@@ -1,0 +1,44 @@
+# ------------------------------------------------------------------------------
+# Quickstart — smallest possible sieval eval
+# ------------------------------------------------------------------------------
+# 1 dataset (AIME 2024) × 1 model × 5 samples, 0-shot generation.
+#
+# Two-step flow:
+#   1. sieval dataset download aime_2024
+#   2. sieval eval quickstart.yaml
+#
+# Edit these fields to match your setup:
+#   models.local-model.infer.checkpoint   — your model's on-disk path
+#   models.local-model.infer_meta.image   — swap to your own image if you need
+#                                           custom deps, or drop the block to run
+#                                           without a container
+# ------------------------------------------------------------------------------
+result_dir: ./outputs/quickstart
+
+models:
+  local-model:
+    args:
+      concurrency_limit: 4
+      temperature: 0.0
+    infer:
+      backend: sglang
+      checkpoint: /path/to/your/model        # EDIT ME
+    infer_meta:
+      gpu: H100-80G
+      image: lmsysorg/sglang:latest
+
+datasets:
+  aime_2024:
+    class: AIME2024Dataset
+    path: "HuggingFaceH4/aime_2024"   # `sieval dataset download aime_2024` stages this
+    operations:
+      - select: { num: 5 }
+
+tasks:
+  aime_2024_smoke:
+    class: AIME2024ZeroShotGenTask
+    dataset: aime_2024
+    model: local-model
+    args:
+      k: 1
+      n: 1

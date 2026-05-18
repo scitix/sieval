@@ -1,0 +1,60 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+exclude: ^sieval/community/
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-toml
+      - id: check-yaml
+        args:
+          - --unsafe
+      - id: check-json
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.9
+    hooks:
+      - id: ruff
+        args:
+          - --fix
+      - id: ruff-format
+  - repo: https://github.com/ComPWA/taplo-pre-commit
+    rev: v0.9.3
+    hooks:
+      - id: taplo-format
+      - id: taplo-lint
+        # --no-schema: taplo 0.9.3 cannot deserialize the current
+        # schemastore.org catalog (https://www.schemastore.org/api/json/catalog.json)
+        # since schemastore's catalog format evolved past taplo's
+        # SchemaCatalog enum. Newer taplo (0.10.0) is fixed upstream but
+        # not yet on PyPI / taplo-pre-commit. Skip schema validation
+        # until the wrapper catches up; taplo-format still enforces syntax.
+        args: [--no-schema]
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.48.0
+    hooks:
+      - id: markdownlint
+  - repo: local
+    hooks:
+      - id: layer-imports
+        name: check layer boundary + private-access imports
+        entry: python scripts/check_layer_imports.py
+        language: python
+        types: [python]
+        files: ^(sieval|scripts)/
+
+ci:
+  autofix_commit_msg: 🎨 [pre-commit.ci] Auto format from pre-commit.com hooks
+  autoupdate_commit_msg: ⬆ [pre-commit.ci] pre-commit autoupdate

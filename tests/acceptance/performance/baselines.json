@@ -1,0 +1,26 @@
+{
+  "_comment": "Performance regression baselines. Values represent minimum acceptable performance. Tests fail if actual performance drops below baseline * tolerance.",
+  "_tolerance": 0.9,
+  "single_turn": {
+    "min_sps": 350.0,
+    "min_efficiency": 0.60
+  },
+  "long_output": {
+    "min_sps": 100.0,
+    "min_efficiency": 0.60
+  },
+  "multi_iteration": {
+    "min_sps": 80.0,
+    "min_efficiency": 0.50
+  },
+  "high_concurrency": {
+    "min_sps": 450.0,
+    "min_efficiency": 0.55
+  },
+  "framework_overhead": {
+    "min_sps": 450.0
+  },
+  "resume_90pct": {
+    "max_elapsed_s": 5.0
+  }
+}

@@ -1,0 +1,14 @@
+.git
+.gitignore
+.gitmodules
+
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+dist/*
+!dist/sieval-*-py3-none-any.whl
+
+.DS_Store
+.vscode

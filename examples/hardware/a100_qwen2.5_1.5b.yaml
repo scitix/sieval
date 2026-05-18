@@ -1,0 +1,79 @@
+# Qwen2.5-1.5B on single A100-40G — ultra-light model, fits easily
+# ~1.5B params in bf16 ≈ 3GB, single GPU with full 32K context
+#
+# When run via `sieval run`, name, api_base, and api_key are auto-injected:
+#   name     ← checkpoint basename (Qwen2.5-1.5B-Instruct)
+#   api_base ← launched endpoint (http://localhost:30000/v1)
+#   api_key  ← "local" (placeholder for OpenAI SDK)
+result_dir: ./outputs/qwen2.5-1.5b-a100
+
+models:
+  qwen2.5-1.5b:
+    args:
+      concurrency_limit: 128
+      max_retries: 3
+      temperature: 0.7
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+    infer:
+      backend: sglang
+      # recipe is auto-resolved from checkpoint (family=qwen2.5, ~1.5B → qwen2.5-1.5b).
+      # Uncomment to pin explicitly and suppress the auto-resolve warning:
+      # recipe: qwen2.5-1.5b
+      checkpoint: /path/to/Qwen2.5-1.5B-Instruct   # EDIT ME
+      # overrides:
+      #   tp_size: 1
+    infer_meta:
+      gpu: A100-40G
+      image: lmsysorg/sglang:latest
+
+datasets:
+  mmlu:
+    class: MMLUDataset
+    path: "${SIEVAL_DATA_DIR}/mmlu"
+    operations:
+      - select: { num: 100 }
+
+  aime_2024:
+    class: AIME2024Dataset
+    path: "HuggingFaceH4/aime_2024"
+    operations:
+      - select: { num: 5 }
+
+  aime_2025:
+    class: AIME2025Dataset
+    path: "opencompass/AIME2025"
+    operations:
+      - select: { num: 5 }
+
+tasks:
+  mmlu_0shot_gen:
+    class: MMLUZeroShotGenTask
+    dataset: mmlu
+    model: qwen2.5-1.5b
+    infer_args:
+      max_tokens: 8192
+      temperature: 0.0
+
+  aime_2024_0shot_gen_oai_style:
+    class: AIME2024ZeroShotGenTask
+    dataset: aime_2024
+    model: qwen2.5-1.5b
+    args:
+      k: 1
+      n: 4
+    runner_config:
+      concurrency_limits:
+        infer: 4
+
+  aime_2025_0shot_gen_oai_style:
+    class: AIME2025ZeroShotGenTask
+    dataset: aime_2025
+    model: qwen2.5-1.5b
+    args:
+      k: 1
+      n: 4
+    runner_config:
+      concurrency_limits:
+        infer: 4

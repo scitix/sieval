@@ -1,0 +1,35 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import json,sys; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path','') or d.get('tool_response',{}).get('filePath',''))\" | { read -r f; echo \"$f\" | grep -qE '\\.pyi?$' && echo \"$f\" | grep -qE '^sieval/(tasks|datasets)/' && python scripts/sync_package_stubs.py || true; }",
+            "timeout": 30,
+            "statusMessage": "Post-edit checks..."
+          },
+          {
+            "type": "command",
+            "command": "python -c \"import json,sys; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path','') or d.get('tool_response',{}).get('filePath',''))\" | { read -r f; echo \"$f\" | grep -qE '^sieval/(tasks|datasets)/.*\\.py$' && python scripts/sync_meta_index.py || true; }",
+            "timeout": 30,
+            "statusMessage": "Post-edit checks..."
+          },
+          {
+            "type": "command",
+            "command": "python -c \"import json,sys; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path','') or d.get('tool_response',{}).get('filePath',''))\" | { read -r f; echo \"$f\" | grep -qE '\\.pyi?$' && ruff check \"$f\" || true; }",
+            "timeout": 15,
+            "statusMessage": "Post-edit checks..."
+          },
+          {
+            "type": "command",
+            "command": "python -c \"import json,sys; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path','') or d.get('tool_response',{}).get('filePath',''))\" | { read -r f; echo \"$f\" | grep -qE '\\.pyi?$' && ty check \"$f\" || true; }",
+            "timeout": 30,
+            "statusMessage": "Post-edit checks..."
+          }
+        ]
+      }
+    ]
+  }
+}

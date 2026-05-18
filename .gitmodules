@@ -1,0 +1,3 @@
+[submodule "submodules/code-evaluator"]
+	path = submodules/code-evaluator
+	url = https://github.com/scitix/code-evaluator

@@ -1,0 +1,85 @@
+# ------------------------------------------------------------------------------
+# Math SFT leaderboard — cover the 3 pilot math tasks against one or more models
+# ------------------------------------------------------------------------------
+# Tasks evaluated: AIME 2024, AIME 2025, MATH-500 (all 0-shot, generative).
+# Shape: multi-task × multi-model matrix. Add/remove models.* entries to scale
+# the matrix horizontally.
+#
+# Two-step flow:
+#   1. sieval dataset download aime_2024 aime_2025 math_500
+#      (or: sieval dataset download --all)
+#   2. sieval eval leaderboard-math-sft.yaml
+#
+# Edit these fields:
+#   models.*.infer.checkpoint  — model paths on disk (one per model entry)
+#   models.*.infer_meta.image  — container image per model
+# ------------------------------------------------------------------------------
+result_dir: ./outputs/leaderboard-math-sft
+
+models:
+  qwen3-4b:
+    args:
+      concurrency_limit: 64
+      temperature: 0.0
+    infer:
+      backend: sglang
+      checkpoint: /path/to/Qwen3-4B-Instruct   # EDIT ME
+    infer_meta:
+      gpu: H100-80G
+      image: lmsysorg/sglang:latest
+
+  # Uncomment to add a second model and make this a true matrix run:
+  # qwen3-0.6b:
+  #   args:
+  #     concurrency_limit: 128
+  #     temperature: 0.0
+  #   infer:
+  #     backend: sglang
+  #     checkpoint: /path/to/Qwen3-0.6B-Instruct   # EDIT ME
+  #   infer_meta:
+  #     gpu: H100-80G
+  #     image: lmsysorg/sglang:latest
+
+datasets:
+  aime_2024:
+    class: AIME2024Dataset
+    path: "HuggingFaceH4/aime_2024"
+
+  aime_2025:
+    class: AIME2025Dataset
+    path: "opencompass/AIME2025"
+
+  math_500:
+    class: MATH500Dataset
+    path: "HuggingFaceH4/MATH-500"
+
+tasks:
+  aime_2024_0shot_gen:
+    class: AIME2024ZeroShotGenTask
+    dataset: aime_2024
+    model: qwen3-4b
+    args:
+      k: 1
+      n: 32
+    runner_config:
+      concurrency_limits:
+        infer: 4
+
+  aime_2025_0shot_gen:
+    class: AIME2025ZeroShotGenTask
+    dataset: aime_2025
+    model: qwen3-4b
+    args:
+      k: 1
+      n: 32
+    runner_config:
+      concurrency_limits:
+        infer: 4
+
+  math_500_0shot_gen:
+    class: MATH500ZeroShotGenTask
+    dataset: math_500
+    model: qwen3-4b
+    infer_args:
+      max_tokens: 8192
+      temperature: 0.0

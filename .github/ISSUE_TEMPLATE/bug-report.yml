@@ -1,0 +1,61 @@
+name: 🐛 Bug report
+description: Raise an issue here if you find a bug.
+title: "[Bug]: "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: >
+        #### Before submitting an issue, please make sure the issue hasn't been already addressed by searching through [the existing and past issues](https://github.com/scitix/sieval/issues?q=is%3Aissue+sort%3Acreated-desc+).
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **SECURITY WARNING:** Please review any text you paste to ensure it does not contain sensitive information such as:
+        - API tokens or keys (e.g., Hugging Face tokens, OpenAI API keys, etc.)
+        - Passwords or authentication credentials
+        - Private URLs or endpoints
+        - Personal or confidential data
+
+        Consider redacting or replacing sensitive values with placeholders like `<YOUR_TOKEN_HERE>` when sharing configuration or code examples.
+  - type: textarea
+    attributes:
+      label: Your current environment
+      description: |
+        Please describe your environment.
+      value: |
+        - Python version:
+        - SiEval version:
+        - Relevant libraries and their versions:
+        - Other information:
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 🐛 Describe the bug
+      description: |
+        Please provide a clear and concise description of what the bug is.
+
+        If relevant, add a minimal example so that we can reproduce the error by running the code. It is very important for the snippet to be as succinct (minimal) as possible, so please take time to trim down any irrelevant code to help us debug efficiently. We are going to copy-paste your code and we expect to get the same result as you did: avoid any external data, and include the relevant imports, etc.
+
+        If the code is too long (hopefully, it isn't), feel free to put it in a public gist and link it in the issue: https://gist.github.com.
+
+        Please also paste or describe the results you observe instead of the expected results. If you observe an error, please paste the error message including the **full** traceback of the exception. It may be relevant to wrap error messages in ```` ```triple quotes blocks``` ````.
+      placeholder: |
+        A clear and concise description of what the bug is.
+
+        ```python
+        # Sample code to reproduce the problem
+        ```
+
+        ```
+        The error message you got, with the full traceback.
+        ```
+    validations:
+      required: true
+  - type: checkboxes
+    attributes:
+      label: Before submitting a new issue...
+      options:
+        - label: Make sure you already searched for relevant issues and documentation.
+          required: true

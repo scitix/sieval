@@ -1,0 +1,460 @@
+{
+  "schema_version": 1,
+  "datasets": [
+    {
+      "name": "aime_2024",
+      "display_name": "AIME 2024",
+      "description": "American Invitational Mathematics Examination 2024, 30 problems.",
+      "source": [
+        "hf:HuggingFaceH4/aime_2024"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "aime_2025",
+      "display_name": "AIME 2025",
+      "description": "American Invitational Mathematics Examination 2025, 30 problems.",
+      "source": [
+        "hf:opencompass/AIME2025"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT"
+    },
+    {
+      "name": "drop",
+      "display_name": "DROP",
+      "description": "Discrete Reasoning Over Paragraphs — reading-comprehension benchmark.",
+      "source": [
+        "url:https://openaipublic.blob.core.windows.net/simple-evals/drop_v0_train.jsonl.gz",
+        "url:https://openaipublic.blob.core.windows.net/simple-evals/drop_v0_dev.jsonl.gz"
+      ],
+      "categories": [
+        {
+          "level1": "Logic",
+          "level2": "TextualReasoning"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-SA-4.0"
+    },
+    {
+      "name": "gpqa_diamond",
+      "display_name": "GPQA Diamond",
+      "description": "Graduate-level science MCQ — diamond subset, 198 questions.",
+      "source": [
+        "url:https://openaipublic.blob.core.windows.net/simple-evals/gpqa_diamond.csv"
+      ],
+      "categories": [
+        {
+          "level1": "Logic",
+          "level2": "ComplexLogic"
+        },
+        {
+          "level1": "Knowledge",
+          "level2": "STEM"
+        }
+      ],
+      "tags": [
+        "english",
+        "multiple-choice",
+        "graduate-level"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-4.0"
+    },
+    {
+      "name": "human_eval",
+      "display_name": "HumanEval",
+      "description": "OpenAI HumanEval — 164 Python function-synthesis problems.",
+      "source": [
+        "hf:openai/openai_humaneval"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        }
+      ],
+      "tags": [
+        "english",
+        "python",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "license": "MIT"
+    },
+    {
+      "name": "ifeval",
+      "display_name": "IFEval",
+      "description": "Instruction-Following Eval — 541 prompts with verifiable constraints.",
+      "source": [
+        "hf:google/IFEval"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "livecodebench_code_generation",
+      "display_name": "LiveCodeBench Code Generation",
+      "description": "LiveCodeBench code generation lite — contamination-free benchmark.",
+      "source": [
+        "hf:livecodebench/code_generation_lite"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        }
+      ],
+      "tags": [
+        "english",
+        "python",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "license": "cc"
+    },
+    {
+      "name": "math_500",
+      "display_name": "MATH-500",
+      "description": "Hendrycks MATH-500 subset — 500 problems across difficulty levels.",
+      "source": [
+        "hf:HuggingFaceH4/MATH-500"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "AdvancedMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT"
+    },
+    {
+      "name": "mmlu",
+      "display_name": "MMLU",
+      "description": "Massive Multitask Language Understanding — 57 academic subjects, MCQ.",
+      "source": [
+        "url:https://openaipublic.blob.core.windows.net/simple-evals/mmlu.csv"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "english",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "MIT"
+    },
+    {
+      "name": "mmlu_pro",
+      "display_name": "MMLU-Pro",
+      "description": "MMLU-Pro — harder MCQ with 10 options, filtered for reasoning.",
+      "source": [
+        "hf:TIGER-Lab/MMLU-Pro"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "english",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "MIT"
+    },
+    {
+      "name": "t_eval_before_calling",
+      "display_name": "T-Eval Before-Calling",
+      "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
+      "source": [
+        "hf:lovesnowbest/T-Eval"
+      ],
+      "categories": [
+        {
+          "level1": "Agent",
+          "level2": "ToolUseSimple"
+        }
+      ],
+      "tags": [
+        "chinese",
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "Apache-2.0"
+    }
+  ],
+  "tasks": [
+    {
+      "name": "aime_2024_0shot_gen",
+      "display_name": "AIME 2024 (0-shot, generative)",
+      "description": "AIME 2024 — American Invitational Mathematics Examination, 30 problems.",
+      "dataset": "aime_2024",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simple-evals",
+        "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
+        "notes": "Math postprocess + ANSWER_PATTERN extraction aligned with simple-evals."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "aime_2025_0shot_gen",
+      "display_name": "AIME 2025 (0-shot, generative)",
+      "description": "AIME 2025 — American Invitational Mathematics Examination, 30 problems.",
+      "dataset": "aime_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simple-evals",
+        "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
+        "notes": "Math postprocess + ANSWER_PATTERN extraction aligned with simple-evals."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "drop_kshot_gen",
+      "display_name": "DROP (few-shot, generative)",
+      "description": "Discrete Reasoning Over Paragraphs — reading-comprehension benchmark.",
+      "dataset": "drop",
+      "eval_mode": "gen",
+      "n_shot": 3,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "drop",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simple-evals",
+        "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/drop_eval.py",
+        "notes": "drop_metric vendored from simple-evals; prompt templates are sieval-local."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "gpqa_diamond_0shot_gen",
+      "display_name": "GPQA-Diamond (0-shot, generative)",
+      "description": "Graduate-level science MCQ — diamond subset, 198 questions.",
+      "dataset": "gpqa_diamond",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "multiple-choice",
+        "graduate-level"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simple-evals",
+        "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/gpqa_eval.py",
+        "notes": "Permutation + seed logic aligned with simple-evals."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "human_eval_0shot_gen",
+      "display_name": "HumanEval (0-shot, generative)",
+      "description": "OpenAI HumanEval — 164 Python functions evaluated with pass@k.",
+      "dataset": "human_eval",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "python",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simple-evals",
+        "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/humaneval_eval.py",
+        "notes": "Prompt style follows simple-evals HumanEval; QUERY_TEMPLATE is sieval-local."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ifeval_0shot_gen",
+      "display_name": "IFEval (0-shot, generative)",
+      "description": "Instruction-Following Eval — 541 prompts with verifiable constraints.",
+      "dataset": "ifeval",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "ifeval",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "google-research/instruction_following_eval",
+        "url": "https://github.com/google-research/google-research/blob/f97f6adab57bd3065b24169bcfc559dc34d0db84/instruction_following_eval/evaluation_lib.py",
+        "notes": "evaluation_lib + instructions_registry vendored from google-research."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "livecodebench_code_generation_0shot_gen",
+      "display_name": "LiveCodeBench Code Generation (0-shot)",
+      "description": "LiveCodeBench — contamination-free code benchmark, generation subset.",
+      "dataset": "livecodebench_code_generation",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "python",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "livecodebench",
+        "url": "https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
+        "notes": "Prompt templates and extract_code vendored from lcb_runner/{prompts,utils}."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "math_500_0shot_gen",
+      "display_name": "MATH-500 (0-shot, generative)",
+      "description": "Hendrycks MATH-500 subset for generative math evaluation.",
+      "dataset": "math_500",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simple-evals",
+        "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
+        "notes": "Math postprocess aligned with simple-evals."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "mmlu_0shot_gen",
+      "display_name": "MMLU (0-shot, generative)",
+      "description": "Massive Multitask Language Understanding — 57 academic subjects, MCQ.",
+      "dataset": "mmlu",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simple-evals",
+        "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/mmlu_eval.py",
+        "notes": "0-shot generative MMLU with letter extraction; aligned with simple-evals."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "mmlu_pro_0shot_gen",
+      "display_name": "MMLU-Pro (0-shot, generative)",
+      "description": "MMLU-Pro — harder MCQ with 10 options, filtered for reasoning.",
+      "dataset": "mmlu_pro",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "opencompass",
+        "url": "https://github.com/open-compass/opencompass/blob/568572803ab108eb0e2ae73b770d965b7de078de/opencompass/configs/datasets/mmlu_pro/mmlu_pro_0shot_cot_gen_08c1de.py",
+        "notes": "QUERY_TEMPLATE / CHOICES adapted from opencompass 0-shot CoT config."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "t_eval_before_calling_0shot_gen",
+      "display_name": "T-Eval Before-Calling (0-shot)",
+      "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
+      "dataset": "t_eval_before_calling",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "chinese",
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "open-compass/T-Eval",
+        "url": "https://github.com/open-compass/T-Eval/tree/58f22406404d7e2a4f36856a19c7f4dc28a0a5f0/teval",
+        "notes": "ResponseDataSample (schema.py) + format_load (utils/format_load.py) vendored."
+      },
+      "status": "stable"
+    }
+  ]
+}

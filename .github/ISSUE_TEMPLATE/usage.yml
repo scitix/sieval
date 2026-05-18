@@ -1,0 +1,39 @@
+name: 💻 Usage
+description: Raise an issue here if you don't know how to use SiEval.
+title: "[Usage]: "
+labels: ["usage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: >
+        #### Before submitting an issue, please make sure the issue hasn't been already addressed by searching through [the existing and past issues](https://github.com/scitix/sieval/issues?q=is%3Aissue+sort%3Acreated-desc+).
+  - type: textarea
+    attributes:
+      label: Your current environment
+      description: |
+        Please describe your environment.
+      value: |
+        - Python version:
+        - SiEval version:
+        - Relevant libraries and their versions:
+        - Other information:
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: How would you like to use SiEval
+      description: |
+        A detailed description of how you want to use SiEval.
+      value: |
+        I want to run evaluation of a specific task. I don't know how to integrate it with SiEval.
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for contributing 🎉!
+  - type: checkboxes
+    attributes:
+      label: Before submitting a new issue...
+      options:
+        - label: Make sure you already searched for relevant issues and documentation.
+          required: true

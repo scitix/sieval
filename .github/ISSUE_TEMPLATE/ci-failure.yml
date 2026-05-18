@@ -1,0 +1,58 @@
+name: 🧪 CI failure report
+description: Report a failing test.
+title: "[CI Failure]: "
+labels: ["ci-failure"]
+
+body:
+  - type: markdown
+    attributes:
+      value: >
+        #### Include the name of the failing GitHub Actions step and test file in the title.
+  - type: input
+    attributes:
+      label: Name of failing test
+      description: |
+        Paste in the fully-qualified name of the failing test from the logs.
+      placeholder: |
+        `path/to/test_file.py::test_name[params]`
+    validations:
+      required: true
+  - type: checkboxes
+    attributes:
+      label: Basic information
+      description: Select all items that apply to the failing test.
+      options:
+        - label: Flaky test
+        - label: Can reproduce locally
+        - label: Caused by external libraries (e.g. bug in `transformers`)
+  - type: textarea
+    attributes:
+      label: 🧪 Describe the failing test
+      description: |
+        Please provide a clear and concise description of the failing test.
+      placeholder: |
+        A clear and concise description of the failing test.
+
+        ```
+        The error message you got, with the full traceback.
+        ```
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 📝 History of failing test
+      description: |
+        Since when did the test start to fail?
+      placeholder: |
+        Approximate timeline.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: CC List.
+      description: >
+        The list of people you want to CC. Usually, this includes those who worked on the PR that failed the test.
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for reporting 🙏!

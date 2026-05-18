@@ -1,0 +1,57 @@
+name: ⚡ Discussion on the performance of SiEval
+description: Submit a proposal/discussion about the performance of SiEval
+title: "[Performance]: "
+labels: ["performance"]
+
+body:
+  - type: markdown
+    attributes:
+      value: >
+        #### Before submitting an issue, please make sure the issue hasn't been already addressed by searching through [the existing and past issues](https://github.com/scitix/sieval/issues?q=is%3Aissue+sort%3Acreated-desc+).
+  - type: markdown
+    attributes:
+      value: >
+        ⚠️ Please fill in at least one of the sections below.
+  - type: textarea
+    attributes:
+      label: Proposal to improve performance
+      description: >
+        How do you plan to improve SiEval's performance?
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Report of performance regression
+      description: >
+        Please provide detailed description of performance comparison to confirm the regression. You may want to run the scripts at https://github.com/scitix/sieval/tree/main/tests/acceptance.
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Misc discussion on performance
+      description: >
+        Anything about the performance.
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Your current environment (if you think it is necessary)
+      description: |
+        Please describe your environment.
+      value: |
+        - Python version:
+        - SiEval version:
+        - Relevant libraries and their versions:
+        - Other information:
+    validations:
+      required: false
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for contributing 🎉!
+  - type: checkboxes
+    attributes:
+      label: Before submitting a new issue...
+      options:
+        - label: Make sure you already searched for relevant issues and documentation.
+          required: true

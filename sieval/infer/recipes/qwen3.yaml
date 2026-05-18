@@ -1,0 +1,720 @@
+# Qwen3 family recipes — profile-based structure
+#
+# Each profile: profiles[hardware][precision][framework] → complete params
+# No inheritance or merge — what you see is what you get.
+#
+# Hardware notes:
+#   A100-40G:  40GB HBM2e, Ampere, no native FP8 (bf16 only)
+#   H100-80G:  80GB HBM3,  Hopper, native FP8, NVLink 4 (900GB/s)
+#   H200-141G: 141GB HBM3e, Hopper, same compute as H100 but 1.76x memory
+#
+# Precision notes:
+#   bf16 profiles include explicit dtype to prevent auto-detection fallback.
+#   fp8 profiles omit dtype — the framework auto-detects the quantization
+#   format from the checkpoint and uses the model's torch_dtype (typically
+#   bfloat16) for compute/KV cache.  Adding dtype here would be misleading.
+#
+# Reasoning & tool-call parsing:
+#   Qwen3 uses <think>…</think> for chain-of-thought.  Both vLLM and SGLang
+#   need --reasoning-parser qwen3 to expose reasoning_content in the API.
+#
+#   For tool calling (function calling), the standard Qwen3 chat template
+#   uses a hermes-compatible format:
+#     vLLM:  --enable-auto-tool-choice --tool-call-parser hermes
+#     SGLang: --tool-call-parser qwen
+#
+#   Qwen3-Coder / Qwen3.5 would use tool_call_parser: qwen3_coder instead.
+
+_family: qwen3
+
+# Size buckets: matched by approximate parameter count (billions)
+# Each bucket covers a range [min_b, max_b)
+#
+# Gaps between buckets (e.g. 40-60B, 80-200B) mean no official Qwen3
+# checkpoint in that range.  If a custom model falls in a gap,
+# match_recipe() returns None — the user must provide explicit infer
+# configuration instead of guessing.
+
+qwen3-0.6b:
+  size_range: [0.3, 1]
+  tested_versions:
+    vllm: [">=0.9.0"]
+    sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
+  profiles:
+    A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.90
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.85
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.90
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.85
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.90
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.85
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H200-141G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.90
+          max_model_len: 40960
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.85
+          context_length: 40960
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.90
+          max_model_len: 40960
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.85
+          context_length: 40960
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+
+qwen3-1.7b:
+  size_range: [1, 3]
+  tested_versions:
+    vllm: [">=0.9.0"]
+    sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
+  profiles:
+    A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.90
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.85
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.90
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.85
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.90
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.85
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H200-141G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.90
+          max_model_len: 40960
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.85
+          context_length: 40960
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.90
+          max_model_len: 40960
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.85
+          context_length: 40960
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+
+qwen3-4b:
+  size_range: [3, 6]
+  tested_versions:
+    vllm: [">=0.9.0"]
+    sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
+  profiles:
+    A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H200-141G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+
+qwen3-8b:
+  size_range: [6, 12]
+  tested_versions:
+    vllm: [">=0.9.0"]
+    sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
+  profiles:
+    A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H200-141G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+
+qwen3-14b:
+  size_range: [12, 20]
+  tested_versions:
+    vllm: [">=0.9.0"]
+    sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
+  profiles:
+    A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 16384
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 16384
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H200-141G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+
+qwen3-30b-a3b:
+  size_range: [20, 32]
+  tested_versions:
+    vllm: [">=0.9.0"]
+    sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
+  profiles:
+    A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 16384
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 16384
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H200-141G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+
+qwen3-32b:
+  size_range: [32, 40]
+  tested_versions:
+    vllm: [">=0.9.0"]
+    sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
+  profiles:
+    A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 16384
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 16384
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H200-141G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+
+qwen3-72b:
+  size_range: [60, 80]
+  tested_versions:
+    vllm: [">=0.9.0"]
+    sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
+  profiles:
+    A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 16384
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 16384
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H200-141G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+
+qwen3-235b-a22b:
+  size_range: [200, 250]
+  tested_versions:
+    vllm: [">=0.9.0"]
+    sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
+  profiles:
+    A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 8192
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 8192
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 16384
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 16384
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+    H200-141G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen
+      fp8:
+        vllm:
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+          reasoning_parser: qwen3
+          enable_auto_tool_choice: true
+          tool_call_parser: hermes
+        sglang:
+          mem_fraction_static: 0.90
+          context_length: 32768
+          reasoning_parser: qwen3
+          tool_call_parser: qwen

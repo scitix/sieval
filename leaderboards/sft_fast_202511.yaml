@@ -1,0 +1,219 @@
+# Leaderboard SFT Fast 202511 Configuration
+#
+# Usage:
+#   sieval eval leaderboards/sft_fast_202511.yaml --model gpt-4o
+#   sieval eval leaderboards/sft_fast_202511.yaml --model gpt-4o --resume
+
+result_dir: "./outputs/sft-fast-202511"
+
+# Global runner config defaults (can be overridden per-task)
+runner_config:
+    concurrency_limits:
+        infer: 128
+    max_iterations: 3
+    auto_resume: false
+    profile_io: true
+    profile_stages: true
+
+# =============================================================================
+# Models
+# =============================================================================
+models:
+    # Base model - name can be overridden via --model CLI arg
+    base_model:
+        name: "gpt-4o"
+        args:
+            max_retries: 3
+            concurrency_limit: 128
+            max_tokens: 8192
+            temperature: 0.0
+            timeout: 3600
+
+    # Derived models inherit from base and override specific args
+    math_model:
+        base: base_model
+        args:
+            temperature: 0.7
+
+    code_model:
+        base: base_model
+        args:
+            temperature: 0.7
+
+# =============================================================================
+# Datasets
+# =============================================================================
+datasets:
+    # Path conventions:
+    #   * hf-scheme datasets: bare repo_id; HF_HUB_CACHE is seeded to
+    #     $SIEVAL_DATA_DIR/hf so `sieval dataset download <name>` snapshots
+    #     are picked up without repeating the path.
+    #   * url-scheme datasets: ${SIEVAL_DATA_DIR}/<dataset_name>; the dataset
+    #     class resolves the file inside.
+    aime_2024:
+        class: AIME2024Dataset
+        path: "HuggingFaceH4/aime_2024"
+
+    aime_2025:
+        class: AIME2025Dataset
+        path: "opencompass/AIME2025"
+
+    drop:
+        class: DROPDataset
+        path: "${SIEVAL_DATA_DIR}/drop"
+
+    gpqa_diamond:
+        class: GPQADiamondDataset
+        path: "${SIEVAL_DATA_DIR}/gpqa_diamond"
+
+    human_eval:
+        class: HumanEvalDataset
+        path: "openai/openai_humaneval"
+
+    ifeval:
+        class: IFEvalDataset
+        path: "google/IFEval"
+
+    livecodebench:
+        class: LiveCodeBenchDataset
+        path: "livecodebench/code_generation_lite"
+        args:
+            version_tag: "release_v6"
+            start_date: "2024-08-01"
+            end_date: "2024-11-30"
+
+    math_500:
+        class: MATH500Dataset
+        path: "HuggingFaceH4/MATH-500"
+
+    mmlu:
+        class: MMLUDataset
+        path: "${SIEVAL_DATA_DIR}/mmlu"
+
+    mmlu_pro:
+        class: MMLUProDataset
+        path: "TIGER-Lab/MMLU-Pro"
+
+    t_eval:
+        class: TEvalBeforeCallingDataset
+        path: "lovesnowbest/T-Eval"
+        args:
+            legacy_model: true
+
+    # Example with operations
+    # mmlu_subset:
+    #   class: MMLUDataset
+    #   path: "${SIEVAL_DATA_DIR}/mmlu"
+    #   operations:
+    #     - shuffle: { seed: 42 }
+    #     - select: { num: 100 }
+
+# =============================================================================
+# Tasks
+# =============================================================================
+tasks:
+    # -------------------------
+    # Math Tasks
+    # -------------------------
+    aime_2024_0shot_gen_oai_style:
+        class: AIME2024ZeroShotGenTask
+        dataset: aime_2024
+        model: math_model
+        args:
+            k: 1
+            n: 64
+        runner_config:
+            concurrency_limits:
+                infer: 4
+
+    aime_2025_0shot_gen_oai_style:
+        class: AIME2025ZeroShotGenTask
+        dataset: aime_2025
+        model: math_model
+        args:
+            k: 1
+            n: 64
+        runner_config:
+            concurrency_limits:
+                infer: 4
+
+    math_500_0shot_gen_oai_style:
+        class: MATH500ZeroShotGenTask
+        dataset: math_500
+        model: base_model
+        args:
+            k: 1
+            n: 1
+
+    # -------------------------
+    # Reasoning Tasks
+    # -------------------------
+    drop_3shot_gen:
+        class: DROPFewShotGenTask
+        dataset: drop
+        model: base_model
+        args:
+            k: 3
+
+    gpqa_diamond_0shot_gen:
+        class: GPQADiamondZeroShotGenTask
+        dataset: gpqa_diamond
+        model: base_model
+        args:
+            seed: 0
+
+    # -------------------------
+    # Code Tasks
+    # -------------------------
+    human_eval_0shot_gen:
+        class: HumanEvalZeroShotGenTask
+        dataset: human_eval
+        model: code_model
+        args:
+            k: 1
+            n: 10
+        runner_config:
+            concurrency_limits:
+                infer: 128
+                feedback: 4
+
+    livecodebench_code_generation_0shot_gen:
+        class: LiveCodeBenchCodeGenerationZeroShotGenTask
+        dataset: livecodebench
+        model: code_model
+        args:
+            k: 1
+            n: 10
+        runner_config:
+            concurrency_limits:
+                infer: 128
+                feedback: 4
+
+    # -------------------------
+    # Knowledge Tasks
+    # -------------------------
+    mmlu_0shot_gen:
+        class: MMLUZeroShotGenTask
+        dataset: mmlu
+        model: base_model
+
+    mmlu_pro_0shot_gen:
+        class: MMLUProZeroShotGenTask
+        dataset: mmlu_pro
+        model: base_model
+
+    # -------------------------
+    # Instruction Following Tasks
+    # -------------------------
+    ifeval_0shot_gen:
+        class: IFEvalZeroShotGenTask
+        dataset: ifeval
+        model: base_model
+
+    # -------------------------
+    # Tool Use Tasks
+    # -------------------------
+    t_eval_before_calling_0shot_gen:
+        class: TEvalBeforeCallingZeroShotGenTask
+        dataset: t_eval
+        model: base_model
