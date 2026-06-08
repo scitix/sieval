@@ -19,6 +19,7 @@ def test_download_uses_per_phase_timeout(tmp_path):
         mock_resp = MagicMock()
         mock_resp.iter_bytes.return_value = [b"x"]
         mock_resp.raise_for_status.return_value = None
+        mock_resp.num_bytes_downloaded = 1
         mock_stream.return_value.__enter__.return_value = mock_resp
         h.download("url:https://example.com/foo.csv", tmp_path, "foo", force=False)
     timeout_arg = mock_stream.call_args.kwargs.get("timeout")
@@ -44,6 +45,7 @@ def test_download_writes_file_at_basename(tmp_path):
         mock_resp.iter_bytes.return_value = [b"hello"]
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-length": "5"}
+        mock_resp.num_bytes_downloaded = 5
         mock_stream.return_value.__enter__.return_value = mock_resp
         h.download(
             "url:https://example.com/foo.csv",
@@ -81,6 +83,7 @@ def test_download_force_redownloads(tmp_path):
         mock_resp.iter_bytes.return_value = [b"fresh"]
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-length": "5"}
+        mock_resp.num_bytes_downloaded = 5
         mock_stream.return_value.__enter__.return_value = mock_resp
         h.download(
             "url:https://example.com/foo.csv",
@@ -103,6 +106,7 @@ def test_download_rejects_truncated_stream(tmp_path):
         mock_resp.iter_bytes.return_value = [b"abc"]
         mock_resp.raise_for_status.return_value = None
         mock_resp.headers = {"content-length": "100"}
+        mock_resp.num_bytes_downloaded = 3  # connection died after 3 raw bytes
         mock_stream.return_value.__enter__.return_value = mock_resp
         with pytest.raises(RuntimeError, match="truncated download"):
             h.download(
@@ -114,6 +118,33 @@ def test_download_rejects_truncated_stream(tmp_path):
     # Target must NOT have been renamed from .partial on truncation.
     assert not (tmp_path / "foo" / "foo.csv").exists()
     assert not (tmp_path / "foo" / "foo.csv.partial").exists()
+
+
+def test_download_accepts_compressed_response(tmp_path):
+    """Server sends Content-Encoding (e.g. gzip): Content-Length is the
+    compressed size while iter_bytes() yields the larger decompressed body.
+    The check must compare on-the-wire bytes (num_bytes_downloaded) against
+    Content-Length, not the decompressed bytes written — otherwise every
+    compressed download falsely trips the truncation guard.
+
+    Regression: SQuAD's train-v2.0.json is gzip-served; Content-Length=9551051
+    but the decoded body is ~42MB, which the old written-bytes check rejected."""
+    h = URLHandler()
+    with patch("sieval.datasets.downloaders.url.httpx.stream") as mock_stream:
+        mock_resp = MagicMock()
+        # Decompressed body is far larger than the compressed Content-Length.
+        mock_resp.iter_bytes.return_value = [b"x" * 42, b"y" * 42]
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.headers = {"content-length": "9", "content-encoding": "gzip"}
+        mock_resp.num_bytes_downloaded = 9  # raw compressed bytes on the wire
+        mock_stream.return_value.__enter__.return_value = mock_resp
+        h.download(
+            "url:https://example.com/foo.json",
+            dest_root=tmp_path,
+            dataset_name="foo",
+            force=False,
+        )
+    assert (tmp_path / "foo" / "foo.json").read_bytes() == b"x" * 42 + b"y" * 42
 
 
 def test_download_accepts_missing_content_length(tmp_path):
