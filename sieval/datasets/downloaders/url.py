@@ -35,16 +35,19 @@ class URLHandler:
             with httpx.stream("GET", url, timeout=_TIMEOUT, follow_redirects=True) as r:
                 r.raise_for_status()
                 # Catches 2xx responses that dropped the connection mid-stream.
+                # Compare against on-the-wire bytes, not bytes written: when the
+                # server sends Content-Encoding (e.g. gzip), Content-Length is the
+                # compressed size while iter_bytes() yields the larger decompressed
+                # body, so comparing written bytes would falsely flag truncation.
                 expected = _parse_content_length(r.headers.get("content-length"))
-                written = 0
                 with tmp.open("wb") as f:
                     for chunk in r.iter_bytes(chunk_size=1 << 16):
                         f.write(chunk)
-                        written += len(chunk)
-                if expected is not None and written != expected:
+                received = r.num_bytes_downloaded
+                if expected is not None and received != expected:
                     raise RuntimeError(
                         f"truncated download from {url}: "
-                        f"Content-Length={expected} but wrote {written} bytes"
+                        f"Content-Length={expected} but received {received} bytes"
                     )
             tmp.replace(target)
         except BaseException:
