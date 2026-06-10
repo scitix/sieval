@@ -22,6 +22,7 @@ def _args(**overrides):
         "lengths": "4096,8192,16384,32768,65536,131072",
         "native_ctx": 32768,
         "checkpoint": "/path/to/model",
+        "tokenizer_model": None,
         "model_base": "model",
         "backend": "sglang",
         "endpoint": "chat",
@@ -81,6 +82,20 @@ def test_vllm_backend_uses_max_model_len_and_rope_scaling():
     ov = doc["models"]["model-yarn128k"]["infer"]["overrides"]
     assert "max_model_len" in ov
     assert "rope_scaling" in ov  # vllm flag name, not json_model_override_args
+
+
+def test_tokenizer_model_defaults_to_checkpoint():
+    # Synthesis must size prompts with the evaluated model's tokenizer (RULER
+    # aligns these): every dataset inherits the checkpoint unless overridden.
+    doc = yaml.safe_load(build(_args(checkpoint="/models/Qwen3-32B")))
+    tms = {ds["args"]["tokenizer_model"] for ds in doc["datasets"].values()}
+    assert tms == {"/models/Qwen3-32B"}
+
+
+def test_tokenizer_model_override():
+    doc = yaml.safe_load(build(_args(tokenizer_model="gpt-4")))
+    tms = {ds["args"]["tokenizer_model"] for ds in doc["datasets"].values()}
+    assert tms == {"gpt-4"}
 
 
 def test_base_endpoint_selects_base_gen_classes():
