@@ -231,6 +231,106 @@
       "license": "MIT"
     },
     {
+      "name": "ruler_cwe",
+      "display_name": "RULER CWE",
+      "description": "RULER common words extraction: report the most frequent words.",
+      "source": [],
+      "categories": [
+        {
+          "level1": "Logic",
+          "level2": "TextualReasoning"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "ruler_fwe",
+      "display_name": "RULER FWE",
+      "description": "RULER frequent words extraction: report the top-3 coded words.",
+      "source": [],
+      "categories": [
+        {
+          "level1": "Logic",
+          "level2": "TextualReasoning"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "ruler_niah",
+      "display_name": "RULER NIAH",
+      "description": "RULER needle-in-a-haystack: retrieve magic values from long context.",
+      "source": [
+        "local:paul_graham_essays/PaulGrahamEssays.json.gz"
+      ],
+      "categories": [
+        {
+          "level1": "Logic",
+          "level2": "TextualReasoning"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "ruler_qa",
+      "display_name": "RULER QA",
+      "description": "RULER QA: answer over many distractor documents.",
+      "source": [
+        "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
+        "url:http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_distractor_v1.json"
+      ],
+      "categories": [
+        {
+          "level1": "Logic",
+          "level2": "TextualReasoning"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "ruler_vt",
+      "display_name": "RULER VT",
+      "description": "RULER variable tracking: trace multi-hop variable assignments.",
+      "source": [],
+      "categories": [
+        {
+          "level1": "Logic",
+          "level2": "TextualReasoning"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "license": "Apache-2.0"
+    },
+    {
       "name": "t_eval_before_calling",
       "display_name": "T-Eval Before-Calling",
       "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
@@ -475,6 +575,216 @@
         "source": "opencompass",
         "url": "https://github.com/open-compass/opencompass/blob/568572803ab108eb0e2ae73b770d965b7de078de/opencompass/configs/datasets/mmlu_pro/mmlu_pro_0shot_cot_gen_08c1de.py",
         "notes": "QUERY_TEMPLATE / CHOICES adapted from opencompass 0-shot CoT config."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_cwe_0shot_base_gen",
+      "display_name": "RULER CWE (0-shot, base/completion)",
+      "description": "RULER common words extraction: report the most frequent words.",
+      "dataset": "ruler_cwe",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "github",
+        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/synthetic/common_words_extraction.py",
+        "notes": "Original NVIDIA RULER evaluates base models via completion; substring-recall scoring."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_cwe_0shot_gen",
+      "display_name": "RULER CWE (0-shot, generative)",
+      "description": "RULER common words extraction: report the most frequent words.",
+      "dataset": "ruler_cwe",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "opencompass",
+        "url": "https://github.com/open-compass/opencompass/blob/a4b54048ae8759fa342d3efa1df5b53865518804/opencompass/datasets/ruler/ruler_cwe.py",
+        "notes": "Synthesis + substring-recall scoring ported from OpenCompass RULER."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_fwe_0shot_base_gen",
+      "display_name": "RULER FWE (0-shot, base/completion)",
+      "description": "RULER frequent words extraction: report the top-3 coded words.",
+      "dataset": "ruler_fwe",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "github",
+        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/synthetic/freq_words_extraction.py",
+        "notes": "Original NVIDIA RULER evaluates base models via completion; substring-recall scoring."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_fwe_0shot_gen",
+      "display_name": "RULER FWE (0-shot, generative)",
+      "description": "RULER frequent words extraction: report the top-3 coded words.",
+      "dataset": "ruler_fwe",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "opencompass",
+        "url": "https://github.com/open-compass/opencompass/blob/a4b54048ae8759fa342d3efa1df5b53865518804/opencompass/datasets/ruler/ruler_fwe.py",
+        "notes": "Synthesis + substring-recall scoring ported from OpenCompass RULER."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_niah_0shot_base_gen",
+      "display_name": "RULER NIAH (0-shot, base/completion)",
+      "description": "RULER needle-in-a-haystack: retrieve magic values from long context.",
+      "dataset": "ruler_niah",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "github",
+        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/synthetic/niah.py",
+        "notes": "Original NVIDIA RULER evaluates base models via completion (raw input + answer_prefix continuation); substring-recall scoring."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_niah_0shot_gen",
+      "display_name": "RULER NIAH (0-shot, generative)",
+      "description": "RULER needle-in-a-haystack: retrieve magic values from long context.",
+      "dataset": "ruler_niah",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "opencompass",
+        "url": "https://github.com/open-compass/opencompass/blob/a4b54048ae8759fa342d3efa1df5b53865518804/opencompass/datasets/ruler/ruler_niah.py",
+        "notes": "Synthesis + substring-recall scoring ported from OpenCompass RULER."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_qa_0shot_base_gen",
+      "display_name": "RULER QA (0-shot, base/completion)",
+      "description": "RULER multi-doc QA via completions: continue input+answer_prefix as raw text.",
+      "dataset": "ruler_qa",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "github",
+        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/synthetic/qa.py",
+        "notes": "Original NVIDIA RULER feeds raw input + answer_prefix to a base model via completion; scoring uses RULER's string_match_part."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_qa_0shot_gen",
+      "display_name": "RULER QA (0-shot, generative)",
+      "description": "RULER multi-doc QA: answer over many distractor documents.",
+      "dataset": "ruler_qa",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "opencompass",
+        "url": "https://github.com/open-compass/opencompass/blob/a4b54048ae8759fa342d3efa1df5b53865518804/opencompass/datasets/ruler/ruler_qa.py",
+        "notes": "Scoring uses RULER's own string_match_part (vendored in sieval.community.ruler.eval.constants); synthesis ported from OpenCompass."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_vt_0shot_base_gen",
+      "display_name": "RULER VT (0-shot, base/completion)",
+      "description": "RULER variable tracking: trace multi-hop variable assignments.",
+      "dataset": "ruler_vt",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "github",
+        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/synthetic/variable_tracking.py",
+        "notes": "Original NVIDIA RULER evaluates base models via completion; synthesis includes RULER's built-in 1-shot ICL; substring-recall scoring."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_vt_0shot_gen",
+      "display_name": "RULER VT (0-shot, generative)",
+      "description": "RULER variable tracking: trace multi-hop variable assignments.",
+      "dataset": "ruler_vt",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "opencompass",
+        "url": "https://github.com/open-compass/opencompass/blob/a4b54048ae8759fa342d3efa1df5b53865518804/opencompass/datasets/ruler/ruler_vt.py",
+        "notes": "Synthesis + substring-recall scoring ported from OpenCompass RULER."
       },
       "status": "stable"
     },

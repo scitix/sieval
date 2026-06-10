@@ -16,6 +16,13 @@ import typer
 from sieval.cli.output import CommandResult, OutputFormat, cli_error_message, render
 
 from .catalog import scan_leaderboards
+from .ruler import (
+    DEFAULT_THRESHOLD,
+    collect_sweep,
+    len_tag,
+    reference_threshold,
+    summarize,
+)
 from .scanner import RunInfo, build_matrix, resolve_model_name, scan_runs
 
 leaderboard_app = typer.Typer(
@@ -23,6 +30,17 @@ leaderboard_app = typer.Typer(
     help="Cross-run score aggregation and leaderboard display.",
     no_args_is_help=True,
 )
+
+
+def _resolve_run_models(runs: list[RunInfo]) -> list[RunInfo]:
+    """Fill in missing model names from inference output (same as `report`)."""
+    resolved: list[RunInfo] = []
+    for run in runs:
+        if run.model_name:
+            resolved.append(run)
+        else:
+            resolved.append(replace(run, model_name=resolve_model_name(run.run_dir)))
+    return resolved
 
 
 @leaderboard_app.command()
@@ -64,23 +82,126 @@ def report(
         else:
             warnings.append(f"Directory not found, skipping: {d}")
 
-    runs = scan_runs(valid_dirs)
-
-    # Resolve model names for runs that lack one
-    resolved_runs: list[RunInfo] = []
-    for run in runs:
-        if not run.model_name:
-            model = resolve_model_name(run.run_dir)
-            resolved_runs.append(replace(run, model_name=model))
-        else:
-            resolved_runs.append(run)
-
+    resolved_runs = _resolve_run_models(scan_runs(valid_dirs))
     matrix = build_matrix(resolved_runs, all_runs=all_runs)
 
     result = CommandResult(
         command="leaderboard.report",
         ok=True,
         data=dict(matrix),
+        warnings=warnings or None,
+    )
+    render(result, output)
+
+
+@leaderboard_app.command(name="ruler-effective")
+def ruler_effective(
+    dirs: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Sweep output directories to scan (default: ./outputs/)"),
+    ] = None,
+    threshold: Annotated[
+        float | None,
+        typer.Option(
+            "--threshold",
+            help="Absolute pass bar (paper: 85.6 = Llama2-7b@4K; harness-dependent).",
+        ),
+    ] = None,
+    threshold_from: Annotated[
+        Path | None,
+        typer.Option(
+            "--threshold-from",
+            help="Reference run dir; use its smallest-tier average as the bar.",
+        ),
+    ] = None,
+    output: Annotated[
+        OutputFormat,
+        typer.Option("-o", "--output", help="Output format"),
+    ] = OutputFormat.TEXT,
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-v", help="Enable verbose logging"),
+    ] = False,
+) -> None:
+    """Per-length 13-task averages + RULER effective length from a sweep.
+
+    Reads ``report.json`` files written by ``sieval eval`` over a multi-length
+    RULER sweep (see ``scripts/gen_ruler_sweep.py``), groups task scores by the
+    ``_<len>`` suffix on each task name, and reports the per-length average and
+    the longest length still clearing the threshold.
+    """
+    from sieval.core.utils.logging import configure_logging
+
+    configure_logging(verbose)
+
+    if threshold is not None and threshold_from is not None:
+        result = CommandResult(
+            command="leaderboard.ruler_effective",
+            ok=False,
+            error="Pass at most one of --threshold / --threshold-from.",
+        )
+        render(result, output)
+        raise typer.Exit(1)
+
+    warnings: list[str] = []
+
+    if dirs is None:
+        dirs = [Path("outputs")]
+    valid_dirs: list[Path] = []
+    for d in dirs:
+        if d.is_dir():
+            valid_dirs.append(d)
+        else:
+            warnings.append(f"Directory not found, skipping: {d}")
+
+    by_model = collect_sweep(_resolve_run_models(scan_runs(valid_dirs)))
+    if not by_model:
+        result = CommandResult(
+            command="leaderboard.ruler_effective",
+            ok=False,
+            error="No RULER sweep reports found (task names need a _<len> suffix).",
+            warnings=warnings or None,
+        )
+        render(result, output)
+        raise typer.Exit(1)
+
+    # Resolve the threshold: explicit > reference-run > paper default.
+    bar = DEFAULT_THRESHOLD
+    bar_source = "default (paper: Llama2-7b@4K = 85.6)"
+    if threshold is not None:
+        bar = threshold
+        bar_source = f"--threshold {threshold}"
+    elif threshold_from is not None:
+        if not threshold_from.is_dir():
+            result = CommandResult(
+                command="leaderboard.ruler_effective",
+                ok=False,
+                error=f"--threshold-from not a directory: {threshold_from}",
+            )
+            render(result, output)
+            raise typer.Exit(1)
+        ref = reference_threshold(
+            collect_sweep(_resolve_run_models(scan_runs([threshold_from])))
+        )
+        if ref is None:
+            result = CommandResult(
+                command="leaderboard.ruler_effective",
+                ok=False,
+                error=f"No reports under --threshold-from {threshold_from}.",
+            )
+            render(result, output)
+            raise typer.Exit(1)
+        bar, base_len = ref
+        bar_source = f"{threshold_from} @ {len_tag(base_len)} = {bar:.2f}"
+
+    result = CommandResult(
+        command="leaderboard.ruler_effective",
+        ok=True,
+        data={
+            "threshold": bar,
+            "threshold_source": bar_source,
+            "models": summarize(by_model, bar),
+        },
         warnings=warnings or None,
     )
     render(result, output)

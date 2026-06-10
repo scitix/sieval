@@ -262,6 +262,33 @@ def _render_text_dry_run(result: CommandResult) -> None:
         log_user("\nDry-run passed.")
 
 
+def _render_text_ruler_effective(result: CommandResult) -> None:
+    """Text renderer for leaderboard.ruler_effective (per-length avg + eff length)."""
+    if not result.ok:
+        logger.error("{}", result.error)
+        return
+    if not isinstance(result.data, dict):
+        logger.error("expected dict data, got {}", type(result.data).__name__)
+        return
+
+    log_user(
+        "Threshold: {:.2f}  [{}]",
+        result.data["threshold"],
+        result.data["threshold_source"],
+    )
+    for model, summary in result.data.get("models", {}).items():
+        log_user("\nModel: {}", model)
+        for row in summary["per_length"]:
+            mark = "PASS" if row["pass"] else "    "
+            note = "" if row["complete"] else f"  !! {row['n_tasks']}/13 tasks"
+            log_user("  {:>6}  avg={:6.2f}  [{}]{}", row["tag"], row["avg"], mark, note)
+        log_user("  Avg (all tiers): {:.2f}", summary["avg_all"])
+        eff = summary["effective_length_tag"] or "none (below threshold at all lengths)"
+        log_user("  Effective length: {}", eff)
+    for w in result.warnings or []:
+        log_user("⚠ {}", w)
+
+
 def _render_text_leaderboard_list(result: CommandResult) -> None:
     """Text renderer for leaderboard.list — NAME / MODELS / TASKS / PATH."""
     if not result.ok:
@@ -624,6 +651,7 @@ _TEXT_RENDERERS: dict[str, Callable[[CommandResult], None]] = {
     "run.dry_run": _render_text_dry_run,
     "leaderboard.run.dry_run": _render_text_dry_run,
     "leaderboard.report": _render_text_leaderboard_report,
+    "leaderboard.ruler_effective": _render_text_ruler_effective,
     "leaderboard.list": _render_text_leaderboard_list,
     "dataset.list": _render_text_dataset_list,
     "dataset.show": _render_text_dataset_show,
