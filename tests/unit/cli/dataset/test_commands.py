@@ -313,12 +313,22 @@ def test_dataset_download_domain_filter(tmp_path):
 
 
 def test_dataset_list_ready_no_when_cache_empty(tmp_path, monkeypatch):
-    """Empty data dir → all rows report ready=no."""
+    """Empty data dir → every dataset with a download source reports ready=no.
+
+    Fully-synthetic datasets (empty ``source``, e.g. RULER vt/cwe/fwe) have
+    nothing to download, so their readiness is decided by deps alone — they are
+    excluded here.
+    """
+    from sieval.meta import load_index
+
     monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
     result = runner.invoke(dataset_app, ["list", "-o", "json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)["data"]
-    assert payload and all(row["ready"] == "no" for row in payload)
+    datasets, _ = load_index()
+    with_source = {m.name for m in datasets if m.source}
+    sourced = [row for row in payload if row["name"] in with_source]
+    assert sourced and all(row["ready"] == "no" for row in sourced)
 
 
 def test_dataset_list_ready_yes_only_for_present_dataset(tmp_path, monkeypatch):
