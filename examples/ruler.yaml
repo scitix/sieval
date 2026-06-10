@@ -1,0 +1,170 @@
+# ------------------------------------------------------------------------------
+# RULER — full long-context suite (4 categories, 13 task configs)
+# ------------------------------------------------------------------------------
+# RULER's headline number is the **naive average of all 13 task configs** at a
+# given context length (see NVIDIA RULER README and OpenCompass `eval_ruler.py`,
+# which averages via `ruler_summary_groups`). sieval Tasks each score ONE
+# dataset; this file lays out all 13 as independent (dataset, task) pairs and the
+# leaderboard/report layer emits one score per task. The final RULER number is
+# the mean of those 13 scores — computed at the report/script layer, NOT inside
+# any single Task. To get it: run this eval, then average the 13 `score` columns.
+#
+# The 13 configs come from 5 parameterized loaders, expanded via `args`:
+#   Retrieval / NIAH  (8): single_1/2/3, multikey_1/2/3, multivalue, multiquery
+#   Multi-hop tracing (1): vt
+#   Aggregation       (2): cwe, fwe
+#   QA                (2): squad, hotpotqa
+#
+# Flow:
+#   1. sieval dataset download ruler_niah ruler_qa
+#      (ruler_vt / ruler_cwe / ruler_fwe are fully synthetic — no download)
+#   2. sieval eval ruler.yaml
+#
+# Scale knobs:
+#   - `max_seq_length` is the context length under test. RULER sweeps
+#     {4k, 8k, 16k, 32k, ...}; this file fixes ONE length (4096). To reproduce the
+#     full sweep, copy this file per length (or template the datasets) and average
+#     each length's 13 scores separately.
+#   - `num_samples` is set low (8) for a runnable smoke. RULER uses 500; raise it
+#     once a model path is wired in. Large `max_seq_length` is slow — synthesis
+#     tokenizes every sample.
+#   - For non-gpt-4 models, set `tokenizer_model` on each dataset to the model's
+#     HF id so prompt lengths are measured with the right tokenizer.
+#
+# Endpoint: this file uses the CHAT tasks (Ruler*ZeroShotGenTask, model_type=chat).
+# For base models / faithful original-RULER continuation, swap each task class to
+# its base/completion twin (Ruler*ZeroShotBaseGenTask, model_type=gen) and set the
+# model `type: gen` — see examples/ruler-qa.yaml for that form.
+# ------------------------------------------------------------------------------
+result_dir: ./outputs/ruler
+
+models:
+  local-model:
+    args:
+      concurrency_limit: 4
+      temperature: 0.0
+    infer:
+      backend: sglang
+      checkpoint: /path/to/your/model        # EDIT ME
+    infer_meta:
+      gpu: H100-80G
+      image: lmsysorg/sglang:latest
+
+# NIAH and QA read staged source files under ${SIEVAL_DATA_DIR}; vt/cwe/fwe are
+# fully synthetic, so their `path` is a required-but-ignored placeholder (".").
+datasets:
+  # --- Retrieval / NIAH (8 variants) ---
+  ruler_niah_single_1:
+    class: RulerNiahDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_niah"
+    args: { max_seq_length: 4096, num_samples: 8, type_haystack: repeat, type_needle_k: words, type_needle_v: numbers, num_needle_k: 1, num_needle_v: 1, num_needle_q: 1 }
+  ruler_niah_single_2:
+    class: RulerNiahDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_niah"
+    args: { max_seq_length: 4096, num_samples: 8, type_haystack: essay, type_needle_k: words, type_needle_v: numbers, num_needle_k: 1, num_needle_v: 1, num_needle_q: 1 }
+  ruler_niah_single_3:
+    class: RulerNiahDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_niah"
+    args: { max_seq_length: 4096, num_samples: 8, type_haystack: essay, type_needle_k: words, type_needle_v: uuids, num_needle_k: 1, num_needle_v: 1, num_needle_q: 1 }
+  ruler_niah_multikey_1:
+    class: RulerNiahDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_niah"
+    args: { max_seq_length: 4096, num_samples: 8, type_haystack: essay, type_needle_k: words, type_needle_v: numbers, num_needle_k: 4, num_needle_v: 1, num_needle_q: 1 }
+  ruler_niah_multikey_2:
+    class: RulerNiahDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_niah"
+    args: { max_seq_length: 4096, num_samples: 8, type_haystack: needle, type_needle_k: words, type_needle_v: numbers, num_needle_k: 1, num_needle_v: 1, num_needle_q: 1 }
+  ruler_niah_multikey_3:
+    class: RulerNiahDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_niah"
+    args: { max_seq_length: 4096, num_samples: 8, type_haystack: needle, type_needle_k: uuids, type_needle_v: uuids, num_needle_k: 1, num_needle_v: 1, num_needle_q: 1 }
+  ruler_niah_multivalue:
+    class: RulerNiahDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_niah"
+    args: { max_seq_length: 4096, num_samples: 8, type_haystack: essay, type_needle_k: words, type_needle_v: numbers, num_needle_k: 1, num_needle_v: 4, num_needle_q: 1 }
+  ruler_niah_multiquery:
+    class: RulerNiahDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_niah"
+    args: { max_seq_length: 4096, num_samples: 8, type_haystack: essay, type_needle_k: words, type_needle_v: numbers, num_needle_k: 1, num_needle_v: 1, num_needle_q: 4 }
+
+  # --- Multi-hop tracing ---
+  ruler_vt:
+    class: RulerVtDataset
+    path: "."
+    args: { max_seq_length: 4096, num_samples: 8, num_chains: 1, num_hops: 4 }
+
+  # --- Aggregation ---
+  ruler_cwe:
+    class: RulerCweDataset
+    path: "."
+    args: { max_seq_length: 4096, num_samples: 8, freq_cw: 30, freq_ucw: 3, num_cw: 10 }
+  ruler_fwe:
+    class: RulerFweDataset
+    path: "."
+    args: { max_seq_length: 4096, num_samples: 8, alpha: 2.0 }
+
+  # --- QA ---
+  ruler_qa_squad:
+    class: RulerQaDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_qa"
+    args: { dataset: squad, max_seq_length: 4096, num_samples: 8 }
+  ruler_qa_hotpotqa:
+    class: RulerQaDataset
+    path: "${SIEVAL_DATA_DIR}/ruler_qa"
+    args: { dataset: hotpotqa, max_seq_length: 4096, num_samples: 8 }
+
+# One task per dataset. All 13 share the same model; their `score` columns are
+# averaged at the report layer to yield the RULER number.
+tasks:
+  ruler_niah_single_1:
+    class: RulerNiahZeroShotGenTask
+    dataset: ruler_niah_single_1
+    model: local-model
+  ruler_niah_single_2:
+    class: RulerNiahZeroShotGenTask
+    dataset: ruler_niah_single_2
+    model: local-model
+  ruler_niah_single_3:
+    class: RulerNiahZeroShotGenTask
+    dataset: ruler_niah_single_3
+    model: local-model
+  ruler_niah_multikey_1:
+    class: RulerNiahZeroShotGenTask
+    dataset: ruler_niah_multikey_1
+    model: local-model
+  ruler_niah_multikey_2:
+    class: RulerNiahZeroShotGenTask
+    dataset: ruler_niah_multikey_2
+    model: local-model
+  ruler_niah_multikey_3:
+    class: RulerNiahZeroShotGenTask
+    dataset: ruler_niah_multikey_3
+    model: local-model
+  ruler_niah_multivalue:
+    class: RulerNiahZeroShotGenTask
+    dataset: ruler_niah_multivalue
+    model: local-model
+  ruler_niah_multiquery:
+    class: RulerNiahZeroShotGenTask
+    dataset: ruler_niah_multiquery
+    model: local-model
+  ruler_vt:
+    class: RulerVtZeroShotGenTask
+    dataset: ruler_vt
+    model: local-model
+  ruler_cwe:
+    class: RulerCweZeroShotGenTask
+    dataset: ruler_cwe
+    model: local-model
+  ruler_fwe:
+    class: RulerFweZeroShotGenTask
+    dataset: ruler_fwe
+    model: local-model
+  ruler_qa_squad:
+    class: RulerQaZeroShotGenTask
+    dataset: ruler_qa_squad
+    model: local-model
+  ruler_qa_hotpotqa:
+    class: RulerQaZeroShotGenTask
+    dataset: ruler_qa_hotpotqa
+    model: local-model
