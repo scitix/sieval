@@ -1,4 +1,4 @@
-"""SourceHandler Protocol + scheme registry. v0.1 ships ``hf:`` and ``url:``.
+"""SourceHandler Protocol + scheme registry. v0.2 ships ``hf:``, ``url:``, ``local:``.
 
 AI-Generated Code - Claude Haiku 4.5 (Anthropic)
 """
@@ -40,9 +40,10 @@ def _ensure_builtin_handlers() -> None:
     if _builtin_registered:
         return
     from sieval.datasets.downloaders.hf import HFHandler
+    from sieval.datasets.downloaders.local import LocalHandler
     from sieval.datasets.downloaders.url import URLHandler
 
-    for handler in (HFHandler(), URLHandler()):
+    for handler in (HFHandler(), URLHandler(), LocalHandler()):
         if handler.scheme not in _HANDLERS:
             register_handler(handler)
     _builtin_registered = True
