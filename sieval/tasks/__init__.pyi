@@ -13,6 +13,9 @@ from .drop_kshot_gen import (
 from .gpqa_diamond_0shot_gen import (
     GPQADiamondZeroShotGenTask,
 )
+from .gsm8k_8shot_base_gen import (
+    GSM8KFewShotBaseGenTask,
+)
 from .human_eval_0shot_gen import (
     HumanEvalZeroShotGenTask,
 )
@@ -40,6 +43,7 @@ __all__ = [
     "AIME2025ZeroShotGenTask",
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
+    "GSM8KFewShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
     "IFEvalZeroShotGenTask",
     "LiveCodeBenchCodeGenerationZeroShotGenTask",
