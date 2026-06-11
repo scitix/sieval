@@ -18,6 +18,7 @@ from typing import TypedDict, override
 import numpy as np
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
+from datasets import load_dataset
 
 from sieval.community.ruler.datasets.constants import TASKS
 from sieval.core.datasets import (
@@ -26,10 +27,10 @@ from sieval.core.datasets import (
     Level1Category,
     sieval_dataset,
 )
+from sieval.core.utils.hf import ensure_dataset
 from sieval.datasets.ruler._common import build_tokenizer
 
 _SQUAD_FILE = "dev-v2.0.json"
-_HOTPOTQA_FILE = "hotpot_dev_distractor_v1.json"
 
 _TEMPLATE = (
     "Answer the question based on the given documents. Only give me the answer "
@@ -54,7 +55,7 @@ class RulerQaDatasetSample(TypedDict):
     description="RULER QA: answer over many distractor documents.",
     source=(
         "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
-        "url:http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_distractor_v1.json",
+        "hf:hotpotqa/hotpot_qa",
     ),
     categories=(Category(Level1Category.LOGIC, "TextualReasoning"),),
     tags=("english", "open-ended", "long-context"),
@@ -84,7 +85,7 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
         if dataset == "squad":
             qas, docs = _read_squad(os.path.join(name_or_path, _SQUAD_FILE))
         elif dataset == "hotpotqa":
-            qas, docs = _read_hotpotqa(os.path.join(name_or_path, _HOTPOTQA_FILE))
+            qas, docs = _read_hotpotqa(name_or_path)
         else:
             raise NotImplementedError(f"{dataset} is not implemented.")
 
@@ -210,23 +211,34 @@ def _read_squad(path: str) -> tuple[list[dict], list[str]]:
     return total_qas, total_docs
 
 
-def _read_hotpotqa(path: str) -> tuple[list[dict], list[str]]:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
+def _read_hotpotqa(name_or_path: str) -> tuple[list[dict], list[str]]:
+    # HF schema: context = {'title': [str, ...], 'sentences': [[str, ...], ...]}
+    raw = load_dataset(name_or_path, "distractor", split="validation")
+    data = ensure_dataset(raw)
 
-    total_docs = [f"{t}\n{''.join(p)}" for d in data for t, p in d["context"]]
-    total_docs = sorted(set(total_docs))
-    total_docs_dict = {c: idx for idx, c in enumerate(total_docs)}
+    # Build global doc pool: "title\nsentences_joined"
+    total_docs_set: dict[str, int] = {}
+    for row in data:
+        ctx = row["context"]
+        for title, sents in zip(ctx["title"], ctx["sentences"], strict=True):
+            doc = f"{title}\n{''.join(sents)}"
+            if doc not in total_docs_set:
+                total_docs_set[doc] = len(total_docs_set)
+    total_docs = sorted(total_docs_set, key=lambda d: total_docs_set[d])
+    total_docs_dict = {d: i for i, d in enumerate(total_docs)}
 
     total_qas = []
-    for d in data:
+    for row in data:
+        ctx = row["context"]
+        context_indices = [
+            total_docs_dict[f"{t}\n{''.join(s)}"]
+            for t, s in zip(ctx["title"], ctx["sentences"], strict=True)
+        ]
         total_qas.append(
             {
-                "query": d["question"],
-                "outputs": [d["answer"]],
-                "context": [
-                    total_docs_dict[f"{t}\n{''.join(p)}"] for t, p in d["context"]
-                ],
+                "query": row["question"],
+                "outputs": [row["answer"]],
+                "context": context_indices,
             }
         )
 

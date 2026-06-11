@@ -295,7 +295,7 @@
       "description": "RULER QA: answer over many distractor documents.",
       "source": [
         "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
-        "url:http://curtis.ml.cmu.edu/datasets/hotpot/hotpot_dev_distractor_v1.json"
+        "hf:hotpotqa/hotpot_qa"
       ],
       "categories": [
         {

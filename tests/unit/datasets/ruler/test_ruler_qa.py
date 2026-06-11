@@ -1,6 +1,8 @@
 import json
+from unittest.mock import patch
 
 import pytest
+from datasets import Dataset as HFDataset
 
 from sieval.datasets.ruler.ruler_qa import (
     RulerQaDataset,
@@ -48,22 +50,23 @@ def squad_dir(tmp_path):
 
 
 @pytest.fixture
-def hotpot_dir(tmp_path):
-    data = [
+def hotpot_hf_dataset():
+    """HF-schema hotpotqa fixture: context={'title':[...], 'sentences':[[...]]}."""
+    rows = [
         {
             "question": f"Who did thing {i}?",
             "answer": f"person {i}",
-            "context": [
-                [f"Title {i}", [f"person {i} did thing {i}.", " More text."]],
-                [f"Other {i}", [f"distractor {i}."]],
-            ],
+            "context": {
+                "title": [f"Title {i}", f"Other {i}"],
+                "sentences": [
+                    [f"person {i} did thing {i}.", " More text."],
+                    [f"distractor {i}."],
+                ],
+            },
         }
         for i in range(30)
     ]
-    (tmp_path / "hotpot_dev_distractor_v1.json").write_text(
-        json.dumps(data), encoding="utf-8"
-    )
-    return str(tmp_path)
+    return HFDataset.from_list(rows)
 
 
 def test_read_squad_filters_impossible(squad_dir):
@@ -76,8 +79,11 @@ def test_read_squad_filters_impossible(squad_dir):
     assert "An unanswerable paragraph." in docs
 
 
-def test_read_hotpotqa_shape(hotpot_dir):
-    qas, docs = _read_hotpotqa(f"{hotpot_dir}/hotpot_dev_distractor_v1.json")
+def test_read_hotpotqa_shape(hotpot_hf_dataset):
+    with patch(
+        "sieval.datasets.ruler.ruler_qa.load_dataset", return_value=hotpot_hf_dataset
+    ):
+        qas, docs = _read_hotpotqa("hotpotqa/hotpot_qa")
     assert len(qas) == 30
     assert qas[0]["outputs"] == ["person 0"]
     # Two context docs per question.
@@ -107,10 +113,13 @@ def test_remove_newline_tab_single_line(squad_dir):
     assert "\n" not in ds.test_set[0]["input"]
 
 
-def test_hotpotqa_synthesis(hotpot_dir):
-    ds = RulerQaDataset(
-        hotpot_dir, dataset="hotpotqa", max_seq_length=512, num_samples=2
-    )
+def test_hotpotqa_synthesis(hotpot_hf_dataset):
+    with patch(
+        "sieval.datasets.ruler.ruler_qa.load_dataset", return_value=hotpot_hf_dataset
+    ):
+        ds = RulerQaDataset(
+            "hotpotqa/hotpot_qa", dataset="hotpotqa", max_seq_length=512, num_samples=2
+        )
     row = ds.test_set[0]
     assert "Document 1:" in row["input"]
     assert any(a in row["input"] for a in row["outputs"])
