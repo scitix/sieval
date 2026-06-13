@@ -34,7 +34,7 @@ models:
     infer:
       backend: sglang
       checkpoint: /mnt/workspace/Qwen-Qwen3-8b        # EDIT ME
-      overrides: { context_length: 32768 }
+      overrides: { context_length: 32768, enable_deterministic_inference: true }
     infer_meta:
       gpu: H200-141G
       image: lmsysorg/sglang:latest
