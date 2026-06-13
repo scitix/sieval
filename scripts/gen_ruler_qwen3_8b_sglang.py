@@ -204,6 +204,11 @@ def build(args) -> str:
 
         serve_ctx = native if length <= native else length
         overrides = {ctx_key: serve_ctx}
+
+        # Enable SGLang deterministic inference (server-side parameter)
+        if args.backend == "sglang":
+            overrides["enable_deterministic_inference"] = True
+
         yarn_note = ""
         if length > native:
             factor = math.ceil(length / native)
