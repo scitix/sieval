@@ -19,6 +19,9 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 
 import re
 from collections import defaultdict
+from pathlib import Path
+
+import yaml
 
 from .scanner import RunInfo
 
@@ -45,19 +48,54 @@ def len_tag(length: int) -> str:
     return f"{length // 1024}k" if length % 1024 == 0 else str(length)
 
 
-def collect_sweep(runs: list[RunInfo]) -> dict[str, dict[int, list[float]]]:
+def extract_task_order(config_path: Path | str) -> list[str] | None:
+    """Extract task ordering from YAML config file (tasks section keys).
+
+    Returns the ordered list of task keys from the YAML, or None if not found.
+    """
+    config_path = Path(config_path)
+    if not config_path.exists():
+        return None
+
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+        tasks = config.get("tasks", {})
+        if isinstance(tasks, dict):
+            return list(tasks.keys())
+    except (yaml.YAMLError, OSError):
+        pass
+
+    return None
+
+
+def collect_sweep(
+    runs: list[RunInfo], task_order: list[str] | None = None
+) -> dict[str, dict[int, list[float]]]:
     """Group run scores into ``{model: {length: [task scores]}}``.
 
     Runs whose task name has no length suffix, or whose report has no numeric
-    ``score``, are skipped.
+    ``score``, are skipped. If task_order is provided, scores are ordered
+    according to it (for consistent output ordering).
     """
     by_model: dict[str, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
+    # If task_order provided, create a position map for sorting
+    task_pos: dict[str, int] = {task: i for i, task in enumerate(task_order)} if task_order else {}
+
     for run in runs:
         length = parse_length(run.task_name)
         score = run.report.get("score")
         if length is None or not isinstance(score, int | float):
             continue
         by_model[run.model_name][length].append(float(score))
+
+    # If task_order provided, store it as metadata in the first model's dict
+    if task_order and by_model:
+        for model_data in by_model.values():
+            if hasattr(model_data, '__dict__'):
+                model_data._task_order = task_order  # type: ignore
+            break
+
     return by_model
 
 
@@ -86,9 +124,15 @@ def reference_threshold(
 
 
 def summarize(
-    by_model: dict[str, dict[int, list[float]]], threshold: float
+    by_model: dict[str, dict[int, list[float]]],
+    threshold: float,
+    task_order: list[str] | None = None,
 ) -> dict[str, dict]:
-    """Build the JSON-serializable per-model summary consumed by the renderer."""
+    """Build the JSON-serializable per-model summary consumed by the renderer.
+
+    If task_order is provided, include per-task scores in the output ordered
+    according to the config task order.
+    """
     out: dict[str, dict] = {}
     for model in sorted(by_model):
         lengths = by_model[model]
@@ -107,10 +151,16 @@ def summarize(
             }
             for length in sorted(per_length_avg)
         ]
-        out[model or "(unnamed)"] = {
+        model_summary: dict = {
             "per_length": rows,
             "avg_all": sum(per_length_avg.values()) / len(per_length_avg),
             "effective_length": eff,
             "effective_length_tag": len_tag(eff) if eff is not None else None,
         }
+
+        # Include task order if provided
+        if task_order:
+            model_summary["task_order"] = task_order
+
+        out[model or "(unnamed)"] = model_summary
     return out
