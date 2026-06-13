@@ -205,14 +205,25 @@ def ruler_effective(
         bar, base_len = ref
         bar_source = f"{threshold_from} @ {len_tag(base_len)} = {bar:.2f}"
 
-    # Extract task order from config if provided
+    # Extract task order from config if provided, otherwise try to auto-detect from output dir
     task_order = None
+    config_source = None
     if config is not None:
         task_order = extract_task_order(config)
-        if task_order:
-            warnings.append(
-                f"Task ordering extracted from {config} ({len(task_order)} tasks)"
-            )
+        config_source = str(config)
+    else:
+        # Try to find effective_config.yaml in the first output directory
+        for dir_path in valid_dirs:
+            effective_config = dir_path / "effective_config.yaml"
+            if effective_config.exists():
+                task_order = extract_task_order(effective_config)
+                config_source = str(effective_config)
+                break
+
+    if task_order and config_source:
+        warnings.append(
+            f"Task ordering extracted from {config_source} ({len(task_order)} tasks)"
+        )
 
     result = CommandResult(
         command="leaderboard.ruler_effective",
