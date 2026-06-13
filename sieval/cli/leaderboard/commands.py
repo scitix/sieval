@@ -19,6 +19,7 @@ from .catalog import scan_leaderboards
 from .ruler import (
     DEFAULT_THRESHOLD,
     collect_sweep,
+    collect_sweep_with_tasks,
     extract_task_order,
     len_tag,
     reference_threshold,
@@ -162,7 +163,9 @@ def ruler_effective(
         else:
             warnings.append(f"Directory not found, skipping: {d}")
 
-    by_model = collect_sweep(_resolve_run_models(scan_runs(valid_dirs)))
+    resolved_runs = _resolve_run_models(scan_runs(valid_dirs))
+    by_model = collect_sweep(resolved_runs)
+    by_task = collect_sweep_with_tasks(resolved_runs)
     if not by_model:
         result = CommandResult(
             command="leaderboard.ruler_effective",
@@ -217,7 +220,7 @@ def ruler_effective(
         data={
             "threshold": bar,
             "threshold_source": bar_source,
-            "models": summarize(by_model, bar, task_order=task_order),
+            "models": summarize(by_model, bar, task_order=task_order, by_task=by_task),
         },
         warnings=warnings or None,
     )

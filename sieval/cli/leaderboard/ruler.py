@@ -79,8 +79,6 @@ def collect_sweep(
     according to it (for consistent output ordering).
     """
     by_model: dict[str, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
-    # If task_order provided, create a position map for sorting
-    task_pos: dict[str, int] = {task: i for i, task in enumerate(task_order)} if task_order else {}
 
     for run in runs:
         length = parse_length(run.task_name)
@@ -89,12 +87,31 @@ def collect_sweep(
             continue
         by_model[run.model_name][length].append(float(score))
 
-    # If task_order provided, store it as metadata in the first model's dict
-    if task_order and by_model:
-        for model_data in by_model.values():
-            if hasattr(model_data, '__dict__'):
-                model_data._task_order = task_order  # type: ignore
-            break
+    return by_model
+
+
+def collect_sweep_with_tasks(
+    runs: list[RunInfo], task_order: list[str] | None = None
+) -> dict[str, dict[int, dict[str, float]]]:
+    """Group run scores by model, length, and task name.
+
+    Returns ``{model: {length: {task_base_name: score}}}``.
+    Runs whose task name has no length suffix are skipped.
+    """
+    by_model: dict[str, dict[int, dict[str, float]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
+
+    for run in runs:
+        length = parse_length(run.task_name)
+        score = run.report.get("score")
+        if length is None or not isinstance(score, int | float):
+            continue
+
+        # Extract task base name (remove _<length> suffix)
+        task_base = _LEN_SUFFIX.sub("", run.task_name)
+
+        by_model[run.model_name][length][task_base] = float(score)
 
     return by_model
 
@@ -127,11 +144,13 @@ def summarize(
     by_model: dict[str, dict[int, list[float]]],
     threshold: float,
     task_order: list[str] | None = None,
+    by_task: dict[str, dict[int, dict[str, float]]] | None = None,
 ) -> dict[str, dict]:
     """Build the JSON-serializable per-model summary consumed by the renderer.
 
     If task_order is provided, include per-task scores in the output ordered
-    according to the config task order.
+    according to the config task order. If by_task is provided, include detailed
+    per-task results at each length tier.
     """
     out: dict[str, dict] = {}
     for model in sorted(by_model):
@@ -161,6 +180,27 @@ def summarize(
         # Include task order if provided
         if task_order:
             model_summary["task_order"] = task_order
+
+        # Include per-task detailed results if available
+        if by_task and model in by_task:
+            per_task_results: dict[int, dict] = {}
+            for length in sorted(by_task[model].keys()):
+                tasks_at_length = by_task[model][length]
+                # Order tasks according to task_order if provided
+                if task_order:
+                    ordered_tasks = {
+                        task: tasks_at_length.get(task)
+                        for task in task_order
+                        if task in tasks_at_length
+                    }
+                else:
+                    ordered_tasks = dict(sorted(tasks_at_length.items()))
+
+                per_task_results[length] = {
+                    "tag": len_tag(length),
+                    "tasks": ordered_tasks,
+                }
+            model_summary["per_task"] = per_task_results
 
         out[model or "(unnamed)"] = model_summary
     return out
