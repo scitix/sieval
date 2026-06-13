@@ -213,14 +213,12 @@ def _read_squad(path: str) -> tuple[list[dict], list[str]]:
 
 def _read_hotpotqa(name_or_path: str) -> tuple[list[dict], list[str]]:
     # HF schema: context = {'title': [str, ...], 'sentences': [[str, ...], ...]}
+    # Try loading with distractor config (from HF or local files)
     try:
         raw = load_dataset(name_or_path, "distractor", split="validation")
-    except ValueError as e:
-        if "BuilderConfig 'distractor' not found" in str(e):
-            # Fallback to fullwiki config if distractor is not available
-            raw = load_dataset(name_or_path, "fullwiki", split="dev")
-        else:
-            raise
+    except (ValueError, FileNotFoundError):
+        # If config parameter doesn't work (e.g., local files), try without it
+        raw = load_dataset(name_or_path, split="validation")
     data = ensure_dataset(raw)
 
     # Build global doc pool: "title\nsentences_joined"
