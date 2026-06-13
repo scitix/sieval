@@ -17,7 +17,10 @@ from typing import TypedDict
 
 from openai.types.chat import ChatCompletionUserMessageParam
 
-from sieval.community.ruler.eval.constants import string_match_part
+from sieval.community.ruler.eval.constants import (
+    string_match_all,
+    string_match_part,
+)
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import Task
 
@@ -30,7 +33,8 @@ class RulerRecallSample(TypedDict):
 
 
 class RecallFeedback(TypedDict):
-    score: float
+    prediction: str
+    references: list[str]
 
 
 class QaFeedback(TypedDict):
@@ -46,15 +50,17 @@ class _RecallScoringMixin:
 
     async def feedback(self, post, ctx):
         refs = ctx.raw_sample["answer"]
-        pred = post.lower()
-        score = sum(1.0 for r in refs if r.lower() in pred) / len(refs)
-        return True, {"score": score}
+        pred = post
+        # Collect individual prediction-reference pairs for batch scoring
+        return True, {"prediction": pred, "references": refs}
 
     async def report(self, finals, fails):
-        count = len(finals)
-        total = sum(ctx.feedback_result["score"] for ctx in finals)
-        avg = total / count * 100 if count > 0 else 0.0
-        return {"score": avg, "fails": len(fails)}
+        if not finals:
+            return {"score": 0.0, "fails": len(fails)}
+        preds = [ctx.feedback_result["prediction"] for ctx in finals]
+        refs = [ctx.feedback_result["references"] for ctx in finals]
+        score = string_match_all(preds, refs)
+        return {"score": score, "fails": len(fails)}
 
 
 class _QaScoringMixin:
