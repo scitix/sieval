@@ -5,9 +5,7 @@ The prompt (question + distractor documents) is fully synthesized in
 RULER's own ``string_match_part`` metric (best-match: any reference answer present
 counts — ``max`` over references, vs the recall ``string_match_all`` mean used by
 NIAH/VT/CWE/FWE). All pipeline logic lives in
-:class:`~sieval.tasks.ruler._base.RulerQaGenTask`; see its docstring for the
-chat-vs-completion endpoint split (the completion variant is
-``RulerQaZeroShotBaseGenTask``).
+:class:`~sieval.tasks.ruler._base.RulerQaGenTask`.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """

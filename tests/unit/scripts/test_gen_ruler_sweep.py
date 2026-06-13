@@ -98,12 +98,6 @@ def test_tokenizer_model_override():
     assert tms == {"gpt-4"}
 
 
-def test_base_endpoint_selects_base_gen_classes():
-    doc = yaml.safe_load(build(_args(endpoint="base")))
-    classes = {t["class"] for t in doc["tasks"].values()}
-    assert all(c.endswith("BaseGenTask") for c in classes)
-
-
 def test_single_native_length_has_no_yarn_model():
     doc = yaml.safe_load(build(_args(lengths="4096,32768")))
     assert list(doc["models"]) == ["model-native"]
