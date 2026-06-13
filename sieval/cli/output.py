@@ -263,7 +263,7 @@ def _render_text_dry_run(result: CommandResult) -> None:
 
 
 def _render_text_ruler_effective(result: CommandResult) -> None:
-    """Text renderer for leaderboard.ruler_effective (per-length avg + eff length)."""
+    """Text renderer for leaderboard.ruler_effective (per-length avg + eff length + per-task details)."""
     if not result.ok:
         logger.error("{}", result.error)
         return
@@ -282,6 +282,25 @@ def _render_text_ruler_effective(result: CommandResult) -> None:
             mark = "PASS" if row["pass"] else "    "
             note = "" if row["complete"] else f"  !! {row['n_tasks']}/13 tasks"
             log_user("  {:>6}  avg={:6.2f}  [{}]{}", row["tag"], row["avg"], mark, note)
+
+        # Include per-task details if available
+        if "per_task" in summary:
+            log_user("\n  Task Details:")
+            task_order = summary.get("task_order", [])
+            for length_val, per_task_data in sorted(summary["per_task"].items()):
+                log_user("    {}", per_task_data["tag"])
+                tasks = per_task_data["tasks"]
+                # Use task_order if available, otherwise sort alphabetically
+                if task_order:
+                    task_names = [t for t in task_order if t in tasks]
+                else:
+                    task_names = sorted(tasks.keys())
+
+                for task_name in task_names:
+                    if task_name in tasks:
+                        score = tasks[task_name]
+                        log_user("      {}: {:.2f}", task_name, score)
+
         log_user("  Avg (all tiers): {:.2f}", summary["avg_all"])
         eff = summary["effective_length_tag"] or "none (below threshold at all lengths)"
         log_user("  Effective length: {}", eff)
