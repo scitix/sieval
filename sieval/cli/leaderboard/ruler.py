@@ -184,13 +184,16 @@ def summarize(
         # Include per-task detailed results if available
         if by_task and model in by_task:
             per_task_results: dict[int, dict] = {}
+            # Strip _<length> suffix from task_order for matching with task base names
+            task_order_bases = [_LEN_SUFFIX.sub("", t) for t in task_order] if task_order else []
+
             for length in sorted(by_task[model].keys()):
                 tasks_at_length = by_task[model][length]
-                # Order tasks according to task_order if provided
-                if task_order:
+                # Order tasks according to task_order_bases if provided
+                if task_order_bases:
                     ordered_tasks = {
                         task: tasks_at_length.get(task)
-                        for task in task_order
+                        for task in task_order_bases
                         if task in tasks_at_length
                     }
                 else:
