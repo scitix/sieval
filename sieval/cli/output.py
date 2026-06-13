@@ -287,12 +287,17 @@ def _render_text_ruler_effective(result: CommandResult) -> None:
         if "per_task" in summary:
             log_user("\n  Task Details:")
             task_order = summary.get("task_order", [])
+            # Extract task base names from task_order (remove _<length> suffix)
+            import re
+            len_suffix_re = re.compile(r"_(\d+)(k?)$", re.IGNORECASE)
+            task_order_bases = [len_suffix_re.sub("", t) for t in task_order] if task_order else []
+
             for length_val, per_task_data in sorted(summary["per_task"].items()):
                 log_user("    {}", per_task_data["tag"])
                 tasks = per_task_data["tasks"]
                 # Use task_order if available, otherwise sort alphabetically
-                if task_order:
-                    task_names = [t for t in task_order if t in tasks]
+                if task_order_bases:
+                    task_names = [t for t in task_order_bases if t in tasks]
                 else:
                     task_names = sorted(tasks.keys())
 
