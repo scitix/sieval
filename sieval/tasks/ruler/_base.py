@@ -1,20 +1,12 @@
 """Shared base classes for the RULER 0-shot task family.
 
 RULER tasks are thin — the prompt is fully synthesized in the dataset loader, so
-every task just sends the prompt and scores the reply. Two orthogonal axes vary:
+every task just sends the prompt and scores the reply. Uses the chat endpoint
+(``ChatModel``, where the prompt is wrapped in a user turn and the serving
+framework applies the model's chat template).
 
-* **Scoring** — *recall* (NIAH/VT/CWE/FWE: ``string_match_all``, the per-sample
-  mean recall over reference answers) vs *QA* (``string_match_part``, best-match
-  over references, computed once over the whole batch).
-* **Endpoint** — *chat* (``ChatModel``, the prompt is wrapped in a user turn and
-  the serving framework applies the model's chat template) vs *base-gen*
-  (``GenModel`` / completions API, the raw ``input + answer_prefix`` string is fed
-  verbatim and the model continues it — faithful to original NVIDIA RULER, which
-  evaluates base models via text continuation).
-
-The 2×2 grid yields four leaf bases; concrete tasks only bind their sample type.
 Scoring lives in mixins so it is shared across endpoints; prompt construction and
-the stage plumbing (preprocess/infer/postprocess) live on the endpoint bases.
+the stage plumbing (preprocess/infer/postprocess) live on the endpoint base.
 Base classes stay undecorated — only concrete tasks register via ``@sieval_task``.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
@@ -115,26 +107,6 @@ class _ChatGenBase[TSample, TFeedback](
         raise NotImplementedError
 
 
-class _BaseGenBase[TSample, TFeedback](
-    Task[TSample, str, ModelOutput, str, TFeedback, dict[str, float]],
-    ABC,
-):
-    """Completion endpoint: feed the raw prompt string to a GenModel verbatim."""
-
-    def __init__(self, dataset, model, name: str | None = None):
-        super().__init__(dataset=dataset, model=model, name=name)
-
-    async def preprocess(self, raw, ctx):
-        return self._build_prompt(raw)
-
-    async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre)
-
-    async def postprocess(self, inf, ctx):
-        return inf.texts[0]
-
-    def _build_prompt(self, raw) -> str:
-        raise NotImplementedError
 
 
 # --- Prompt-shape mixins ------------------------------------------------------
@@ -161,19 +133,7 @@ class RulerRecallGenTask[TSample: RulerRecallSample](
     """Recall-style RULER task over the chat endpoint."""
 
 
-class RulerRecallBaseGenTask[TSample: RulerRecallSample](
-    _RecallScoringMixin, _RecallPromptMixin, _BaseGenBase[TSample, RecallFeedback]
-):
-    """Recall-style RULER task over the completion endpoint."""
-
-
 class RulerQaGenTask[TSample](
     _QaScoringMixin, _QaPromptMixin, _ChatGenBase[TSample, QaFeedback]
 ):
     """QA-style RULER task over the chat endpoint."""
-
-
-class RulerQaBaseGenTask[TSample](
-    _QaScoringMixin, _QaPromptMixin, _BaseGenBase[TSample, QaFeedback]
-):
-    """QA-style RULER task over the completion endpoint."""
