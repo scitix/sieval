@@ -205,9 +205,12 @@ def build(args) -> str:
         serve_ctx = native if length <= native else length
         overrides = {ctx_key: serve_ctx}
 
-        # Enable SGLang deterministic inference (server-side parameter)
+        # Enable SGLang deterministic inference and increase max_seq_len (server-side parameter)
         if args.backend == "sglang":
             overrides["enable_deterministic_inference"] = True
+            # For 128K+ sequences, need to disable CUDA graphs to avoid memory limits
+            if serve_ctx >= 131072:
+                overrides["disable_cuda_graph"] = True
 
         yarn_note = ""
         if length > native:
@@ -236,7 +239,7 @@ def build(args) -> str:
             "          enable_thinking: false  # set true + raise max_tokens for thinking",
             "          top_k: 20",
             "          presence_penalty: 1.5",
-            "        enable_deterministic_output: true  # Enable SGLang deterministic inference",
+            # "        enable_deterministic_output: true  # Enable SGLang deterministic inference",
         ]
         block += [
             "    infer:",
