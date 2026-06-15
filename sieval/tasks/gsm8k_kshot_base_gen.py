@@ -1,10 +1,21 @@
 """
+GSM8K few-shot base-model generative task.
+
+The reported `score` and `exact_match` are strict GSM8K EM: predictions are
+scored only when the model emits a `#### N` final answer. This matches the
+lm-eval-harness `strict-match` filter and the original GSM8K dataset.py answer
+delimiter.
+
+The comparison target is DeepSeek-V3 Table 3: Qwen2.5-72B-Base GSM8K 8-shot
+EM = 88.3. DeepSeek-V3 does not specify whether it used strict-match or
+flexible-match extraction, so this task states and reports strict-match EM.
+Default k=8 is chosen for that DeepSeek-V3 comparison.
+
 AI-Generated Code - GPT-5.5 (OpenAI)
 """
 
-import random
 import re
-from typing import TypedDict, cast, override
+from typing import TypedDict, override
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -16,13 +27,11 @@ from sieval.core.tasks import (
 from sieval.datasets import GSM8KDatasetSample
 
 N_SHOT = 8
-DEFAULT_MAX_TOKENS = 256
+DEFAULT_MAX_TOKENS = 2048
 DEFAULT_FEWSHOT_SEED = 1234
-STOP_SEQUENCES = ("Question:", "\n\n", "<|im_end|>")
+STOP_SEQUENCES = ("Question:", "</s>", "<|im_end|>")
 
 _STRICT_ANSWER_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
-_FLEXIBLE_ANSWER_RE = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
-
 
 class Feedback(TypedDict):
     correct: bool
@@ -56,28 +65,18 @@ def _extract_strict_answer(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _extract_flexible_answer(text: str) -> str:
-    matches = _FLEXIBLE_ANSWER_RE.findall(text)
-    if not matches:
-        return ""
-    match = matches[-1]
-    return next((group.strip() for group in match if group), "")
-
 
 def _extract_answer(text: str) -> tuple[str, str]:
     strict = _extract_strict_answer(text)
     if strict:
         return _normalize_exact_match(strict), "strict-match"
-    flexible = _extract_flexible_answer(text)
-    if flexible:
-        return _normalize_exact_match(flexible), "flexible-extract"
     return "", "none"
 
 
 @sieval_task(
-    name="gsm8k_8shot_base_gen",
-    display_name="GSM8K (8-shot, base generative)",
-    description="GSM8K 8-shot base-model generative evaluation with lm-eval filters.",
+    name="gsm8k_kshot_base_gen",
+    display_name="GSM8K (few-shot, base generative)",
+    description="GSM8K few-shot base-model strict-match EM evaluation.",
     eval_mode=EvalMode.GEN,
     n_shot=N_SHOT,
     tags=("english", "math-word-problems", "open-ended", "base-model"),
@@ -87,7 +86,13 @@ def _extract_answer(text: str) -> tuple[str, str]:
         url=(
             "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/gsm8k/gsm8k.yaml"
         ),
-        notes="Prompt/filter rules mirror GSM8K yaml; num_fewshot changed to 8.",
+        notes=(
+            "Uses lm-eval-harness strict-match extraction, aligned with the "
+            "original GSM8K dataset.py #### answer delimiter. Default k=8 "
+            "follows the DeepSeek-V3 Table 3 comparison target "
+            "(Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does "
+            "not specify strict vs flexible extraction."
+        ),
     ),
 )
 class GSM8KFewShotBaseGenTask(
@@ -111,7 +116,7 @@ class GSM8KFewShotBaseGenTask(
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = 0.0,
         fewshot_split: str = "train",
-        fewshot_seed: int | None = DEFAULT_FEWSHOT_SEED,
+        fewshot_seed: int = DEFAULT_FEWSHOT_SEED,
         stop: tuple[str, ...] = STOP_SEQUENCES,
     ):
         if k < 0:
@@ -170,11 +175,11 @@ class GSM8KFewShotBaseGenTask(
 
     @override
     async def report(self, finals, fails):
-        total = len(finals) + len(fails)
-        if total == 0:
+        count = len(finals)
+        if count == 0:
             return {"score": 0.0, "fails": len(fails), "exact_match": 0.0}
         correct_num = sum(1 for ctx in finals if ctx.feedback_result["correct"])
-        exact_match = 100 * correct_num / total
+        exact_match = 100 * correct_num / count
         return {"score": exact_match, "fails": len(fails), "exact_match": exact_match}
 
     def _get_fewshot_examples(self) -> list[GSM8KDatasetSample]:
@@ -186,16 +191,20 @@ class GSM8KFewShotBaseGenTask(
         split = self.dataset.dataset_dict.get(self._fewshot_split)
         if split is None:
             raise ValueError(
-                "GSM8K 8-shot base_gen requires a "
+                "GSM8K few-shot base generative task requires a "
                 f"{self._fewshot_split!r} split for few-shot examples."
             )
         if len(split) < self._k:
             raise ValueError(
-                "GSM8K 8-shot base_gen requires at least "
+                "GSM8K few-shot base generative task requires at least "
                 f"{self._k} examples in split {self._fewshot_split!r}; "
                 f"found {len(split)}."
             )
-        examples = [cast(GSM8KDatasetSample, row) for row in split]
         if self._k == 0:
             return []
-        return random.Random(self._fewshot_seed).sample(examples, self._k)
+        return self.dataset.retrieve_samples(
+            self._k,
+            split=self._fewshot_split,
+            mode="random",
+            seed=self._fewshot_seed,
+        )

@@ -335,9 +335,9 @@
       "status": "stable"
     },
     {
-      "name": "gsm8k_8shot_base_gen",
-      "display_name": "GSM8K (8-shot, base generative)",
-      "description": "GSM8K 8-shot base-model generative evaluation with lm-eval filters.",
+      "name": "gsm8k_kshot_base_gen",
+      "display_name": "GSM8K (few-shot, base generative)",
+      "description": "GSM8K few-shot base-model strict-match EM evaluation.",
       "dataset": "gsm8k",
       "eval_mode": "gen",
       "n_shot": 8,
@@ -352,7 +352,7 @@
       "reference_impl": {
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/gsm8k/gsm8k.yaml",
-        "notes": "Prompt/filter rules mirror GSM8K yaml; num_fewshot changed to 8."
+        "notes": "Uses lm-eval-harness strict-match extraction, aligned with the original GSM8K dataset.py #### answer delimiter. Default k=8 follows the DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs flexible extraction."
       },
       "status": "stable"
     },

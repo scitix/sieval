@@ -31,14 +31,14 @@ class GSM8KDatasetSample(TypedDict):
     license="MIT",
 )
 class GSM8KDataset(Dataset[GSM8KDatasetSample]):
+    GSM8K_REVISION = "740312add88f781978c0658806c59bc2815b9866"
     @override
     def load(
         self,
         name_or_path: str,
         config: str | None = "main",
+        revision: str = GSM8K_REVISION,
         **kwargs,
     ) -> HFDatasetDict:
-        if name_or_path.startswith("hf://"):
-            name_or_path = name_or_path.removeprefix("hf://")
-        dataset = load_dataset(name_or_path, config, **kwargs)
+        dataset = load_dataset(name_or_path, config, revision=revision, **kwargs)
         return ensure_dataset_dict(dataset)
