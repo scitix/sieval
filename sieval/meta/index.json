@@ -92,7 +92,7 @@
       "display_name": "GSM8K",
       "description": "Grade School Math 8K - grade-school arithmetic word problems.",
       "source": [
-        "hf:openai/gsm8k"
+        "hf:openai/gsm8k@740312add88f781978c0658806c59bc2815b9866"
       ],
       "categories": [
         {

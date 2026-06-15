@@ -10,6 +10,7 @@ from sieval.cli._readiness import evaluate_dataset_readiness, readiness_to_wire
 from sieval.cli.output import CommandResult
 from sieval.core.datasets.meta import DatasetMeta
 from sieval.core.tasks.meta import TaskMeta
+from sieval.datasets.downloaders.hf import parse_hf_source
 
 
 def _suggested_yaml_path(meta: DatasetMeta) -> str | None:
@@ -25,7 +26,7 @@ def _suggested_yaml_path(meta: DatasetMeta) -> str | None:
     if url_sources and not hf_sources:
         return "${SIEVAL_DATA_DIR}/" + meta.name
     if len(hf_sources) == 1 and not url_sources:
-        return hf_sources[0][len("hf:") :]
+        return parse_hf_source(hf_sources[0]).repo_id
     return None
 
 
