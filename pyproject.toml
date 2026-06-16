@@ -112,6 +112,11 @@ select = [
 ] # scripts/ are CLI tools — print() for progress output
 "tests/**/*.py" = ["T201"] # tests/ may use print() for debugging
 
+[tool.ruff.lint.isort]
+# Pin first-party so import grouping is deterministic across environments — CI's
+# isolated ruff hook and a local editable install otherwise detect it differently.
+known-first-party = ["sieval"]
+
 [tool.ty.environment]
 python = "./.venv"
 root = ["./"]
@@ -127,6 +132,15 @@ include = ["sieval/__init__.py"]
 
 [tool.ty.overrides.rules]
 unused-type-ignore-comment = "ignore"
+
+# t_eval lazy-imports sentence_transformers (optional `t-eval` group) inside the
+# method that uses it; the torch-free CI env doesn't install it, so ty cannot
+# resolve the import there. The lazy import is intentional (keeps CI base-only).
+[[tool.ty.overrides]]
+include = ["sieval/tasks/t_eval_before_calling_0shot_gen.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
 
 [tool.coverage.run]
 source = ["sieval/core"]
