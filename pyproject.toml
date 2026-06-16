@@ -112,11 +112,6 @@ select = [
 ] # scripts/ are CLI tools — print() for progress output
 "tests/**/*.py" = ["T201"] # tests/ may use print() for debugging
 
-[tool.ruff.lint.isort]
-# Pin first-party so import grouping is deterministic across environments — CI's
-# isolated ruff hook and a local editable install otherwise detect it differently.
-known-first-party = ["sieval"]
-
 [tool.ty.environment]
 python = "./.venv"
 root = ["./"]

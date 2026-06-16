@@ -7,9 +7,9 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
 import pytest
-
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
+
 from sieval.core.tasks.context import TaskContext
 from tests.conftest import (
     PerfMockDataset,

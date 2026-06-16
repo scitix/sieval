@@ -7,6 +7,7 @@ from typing import Literal, Self, overload
 
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
+
 from sieval.core.utils.hf import maybe_resolve_hf_path
 
 TRetrieveStrategy = Literal["random", "fixed"]

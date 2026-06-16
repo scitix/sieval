@@ -2,10 +2,10 @@ import json
 import os
 from typing import Literal, TypedDict, override
 
-from openai.types.chat import ChatCompletionMessage
-
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
+from openai.types.chat import ChatCompletionMessage
+
 from sieval.core.datasets import (
     Category,
     Dataset,

@@ -4,9 +4,9 @@ AI-Generated Code - GPT-5-Codex (OpenAI)
 """
 
 import pytest
-
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
+
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import TaskContext

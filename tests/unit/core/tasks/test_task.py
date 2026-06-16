@@ -8,9 +8,9 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
 import pytest
-
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
+
 from sieval.core.datasets import Dataset
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel

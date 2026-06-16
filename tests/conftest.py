@@ -27,10 +27,10 @@ from typing import Any
 import anyio
 import psutil
 import pytest
-from loguru import logger as _loguru_logger
-
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
+from loguru import logger as _loguru_logger
+
 from sieval.core.datasets import Dataset
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
