@@ -2,11 +2,35 @@ from unittest.mock import patch
 
 import pytest
 
-from sieval.datasets.downloaders.hf import HFHandler
+from sieval.datasets.downloaders.hf import HFHandler, HFSource, parse_hf_source
 
 
 def test_scheme():
     assert HFHandler().scheme == "hf"
+
+
+def test_parse_hf_source_without_revision():
+    assert parse_hf_source("hf:org/foo") == HFSource(repo_id="org/foo", revision=None)
+
+
+def test_parse_hf_source_with_revision():
+    assert parse_hf_source("hf:org/foo@abc123") == HFSource(
+        repo_id="org/foo", revision="abc123"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "url:https://example.com/x",
+        "hf:",
+        "hf:@abc123",
+        "hf:org/foo@",
+    ],
+)
+def test_parse_hf_source_rejects_invalid_source(source):
+    with pytest.raises(ValueError):
+        parse_hf_source(source)
 
 
 def test_download_invokes_snapshot_download_with_local_dir(tmp_path):
@@ -24,10 +48,24 @@ def test_download_invokes_snapshot_download_with_local_dir(tmp_path):
     call = mock_snap.call_args
     assert call.kwargs["repo_id"] == "org/foo"
     assert call.kwargs["repo_type"] == "dataset"
+    assert call.kwargs["revision"] is None
     assert call.kwargs["local_dir"] == str(tmp_path / "org" / "foo")
     assert call.kwargs["force_download"] is False
     # `cache_dir=` must not be passed — local_dir mode is the contract.
     assert "cache_dir" not in call.kwargs
+
+
+def test_download_invokes_snapshot_download_with_revision(tmp_path):
+    h = HFHandler()
+    with patch("huggingface_hub.snapshot_download") as mock_snap:
+        mock_snap.return_value = str(tmp_path / "org" / "foo")
+        h.download(
+            "hf:org/foo@abc123", dest_root=tmp_path, dataset_name="foo", force=False
+        )
+    call = mock_snap.call_args
+    assert call.kwargs["repo_id"] == "org/foo"
+    assert call.kwargs["revision"] == "abc123"
+    assert call.kwargs["local_dir"] == str(tmp_path / "org" / "foo")
 
 
 def test_force_maps_to_force_download(tmp_path):
@@ -72,6 +110,14 @@ def test_is_downloaded_true_with_parquet_payload(tmp_path):
     local_dir.mkdir(parents=True)
     (local_dir / "data.parquet").write_bytes(b"x")
     assert h.is_downloaded("hf:org/foo", tmp_path, "foo")
+
+
+def test_is_downloaded_strips_revision_from_local_dir(tmp_path):
+    h = HFHandler()
+    local_dir = tmp_path / "org" / "foo"
+    local_dir.mkdir(parents=True)
+    (local_dir / "data.parquet").write_bytes(b"x")
+    assert h.is_downloaded("hf:org/foo@abc123", tmp_path, "foo")
 
 
 def test_is_downloaded_true_with_arrow_payload(tmp_path):

@@ -47,7 +47,6 @@ tasks:
         model: math_model
         args:
             k: 8
-            n: 1
         # infer_args:                  # per-task inference parameter overrides
         #     max_tokens: 512
 ```

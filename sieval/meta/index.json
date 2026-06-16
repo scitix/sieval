@@ -231,6 +231,47 @@
       "license": "MIT"
     },
     {
+      "name": "mmmlu",
+      "display_name": "MMMLU",
+      "description": "OpenAI MMMLU - human-translated MMLU test split covering 57 subjects across 14 locales.",
+      "source": [
+        "hf:openai/MMMLU"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "multilingual",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "MIT"
+    },
+    {
+      "name": "mmmlu_zh_cn",
+      "display_name": "MMMLU ZH-CN",
+      "description": "OpenAI MMMLU Simplified Chinese - human-translated MMLU test split covering 57 subjects.",
+      "source": [
+        "hf:openai/MMMLU"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "chinese",
+        "simplified-chinese",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "MIT"
+    },
+    {
       "name": "t_eval_before_calling",
       "display_name": "T-Eval Before-Calling",
       "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
@@ -250,6 +291,31 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0"
+    },
+    {
+      "name": "theoremqa",
+      "display_name": "TheoremQA",
+      "description": "Theorem-driven STEM QA benchmark with 800 expert-written questions.",
+      "source": [
+        "hf:TIGER-Lab/TheoremQA@a340b1782960a712843aae3ed25f1e013cc008a5"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "STEM"
+        },
+        {
+          "level1": "Mathematics",
+          "level2": "AppliedMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "theorem-driven"
+      ],
+      "deps_group": null,
+      "license": "MIT"
     }
   ],
   "tasks": [
@@ -352,7 +418,7 @@
       "reference_impl": {
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/gsm8k/gsm8k.yaml",
-        "notes": "Uses lm-eval-harness strict-match extraction, aligned with the original GSM8K dataset.py #### answer delimiter. Default k=8 follows the DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs flexible extraction."
+        "notes": "Uses lm-eval-harness strict-match extraction, aligned with the original GSM8K dataset.py #### answer delimiter. Also reports lm-eval-harness flexible-extract as a secondary metric, not as the original GSM8K official metric. Default k=8 follows the DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs flexible extraction."
       },
       "status": "stable"
     },
@@ -479,6 +545,47 @@
       "status": "stable"
     },
     {
+      "name": "mmmlu_kshot_base_gen",
+      "display_name": "MMMLU (k-shot, base generative)",
+      "description": "OpenAI MMMLU multilingual k-shot MCQ with weighted groups.",
+      "dataset": "mmmlu",
+      "eval_mode": "ppl",
+      "n_shot": 5,
+      "tags": [
+        "multilingual",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "lm-evaluation-harness + hendrycks/test",
+        "url": "https://github.com/EleutherAI/lm-evaluation-harness/tree/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/openai-mmmlu",
+        "notes": "Uses MMMLU locale/category/subject organization and size-weighted aggregation from lm-evaluation-harness; uses Hendrycks evaluate.py completion top-logprob scoring for base models."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "mmmlu_zh_cn_kshot_base_gen",
+      "display_name": "MMMLU ZH-CN (k-shot, base generative)",
+      "description": "MMMLU ZH-CN k-shot MCQ with Hendrycks official logprob scoring.",
+      "dataset": "mmmlu_zh_cn",
+      "eval_mode": "ppl",
+      "n_shot": 5,
+      "tags": [
+        "chinese",
+        "simplified-chinese",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "hendrycks/test",
+        "url": "https://github.com/hendrycks/test/blob/4450500f923c49f1fb1dd3d99108a0bd9717b660/evaluate.py",
+        "notes": "Mirrors official prompt format and one-call next-token logprob scoring over space-prefixed A/B/C/D choices."
+      },
+      "status": "stable"
+    },
+    {
       "name": "t_eval_before_calling_0shot_gen",
       "display_name": "T-Eval Before-Calling (0-shot)",
       "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
@@ -496,6 +603,27 @@
         "source": "open-compass/T-Eval",
         "url": "https://github.com/open-compass/T-Eval/tree/58f22406404d7e2a4f36856a19c7f4dc28a0a5f0/teval",
         "notes": "ResponseDataSample (schema.py) + format_load (utils/format_load.py) vendored."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "theoremqa_kshot_base_gen",
+      "display_name": "TheoremQA (k-shot, base generative)",
+      "description": "TheoremQA k-shot ICL with official short prompt and matcher.",
+      "dataset": "theoremqa",
+      "eval_mode": "gen",
+      "n_shot": 5,
+      "tags": [
+        "english",
+        "open-ended",
+        "theorem-driven"
+      ],
+      "deps_group": "math",
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "TIGER-AI-Lab/TheoremQA",
+        "url": "https://github.com/TIGER-AI-Lab/TheoremQA/blob/acfc9686aa9b49f3c8f189364a9a9ee9c53da039/utils.py",
+        "notes": "Prompt follows official short-form examples by default; k can select any prefix of the built-in examples. answer_clean and numeric matching mirror official utils.py/number_utils.py."
       },
       "status": "stable"
     }

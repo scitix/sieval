@@ -38,8 +38,7 @@ class GSM8KDataset(Dataset[GSM8KDatasetSample]):
         self,
         name_or_path: str,
         config: str | None = "main",
-        revision: str = GSM8K_REVISION,
         **kwargs,
     ) -> HFDatasetDict:
-        dataset = load_dataset(name_or_path, config, revision=revision, **kwargs)
+        dataset = load_dataset(name_or_path, config, **kwargs)
         return ensure_dataset_dict(dataset)

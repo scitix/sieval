@@ -3,8 +3,13 @@ GSM8K few-shot base-model generative task.
 
 The reported `score` and `exact_match` are strict GSM8K EM: predictions are
 scored only when the model emits a `#### N` final answer. This matches the
-lm-eval-harness `strict-match` filter and the original GSM8K dataset.py answer
-delimiter.
+original GSM8K dataset.py answer delimiter and the lm-eval-harness
+`strict-match` filter. The prompt examples and strict extractor must stay in
+lockstep around that `####` final-answer format.
+
+The secondary `flexible_exact_match` metric mirrors the lm-eval-harness
+`flexible-extract` last-number filter; it is not part of the original GSM8K
+official metric.
 
 The comparison target is DeepSeek-V3 Table 3: Qwen2.5-72B-Base GSM8K 8-shot
 EM = 88.3. DeepSeek-V3 does not specify whether it used strict-match or
@@ -32,17 +37,24 @@ DEFAULT_FEWSHOT_SEED = 1234
 STOP_SEQUENCES = ("Question:", "</s>", "<|im_end|>")
 
 _STRICT_ANSWER_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
+_FLEXIBLE_ANSWER_RE = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
+
 
 class Feedback(TypedDict):
     correct: bool
+    flexible_correct: bool
     answer: str
     prediction: str
+    flexible_prediction: str
     extraction_method: str
+    flexible_extraction_method: str
 
 
 class Prediction(TypedDict):
     answer: str
+    flexible_answer: str
     extraction_method: str
+    flexible_extraction_method: str
 
 
 def _format_example(sample: GSM8KDatasetSample, include_answer: bool) -> str:
@@ -55,7 +67,6 @@ def _format_example(sample: GSM8KDatasetSample, include_answer: bool) -> str:
 def _normalize_exact_match(text: str) -> str:
     text = re.sub(r",", "", text)
     text = re.sub(r"\$", "", text)
-    text = re.sub(r"(?s).*#### ", "", text)
     text = re.sub(r"\.$", "", text.strip())
     return text.strip().lower()
 
@@ -65,11 +76,24 @@ def _extract_strict_answer(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _extract_flexible_answer(text: str) -> str:
+    matches = _FLEXIBLE_ANSWER_RE.findall(text)
+    if not matches:
+        return ""
+    return next((part.strip() for part in matches[-1] if part), "")
+
 
 def _extract_answer(text: str) -> tuple[str, str]:
     strict = _extract_strict_answer(text)
     if strict:
         return _normalize_exact_match(strict), "strict-match"
+    return "", "none"
+
+
+def _extract_flexible_match(text: str) -> tuple[str, str]:
+    flexible = _extract_flexible_answer(text)
+    if flexible:
+        return _normalize_exact_match(flexible), "flexible-extract"
     return "", "none"
 
 
@@ -88,10 +112,12 @@ def _extract_answer(text: str) -> tuple[str, str]:
         ),
         notes=(
             "Uses lm-eval-harness strict-match extraction, aligned with the "
-            "original GSM8K dataset.py #### answer delimiter. Default k=8 "
-            "follows the DeepSeek-V3 Table 3 comparison target "
-            "(Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does "
-            "not specify strict vs flexible extraction."
+            "original GSM8K dataset.py #### answer delimiter. Also reports "
+            "lm-eval-harness flexible-extract as a secondary metric, not as "
+            "the original GSM8K official metric. Default k=8 follows the "
+            "DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K "
+            "8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs "
+            "flexible extraction."
         ),
     ),
 )
@@ -112,7 +138,6 @@ class GSM8KFewShotBaseGenTask(
         name: str | None = None,
         *,
         k: int = N_SHOT,
-        n: int = 1,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = 0.0,
         fewshot_split: str = "train",
@@ -121,13 +146,10 @@ class GSM8KFewShotBaseGenTask(
     ):
         if k < 0:
             raise ValueError(f"k must be >= 0, got {k}")
-        if n < 1:
-            raise ValueError(f"n must be >= 1, got {n}")
         if max_tokens < 1:
             raise ValueError(f"max_tokens must be >= 1, got {max_tokens}")
         super().__init__(dataset=dataset, model=model, name=name)
         self._k = k
-        self._n = n
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._fewshot_split = fewshot_split
@@ -151,7 +173,6 @@ class GSM8KFewShotBaseGenTask(
         kwargs: dict[str, object] = {
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
-            "n": self._n,
         }
         if self._stop:
             kwargs["stop"] = list(self._stop)
@@ -161,26 +182,49 @@ class GSM8KFewShotBaseGenTask(
     async def postprocess(self, inf, ctx):
         text = inf.texts[0] if inf.texts else ""
         answer, extraction_method = _extract_answer(text)
-        return {"answer": answer, "extraction_method": extraction_method}
+        flexible_answer, flexible_extraction_method = _extract_flexible_match(text)
+        return {
+            "answer": answer,
+            "flexible_answer": flexible_answer,
+            "extraction_method": extraction_method,
+            "flexible_extraction_method": flexible_extraction_method,
+        }
 
     @override
     async def feedback(self, post, ctx):
         answer, _ = _extract_answer(ctx.raw_sample["answer"])
         return True, {
             "correct": post["answer"] == answer,
+            "flexible_correct": post["flexible_answer"] == answer,
             "answer": answer,
             "prediction": post["answer"],
+            "flexible_prediction": post["flexible_answer"],
             "extraction_method": post["extraction_method"],
+            "flexible_extraction_method": post["flexible_extraction_method"],
         }
 
     @override
     async def report(self, finals, fails):
         count = len(finals)
         if count == 0:
-            return {"score": 0.0, "fails": len(fails), "exact_match": 0.0}
+            return {
+                "score": 0.0,
+                "fails": len(fails),
+                "exact_match": 0.0,
+                "flexible_exact_match": 0.0,
+            }
         correct_num = sum(1 for ctx in finals if ctx.feedback_result["correct"])
+        flexible_correct_num = sum(
+            1 for ctx in finals if ctx.feedback_result["flexible_correct"]
+        )
         exact_match = 100 * correct_num / count
-        return {"score": exact_match, "fails": len(fails), "exact_match": exact_match}
+        flexible_exact_match = 100 * flexible_correct_num / count
+        return {
+            "score": exact_match,
+            "fails": len(fails),
+            "exact_match": exact_match,
+            "flexible_exact_match": flexible_exact_match,
+        }
 
     def _get_fewshot_examples(self) -> list[GSM8KDatasetSample]:
         if self._fewshot_examples is None:
