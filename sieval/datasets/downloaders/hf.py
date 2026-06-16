@@ -13,14 +13,15 @@ indirection, no offline/online split inside ``datasets.load_dataset``.
 AI-Generated Code - Claude Opus 4.7 (1M context) (Anthropic)
 """
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
 
 # Payload suffixes found across pilot datasets; extend as other formats surface.
 _DATA_SUFFIXES = (".arrow", ".parquet", ".jsonl", ".json", ".csv")
 
 
-class HFSource(NamedTuple):
+@dataclass(frozen=True)
+class HFSource:
     repo_id: str
     revision: str | None
 
