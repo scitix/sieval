@@ -64,6 +64,9 @@ from .mmlu_0shot_gen import (
 from .mmlu_pro_0shot_gen import (
     MMLUProZeroShotGenTask,
 )
+from .mmmlu_kshot_clp import (
+    MMMLUKShotClpTask,
+)
 from .openbookqa_kshot_gen import (
     OpenBookQAFewShotGenTask,
 )
@@ -96,6 +99,7 @@ __all__ = [
     "MBPPFewShotBaseGenTask",
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
+    "MMMLUKShotClpTask",
     "OpenBookQAFewShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
     "TheoremQAKShotBaseGenTask",
