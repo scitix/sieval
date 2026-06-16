@@ -4,11 +4,6 @@ from typing import TypedDict, override
 from openai.types.chat import ChatCompletionUserMessageParam
 
 from sieval.community.simple_evals.common import ANSWER_PATTERN
-from sieval.community.simple_evals.drop_eval import (
-    FEW_SHOT_TEMPLATE,
-    QUERY_TEMPLATE,
-    drop_metric,
-)
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
@@ -59,6 +54,11 @@ class DROPFewShotGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
+        from sieval.community.simple_evals.drop_eval import (
+            FEW_SHOT_TEMPLATE,
+            QUERY_TEMPLATE,
+        )
+
         few_shot_examples = self.dataset.retrieve_samples(
             self._k,
             split="train",
@@ -93,6 +93,8 @@ class DROPFewShotGenTask(
 
     @override
     async def feedback(self, post, ctx):
+        from sieval.community.simple_evals.drop_eval import drop_metric
+
         ref = ctx.raw_sample["ref_text"]
         answers = ref.split("|")
         em, f1 = drop_metric(post, answers)
