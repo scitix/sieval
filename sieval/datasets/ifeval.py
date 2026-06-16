@@ -2,7 +2,6 @@ from typing import Any, TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
 from datasets import load_dataset
-
 from sieval.core.datasets import (
     Category,
     Dataset,
