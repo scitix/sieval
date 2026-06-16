@@ -32,7 +32,7 @@ ALLOWLIST=(
   "0\.0\.0\.0"                      # bind-all is fine
   "\.venv/"                         # third-party packages
   "data/"                           # benchmark datasets (may contain example IPs/paths in data)
-  "sieval/infer/topology/models.py" # generic placeholder IP in field docstring
+  '"10\.0\.1\.100:30001"'           # ServiceBinding.address field-docstring example
 )
 
 ALLOWLIST_PATTERN="$(IFS='|'; echo "${ALLOWLIST[*]}")"
