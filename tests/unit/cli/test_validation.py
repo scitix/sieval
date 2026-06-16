@@ -431,6 +431,29 @@ class TestValidateDatasets:
         result = validate_eval_config(cfg)
         assert result.ok
 
+    def test_valid_stratified_select_operation(self):
+        cfg = {
+            "models": {},
+            "tasks": {},
+            "datasets": {
+                "d": {
+                    "class": "X",
+                    "operations": [
+                        {
+                            "stratified_select": {
+                                "by": "Subject",
+                                "num": 800,
+                                "min_per_group": 5,
+                                "seed": 42,
+                            }
+                        }
+                    ],
+                }
+            },
+        }
+        result = validate_eval_config(cfg)
+        assert result.ok
+
 
 # ---------------------------------------------------------------------------
 # Schema validation — tasks

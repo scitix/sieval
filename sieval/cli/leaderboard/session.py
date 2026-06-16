@@ -1257,10 +1257,39 @@ class EvalSession:
                     dataset = dataset.repeat(times, split=split)
                     logger.debug("Dataset '{}': repeated {} times", dataset_name, times)
 
+                case "stratified_select":
+                    num = op_args.get("num", op_args.get("n"))
+                    by = op_args.get("by")
+                    if num is None or by is None:
+                        raise ValueError(
+                            f"Dataset '{dataset_name}': 'stratified_select' "
+                            f"requires 'num' and 'by'"
+                        )
+                    min_per_group = op_args.get("min_per_group", 1)
+                    seed = op_args.get("seed", 0)
+                    split = op_args.get("split", "test")
+                    dataset = dataset.stratified_select(
+                        num,
+                        by=by,
+                        min_per_group=min_per_group,
+                        seed=seed,
+                        split=split,
+                    )
+                    logger.debug(
+                        "Dataset '{}': stratified-selected {} by '{}' "
+                        "(min_per_group={}, seed={})",
+                        dataset_name,
+                        num,
+                        by,
+                        min_per_group,
+                        seed,
+                    )
+
                 case _:
                     raise ValueError(
                         f"Dataset '{dataset_name}': Unknown operation '{op_name}'. "
-                        f"Valid operations: select, shuffle, repeat"
+                        f"Valid operations: select, shuffle, repeat, "
+                        f"stratified_select"
                     )
 
         return dataset

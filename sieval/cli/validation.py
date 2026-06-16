@@ -32,7 +32,7 @@ _ROOT_KEYS: set[str] = set(RootConfigDict.__annotations__)
 _CONCURRENCY_KEYS: set[str] = {a.value for a in TaskAction}
 
 # Valid dataset operations
-_VALID_OPERATIONS: set[str] = {"select", "shuffle", "repeat"}
+_VALID_OPERATIONS: set[str] = {"select", "shuffle", "repeat", "stratified_select"}
 
 # Valid TaskRunnerConfig field names
 _RUNNER_CONFIG_FIELDS: set[str] = set(TaskRunnerConfig.__dataclass_fields__)

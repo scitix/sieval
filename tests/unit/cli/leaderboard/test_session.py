@@ -315,6 +315,51 @@ class TestDatasetOperations:
         runner._apply_dataset_operations(ds_none_args, [{"shuffle": None}], "test_ds")
         ds_none_args.shuffle.assert_called_once_with(seed=0, split="test")
 
+    def test_stratified_select_dispatch(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        ds.stratified_select.return_value = ds
+        runner._apply_dataset_operations(
+            ds,
+            [
+                {
+                    "stratified_select": {
+                        "by": "Subject",
+                        "num": 800,
+                        "min_per_group": 5,
+                        "seed": 42,
+                    }
+                }
+            ],
+            "test_ds",
+        )
+        ds.stratified_select.assert_called_once_with(
+            800, by="Subject", min_per_group=5, seed=42, split="test"
+        )
+
+    def test_stratified_select_defaults(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        ds.stratified_select.return_value = ds
+        runner._apply_dataset_operations(
+            ds, [{"stratified_select": {"by": "category", "num": 600}}], "test_ds"
+        )
+        ds.stratified_select.assert_called_once_with(
+            600, by="category", min_per_group=1, seed=0, split="test"
+        )
+
+    @pytest.mark.parametrize(
+        "op_args",
+        [{"num": 5}, {"by": "Subject"}, {}],
+    )
+    def test_stratified_select_requires_num_and_by(self, op_args):
+        runner = self._make_runner()
+        ds = MagicMock()
+        with pytest.raises(ValueError, match="requires 'num' and 'by'"):
+            runner._apply_dataset_operations(
+                ds, [{"stratified_select": op_args}], "test_ds"
+            )
+
 
 # ===================================================================
 # Model type inference

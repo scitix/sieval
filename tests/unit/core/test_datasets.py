@@ -154,6 +154,86 @@ class TestShuffle:
 
 
 # ===================================================================
+# stratified_select
+# ===================================================================
+def _make_grouped(group_sizes):
+    """Build a _ListDataset with a 'subject' column per {group: size} mapping."""
+    samples = []
+    idx = 0
+    for group, n in group_sizes.items():
+        for _ in range(n):
+            samples.append({"id": idx, "subject": group})
+            idx += 1
+    return _ListDataset(samples)
+
+
+def _subject_counts(ds):
+    counts: dict = {}
+    for row in ds.test_set:
+        counts[row["subject"]] = counts.get(row["subject"], 0) + 1
+    return counts
+
+
+class TestStratifiedSelect:
+    def test_proportional_allocation_with_zero_floor(self):
+        ds = _make_grouped({"a": 100, "b": 50, "c": 50})
+        result = ds.stratified_select(num=40, by="subject", min_per_group=0, seed=0)
+        assert _subject_counts(result) == {"a": 20, "b": 10, "c": 10}
+        assert type(result) is type(ds)
+
+    def test_floor_guarantees_small_groups_capped_by_size(self):
+        ds = _make_grouped({"a": 100, "b": 2, "c": 2})
+        result = ds.stratified_select(num=12, by="subject", min_per_group=3, seed=0)
+        # small groups capped at their full size (< floor); big group takes the rest
+        assert _subject_counts(result) == {"a": 8, "b": 2, "c": 2}
+
+    def test_floor_sum_exceeding_num_raises_total_to_floor(self):
+        ds = _make_grouped({"a": 5, "b": 5, "c": 5})
+        result = ds.stratified_select(num=2, by="subject", min_per_group=2, seed=0)
+        # 3 groups x floor 2 = 6 > num 2 → total raised to 6 to honour the floor
+        assert _subject_counts(result) == {"a": 2, "b": 2, "c": 2}
+
+    def test_num_exceeding_total_returns_all(self):
+        ds = _make_grouped({"a": 3, "b": 2})
+        result = ds.stratified_select(num=999, by="subject", min_per_group=1, seed=0)
+        assert len(result.test_set) == 5
+
+    def test_same_seed_is_deterministic(self):
+        ds = _make_grouped({"a": 100, "b": 50, "c": 50})
+        ids1 = sorted(
+            r["id"] for r in ds.stratified_select(num=40, by="subject", seed=7).test_set
+        )
+        ids2 = sorted(
+            r["id"] for r in ds.stratified_select(num=40, by="subject", seed=7).test_set
+        )
+        assert ids1 == ids2
+
+    def test_different_seed_changes_rows_not_counts(self):
+        ds = _make_grouped({"a": 100, "b": 50, "c": 50})
+        r0 = ds.stratified_select(num=40, by="subject", min_per_group=0, seed=0)
+        r1 = ds.stratified_select(num=40, by="subject", min_per_group=0, seed=1)
+        assert _subject_counts(r0) == _subject_counts(r1)
+        ids0 = sorted(x["id"] for x in r0.test_set)
+        ids1 = sorted(x["id"] for x in r1.test_set)
+        assert ids0 != ids1
+
+    def test_missing_by_column_raises(self):
+        ds = _make_grouped({"a": 3})
+        with pytest.raises(ValueError, match="nonexistent"):
+            ds.stratified_select(num=2, by="nonexistent", seed=0)
+
+    def test_no_test_set_returns_self(self):
+        class _NoTestDataset(_ListDataset):
+            def load(self, name_or_path, **kwargs):
+                return HFDatasetDict(
+                    {"train": HFDataset.from_list([{"id": 0, "subject": "a"}])}
+                )
+
+        ds = _NoTestDataset([], None)
+        assert ds.stratified_select(num=2, by="subject", seed=0) is ds
+
+
+# ===================================================================
 # retrieve_samples
 # ===================================================================
 class TestRetrieveSamples:

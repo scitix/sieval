@@ -1,6 +1,7 @@
 """Abstract Dataset base class backed by HuggingFace DatasetDict."""
 
 import copy
+import random
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import Literal, Self, overload
@@ -90,6 +91,71 @@ class Dataset[TSample](ABC):
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
         new_dict[split] = new_dict[split].shuffle(seed=seed)
+        return self._clone_with_new_dict(new_dict)
+
+    def stratified_select(
+        self,
+        num: int,
+        by: str,
+        min_per_group: int = 1,
+        seed: int = 0,
+        split: str = "test",
+    ) -> Self:
+        """Return a clone keeping a proportional, group-balanced subsample.
+
+        Rows in *split* are grouped by column *by*. Each group is guaranteed at
+        least ``min(min_per_group, group_size)`` rows; the remaining budget
+        toward *num* is distributed proportionally to group size (capped by
+        availability). If the per-group floors already sum above *num*, the
+        total is raised to honour them. Within each group, rows are chosen by a
+        deterministic *seed*-driven shuffle, so the selection reproduces across
+        runs and processes.
+
+        Returns ``self`` unchanged if *split* is absent.
+        """
+        if split not in self._dataset_dict:
+            return self
+        hf = self._dataset_dict[split]
+        if by not in hf.column_names:
+            raise ValueError(
+                f"stratified_select: column {by!r} not found; "
+                f"available columns: {hf.column_names}"
+            )
+
+        # Group row indices by value (first-seen order preserved per group).
+        groups: dict[object, list[int]] = {}
+        for index, value in enumerate(hf[by]):
+            groups.setdefault(value, []).append(index)
+
+        total = len(hf)
+        keys = sorted(groups, key=str)
+        sizes = {key: len(groups[key]) for key in keys}
+
+        # Floor allocation (capped by group size), then proportional fill toward
+        # the target. Floors take priority: the target rises to meet them.
+        alloc = {key: min(min_per_group, sizes[key]) for key in keys}
+        target = min(max(num, sum(alloc.values())), total)
+        while sum(alloc.values()) < target:
+            candidates = [key for key in keys if alloc[key] < sizes[key]]
+            if not candidates:
+                break
+            # Group furthest below its proportional quota; ties → smallest key.
+            chosen = max(
+                candidates,
+                key=lambda key: sizes[key] * target / total - alloc[key],
+            )
+            alloc[chosen] += 1
+
+        # Deterministic within-group selection.
+        selected: list[int] = []
+        for key in keys:
+            indices = list(groups[key])
+            random.Random(f"{seed}:{key}").shuffle(indices)
+            selected.extend(indices[: alloc[key]])
+        selected.sort()
+
+        new_dict = HFDatasetDict(self._dataset_dict)
+        new_dict[split] = hf.select(selected)
         return self._clone_with_new_dict(new_dict)
 
     def _clone_with_new_dict(self, new_dict: HFDatasetDict) -> Self:
