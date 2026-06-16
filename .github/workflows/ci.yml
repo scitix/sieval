@@ -149,7 +149,7 @@ jobs:
 
   check:
     if: always()
-    needs: [pre-commit, commit-lint, typecheck, checks, sanitize, gitleaks]
+    needs: [changes, pre-commit, commit-lint, typecheck, checks, sanitize, gitleaks]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1
