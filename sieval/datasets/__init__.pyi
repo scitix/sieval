@@ -49,6 +49,10 @@ from .t_eval import (
     TEvalBeforeCallingDataset,
     TEvalBeforeCallingDatasetSample,
 )
+from .theoremqa import (
+    TheoremQADataset,
+    TheoremQADatasetSample,
+)
 
 __all__ = [
     "AIME2024Dataset",
@@ -75,4 +79,6 @@ __all__ = [
     "MMLUProDatasetSample",
     "TEvalBeforeCallingDataset",
     "TEvalBeforeCallingDatasetSample",
+    "TheoremQADataset",
+    "TheoremQADatasetSample",
 ]

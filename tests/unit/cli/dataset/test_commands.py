@@ -383,6 +383,17 @@ def test_dataset_show_suggested_path_for_hf_source():
     assert data["suggested_path"] == "HuggingFaceH4/aime_2024"
 
 
+def test_dataset_show_suggested_path_strips_hf_revision_pin():
+    """Pinned HF dataset source still suggests the bare repo id for YAML path."""
+    result = runner.invoke(dataset_app, ["show", "theoremqa", "-o", "json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["suggested_path"] == "TIGER-Lab/TheoremQA"
+    assert data["source"] == [
+        "hf:TIGER-Lab/TheoremQA@a340b1782960a712843aae3ed25f1e013cc008a5"
+    ]
+
+
 def test_dataset_show_suggested_path_for_url_source():
     """URL dataset → suggested_path is ${SIEVAL_DATA_DIR}/<name> (literal)."""
     result = runner.invoke(dataset_app, ["show", "drop", "-o", "json"])

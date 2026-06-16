@@ -1,0 +1,36 @@
+deterministic: true
+result_dir: ./outputs/theoremqa_5shot_qwen2.5-72b
+
+models:
+  qwen2.5-72b:
+    type: gen
+    name: Qwen2.5-72B
+    path: /mnt/projects/jackhu/models/Qwen2.5-72B
+    args:
+      concurrency_limit: 8
+      temperature: 0.0
+    infer:
+      backend: sglang
+      checkpoint: /mnt/projects/jackhu/models/Qwen2.5-72B
+      recipe: qwen2.5-72b
+      overrides:
+        dtype: bfloat16
+        tp_size: 2
+        mem_fraction_static: 0.7
+        tool_call_parser: qwen
+
+datasets:
+  theoremqa:
+    class: TheoremQADataset
+    path: TIGER-Lab/TheoremQA
+    # For a quick smoke test, uncomment this block.
+    # operations:
+    #   - select: { num: 20 }
+
+tasks:
+  theoremqa_5shot_base_gen:
+    class: TheoremQAKShotBaseGenTask
+    dataset: theoremqa
+    model: qwen2.5-72b
+    args:
+      k: 5

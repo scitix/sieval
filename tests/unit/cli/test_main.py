@@ -551,9 +551,13 @@ class TestDownloadStagingContract:
         with patch("huggingface_hub.snapshot_download") as mock_snap:
             mock_snap.return_value = str(tmp_path / "org" / "foo")
             HFHandler().download(
-                "hf:org/foo", dest_root=tmp_path, dataset_name="foo", force=False
+                "hf:org/foo@abc123",
+                dest_root=tmp_path,
+                dataset_name="foo",
+                force=False,
             )
         write_target = mock_snap.call_args.kwargs["local_dir"]
+        assert mock_snap.call_args.kwargs["revision"] == "abc123"
 
         # Where does the runtime resolver point at?
         read_target = maybe_resolve_hf_path("org/foo")
