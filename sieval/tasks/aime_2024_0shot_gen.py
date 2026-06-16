@@ -2,7 +2,6 @@ import re
 from typing import TypedDict, override
 
 from loguru import logger
-from math_verify import parse, verify
 from openai.types.chat import ChatCompletionUserMessageParam
 
 from sieval.community.simple_evals.common import ANSWER_PATTERN
@@ -74,6 +73,8 @@ class AIME2024ZeroShotGenTask(
 
     @override
     async def feedback(self, post, ctx):
+        from math_verify import parse, verify
+
         feedbacks: list[Feedback] = []
         ground_truth = ctx.raw_sample["answer"]
         for pred in post:
