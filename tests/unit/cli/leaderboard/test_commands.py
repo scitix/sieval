@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from typer.testing import CliRunner
 
 from sieval.cli.main import app
@@ -354,14 +353,6 @@ class TestLeaderboardRun:
         assert result.exit_code == 0
         assert "YAML" in result.stdout or "yaml" in result.stdout.lower()
 
-    @pytest.mark.skipif(
-        "os.environ.get('CI') == 'true'",
-        reason=(
-            "Pre-existing CI-env fragility: asserts substrings against Rich-rendered"
-            " --help output, which wraps differently on CI's runner; passes locally."
-            " Quarantined while landing first CI — see follow-up for a robust fix."
-        ),
-    )
     def test_run_accepts_options(self):
         result = cli_runner.invoke(app, ["leaderboard", "run", "--help"])
         assert result.exit_code == 0

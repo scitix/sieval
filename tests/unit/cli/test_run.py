@@ -99,14 +99,6 @@ class TestRunCommand:
         assert str(existing) in error
         assert "auto_resume=True" not in error
 
-    @pytest.mark.skipif(
-        "os.environ.get('CI') == 'true'",
-        reason=(
-            "Pre-existing CI-env fragility: asserts substrings against Rich-rendered"
-            " --help output, which wraps differently on CI's runner; passes locally."
-            " Quarantined while landing first CI — see follow-up for a robust fix."
-        ),
-    )
     def test_run_help_shows_deterministic_flag_only(self):
         """--deterministic appears; --no-deterministic does not (monotone).
 

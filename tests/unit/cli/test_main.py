@@ -5,7 +5,6 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -202,14 +201,6 @@ class TestInfer:
         assert result.exit_code == 0
         assert "Checkpoint path" in result.stdout or "YAML" in result.stdout
 
-    @pytest.mark.skipif(
-        "os.environ.get('CI') == 'true'",
-        reason=(
-            "Pre-existing CI-env fragility: asserts substrings against Rich-rendered"
-            " --help output, which wraps differently on CI's runner; passes locally."
-            " Quarantined while landing first CI — see follow-up for a robust fix."
-        ),
-    )
     def test_infer_start_help_shows_deterministic_flag(self):
         result = runner.invoke(app, ["infer", "start", "--help"])
         assert result.exit_code == 0
