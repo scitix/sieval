@@ -11,7 +11,7 @@ import importlib
 import os
 import shlex
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -253,6 +253,8 @@ def _strip_throughput_fields(cfg: dict[str, Any]) -> dict[str, Any]:
 
     Removes (on the copy only; the input is never mutated):
       * top-level ``concurrency_limit`` / ``concurrency_limits``
+      * top-level ``result_dir`` (the resume target's own location —
+        never affects what results are produced, only where they go)
       * ``models.*.args.concurrency_limit``
       * ``tasks.*.runner_config.<k>`` for every ``k`` in
         ``_THROUGHPUT_RUNNER_KEYS``
@@ -262,7 +264,7 @@ def _strip_throughput_fields(cfg: dict[str, Any]) -> dict[str, Any]:
     """
     out = copy.deepcopy(cfg)
 
-    for key in ("concurrency_limit", "concurrency_limits"):
+    for key in ("concurrency_limit", "concurrency_limits", "result_dir"):
         out.pop(key, None)
 
     models = out.get("models")
@@ -1410,14 +1412,26 @@ class EvalSession:
         body: str,
         header: str,
         audit_label: str,
+        mutable_strip: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         """Atomically write ``header + body`` to ``result_dir/target_name``.
 
-        Under ``--resume`` with an existing target file, the persisted body
-        (header excluded) MUST match ``body`` byte-for-byte; mismatch raises
-        ``RuntimeError`` (the only failure mode the caller observes — every
-        other failure is best-effort and only logged). On match, the file is
-        not rewritten so existing header timestamps survive the resume.
+        Under ``--resume`` with an existing target file:
+
+        * If the persisted body (header excluded) matches ``body``
+          byte-for-byte, the file is not rewritten so existing header
+          timestamps survive.
+        * If ``mutable_strip`` is ``None`` (byte-for-byte strict, e.g. infer
+          plans), any other difference raises ``RuntimeError``.
+        * If ``mutable_strip`` is provided, the two bodies are parsed and
+          compared with ``mutable_strip`` applied to both. Differences that
+          vanish under stripping (throughput knobs, or pure formatting) are
+          tolerated: the file is rewritten with the new ``body`` while the
+          original header/timestamps are preserved. A residual difference
+          (result- or layout-affecting) raises ``RuntimeError``.
+
+        ``RuntimeError`` is the only failure mode the caller observes — every
+        other failure is best-effort and only logged.
         """
         effective_result_dir = self._resolve_result_dir()
         if effective_result_dir is None:
@@ -1429,39 +1443,71 @@ class EvalSession:
         result_path = anyio.Path(effective_result_dir)
         target = result_path / target_name
 
-        # Strict-match resume check: if --resume was requested and a persisted
-        # file exists, the current invocation's body MUST match the persisted
-        # body byte-for-byte (comment header excluded). Silently resuming under
-        # a different config would mix data from two runs.
+        write_header = header
+
         if self.resume_override and await target.exists():
             try:
                 existing = await target.read_text(encoding="utf-8")
             except OSError as e:
-                # Can't verify the match — refuse to resume. Surfaced as the
-                # same Resume-aborted shape so the user sees a consistent
-                # error class instead of a bare OSError from the persistence
-                # path they may not know exists.
                 raise RuntimeError(
                     f"Resume aborted: cannot read existing {target}: {e}\n"
                     "Either:\n"
                     "  1. Remove the result_dir and start fresh\n"
                     f"  2. Ensure {target} is readable"
                 ) from e
-            existing_body = _strip_header(existing)
-            if existing_body != body:
-                diff_hint = _brief_diff(existing_body, body)
+
+            existing_header, existing_body = _split_header(existing)
+
+            if existing_body == body:
+                logger.info("Resume: {} matches — skipping rewrite", target_name)
+                return
+
+            if mutable_strip is None:
+                # Byte-for-byte strict (e.g. infer plans): any diff aborts.
                 raise RuntimeError(
                     f"Resume aborted: {target} does not match current invocation.\n"
-                    f"{diff_hint}\n"
+                    f"{_brief_diff(existing_body, body)}\n"
                     "Either:\n"
                     "  1. Remove the result_dir and start fresh\n"
                     f"  2. Match the invocation to the persisted {audit_label}"
                 )
-            logger.info("Resume: {} matches — skipping rewrite", target_name)
-            return
+
+            # Tolerate throughput-only diffs: parse BOTH sides through YAML so
+            # type coercion (e.g. tuple→list) can't cause a spurious mismatch.
+            try:
+                existing_cfg = yaml.safe_load(existing_body) or {}
+                current_cfg = yaml.safe_load(body) or {}
+            except yaml.YAMLError as e:
+                raise RuntimeError(
+                    f"Resume aborted: cannot parse existing {target} to verify "
+                    f"match: {e}\n"
+                    "Either:\n"
+                    "  1. Remove the result_dir and start fresh\n"
+                    f"  2. Restore {target} to valid YAML matching the persisted "
+                    f"{audit_label}"
+                ) from e
+
+            stripped_existing = mutable_strip(existing_cfg)
+            stripped_current = mutable_strip(current_cfg)
+            if stripped_existing != stripped_current:
+                raise RuntimeError(
+                    f"Resume aborted: {target} does not match current invocation.\n"
+                    f"{_diff_dicts(stripped_existing, stripped_current)}\n"
+                    "Either:\n"
+                    "  1. Remove the result_dir and start fresh\n"
+                    f"  2. Match the invocation to the persisted {audit_label}"
+                )
+
+            # Result-relevant content is identical; only throughput (or
+            # formatting) differs. Rewrite so the artifact reflects the new
+            # throughput, preserving the original header/timestamps when present.
+            logger.info(
+                "Resume: {} throughput fields changed — updating file", target_name
+            )
+            write_header = existing_header or header
 
         tmp_path = target.with_name(target.name + ".tmp")
-        content = header + body
+        content = write_header + body
 
         try:
             await result_path.mkdir(parents=True, exist_ok=True)
@@ -1506,6 +1552,7 @@ class EvalSession:
             body=body,
             header=header,
             audit_label="effective config",
+            mutable_strip=_strip_throughput_fields,
         )
 
     async def _persist_infer_plans(self) -> None:
