@@ -133,20 +133,6 @@ jobs:
       - name: Scan
         run: gitleaks detect --source . --redact --no-banner --exit-code 1
 
-  mypy:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    continue-on-error: true            # advisory (secondary type checker)
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pdm-project/setup-pdm@v4
-        with:
-          python-version: ${{ env.PYTHON_DEFAULT }}
-          cache: true
-      - run: pdm install --check --frozen-lockfile ${{ env.INSTALL_GROUPS }}
-      - run: pdm run mypy sieval
-
   check:
     if: always()
     needs: [changes, pre-commit, commit-lint, typecheck, checks, sanitize, gitleaks]
