@@ -128,9 +128,8 @@ include = ["sieval/__init__.py"]
 [tool.ty.overrides.rules]
 unused-type-ignore-comment = "ignore"
 
-# t_eval lazy-imports sentence_transformers (optional `t-eval` group) inside the
-# method that uses it; the torch-free CI env doesn't install it, so ty cannot
-# resolve the import there. The lazy import is intentional (keeps CI base-only).
+# t_eval lazy-imports sentence_transformers (torch), absent from CI's light env,
+# so ty can't resolve that import. Intentional — keeps CI torch-free.
 [[tool.ty.overrides]]
 include = ["sieval/tasks/t_eval_before_calling_0shot_gen.py"]
 
