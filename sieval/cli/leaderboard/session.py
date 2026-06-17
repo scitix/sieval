@@ -147,6 +147,33 @@ def _strip_header(text: str) -> str:
     return _split_header(text)[1]
 
 
+def _diff_dicts(a: dict[str, Any], b: dict[str, Any]) -> str:
+    """Return a short human-readable hint describing which keys differ.
+
+    Walks two parsed-config mappings; reports up to 10 differing leaf paths.
+    Returns a "formatting only" sentinel when nothing differs.
+    """
+    diffs: list[str] = []
+
+    def _walk(x: Any, y: Any, path: str) -> None:
+        if isinstance(x, dict) and isinstance(y, dict):
+            for k in sorted(set(x) | set(y)):
+                _walk(x.get(k), y.get(k), f"{path}.{k}" if path else k)
+        elif isinstance(x, list) and isinstance(y, list):
+            if len(x) != len(y):
+                diffs.append(f"  - {path}: list length {len(x)} → {len(y)}")
+            else:
+                for i, (xv, yv) in enumerate(zip(x, y, strict=True)):
+                    _walk(xv, yv, f"{path}[{i}]")
+        elif x != y:
+            diffs.append(f"  - {path}: {x!r} → {y!r}")
+
+    _walk(a, b, "")
+    if not diffs:
+        return "Diff: (whitespace / formatting only)"
+    return "Diff:\n" + "\n".join(diffs[:10])
+
+
 def _brief_diff(existing: str, current: str) -> str:
     """Return a short human-readable hint describing which YAML keys differ.
 
@@ -160,25 +187,7 @@ def _brief_diff(existing: str, current: str) -> str:
         c = yaml.safe_load(current) or {}
     except yaml.YAMLError:
         return "Diff: (existing file is not valid YAML — cannot compute key-level diff)"
-    diffs: list[str] = []
-
-    def _walk(a: Any, b: Any, path: str) -> None:
-        if isinstance(a, dict) and isinstance(b, dict):
-            for k in sorted(set(a) | set(b)):
-                _walk(a.get(k), b.get(k), f"{path}.{k}" if path else k)
-        elif isinstance(a, list) and isinstance(b, list):
-            if len(a) != len(b):
-                diffs.append(f"  - {path}: list length {len(a)} → {len(b)}")
-            else:
-                for i, (av, bv) in enumerate(zip(a, b, strict=True)):
-                    _walk(av, bv, f"{path}[{i}]")
-        elif a != b:
-            diffs.append(f"  - {path}: {a!r} → {b!r}")
-
-    _walk(e, c, "")
-    if not diffs:
-        return "Diff: (whitespace / formatting only)"
-    return "Diff:\n" + "\n".join(diffs[:10])
+    return _diff_dicts(e, c)
 
 
 def resolve_deterministic(cli_override: bool | None, config: Mapping[str, Any]) -> bool:

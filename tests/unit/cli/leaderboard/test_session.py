@@ -21,6 +21,7 @@ from sieval.cli.leaderboard.session import (
     EvalSession,
     _apply_endpoint_injection,
     _brief_diff,
+    _diff_dicts,
     _format_comment_header,
     _guess_submodule_names,
     _reify_cli_overrides,
@@ -2960,6 +2961,21 @@ class TestEvalSessionRawConfig:
         # Reification must survive runner initialization.
         assert session.config["deterministic"] is True
         assert session.config["models"]["base"]["args"]["seed"] == 0
+
+
+class TestDiffDicts:
+    def test_reports_changed_scalar(self):
+        out = _diff_dicts({"a": 1, "b": 2}, {"a": 1, "b": 3})
+        assert "b" in out
+        assert "2" in out and "3" in out
+
+    def test_identical_reports_formatting_only(self):
+        out = _diff_dicts({"a": 1}, {"a": 1})
+        assert "formatting only" in out
+
+    def test_reports_list_length_change(self):
+        out = _diff_dicts({"xs": [1, 2]}, {"xs": [1, 2, 3]})
+        assert "list length 2 → 3" in out
 
 
 class TestBriefDiff:
