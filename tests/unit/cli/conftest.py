@@ -78,3 +78,30 @@ def _cleanup_registries_and_modules():
     # the @register_dataset/@register_task decorators properly.
     _clear_lazy_cache("sieval.datasets", _LAZY_DATASET_SUFFIXES)
     _clear_lazy_cache("sieval.tasks", _LAZY_TASK_SUFFIXES)
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_help_output(monkeypatch):
+    """Make CLI ``--help`` output deterministic across environments.
+
+    Plain-substring assertions on help text (e.g. ``"--model" in result.output``)
+    are environment-dependent for two reasons:
+
+    * **Color** — under GitHub Actions (``GITHUB_ACTIONS=true``), typer sets its
+      module-level ``FORCE_TERMINAL=True`` / ``COLOR_SYSTEM`` at import time, so
+      Rich colorizes help and interleaves ANSI escapes *inside* option names —
+      ``"--model"`` is no longer a contiguous substring. ``force_terminal=True``
+      also overrides ``NO_COLOR``, so an env var can't fix it. Locally there is
+      no TTY and no such forcing, so color is off and the asserts pass — hence
+      the CI-only failures.
+    * **Width** — Rich truncates long option names (e.g. ``--deterministic``)
+      at narrow widths.
+
+    ``typer.rich_utils._get_rich_console`` reads these constants on every call,
+    so patching them makes help plain and wide for each test, deterministically.
+    """
+    import typer.rich_utils as _ru
+
+    monkeypatch.setattr(_ru, "FORCE_TERMINAL", None, raising=False)
+    monkeypatch.setattr(_ru, "COLOR_SYSTEM", None, raising=False)
+    monkeypatch.setattr(_ru, "MAX_WIDTH", 200, raising=False)

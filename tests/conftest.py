@@ -71,6 +71,34 @@ def _loguru_pytest_safe_sink():
 
 
 # ===================================================================
+# Neutralize openai's client finalizer (autouse session fixture)
+# ===================================================================
+@pytest.fixture(scope="session", autouse=True)
+def _neutralize_openai_client_finalizer():
+    """Disable ``openai`` ``AsyncHttpxClientWrapper.__del__`` during the session.
+
+    The wrapper's finalizer runs
+    ``asyncio.get_running_loop().create_task(self.aclose())``. Tests build many
+    short-lived models — each constructs an ``AsyncOpenAI`` client — across
+    anyio's per-test event loops without closing them. When such a client is
+    garbage-collected during a *later* test, its finalizer schedules ``aclose()``
+    on the current loop, which then tears down connections bound to the earlier,
+    now-closed loop, raising an intermittent ``RuntimeError: Event loop is
+    closed`` on CPython 3.12 that surfaces as an unrelated test failing.
+
+    Production is unaffected: a command runs a single long-lived loop via one
+    ``anyio.run`` call, so there is no closed prior loop. The clients here are
+    mock-backed with nothing meaningful to close, so dropping the finalizer is
+    safe for tests. Not restored on teardown — re-enabling it would just
+    reintroduce the race for clients collected during session teardown.
+    """
+    from openai._base_client import AsyncHttpxClientWrapper
+
+    AsyncHttpxClientWrapper.__del__ = lambda self: None  # type: ignore[method-assign]
+    yield
+
+
+# ===================================================================
 # Mock Dataset
 # ===================================================================
 class MockDataset(Dataset):

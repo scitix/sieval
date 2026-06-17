@@ -6,7 +6,6 @@ import anyio
 import numpy as np
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionUserMessageParam
-from sentence_transformers import util
 
 from sieval.community.t_eval import EMB_PLACEHOLDER, ResponseDataSample, format_load
 from sieval.core.models import ModelOutput
@@ -187,6 +186,9 @@ class TEvalBeforeCallingZeroShotGenTask(
             and "thought" in data_sample.pred
             and "thought" in data_sample.gt
         ):
+            # Lazy import: sentence_transformers pulls torch; only needed here.
+            from sentence_transformers import util
+
             pred_thought = data_sample.pred["thought"] or EMB_PLACEHOLDER
             gt_thought = data_sample.gt["thought"] or EMB_PLACEHOLDER
 

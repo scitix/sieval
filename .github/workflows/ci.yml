@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_DEFAULT: "3.12"
+  INSTALL_GROUPS: "-G drop -G ifeval -G math -G test -G dev"  # light, no torch
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      tests: ${{ steps.filter.outputs.tests }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'sieval/**'
+              - 'scripts/**'
+              - 'pyproject.toml'
+              - 'pdm.lock'
+            tests:
+              - 'tests/**'
+
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_DEFAULT }}
+      - uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: --all-files --hook-stage pre-commit
+
+  commit-lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate conventional commit messages in PR range
+        run: |
+          set -euo pipefail
+          pat='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+'
+          fail=0
+          while read -r sha; do
+            msg=$(git log -1 --format=%s "$sha")
+            if ! echo "$msg" | grep -qE "$pat"; then
+              echo "::error::non-conventional commit $sha: $msg"
+              fail=1
+            fi
+          done < <(git rev-list --no-merges \
+            "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}")
+          exit $fail
+
+  typecheck:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: ${{ env.PYTHON_DEFAULT }}
+          cache: true
+      - run: pdm install --check --frozen-lockfile ${{ env.INSTALL_GROUPS }}
+      - run: pdm run ty check
+
+  checks:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.tests == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: true
+      - name: Install (base + light groups; no torch)
+        run: pdm install --check --frozen-lockfile ${{ env.INSTALL_GROUPS }}
+      - name: Preflight (registration, version, deps, links, meta-drift)
+        run: pdm run python scripts/check_preflight.py
+      - name: Unit tests + coverage
+        run: >-
+          pdm run python -m pytest tests/unit -m "not stress"
+          --cov --cov-report=xml -q
+      - name: Upload coverage (advisory)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sanitization scan
+        run: ./scripts/sanitize.sh
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: |
+          GL=8.21.2
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GL}/gitleaks_${GL}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+      - name: Scan
+        run: gitleaks detect --source . --redact --no-banner --exit-code 1
+
+  check:
+    if: always()
+    needs: [changes, pre-commit, commit-lint, typecheck, checks, sanitize, gitleaks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: re-actors/alls-green@release/v1
+        with:
+          allowed-skips: commit-lint, typecheck, checks
+          jobs: ${{ toJSON(needs) }}

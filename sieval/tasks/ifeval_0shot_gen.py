@@ -1,14 +1,13 @@
 from collections import defaultdict
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from openai.types.chat import ChatCompletionUserMessageParam
 
-from sieval.community.instruction_following_eval.evaluation_lib import (
-    InputExample,
-    OutputExample,
-    test_instruction_following_loose,
-    test_instruction_following_strict,
-)
+if TYPE_CHECKING:
+    from sieval.community.instruction_following_eval.evaluation_lib import (
+        OutputExample,
+    )
+
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
@@ -67,6 +66,12 @@ class IFEvalZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
+        from sieval.community.instruction_following_eval.evaluation_lib import (
+            InputExample,
+            test_instruction_following_loose,
+            test_instruction_following_strict,
+        )
+
         inputs = [
             InputExample(
                 key=f.raw_sample["key"],
@@ -102,7 +107,7 @@ class IFEvalZeroShotGenTask(
         # avoid hf datasets underlying Arrow sparse struct problem
         return [{k: v for k, v in d.items() if v is not None} for d in kwargs]
 
-    def _get_report(self, outputs: list[OutputExample]) -> dict[str, float]:
+    def _get_report(self, outputs: "list[OutputExample]") -> dict[str, float]:
         prompt_total = 0
         prompt_correct = 0
         instruction_total = 0
