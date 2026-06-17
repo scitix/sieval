@@ -21,6 +21,7 @@ from datasets import DatasetDict as HFDatasetDict
 from datasets import load_dataset
 
 from sieval.community.ruler.datasets.constants import TASKS
+from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 from sieval.core.datasets import (
     Category,
     Dataset,
@@ -28,16 +29,9 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 from sieval.core.utils.hf import ensure_dataset
-from sieval.datasets.ruler._common import build_tokenizer
 
 _SQUAD_FILE = "dev-v2.0.json"
 
-_TEMPLATE = (
-    "Answer the question based on the given documents. Only give me the answer "
-    "and do not output any other words.\n\nThe following are given documents.\n\n"
-    "{context}\n\nAnswer the question based on the given documents. Only give me "
-    "the answer and do not output any other words.\n\nQuestion: {query} Answer:"
-)
 _DOCUMENT_PROMPT = "Document {i}:\n{document}"
 
 
@@ -70,15 +64,17 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
         *,
         dataset: str = "squad",
         max_seq_length: int = 4096,
-        tokens_to_generate: int = 32,
-        tokenizer_model: str = "gpt-4",
+        tokens_to_generate: int = TASKS['qa']['tokens_to_generate'],
+        tokenizer_type: str = 'openai',
+        tokenizer_path: str = 'cl100k_base',
         num_samples: int = 500,
         pre_samples: int = 0,
         random_seed: int = 42,
-        remove_newline_tab: bool = True,
+        remove_newline_tab: bool = False,
         **kwargs,
     ) -> HFDatasetDict:
-        tokenizer = build_tokenizer(tokenizer_model)
+        tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
+
         random.seed(random_seed)
         np.random.seed(random_seed)
 
@@ -115,7 +111,9 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
             while True:
                 try:
                     input_text, answer = gen(index + pre_samples, used_docs)
-                    length = len(tokenizer.encode(input_text)) + tokens_to_generate
+                    length = (
+                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+                    )
                     assert length <= max_seq_length, f"{length} exceeds max_seq_length"
                     break
                 except AssertionError:
@@ -154,7 +152,7 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
     ) -> int:
         # Estimate tokens per question to determine a reasonable upper bound.
         sample_input_text, _ = gen(0, incremental)
-        sample_tokens = len(tokenizer.encode(sample_input_text))
+        sample_tokens = len(tokenizer.text_to_tokens(sample_input_text))
         tokens_per_doc = sample_tokens / incremental
 
         estimated_max_docs = int((max_seq_length / tokens_per_doc) * 3)
@@ -168,7 +166,9 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
         while lower_bound <= upper_bound:
             mid = (lower_bound + upper_bound) // 2
             input_text, _ = gen(0, mid)
-            total_tokens = len(tokenizer.encode(input_text)) + tokens_to_generate
+            total_tokens = (
+                len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+            )
 
             if total_tokens <= max_seq_length:
                 # This size works, can we go larger?
@@ -285,8 +285,12 @@ def _generate_input_output(
         all_docs = (docs * repeats)[:num_docs]
 
     random.Random(random_seed).shuffle(all_docs)
+
     context = "\n\n".join(
         _DOCUMENT_PROMPT.format(i=i + 1, document=d) for i, d in enumerate(all_docs)
     )
-    input_text = _TEMPLATE.format(context=context, query=curr_q)
+    # RULER bakes answer_prefix into the template before generation (prepare.py),
+    # so the prompt ends with the answer cue and the loader can split it back off.
+    template = TASKS["qa"]["template"] + TASKS["qa"]["answer_prefix"]
+    input_text = template.format(context=context, query=curr_q)
     return input_text, curr_a

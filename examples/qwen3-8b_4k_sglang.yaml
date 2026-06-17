@@ -27,10 +27,11 @@ models:
       top_p: 0.8
       extra_body:
         chat_template_kwargs:
-          enable_thinking: false  # set true + raise max_tokens for thinking
           top_k: 20
           presence_penalty: 1.5
-        enable_deterministic_output: true  # Enable SGLang deterministic inference
+        enable_deterministic_output: False
+        continue_final_message: True
+        add_generation_prompt: False
     infer:
       backend: sglang
       checkpoint: /mnt/workspace/Qwen-Qwen3-8b        # EDIT ME
@@ -94,16 +95,16 @@ datasets:
     args: { max_seq_length: 4096, num_samples: 500, tokenizer_model: /mnt/workspace/Qwen-Qwen3-8b, dataset: hotpotqa }
 
 tasks:
-  ruler_niah_single_1_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_single_1_4k, model: model-native }
-  ruler_niah_single_2_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_single_2_4k, model: model-native }
-  ruler_niah_single_3_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_single_3_4k, model: model-native }
-  ruler_niah_multikey_1_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multikey_1_4k, model: model-native }
-  ruler_niah_multikey_2_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multikey_2_4k, model: model-native }
-  ruler_niah_multikey_3_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multikey_3_4k, model: model-native }
-  ruler_niah_multivalue_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multivalue_4k, model: model-native }
-  ruler_niah_multiquery_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multiquery_4k, model: model-native }
-  ruler_vt_4k: { class: RulerVtZeroShotGenTask, dataset: ruler_vt_4k, model: model-native }
-  ruler_cwe_4k: { class: RulerCweZeroShotGenTask, dataset: ruler_cwe_4k, model: model-native }
-  ruler_fwe_4k: { class: RulerFweZeroShotGenTask, dataset: ruler_fwe_4k, model: model-native }
+  # ruler_niah_single_1_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_single_1_4k, model: model-native }
+  # ruler_niah_single_2_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_single_2_4k, model: model-native }
+  # ruler_niah_single_3_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_single_3_4k, model: model-native }
+  # ruler_niah_multikey_1_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multikey_1_4k, model: model-native }
+  # ruler_niah_multikey_2_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multikey_2_4k, model: model-native }
+  # ruler_niah_multikey_3_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multikey_3_4k, model: model-native }
+  # ruler_niah_multivalue_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multivalue_4k, model: model-native }
+  # ruler_niah_multiquery_4k: { class: RulerNiahZeroShotGenTask, dataset: ruler_niah_multiquery_4k, model: model-native }
+  # ruler_vt_4k: { class: RulerVtZeroShotGenTask, dataset: ruler_vt_4k, model: model-native }
+  # ruler_cwe_4k: { class: RulerCweZeroShotGenTask, dataset: ruler_cwe_4k, model: model-native }
+  # ruler_fwe_4k: { class: RulerFweZeroShotGenTask, dataset: ruler_fwe_4k, model: model-native }
   ruler_qa_squad_4k: { class: RulerQaZeroShotGenTask, dataset: ruler_qa_squad_4k, model: model-native }
   ruler_qa_hotpotqa_4k: { class: RulerQaZeroShotGenTask, dataset: ruler_qa_hotpotqa_4k, model: model-native }

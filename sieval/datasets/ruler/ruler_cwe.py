@@ -11,7 +11,8 @@ inference + substring scoring.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
-
+import json
+import os
 import random
 from typing import TypedDict, override
 
@@ -19,32 +20,31 @@ import numpy as np
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
+from sieval.community.ruler.datasets.constants import TASKS
+from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 from sieval.core.datasets import (
     Category,
     Dataset,
     Level1Category,
     sieval_dataset,
 )
-from sieval.datasets.ruler._common import build_tokenizer
-
-_TEMPLATE = (
-    "Below is a numbered list of words. In these words, some appear more often "
-    "than others. Memorize the ones that appear most often.\n{context}\n"
-    "Question: What are the 10 most common words in the above list? Answer: The "
-    "top 10 words that appear most often in the list are:"
-)
 
 
 class RulerCweDatasetSample(TypedDict):
-    prompt: str
-    answer: list[str]
+    index: int
+    input: str
+    outputs: list[str]
+    length: int
+    answer_prefix: str
 
 
 @sieval_dataset(
     name="ruler_cwe",
     display_name="RULER CWE",
     description="RULER common words extraction: report the most frequent words.",
-    source=(),
+    source=(
+        "url:https://media.githubusercontent.com/media/NVIDIA/RULER/main/scripts/data/synthetic/json/english_words.json",
+    ),
     categories=(Category(Level1Category.LOGIC, "TextualReasoning"),),
     tags=("english", "open-ended", "long-context"),
     license="Apache-2.0",
@@ -57,20 +57,35 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
         name_or_path: str,
         *,
         max_seq_length: int = 4096,
-        tokens_to_generate: int = 120,
-        tokenizer_model: str = "gpt-4",
+        tokens_to_generate: int = TASKS['common_words_extraction'][
+            'tokens_to_generate'
+        ],
+        tokenizer_type: str = 'openai',
+        tokenizer_path: str = 'cl100k_base',
         freq_cw: int = 30,
         freq_ucw: int = 3,
         num_cw: int = 10,
         num_samples: int = 500,
         random_seed: int = 42,
+        num_fewshot: int = 1,
         remove_newline_tab: bool = False,
         **kwargs,
     ) -> HFDatasetDict:
-        tokenizer = build_tokenizer(tokenizer_model)
+        tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
+
         random.seed(random_seed)
         np.random.seed(random_seed)
         words = _word_pool(random_seed)
+
+        # Overflow vocabulary (RULER's english_words.json), staged by
+        # ``sieval dataset download`` into ``<datadir>/ruler_cwe/`` from the
+        # ``url:`` source. Only consumed when more words are needed than the
+        # wonderwords pool holds; load it when present, else fall back to empty.
+        randle_words: list[str] = []
+        randle_path = os.path.join(name_or_path, "english_words.json")
+        if os.path.exists(randle_path):
+            with open(randle_path) as f:
+                randle_words = list(json.load(f).values())
 
         def gen(num_words: int) -> tuple[str, list[str]]:
             return _generate_input_output(
@@ -81,6 +96,8 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
                 freq_ucw=freq_ucw,
                 num_cw=num_cw,
                 random_seed=random_seed,
+                num_fewshot=num_fewshot,
+                randle_words=randle_words
             )
 
         incremental = 10
@@ -93,26 +110,45 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
             incremental=incremental,
         )
 
+        # Generate samples
         rows = []
-        for _ in range(num_samples):
+        for index in range(num_samples):
             used_words = num_words
             while True:
                 try:
-                    prompt, answer = gen(used_words)
-                    length = len(tokenizer.encode(prompt)) + tokens_to_generate
+                    input_text, answer = gen(used_words)
+                    length = (
+                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+                    )
                     assert length <= max_seq_length, "exceeds max_seq_length"
                     break
                 except Exception:
                     if used_words > incremental:
                         used_words -= incremental
                     else:
-                        prompt, answer = gen(used_words)
                         break
+
             if remove_newline_tab:
-                prompt = " ".join(
-                    prompt.replace("\n", " ").replace("\t", " ").strip().split()
+                input_text = " ".join(
+                    input_text.replace("\n", " ").replace("\t", " ").strip().split()
                 )
-            rows.append({"prompt": prompt, "answer": answer})
+
+            # use first 10 char of answer prefix to locate it
+            answer_prefix_index = input_text.rfind(
+                TASKS['common_words_extraction']['answer_prefix'][:10]
+            )
+            answer_prefix = input_text[answer_prefix_index:]
+            input_text = input_text[:answer_prefix_index]
+
+            rows.append(
+                {
+                    "index": index,
+                    "input": input_text,
+                    "outputs": answer,
+                    "length": length,
+                    "answer_prefix": answer_prefix,
+                }
+            )
 
         return HFDatasetDict({"test": HFDataset.from_list(rows)})
 
@@ -126,43 +162,42 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
         tokens_to_generate: int,
         incremental: int,
     ) -> int:
-        """RULER's tokens-per-word estimate + binary search for the largest fit.
-
-        RULER falls back to a large ``english_words.json`` pool when the optimal
-        word count exceeds the wonderwords vocabulary; that file is an unavailable
-        git-LFS stub here, so the search is capped at ``vocab_size`` and a warning
-        is logged when the estimate wanted more (the context can't be fully filled
-        from wonderwords alone — relevant only at very large ``max_seq_length``).
-        """
         from loguru import logger
 
         # Estimate tokens-per-word from a fixed 4096-word sample (RULER constant).
         sample_text, _ = gen(min(4096, vocab_size))
-        tokens_per_word = len(tokenizer.encode(sample_text)) / min(4096, vocab_size)
-        estimated_max = int(max_seq_length // tokens_per_word) * 2
+        tokens_per_word = len(tokenizer.text_to_tokens(sample_text)) / min(
+            4096, vocab_size
+        )
 
-        lower = incremental
-        upper = max(estimated_max, incremental * 2)
-        if upper > vocab_size:
+        estimated_max_words = int(max_seq_length // tokens_per_word) * 2
+
+        lower_bound = incremental
+        upper_bound = max(estimated_max_words, incremental * 2)
+
+        if upper_bound > vocab_size:
             logger.warning(
-                f"RULER CWE: estimated word count {upper} exceeds wonderwords "
+                f"RULER CWE: estimated word count {upper_bound} exceeds wonderwords "
                 f"vocab {vocab_size}; capping (RULER would extend via "
                 f"english_words.json, unavailable here). Prompts at "
                 f"max_seq_length={max_seq_length} may underfill."
             )
-            upper = vocab_size
+            upper_bound = vocab_size
 
-        optimal: int | None = None
-        while lower <= upper:
-            mid = (lower + upper) // 2
-            text, _ = gen(mid)
-            total = len(tokenizer.encode(text)) + tokens_to_generate
-            if total <= max_seq_length:
-                optimal = mid
-                lower = mid + 1
+        optimal_num_words: int | None = None
+
+        while lower_bound <= upper_bound:
+            mid = (lower_bound + upper_bound) // 2
+            input_text, _ = gen(mid)
+            total_tokens = (
+                len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+            )
+            if total_tokens <= max_seq_length:
+                optimal_num_words = mid
+                lower_bound = mid + 1
             else:
-                upper = mid - 1
-        return optimal if optimal is not None else incremental
+                upper_bound = mid - 1
+        return optimal_num_words if optimal_num_words is not None else incremental
 
 
 def _word_pool(random_seed: int) -> list[str]:
@@ -180,12 +215,16 @@ def _get_example(
     *,
     num_words: int,
     words: list[str],
+    randle_words: list[str],
     common_repeats: int,
     uncommon_repeats: int,
     common_nums: int,
     random_seed: int,
 ) -> tuple[str, list[str]]:
-    word_list_full = random.sample(words, num_words)
+    if num_words <= len(words):
+        word_list_full = random.sample(words, num_words)
+    else:
+        word_list_full = random.sample(randle_words, num_words)
     common, uncommon = word_list_full[:common_nums], word_list_full[common_nums:]
     word_list = common * int(common_repeats) + uncommon * int(uncommon_repeats)
     random.Random(random_seed).shuffle(word_list)
@@ -202,44 +241,68 @@ def _generate_input_output(
     freq_ucw: int,
     num_cw: int,
     random_seed: int,
+    num_fewshot: int,
+    randle_words: list[str],
 ) -> tuple[str, list[str]]:
+    few_shots = []
     if max_seq_length < 4096:
-        context_example, answer_example = _get_example(
-            num_words=20,
-            words=words,
-            common_repeats=3,
-            uncommon_repeats=1,
-            common_nums=num_cw,
-            random_seed=random_seed,
-        )
+        for _ in range(num_fewshot):
+            context_example, answer_example = _get_example(
+                num_words=20,
+                words=words,
+                randle_words=randle_words,
+                common_repeats=3,
+                uncommon_repeats=1,
+                common_nums=num_cw,
+                random_seed=random_seed,
+            )
+            few_shots.append((context_example, answer_example))
         context, answer = _get_example(
             num_words=num_words,
             words=words,
+            randle_words=randle_words,
             common_repeats=6,
             uncommon_repeats=1,
             common_nums=num_cw,
             random_seed=random_seed,
         )
     else:
-        context_example, answer_example = _get_example(
-            num_words=40,
-            words=words,
-            common_repeats=10,
-            uncommon_repeats=3,
-            common_nums=num_cw,
-            random_seed=random_seed,
-        )
+        for _ in range(num_fewshot):
+            context_example, answer_example = _get_example(
+                num_words=40,
+                words=words,
+                randle_words=randle_words,
+                common_repeats=10,
+                uncommon_repeats=3,
+                common_nums=num_cw,
+                random_seed=random_seed,
+            )
+            few_shots.append((context_example, answer_example))
         context, answer = _get_example(
             num_words=num_words,
             words=words,
+            randle_words=randle_words,
             common_repeats=freq_cw,
             uncommon_repeats=freq_ucw,
             common_nums=num_cw,
             random_seed=random_seed,
         )
-
-    input_example = _TEMPLATE.format(context=context_example, query="") + " ".join(
-        f"{i + 1}. {word}" for i, word in enumerate(answer_example)
+    # RULER bakes answer_prefix into the template before generation
+    # (prepare.py: ``template = model_template.format(task_template) + answer_prefix``),
+    # so the prompt ends with the answer cue and the loader can split it back off.
+    _template = (
+        TASKS['common_words_extraction']['template']
+        + TASKS['common_words_extraction']['answer_prefix']
     )
-    input_text = _TEMPLATE.format(context=context, query="")
-    return input_example + "\n" + input_text, answer
+    for n in range(len(few_shots)):
+        shot_answer = ' '.join(
+            f"{i + 1}. {word}" for i, word in enumerate(few_shots[n][1])
+        )
+        few_shots[n] = (
+            _template.format(num_cw=num_cw, context=few_shots[n][0], query='')
+            + ' '
+            + shot_answer
+        )
+    few_shots = "\n".join(few_shots)
+    input_text = _template.format(num_cw=num_cw, context=context, query='')
+    return few_shots + "\n" + input_text, answer

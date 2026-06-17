@@ -9,6 +9,7 @@ def test_get_example_common_words_repeat_more():
     context, common = _get_example(
         num_words=20,
         words=words,
+        randle_words=[],
         common_repeats=5,
         uncommon_repeats=1,
         common_nums=3,
@@ -20,21 +21,24 @@ def test_get_example_common_words_repeat_more():
         assert context.count(f" {cw}") >= 5
 
 
-def test_load_emits_prompt_answer_rows():
+def test_load_emits_rows_with_ruler_schema():
     ds = RulerCweDataset(name_or_path=".", max_seq_length=512, num_samples=4)
     rows = ds.test_set
-    assert len(rows) == 4
+    assert rows is not None and len(rows) == 4
     for r in rows:
-        assert r["prompt"]
-        assert len(r["answer"]) == 10  # default num_cw
-        # Answer words are present in the numbered list within the prompt.
-        for w in r["answer"]:
-            assert w in r["prompt"]
+        assert set(r) == {"index", "input", "outputs", "length", "answer_prefix"}
+        assert r["input"]
+        assert len(r["outputs"]) == 10  # default num_cw
+        # The answer cue is split off the tail into answer_prefix.
+        assert r["answer_prefix"].startswith(" Answer: The top 10 words")
+        # Answer words are present in the numbered list within the prompt body.
+        for w in r["outputs"]:
+            assert w in r["input"]
 
 
 def test_load_is_deterministic_for_fixed_seed():
     kw = {"name_or_path": ".", "max_seq_length": 512, "num_samples": 3}
     first = RulerCweDataset(**kw).test_set[0]
     second = RulerCweDataset(**kw).test_set[0]
-    assert first["prompt"] == second["prompt"]
-    assert first["answer"] == second["answer"]
+    assert first["input"] == second["input"]
+    assert first["outputs"] == second["outputs"]

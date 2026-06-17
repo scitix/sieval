@@ -108,8 +108,14 @@ def test_squad_synthesis_row_schema(squad_dir):
 
 
 def test_remove_newline_tab_single_line(squad_dir):
-    ds = RulerQaDataset(squad_dir, dataset="squad", max_seq_length=512, num_samples=1)
-    # Default remove_newline_tab=True collapses the prompt to one line.
+    ds = RulerQaDataset(
+        squad_dir,
+        dataset="squad",
+        max_seq_length=512,
+        num_samples=1,
+        remove_newline_tab=True,
+    )
+    # remove_newline_tab=True collapses the prompt to a single line.
     assert "\n" not in ds.test_set[0]["input"]
 
 

@@ -8,7 +8,8 @@ from sieval.tasks.ruler.ruler_qa_0shot_gen import RulerQaZeroShotGenTask
 
 
 @pytest.mark.anyio
-async def test_preprocess_concatenates_input_and_answer_prefix():
+async def test_preprocess_splits_body_and_answer_prefix():
+    """Body goes in the user turn; the answer cue is an assistant prefill turn."""
     raw = {
         "input": "Document 1: foo. Question: q?",
         "answer_prefix": " Answer:",
@@ -19,7 +20,10 @@ async def test_preprocess_concatenates_input_and_answer_prefix():
     # needs a real `self`; an uninitialized instance suffices (no dataset/model).
     task = RulerQaZeroShotGenTask.__new__(RulerQaZeroShotGenTask)
     pre = await RulerQaZeroShotGenTask.preprocess(task, raw, ctx)
-    assert pre == [{"role": "user", "content": "Document 1: foo. Question: q? Answer:"}]
+    assert pre == [
+        {"role": "user", "content": "Document 1: foo. Question: q?"},
+        {"role": "assistant", "content": " Answer:"},
+    ]
 
 
 @pytest.mark.anyio
