@@ -190,6 +190,101 @@ def _brief_diff(existing: str, current: str) -> str:
     return _diff_dicts(e, c)
 
 
+# ── Resume strict-match field policy ──────────────────────────────────────
+# Throughput / orchestration knobs that may change across a --resume without
+# invalidating already-persisted data: they alter how fast and in what order
+# samples are produced, never WHAT is produced or how it is laid out on disk.
+# Stripped from both configs before the strict-match comparison.
+#
+# MUST stay in sync with TaskRunnerConfig — TestRunnerFieldClassification
+# fails if a new dataclass field is left unbucketed. Forgetting to list a
+# genuine throughput field here only causes a spurious resume abort (safe);
+# a result/layout field can never land here except by explicit human edit.
+_THROUGHPUT_RUNNER_KEYS: frozenset[str] = frozenset(
+    {
+        "concurrency_limit",
+        "concurrency_limits",
+        "profile_io",
+        "profile_stages",
+        "profile_usage",
+        "shard_read_concurrency",
+        "shard_write_concurrency",
+        "write_buffer_size",
+        "write_buffer_flush_interval",
+        "show_progress",
+        "progress_log_interval",
+        "progress_log_pct_interval",
+        "dump_progress",
+        "progress_dump_interval",
+        "max_retries",
+        "detect_anomalies",
+        "detect_anomalies_on_resume",
+    }
+)
+
+# Result- or disk-layout-affecting runner_config fields that MUST match.
+_STRICT_RUNNER_KEYS: frozenset[str] = frozenset(
+    {
+        "shard_samples",
+        "record_each_stage",
+        "record_type_metadata",
+        "record_meta",
+        "max_iterations",
+        "deterministic",
+    }
+)
+
+# Fields that never participate in the match: result_dir is the resume
+# target's own location; auto_resume is set on the runtime config only and is
+# never persisted into the body; stage_meta hooks are callables (not
+# YAML-serializable).
+_NONMATCH_RUNNER_KEYS: frozenset[str] = frozenset(
+    {
+        "result_dir",
+        "auto_resume",
+        "stage_meta_hook",
+        "stage_meta_hooks",
+    }
+)
+
+
+def _strip_throughput_fields(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of ``cfg`` with throughput knobs removed.
+
+    Removes (on the copy only; the input is never mutated):
+      * top-level ``concurrency_limit`` / ``concurrency_limits``
+      * ``models.*.args.concurrency_limit``
+      * ``tasks.*.runner_config.<k>`` for every ``k`` in
+        ``_THROUGHPUT_RUNNER_KEYS``
+
+    Used to compare two effective configs for strict-match resume while
+    tolerating differences that cannot make resumed data incompatible.
+    """
+    out = copy.deepcopy(cfg)
+
+    for key in ("concurrency_limit", "concurrency_limits"):
+        out.pop(key, None)
+
+    models = out.get("models")
+    if isinstance(models, dict):
+        for mcfg in models.values():
+            if isinstance(mcfg, dict):
+                args = mcfg.get("args")
+                if isinstance(args, dict):
+                    args.pop("concurrency_limit", None)
+
+    tasks = out.get("tasks")
+    if isinstance(tasks, dict):
+        for tcfg in tasks.values():
+            if isinstance(tcfg, dict):
+                rc = tcfg.get("runner_config")
+                if isinstance(rc, dict):
+                    for key in _THROUGHPUT_RUNNER_KEYS:
+                        rc.pop(key, None)
+
+    return out
+
+
 def resolve_deterministic(cli_override: bool | None, config: Mapping[str, Any]) -> bool:
     """Effective deterministic flag: monotone OR of YAML and CLI.
 

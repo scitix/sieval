@@ -17,6 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sieval.cli.leaderboard.session import (
+    _NONMATCH_RUNNER_KEYS,
+    _STRICT_RUNNER_KEYS,
+    _THROUGHPUT_RUNNER_KEYS,
     DETERMINISTIC_DEFAULT_SEED,
     EvalSession,
     _apply_endpoint_injection,
@@ -27,6 +30,7 @@ from sieval.cli.leaderboard.session import (
     _reify_cli_overrides,
     _split_header,
     _strip_header,
+    _strip_throughput_fields,
     arun_session,
     load_class_from_name,
     load_class_from_path,
@@ -36,6 +40,7 @@ from sieval.cli.leaderboard.session import (
     unwrap_proxies,
 )
 from sieval.core.models.model import Model
+from sieval.core.runners import TaskRunnerConfig
 from sieval.core.runners.multi_runner import MultiTaskRunner
 from tests.conftest import MockChatModel
 
@@ -2378,6 +2383,60 @@ class TestResolveDeterministic:
 
     def test_both_true_is_true(self):
         assert resolve_deterministic(True, {"deterministic": True}) is True
+
+
+# ===================================================================
+# Runner field classification: throughput vs strict vs non-match
+# ===================================================================
+class TestRunnerFieldClassification:
+    def test_every_field_classified_exactly_once(self):
+        all_fields = set(TaskRunnerConfig.__dataclass_fields__)
+        buckets = [
+            _THROUGHPUT_RUNNER_KEYS,
+            _STRICT_RUNNER_KEYS,
+            _NONMATCH_RUNNER_KEYS,
+        ]
+        union = set().union(*buckets)
+        assert union == all_fields, f"unclassified: {all_fields ^ union}"
+        # pairwise disjoint
+        for i in range(len(buckets)):
+            for j in range(i + 1, len(buckets)):
+                assert buckets[i].isdisjoint(buckets[j])
+
+
+class TestStripThroughputFields:
+    def test_removes_top_level_concurrency_without_mutating_input(self):
+        cfg = {"concurrency_limit": 8, "concurrency_limits": {"infer": 4}, "models": {}}
+        out = _strip_throughput_fields(cfg)
+        assert "concurrency_limit" not in out
+        assert "concurrency_limits" not in out
+        assert cfg["concurrency_limit"] == 8  # original untouched
+
+    def test_removes_per_model_args_concurrency_only(self):
+        cfg = {"models": {"m": {"args": {"concurrency_limit": 64, "temperature": 0.0}}}}
+        out = _strip_throughput_fields(cfg)
+        assert "concurrency_limit" not in out["models"]["m"]["args"]
+        assert out["models"]["m"]["args"]["temperature"] == 0.0
+
+    def test_removes_runner_config_throughput_keeps_strict(self):
+        cfg = {
+            "tasks": {
+                "t": {
+                    "runner_config": {
+                        "concurrency_limits": {"infer": 4},
+                        "max_retries": 3,
+                        "shard_samples": 1024,
+                        "max_iterations": 5,
+                    }
+                }
+            }
+        }
+        out = _strip_throughput_fields(cfg)
+        rc = out["tasks"]["t"]["runner_config"]
+        assert "concurrency_limits" not in rc
+        assert "max_retries" not in rc
+        assert rc["shard_samples"] == 1024
+        assert rc["max_iterations"] == 5
 
 
 # ===================================================================
