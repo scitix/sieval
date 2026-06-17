@@ -15,6 +15,7 @@ SiEval is a **model delivery quality verification system**: eval-side knowledge 
 Precise reproducibility is a product contract, not a nicety.
 
 * Safety guards (e.g. `--resume` strict match) ship strict-only. No `--force-*` flags, no bypass env vars, no "(future)" escape-hatch hints in errors.
+* The `--resume` match scope is deliberately narrowed to fields whose change could make resumed data incompatible with what is already on disk. Pure throughput/orchestration knobs (concurrency, retries, buffering, profiling, progress) are excluded and may be retuned across a resume — this narrows the contract's scope, it does not add a bypass. Result- and disk-layout-affecting fields (sampling params, seeds, `max_iterations`, `shard_samples`, `record_*`) and `infer_plans.yaml` remain strict.
 * Recovery: "start fresh" or "match the invocation". Escape-hatch proposals must re-justify the contract, not just add a flag.
 
 ## Toolchain
