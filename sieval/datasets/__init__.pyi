@@ -9,6 +9,10 @@ from .aime_2025 import (
     AIME2025Dataset,
     AIME2025DatasetSample,
 )
+from .cmmlu import (
+    CMMLUDataset,
+    CMMLUDatasetSample,
+)
 from .drop import (
     DROPDataset,
     DROPDatasetSample,
@@ -59,6 +63,8 @@ __all__ = [
     "AIME2024DatasetSample",
     "AIME2025Dataset",
     "AIME2025DatasetSample",
+    "CMMLUDataset",
+    "CMMLUDatasetSample",
     "DROPDataset",
     "DROPDatasetSample",
     "GPQADiamondDataset",

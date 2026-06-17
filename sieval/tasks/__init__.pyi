@@ -7,6 +7,9 @@ from .aime_2024_0shot_gen import (
 from .aime_2025_0shot_gen import (
     AIME2025ZeroShotGenTask,
 )
+from .cmmlu_kshot_base_gen import (
+    CMMLUFewShotBaseGenTask,
+)
 from .drop_kshot_gen import (
     DROPFewShotGenTask,
 )
@@ -47,6 +50,7 @@ from .theoremqa_kshot_base_gen import (
 __all__ = [
     "AIME2024ZeroShotGenTask",
     "AIME2025ZeroShotGenTask",
+    "CMMLUFewShotBaseGenTask",
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
     "GSM8KFewShotBaseGenTask",

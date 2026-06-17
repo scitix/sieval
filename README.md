@@ -7,7 +7,7 @@ SiEval is a **model delivery quality verification system** with an asynchronous 
 - **Asynchronous streaming** — process samples concurrently without waiting for batch completion
 - **Iterative feedback loop** — multi-turn evaluation with feedback
 - **Resilient persistence** — sharded, append-only storage for crash recovery
-- **11 mainstream benchmarks** — AIME 2024/2025, DROP, GPQA-Diamond, HumanEval, IFEval, LiveCodeBench, MATH-500, MMLU, MMLU-Pro, T-Eval (math, code, reasoning, knowledge, instruction-following, tool-use)
+- **13 registered benchmark datasets** — AIME 2024, AIME 2025, CMMLU, DROP, GPQA-Diamond, GSM8K, HumanEval, IFEval, LiveCodeBench, MATH-500, MMLU, MMLU-Pro, T-Eval (math, code, reasoning, knowledge, instruction-following, tool-use)
 - **Type-safe pipelines** — fully typed task stages (preprocess → infer → postprocess → feedback)
 - **YAML-based configuration** — batch evaluation with model derivation and quota allocation
 - **Inference orchestration** — recipe-driven inference with auto-resolve and backend abstraction (vLLM, SGLang)

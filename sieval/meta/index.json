@@ -42,6 +42,26 @@
       "license": "MIT"
     },
     {
+      "name": "cmmlu",
+      "display_name": "CMMLU",
+      "description": "CMMLU Chinese multi-domain exam benchmark with 67 subjects.",
+      "source": [
+        "url:https://github.com/haonan-li/CMMLU/archive/d6e7b716d8ac694f38969a6c0407437d1fded799.zip"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "chinese",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": null
+    },
+    {
       "name": "drop",
       "display_name": "DROP",
       "description": "Discrete Reasoning Over Paragraphs — reading-comprehension benchmark.",
@@ -315,6 +335,27 @@
         "source": "simple-evals",
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
         "notes": "Math postprocess + ANSWER_PATTERN extraction aligned with simple-evals."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "cmmlu_kshot_base_gen",
+      "display_name": "CMMLU (few-shot, base logprob)",
+      "description": "CMMLU few-shot MCQ with same-subject dev examples and macro scoring.",
+      "dataset": "cmmlu",
+      "eval_mode": "ppl",
+      "n_shot": 5,
+      "tags": [
+        "chinese",
+        "multiple-choice",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "cmmlu",
+        "url": "https://github.com/haonan-li/CMMLU/blob/d6e7b716d8ac694f38969a6c0407437d1fded799/src/qwen2.py",
+        "notes": "Mirrors the official qwen2.py base path (eval, not eval_instruct): non-CoT CMMLU prompt, same-subject dev shots, one-call next-token A/B/C/D scoring, and subject-level macro report. Runtime k is configurable. Uses API top_logprobs as an OpenAI-compatible substitute for the official raw-logits choice argmax (equivalent while all four option tokens are in top-k); the validated Qwen2.5-72B 5-shot run with logprobs=100 had no missing A/B/C/D top-k entries across 11,582 samples. Runner failures are reported separately and excluded from the score denominator. Target: 89.5 (Qwen2.5-72B Base, 5-shot, DeepSeek-V3 base-model table) as a cross-check only — DeepSeek's perplexity method is underspecified (letter vs. text unstated; appendix template lists single-letter OPTIONS) and is not the reproduced method. The official CMMLU leaderboard's 85.67 is the Instruct model, not this base target."
       },
       "status": "stable"
     },
