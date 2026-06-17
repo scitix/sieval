@@ -30,7 +30,7 @@ from sieval.cli.leaderboard.session import (
     _reify_cli_overrides,
     _split_header,
     _strip_header,
-    _strip_throughput_fields,
+    _strip_noncomparable_fields,
     arun_session,
     load_class_from_name,
     load_class_from_path,
@@ -2404,17 +2404,17 @@ class TestRunnerFieldClassification:
                 assert buckets[i].isdisjoint(buckets[j])
 
 
-class TestStripThroughputFields:
+class TestStripNoncomparableFields:
     def test_removes_top_level_concurrency_without_mutating_input(self):
         cfg = {"concurrency_limit": 8, "concurrency_limits": {"infer": 4}, "models": {}}
-        out = _strip_throughput_fields(cfg)
+        out = _strip_noncomparable_fields(cfg)
         assert "concurrency_limit" not in out
         assert "concurrency_limits" not in out
         assert cfg["concurrency_limit"] == 8  # original untouched
 
     def test_removes_per_model_args_concurrency_only(self):
         cfg = {"models": {"m": {"args": {"concurrency_limit": 64, "temperature": 0.0}}}}
-        out = _strip_throughput_fields(cfg)
+        out = _strip_noncomparable_fields(cfg)
         assert "concurrency_limit" not in out["models"]["m"]["args"]
         assert out["models"]["m"]["args"]["temperature"] == 0.0
 
@@ -2431,7 +2431,7 @@ class TestStripThroughputFields:
                 }
             }
         }
-        out = _strip_throughput_fields(cfg)
+        out = _strip_noncomparable_fields(cfg)
         rc = out["tasks"]["t"]["runner_config"]
         assert "concurrency_limits" not in rc
         assert "max_retries" not in rc

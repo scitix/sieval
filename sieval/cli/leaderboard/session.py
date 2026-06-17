@@ -248,8 +248,9 @@ _NONMATCH_RUNNER_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _strip_throughput_fields(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Return a deep copy of ``cfg`` with throughput knobs removed.
+def _strip_noncomparable_fields(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of ``cfg`` with fields that may differ across a resume removed
+    (throughput knobs plus the ``result_dir`` location).
 
     Removes (on the copy only; the input is never mutated):
       * top-level ``concurrency_limit`` / ``concurrency_limits``
@@ -1552,7 +1553,7 @@ class EvalSession:
             body=body,
             header=header,
             audit_label="effective config",
-            mutable_strip=_strip_throughput_fields,
+            mutable_strip=_strip_noncomparable_fields,
         )
 
     async def _persist_infer_plans(self) -> None:

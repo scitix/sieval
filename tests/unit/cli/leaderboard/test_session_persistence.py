@@ -758,6 +758,8 @@ class TestStrictResumeMatch:
             "cfg.yaml",
             "concurrency_limit: 2\nmodels:\n  base:\n    name: m\n",
         )
+        # result_dir is injected into the body by result_dir_override but stripped from
+        # the resume comparison, so it does not count as a diff here.
         s = EvalSession(
             config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
         )
@@ -779,6 +781,8 @@ class TestStrictResumeMatch:
             header + "models: {base: {name: m}}\n"
         )
         cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
+        # result_dir is injected into the body by result_dir_override but stripped from
+        # the resume comparison, so it does not count as a diff here.
         s = EvalSession(
             config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
         )
