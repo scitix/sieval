@@ -1,3 +1,4 @@
+
 """Shared base classes for the RULER 0-shot task family.
 
 RULER tasks are thin — the prompt is fully synthesized in the dataset loader, so
@@ -15,7 +16,7 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 from abc import ABC
 from typing import TypedDict
 
-from openai.types.chat import ChatCompletionUserMessageParam
+from openai.types.chat import ChatCompletionMessageParam
 
 from sieval.community.ruler.eval.constants import (
     string_match_all,
@@ -26,10 +27,16 @@ from sieval.core.tasks import Task
 
 
 class RulerRecallSample(TypedDict):
-    """Structural bound for recall-style RULER samples (NIAH/VT/CWE/FWE)."""
+    """Structural bound for recall-style RULER samples (NIAH/VT/CWE/FWE).
 
-    prompt: str
-    answer: list[str]
+    Mirrors the dataset row schema: the body, the split-off answer cue, and the
+    reference answers (``outputs``). The loaders also emit ``index``/``length``
+    (and NIAH ``token_position_answer``), which the task does not read.
+    """
+
+    input: str
+    answer_prefix: str
+    outputs: list[str]
 
 
 class RecallFeedback(TypedDict):
@@ -49,7 +56,7 @@ class _RecallScoringMixin:
     """RULER ``string_match_all``: per-sample mean recall over references, ×100."""
 
     async def feedback(self, post, ctx):
-        refs = ctx.raw_sample["answer"]
+        refs = ctx.raw_sample["outputs"]
         pred = post
         # Collect individual prediction-reference pairs for batch scoring
         return True, {"prediction": pred, "references": refs}
@@ -87,7 +94,7 @@ class _QaScoringMixin:
 class _ChatGenBase[TSample, TFeedback](
     Task[
         TSample,
-        list[ChatCompletionUserMessageParam],
+        list[ChatCompletionMessageParam],
         ModelOutput,
         str,
         TFeedback,
@@ -95,13 +102,25 @@ class _ChatGenBase[TSample, TFeedback](
     ],
     ABC,
 ):
-    """Chat endpoint: wrap the synthesized prompt in a single user turn."""
+    """Chat endpoint: user turn carries the body, an assistant turn prefills the
+    RULER answer cue so the model *continues* it instead of re-answering.
+
+    The prefill only works if the serving framework keeps the final assistant
+    turn open instead of closing it and appending a fresh generation prompt. That
+    is opt-in per deployment via the model's ``extra_body``
+    (``continue_final_message`` / ``add_generation_prompt`` for vLLM / SGLang) —
+    set in the run config, not here, so it composes with the rest of
+    ``extra_body`` instead of overwriting it.
+    """
 
     def __init__(self, dataset, model, name: str | None = None):
         super().__init__(dataset=dataset, model=model, name=name)
 
     async def preprocess(self, raw, ctx):
-        return [{"role": "user", "content": self._build_prompt(raw)}]
+        return [
+            {"role": "user", "content": self._build_prompt(raw)},
+            {"role": "assistant", "content": raw["answer_prefix"]},
+        ]
 
     async def infer(self, pre, ctx):
         return await self.model.agenerate(pre)
@@ -113,33 +132,27 @@ class _ChatGenBase[TSample, TFeedback](
         raise NotImplementedError
 
 
-
-
 # --- Prompt-shape mixins ------------------------------------------------------
 
 
-class _RecallPromptMixin:
+class _PromptMixin:
     def _build_prompt(self, raw) -> str:
-        return raw["prompt"]
-
-
-class _QaPromptMixin:
-    def _build_prompt(self, raw) -> str:
-        # RULER stores the prompt split into body + answer cue; the model sees
-        # them concatenated (mirrors the original RULER jsonl `input + answer_prefix`).
-        return raw["input"] + raw["answer_prefix"]
+        # The body only — the answer cue (``answer_prefix``) is sent as a separate
+        # assistant prefill turn (see `_ChatGenBase.preprocess`) so the model
+        # continues from it rather than treating it as part of the user question.
+        return raw["input"]
 
 
 # --- Leaf bases (scoring × prompt × endpoint) ---------------------------------
 
 
 class RulerRecallGenTask[TSample: RulerRecallSample](
-    _RecallScoringMixin, _RecallPromptMixin, _ChatGenBase[TSample, RecallFeedback]
+    _RecallScoringMixin, _PromptMixin, _ChatGenBase[TSample, RecallFeedback]
 ):
     """Recall-style RULER task over the chat endpoint."""
 
 
 class RulerQaGenTask[TSample](
-    _QaScoringMixin, _QaPromptMixin, _ChatGenBase[TSample, QaFeedback]
+    _QaScoringMixin, _PromptMixin, _ChatGenBase[TSample, QaFeedback]
 ):
     """QA-style RULER task over the chat endpoint."""

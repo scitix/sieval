@@ -2,8 +2,10 @@
 
 All four share :class:`RulerRecallGenTask`; scoring is RULER ``string_match_all``
 (per-sample mean recall over reference answers, averaged across samples × 100).
-``preprocess``/``feedback``/``report`` read only ctx + args (never ``self``), so
-they run as unbound methods with ``self=None`` — no dataset/model construction.
+``preprocess``/``feedback``/``report`` read only ctx + args (never ``self``)
+except ``preprocess`` which resolves ``_build_prompt`` via MRO — so they run as
+unbound methods, with an uninitialized instance where ``self`` is needed (no
+dataset/model construction).
 """
 
 import pytest
@@ -26,35 +28,56 @@ RECALL_TASKS = [
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("task_cls", RECALL_TASKS)
-async def test_preprocess_passes_prompt_through(task_cls):
-    raw = {"prompt": "find the magic number", "answer": ["123"]}
+async def test_preprocess_splits_body_and_answer_prefix(task_cls):
+    """Body goes in the user turn; the answer cue is an assistant prefill turn."""
+    raw = {
+        "input": "find the magic number",
+        "answer_prefix": " The magic number is",
+        "outputs": ["123"],
+    }
     ctx = TaskContext(sample_id=0, raw_sample=raw)
     # preprocess delegates to the shared `_build_prompt` (resolved via MRO), so it
     # needs a real `self`; an uninitialized instance suffices (no dataset/model).
     pre = await task_cls.preprocess(task_cls.__new__(task_cls), raw, ctx)
-    assert pre == [{"role": "user", "content": "find the magic number"}]
+    assert pre == [
+        {"role": "user", "content": "find the magic number"},
+        {"role": "assistant", "content": " The magic number is"},
+    ]
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("task_cls", RECALL_TASKS)
-async def test_feedback_scores_partial_recall(task_cls):
-    # 1 of 2 references present (case-insensitive) → 0.5 recall.
-    raw = {"prompt": "p", "answer": ["Alpha", "Beta"]}
+async def test_feedback_carries_prediction_and_references(task_cls):
+    """feedback forwards the prediction + references (from ``outputs``); scoring
+    happens batch-wide in ``report``."""
+    raw = {"input": "p", "answer_prefix": "", "outputs": ["Alpha", "Beta"]}
     ctx = TaskContext(sample_id=0, raw_sample=raw)
     finalize, fb = await task_cls.feedback(None, "the answer mentions alpha", ctx)
     assert finalize is True
-    assert fb == {"score": 0.5}
+    assert fb == {
+        "prediction": "the answer mentions alpha",
+        "references": ["Alpha", "Beta"],
+    }
 
 
-def _final_ctx(score: float) -> TaskContext:
-    ctx = TaskContext(sample_id=0, raw_sample={"prompt": "p", "answer": ["x"]})
-    return ctx.to_feedback({"score": score})
+def _final_ctx(prediction: str, references: list[str]) -> TaskContext:
+    ctx = TaskContext(
+        sample_id=0,
+        raw_sample={"input": "p", "answer_prefix": "", "outputs": references},
+    )
+    return ctx.to_feedback({"prediction": prediction, "references": references})
 
 
 @pytest.mark.anyio
 async def test_report_means_recall_and_scales_to_100():
-    # string_match_all averages per-sample recall, then × 100.
-    finals = [_final_ctx(1.0), _final_ctx(0.5), _final_ctx(0.0)]
+    # string_match_all averages per-sample recall (fraction of refs present), ×100.
+    # S1: both of 2 refs present → 1.0; S2: 1 of 2 → 0.5; S3: 0 of 1 → 0.0.
+    # mean(1.0, 0.5, 0.0) * 100 = 50.0
+    finals = [
+        _final_ctx("alpha and beta", ["Alpha", "Beta"]),
+        _final_ctx("only alpha here", ["Alpha", "Beta"]),
+        _final_ctx("nothing", ["Gamma"]),
+    ]
     report = await RulerNiahZeroShotGenTask.report(None, finals, [])
     assert report["score"] == pytest.approx(50.0)
     assert report["fails"] == 0

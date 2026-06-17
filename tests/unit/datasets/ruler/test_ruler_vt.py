@@ -1,5 +1,6 @@
 """Tests for the RULER variable-tracking (VT) synthetic dataset."""
 
+from sieval.datasets.ruler._common import _NOISE_HAYSTACK
 from sieval.datasets.ruler.ruler_vt import (
     RulerVtDataset,
     _generate_chains,
@@ -36,38 +37,71 @@ def test_randomize_icl_replaces_value_and_answer_vars():
 
 
 def test_generate_input_output_answer_is_chain_vars():
-    prompt, answer = _generate_input_output(num_noises=20, num_chains=1, num_hops=4)
+    """The prompt embeds the chain; the answer is the chain's variable names."""
+    prompt, answer = _generate_input_output(
+        num_noises=20,
+        num_chains=1,
+        num_hops=4,
+        type_haystack="noise",
+        haystack=_NOISE_HAYSTACK,
+    )
     assert "Memorize and track" in prompt
-    assert answer  # the variables of the (single) chain
+    assert len(answer) == 5  # num_hops + 1 variables in the single chain
     # Every answer variable name must appear somewhere in the prompt body.
     for var in answer:
         assert var in prompt
 
 
-def test_load_emits_prompt_answer_rows():
-    ds = RulerVtDataset(name_or_path=".", max_seq_length=512, num_samples=4, num_hops=2)
+def test_generate_input_output_rejects_unknown_haystack():
+    """Only essay/noise haystacks are supported."""
+    import pytest
+
+    with pytest.raises(NotImplementedError):
+        _generate_input_output(
+            num_noises=5,
+            num_chains=1,
+            num_hops=2,
+            type_haystack="bogus",
+            haystack=_NOISE_HAYSTACK,
+        )
+
+
+def test_load_emits_rows_with_ruler_schema():
+    """Loaded rows carry the RULER VT schema (input/outputs/answer_prefix split)."""
+    ds = RulerVtDataset(
+        name_or_path=".", max_seq_length=512, num_samples=4, num_hops=2
+    )
     rows = ds.test_set
-    assert len(rows) == 4
+    assert rows is not None and len(rows) == 4
     for r in rows:
-        assert r["prompt"]
-        assert r["answer"]
-        assert isinstance(r["answer"], list)
+        assert set(r) == {"index", "input", "outputs", "length", "answer_prefix"}
+        assert r["input"]
+        assert isinstance(r["outputs"], list) and r["outputs"]
+        # The real answer_prefix is split off the tail (input ends at the body);
+        # only the embedded ICL copy's prefix remains inside input.
+        assert r["answer_prefix"].startswith(" Answer: According to the chain(s)")
+        assert r["input"].rstrip().endswith("text above.")
+        assert r["input"].count("they are:") == 1
+        # Every answer variable resolves to a name present in the prompt body.
+        for var in r["outputs"]:
+            assert var in r["input"]
 
 
 def test_load_prepends_one_shot_icl():
-    """RULER bakes a 1-shot worked example before the real prompt, so the
-    template head + answer cue each appear twice."""
+    """RULER bakes a 1-shot worked example before the real prompt, so the template
+    head appears twice (ICL copy + real body) across input + answer_prefix."""
     ds = RulerVtDataset(
         name_or_path=".", max_seq_length=1024, num_samples=2, num_hops=2
     )
-    prompt = ds.test_set[0]["prompt"]
-    assert prompt.count("Memorize and track the chain(s)") == 2
-    assert prompt.count("they are:") == 2
+    row = ds.test_set[0]
+    full = row["input"] + row["answer_prefix"]
+    assert full.count("Memorize and track the chain(s)") == 2
+    assert full.count("they are:") == 2
 
 
 def test_load_is_deterministic_for_fixed_seed():
     kw = {"name_or_path": ".", "max_seq_length": 512, "num_samples": 3, "num_hops": 2}
     first = RulerVtDataset(**kw).test_set[0]
     second = RulerVtDataset(**kw).test_set[0]
-    assert first["prompt"] == second["prompt"]
-    assert first["answer"] == second["answer"]
+    assert first["input"] == second["input"]
+    assert first["outputs"] == second["outputs"]

@@ -10,11 +10,7 @@ insert key/value needles at sampled depths, grow the haystack until it fills
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-import gzip
-import json
-import os
 import random
-import re
 import uuid
 from typing import TypedDict, override
 
@@ -22,33 +18,25 @@ import numpy as np
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
+from sieval.community.ruler.datasets.constants import TASKS
+from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 from sieval.core.datasets import (
     Category,
     Dataset,
     Level1Category,
     sieval_dataset,
 )
-from sieval.datasets.ruler._common import build_tokenizer
 
-_CORPUS_FILE = "PaulGrahamEssays.json.gz"
-
-_NEEDLE = "One of the special magic {type_needle_v} for {key} is: {value}."
-_REPEAT_HAYSTACK = (
-    "The grass is green. The sky is blue. The sun is yellow. "
-    "Here we go. There and back again."
-)
-_TEMPLATE = (
-    "Some special magic {type_needle_v} are hidden within the following text. "
-    "Make sure to memorize it. I will quiz you about the {type_needle_v} "
-    "afterwards.\n{context}\nWhat are all the special magic {type_needle_v} for "
-    "{query} mentioned in the provided text? The special magic {type_needle_v} "
-    "for {query} mentioned in the provided text are"
-)
+from ._common import _NEEDLE, _build_haystack
 
 
 class RulerNiahDatasetSample(TypedDict):
-    prompt: str
-    answer: list[str]
+    index: int
+    input: str
+    outputs: list[str]
+    length: int
+    answer_prefix: str
+    token_position_answer: int
 
 
 @sieval_dataset(
@@ -68,8 +56,9 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
         name_or_path: str,
         *,
         max_seq_length: int = 4096,
-        tokens_to_generate: int = 128,
-        tokenizer_model: str = "gpt-4",
+        tokens_to_generate: int = TASKS['niah']['tokens_to_generate'],
+        tokenizer_type: str = 'openai',
+        tokenizer_path: str = 'cl100k_base',
         num_samples: int = 500,
         random_seed: int = 42,
         num_needle_k: int = 1,
@@ -81,12 +70,14 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
         remove_newline_tab: bool = False,
         **kwargs,
     ) -> HFDatasetDict:
-        tokenizer = build_tokenizer(tokenizer_model)
+        tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
+
         random.seed(random_seed)
         np.random.seed(random_seed)
+
         num_needle_k = max(num_needle_k, num_needle_q)
 
-        haystack = self._build_haystack(name_or_path, type_haystack)
+        haystack = _build_haystack(name_or_path, type_haystack)
         words = _word_pool()
         depths = list(np.round(np.linspace(0, 100, num=40, endpoint=True)).astype(int))
 
@@ -117,38 +108,44 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
         rows = []
         incremental = _incremental(type_haystack, max_seq_length)
         for _ in range(num_samples):
-            used = num_haystack
+            used_haystack = num_haystack
             while True:
                 try:
-                    prompt, answer = gen(used)
-                    length = len(tokenizer.encode(prompt)) + tokens_to_generate
+                    input_text, answer = gen(used_haystack)
+                    length = (
+                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+                    )
                     assert length <= max_seq_length, "exceeds max_seq_length"
                     break
                 except Exception:
-                    if used > incremental:
-                        used -= incremental
+                    if used_haystack > incremental:
+                        used_haystack -= incremental
                     else:
-                        prompt, answer = gen(used)
+                        input_text, answer = gen(used_haystack)
                         break
             if remove_newline_tab:
-                prompt = " ".join(
-                    prompt.replace("\n", " ").replace("\t", " ").strip().split()
+                input_text = " ".join(
+                    [input_text.replace("\n", " ").replace("\t", " ").strip().split()]
                 )
-            rows.append({"prompt": prompt, "answer": answer})
+            # use first 10 char of answer prefix to locate it
+            answer_prefix_index = input_text.rfind(TASKS['niah']['answer_prefix'][:10])
+            answer_prefix = input_text[answer_prefix_index:]
+            input_text = input_text[:answer_prefix_index]
+            # find answer position in text
+            index = input_text.find(answer[0])
+            token_position_answer = len(tokenizer.text_to_tokens(input_text[:index]))
+            rows.append(
+                {
+                    "index": index,
+                    "input": input_text,
+                    "outputs": answer,
+                    "length": length,
+                    "answer_prefix": answer_prefix,
+                    'token_position_answer': token_position_answer,
+                }
+            )
 
         return HFDatasetDict({"test": HFDataset.from_list(rows)})
-
-    def _build_haystack(self, name_or_path: str, type_haystack: str):
-        if type_haystack == "essay":
-            path = os.path.join(name_or_path, _CORPUS_FILE)
-            with gzip.open(path, "rt", encoding="utf-8") as f:
-                text = json.load(f)["text"]
-            return re.sub(r"\s+", " ", text).split(" ")
-        if type_haystack == "repeat":
-            return _REPEAT_HAYSTACK
-        if type_haystack == "needle":
-            return _NEEDLE
-        raise NotImplementedError(f"{type_haystack} is not implemented.")
 
     def _fit_haystack_size(
         self,
@@ -167,22 +164,41 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
         """
         incremental = _incremental(type_haystack, max_seq_length)
         sample_prompt, _ = gen(incremental)
-        tokens_per_haystack = len(tokenizer.encode(sample_prompt)) / incremental
-        estimated_max = int((max_seq_length / tokens_per_haystack) * 3)
+        tokens_per_haystack = len(tokenizer.text_to_tokens(sample_prompt)) / incremental
 
-        lower, upper = incremental, max(estimated_max, incremental * 2)
-        optimal: int | None = None
-        while lower <= upper:
-            mid = (lower + upper) // 2
+        estimated_max_questions = int((max_seq_length / tokens_per_haystack) * 3)
+
+        # Binary search for optimal haystack size
+
+        lower_bound = incremental
+        upper_bound = max(estimated_max_questions, incremental * 2)
+        optimal_haystack: int | None = None
+        while lower_bound <= upper_bound:
+            mid = (lower_bound + upper_bound) // 2
             prompt, _ = gen(mid)
-            total = len(tokenizer.encode(prompt)) + tokens_to_generate
-            if total <= max_seq_length:
-                optimal = mid
-                lower = mid + 1
-            else:
-                upper = mid - 1
-        return optimal if optimal is not None else incremental
+            total_tokens = len(tokenizer.text_to_tokens(prompt)) + tokens_to_generate
 
+            if total_tokens <= max_seq_length:
+                optimal_haystack = mid
+                lower_bound = mid + 1
+            else:
+                upper_bound = mid - 1
+        return optimal_haystack if optimal_haystack is not None else incremental
+
+def _ensure_punkt() -> None:
+    """Ensure NLTK's ``punkt_tab`` sentence tokenizer is present.
+
+    ``sent_tokenize`` (used for the ``essay`` haystack) loads ``punkt_tab`` on
+    nltk >= 3.9. Mirrors RULER's ``prepare.py``: probe first, download only when
+    missing, so the one-time fetch happens during data generation rather than at
+    eval time.
+    """
+    import nltk
+
+    try:
+        nltk.data.find("tokenizers/punkt_tab")
+    except LookupError:
+        nltk.download("punkt_tab")
 
 def _word_pool() -> list[str]:
     import wonderwords
@@ -200,15 +216,28 @@ def _incremental(type_haystack: str, max_seq_length: int) -> int:
         return 5
     return 25
 
+def _generate_random_number(num_digits=7) -> str:
+    lower_bound_bound = 10**(num_digits - 1)
+    upper_bound_bound = 10**num_digits - 1
+    return str(random.randint(lower_bound_bound, upper_bound_bound))
+
+def _generate_random_word(words) -> str:
+    word = random.choice(words)
+    return word
+
+def _generate_random_uuid() -> str:
+    return str(uuid.UUID(int=random.getrandbits(128), version=4))
+
 
 def _random_value(type_needle: str, words: list[str]) -> str:
     if type_needle == "numbers":
-        return str(random.randint(10**6, 10**7 - 1))
+        return _generate_random_number()
     if type_needle == "words":
-        return random.choice(words)
+        return _generate_random_word(words)
     if type_needle == "uuids":
-        return str(uuid.UUID(int=random.getrandbits(128), version=4))
-    raise NotImplementedError(f"{type_needle} is not implemented.")
+        return _generate_random_uuid()
+    else:
+        raise NotImplementedError(f"{type_needle} is not implemented.")
 
 
 def _generate_input_output(
@@ -242,6 +271,7 @@ def _generate_input_output(
 
     random.Random(random_seed).shuffle(needles)
 
+    # Context
     if type_haystack == "essay":
         # Repeat the essay when more words are needed than the corpus holds
         # (RULER behaviour); otherwise slice. Keeps very large contexts fillable.
@@ -250,7 +280,11 @@ def _generate_input_output(
         else:
             repeats = (num_haystack + len(haystack) - 1) // len(haystack)
             text = " ".join((haystack * repeats)[:num_haystack])
-        document_sents = [s.strip() for s in text.split(". ") if s]
+
+        _ensure_punkt()
+        from nltk.tokenize import sent_tokenize
+
+        document_sents = sent_tokenize(text.strip())
         insertion_positions = (
             [0]
             + sorted(
@@ -259,16 +293,16 @@ def _generate_input_output(
             )
             + [len(document_sents)]
         )
-        pieces: list[str] = []
+        document_sents_list: list[str] = []
         for i in range(1, len(insertion_positions)):
             last_pos = insertion_positions[i - 1]
             next_pos = insertion_positions[i]
-            pieces.append(" ".join(document_sents[last_pos:next_pos]))
+            document_sents_list.append(" ".join(document_sents[last_pos:next_pos]))
             if i - 1 < len(needles):
-                pieces.append(needles[i - 1])
-        context = " ".join(pieces)
+                document_sents_list.append(needles[i - 1])
+        context = " ".join(document_sents_list)
     else:
-        if type_haystack == "repeat":
+        if type_haystack == "noise":
             sentences = [haystack] * num_haystack
         else:  # needle
             sentences = [
@@ -284,6 +318,7 @@ def _generate_input_output(
             sentences.insert(index, element)
         context = "\n".join(sentences)
 
+    ## Query and Answer
     indices = random.sample(range(num_needle_k), num_needle_q)
     queries = [keys[i] for i in indices]
     answers = [a for i in indices for a in values[i]]
@@ -293,7 +328,10 @@ def _generate_input_output(
         else queries[0]
     )
 
-    template = _TEMPLATE
+    # RULER bakes answer_prefix into the template before generation (prepare.py),
+    # so the prompt ends with the answer cue and the loader can split it back off.
+    # The singularization below must therefore also rewrite the prefix's "are".
+    template = TASKS['niah']['template'] + TASKS['niah']['answer_prefix']
     tnv = type_needle_v
     if num_needle_q * num_needle_v == 1:
         template = (

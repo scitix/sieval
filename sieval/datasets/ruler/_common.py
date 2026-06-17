@@ -1,23 +1,26 @@
-"""Shared helpers for the RULER synthetic dataset family.
+import gzip
+import json
+import os
+import re
 
-All RULER loaders measure prompt length against a tokenizer to fill a target
-``max_seq_length``. They use the same builder: tiktoken for the ``gpt-4``
-default, otherwise a HuggingFace ``AutoTokenizer`` for the model under test.
+_NOISE_HAYSTACK = (
+    "The grass is green. The sky is blue. The sun is yellow. "
+    "Here we go. There and back again."
+)
 
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
-"""
+_CORPUS_FILE = "PaulGrahamEssays.json.gz"
 
+_NEEDLE = "One of the special magic {type_needle_v} for {key} is: {value}."
 
-def build_tokenizer(tokenizer_model: str):
-    """Return a token encoder exposing ``.encode(str) -> list[int]``.
-
-    ``gpt-4`` (the RULER default) maps to a tiktoken encoding; any other value
-    is treated as a HuggingFace model id loaded via ``AutoTokenizer``.
-    """
-    if tokenizer_model == "gpt-4":
-        import tiktoken
-
-        return tiktoken.encoding_for_model(tokenizer_model)
-    from transformers import AutoTokenizer
-
-    return AutoTokenizer.from_pretrained(tokenizer_model, trust_remote_code=True)
+def _build_haystack(name_or_path: str, type_haystack: str):
+    if type_haystack == "essay":
+        path = os.path.join(name_or_path, _CORPUS_FILE)
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            text = json.load(f)["text"]
+        return re.sub(r"\s+", " ", text).split(" ")
+    if type_haystack == "noise":
+        return _NOISE_HAYSTACK
+    if type_haystack == "needle":
+        return _NEEDLE
+    else:
+        raise NotImplementedError(f"{type_haystack} is not implemented.")
