@@ -24,6 +24,7 @@ from sieval.cli.leaderboard.session import (
     _format_comment_header,
     _guess_submodule_names,
     _reify_cli_overrides,
+    _split_header,
     _strip_header,
     arun_session,
     load_class_from_name,
@@ -2842,6 +2843,36 @@ class TestStripHeader:
             "models:\n  m: {}\n"
         )
         assert _strip_header(text) == text
+
+
+class TestSplitHeader:
+    def test_valid_header_is_an_exact_partition(self):
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        body = "models:\n  base:\n    name: m\n"
+        h, b = _split_header(header + body)
+        assert b == body
+        assert h + b == header + body
+
+    def test_no_header_returns_empty_header(self):
+        body = "models:\n  base: {}\n"
+        h, b = _split_header(body)
+        assert h == ""
+        assert b == body
+
+    def test_malformed_header_returns_empty_header(self):
+        broken = "# " + "-" * 70 + "\n# only one border\nmodels: {}\n"
+        h, b = _split_header(broken)
+        assert h == ""
+        assert b == broken
+
+    def test_strip_header_delegates_to_split(self):
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        body = "models:\n  base:\n    name: m\n"
+        assert _strip_header(header + body) == _split_header(header + body)[1]
 
 
 class TestEvalSessionRawConfig:

@@ -115,24 +115,36 @@ class RootConfigDict(TypedDict, total=False):
     alignment: AlignmentBlockDict
 
 
-def _strip_header(text: str) -> str:
-    """Strip the comment header block written by ``_format_comment_header``.
+def _split_header(text: str) -> tuple[str, str]:
+    """Partition ``text`` into ``(header, body)`` at the comment header block
+    written by ``_format_comment_header``.
 
-    Anchored to the ``# ---...`` border so only OUR header is stripped, not
-    arbitrary user-added top-of-file comments. A leading border with no
-    closing border is treated as malformed and returned unchanged so body
-    comparison detects the tampering instead of silently succeeding.
+    Anchored to the ``# ---...`` border pair so only OUR header is split off,
+    not arbitrary user-added top-of-file comments. A leading border with no
+    closing border is treated as malformed and yields ``("", text)`` so body
+    comparison detects the tampering instead of silently succeeding. When no
+    header is present, returns ``("", text)``. In all cases ``header + body``
+    reconstructs ``text`` exactly.
     """
     lines = text.splitlines(keepends=True)
     if not lines or not lines[0].startswith("# -"):
-        return text
+        return "", text
     for i in range(1, len(lines)):
         if lines[i].startswith("# -"):
             end = i + 1
             if end < len(lines) and lines[end].strip() == "":
                 end += 1
-            return "".join(lines[end:])
-    return text
+            return "".join(lines[:end]), "".join(lines[end:])
+    return "", text
+
+
+def _strip_header(text: str) -> str:
+    """Return ``text`` with the ``_format_comment_header`` block removed.
+
+    Thin wrapper over :func:`_split_header`; see it for border/malformed
+    semantics.
+    """
+    return _split_header(text)[1]
 
 
 def _brief_diff(existing: str, current: str) -> str:
