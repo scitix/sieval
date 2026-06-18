@@ -11,6 +11,8 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset_dict
 
+HUMAN_EVAL_REVISION = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
+
 
 class HumanEvalDatasetSample(TypedDict):
     prompt: str
@@ -23,7 +25,7 @@ class HumanEvalDatasetSample(TypedDict):
     name="human_eval",
     display_name="HumanEval",
     description="OpenAI HumanEval — 164 Python function-synthesis problems.",
-    source="hf:openai/openai_humaneval",
+    source=f"hf:openai/openai_humaneval@{HUMAN_EVAL_REVISION}",
     categories=(Category(Level1Category.CODE, "CodeGeneration"),),
     tags=("english", "python", "code-exec"),
     license="MIT",

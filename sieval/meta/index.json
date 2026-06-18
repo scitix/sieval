@@ -113,7 +113,7 @@
       "display_name": "HumanEval",
       "description": "OpenAI HumanEval — 164 Python function-synthesis problems.",
       "source": [
-        "hf:openai/openai_humaneval"
+        "hf:openai/openai_humaneval@7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
       ],
       "categories": [
         {
@@ -378,6 +378,28 @@
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/gsm8k/gsm8k.yaml",
         "notes": "Uses lm-eval-harness strict-match extraction, aligned with the original GSM8K dataset.py #### answer delimiter. Also reports lm-eval-harness flexible-extract as a secondary metric, not as the original GSM8K official metric. Default k=8 follows the DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs flexible extraction."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "human_eval_0shot_base_gen",
+      "display_name": "HumanEval (0-shot, base generative)",
+      "description": "OpenAI HumanEval for base completion models evaluated with pass@k.",
+      "dataset": "human_eval",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "python",
+        "code-exec",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "lm-evaluation-harness",
+        "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/humaneval/humaneval.yaml",
+        "notes": "Aligned with lm-evaluation-harness humaneval.yaml prompt, stop sequences, max_gen_toks, zero-shot setting, repeats=1, and raw completion filtering; code execution is handled by the SiEval code-eval API."
       },
       "status": "stable"
     },
