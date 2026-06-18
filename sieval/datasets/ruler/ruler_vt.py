@@ -78,6 +78,7 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
         random_seed: int = 42,
         remove_newline_tab: bool = False,
         type_haystack: str = 'noise',
+        enable_thinking: bool = False,
         **kwargs,
     ) -> HFDatasetDict:
         tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
@@ -100,6 +101,7 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
             type_haystack=type_haystack,
             haystack=haystack,
             final_output=False,
+            enable_thinking=enable_thinking,
         )[0]
 
         # 2) Synthesize the real samples, each prefixed with a randomized ICL copy.
@@ -116,6 +118,7 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
             type_haystack=type_haystack,
             haystack=haystack,
             final_output=True,
+            enable_thinking=enable_thinking,
         )
 
         return HFDatasetDict({"test": HFDataset.from_list(rows)})
@@ -135,10 +138,16 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
         haystack,
         final_output: bool = False,
         add_fewshot: bool = True,
+        enable_thinking: bool = False,
     ) -> list[dict]:
         # ``is_icl`` reflects the *original* None-ness of ``icl_example`` — the
         # worked example itself is synthesized with the ICL chain shape.
         is_icl = add_fewshot and (icl_example is None)
+
+        # Account for thinking tags overhead when enable_thinking=False
+        thinking_overhead = 0
+        if enable_thinking is False:
+            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
 
         # Find the perfect num_noises.
         if icl_example is not None:
@@ -200,7 +209,7 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
                             .split()
                         )
                     length = (
-                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
                     )
                     assert length <= max_seq_length, "exceeds max_seq_length"
                     break

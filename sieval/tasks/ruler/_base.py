@@ -117,9 +117,19 @@ class _ChatGenBase[TSample, TFeedback](
         super().__init__(dataset=dataset, model=model, name=name)
 
     async def preprocess(self, raw, ctx):
+        assistant_content = raw["answer_prefix"]
+
+        # Qwen3 models support extended thinking via <think>...</think> tags.
+        # When enable_thinking=false, manually add tags to the prompt so the
+        # model can still use the thinking framework.
+        is_qwen3 = "qwen" in self.model._model.lower()
+        extra_body = self.model._kwargs.get("extra_body", {})
+        if is_qwen3 and extra_body.get("enable_thinking") is False:
+            assistant_content = f"<think>\n\n</think>\n\n{assistant_content}"
+
         return [
             {"role": "user", "content": self._build_prompt(raw)},
-            {"role": "assistant", "content": raw["answer_prefix"]},
+            {"role": "assistant", "content": assistant_content},
         ]
 
     async def infer(self, pre, ctx):
