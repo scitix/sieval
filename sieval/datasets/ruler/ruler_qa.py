@@ -71,6 +71,7 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
         pre_samples: int = 0,
         random_seed: int = 42,
         remove_newline_tab: bool = False,
+        enable_thinking: bool = False,
         **kwargs,
     ) -> HFDatasetDict:
         tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
@@ -106,13 +107,19 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
 
         # Generate samples
         rows = []
+        # Account for thinking tags overhead when enable_thinking=False
+        # (Qwen3 models add <think>\n\n</think>\n\n prefix in preprocess)
+        thinking_overhead = 0
+        if enable_thinking is False:
+            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
+
         for index in range(num_samples):
             used_docs = num_docs
             while True:
                 try:
                     input_text, answer = gen(index + pre_samples, used_docs)
                     length = (
-                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
                     )
                     assert length <= max_seq_length, f"{length} exceeds max_seq_length"
                     break

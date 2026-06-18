@@ -65,13 +65,19 @@ class RulerFweDataset(Dataset[RulerFweDatasetSample]):
         num_samples: int = 500,
         random_seed: int = 42,
         remove_newline_tab: bool = False,
+        enable_thinking: bool = False,
         **kwargs,
     ) -> HFDatasetDict:
         tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
         random.seed(random_seed)
         np.random.seed(random_seed)
 
-        input_max_len = max_seq_length - tokens_to_generate
+        # Account for thinking tags overhead when enable_thinking=False
+        thinking_overhead = 0
+        if enable_thinking is False:
+            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
+
+        input_max_len = max_seq_length - tokens_to_generate - thinking_overhead
         vocab_size = input_max_len // 50 if vocab_size == -1 else vocab_size
 
         # get number of words
@@ -98,7 +104,7 @@ class RulerFweDataset(Dataset[RulerFweDatasetSample]):
                 random_seed=random_seed,
             )
 
-            length = len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+            length = len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
 
             if remove_newline_tab:
                 input_text = " ".join(

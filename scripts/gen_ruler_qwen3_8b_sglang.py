@@ -35,121 +35,66 @@ import json
 import math
 import re
 
-# The 13 RULER configs, defined once. Each NIAH variant shares RulerNiahDataset
-# but differs by args; vt/cwe/fwe/qa map to their own datasets.
-_NIAH_VARIANTS = [
-    (
-        "single_1",
-        {
-            "type_haystack": "repeat",
-            "type_needle_k": "words",
-            "type_needle_v": "numbers",
-            "num_needle_k": 1,
-            "num_needle_v": 1,
-            "num_needle_q": 1,
-        },
-    ),  # noqa: E501
-    (
-        "single_2",
-        {
-            "type_haystack": "essay",
-            "type_needle_k": "words",
-            "type_needle_v": "numbers",
-            "num_needle_k": 1,
-            "num_needle_v": 1,
-            "num_needle_q": 1,
-        },
-    ),  # noqa: E501
-    (
-        "single_3",
-        {
-            "type_haystack": "essay",
-            "type_needle_k": "words",
-            "type_needle_v": "uuids",
-            "num_needle_k": 1,
-            "num_needle_v": 1,
-            "num_needle_q": 1,
-        },
-    ),  # noqa: E501
-    (
-        "multikey_1",
-        {
-            "type_haystack": "essay",
-            "type_needle_k": "words",
-            "type_needle_v": "numbers",
-            "num_needle_k": 4,
-            "num_needle_v": 1,
-            "num_needle_q": 1,
-        },
-    ),  # noqa: E501
-    (
-        "multikey_2",
-        {
-            "type_haystack": "needle",
-            "type_needle_k": "words",
-            "type_needle_v": "numbers",
-            "num_needle_k": 1,
-            "num_needle_v": 1,
-            "num_needle_q": 1,
-        },
-    ),  # noqa: E501
-    (
-        "multikey_3",
-        {
-            "type_haystack": "needle",
-            "type_needle_k": "uuids",
-            "type_needle_v": "uuids",
-            "num_needle_k": 1,
-            "num_needle_v": 1,
-            "num_needle_q": 1,
-        },
-    ),  # noqa: E501
-    (
-        "multivalue",
-        {
-            "type_haystack": "essay",
-            "type_needle_k": "words",
-            "type_needle_v": "numbers",
-            "num_needle_k": 1,
-            "num_needle_v": 4,
-            "num_needle_q": 1,
-        },
-    ),  # noqa: E501
-    (
-        "multiquery",
-        {
-            "type_haystack": "essay",
-            "type_needle_k": "words",
-            "type_needle_v": "numbers",
-            "num_needle_k": 1,
-            "num_needle_v": 1,
-            "num_needle_q": 4,
-        },
-    ),  # noqa: E501
-]
-
-# task_key -> (dataset class, base args, data subdir under SIEVAL_DATA_DIR or None)
-_OTHER_TASKS = {
-    "vt": ("RulerVtDataset", {"num_chains": 1, "num_hops": 4}, None),
-    "cwe": ("RulerCweDataset", {"freq_cw": 30, "freq_ucw": 3, "num_cw": 10}, None),
-    "fwe": ("RulerFweDataset", {"alpha": 2.0}, None),
-    "qa_squad": ("RulerQaDataset", {"dataset": "squad"}, "ruler_qa"),
-    "qa_hotpotqa": ("RulerQaDataset", {"dataset": "hotpotqa"}, "hotpotqa"),
+# Task class mapping: inferred from task type in synthetic.yaml
+_TASK_CLASS_MAP = {
+    "niah": "RulerNiahZeroShotGenTask",
+    "variable_tracking": "RulerVtZeroShotGenTask",
+    "common_words_extraction": "RulerCweZeroShotGenTask",
+    "freq_words_extraction": "RulerFweZeroShotGenTask",
+    "qa": "RulerQaZeroShotGenTask",
 }
 
-# Chat endpoint task classes
-_TASK_CLASS = {
-    "niah": "RulerNiahZeroShotGenTask",
-    "vt": "RulerVtZeroShotGenTask",
-    "cwe": "RulerCweZeroShotGenTask",
-    "fwe": "RulerFweZeroShotGenTask",
-    "qa": "RulerQaZeroShotGenTask",
+# Dataset class mapping: inferred from task type in synthetic.yaml
+_DATASET_CLASS_MAP = {
+    "niah": "RulerNiahDataset",
+    "variable_tracking": "RulerVtDataset",
+    "common_words_extraction": "RulerCweDataset",
+    "freq_words_extraction": "RulerFweDataset",
+    "qa": "RulerQaDataset",
+}
+
+# Dataset path mapping: where to find data in SIEVAL_DATA_DIR
+_DATASET_PATH_MAP = {
+    "niah": "ruler_niah",
+    "variable_tracking": None,
+    "common_words_extraction": "ruler_cwe",
+    "freq_words_extraction": None,
+    "qa": None,  # Multi-path: "ruler_qa" or "hotpotqa"
+}
+
+# NIAH variants kept for compatibility (args loaded from synthetic.yaml)
+_NIAH_VARIANTS = [
+    ("single_1", {}),
+    ("single_2", {}),
+    ("single_3", {}),
+    ("multikey_1", {}),
+    ("multikey_2", {}),
+    ("multikey_3", {}),
+    ("multivalue", {}),
+    ("multiquery", {}),
+]
+
+# Other tasks: (dataset_class, subdir, task_type_for_class_lookup)
+_OTHER_TASKS = {
+    "vt": ("RulerVtDataset", None, "variable_tracking"),
+    "cwe": ("RulerCweDataset", "ruler_cwe", "common_words_extraction"),
+    "fwe": ("RulerFweDataset", None, "freq_words_extraction"),
+    "qa_squad": ("RulerQaDataset", "ruler_qa", "qa"),
+    "qa_hotpotqa": ("RulerQaDataset", "hotpotqa/hotpot_qa", "qa"),
 }
 
 
 def _len_tag(length: int) -> str:
     """4096 -> '4k', 131072 -> '128k'."""
     return f"{length // 1024}k" if length % 1024 == 0 else str(length)
+
+
+def _load_synthetic_config(path: str) -> dict:
+    """Load NIAH and other task configs from synthetic.yaml."""
+    import yaml
+    with open(path, encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    return config or {}
 
 
 def _scalar(v) -> str:
@@ -183,13 +128,28 @@ def _model_name(base: str, length: int, native: int) -> str:
 
 
 def build(args) -> str:
-    lengths = [int(x) for x in args.lengths.split(",")]
+    # Parse lengths: either direct numbers or multipliers of 1024
+    raw_lengths = [int(x) for x in args.lengths.split(",")]
+    lengths = [x * 1024 if x < 1024 else x for x in raw_lengths]
     native = args.native_ctx
     model_type = "chat"
     ctx_key = "max_model_len" if args.backend == "vllm" else "context_length"
     # Size prompts with the evaluated model's own tokenizer (RULER aligns these),
     # falling back to the checkpoint path when not given.
     tokenizer_model = args.tokenizer_model or args.checkpoint
+
+    # Load synthetic.yaml config to reference task-level args
+    try:
+        import os
+        import yaml
+        yaml_path = os.path.join(
+            os.path.dirname(__file__),
+            "../sieval/community/ruler/synthetic.yaml"
+        )
+        with open(yaml_path, encoding="utf-8") as f:
+            synthetic_config = yaml.safe_load(f) or {}
+    except Exception:
+        synthetic_config = {}
 
     # --- models: one per distinct serving config (native, then one per YARN tier) ---
     model_blocks: list[str] = []
@@ -207,18 +167,22 @@ def build(args) -> str:
 
         # Enable SGLang deterministic inference and increase max_seq_len (server-side parameter)
         if args.backend == "sglang":
-            overrides["enable_deterministic_inference"] = True
+            # overrides["enable_deterministic_inference"] = True
             # For 128K+ sequences, need to disable CUDA graphs to avoid memory limits
             if serve_ctx >= 131072:
                 overrides["disable_cuda_graph"] = True
 
         yarn_note = ""
         if length > native:
-            factor = math.ceil(length / native)
+            # Use fixed YARN factor if specified, else compute adaptive factor
+            if args.yarn_factor:
+                factor = float(args.yarn_factor)
+            else:
+                factor = math.ceil(length / native)
             yarn_note = f"  # YARN factor={factor} ({_len_tag(length)} > native {_len_tag(native)})"  # noqa: E501
             scaling = {
                 "rope_type": "yarn",
-                "factor": float(factor),
+                "factor": factor,
                 "original_max_position_embeddings": native,
             }
             if args.backend == "vllm":
@@ -234,20 +198,21 @@ def build(args) -> str:
             "      concurrency_limit: 64",
             "      temperature: 0.7",
             "      top_p: 0.8",
+            "      presence_penalty: 1.5",
             "      extra_body:",
-            "        chat_template_kwargs:",
-            "          enable_thinking: false  # set true + raise max_tokens for thinking",
-            "          top_k: 20",
-            "          presence_penalty: 1.5",
-            # "        enable_deterministic_output: true  # Enable SGLang deterministic inference",
+            "        enable_thinking: false",
+            "        top_k: 20",
+            "        continue_final_message: True",
+            "        add_generation_prompt: False",
         ]
         block += [
             "    infer:",
             f"      backend: {args.backend}",
+            f"      recipe: {args.recipe}",
             f"      checkpoint: {args.checkpoint}        # EDIT ME",
             f"      overrides: {_flow(overrides)}",
             "    infer_meta:",
-            "      gpu: H200-141G",
+            f"      gpu: {args.gpu}",
             "      image: lmsysorg/sglang:latest",
         ]
         model_blocks.append("\n".join(block))
@@ -262,27 +227,39 @@ def build(args) -> str:
 
         for variant, vargs in _NIAH_VARIANTS:
             name = f"ruler_niah_{variant}_{tag}"
+            # Use args from synthetic.yaml if available, else fall back to local config
+            synth_key = f"niah_{variant}"
+            synth_args = synthetic_config.get(synth_key, {}).get("args", {})
             a = {
                 "max_seq_length": length,
                 "num_samples": ns,
-                "tokenizer_model": tokenizer_model,
-                **vargs,
+                "tokenizer_type": "hf",
+                "tokenizer_path": tokenizer_model,
+                "enable_thinking": args.enable_thinking,
+                **(synth_args or vargs),
             }
             ds_lines.append(f"  {name}:")
             ds_lines.append("    class: RulerNiahDataset")
             ds_lines.append('    path: "${SIEVAL_DATA_DIR}/ruler_niah"')
             ds_lines.append(f"    args: {_flow(a)}")
             task_lines.append(
-                f"  {name}: {_flow({'class': _TASK_CLASS['niah'], 'dataset': name, 'model': model})}"  # noqa: E501
+                f"  {name}: {_flow({'class': _TASK_CLASS_MAP['niah'], 'dataset': name, 'model': model})}"  # noqa: E501
             )
 
-        for key, (ds_cls, bargs, subdir) in _OTHER_TASKS.items():
+        for key, (ds_cls, subdir, task_type) in _OTHER_TASKS.items():
             name = f"ruler_{key}_{tag}"
+            # Map internal keys to synthetic.yaml keys
+            synth_key_map = {"qa_squad": "qa_1", "qa_hotpotqa": "qa_2"}
+            synth_key = synth_key_map.get(key, key)
+            # Use args from synthetic.yaml if available, else empty dict
+            synth_args = synthetic_config.get(synth_key, {}).get("args", {})
             a = {
                 "max_seq_length": length,
                 "num_samples": ns,
-                "tokenizer_model": tokenizer_model,
-                **bargs,
+                "tokenizer_type": "hf",
+                "tokenizer_path": tokenizer_model,
+                "enable_thinking": args.enable_thinking,
+                **synth_args,
             }
             ds_lines.append(f"  {name}:")
             ds_lines.append(f"    class: {ds_cls}")
@@ -292,9 +269,8 @@ def build(args) -> str:
                 else '    path: "."'
             )
             ds_lines.append(f"    args: {_flow(a)}")
-            tkey = "qa" if key.startswith("qa") else key
             task_lines.append(
-                f"  {name}: {_flow({'class': _TASK_CLASS[tkey], 'dataset': name, 'model': model})}"  # noqa: E501
+                f"  {name}: {_flow({'class': _TASK_CLASS_MAP[task_type], 'dataset': name, 'model': model})}"  # noqa: E501
             )
 
     bar = "# " + "-" * 78
@@ -334,9 +310,14 @@ result_dir: {args.result_dir}
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--lengths", default="4096,8192,16384,32768,65536,131072")
+    p.add_argument(
+        "--lengths",
+        default="4,8,16,32,128",
+        help="Context lengths in 1K units (4 -> 4096, 8 -> 8192, etc). "
+        "Can also be raw byte values for lengths >= 1024.",
+    )
     p.add_argument("--native-ctx", type=int, default=32768, help="model native context")
-    p.add_argument("--checkpoint", default="/mnt/workspace/Qwen-Qwen3-8b")
+    p.add_argument("--checkpoint", default="/root/models/Qwen3-8b")
     p.add_argument(
         "--tokenizer-model",
         default=None,
@@ -344,10 +325,36 @@ def main() -> None:
         "matches the evaluated model (RULER aligns these). Use 'gpt-4' for tiktoken, "
         "or an HF id / local path otherwise.",
     )
-    p.add_argument("--model-base", default="model", help="Qwen/Qwen3-8B")
+    p.add_argument("--model-base", default="Qwen3-8B", help="model name")
     p.add_argument("--backend", choices=["sglang", "vllm"], default="sglang")
+    p.add_argument(
+        "--yarn-factor",
+        type=float,
+        default=None,
+        help="Fixed YARN scaling factor (e.g., 4). If not specified, uses adaptive factor "
+        "(ceil(length / native_ctx)) for each length > native_ctx.",
+    )
     p.add_argument("--num-samples", type=int, default=500)
-    p.add_argument("--result-dir", default="./outputs/ruler_qwen3_8b_sglang")
+    p.add_argument(
+        "--recipe",
+        default="qwen3-8b",
+        help="Recipe name from sieval/infer/recipes/ (for sieval infer). "
+        "Must match the model size: qwen3-8b for ~8B params.",
+    )
+    p.add_argument(
+        "--gpu",
+        default="H200-141G",
+        help="GPU model for infer_meta (e.g., H200-141G, H100-80G, A100-40G). "
+        "Must match a profile key in the recipe.",
+    )
+    p.add_argument(
+        "--enable-thinking",
+        action="store_true",
+        default=False,
+        help="Enable reasoning/thinking mode in Qwen3 (longer generation, higher tokens). "
+        "When enabled, consider increasing max_completion_tokens.",
+    )
+    p.add_argument("--result-dir", default="./outputs/ruler_qwen3_8b_sglang_test")
     p.add_argument("--out", default="-", help="output path, or '-' for stdout")
     args = p.parse_args()
 

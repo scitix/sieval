@@ -69,6 +69,7 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
         random_seed: int = 42,
         num_fewshot: int = 1,
         remove_newline_tab: bool = False,
+        enable_thinking: bool = False,
         **kwargs,
     ) -> HFDatasetDict:
         tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
@@ -112,13 +113,18 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
 
         # Generate samples
         rows = []
+        # Account for thinking tags overhead when enable_thinking=False
+        thinking_overhead = 0
+        if enable_thinking is False:
+            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
+
         for index in range(num_samples):
             used_words = num_words
             while True:
                 try:
                     input_text, answer = gen(used_words)
                     length = (
-                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
                     )
                     assert length <= max_seq_length, "exceeds max_seq_length"
                     break

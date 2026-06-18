@@ -68,6 +68,7 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
         type_needle_k: str = "words",
         type_needle_v: str = "numbers",
         remove_newline_tab: bool = False,
+        enable_thinking: bool = False,
         **kwargs,
     ) -> HFDatasetDict:
         tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
@@ -107,13 +108,18 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
 
         rows = []
         incremental = _incremental(type_haystack, max_seq_length)
+        # Account for thinking tags overhead when enable_thinking=False
+        thinking_overhead = 0
+        if enable_thinking is False:
+            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
+
         for _ in range(num_samples):
             used_haystack = num_haystack
             while True:
                 try:
                     input_text, answer = gen(used_haystack)
                     length = (
-                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
                     )
                     assert length <= max_seq_length, "exceeds max_seq_length"
                     break
