@@ -2423,8 +2423,14 @@ class TestStripNoncomparableFields:
             "tasks": {
                 "t": {
                     "runner_config": {
+                        # Scheduling + console-only → stripped
                         "concurrency_limits": {"infer": 4},
+                        "show_progress": False,
+                        # Affect on-disk content / result semantics → kept strict
                         "max_retries": 3,
+                        "profile_usage": False,
+                        "detect_anomalies": False,
+                        "dump_progress": False,
                         "shard_samples": 1024,
                         "max_iterations": 5,
                     }
@@ -2433,8 +2439,14 @@ class TestStripNoncomparableFields:
         }
         out = _strip_noncomparable_fields(cfg)
         rc = out["tasks"]["t"]["runner_config"]
+        # stripped (adjustable on resume)
         assert "concurrency_limits" not in rc
-        assert "max_retries" not in rc
+        assert "show_progress" not in rc
+        # kept (must match on resume — touch disk content / failure signal)
+        assert rc["max_retries"] == 3
+        assert rc["profile_usage"] is False
+        assert rc["detect_anomalies"] is False
+        assert rc["dump_progress"] is False
         assert rc["shard_samples"] == 1024
         assert rc["max_iterations"] == 5
 

@@ -191,38 +191,45 @@ def _brief_diff(existing: str, current: str) -> str:
 
 
 # ── Resume strict-match field policy ──────────────────────────────────────
-# Throughput / orchestration knobs that may change across a --resume without
-# invalidating already-persisted data: they alter how fast and in what order
-# samples are produced, never WHAT is produced or how it is laid out on disk.
+# A field is safe to change across a --resume ONLY if it touches neither the
+# authoritative sample data NOR any persisted artifact's content. That leaves
+# pure scheduling (concurrency, shard-I/O parallelism, write-buffer timing)
+# and console-only progress output (tqdm bar + loguru cadence) — these alter
+# how fast/in what order samples run, never WHAT is written to disk.
 # Stripped from both configs before the strict-match comparison.
 #
 # MUST stay in sync with TaskRunnerConfig — TestRunnerFieldClassification
 # fails if a new dataclass field is left unbucketed. Forgetting to list a
-# genuine throughput field here only causes a spurious resume abort (safe);
-# a result/layout field can never land here except by explicit human edit.
+# genuine scheduling field here only causes a spurious resume abort (safe);
+# a result/artifact field can never land here except by explicit human edit.
 _THROUGHPUT_RUNNER_KEYS: frozenset[str] = frozenset(
     {
         "concurrency_limit",
         "concurrency_limits",
-        "profile_io",
-        "profile_stages",
-        "profile_usage",
         "shard_read_concurrency",
         "shard_write_concurrency",
         "write_buffer_size",
         "write_buffer_flush_interval",
+        # Console-only progress: tqdm bar visibility + loguru log cadence.
+        # These feed neither the progress.json dump (gated by dump_progress)
+        # nor any other on-disk artifact, so they are safe to retune.
         "show_progress",
         "progress_log_interval",
         "progress_log_pct_interval",
-        "dump_progress",
-        "progress_dump_interval",
-        "max_retries",
-        "detect_anomalies",
-        "detect_anomalies_on_resume",
     }
 )
 
-# Result- or disk-layout-affecting runner_config fields that MUST match.
+# Fields that MUST match: they affect the authoritative sample data, an
+# on-disk artifact's content, or the meaning of a recorded outcome.
+#   * shard_samples / record_*       — shard layout & persisted record shape
+#   * max_iterations / deterministic — produced data
+#   * max_retries                    — the failure SIGNAL: a sample that is
+#       FAILED after k retries is itself a result, the value is written into
+#       the FAILED record's reason, and resuming under a different budget
+#       would mix failure criteria across one dataset.
+#   * profile_*                      — per-record timing meta + profiler file
+#   * detect_anomalies*              — the anomaly report artifact
+#   * dump_progress / progress_dump_interval — the progress.json dump
 _STRICT_RUNNER_KEYS: frozenset[str] = frozenset(
     {
         "shard_samples",
@@ -231,6 +238,14 @@ _STRICT_RUNNER_KEYS: frozenset[str] = frozenset(
         "record_meta",
         "max_iterations",
         "deterministic",
+        "max_retries",
+        "profile_io",
+        "profile_stages",
+        "profile_usage",
+        "detect_anomalies",
+        "detect_anomalies_on_resume",
+        "dump_progress",
+        "progress_dump_interval",
     }
 )
 

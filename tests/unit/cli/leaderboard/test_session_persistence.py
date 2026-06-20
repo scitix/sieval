@@ -680,9 +680,10 @@ class TestStrictResumeMatch:
         assert loaded["models"]["base"]["args"]["temperature"] == 0.0
 
     @pytest.mark.anyio
-    async def test_resume_tolerates_runner_config_max_retries_change(
-        self, tmp_path: Path
-    ):
+    async def test_resume_aborts_on_max_retries_change(self, tmp_path: Path):
+        # max_retries is the failure SIGNAL: a sample FAILED after k retries is
+        # itself a result and the value is written into the FAILED record's
+        # reason, so it must match on resume.
         base = (
             "models:\n  base:\n    name: m\ntasks:\n  t:\n"
             "    runner_config:\n      max_retries: {}\n"
@@ -696,10 +697,50 @@ class TestStrictResumeMatch:
         s2 = EvalSession(
             config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
         )
+        with pytest.raises(RuntimeError, match=r"Resume aborted"):
+            await s2._persist_effective_config()
+
+    @pytest.mark.anyio
+    async def test_resume_aborts_on_profile_change(self, tmp_path: Path):
+        # profile_* feed per-record timing meta and the saved profiler summary
+        # — toggling mid-run yields inconsistent on-disk profiling artifacts.
+        base = (
+            "models:\n  base:\n    name: m\ntasks:\n  t:\n"
+            "    runner_config:\n      profile_usage: {}\n"
+        )
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format("true"))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        cfg_path.write_text(base.format("false"))
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        with pytest.raises(RuntimeError, match=r"Resume aborted"):
+            await s2._persist_effective_config()
+
+    @pytest.mark.anyio
+    async def test_resume_tolerates_console_progress_change(self, tmp_path: Path):
+        # show_progress is console-only (tqdm bar + loguru cadence) — it never
+        # feeds the progress.json dump, so it may be retuned across a resume.
+        base = (
+            "models:\n  base:\n    name: m\ntasks:\n  t:\n"
+            "    runner_config:\n      show_progress: {}\n"
+        )
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format("true"))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        cfg_path.write_text(base.format("false"))
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
         await s2._persist_effective_config()  # must NOT raise
 
         loaded = yaml.safe_load((result_dir / "effective_config.yaml").read_text())
-        assert loaded["tasks"]["t"]["runner_config"]["max_retries"] == 10
+        assert loaded["tasks"]["t"]["runner_config"]["show_progress"] is False
 
     @pytest.mark.anyio
     async def test_resume_aborts_on_throughput_plus_result_change(self, tmp_path: Path):
