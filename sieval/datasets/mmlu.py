@@ -75,6 +75,9 @@ def _process_sample(sample: dict) -> MMLUDatasetSample:
     display_name="MMLU",
     description="Massive Multitask Language Understanding — 57 academic subjects, MCQ.",
     source="url:https://openaipublic.blob.core.windows.net/simple-evals/mmlu.csv",
+    checksums={
+        "mmlu.csv": "sha256:15b6785d49e0012602e089558a7a0dfb916baf97e9295aa25b48062f13c6afbb",  # noqa: E501
+    },
     categories=(Category(Level1Category.KNOWLEDGE, "Multi-domain"),),
     tags=("english", "multiple-choice"),
     license="MIT",

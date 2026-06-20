@@ -27,6 +27,10 @@ class DROPDatasetSample(TypedDict):
         "url:https://openaipublic.blob.core.windows.net/simple-evals/drop_v0_train.jsonl.gz",
         "url:https://openaipublic.blob.core.windows.net/simple-evals/drop_v0_dev.jsonl.gz",
     ),
+    checksums={
+        "drop_v0_train.jsonl.gz": "sha256:d4a3a00ea2cfbe69d11f0bd24f5ba069731c645489bd39248b480d8eb34e1fb6",  # noqa: E501
+        "drop_v0_dev.jsonl.gz": "sha256:7a58d35552dc476699d87ee8af0254f63e9f00f5a7f6b8b033e11c933157e186",  # noqa: E501
+    },
     categories=(Category(Level1Category.LOGIC, "TextualReasoning"),),
     tags=("english", "open-ended"),
     license="CC-BY-SA-4.0",

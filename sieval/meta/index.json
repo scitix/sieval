@@ -6,7 +6,7 @@
       "display_name": "AIME 2024",
       "description": "American Invitational Mathematics Examination 2024, 30 problems.",
       "source": [
-        "hf:HuggingFaceH4/aime_2024"
+        "hf:HuggingFaceH4/aime_2024@2fe88a2f1091d5048c0f36abc874fb997b3dd99a"
       ],
       "categories": [
         {
@@ -19,14 +19,15 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "checksums": {}
     },
     {
       "name": "aime_2025",
       "display_name": "AIME 2025",
       "description": "American Invitational Mathematics Examination 2025, 30 problems.",
       "source": [
-        "hf:opencompass/AIME2025"
+        "hf:opencompass/AIME2025@a6ad95f611d72cf628a80b58bd0432ef6638f958"
       ],
       "categories": [
         {
@@ -39,7 +40,8 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "MIT"
+      "license": "MIT",
+      "checksums": {}
     },
     {
       "name": "aime_2026",
@@ -59,7 +61,8 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "CC-BY-NC-SA-4.0"
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
     },
     {
       "name": "cmmlu",
@@ -79,7 +82,8 @@
         "multiple-choice"
       ],
       "deps_group": null,
-      "license": "CC-BY-NC-SA-4.0"
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
     },
     {
       "name": "drop",
@@ -100,7 +104,11 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "CC-BY-SA-4.0"
+      "license": "CC-BY-SA-4.0",
+      "checksums": {
+        "drop_v0_dev.jsonl.gz": "sha256:7a58d35552dc476699d87ee8af0254f63e9f00f5a7f6b8b033e11c933157e186",
+        "drop_v0_train.jsonl.gz": "sha256:d4a3a00ea2cfbe69d11f0bd24f5ba069731c645489bd39248b480d8eb34e1fb6"
+      }
     },
     {
       "name": "gpqa_diamond",
@@ -125,7 +133,10 @@
         "graduate-level"
       ],
       "deps_group": null,
-      "license": "CC-BY-4.0"
+      "license": "CC-BY-4.0",
+      "checksums": {
+        "gpqa_diamond.csv": "sha256:41d1213cd7a4998605a26c2798500652572007161b3a92817ba46b35befcd305"
+      }
     },
     {
       "name": "gsm8k",
@@ -146,7 +157,8 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "MIT"
+      "license": "MIT",
+      "checksums": {}
     },
     {
       "name": "hmmt_feb_2026",
@@ -166,7 +178,8 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "CC-BY-NC-SA-4.0"
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
     },
     {
       "name": "human_eval",
@@ -187,14 +200,15 @@
         "code-exec"
       ],
       "deps_group": null,
-      "license": "MIT"
+      "license": "MIT",
+      "checksums": {}
     },
     {
       "name": "ifeval",
       "display_name": "IFEval",
       "description": "Instruction-Following Eval — 541 prompts with verifiable constraints.",
       "source": [
-        "hf:google/IFEval"
+        "hf:google/IFEval@966cd89545d6b6acfd7638bc708b98261ca58e84"
       ],
       "categories": [
         {
@@ -207,7 +221,8 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "checksums": {}
     },
     {
       "name": "livecodebench_code_generation",
@@ -228,14 +243,15 @@
         "code-exec"
       ],
       "deps_group": null,
-      "license": "cc"
+      "license": "cc",
+      "checksums": {}
     },
     {
       "name": "math_500",
       "display_name": "MATH-500",
       "description": "Hendrycks MATH-500 subset — 500 problems across difficulty levels.",
       "source": [
-        "hf:HuggingFaceH4/MATH-500"
+        "hf:HuggingFaceH4/MATH-500@6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be"
       ],
       "categories": [
         {
@@ -248,7 +264,8 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "MIT"
+      "license": "MIT",
+      "checksums": {}
     },
     {
       "name": "mmlu",
@@ -268,14 +285,17 @@
         "multiple-choice"
       ],
       "deps_group": null,
-      "license": "MIT"
+      "license": "MIT",
+      "checksums": {
+        "mmlu.csv": "sha256:15b6785d49e0012602e089558a7a0dfb916baf97e9295aa25b48062f13c6afbb"
+      }
     },
     {
       "name": "mmlu_pro",
       "display_name": "MMLU-Pro",
       "description": "MMLU-Pro — harder MCQ with 10 options, filtered for reasoning.",
       "source": [
-        "hf:TIGER-Lab/MMLU-Pro"
+        "hf:TIGER-Lab/MMLU-Pro@54611cde22c74cca43dd78732198de6abe971398"
       ],
       "categories": [
         {
@@ -288,14 +308,15 @@
         "multiple-choice"
       ],
       "deps_group": null,
-      "license": "MIT"
+      "license": "MIT",
+      "checksums": {}
     },
     {
       "name": "t_eval_before_calling",
       "display_name": "T-Eval Before-Calling",
       "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
       "source": [
-        "hf:lovesnowbest/T-Eval"
+        "hf:lovesnowbest/T-Eval@af355ab2b62cdbae4262ac41c7529ffeae395012"
       ],
       "categories": [
         {
@@ -309,7 +330,8 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "checksums": {}
     },
     {
       "name": "theoremqa",
@@ -334,7 +356,8 @@
         "theorem-driven"
       ],
       "deps_group": null,
-      "license": "MIT"
+      "license": "MIT",
+      "checksums": {}
     }
   ],
   "tasks": [
