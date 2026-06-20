@@ -681,9 +681,7 @@ class TestStrictResumeMatch:
 
     @pytest.mark.anyio
     async def test_resume_aborts_on_max_retries_change(self, tmp_path: Path):
-        # max_retries is the failure SIGNAL: a sample FAILED after k retries is
-        # itself a result and the value is written into the FAILED record's
-        # reason, so it must match on resume.
+        # max_retries is the failure signal (written into FAILED records) — strict.
         base = (
             "models:\n  base:\n    name: m\ntasks:\n  t:\n"
             "    runner_config:\n      max_retries: {}\n"
@@ -702,8 +700,7 @@ class TestStrictResumeMatch:
 
     @pytest.mark.anyio
     async def test_resume_aborts_on_profile_change(self, tmp_path: Path):
-        # profile_* feed per-record timing meta and the saved profiler summary
-        # — toggling mid-run yields inconsistent on-disk profiling artifacts.
+        # profile_* write per-record meta + the profiler summary file — strict.
         base = (
             "models:\n  base:\n    name: m\ntasks:\n  t:\n"
             "    runner_config:\n      profile_usage: {}\n"
@@ -722,8 +719,7 @@ class TestStrictResumeMatch:
 
     @pytest.mark.anyio
     async def test_resume_tolerates_console_progress_change(self, tmp_path: Path):
-        # show_progress is console-only (tqdm bar + loguru cadence) — it never
-        # feeds the progress.json dump, so it may be retuned across a resume.
+        # show_progress is console-only (never the progress.json dump) — adjustable.
         base = (
             "models:\n  base:\n    name: m\ntasks:\n  t:\n"
             "    runner_config:\n      show_progress: {}\n"

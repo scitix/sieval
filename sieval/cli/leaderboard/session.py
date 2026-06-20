@@ -190,18 +190,9 @@ def _brief_diff(existing: str, current: str) -> str:
     return _diff_dicts(e, c)
 
 
-# ── Resume strict-match field policy ──────────────────────────────────────
-# A field is safe to change across a --resume ONLY if it touches neither the
-# authoritative sample data NOR any persisted artifact's content. That leaves
-# pure scheduling (concurrency, shard-I/O parallelism, write-buffer timing)
-# and console-only progress output (tqdm bar + loguru cadence) — these alter
-# how fast/in what order samples run, never WHAT is written to disk.
-# Stripped from both configs before the strict-match comparison.
-#
-# MUST stay in sync with TaskRunnerConfig — TestRunnerFieldClassification
-# fails if a new dataclass field is left unbucketed. Forgetting to list a
-# genuine scheduling field here only causes a spurious resume abort (safe);
-# a result/artifact field can never land here except by explicit human edit.
+# ── Resume strict-match field policy (must partition TaskRunnerConfig) ──
+# Adjustable across --resume only if a field touches neither the sample data
+# nor any persisted artifact: pure scheduling + console-only progress.
 _THROUGHPUT_RUNNER_KEYS: frozenset[str] = frozenset(
     {
         "concurrency_limit",
@@ -210,26 +201,16 @@ _THROUGHPUT_RUNNER_KEYS: frozenset[str] = frozenset(
         "shard_write_concurrency",
         "write_buffer_size",
         "write_buffer_flush_interval",
-        # Console-only progress: tqdm bar visibility + loguru log cadence.
-        # These feed neither the progress.json dump (gated by dump_progress)
-        # nor any other on-disk artifact, so they are safe to retune.
+        # Console-only (tqdm bar + log cadence); not the progress.json dump.
         "show_progress",
         "progress_log_interval",
         "progress_log_pct_interval",
     }
 )
 
-# Fields that MUST match: they affect the authoritative sample data, an
-# on-disk artifact's content, or the meaning of a recorded outcome.
-#   * shard_samples / record_*       — shard layout & persisted record shape
-#   * max_iterations / deterministic — produced data
-#   * max_retries                    — the failure SIGNAL: a sample that is
-#       FAILED after k retries is itself a result, the value is written into
-#       the FAILED record's reason, and resuming under a different budget
-#       would mix failure criteria across one dataset.
-#   * profile_*                      — per-record timing meta + profiler file
-#   * detect_anomalies*              — the anomaly report artifact
-#   * dump_progress / progress_dump_interval — the progress.json dump
+# Must match: affect sample data, an on-disk artifact, or a recorded outcome's
+# meaning — e.g. max_retries is the failure signal written into FAILED records;
+# profile_*/detect_anomalies*/dump_progress write profiler/anomaly/progress files.
 _STRICT_RUNNER_KEYS: frozenset[str] = frozenset(
     {
         "shard_samples",
@@ -249,10 +230,8 @@ _STRICT_RUNNER_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Fields that never participate in the match: result_dir is the resume
-# target's own location; auto_resume is set on the runtime config only and is
-# never persisted into the body; stage_meta hooks are callables (not
-# YAML-serializable).
+# Never compared: result_dir is the target's location, auto_resume is runtime-
+# only (never persisted), stage_meta hooks are non-serializable callables.
 _NONMATCH_RUNNER_KEYS: frozenset[str] = frozenset(
     {
         "result_dir",
@@ -264,19 +243,11 @@ _NONMATCH_RUNNER_KEYS: frozenset[str] = frozenset(
 
 
 def _strip_noncomparable_fields(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Return a deep copy of ``cfg`` with fields that may differ across a resume removed
-    (throughput knobs plus the ``result_dir`` location).
+    """Deep-copy ``cfg`` with resume-mutable fields removed, for comparison.
 
-    Removes (on the copy only; the input is never mutated):
-      * top-level ``concurrency_limit`` / ``concurrency_limits``
-      * top-level ``result_dir`` (the resume target's own location —
-        never affects what results are produced, only where they go)
-      * ``models.*.args.concurrency_limit``
-      * ``tasks.*.runner_config.<k>`` for every ``k`` in
-        ``_THROUGHPUT_RUNNER_KEYS``
-
-    Used to compare two effective configs for strict-match resume while
-    tolerating differences that cannot make resumed data incompatible.
+    Strips (input never mutated) top-level ``concurrency_limit`` /
+    ``concurrency_limits`` / ``result_dir``, ``models.*.args.concurrency_limit``,
+    and ``tasks.*.runner_config.<k>`` for ``k`` in ``_THROUGHPUT_RUNNER_KEYS``.
     """
     out = copy.deepcopy(cfg)
 
@@ -1432,22 +1403,14 @@ class EvalSession:
     ) -> None:
         """Atomically write ``header + body`` to ``result_dir/target_name``.
 
-        Under ``--resume`` with an existing target file:
-
-        * If the persisted body (header excluded) matches ``body``
-          byte-for-byte, the file is not rewritten so existing header
-          timestamps survive.
-        * If ``mutable_strip`` is ``None`` (byte-for-byte strict, e.g. infer
-          plans), any other difference raises ``RuntimeError``.
-        * If ``mutable_strip`` is provided, the two bodies are parsed and
-          compared with ``mutable_strip`` applied to both. Differences that
-          vanish under stripping (throughput knobs, or pure formatting) are
-          tolerated: the file is rewritten with the new ``body`` while the
-          original header/timestamps are preserved. A residual difference
-          (result- or layout-affecting) raises ``RuntimeError``.
-
-        ``RuntimeError`` is the only failure mode the caller observes — every
-        other failure is best-effort and only logged.
+        Under ``--resume`` with an existing file: an identical body skips the
+        rewrite (timestamps survive). With ``mutable_strip=None`` (e.g. infer
+        plans) any other diff raises. Otherwise both bodies are parsed and
+        compared with ``mutable_strip`` applied; a diff that vanishes
+        (resume-mutable or formatting) is tolerated — the file is rewritten
+        with the new body, original header preserved — and any residual diff
+        raises. ``RuntimeError`` is the only failure the caller observes; all
+        else is best-effort and logged.
         """
         effective_result_dir = self._resolve_result_dir()
         if effective_result_dir is None:
@@ -1488,8 +1451,8 @@ class EvalSession:
                     f"  2. Match the invocation to the persisted {audit_label}"
                 )
 
-            # Tolerate throughput-only diffs: parse BOTH sides through YAML so
-            # type coercion (e.g. tuple→list) can't cause a spurious mismatch.
+            # Parse both sides so YAML type coercion (tuple→list) and key
+            # ordering can't cause a spurious mismatch.
             try:
                 existing_cfg = yaml.safe_load(existing_body) or {}
                 current_cfg = yaml.safe_load(body) or {}
@@ -1514,11 +1477,11 @@ class EvalSession:
                     f"  2. Match the invocation to the persisted {audit_label}"
                 )
 
-            # Result-relevant content is identical; only throughput (or
-            # formatting) differs. Rewrite so the artifact reflects the new
-            # throughput, preserving the original header/timestamps when present.
+            # Only resume-mutable (or formatting) fields differ — rewrite with
+            # the new body, preserving the original header when present.
             logger.info(
-                "Resume: {} throughput fields changed — updating file", target_name
+                "Resume: {} resume-mutable fields changed — updating file",
+                target_name,
             )
             write_header = existing_header or header
 
