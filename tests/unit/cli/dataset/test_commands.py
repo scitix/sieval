@@ -4,7 +4,7 @@ AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
@@ -414,6 +414,38 @@ def test_dataset_list_text_shows_ready_and_drops_downloaded(tmp_path, monkeypatc
     assert result.exit_code == 0
     assert "READY" in result.output
     assert "DOWNLOADED" not in result.output
+
+
+def test_download_one_deletes_and_raises_on_checksum_mismatch(tmp_path):
+    import pytest
+
+    from sieval.cli.dataset.commands import _download_one
+    from sieval.core.datasets.meta import Category, DatasetMeta, Level1Category
+
+    meta = DatasetMeta(
+        name="ds",
+        display_name="ds",
+        description="d",
+        source=("url:https://example.com/f.csv",),
+        categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+        checksums=(("f.csv", "sha256:" + "a" * 64),),
+    )
+
+    def fake_download(_source, dest_root, dataset_name, **_kwargs):  # noqa: ARG001
+        (dest_root / dataset_name).mkdir(parents=True, exist_ok=True)
+        (dest_root / dataset_name / "f.csv").write_bytes(b"wrong-bytes")
+
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = False
+    fake_handler.download.side_effect = fake_download
+
+    with (
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        pytest.raises(RuntimeError, match="checksum verification failed"),
+    ):
+        _download_one(meta, tmp_path, force=False)
+
+    assert not (tmp_path / "ds" / "f.csv").exists()  # bad file deleted
 
 
 def test_dataset_show_text_renders_ready_and_missing(tmp_path, monkeypatch):
