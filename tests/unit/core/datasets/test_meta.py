@@ -502,8 +502,6 @@ class CkSample(TypedDict):
 
 
 def test_checksums_normalized_sorted_and_round_trips():
-    from sieval.core.datasets.meta import dataset_meta_to_dict
-
     digest = "sha256:" + "a" * 64
 
     @sieval_dataset(

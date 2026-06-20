@@ -23,6 +23,9 @@ def test_compute_sha256_format(tmp_path):
     digest = compute_sha256(p)
     assert digest.startswith("sha256:")
     assert len(digest) == len("sha256:") + 64
+    assert digest == (
+        "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    )
 
 
 def test_verify_match_returns_empty(tmp_path):
@@ -42,6 +45,7 @@ def test_verify_corruption_detected(tmp_path):
     out = verify_checksums(_meta("ds", (("f.bin", good),)), tmp_path)
     assert len(out) == 1 and out[0].basename == "f.bin"
     assert out[0].actual is not None and out[0].actual != good
+    assert out[0].expected == good
 
 
 def test_verify_missing_file(tmp_path):

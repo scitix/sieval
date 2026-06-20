@@ -452,6 +452,32 @@ def test_download_one_deletes_and_raises_on_checksum_mismatch(tmp_path):
     assert not (tmp_path / "ds" / "f.csv").exists()  # bad file deleted
 
 
+def test_download_one_verifies_even_when_already_present(tmp_path):
+    import pytest
+
+    from sieval.cli.dataset.commands import _download_one
+    from sieval.core.datasets.meta import Category, DatasetMeta, Level1Category
+
+    meta = DatasetMeta(
+        name="ds",
+        display_name="ds",
+        description="d",
+        source=("url:https://example.com/f.csv",),
+        categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+        checksums=(("f.csv", "sha256:" + "a" * 64),),
+    )
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = True  # already present, download skipped
+
+    with (
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        pytest.raises(RuntimeError, match="checksum verification failed"),
+    ):
+        _download_one(meta, tmp_path, force=False)
+
+    fake_handler.download.assert_not_called()  # verify ran despite the skip
+
+
 def test_dataset_show_text_renders_ready_and_missing(tmp_path, monkeypatch):
     """ready=no path renders the Missing: block + suppresses downloaded."""
     monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
