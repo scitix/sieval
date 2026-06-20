@@ -20,6 +20,7 @@ AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 
 import importlib
 import pkgutil
+import re
 import types
 import typing
 from collections import Counter
@@ -125,6 +126,7 @@ class DatasetMeta:
     tags: tuple[str, ...] = ()
     deps_group: str | None = None
     license: str | None = None
+    checksums: tuple[tuple[str, str], ...] = ()
 
 
 def _normalize_source(source: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -204,6 +206,47 @@ def _validate_url_basenames_unique(name: str, source: tuple[str, ...]) -> None:
         )
 
 
+_CHECKSUM_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _normalize_checksums(
+    checksums: dict[str, str] | None,
+) -> tuple[tuple[str, str], ...]:
+    """Normalize the decorator's dict to a sorted tuple-of-pairs (mirrors
+    ``_normalize_source``); keeps ``DatasetMeta`` immutable and ``index.json``
+    deterministic."""
+    if not checksums:
+        return ()
+    return tuple(sorted(checksums.items()))
+
+
+def _validate_checksums(
+    name: str,
+    source: tuple[str, ...],
+    checksums: tuple[tuple[str, str], ...],
+) -> None:
+    """Each value is a ``sha256:<hex>`` digest; each key is the basename of a
+    declared ``url:`` source in this dataset."""
+    if not checksums:
+        return
+    url_basenames = {
+        url_path_basename(src[len("url:") :])
+        for src in source
+        if src.startswith("url:")
+    }
+    for basename, digest in checksums:
+        if not _CHECKSUM_RE.match(digest):
+            raise ValueError(
+                f"dataset {name!r} checksum for {basename!r} must be "
+                f"'sha256:<64 hex>', got {digest!r}"
+            )
+        if basename not in url_basenames:
+            raise ValueError(
+                f"dataset {name!r} checksum key {basename!r} is not the basename "
+                f"of any declared url: source {sorted(url_basenames)}"
+            )
+
+
 def extract_sample_type(cls: type) -> type:
     """First concrete (non-TypeVar) generic arg on any parameterized base in
     the MRO. Shared by ``@sieval_dataset`` (``Dataset[TSample]``) and
@@ -236,6 +279,7 @@ def sieval_dataset[T: type](
     tags: tuple[str, ...] = (),
     deps_group: str | None = None,
     license: str | None = None,
+    checksums: dict[str, str] | None = None,
 ) -> Callable[[T], T]:
     """Decorate a Dataset subclass to register its DatasetMeta.
 
@@ -255,6 +299,8 @@ def sieval_dataset[T: type](
         categories=categories,
         source=normalized_source,
     )
+    normalized_checksums = _normalize_checksums(checksums)
+    _validate_checksums(name, normalized_source, normalized_checksums)
     meta = DatasetMeta(
         name=name,
         display_name=display_name,
@@ -264,6 +310,7 @@ def sieval_dataset[T: type](
         tags=tags,
         deps_group=deps_group,
         license=license,
+        checksums=normalized_checksums,
     )
 
     def decorator(cls: T) -> T:
@@ -331,6 +378,7 @@ def dataset_meta_to_dict(meta: DatasetMeta) -> dict[str, Any]:
         "tags": list(meta.tags),
         "deps_group": meta.deps_group,
         "license": meta.license,
+        "checksums": dict(meta.checksums),
     }
 
 
@@ -356,6 +404,7 @@ def dataset_meta_from_dict(payload: dict[str, Any]) -> DatasetMeta:
         tags=tuple(payload.get("tags", ())),
         deps_group=payload.get("deps_group"),
         license=payload.get("license"),
+        checksums=tuple(sorted(payload.get("checksums", {}).items())),
     )
 
 
