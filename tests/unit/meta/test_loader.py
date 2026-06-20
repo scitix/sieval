@@ -44,7 +44,9 @@ def test_aime_2024_dataset_round_trips():
     assert aime.display_name == "AIME 2024"
     assert aime.license == "Apache-2.0"
     # Single-source on wire = 1-element list → reconstructed as 1-tuple.
-    assert aime.source == ("hf:HuggingFaceH4/aime_2024",)
+    assert aime.source == (
+        "hf:HuggingFaceH4/aime_2024@2fe88a2f1091d5048c0f36abc874fb997b3dd99a",
+    )
     assert any(c.level1 is Level1Category.MATHEMATICS for c in aime.categories)
 
 

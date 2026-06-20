@@ -82,6 +82,7 @@ def test_dataset_download_by_name_invokes_handler(tmp_path):
             "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
             return_value=False,
         ),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         mock_url_dl.return_value = tmp_path
         result = runner.invoke(
@@ -104,6 +105,7 @@ def test_dataset_download_skips_when_already_present(tmp_path):
             "sieval.datasets.downloaders.hf.HFHandler.is_downloaded", return_value=True
         ),
         patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_hf_dl,
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         result = runner.invoke(
             dataset_app,
@@ -121,6 +123,7 @@ def test_dataset_download_force_redownloads(tmp_path):
             return_value=True,
         ),
         patch("sieval.datasets.downloaders.url.URLHandler.download") as mock_url_dl,
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         mock_url_dl.return_value = tmp_path
         result = runner.invoke(
@@ -156,6 +159,7 @@ def test_dataset_download_all_iterates_all_pilots(tmp_path):
         ) as mock_url_probe,
         patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_hf,
         patch("sieval.datasets.downloaders.url.URLHandler.download") as mock_url,
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         result = runner.invoke(
             dataset_app,
