@@ -1338,3 +1338,43 @@ class TestMainNameGuard:
         assert code in (0, 1)
         captured = capsys.readouterr()
         assert "check_links" in captured.out
+
+
+class TestDatasetIntegrity:
+    def _meta(self, name, source, checksums=()):
+        from sieval.core.datasets.meta import Category, DatasetMeta, Level1Category
+
+        return DatasetMeta(
+            name=name,
+            display_name=name,
+            description="d",
+            source=tuple(source),
+            categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+            checksums=tuple(checksums),
+        )
+
+    def test_unpinned_hf_flagged(self):
+        from check_preflight import _dataset_integrity_violations
+
+        out = _dataset_integrity_violations([self._meta("a", ["hf:org/a"])])
+        assert len(out) == 1 and "a" in out[0]
+
+    def test_url_without_checksum_flagged(self):
+        from check_preflight import _dataset_integrity_violations
+
+        out = _dataset_integrity_violations([self._meta("b", ["url:https://x/y.csv"])])
+        assert len(out) == 1 and "b" in out[0]
+
+    def test_pinned_and_checksummed_pass(self):
+        from check_preflight import _dataset_integrity_violations
+
+        metas = [
+            self._meta("a", ["hf:org/a@" + "0" * 40]),
+            self._meta(
+                "b",
+                ["url:https://x/y.csv"],
+                checksums=[("y.csv", "sha256:" + "a" * 64)],
+            ),
+            self._meta("c", ["local:/data/c"]),  # local exempt
+        ]
+        assert _dataset_integrity_violations(metas) == []
