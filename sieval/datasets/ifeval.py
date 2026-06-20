@@ -11,6 +11,8 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset
 
+IFEVAL_REVISION = "966cd89545d6b6acfd7638bc708b98261ca58e84"
+
 
 class IFEvalDatasetSample(TypedDict):
     key: str
@@ -23,7 +25,7 @@ class IFEvalDatasetSample(TypedDict):
     name="ifeval",
     display_name="IFEval",
     description="Instruction-Following Eval — 541 prompts with verifiable constraints.",
-    source="hf:google/IFEval",
+    source=f"hf:google/IFEval@{IFEVAL_REVISION}",
     categories=(Category(Level1Category.LANGUAGE, "InstructionFollowing"),),
     tags=("english", "open-ended"),
     license="Apache-2.0",

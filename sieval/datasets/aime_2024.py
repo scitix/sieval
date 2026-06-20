@@ -13,6 +13,8 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset
 
+AIME_2024_REVISION = "2fe88a2f1091d5048c0f36abc874fb997b3dd99a"
+
 
 class AIME2024DatasetSample(TypedDict):
     problem: str
@@ -23,7 +25,7 @@ class AIME2024DatasetSample(TypedDict):
     name="aime_2024",
     display_name="AIME 2024",
     description="American Invitational Mathematics Examination 2024, 30 problems.",
-    source="hf:HuggingFaceH4/aime_2024",
+    source=f"hf:HuggingFaceH4/aime_2024@{AIME_2024_REVISION}",
     categories=(Category(Level1Category.MATHEMATICS, "CompetitionMath"),),
     tags=("english", "open-ended"),
     # Inherited from upstream AI-MO/aimo-validation-aime (Apache-2.0 on HF).
