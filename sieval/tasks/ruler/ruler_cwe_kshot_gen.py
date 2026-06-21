@@ -1,10 +1,11 @@
-"""RULER CWE (common words extraction) 0-shot generative task.
+"""RULER CWE (common words extraction) few-shot generative task.
 
-The prompt is fully synthesized in ``RulerCweDataset.load()``, so this task is
-thin: send the prompt, then score by substring recall (RULER ``string_match_all``
-— the mean over reference common words of whether each appears in the
-prediction). All pipeline logic lives in
-:class:`~sieval.tasks.ruler._base.RulerRecallGenTask`.
+The prompt is fully synthesized in ``RulerCweDataset.load()``, which (mirroring
+upstream RULER's ``num_fewshot=1`` default) prepends one in-context
+demonstration — hence ``n_shot=1``, not 0. This task is thin: send the prompt,
+then score by substring recall (RULER ``string_match_all`` — the mean over
+reference common words of whether each appears in the prediction). All pipeline
+logic lives in :class:`~sieval.tasks.ruler._base.RulerRecallGenTask`.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
@@ -19,11 +20,11 @@ from sieval.tasks.ruler._base import RulerRecallGenTask
 
 
 @sieval_task(
-    name="ruler_cwe_0shot_gen",
-    display_name="RULER CWE (0-shot, generative)",
+    name="ruler_cwe_kshot_gen",
+    display_name="RULER CWE (few-shot, generative)",
     description="RULER common words extraction: report the most frequent words.",
     eval_mode=EvalMode.GEN,
-    n_shot=0,
+    n_shot=1,
     tags=("english", "open-ended", "long-context"),
     deps_group="ruler",
     model_type="chat",
@@ -33,5 +34,5 @@ from sieval.tasks.ruler._base import RulerRecallGenTask
         notes="Synthesis + substring-recall scoring ported from OpenCompass RULER.",
     ),
 )
-class RulerCweZeroShotGenTask(RulerRecallGenTask[RulerCweDatasetSample]):
+class RulerCweFewShotGenTask(RulerRecallGenTask[RulerCweDatasetSample]):
     pass

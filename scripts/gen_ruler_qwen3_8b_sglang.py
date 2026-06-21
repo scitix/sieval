@@ -38,8 +38,8 @@ import re
 # Task class mapping: inferred from task type in synthetic.yaml
 _TASK_CLASS_MAP = {
     "niah": "RulerNiahZeroShotGenTask",
-    "variable_tracking": "RulerVtZeroShotGenTask",
-    "common_words_extraction": "RulerCweZeroShotGenTask",
+    "variable_tracking": "RulerVtFewShotGenTask",
+    "common_words_extraction": "RulerCweFewShotGenTask",
     "freq_words_extraction": "RulerFweZeroShotGenTask",
     "qa": "RulerQaZeroShotGenTask",
 }

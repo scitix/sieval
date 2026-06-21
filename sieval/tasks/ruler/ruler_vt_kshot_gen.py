@@ -1,9 +1,10 @@
-"""RULER VT (variable tracking) 0-shot generative task.
+"""RULER VT (variable tracking) few-shot generative task.
 
-The prompt is fully synthesized in ``RulerVtDataset.load()``, so this task is
-thin: send the prompt, then score by substring recall (RULER ``string_match_all``
-— the mean over reference variable names of whether each appears in the
-prediction). All pipeline logic lives in
+The prompt is fully synthesized in ``RulerVtDataset.load()``, which (mirroring
+upstream RULER) always prepends one in-context demonstration — hence
+``n_shot=1``, not 0. This task is thin: send the prompt, then score by
+substring recall (RULER ``string_match_all`` — the mean over reference variable
+names of whether each appears in the prediction). All pipeline logic lives in
 :class:`~sieval.tasks.ruler._base.RulerRecallGenTask`.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
@@ -19,11 +20,11 @@ from sieval.tasks.ruler._base import RulerRecallGenTask
 
 
 @sieval_task(
-    name="ruler_vt_0shot_gen",
-    display_name="RULER VT (0-shot, generative)",
+    name="ruler_vt_kshot_gen",
+    display_name="RULER VT (few-shot, generative)",
     description="RULER variable tracking: trace multi-hop variable assignments.",
     eval_mode=EvalMode.GEN,
-    n_shot=0,
+    n_shot=1,
     tags=("english", "open-ended", "long-context"),
     deps_group="ruler",
     model_type="chat",
@@ -33,5 +34,5 @@ from sieval.tasks.ruler._base import RulerRecallGenTask
         notes="Synthesis + substring-recall scoring ported from OpenCompass RULER.",
     ),
 )
-class RulerVtZeroShotGenTask(RulerRecallGenTask[RulerVtDatasetSample]):
+class RulerVtFewShotGenTask(RulerRecallGenTask[RulerVtDatasetSample]):
     pass
