@@ -1,17 +1,3 @@
-"""RULER frequent-words-extraction (FWE) synthetic dataset.
-
-Aggregation task: the prompt is a stream of coded words drawn from a Zipfian
-distribution (a few words dominate, most are rare, with ``...`` injected as
-noise); the model must name the three most frequent coded words. Synthesis is
-ported from OpenCompass ``opencompass/datasets/ruler/ruler_fwe.py``: build a
-random coded vocabulary, sample word counts as ``k^-alpha / zeta(alpha)``, and
-grow the stream to fill ``max_seq_length`` (measured with a tiktoken/HF
-tokenizer). Emits ``{prompt, answer}`` rows; the bound task does inference +
-substring scoring.
-
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
-"""
-
 import random
 import string
 from typing import TypedDict, override
@@ -30,6 +16,8 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 
+from ._common import thinking_prefill
+
 
 class RulerFweDatasetSample(TypedDict):
     index: int
@@ -42,7 +30,7 @@ class RulerFweDatasetSample(TypedDict):
 @sieval_dataset(
     name="ruler_fwe",
     display_name="RULER FWE",
-    description="RULER frequent words extraction: report the top-N coded words.",
+    description="RULER frequent words extraction: report the top frequent coded words.",
     source=(),
     categories=(Category(Level1Category.LOGIC, "TextualReasoning"),),
     tags=("english", "open-ended", "long-context"),
@@ -72,15 +60,14 @@ class RulerFweDataset(Dataset[RulerFweDatasetSample]):
         random.seed(random_seed)
         np.random.seed(random_seed)
 
-        # Account for thinking tags overhead when enable_thinking=False
-        thinking_overhead = 0
-        if enable_thinking is False:
-            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
+        # Reserve budget for any assistant-turn prefill (e.g. Qwen3 thinking tags).
+        thinking_overhead = len(
+            tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
+        )
 
         input_max_len = max_seq_length - tokens_to_generate - thinking_overhead
         vocab_size = input_max_len // 50 if vocab_size == -1 else vocab_size
 
-        # get number of words
         _, _, num_example_words = _generate_input_output(
             input_max_len,
             tokenizer=tokenizer,
@@ -157,9 +144,7 @@ def _generate_input_output(
         ]
         flat = [x for wlst in sampled_words for x in wlst]
         random.Random(random_seed).shuffle(flat)
-        # RULER bakes answer_prefix into the template before generation
-        # (prepare.py), so the prompt ends with the answer cue and the loader
-        # can split it back off into ``answer_prefix``.
+        
         template = (
             TASKS['freq_words_extraction']['template']
             + TASKS['freq_words_extraction']['answer_prefix']

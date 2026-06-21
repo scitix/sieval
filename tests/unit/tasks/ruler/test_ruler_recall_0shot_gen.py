@@ -26,6 +26,14 @@ RECALL_TASKS = [
 ]
 
 
+class _StubModel:
+    """Minimal stand-in for the chat model `preprocess` reads. Non-reasoning
+    name + no `enable_thinking` → `thinking_prefill` returns "" (general case)."""
+
+    _model = "test-model"
+    _kwargs: dict = {}
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("task_cls", RECALL_TASKS)
 async def test_preprocess_splits_body_and_answer_prefix(task_cls):
@@ -36,9 +44,12 @@ async def test_preprocess_splits_body_and_answer_prefix(task_cls):
         "outputs": ["123"],
     }
     ctx = TaskContext(sample_id=0, raw_sample=raw)
-    # preprocess delegates to the shared `_build_prompt` (resolved via MRO), so it
-    # needs a real `self`; an uninitialized instance suffices (no dataset/model).
-    pre = await task_cls.preprocess(task_cls.__new__(task_cls), raw, ctx)
+    # preprocess resolves `_build_prompt` via MRO and reads `self.model` to decide
+    # whether to prefill a model-specific placeholder. A non-reasoning stub model
+    # exercises the general case: no prefill, so the answer cue passes through.
+    task = task_cls.__new__(task_cls)
+    task._model = _StubModel()
+    pre = await task_cls.preprocess(task, raw, ctx)
     assert pre == [
         {"role": "user", "content": "find the magic number"},
         {"role": "assistant", "content": " The magic number is"},

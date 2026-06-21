@@ -1,25 +1,3 @@
-"""RULER variable-tracking (VT) synthetic dataset.
-
-Multi-hop tracing: the prompt hides one or more chains of variable assignments
-(``VAR X = 12345`` then ``VAR Y = VAR X`` …) inside repeated noise sentences;
-the model must name every variable that ultimately resolves to a given value.
-
-Ported from original NVIDIA RULER ``scripts/data/synthetic/variable_tracking.py``
-(not the OpenCompass reduction), so it reproduces RULER's two distinguishing
-behaviours:
-
-* **Binary-search sizing** — estimate tokens-per-noise once, then binary-search
-  the noise count that fills ``max_seq_length`` (vs a linear scan).
-* **Built-in 1-shot ICL** — RULER first synthesizes a small worked example
-  (``max_seq_length=500``), then prepends a per-sample *randomized* copy of it
-  (fresh variable names + value via :func:`_randomize_icl`) before each prompt.
-
-Emits ``{prompt, answer}`` rows; the bound task does inference + substring
-scoring (``string_match_all``).
-
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
-"""
-
 import heapq
 import random
 import string
@@ -38,7 +16,7 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 
-from ._common import _build_haystack
+from ._common import _build_haystack, _ensure_punkt, thinking_prefill
 
 # Insertion depths (percentages) for chains in the essay haystack.
 DEPTHS = list(np.round(np.linspace(0, 100, num=40, endpoint=True)).astype(int))
@@ -87,7 +65,6 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
 
         haystack = _build_haystack(name_or_path, type_haystack)
 
-        # 1) Synthesize a small worked example (RULER uses max_seq_length=500).
         icl_example = self._synthesize(
             tokenizer=tokenizer,
             num_samples=1,
@@ -102,9 +79,9 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
             haystack=haystack,
             final_output=False,
             enable_thinking=enable_thinking,
+            tokenizer_path=tokenizer_path,
         )[0]
 
-        # 2) Synthesize the real samples, each prefixed with a randomized ICL copy.
         rows = self._synthesize(
             tokenizer=tokenizer,
             num_samples=num_samples,
@@ -119,6 +96,7 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
             haystack=haystack,
             final_output=True,
             enable_thinking=enable_thinking,
+            tokenizer_path=tokenizer_path,
         )
 
         return HFDatasetDict({"test": HFDataset.from_list(rows)})
@@ -139,17 +117,15 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
         final_output: bool = False,
         add_fewshot: bool = True,
         enable_thinking: bool = False,
+        tokenizer_path: str = 'cl100k_base',
     ) -> list[dict]:
-        # ``is_icl`` reflects the *original* None-ness of ``icl_example`` — the
-        # worked example itself is synthesized with the ICL chain shape.
         is_icl = add_fewshot and (icl_example is None)
 
-        # Account for thinking tags overhead when enable_thinking=False
-        thinking_overhead = 0
-        if enable_thinking is False:
-            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
+        # Reserve budget for any assistant-turn prefill (e.g. Qwen3 thinking tags).
+        thinking_overhead = len(
+            tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
+        )
 
-        # Find the perfect num_noises.
         if icl_example is not None:
             incremental = 500 if type_haystack == 'essay' else 10
             if type_haystack != 'essay' and max_seq_length < 4096:
@@ -191,7 +167,6 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
                 try:
                     input_text, answer = gen(used_noises)
                     if add_fewshot and (icl_text is not None):
-                        # Insert a per-sample randomized ICL copy before the body.
                         cutoff = input_text.index(
                             TASKS['variable_tracking']['template'][:20]
                         )
@@ -219,7 +194,6 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
                     else:
                         break
             if final_output:
-                # use first 10 char of answer prefix to locate it
                 answer_prefix_index = input_text.rfind(
                     TASKS['variable_tracking']['answer_prefix'][:10]
                 )
@@ -242,17 +216,6 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
             rows.append(formatted_output)
         return rows
 
-
-def _ensure_punkt() -> None:
-    """Ensure NLTK's ``punkt_tab`` sentence tokenizer is present (essay haystack)."""
-    import nltk
-
-    try:
-        nltk.data.find("tokenizers/punkt_tab")
-    except LookupError:
-        nltk.download("punkt_tab")
-
-
 def _binary_search_noises(
     *,
     gen,
@@ -262,7 +225,6 @@ def _binary_search_noises(
     example_tokens: int,
     incremental: int,
 ) -> int:
-    """RULER's tokens-per-noise estimate + binary search for the largest fit."""
     sample_text, _ = gen(incremental)
     sample_tokens = len(tokenizer.text_to_tokens(sample_text))
     tokens_per_haystack = sample_tokens / incremental
@@ -313,7 +275,6 @@ def _generate_chains(
 
 
 def _shuffle_sublists_heap(lst: list[list[str]]) -> list[str]:
-    """Interleave sublists, preserving each sublist's internal order (RULER)."""
     heap: list[tuple[float, int, int]] = []
     for i in range(len(lst)):
         heapq.heappush(heap, (random.random(), i, 0))
@@ -373,8 +334,6 @@ def _generate_input_output(
 
     context = context.replace(". \n", ".\n")
 
-    # Combine template + answer_prefix so ``final_output`` can later locate the
-    # prefix via rfind(); RULER's CLI template bakes the prefix into the prompt.
     template = (
         TASKS['variable_tracking']['template']
         + TASKS['variable_tracking']['answer_prefix']
@@ -384,12 +343,6 @@ def _generate_input_output(
 
 
 def _randomize_icl(icl_example: str, num_hops: int) -> str:
-    """Refresh the worked example: new variable names for the answer + a new value.
-
-    Mirrors RULER's ``randomize_icl`` — replace the last ``num_hops + 1``
-    whitespace tokens (the answer variable names) with fresh upper-case strings,
-    and swap the literal root value ``12345`` for a new one.
-    """
     icl_tgt = icl_example.strip().split()[-num_hops - 1 :]
     for item in icl_tgt:
         new_item = "".join(random.choices(string.ascii_uppercase, k=len(item))).upper()
