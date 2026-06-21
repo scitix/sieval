@@ -254,7 +254,7 @@
     {
       "name": "ruler_fwe",
       "display_name": "RULER FWE",
-      "description": "RULER frequent words extraction: report the top-N coded words.",
+      "description": "RULER frequent words extraction: report the top frequent coded words.",
       "source": [],
       "categories": [
         {
@@ -583,12 +583,12 @@
       "status": "stable"
     },
     {
-      "name": "ruler_cwe_0shot_gen",
-      "display_name": "RULER CWE (0-shot, generative)",
+      "name": "ruler_cwe_kshot_gen",
+      "display_name": "RULER CWE (few-shot, generative)",
       "description": "RULER common words extraction: report the most frequent words.",
       "dataset": "ruler_cwe",
       "eval_mode": "gen",
-      "n_shot": 0,
+      "n_shot": 1,
       "tags": [
         "english",
         "open-ended",
@@ -667,12 +667,12 @@
       "status": "stable"
     },
     {
-      "name": "ruler_vt_0shot_gen",
-      "display_name": "RULER VT (0-shot, generative)",
+      "name": "ruler_vt_kshot_gen",
+      "display_name": "RULER VT (few-shot, generative)",
       "description": "RULER variable tracking: trace multi-hop variable assignments.",
       "dataset": "ruler_vt",
       "eval_mode": "gen",
-      "n_shot": 0,
+      "n_shot": 1,
       "tags": [
         "english",
         "open-ended",

@@ -11,17 +11,17 @@ dataset/model construction).
 import pytest
 
 from sieval.core.tasks.context import TaskContext
-from sieval.tasks.ruler.ruler_cwe_0shot_gen import RulerCweZeroShotGenTask
+from sieval.tasks.ruler.ruler_cwe_kshot_gen import RulerCweFewShotGenTask
 from sieval.tasks.ruler.ruler_fwe_0shot_gen import RulerFweZeroShotGenTask
 from sieval.tasks.ruler.ruler_niah_0shot_gen import RulerNiahZeroShotGenTask
-from sieval.tasks.ruler.ruler_vt_0shot_gen import RulerVtZeroShotGenTask
+from sieval.tasks.ruler.ruler_vt_kshot_gen import RulerVtFewShotGenTask
 
 # Every recall task inherits the same pipeline from RulerRecallGenTask; running
 # the shared assertions against all four guards against an accidental override.
 RECALL_TASKS = [
     RulerNiahZeroShotGenTask,
-    RulerVtZeroShotGenTask,
-    RulerCweZeroShotGenTask,
+    RulerVtFewShotGenTask,
+    RulerCweFewShotGenTask,
     RulerFweZeroShotGenTask,
 ]
 
@@ -96,5 +96,5 @@ async def test_report_means_recall_and_scales_to_100():
 
 @pytest.mark.anyio
 async def test_report_empty_is_zero():
-    report = await RulerVtZeroShotGenTask.report(None, [], [])
+    report = await RulerVtFewShotGenTask.report(None, [], [])
     assert report["score"] == 0.0
