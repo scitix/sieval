@@ -1,0 +1,48 @@
+# ------------------------------------------------------------------------------
+# Infer recipe override — pin or tune the sglang/vllm recipe for a model
+# ------------------------------------------------------------------------------
+# When to use: you want to (a) suppress the auto-resolve warning by pinning a
+# recipe explicitly, (b) override specific engine args (tp_size, mem fraction,
+# context length), or (c) bump per-task concurrency.
+#
+# Recipe resolution precedence:
+#   explicit `recipe:` > auto-resolve from checkpoint family+size
+# Auto-resolve emits a warning in the launcher; pinning silences it.
+#
+# Two-step flow:
+#   1. sieval dataset download gpqa_diamond
+#   2. sieval run infer-recipe-override.yaml
+# ------------------------------------------------------------------------------
+result_dir: ./outputs/infer-recipe-override
+
+models:
+  qwen3-4b-tuned:
+    args:
+      concurrency_limit: 256           # raise request-side concurrency ceiling
+      max_retries: 3
+      temperature: 0.0
+    infer:
+      backend: sglang
+      checkpoint: /path/to/Qwen3-4B-Instruct   # EDIT ME
+      recipe: qwen3-4b                  # explicit pin — silences auto-resolve warning
+      overrides:
+        tp_size: 2                      # 2-way tensor parallel across 2 GPUs
+        mem_fraction_static: 0.85       # leave some slack for activations
+        context_length: 16384           # cap context below model default
+    infer_meta:
+      gpu: H100-80G
+      image: lmsysorg/sglang:latest
+
+datasets:
+  gpqa_diamond:
+    class: GPQADiamondDataset
+    path: "${SIEVAL_DATA_DIR}/gpqa_diamond"
+
+tasks:
+  gpqa_0shot_gen:
+    class: GPQADiamondZeroShotGenTask
+    dataset: gpqa_diamond
+    model: qwen3-4b-tuned
+    runner_config:
+      concurrency_limits:
+        infer: 8                        # per-task concurrency cap (< model's 256)
