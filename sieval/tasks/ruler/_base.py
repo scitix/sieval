@@ -24,6 +24,7 @@ from sieval.community.ruler.eval.constants import (
 )
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import Task
+from sieval.datasets.ruler import thinking_prefill
 
 
 class RulerRecallSample(TypedDict):
@@ -119,13 +120,15 @@ class _ChatGenBase[TSample, TFeedback](
     async def preprocess(self, raw, ctx):
         assistant_content = raw["answer_prefix"]
 
-        # Qwen3 models support extended thinking via <think>...</think> tags.
-        # When enable_thinking=false, manually add tags to the prompt so the
-        # model can still use the thinking framework.
-        is_qwen3 = "qwen" in self.model._model.lower()
+        # Prefill any model-specific assistant-turn placeholder (e.g. Qwen3's
+        # empty <think></think> block when thinking is disabled) so the model
+        # continues from the answer cue. The dataset loader reserves token budget
+        # for the same string via the shared ``thinking_prefill`` helper.
         extra_body = self.model._kwargs.get("extra_body", {})
-        if is_qwen3 and extra_body.get("enable_thinking") is False:
-            assistant_content = f"<think>\n\n</think>\n\n{assistant_content}"
+        enable_thinking = extra_body.get("enable_thinking", True)
+        assistant_content = (
+            f"{thinking_prefill(self.model._model, enable_thinking)}{assistant_content}"
+        )
 
         return [
             {"role": "user", "content": self._build_prompt(raw)},

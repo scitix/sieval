@@ -1,15 +1,3 @@
-"""RULER NIAH (needle-in-a-haystack) synthetic dataset.
-
-One parameterized loader covering all eight RULER NIAH variants (single_1/2/3,
-multikey_1/2/3, multivalue, multiquery) via ``load()`` args. Synthesis is ported
-from OpenCompass ``opencompass/datasets/ruler/ruler_niah.py``: build a haystack,
-insert key/value needles at sampled depths, grow the haystack until it fills
-``max_seq_length`` (measured with a tiktoken/HF tokenizer), and emit
-``{prompt, answer}`` rows. The bound task does inference + substring scoring.
-
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
-"""
-
 import random
 import uuid
 from typing import TypedDict, override
@@ -27,7 +15,7 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 
-from ._common import _NEEDLE, _build_haystack
+from ._common import _NEEDLE, _build_haystack, _ensure_punkt, thinking_prefill
 
 
 class RulerNiahDatasetSample(TypedDict):
@@ -108,10 +96,10 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
 
         rows = []
         incremental = _incremental(type_haystack, max_seq_length)
-        # Account for thinking tags overhead when enable_thinking=False
-        thinking_overhead = 0
-        if enable_thinking is False:
-            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
+        # Reserve budget for any assistant-turn prefill (e.g. Qwen3 thinking tags).
+        thinking_overhead = len(
+            tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
+        )
 
         for _ in range(num_samples):
             used_haystack = num_haystack
@@ -190,21 +178,6 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
             else:
                 upper_bound = mid - 1
         return optimal_haystack if optimal_haystack is not None else incremental
-
-def _ensure_punkt() -> None:
-    """Ensure NLTK's ``punkt_tab`` sentence tokenizer is present.
-
-    ``sent_tokenize`` (used for the ``essay`` haystack) loads ``punkt_tab`` on
-    nltk >= 3.9. Mirrors RULER's ``prepare.py``: probe first, download only when
-    missing, so the one-time fetch happens during data generation rather than at
-    eval time.
-    """
-    import nltk
-
-    try:
-        nltk.data.find("tokenizers/punkt_tab")
-    except LookupError:
-        nltk.download("punkt_tab")
 
 def _word_pool() -> list[str]:
     import wonderwords

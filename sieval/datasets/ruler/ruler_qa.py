@@ -1,15 +1,3 @@
-"""RULER QA synthetic dataset (multi-document question answering).
-
-One parameterized loader covering both RULER QA variants — ``dataset="squad"``
-and ``dataset="hotpotqa"`` — selected via a ``load()`` arg. Synthesis is ported
-from OpenCompass ``opencompass/datasets/ruler/ruler_qa.py``: read the source QA
-pairs and their gold documents, pad each question with distractor documents up to
-``max_seq_length`` (measured with a tiktoken/HF tokenizer), shuffle, and emit
-``{prompt, answer}`` rows. The bound task does inference + substring scoring.
-
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
-"""
-
 import json
 import os
 import random
@@ -29,6 +17,8 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 from sieval.core.utils.hf import ensure_dataset
+
+from ._common import thinking_prefill
 
 _SQUAD_FILE = "dev-v2.0.json"
 
@@ -95,7 +85,6 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
                 random_seed=random_seed,
             )
 
-        # Find the perfect num_docs
         incremental = 10
         num_docs = self._fit_num_docs(
             gen=gen,
@@ -107,11 +96,10 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
 
         # Generate samples
         rows = []
-        # Account for thinking tags overhead when enable_thinking=False
-        # (Qwen3 models add <think>\n\n</think>\n\n prefix in preprocess)
-        thinking_overhead = 0
-        if enable_thinking is False:
-            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
+        # Reserve budget for any assistant-turn prefill (e.g. Qwen3 thinking tags).
+        thinking_overhead = len(
+            tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
+        )
 
         for index in range(num_samples):
             used_docs = num_docs
@@ -157,7 +145,6 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
         tokens_to_generate: int,
         incremental: int = 10,
     ) -> int:
-        # Estimate tokens per question to determine a reasonable upper bound.
         sample_input_text, _ = gen(0, incremental)
         sample_tokens = len(tokenizer.text_to_tokens(sample_input_text))
         tokens_per_doc = sample_tokens / incremental
@@ -219,16 +206,12 @@ def _read_squad(path: str) -> tuple[list[dict], list[str]]:
 
 
 def _read_hotpotqa(name_or_path: str) -> tuple[list[dict], list[str]]:
-    # HF schema: context = {'title': [str, ...], 'sentences': [[str, ...], ...]}
-    # Try loading with distractor config (from HF or local files)
     try:
         raw = load_dataset(name_or_path, "distractor", split="validation")
     except (ValueError, FileNotFoundError):
-        # If config parameter doesn't work (e.g., local files), try without it
         raw = load_dataset(name_or_path, split="validation")
     data = ensure_dataset(raw)
 
-    # Build global doc pool: "title\nsentences_joined"
     total_docs_set: dict[str, int] = {}
     for row in data:
         ctx = row["context"]
@@ -287,7 +270,6 @@ def _generate_input_output(
             all_docs = curr_docs + random.sample(curr_more, num_docs - len(curr_docs))
         all_docs = [docs[idx] for idx in all_docs]
     else:
-        # Repeat DOCS as many times as needed and slice to num_docs
         repeats = (num_docs + len(docs) - 1) // len(docs)  # Ceiling division
         all_docs = (docs * repeats)[:num_docs]
 
@@ -296,8 +278,6 @@ def _generate_input_output(
     context = "\n\n".join(
         _DOCUMENT_PROMPT.format(i=i + 1, document=d) for i, d in enumerate(all_docs)
     )
-    # RULER bakes answer_prefix into the template before generation (prepare.py),
-    # so the prompt ends with the answer cue and the loader can split it back off.
     template = TASKS["qa"]["template"] + TASKS["qa"]["answer_prefix"]
     input_text = template.format(context=context, query=curr_q)
     return input_text, curr_a

@@ -1,16 +1,3 @@
-"""RULER common-words-extraction (CWE) synthetic dataset.
-
-Aggregation task: the prompt is a long numbered list of words in which a handful
-of "common" words repeat far more often than the rest; the model must report the
-most frequent ones. Synthesis is ported from OpenCompass
-``opencompass/datasets/ruler/ruler_cwe.py``: draw words from ``wonderwords``,
-repeat common/uncommon words at configured frequencies, prepend a one-shot
-example, and grow the list to fill ``max_seq_length`` (measured with a
-tiktoken/HF tokenizer). Emits ``{prompt, answer}`` rows; the bound task does
-inference + substring scoring.
-
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
-"""
 import json
 import os
 import random
@@ -28,6 +15,8 @@ from sieval.core.datasets import (
     Level1Category,
     sieval_dataset,
 )
+
+from ._common import thinking_prefill
 
 
 class RulerCweDatasetSample(TypedDict):
@@ -78,10 +67,6 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
         np.random.seed(random_seed)
         words = _word_pool(random_seed)
 
-        # Overflow vocabulary (RULER's english_words.json), staged by
-        # ``sieval dataset download`` into ``<datadir>/ruler_cwe/`` from the
-        # ``url:`` source. Only consumed when more words are needed than the
-        # wonderwords pool holds; load it when present, else fall back to empty.
         randle_words: list[str] = []
         randle_path = os.path.join(name_or_path, "english_words.json")
         if os.path.exists(randle_path):
@@ -113,10 +98,10 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
 
         # Generate samples
         rows = []
-        # Account for thinking tags overhead when enable_thinking=False
-        thinking_overhead = 0
-        if enable_thinking is False:
-            thinking_overhead = len(tokenizer.text_to_tokens("<think>\n\n</think>\n\n"))
+        # Reserve budget for any assistant-turn prefill (e.g. Qwen3 thinking tags).
+        thinking_overhead = len(
+            tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
+        )
 
         for index in range(num_samples):
             used_words = num_words
@@ -170,7 +155,6 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
     ) -> int:
         from loguru import logger
 
-        # Estimate tokens-per-word from a fixed 4096-word sample (RULER constant).
         sample_text, _ = gen(min(4096, vocab_size))
         tokens_per_word = len(tokenizer.text_to_tokens(sample_text)) / min(
             4096, vocab_size
@@ -293,9 +277,7 @@ def _generate_input_output(
             common_nums=num_cw,
             random_seed=random_seed,
         )
-    # RULER bakes answer_prefix into the template before generation
-    # (prepare.py: ``template = model_template.format(task_template) + answer_prefix``),
-    # so the prompt ends with the answer cue and the loader can split it back off.
+        
     _template = (
         TASKS['common_words_extraction']['template']
         + TASKS['common_words_extraction']['answer_prefix']

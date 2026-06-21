@@ -7,6 +7,14 @@ from sieval.tasks.ruler.ruler_qa_0shot_gen import RulerQaZeroShotGenTask
 # as unbound methods with self=None — no dataset/model construction needed.
 
 
+class _StubModel:
+    """Minimal stand-in for the chat model `preprocess` reads. Non-reasoning
+    name + no `enable_thinking` → `thinking_prefill` returns "" (general case)."""
+
+    _model = "test-model"
+    _kwargs: dict = {}
+
+
 @pytest.mark.anyio
 async def test_preprocess_splits_body_and_answer_prefix():
     """Body goes in the user turn; the answer cue is an assistant prefill turn."""
@@ -16,9 +24,11 @@ async def test_preprocess_splits_body_and_answer_prefix():
         "outputs": ["x"],
     }
     ctx = TaskContext(sample_id=0, raw_sample=raw)
-    # preprocess delegates to the shared `_build_prompt` (resolved via MRO), so it
-    # needs a real `self`; an uninitialized instance suffices (no dataset/model).
+    # preprocess resolves `_build_prompt` via MRO and reads `self.model` to decide
+    # whether to prefill a model-specific placeholder. A non-reasoning stub model
+    # exercises the general case: no prefill, so the answer cue passes through.
     task = RulerQaZeroShotGenTask.__new__(RulerQaZeroShotGenTask)
+    task._model = _StubModel()
     pre = await RulerQaZeroShotGenTask.preprocess(task, raw, ctx)
     assert pre == [
         {"role": "user", "content": "Document 1: foo. Question: q?"},

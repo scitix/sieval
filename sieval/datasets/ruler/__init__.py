@@ -1,4 +1,3 @@
-"""RULER long-context benchmark subtask datasets (NIAH, QA).
+from ._common import thinking_prefill
 
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
-"""
+__all__ = ["thinking_prefill"]
