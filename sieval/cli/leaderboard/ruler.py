@@ -70,13 +70,12 @@ def extract_task_order(config_path: Path | str) -> list[str] | None:
 
 
 def collect_sweep(
-    runs: list[RunInfo], task_order: list[str] | None = None
+    runs: list[RunInfo],
 ) -> dict[str, dict[int, list[float]]]:
     """Group run scores into ``{model: {length: [task scores]}}``.
 
     Runs whose task name has no length suffix, or whose report has no numeric
-    ``score``, are skipped. If task_order is provided, scores are ordered
-    according to it (for consistent output ordering).
+    ``score``, are skipped.
     """
     by_model: dict[str, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
 
@@ -91,7 +90,7 @@ def collect_sweep(
 
 
 def collect_sweep_with_tasks(
-    runs: list[RunInfo], task_order: list[str] | None = None
+    runs: list[RunInfo],
 ) -> dict[str, dict[int, dict[str, float]]]:
     """Group run scores by model, length, and task name.
 
@@ -185,7 +184,9 @@ def summarize(
         if by_task and model in by_task:
             per_task_results: dict[int, dict] = {}
             # Strip _<length> suffix from task_order for matching with task base names
-            task_order_bases = [_LEN_SUFFIX.sub("", t) for t in task_order] if task_order else []
+            task_order_bases = (
+                [_LEN_SUFFIX.sub("", t) for t in task_order] if task_order else []
+            )
 
             for length in sorted(by_task[model].keys()):
                 tasks_at_length = by_task[model][length]

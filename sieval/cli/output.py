@@ -263,7 +263,10 @@ def _render_text_dry_run(result: CommandResult) -> None:
 
 
 def _render_text_ruler_effective(result: CommandResult) -> None:
-    """Text renderer for leaderboard.ruler_effective (per-length avg + eff length + per-task details)."""
+    """Text renderer for leaderboard.ruler_effective.
+
+    Shows per-length average, effective length, and per-task details.
+    """
     if not result.ok:
         logger.error("{}", result.error)
         return
@@ -289,10 +292,13 @@ def _render_text_ruler_effective(result: CommandResult) -> None:
             task_order = summary.get("task_order", [])
             # Extract task base names from task_order (remove _<length> suffix)
             import re
-            len_suffix_re = re.compile(r"_(\d+)(k?)$", re.IGNORECASE)
-            task_order_bases = [len_suffix_re.sub("", t) for t in task_order] if task_order else []
 
-            for length_val, per_task_data in sorted(summary["per_task"].items()):
+            len_suffix_re = re.compile(r"_(\d+)(k?)$", re.IGNORECASE)
+            task_order_bases = (
+                [len_suffix_re.sub("", t) for t in task_order] if task_order else []
+            )
+
+            for _length_val, per_task_data in sorted(summary["per_task"].items()):
                 log_user("    {}", per_task_data["tag"])
                 tasks = per_task_data["tasks"]
                 # Use task_order if available, otherwise sort alphabetically
