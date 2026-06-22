@@ -7,9 +7,6 @@ delimiters, the ``[DONE]`` stop token, and the fixed task_id 2/3/4 few-shot
 examples. The few-shot set and the 1-10/11-510/511-600/601-974 split ranges
 follow the original google-research MBPP README.
 
-For reference, published Qwen2.5-72B-Base MBPP 3-shot Pass@1 is 76.0 in the
-Qwen3 report (Table 3) and 72.6 in the DeepSeek-V3 report (Table 3).
-
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
 
