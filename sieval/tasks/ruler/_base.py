@@ -1,4 +1,3 @@
-
 """Shared base classes for the RULER 0-shot task family.
 
 RULER tasks are thin — the prompt is fully synthesized in the dataset loader, so
