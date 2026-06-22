@@ -87,6 +87,59 @@ def report(
     render(result, output)
 
 
+@leaderboard_app.command(name="ruler-avg")
+def ruler_avg(
+    dirs: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Directories to scan (default: ./outputs/)"),
+    ] = None,
+    output: Annotated[
+        OutputFormat,
+        typer.Option("-o", "--output", help="Output format"),
+    ] = OutputFormat.TEXT,
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-v", help="Enable verbose logging"),
+    ] = False,
+) -> None:
+    """RULER headline: mean of the 13 subtask scores, per context length.
+
+    RULER's score is the unweighted average over its subtasks; the wide
+    per-task matrix from `report` isn't that number. This collapses the
+    ``ruler_*`` runs into the per-length mean (and an overall mean).
+    """
+    from sieval.core.utils.logging import configure_logging
+
+    from ._ruler_avg import ruler_average
+
+    configure_logging(verbose)
+
+    warnings: list[str] = []
+    if dirs is None:
+        dirs = [Path("outputs")]
+    valid_dirs: list[Path] = []
+    for d in dirs:
+        if d.is_dir():
+            valid_dirs.append(d)
+        else:
+            warnings.append(f"Directory not found, skipping: {d}")
+
+    resolved_runs = _resolve_run_models(scan_runs(valid_dirs))
+    averages = ruler_average(
+        [(r.model_name, r.task_name, r.report) for r in resolved_runs]
+    )
+    if not averages:
+        warnings.append("No ruler_* runs with a numeric score found.")
+
+    result = CommandResult(
+        command="leaderboard.ruler_avg",
+        ok=True,
+        data={"models": averages},
+        warnings=warnings or None,
+    )
+    render(result, output)
+
+
 @leaderboard_app.command(name="list")
 def list_cmd(
     directory: Annotated[

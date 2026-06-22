@@ -262,6 +262,32 @@ def _render_text_dry_run(result: CommandResult) -> None:
         log_user("\nDry-run passed.")
 
 
+def _render_text_ruler_avg(result: CommandResult) -> None:
+    """Text renderer for leaderboard.ruler_avg — per-length and overall mean."""
+    if not result.ok:
+        logger.error("{}", result.error)
+        return
+    models = result.data.get("models", {}) if isinstance(result.data, dict) else {}
+    for model, summary in models.items():
+        log_user("\nModel: {}", model)
+        per_length = summary["per_length"]
+
+        # Sort numeric length tags ascending; "all" (single-length) sorts last.
+        def _tag_key(tag: str) -> tuple[int, float]:
+            if tag == "all":
+                return (1, 0.0)
+            n = int(tag[:-1]) * 1024 if tag.endswith("k") else int(tag)
+            return (0, n)
+
+        for tag in sorted(per_length, key=_tag_key):
+            row = per_length[tag]
+            log_user("  {:>6}  avg={:6.2f}  ({} subtasks)", tag, row["avg"], row["n"])
+        overall = summary["overall"]
+        log_user("  overall avg={:.2f}  ({} subtasks)", overall["avg"], overall["n"])
+    for w in result.warnings or []:
+        log_user("⚠ {}", w)
+
+
 def _render_text_leaderboard_list(result: CommandResult) -> None:
     """Text renderer for leaderboard.list — NAME / MODELS / TASKS / PATH."""
     if not result.ok:
@@ -624,6 +650,7 @@ _TEXT_RENDERERS: dict[str, Callable[[CommandResult], None]] = {
     "run.dry_run": _render_text_dry_run,
     "leaderboard.run.dry_run": _render_text_dry_run,
     "leaderboard.report": _render_text_leaderboard_report,
+    "leaderboard.ruler_avg": _render_text_ruler_avg,
     "leaderboard.list": _render_text_leaderboard_list,
     "dataset.list": _render_text_dataset_list,
     "dataset.show": _render_text_dataset_show,
