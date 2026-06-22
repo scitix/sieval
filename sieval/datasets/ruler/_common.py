@@ -2,6 +2,29 @@ import gzip
 import json
 import os
 import re
+from typing import TypedDict, cast
+
+from sieval.community.ruler.datasets.constants import TASKS
+
+
+class RulerTaskSpec(TypedDict):
+    """Typed view over one entry of the vendored RULER ``TASKS`` table."""
+
+    tokens_to_generate: int
+    template: str
+    answer_prefix: str
+
+
+def ruler_task(name: str) -> RulerTaskSpec:
+    """Return the RULER spec for *name* with precise field types.
+
+    ``community/`` is excluded from type checking and its ``TASKS`` dict mixes
+    ``int`` and ``str`` values, so ty infers ``int | str`` at every call site
+    (breaking subscription, concatenation, and ``int`` defaults). This re-asserts
+    the per-task schema once so loaders get exact types.
+    """
+    return cast(RulerTaskSpec, TASKS[name])
+
 
 _NOISE_HAYSTACK = (
     "The grass is green. The sky is blue. The sun is yellow. "
@@ -42,6 +65,7 @@ def _build_haystack(name_or_path: str, type_haystack: str):
         return _NEEDLE
     else:
         raise NotImplementedError(f"{type_haystack} is not implemented.")
+
 
 def _ensure_punkt() -> None:
     import nltk

@@ -8,6 +8,8 @@ unbound methods, with an uninitialized instance where ``self`` is needed (no
 dataset/model construction).
 """
 
+from typing import Any
+
 import pytest
 
 from sieval.core.tasks.context import TaskContext
@@ -24,6 +26,10 @@ RECALL_TASKS = [
     RulerCweFewShotGenTask,
     RulerFweZeroShotGenTask,
 ]
+
+# feedback/report ignore self; `_SELF` is typed Any so the unbound calls below
+# type-check without per-line ignores.
+_SELF: Any = None
 
 
 class _StubModel:
@@ -63,7 +69,7 @@ async def test_feedback_carries_prediction_and_references(task_cls):
     happens batch-wide in ``report``."""
     raw = {"input": "p", "answer_prefix": "", "outputs": ["Alpha", "Beta"]}
     ctx = TaskContext(sample_id=0, raw_sample=raw)
-    finalize, fb = await task_cls.feedback(None, "the answer mentions alpha", ctx)
+    finalize, fb = await task_cls.feedback(_SELF, "the answer mentions alpha", ctx)
     assert finalize is True
     assert fb == {
         "prediction": "the answer mentions alpha",
@@ -89,12 +95,12 @@ async def test_report_means_recall_and_scales_to_100():
         _final_ctx("only alpha here", ["Alpha", "Beta"]),
         _final_ctx("nothing", ["Gamma"]),
     ]
-    report = await RulerNiahZeroShotGenTask.report(None, finals, [])
+    report = await RulerNiahZeroShotGenTask.report(_SELF, finals, [])
     assert report["score"] == pytest.approx(50.0)
     assert report["fails"] == 0
 
 
 @pytest.mark.anyio
 async def test_report_empty_is_zero():
-    report = await RulerVtFewShotGenTask.report(None, [], [])
+    report = await RulerVtFewShotGenTask.report(_SELF, [], [])
     assert report["score"] == 0.0

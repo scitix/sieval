@@ -8,7 +8,6 @@ from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 from datasets import load_dataset
 
-from sieval.community.ruler.datasets.constants import TASKS
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 from sieval.core.datasets import (
     Category,
@@ -18,7 +17,7 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset
 
-from ._common import thinking_prefill
+from ._common import ruler_task, thinking_prefill
 
 _SQUAD_FILE = "dev-v2.0.json"
 
@@ -54,9 +53,9 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
         *,
         dataset: str = "squad",
         max_seq_length: int = 4096,
-        tokens_to_generate: int = TASKS['qa']['tokens_to_generate'],
-        tokenizer_type: str = 'openai',
-        tokenizer_path: str = 'cl100k_base',
+        tokens_to_generate: int = ruler_task("qa")["tokens_to_generate"],
+        tokenizer_type: str = "openai",
+        tokenizer_path: str = "cl100k_base",
         num_samples: int = 500,
         pre_samples: int = 0,
         random_seed: int = 42,
@@ -107,7 +106,9 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
                 try:
                     input_text, answer = gen(index + pre_samples, used_docs)
                     length = (
-                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
+                        len(tokenizer.text_to_tokens(input_text))
+                        + tokens_to_generate
+                        + thinking_overhead
                     )
                     assert length <= max_seq_length, f"{length} exceeds max_seq_length"
                     break
@@ -120,7 +121,7 @@ class RulerQaDataset(Dataset[RulerQaDatasetSample]):
                     input_text.replace("\n", " ").replace("\t", " ").strip().split()
                 )
             # Locate the answer prefix by its first 10 chars and split it off.
-            qa_answer_prefix = str(TASKS["qa"]["answer_prefix"])
+            qa_answer_prefix = ruler_task("qa")["answer_prefix"]
             answer_prefix_index = input_text.rfind(qa_answer_prefix[:10])
             answer_prefix = input_text[answer_prefix_index:]
             input_text = input_text[:answer_prefix_index]
@@ -278,6 +279,6 @@ def _generate_input_output(
     context = "\n\n".join(
         _DOCUMENT_PROMPT.format(i=i + 1, document=d) for i, d in enumerate(all_docs)
     )
-    template = TASKS["qa"]["template"] + TASKS["qa"]["answer_prefix"]
+    template = ruler_task("qa")["template"] + ruler_task("qa")["answer_prefix"]
     input_text = template.format(context=context, query=curr_q)
     return input_text, curr_a

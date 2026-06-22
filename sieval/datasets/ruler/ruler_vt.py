@@ -7,7 +7,6 @@ import numpy as np
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
-from sieval.community.ruler.datasets.constants import TASKS
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 from sieval.core.datasets import (
     Category,
@@ -16,7 +15,7 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 
-from ._common import _build_haystack, _ensure_punkt, thinking_prefill
+from ._common import _build_haystack, _ensure_punkt, ruler_task, thinking_prefill
 
 # Insertion depths (percentages) for chains in the essay haystack.
 DEPTHS = list(np.round(np.linspace(0, 100, num=40, endpoint=True)).astype(int))
@@ -47,15 +46,15 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
         name_or_path: str,
         *,
         max_seq_length: int = 4096,
-        tokens_to_generate: int = TASKS['variable_tracking']['tokens_to_generate'],
-        tokenizer_type: str = 'openai',
-        tokenizer_path: str = 'cl100k_base',
+        tokens_to_generate: int = ruler_task("variable_tracking")["tokens_to_generate"],
+        tokenizer_type: str = "openai",
+        tokenizer_path: str = "cl100k_base",
         num_chains: int = 1,
         num_hops: int = 4,
         num_samples: int = 500,
         random_seed: int = 42,
         remove_newline_tab: bool = False,
-        type_haystack: str = 'noise',
+        type_haystack: str = "noise",
         enable_thinking: bool = False,
         **kwargs,
     ) -> HFDatasetDict:
@@ -117,7 +116,7 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
         final_output: bool = False,
         add_fewshot: bool = True,
         enable_thinking: bool = False,
-        tokenizer_path: str = 'cl100k_base',
+        tokenizer_path: str = "cl100k_base",
     ) -> list[dict]:
         is_icl = add_fewshot and (icl_example is None)
 
@@ -127,17 +126,17 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
         )
 
         if icl_example is not None:
-            incremental = 500 if type_haystack == 'essay' else 10
-            if type_haystack != 'essay' and max_seq_length < 4096:
+            incremental = 500 if type_haystack == "essay" else 10
+            if type_haystack != "essay" and max_seq_length < 4096:
                 incremental = 5
         else:
-            incremental = 50 if type_haystack == 'essay' else 5
+            incremental = 50 if type_haystack == "essay" else 5
 
         example_tokens = 0
         icl_text: str | None = None
         if add_fewshot and (icl_example is not None):
             icl_text = (
-                icl_example['input'] + " " + ' '.join(icl_example['outputs']) + '\n'
+                icl_example["input"] + " " + " ".join(icl_example["outputs"]) + "\n"
             )
             example_tokens = len(tokenizer.text_to_tokens(icl_text))
 
@@ -168,23 +167,25 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
                     input_text, answer = gen(used_noises)
                     if add_fewshot and (icl_text is not None):
                         cutoff = input_text.index(
-                            TASKS['variable_tracking']['template'][:20]
+                            ruler_task("variable_tracking")["template"][:20]
                         )
                         input_text = (
                             input_text[:cutoff]
                             + _randomize_icl(icl_text, num_hops)
-                            + '\n'
+                            + "\n"
                             + input_text[cutoff:]
                         )
                     if remove_newline_tab:
-                        input_text = ' '.join(
-                            input_text.replace('\n', ' ')
-                            .replace('\t', ' ')
+                        input_text = " ".join(
+                            input_text.replace("\n", " ")
+                            .replace("\t", " ")
                             .strip()
                             .split()
                         )
                     length = (
-                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
+                        len(tokenizer.text_to_tokens(input_text))
+                        + tokens_to_generate
+                        + thinking_overhead
                     )
                     assert length <= max_seq_length, "exceeds max_seq_length"
                     break
@@ -195,26 +196,27 @@ class RulerVtDataset(Dataset[RulerVtDatasetSample]):
                         break
             if final_output:
                 answer_prefix_index = input_text.rfind(
-                    TASKS['variable_tracking']['answer_prefix'][:10]
+                    ruler_task("variable_tracking")["answer_prefix"][:10]
                 )
                 answer_prefix = input_text[answer_prefix_index:]
                 input_text = input_text[:answer_prefix_index]
                 formatted_output = {
-                    'index': index,
+                    "index": index,
                     "input": input_text,
                     "outputs": answer,
                     "length": length,
-                    'answer_prefix': answer_prefix,
+                    "answer_prefix": answer_prefix,
                 }
             else:
                 formatted_output = {
-                    'index': index,
+                    "index": index,
                     "input": input_text,
                     "outputs": answer,
                     "length": length,
                 }
             rows.append(formatted_output)
         return rows
+
 
 def _binary_search_noises(
     *,
@@ -299,7 +301,7 @@ def _generate_input_output(
     variables, chains = _generate_chains(num_chains, num_hops, is_icl=is_icl)
     value = chains[0][0].split("=")[-1].strip()
 
-    if type_haystack == 'essay':
+    if type_haystack == "essay":
         from nltk.tokenize import sent_tokenize
 
         text = " ".join(haystack[:num_noises])
@@ -322,7 +324,7 @@ def _generate_input_output(
             if i - 1 < len(chains_flat):
                 document_sents_list.append(chains_flat[i - 1].strip() + ".")
         context = " ".join(document_sents_list)
-    elif type_haystack == 'noise':
+    elif type_haystack == "noise":
         sentences = [haystack] * num_noises
         for chain in chains:
             positions = sorted(random.sample(range(len(sentences)), len(chain)))
@@ -335,8 +337,8 @@ def _generate_input_output(
     context = context.replace(". \n", ".\n")
 
     template = (
-        TASKS['variable_tracking']['template']
-        + TASKS['variable_tracking']['answer_prefix']
+        ruler_task("variable_tracking")["template"]
+        + ruler_task("variable_tracking")["answer_prefix"]
     )
     input_text = template.format(context=context, query=value, num_v=num_hops + 1)
     return input_text, variables[0]

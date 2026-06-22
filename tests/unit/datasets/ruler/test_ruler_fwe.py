@@ -39,8 +39,12 @@ def test_load_emits_rows_with_ruler_schema():
 
 
 def test_load_is_deterministic_for_fixed_seed():
-    kw = {"name_or_path": ".", "max_seq_length": 512, "num_samples": 3}
-    first = RulerFweDataset(**kw).test_set[0]
-    second = RulerFweDataset(**kw).test_set[0]
-    assert first["input"] == second["input"]
-    assert first["outputs"] == second["outputs"]
+    first = RulerFweDataset(
+        name_or_path=".", max_seq_length=512, num_samples=3
+    ).test_set
+    second = RulerFweDataset(
+        name_or_path=".", max_seq_length=512, num_samples=3
+    ).test_set
+    assert first is not None and second is not None
+    assert first[0]["input"] == second[0]["input"]
+    assert first[0]["outputs"] == second[0]["outputs"]

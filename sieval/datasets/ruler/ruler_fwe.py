@@ -7,7 +7,6 @@ from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 from scipy.special import zeta
 
-from sieval.community.ruler.datasets.constants import TASKS
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 from sieval.core.datasets import (
     Category,
@@ -16,7 +15,7 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 
-from ._common import thinking_prefill
+from ._common import ruler_task, thinking_prefill
 
 
 class RulerFweDatasetSample(TypedDict):
@@ -25,6 +24,9 @@ class RulerFweDatasetSample(TypedDict):
     outputs: list[str]
     length: int
     answer_prefix: str
+
+
+_DEFAULT_TOKENS_TO_GENERATE = ruler_task("freq_words_extraction")["tokens_to_generate"]
 
 
 @sieval_dataset(
@@ -44,9 +46,9 @@ class RulerFweDataset(Dataset[RulerFweDatasetSample]):
         name_or_path: str,
         *,
         max_seq_length: int = 4096,
-        tokens_to_generate: int = TASKS['freq_words_extraction']['tokens_to_generate'],
-        tokenizer_type: str = 'openai',
-        tokenizer_path: str = 'cl100k_base',
+        tokens_to_generate: int = _DEFAULT_TOKENS_TO_GENERATE,
+        tokenizer_type: str = "openai",
+        tokenizer_path: str = "cl100k_base",
         alpha: float = 2.0,
         coded_wordlen: int = 6,
         vocab_size: int = -1,
@@ -91,14 +93,18 @@ class RulerFweDataset(Dataset[RulerFweDatasetSample]):
                 random_seed=random_seed,
             )
 
-            length = len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
+            length = (
+                len(tokenizer.text_to_tokens(input_text))
+                + tokens_to_generate
+                + thinking_overhead
+            )
 
             if remove_newline_tab:
                 input_text = " ".join(
                     input_text.replace("\n", " ").replace("\t", " ").strip().split()
                 )
             answer_prefix_index = input_text.rfind(
-                TASKS['freq_words_extraction']['answer_prefix'][:10]
+                ruler_task("freq_words_extraction")["answer_prefix"][:10]
             )
             answer_prefix = input_text[answer_prefix_index:]
             input_text = input_text[:answer_prefix_index]
@@ -144,10 +150,10 @@ def _generate_input_output(
         ]
         flat = [x for wlst in sampled_words for x in wlst]
         random.Random(random_seed).shuffle(flat)
-        
+
         template = (
-            TASKS['freq_words_extraction']['template']
-            + TASKS['freq_words_extraction']['answer_prefix']
+            ruler_task("freq_words_extraction")["template"]
+            + ruler_task("freq_words_extraction")["answer_prefix"]
         )
         text = template.format(context=" ".join(flat), query="")
         return text, vocab[1:4]

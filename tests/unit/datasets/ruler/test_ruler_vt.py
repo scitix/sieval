@@ -68,9 +68,7 @@ def test_generate_input_output_rejects_unknown_haystack():
 
 def test_load_emits_rows_with_ruler_schema():
     """Loaded rows carry the RULER VT schema (input/outputs/answer_prefix split)."""
-    ds = RulerVtDataset(
-        name_or_path=".", max_seq_length=512, num_samples=4, num_hops=2
-    )
+    ds = RulerVtDataset(name_or_path=".", max_seq_length=512, num_samples=4, num_hops=2)
     rows = ds.test_set
     assert rows is not None and len(rows) == 4
     for r in rows:
@@ -93,15 +91,21 @@ def test_load_prepends_one_shot_icl():
     ds = RulerVtDataset(
         name_or_path=".", max_seq_length=1024, num_samples=2, num_hops=2
     )
-    row = ds.test_set[0]
+    test = ds.test_set
+    assert test is not None
+    row = test[0]
     full = row["input"] + row["answer_prefix"]
     assert full.count("Memorize and track the chain(s)") == 2
     assert full.count("they are:") == 2
 
 
 def test_load_is_deterministic_for_fixed_seed():
-    kw = {"name_or_path": ".", "max_seq_length": 512, "num_samples": 3, "num_hops": 2}
-    first = RulerVtDataset(**kw).test_set[0]
-    second = RulerVtDataset(**kw).test_set[0]
-    assert first["input"] == second["input"]
-    assert first["outputs"] == second["outputs"]
+    first = RulerVtDataset(
+        name_or_path=".", max_seq_length=512, num_samples=3, num_hops=2
+    ).test_set
+    second = RulerVtDataset(
+        name_or_path=".", max_seq_length=512, num_samples=3, num_hops=2
+    ).test_set
+    assert first is not None and second is not None
+    assert first[0]["input"] == second[0]["input"]
+    assert first[0]["outputs"] == second[0]["outputs"]
