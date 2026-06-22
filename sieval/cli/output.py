@@ -281,7 +281,7 @@ def _render_text_ruler_avg(result: CommandResult) -> None:
 
         for tag in sorted(per_length, key=_tag_key):
             row = per_length[tag]
-            log_user("  {:>6}  avg={:6.1f}  ({} subtasks)", tag, row["avg"], row["n"])
+            log_user("  {:>6}  avg={:.1f}  ({} subtasks)", tag, row["avg"], row["n"])
         overall = summary["overall"]
         log_user("  overall avg={:.1f}  ({} subtasks)", overall["avg"], overall["n"])
     for w in result.warnings or []:
