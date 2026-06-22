@@ -1,3 +1,13 @@
+"""RULER VT (variable tracking) synthetic dataset.
+
+Prompt synthesis is ported from NVIDIA RULER's
+``scripts/data/synthetic/variable_tracking.py`` (assignment-chain generation,
+noise/essay haystacks, one in-context demonstration), refactored into a sieval
+Dataset loader.
+
+AI-Generated Code - Claude Opus 4.8 (Anthropic)
+"""
+
 import heapq
 import random
 import string

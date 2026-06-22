@@ -1,3 +1,12 @@
+"""RULER QA synthetic dataset (SQuAD / HotpotQA distractors).
+
+Prompt synthesis is ported from NVIDIA RULER's
+``scripts/data/synthetic/qa.py`` (distractor-document assembly, ceiling-division
+repeat, answer-prefix split), refactored into a sieval Dataset loader.
+
+AI-Generated Code - Claude Opus 4.8 (Anthropic)
+"""
+
 import json
 import os
 import random

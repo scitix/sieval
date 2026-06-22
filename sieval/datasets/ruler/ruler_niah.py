@@ -1,3 +1,12 @@
+"""RULER NIAH (needle-in-a-haystack) synthetic dataset.
+
+Prompt synthesis is ported from NVIDIA RULER's
+``scripts/data/synthetic/niah.py`` (binary-search haystack sizing, sentence
+insertion, answer-prefix split), refactored into a sieval Dataset loader.
+
+AI-Generated Code - Claude Opus 4.8 (Anthropic)
+"""
+
 import random
 import uuid
 from typing import TypedDict, override

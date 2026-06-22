@@ -29,10 +29,11 @@ from sieval.tasks.ruler._base import RulerQaGenTask
     deps_group="ruler",
     model_type="chat",
     reference_impl=ReferenceImpl(
-        source="opencompass",
-        url="https://github.com/open-compass/opencompass/blob/a4b54048ae8759fa342d3efa1df5b53865518804/opencompass/datasets/ruler/ruler_qa.py",
-        notes="Scoring uses RULER's own string_match_part (vendored in "
-        "sieval.community.ruler.eval.constants); synthesis ported from OpenCompass.",
+        source="NVIDIA/RULER",
+        url="https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
+        notes="This task mirrors RULER's scoring (string_match_part, vendored in "
+        "community/ruler/eval). Prompt synthesis lives in the RulerQaDataset loader, "
+        "ported from RULER's scripts/data/synthetic/qa.py.",
     ),
 )
 class RulerQaZeroShotGenTask(RulerQaGenTask[RulerQaDatasetSample]):
