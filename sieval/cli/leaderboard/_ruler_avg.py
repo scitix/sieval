@@ -79,13 +79,14 @@ def ruler_average(
         all_scores: list[float] = []
         for length, scores in by_length.items():
             tag = "all" if length is None else length_tag(length)
-            per_length[tag] = {"avg": sum(scores) / len(scores), "n": len(scores)}
+            per_length[tag] = {
+                "avg": round(sum(scores) / len(scores), 1),
+                "n": len(scores),
+            }
             all_scores.extend(scores)
+        overall = round(sum(all_scores) / len(all_scores), 1) if all_scores else 0.0
         out[model_name] = {
             "per_length": per_length,
-            "overall": {
-                "avg": sum(all_scores) / len(all_scores) if all_scores else 0.0,
-                "n": len(all_scores),
-            },
+            "overall": {"avg": overall, "n": len(all_scores)},
         }
     return out
