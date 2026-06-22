@@ -1,3 +1,8 @@
+"""Tests for the local: source handler.
+
+AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
+"""
+
 from unittest.mock import patch
 
 import pytest
