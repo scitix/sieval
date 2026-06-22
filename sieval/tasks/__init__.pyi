@@ -49,6 +49,9 @@ from .livecodebench_code_generation_kshot_base_gen import (
 from .math_500_0shot_gen import (
     MATH500ZeroShotGenTask,
 )
+from .mbpp_kshot_base_gen import (
+    MBPPFewShotBaseGenTask,
+)
 from .mmlu_0shot_gen import (
     MMLUZeroShotGenTask,
 )
@@ -79,6 +82,7 @@ __all__ = [
     "LiveCodeBenchCodeGenerationFewShotBaseGenTask",
     "LiveCodeBenchCodeGenerationZeroShotGenTask",
     "MATH500ZeroShotGenTask",
+    "MBPPFewShotBaseGenTask",
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
