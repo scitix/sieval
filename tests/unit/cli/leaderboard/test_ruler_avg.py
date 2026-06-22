@@ -84,3 +84,16 @@ def test_multiple_models_kept_separate():
 
 def test_empty_runs():
     assert ruler_average([]) == {}
+
+
+def test_average_rounds_to_one_decimal():
+    # mean of 80 and 75 = 77.5 (exact); add a third giving a repeating decimal:
+    # (80 + 75 + 71) / 3 = 75.333... → rounded to 75.3
+    runs = [
+        ("m", "ruler_cwe_64k", {"score": 80.0}),
+        ("m", "ruler_vt_64k", {"score": 75.0}),
+        ("m", "ruler_fwe_64k", {"score": 71.0}),
+    ]
+    out = ruler_average(runs)
+    assert out["m"]["per_length"]["64k"]["avg"] == 75.3
+    assert out["m"]["overall"]["avg"] == 75.3
