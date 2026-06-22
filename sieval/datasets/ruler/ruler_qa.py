@@ -23,6 +23,10 @@ _SQUAD_FILE = "dev-v2.0.json"
 
 _DOCUMENT_PROMPT = "Document {i}:\n{document}"
 
+# Pin the HotpotQA snapshot so the distractor documents are reproducible across
+# downloads (HF `main` can move). See the gsm8k dataset for the same pattern.
+HOTPOTQA_REVISION = "1908d6afbbead072334abe2965f91bd2709910ab"
+
 
 class RulerQaDatasetSample(TypedDict):
     index: int
@@ -38,7 +42,7 @@ class RulerQaDatasetSample(TypedDict):
     description="RULER QA: answer over many distractor documents.",
     source=(
         "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
-        "hf:hotpotqa/hotpot_qa",
+        f"hf:hotpotqa/hotpot_qa@{HOTPOTQA_REVISION}",
     ),
     categories=(Category(Level1Category.LOGIC, "TextualReasoning"),),
     tags=("english", "open-ended", "long-context"),
