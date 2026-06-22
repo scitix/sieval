@@ -1,10 +1,10 @@
 """RULER NIAH 0-shot generative task.
 
 The prompt is fully synthesized in ``RulerNiahDataset.load()``, so this task is
-thin: pass the prompt to the model, then score by substring recall — the mean
-over reference answers of whether each appears (case-insensitively) in the
-prediction. Mirrors OpenCompass ``RulerNiahEvaluator``. All pipeline logic lives
-in :class:`~sieval.tasks.ruler._base.RulerRecallGenTask`.
+thin: pass the prompt to the model, then score by substring recall (RULER
+``string_match_all`` — the mean over reference answers of whether each appears,
+case-insensitively, in the prediction). All pipeline logic lives in
+:class:`~sieval.tasks.ruler._base.RulerRecallGenTask`.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
