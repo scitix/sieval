@@ -116,7 +116,9 @@ def test_remove_newline_tab_single_line(squad_dir):
         remove_newline_tab=True,
     )
     # remove_newline_tab=True collapses the prompt to a single line.
-    assert "\n" not in ds.test_set[0]["input"]
+    test = ds.test_set
+    assert test is not None
+    assert "\n" not in test[0]["input"]
 
 
 def test_hotpotqa_synthesis(hotpot_hf_dataset):
@@ -126,17 +128,23 @@ def test_hotpotqa_synthesis(hotpot_hf_dataset):
         ds = RulerQaDataset(
             "hotpotqa/hotpot_qa", dataset="hotpotqa", max_seq_length=512, num_samples=2
         )
-    row = ds.test_set[0]
+    test = ds.test_set
+    assert test is not None
+    row = test[0]
     assert "Document 1:" in row["input"]
     assert any(a in row["input"] for a in row["outputs"])
 
 
 def test_deterministic_under_seed(squad_dir):
-    kw = {"dataset": "squad", "max_seq_length": 512, "num_samples": 2, "random_seed": 7}
-    a = RulerQaDataset(squad_dir, **kw).test_set[0]
-    b = RulerQaDataset(squad_dir, **kw).test_set[0]
-    assert a["input"] == b["input"]
-    assert a["outputs"] == b["outputs"]
+    a = RulerQaDataset(
+        squad_dir, dataset="squad", max_seq_length=512, num_samples=2, random_seed=7
+    ).test_set
+    b = RulerQaDataset(
+        squad_dir, dataset="squad", max_seq_length=512, num_samples=2, random_seed=7
+    ).test_set
+    assert a is not None and b is not None
+    assert a[0]["input"] == b[0]["input"]
+    assert a[0]["outputs"] == b[0]["outputs"]
 
 
 def test_unknown_dataset_rejected(squad_dir):

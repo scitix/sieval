@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from sieval.core.tasks.context import TaskContext
@@ -5,6 +7,8 @@ from sieval.tasks.ruler.ruler_qa_0shot_gen import RulerQaZeroShotGenTask
 
 # feedback/report read only ctx + args (never `self`), so they can be invoked
 # as unbound methods with self=None — no dataset/model construction needed.
+# `_SELF` is typed Any so passing it as `self` type-checks without per-line ignores.
+_SELF: Any = None
 
 
 class _StubModel:
@@ -41,7 +45,7 @@ async def test_feedback_carries_prediction_and_references():
     raw = {"outputs": ["Paris", "the capital"]}
     ctx = TaskContext(sample_id=0, raw_sample=raw)
     finalize, fb = await RulerQaZeroShotGenTask.feedback(
-        None, "The answer is paris.", ctx
+        _SELF, "The answer is paris.", ctx
     )
     assert finalize is True
     assert fb == {
@@ -65,7 +69,7 @@ async def test_report_uses_max_over_references():
         _final_ctx("the answer is paris.", ["Paris", "the capital"]),
         _final_ctx("Berlin", ["Paris", "London"]),
     ]
-    report = await RulerQaZeroShotGenTask.report(None, finals, [])
+    report = await RulerQaZeroShotGenTask.report(_SELF, finals, [])
     assert report["score"] == 50.0
     assert report["fails"] == 0
 
@@ -76,11 +80,11 @@ async def test_report_all_correct_is_100():
         _final_ctx("paris", ["Paris"]),
         _final_ctx("london", ["London"]),
     ]
-    report = await RulerQaZeroShotGenTask.report(None, finals, [])
+    report = await RulerQaZeroShotGenTask.report(_SELF, finals, [])
     assert report["score"] == 100.0
 
 
 @pytest.mark.anyio
 async def test_report_empty_is_zero():
-    report = await RulerQaZeroShotGenTask.report(None, [], [])
+    report = await RulerQaZeroShotGenTask.report(_SELF, [], [])
     assert report["score"] == 0.0

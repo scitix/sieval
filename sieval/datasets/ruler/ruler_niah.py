@@ -6,7 +6,6 @@ import numpy as np
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
-from sieval.community.ruler.datasets.constants import TASKS
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 from sieval.core.datasets import (
     Category,
@@ -15,7 +14,13 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 
-from ._common import _NEEDLE, _build_haystack, _ensure_punkt, thinking_prefill
+from ._common import (
+    _NEEDLE,
+    _build_haystack,
+    _ensure_punkt,
+    ruler_task,
+    thinking_prefill,
+)
 
 
 class RulerNiahDatasetSample(TypedDict):
@@ -44,9 +49,9 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
         name_or_path: str,
         *,
         max_seq_length: int = 4096,
-        tokens_to_generate: int = TASKS['niah']['tokens_to_generate'],
-        tokenizer_type: str = 'openai',
-        tokenizer_path: str = 'cl100k_base',
+        tokens_to_generate: int = ruler_task("niah")["tokens_to_generate"],
+        tokenizer_type: str = "openai",
+        tokenizer_path: str = "cl100k_base",
         num_samples: int = 500,
         random_seed: int = 42,
         num_needle_k: int = 1,
@@ -107,7 +112,9 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
                 try:
                     input_text, answer = gen(used_haystack)
                     length = (
-                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
+                        len(tokenizer.text_to_tokens(input_text))
+                        + tokens_to_generate
+                        + thinking_overhead
                     )
                     assert length <= max_seq_length, "exceeds max_seq_length"
                     break
@@ -119,10 +126,11 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
                         break
             if remove_newline_tab:
                 input_text = " ".join(
-                    [input_text.replace("\n", " ").replace("\t", " ").strip().split()]
+                    input_text.replace("\n", " ").replace("\t", " ").strip().split()
                 )
             # use first 10 char of answer prefix to locate it
-            answer_prefix_index = input_text.rfind(TASKS['niah']['answer_prefix'][:10])
+            niah_answer_prefix = ruler_task("niah")["answer_prefix"]
+            answer_prefix_index = input_text.rfind(niah_answer_prefix[:10])
             answer_prefix = input_text[answer_prefix_index:]
             input_text = input_text[:answer_prefix_index]
             # find answer position in text
@@ -135,7 +143,7 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
                     "outputs": answer,
                     "length": length,
                     "answer_prefix": answer_prefix,
-                    'token_position_answer': token_position_answer,
+                    "token_position_answer": token_position_answer,
                 }
             )
 
@@ -179,6 +187,7 @@ class RulerNiahDataset(Dataset[RulerNiahDatasetSample]):
                 upper_bound = mid - 1
         return optimal_haystack if optimal_haystack is not None else incremental
 
+
 def _word_pool() -> list[str]:
     import wonderwords
 
@@ -195,14 +204,17 @@ def _incremental(type_haystack: str, max_seq_length: int) -> int:
         return 5
     return 25
 
+
 def _generate_random_number(num_digits=7) -> str:
-    lower_bound_bound = 10**(num_digits - 1)
+    lower_bound_bound = 10 ** (num_digits - 1)
     upper_bound_bound = 10**num_digits - 1
     return str(random.randint(lower_bound_bound, upper_bound_bound))
+
 
 def _generate_random_word(words) -> str:
     word = random.choice(words)
     return word
+
 
 def _generate_random_uuid() -> str:
     return str(uuid.UUID(int=random.getrandbits(128), version=4))
@@ -310,7 +322,7 @@ def _generate_input_output(
     # RULER bakes answer_prefix into the template before generation (prepare.py),
     # so the prompt ends with the answer cue and the loader can split it back off.
     # The singularization below must therefore also rewrite the prefix's "are".
-    template = TASKS['niah']['template'] + TASKS['niah']['answer_prefix']
+    template = ruler_task("niah")["template"] + ruler_task("niah")["answer_prefix"]
     tnv = type_needle_v
     if num_needle_q * num_needle_v == 1:
         template = (

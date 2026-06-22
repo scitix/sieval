@@ -137,6 +137,16 @@ include = ["sieval/tasks/t_eval_before_calling_0shot_gen.py"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 
+# gen_paul_graham_essays.py is a one-off regeneration tool whose html2text/
+# beautifulsoup4 deps are intentionally kept out of sieval's runtime graph, so
+# ty can't resolve them. Intentional — the script lives under scripts/ and is
+# never imported by sieval/.
+[[tool.ty.overrides]]
+include = ["scripts/gen_paul_graham_essays.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
 [tool.coverage.run]
 source = ["sieval/core"]
 branch = true

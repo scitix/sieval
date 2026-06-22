@@ -111,7 +111,9 @@ def test_effective_length_non_contiguous_takes_max_passing():
 
 def test_reference_threshold_uses_smallest_tier():
     ref = collect_sweep(_runs({"4k": 80.0, "8k": 70.0}))
-    bar, base = reference_threshold(ref)
+    result = reference_threshold(ref)
+    assert result is not None
+    bar, base = result
     assert base == 4096
     assert bar == 80.0
 

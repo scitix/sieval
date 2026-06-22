@@ -7,7 +7,6 @@ import numpy as np
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
-from sieval.community.ruler.datasets.constants import TASKS
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 from sieval.core.datasets import (
     Category,
@@ -16,7 +15,7 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 
-from ._common import thinking_prefill
+from ._common import ruler_task, thinking_prefill
 
 
 class RulerCweDatasetSample(TypedDict):
@@ -46,11 +45,11 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
         name_or_path: str,
         *,
         max_seq_length: int = 4096,
-        tokens_to_generate: int = TASKS['common_words_extraction'][
-            'tokens_to_generate'
+        tokens_to_generate: int = ruler_task("common_words_extraction")[
+            "tokens_to_generate"
         ],
-        tokenizer_type: str = 'openai',
-        tokenizer_path: str = 'cl100k_base',
+        tokenizer_type: str = "openai",
+        tokenizer_path: str = "cl100k_base",
         freq_cw: int = 30,
         freq_ucw: int = 3,
         num_cw: int = 10,
@@ -83,7 +82,7 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
                 num_cw=num_cw,
                 random_seed=random_seed,
                 num_fewshot=num_fewshot,
-                randle_words=randle_words
+                randle_words=randle_words,
             )
 
         incremental = 10
@@ -109,7 +108,9 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
                 try:
                     input_text, answer = gen(used_words)
                     length = (
-                        len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate + thinking_overhead
+                        len(tokenizer.text_to_tokens(input_text))
+                        + tokens_to_generate
+                        + thinking_overhead
                     )
                     assert length <= max_seq_length, "exceeds max_seq_length"
                     break
@@ -126,7 +127,7 @@ class RulerCweDataset(Dataset[RulerCweDatasetSample]):
 
             # use first 10 char of answer prefix to locate it
             answer_prefix_index = input_text.rfind(
-                TASKS['common_words_extraction']['answer_prefix'][:10]
+                ruler_task("common_words_extraction")["answer_prefix"][:10]
             )
             answer_prefix = input_text[answer_prefix_index:]
             input_text = input_text[:answer_prefix_index]
@@ -277,20 +278,20 @@ def _generate_input_output(
             common_nums=num_cw,
             random_seed=random_seed,
         )
-        
+
     _template = (
-        TASKS['common_words_extraction']['template']
-        + TASKS['common_words_extraction']['answer_prefix']
+        ruler_task("common_words_extraction")["template"]
+        + ruler_task("common_words_extraction")["answer_prefix"]
     )
     for n in range(len(few_shots)):
-        shot_answer = ' '.join(
+        shot_answer = " ".join(
             f"{i + 1}. {word}" for i, word in enumerate(few_shots[n][1])
         )
         few_shots[n] = (
-            _template.format(num_cw=num_cw, context=few_shots[n][0], query='')
-            + ' '
+            _template.format(num_cw=num_cw, context=few_shots[n][0], query="")
+            + " "
             + shot_answer
         )
     few_shots = "\n".join(few_shots)
-    input_text = _template.format(num_cw=num_cw, context=context, query='')
+    input_text = _template.format(num_cw=num_cw, context=context, query="")
     return few_shots + "\n" + input_text, answer
