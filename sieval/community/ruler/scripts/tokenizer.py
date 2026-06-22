@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# adapted from https://github.com/NVIDIA/RULER/blob/main/scripts/data/tokenizer.py
+# adapted from https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/tokenizer.py
 
 import os
 from typing import List

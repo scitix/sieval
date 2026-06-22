@@ -1,3 +1,12 @@
+"""RULER FWE (frequent words extraction) synthetic dataset.
+
+Prompt synthesis is ported from NVIDIA RULER's
+``scripts/data/synthetic/freq_words_extraction.py`` (Zipfian coded-word
+generation, two-phase length fitting), refactored into a sieval Dataset loader.
+
+AI-Generated Code - Claude Opus 4.8 (Anthropic)
+"""
+
 import random
 import string
 from typing import TypedDict, override

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# adapted from https://github.com/NVIDIA/RULER/blob/main/scripts/data/synthetic/constants.py
+# adapted from https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/synthetic/constants.py
 
 """
 Add a new task (required arguments):
