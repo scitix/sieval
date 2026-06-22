@@ -69,9 +69,7 @@ def ruler_average(
         if not isinstance(score, int | float) or isinstance(score, bool):
             continue
         length = parse_length(task_name)
-        by_model.setdefault(model_name, {}).setdefault(length, []).append(
-            float(score)
-        )
+        by_model.setdefault(model_name, {}).setdefault(length, []).append(float(score))
 
     out: dict[str, dict] = {}
     for model_name, by_length in by_model.items():
