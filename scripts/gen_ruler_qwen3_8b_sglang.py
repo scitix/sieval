@@ -3,7 +3,7 @@
 
 RULER's headline number is the 13-task average at each context length; its
 "effective length" is the longest length whose average still clears a fixed
-threshold (see ``sieval leaderboard ruler-effective``). Reproducing that means
+threshold. Reproducing that means
 running the same 13 configs at every length tier — RULER (``config_tasks.sh``) and
 OpenCompass (``eval_ruler.py``) both emit these programmatically rather than by
 hand. This script does the same: it defines the 13 RULER configs once and expands
@@ -281,9 +281,8 @@ def build(args) -> str:
 #   (prompts sized with tokenizer_model; keep it == the evaluated model)
 #
 # Each length tier runs the full 13-task RULER suite; the per-tier 13-task
-# average is RULER's score at that length, and the "effective length" is the
-# longest tier still clearing the threshold — compute both with
-#   sieval leaderboard ruler-effective {args.result_dir}
+# average is RULER's score at that length. Aggregate the per-task scores with
+#   sieval leaderboard report {args.result_dir}
 #
 # YARN: tiers <= native ctx run with no extrapolation; tiers > native ctx get an
 # engine override with factor=ceil(length/native). For an API endpoint, YARN is

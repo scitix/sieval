@@ -262,63 +262,6 @@ def _render_text_dry_run(result: CommandResult) -> None:
         log_user("\nDry-run passed.")
 
 
-def _render_text_ruler_effective(result: CommandResult) -> None:
-    """Text renderer for leaderboard.ruler_effective.
-
-    Shows per-length average, effective length, and per-task details.
-    """
-    if not result.ok:
-        logger.error("{}", result.error)
-        return
-    if not isinstance(result.data, dict):
-        logger.error("expected dict data, got {}", type(result.data).__name__)
-        return
-
-    log_user(
-        "Threshold: {:.2f}  [{}]",
-        result.data["threshold"],
-        result.data["threshold_source"],
-    )
-    for model, summary in result.data.get("models", {}).items():
-        log_user("\nModel: {}", model)
-        for row in summary["per_length"]:
-            mark = "PASS" if row["pass"] else "    "
-            note = "" if row["complete"] else f"  !! {row['n_tasks']}/13 tasks"
-            log_user("  {:>6}  avg={:6.2f}  [{}]{}", row["tag"], row["avg"], mark, note)
-
-        # Include per-task details if available
-        if "per_task" in summary:
-            log_user("\n  Task Details:")
-            task_order = summary.get("task_order", [])
-            # Extract task base names from task_order (remove _<length> suffix)
-            import re
-
-            len_suffix_re = re.compile(r"_(\d+)(k?)$", re.IGNORECASE)
-            task_order_bases = (
-                [len_suffix_re.sub("", t) for t in task_order] if task_order else []
-            )
-
-            for _length_val, per_task_data in sorted(summary["per_task"].items()):
-                log_user("    {}", per_task_data["tag"])
-                tasks = per_task_data["tasks"]
-                # Use task_order if available, otherwise sort alphabetically
-                if task_order_bases:
-                    task_names = [t for t in task_order_bases if t in tasks]
-                else:
-                    task_names = sorted(tasks.keys())
-
-                for task_name in task_names:
-                    if task_name in tasks:
-                        score = tasks[task_name]
-                        log_user("      {}: {:.2f}", task_name, score)
-
-        log_user("  Avg (all tiers): {:.2f}", summary["avg_all"])
-        eff = summary["effective_length_tag"] or "none (below threshold at all lengths)"
-        log_user("  Effective length: {}", eff)
-    for w in result.warnings or []:
-        log_user("⚠ {}", w)
-
-
 def _render_text_leaderboard_list(result: CommandResult) -> None:
     """Text renderer for leaderboard.list — NAME / MODELS / TASKS / PATH."""
     if not result.ok:
@@ -681,7 +624,6 @@ _TEXT_RENDERERS: dict[str, Callable[[CommandResult], None]] = {
     "run.dry_run": _render_text_dry_run,
     "leaderboard.run.dry_run": _render_text_dry_run,
     "leaderboard.report": _render_text_leaderboard_report,
-    "leaderboard.ruler_effective": _render_text_ruler_effective,
     "leaderboard.list": _render_text_leaderboard_list,
     "dataset.list": _render_text_dataset_list,
     "dataset.show": _render_text_dataset_show,
