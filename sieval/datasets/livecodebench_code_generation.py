@@ -13,6 +13,8 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset_dict
 
+LIVECODEBENCH_REVISION = "0fe84c3912ea0c4d4a78037083943e8f0c4dd505"
+
 VERSION_FILES = {
     "release_v0": [],  # placeholder for initial version
     "release_v1": ["test.jsonl"],
@@ -50,7 +52,7 @@ class LiveCodeBenchDatasetSample(TypedDict):
     name="livecodebench_code_generation",
     display_name="LiveCodeBench Code Generation",
     description="LiveCodeBench code generation lite — contamination-free benchmark.",
-    source="hf:livecodebench/code_generation_lite",
+    source=f"hf:livecodebench/code_generation_lite@{LIVECODEBENCH_REVISION}",
     categories=(Category(Level1Category.CODE, "CodeGeneration"),),
     tags=("english", "python", "code-exec"),
     # Mirrors upstream HF label verbatim (unversioned 'cc'); the license

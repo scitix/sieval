@@ -214,7 +214,7 @@
       "display_name": "LiveCodeBench Code Generation",
       "description": "LiveCodeBench code generation lite — contamination-free benchmark.",
       "source": [
-        "hf:livecodebench/code_generation_lite"
+        "hf:livecodebench/code_generation_lite@0fe84c3912ea0c4d4a78037083943e8f0c4dd505"
       ],
       "categories": [
         {
@@ -583,6 +583,28 @@
         "source": "livecodebench",
         "url": "https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
         "notes": "Prompt templates and extract_code vendored from lcb_runner/{prompts,utils}."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "livecodebench_code_generation_kshot_base_gen",
+      "display_name": "LiveCodeBench Code Generation (few-shot, base generative)",
+      "description": "LiveCodeBench — contamination-free code benchmark, base-model few-shot generation subset.",
+      "dataset": "livecodebench_code_generation",
+      "eval_mode": "gen",
+      "n_shot": 3,
+      "tags": [
+        "english",
+        "python",
+        "code-exec",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "livecodebench",
+        "url": "https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
+        "notes": "Base-model few-shot template vendored from lcb_runner/prompts.get_base_model_question_template_answer and extract_code(lmstyle='GenericBase') from lcb_runner/utils. Default n_shot=3 and stop=('###',) follow DeepSeek-V3 Table 3 'LiveCodeBench-Base (Pass@1), 3-shot' and upstream's runner default. Upstream ships only 2 few-shot examples per pool, so the 3rd example is sieval-authored. Recommended problem window 2024-08-01..2024-11-01 is configured via dataset YAML args (version_tag/start_date/end_date)."
       },
       "status": "stable"
     },
