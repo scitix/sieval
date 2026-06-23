@@ -34,6 +34,9 @@ from .human_eval_0shot_base_gen import (
 from .human_eval_0shot_gen import (
     HumanEvalZeroShotGenTask,
 )
+from .ifbench_0shot_gen import (
+    IFBenchZeroShotGenTask,
+)
 from .ifeval_0shot_gen import (
     IFEvalZeroShotGenTask,
 )
@@ -74,6 +77,7 @@ __all__ = [
     "HMMTFeb2026ZeroShotGenTask",
     "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
+    "IFBenchZeroShotGenTask",
     "IFEvalZeroShotGenTask",
     "IMOAnswerBenchZeroShotGenTask",
     "LiveCodeBenchCodeGenerationFewShotBaseGenTask",

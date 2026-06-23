@@ -41,6 +41,10 @@ from .human_eval import (
     HumanEvalDataset,
     HumanEvalDatasetSample,
 )
+from .ifbench import (
+    IFBenchDataset,
+    IFBenchDatasetSample,
+)
 from .ifeval import (
     IFEvalDataset,
     IFEvalDatasetSample,
@@ -95,6 +99,8 @@ __all__ = [
     "HMMTFeb2026DatasetSample",
     "HumanEvalDataset",
     "HumanEvalDatasetSample",
+    "IFBenchDataset",
+    "IFBenchDatasetSample",
     "IFEvalDataset",
     "IFEvalDatasetSample",
     "IMOAnswerBenchDataset",

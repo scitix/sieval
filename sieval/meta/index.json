@@ -227,6 +227,27 @@
       "checksums": {}
     },
     {
+      "name": "ifbench",
+      "display_name": "IFBench",
+      "description": "Precise instruction-following benchmark with verifiable OOD constraints.",
+      "source": [
+        "hf:allenai/IFBench_test@2e8a48de45ff3bf41242f927254ca81b59ca3ae2"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "ODC-BY-1.0",
+      "checksums": {}
+    },
+    {
       "name": "ifeval",
       "display_name": "IFEval",
       "description": "Instruction-Following Eval — 541 prompts with verifiable constraints.",
@@ -629,6 +650,26 @@
         "source": "simple-evals",
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/humaneval_eval.py",
         "notes": "Prompt style follows simple-evals HumanEval; QUERY_TEMPLATE is sieval-local."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ifbench_0shot_gen",
+      "display_name": "IFBench (0-shot, generative)",
+      "description": "Precise instruction-following benchmark with verifiable OOD constraints.",
+      "dataset": "ifbench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "ifbench",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "allenai/IFBench",
+        "url": "https://github.com/allenai/IFBench/blob/1091c4c3de6c1f6ed12c012ed68f11ea450b0117/evaluation_lib.py",
+        "notes": "evaluation_lib + instructions registry/checkers vendored from AllenAI IFBench. Headline score is prompt-level loose accuracy, the metric the IFBench paper reports. Comparison target: AllenAI leaderboard Qwen3-32B = 37.3 (allenai/IFBench#5)."
       },
       "status": "stable"
     },
