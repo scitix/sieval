@@ -59,7 +59,7 @@
         "multiple-choice"
       ],
       "deps_group": null,
-      "license": null
+      "license": "CC-BY-NC-SA-4.0"
     },
     {
       "name": "drop",
@@ -355,7 +355,7 @@
       "reference_impl": {
         "source": "cmmlu",
         "url": "https://github.com/haonan-li/CMMLU/blob/d6e7b716d8ac694f38969a6c0407437d1fded799/src/qwen2.py",
-        "notes": "Mirrors the official qwen2.py base path (eval, not eval_instruct): non-CoT CMMLU prompt, same-subject dev shots, one-call next-token A/B/C/D scoring, and subject-level macro report. Runtime k is configurable. Uses API top_logprobs as an OpenAI-compatible substitute for the official raw-logits choice argmax (equivalent while all four option tokens are in top-k); the validated Qwen2.5-72B 5-shot run with logprobs=100 had no missing A/B/C/D top-k entries across 11,582 samples. Runner failures are reported separately and excluded from the score denominator. Target: 89.5 (Qwen2.5-72B Base, 5-shot, DeepSeek-V3 base-model table) as a cross-check only — DeepSeek's perplexity method is underspecified (letter vs. text unstated; appendix template lists single-letter OPTIONS) and is not the reproduced method. The official CMMLU leaderboard's 85.67 is the Instruct model, not this base target."
+        "notes": "Mirrors the official qwen2.py base path (eval, not eval_instruct): non-CoT CMMLU prompt, same-subject dev shots, one-call next-token A/B/C/D scoring, and subject-level macro report. Runtime k is configurable. Uses API top_logprobs as an OpenAI-compatible substitute for the official raw-logits choice argmax (equivalent while all four option tokens are in top-k). Scoring requires all of A/B/C/D in the top-k and fails the sample otherwise, so partial coverage is loud; faithful reproduction needs a top-k that always includes them (default logprobs=100; on vLLM start with --max-logprobs 100, default 20; SGLang serves 100 by default). The validated Qwen2.5-72B 5-shot run with logprobs=100 had the full A/B/C/D set across all 11,582 samples. Runner failures are reported separately and excluded from the score denominator. Target: 89.5 (Qwen2.5-72B Base, 5-shot, DeepSeek-V3 base-model table) as a cross-check only — DeepSeek's perplexity method is underspecified (letter vs. text unstated; appendix template lists single-letter OPTIONS) and is not the reproduced method. The official CMMLU leaderboard's 85.67 is the Instruct model, not this base target."
       },
       "status": "stable"
     },

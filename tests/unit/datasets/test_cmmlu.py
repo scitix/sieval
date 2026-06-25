@@ -13,29 +13,6 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.datasets.cmmlu import CMMLU_REVISION, CMMLU_SOURCE_URL, CMMLUDataset
 
 
-def test_processes_cmmlu_single_column_csv_row():
-    dataset = CMMLUDataset(_hf_dict=HFDatasetDict({"test": HFDataset.from_list([])}))
-
-    sample = dataset._process_sample(
-        {
-            ",Question,A,B,C,D,Answer": (
-                "0,壁胸膜的分部不包括,肋胸膜,肺胸膜,膈胸膜,胸膜顶,B"
-            )
-        },
-        "anatomy",
-    )
-
-    assert sample == {
-        "question": "壁胸膜的分部不包括",
-        "A": "肋胸膜",
-        "B": "肺胸膜",
-        "C": "膈胸膜",
-        "D": "胸膜顶",
-        "answer": "B",
-        "subject": "anatomy",
-    }
-
-
 def test_processes_structured_cmmlu_row():
     dataset = CMMLUDataset(_hf_dict=HFDatasetDict({"test": HFDataset.from_list([])}))
 
@@ -60,9 +37,7 @@ def test_malformed_row_raises():
     dataset = CMMLUDataset(_hf_dict=HFDatasetDict({"test": HFDataset.from_list([])}))
 
     with pytest.raises(ValueError, match="Malformed CMMLU row"):
-        dataset._process_sample(
-            {",Question,A,B,C,D,Answer": "0,只有三列,甲"}, "anatomy"
-        )
+        dataset._process_sample({"unexpected": "no question column"}, "anatomy")
 
 
 def test_empty_load_raises(tmp_path):
@@ -74,6 +49,28 @@ def test_empty_load_raises(tmp_path):
 
     with pytest.raises(ValueError, match="No CMMLU samples were loaded"):
         CMMLUDataset(str(zip_path), subjects=["nonexistent_subject"])
+
+
+def test_loads_from_staged_directory(tmp_path):
+    # Production path: `sieval dataset download` saves `<sha>.zip` into the
+    # dataset dir, and load() receives that directory.
+    data_dir = tmp_path / "cmmlu"
+    data_dir.mkdir()
+    with zipfile.ZipFile(data_dir / f"{CMMLU_REVISION}.zip", "w") as archive:
+        archive.writestr(
+            f"CMMLU-{CMMLU_REVISION}/data/test/anatomy.csv",
+            ",Question,A,B,C,D,Answer\n0,女性生殖腺是,卵巢,前庭大腺,前庭球,乳腺,A\n",
+        )
+
+    dataset = CMMLUDataset(str(data_dir), subjects=["anatomy"])
+
+    assert dataset.dataset_dict["test"][0]["question"] == "女性生殖腺是"
+    assert dataset.dataset_dict["test"][0]["answer"] == "A"
+
+
+def test_missing_archive_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="sieval dataset download cmmlu"):
+        CMMLUDataset(str(tmp_path), subjects=["anatomy"])
 
 
 def test_dataset_source_uses_official_github_archive():

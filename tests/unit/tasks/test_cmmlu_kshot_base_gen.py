@@ -12,7 +12,12 @@ from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import TaskContext
 from sieval.datasets.cmmlu import CMMLUDataset, CMMLUDatasetSample
-from sieval.tasks.cmmlu_kshot_base_gen import CMMLUFewShotBaseGenTask
+from sieval.tasks.cmmlu_kshot_base_gen import (
+    CMMLU_CATEGORIES,
+    CMMLU_SUBCATEGORIES,
+    CMMLU_SUBJECT_DISPLAY_NAMES,
+    CMMLUFewShotBaseGenTask,
+)
 
 
 class _DummyGenModel(GenModel):
@@ -169,6 +174,20 @@ async def test_infer_postprocess_feedback_and_report():
 
 
 @pytest.mark.anyio
+async def test_postprocess_raises_when_option_token_missing():
+    # Only A/B/C present in top-k (D dropped) → must fail loudly, not guess.
+    task = CMMLUFewShotBaseGenTask(_dataset(), _DummyGenModel(), k=0)
+    inf = ModelOutput(
+        model=_DummyGenModel().meta(),
+        texts=["A"],
+        top_logprobs=[{"A": -0.1, "B": -1.0, "C": -2.0}],
+    )
+
+    with pytest.raises(RuntimeError, match=r"missing option token.*'D'"):
+        await task.postprocess(inf, TaskContext(sample_id=0, raw_sample=_sample("题")))
+
+
+@pytest.mark.anyio
 async def test_report_excludes_failures_from_subject_denominator():
     task = CMMLUFewShotBaseGenTask(_dataset(), _DummyGenModel(), k=0)
     correct_anatomy = _sample("解剖测试", answer="B", subject="anatomy")
@@ -210,3 +229,99 @@ async def test_report_excludes_failures_from_subject_denominator():
     assert report["score"] == 50.0
     assert report["stem"] == 100.0
     assert report["humanities"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Upstream-constant pinning — lock the prompt template and the
+# subject/category taxonomy against silent edits. These mirror the official
+# qwen2.py / categories.py at the pinned CMMLU SHA; a faithful-reproduction
+# regression must fail loudly here rather than drift unnoticed.
+# ---------------------------------------------------------------------------
+def test_format_example_template_is_pinned():
+    task = CMMLUFewShotBaseGenTask(_dataset(), _DummyGenModel(), k=0)
+    sample = _sample("壁胸膜的分部不包括", answer="B")
+
+    assert task._format_example(sample, include_answer=False) == (
+        "题目：壁胸膜的分部不包括\n"
+        "A. 选项甲\nB. 选项乙\nC. 选项丙\nD. 选项丁\n"
+        "答案是："
+    )
+    assert task._format_example(sample, include_answer=True) == (
+        "题目：壁胸膜的分部不包括\n"
+        "A. 选项甲\nB. 选项乙\nC. 选项丙\nD. 选项丁\n"
+        "答案是：B\n\n"
+    )
+
+
+@pytest.mark.anyio
+async def test_few_shot_header_is_pinned():
+    # Header template + the subject display-name lookup (anatomy → 解剖学).
+    task = CMMLUFewShotBaseGenTask(_dataset(), _DummyGenModel(), k=1)
+    await task.setup()
+
+    prompt = task._build_few_shot_prompt("anatomy")
+
+    assert prompt.startswith(
+        "以下是关于解剖学的单项选择题，请直接给出正确答案的选项。\n\n"
+    )
+
+
+def test_category_partition_is_pinned():
+    assert CMMLU_CATEGORIES == {
+        "STEM": (
+            "physics",
+            "chemistry",
+            "biology",
+            "computer science",
+            "math",
+            "engineering",
+            "statistics",
+        ),
+        "Humanities": (
+            "history",
+            "philosophy",
+            "law",
+            "arts",
+            "literature",
+            "global",
+        ),
+        "Social Science": (
+            "linguistics",
+            "business",
+            "politics",
+            "culture",
+            "economics",
+            "geography",
+            "psychology",
+            "education",
+            "sociology",
+        ),
+        "Other": ("other",),
+        "China specific": ("china specific",),
+    }
+
+
+def test_every_subject_is_classified_and_named():
+    subjects = set(CMMLUDataset.SUBJECTS)
+
+    assert len(CMMLUDataset.SUBJECTS) == 67
+    assert set(CMMLU_SUBCATEGORIES) == subjects
+    assert set(CMMLU_SUBJECT_DISPLAY_NAMES) == subjects
+
+
+def test_every_subcategory_maps_to_a_category():
+    # A subcategory used in CMMLU_SUBCATEGORIES but absent from every
+    # CMMLU_CATEGORIES bucket would silently drop its subjects from all
+    # category-level metrics — guard against that typo class.
+    bucket_subcategories = {
+        subcategory
+        for subcategories in CMMLU_CATEGORIES.values()
+        for subcategory in subcategories
+    }
+    used_subcategories = {
+        subcategory
+        for subcategories in CMMLU_SUBCATEGORIES.values()
+        for subcategory in subcategories
+    }
+
+    assert used_subcategories <= bucket_subcategories

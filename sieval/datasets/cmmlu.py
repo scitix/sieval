@@ -1,6 +1,12 @@
 """
 CMMLU dataset loader.
 
+Loads the official CMMLU GitHub archive (``{sha}.zip``) staged by
+``sieval dataset download cmmlu``. ``load`` accepts either that staged
+directory (the production path) or a direct path to the ``.zip``; CSV members
+are read straight from the archive with the standard ``Question/A-D/Answer``
+header.
+
 AI-Generated Code - GPT-5.5 (OpenAI)
 """
 
@@ -38,6 +44,7 @@ class CMMLUDatasetSample(TypedDict):
     source=f"url:{CMMLU_SOURCE_URL}",
     categories=(Category(Level1Category.KNOWLEDGE, "Multi-domain"),),
     tags=("chinese", "multiple-choice"),
+    license="CC-BY-NC-SA-4.0",
 )
 class CMMLUDataset(Dataset[CMMLUDatasetSample]):
     SUBJECTS = [
@@ -122,21 +129,17 @@ class CMMLUDataset(Dataset[CMMLUDatasetSample]):
         path = Path(name_or_path)
 
         if path.is_file() and path.suffix == ".zip":
-            return self._load_zip(path, subjects_to_load)
+            zip_path = path
+        else:
+            zip_path = path / f"{CMMLU_REVISION}.zip"
 
-        if path.is_dir():
-            zip_path = _find_zip(path)
-            if zip_path is not None:
-                return self._load_zip(zip_path, subjects_to_load)
-
-            csv_root = _find_csv_root(path)
-            if csv_root is not None:
-                return self._load_csv_root(csv_root, subjects_to_load)
-
-        raise FileNotFoundError(
-            "CMMLU data must be a GitHub archive zip or a directory containing "
-            "data/dev/*.csv and data/test/*.csv."
-        )
+        if not zip_path.is_file():
+            raise FileNotFoundError(
+                f"CMMLU archive not found at {str(zip_path)!r}. Run "
+                "'sieval dataset download cmmlu' to stage the official "
+                f"{CMMLU_REVISION}.zip GitHub archive."
+            )
+        return self._load_zip(zip_path, subjects_to_load)
 
     def _load_zip(
         self,
@@ -162,21 +165,6 @@ class CMMLUDataset(Dataset[CMMLUDatasetSample]):
                         )
         return _dataset_dict_from_samples(samples)
 
-    def _load_csv_root(
-        self,
-        data_root: Path,
-        subjects_to_load: list[str],
-    ) -> HFDatasetDict:
-        samples: dict[str, list[CMMLUDatasetSample]] = {"dev": [], "test": []}
-        for subject in subjects_to_load:
-            for split in ("dev", "test"):
-                csv_path = data_root / split / f"{subject}.csv"
-                if not csv_path.exists():
-                    continue
-                with csv_path.open(encoding="utf-8-sig", newline="") as csv_file:
-                    samples[split].extend(self._process_csv_rows(csv_file, subject))
-        return _dataset_dict_from_samples(samples)
-
     def _process_csv_rows(
         self,
         csv_file: io.TextIOBase,
@@ -190,59 +178,22 @@ class CMMLUDataset(Dataset[CMMLUDatasetSample]):
         sample: Mapping[str, object],
         subject: str | None = None,
     ) -> CMMLUDatasetSample:
-        if _has_structured_fields(sample):
-            return _process_structured_sample(sample, subject)
-
-        raw_string = _find_raw_csv_row(sample)
-        if raw_string:
-            row = next(csv.reader([raw_string]))
-            if len(row) >= 7:
-                return {
-                    "question": row[1].strip(),
-                    "A": row[2].strip(),
-                    "B": row[3].strip(),
-                    "C": row[4].strip(),
-                    "D": row[5].strip(),
-                    "answer": row[6].strip().upper(),
-                    "subject": subject or str(sample.get("subject", "")),
-                }
-
-        raise ValueError(
-            "Malformed CMMLU row for subject "
-            f"{subject or str(sample.get('subject', ''))!r}: expected structured "
-            "question/A-D/answer fields or a >=7-column CSV row, got keys "
-            f"{sorted(sample.keys())}."
-        )
-
-
-def _has_structured_fields(sample: Mapping[str, object]) -> bool:
-    return any(key in sample for key in ("question", "Question"))
-
-
-def _find_zip(root: Path) -> Path | None:
-    preferred = root / f"{CMMLU_REVISION}.zip"
-    if preferred.exists():
-        return preferred
-
-    zip_files = sorted(root.glob("*.zip"))
-    if len(zip_files) == 1:
-        return zip_files[0]
-
-    for zip_file in zip_files:
-        if zip_file.name == "cmmlu_v1_0_1.zip":
-            return zip_file
-    return None
-
-
-def _find_csv_root(root: Path) -> Path | None:
-    candidates = [root / "data", root]
-    candidates.extend(
-        child / "data" for child in sorted(root.iterdir()) if child.is_dir()
-    )
-    for candidate in candidates:
-        if (candidate / "dev").is_dir() and (candidate / "test").is_dir():
-            return candidate
-    return None
+        if not any(key in sample for key in ("question", "Question")):
+            raise ValueError(
+                "Malformed CMMLU row for subject "
+                f"{subject or str(sample.get('subject', ''))!r}: expected a "
+                "Question/A-D/Answer CSV header, got keys "
+                f"{sorted(sample.keys())}."
+            )
+        return {
+            "question": _get_text(sample, "question", "Question"),
+            "A": _get_text(sample, "A"),
+            "B": _get_text(sample, "B"),
+            "C": _get_text(sample, "C"),
+            "D": _get_text(sample, "D"),
+            "answer": _get_text(sample, "answer", "Answer").upper(),
+            "subject": subject or _get_text(sample, "subject", "Subject"),
+        }
 
 
 def _find_zip_csv_member(
@@ -250,13 +201,9 @@ def _find_zip_csv_member(
     split: str,
     subject: str,
 ) -> str | None:
-    suffixes = (
-        ("data", split, f"{subject}.csv"),
-        (split, f"{subject}.csv"),
-    )
+    suffix = ("data", split, f"{subject}.csv")
     for name in names:
-        parts = PurePosixPath(name).parts
-        if any(parts[-len(suffix) :] == suffix for suffix in suffixes):
+        if PurePosixPath(name).parts[-len(suffix) :] == suffix:
             return name
     return None
 
@@ -276,36 +223,9 @@ def _dataset_dict_from_samples(
     return ensure_dataset_dict(dataset_dict)
 
 
-def _process_structured_sample(
-    sample: Mapping[str, object],
-    subject: str | None,
-) -> CMMLUDatasetSample:
-    return {
-        "question": _get_text(sample, "question", "Question"),
-        "A": _get_text(sample, "A"),
-        "B": _get_text(sample, "B"),
-        "C": _get_text(sample, "C"),
-        "D": _get_text(sample, "D"),
-        "answer": _get_text(sample, "answer", "Answer").upper(),
-        "subject": subject or _get_text(sample, "subject", "Subject"),
-    }
-
-
 def _get_text(sample: Mapping[str, object], *keys: str) -> str:
     for key in keys:
         value = sample.get(key)
         if value is not None:
             return str(value).strip()
-    return ""
-
-
-def _find_raw_csv_row(sample: Mapping[str, object]) -> str:
-    for key, value in sample.items():
-        if key == "subject":
-            continue
-        if "Question" in key or key.startswith(","):
-            return str(value)
-    for key, value in sample.items():
-        if key != "subject":
-            return str(value)
     return ""

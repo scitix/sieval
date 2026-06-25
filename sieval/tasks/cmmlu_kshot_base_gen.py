@@ -6,9 +6,20 @@ Mirrors the official CMMLU ``qwen2.py`` *base* path (``eval``, not
 A/B/C/D choice scoring. Here scoring reads one next token from ``top_logprobs``
 and argmaxes over A/B/C/D; the official ``eval`` argmaxes raw last-token logits
 over the same token IDs. The two agree whenever all four option tokens are in
-the requested top-k (softmax is monotonic) — the only divergence is an option
-token outside top-k, scored ``-inf`` here. In the validated Qwen2.5-72B 5-shot
-run with ``logprobs=100``, all 11,582 samples had finite A/B/C/D scores.
+the requested top-k (softmax is monotonic). To keep partial coverage loud
+rather than silent, scoring *requires all four* option tokens to be present and
+raises otherwise — so a too-small top-k surfaces as a sample failure instead of
+a best-of-present guess. In the validated Qwen2.5-72B 5-shot run with
+``logprobs=100``, all 11,582 samples had the full A/B/C/D set.
+
+Infra requirement for faithful reproduction: the serving backend must return a
+top-k large enough to always include A/B/C/D. SGLang serves ``logprobs=100`` out
+of the box; on vLLM start the server with ``--max-logprobs 100`` (its default is
+20, which can drop option tokens). ``DEFAULT_LOGPROBS`` is set to 100 to match.
+
+Option matching is by the *stripped token string* (e.g. ``" A"`` → ``"A"``),
+since the OpenAI-compatible API exposes token text rather than the fixed token
+IDs the official ``eval`` indexes; this only differs in tokenizer edge cases.
 
 Target: 89.5 — Qwen2.5-72B *Base*, 5-shot, from the DeepSeek-V3 report's
 base-model table; benchmarked against this task's ``overall`` (subject-level
@@ -38,7 +49,9 @@ from sieval.datasets import CMMLUDatasetSample
 
 CHOICES = ("A", "B", "C", "D")
 DEFAULT_N_SHOT = 5
-DEFAULT_LOGPROBS = 20
+# Must be large enough that all of A/B/C/D land in the returned top-k. The
+# validated run used 100; vLLM needs `--max-logprobs 100` (default 20).
+DEFAULT_LOGPROBS = 100
 
 CMMLU_SUBJECT_DISPLAY_NAMES = {
     "agronomy": "农学",
@@ -225,17 +238,23 @@ class Feedback(TypedDict):
 def _choice_scores_from_top_logprobs(
     top_logprobs: list[dict[str, float]] | None,
 ) -> tuple[dict[str, float], bool]:
+    """Map the first token's top-k onto A/B/C/D logprobs.
+
+    Returns ``(scores, all_present)`` where *all_present* is ``True`` only when
+    every one of A/B/C/D appears in the top-k. Partial coverage is reported as
+    ``False`` so the caller can fail loudly rather than argmax a subset.
+    """
     scores = {label: float("-inf") for label in CHOICES}
     if not top_logprobs:
         return scores, False
 
-    found = False
+    seen: set[str] = set()
     for token, logprob in top_logprobs[0].items():
         label = token.strip()
         if label in scores:
             scores[label] = max(scores[label], logprob)
-            found = True
-    return scores, found
+            seen.add(label)
+    return scores, len(seen) == len(CHOICES)
 
 
 @sieval_task(
@@ -255,9 +274,13 @@ def _choice_scores_from_top_logprobs(
             "A/B/C/D scoring, and subject-level macro report. Runtime k is "
             "configurable. Uses API top_logprobs as an OpenAI-compatible "
             "substitute for the official raw-logits choice argmax (equivalent "
-            "while all four option tokens are in top-k); the validated "
-            "Qwen2.5-72B 5-shot run with logprobs=100 had no missing A/B/C/D "
-            "top-k entries across 11,582 samples. Runner failures are reported "
+            "while all four option tokens are in top-k). Scoring requires all "
+            "of A/B/C/D in the top-k and fails the sample otherwise, so partial "
+            "coverage is loud; faithful reproduction needs a top-k that always "
+            "includes them (default logprobs=100; on vLLM start with "
+            "--max-logprobs 100, default 20; SGLang serves 100 by default). The "
+            "validated Qwen2.5-72B 5-shot run with logprobs=100 had the full "
+            "A/B/C/D set across all 11,582 samples. Runner failures are reported "
             "separately and excluded from the score denominator. Target: 89.5 "
             "(Qwen2.5-72B Base, 5-shot, DeepSeek-V3 base-model table) as a "
             "cross-check only — DeepSeek's perplexity method is underspecified "
@@ -369,10 +392,14 @@ class CMMLUFewShotBaseGenTask(
 
     @override
     async def postprocess(self, inf, ctx):
-        scores, found = _choice_scores_from_top_logprobs(inf.top_logprobs)
-        if not found:
+        scores, all_present = _choice_scores_from_top_logprobs(inf.top_logprobs)
+        if not all_present:
+            missing = [label for label in CHOICES if scores[label] == float("-inf")]
             raise RuntimeError(
-                "CMMLU top_logprobs did not contain any A/B/C/D option tokens."
+                "CMMLU top_logprobs missing option token(s) "
+                f"{missing}; increase logprobs (got top-k of {self._logprobs}) "
+                "or raise the server's max-logprobs so all of A/B/C/D are "
+                "returned."
             )
         return max(scores.items(), key=lambda item: item[1])[0]
 
