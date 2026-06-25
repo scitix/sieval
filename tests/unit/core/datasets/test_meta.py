@@ -472,6 +472,54 @@ def test_sieval_dataset_rejects_colliding_url_basenames():
                 raise NotImplementedError
 
 
+def test_sieval_dataset_rejects_colliding_local_basenames():
+    """Two local: sources in the same dataset with the same basename stage to
+    the same <dest>/<name>/<basename> and overwrite each other. Reject."""
+
+    class LocalClashSample(TypedDict):
+        x: str
+
+    with pytest.raises(ValueError, match="colliding basenames"):
+
+        @sieval_dataset(
+            name="local_clash_test",
+            display_name="Local Clash Test",
+            description="x",
+            source=(
+                "local:a/data.csv",
+                "local:b/data.csv",
+            ),
+            categories=(Category(Level1Category.LOGIC, "BasicLogic"),),
+        )
+        class LocalClashDataset(Dataset[LocalClashSample]):
+            def load(self, name_or_path, **kwargs):
+                raise NotImplementedError
+
+
+def test_sieval_dataset_rejects_url_local_basename_collision():
+    """A url: and a local: source staging to the same basename overwrite each
+    other under <dest>/<name>/; the guard spans both staged schemes."""
+
+    class CrossSample(TypedDict):
+        x: str
+
+    with pytest.raises(ValueError, match="colliding basenames"):
+
+        @sieval_dataset(
+            name="cross_clash_test",
+            display_name="Cross Clash Test",
+            description="x",
+            source=(
+                "url:https://a.example.com/data.csv",
+                "local:cross_clash/data.csv",
+            ),
+            categories=(Category(Level1Category.LOGIC, "BasicLogic"),),
+        )
+        class CrossClashDataset(Dataset[CrossSample]):
+            def load(self, name_or_path, **kwargs):
+                raise NotImplementedError
+
+
 def test_sieval_dataset_accepts_different_url_basenames():
     """Different basenames should not trigger the validation."""
 

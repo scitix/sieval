@@ -179,7 +179,7 @@ def _validate(
                 f"{_VALID_SCHEMES} (e.g. 'hf:org/name')"
             )
 
-    _validate_url_basenames_unique(name, source)
+    _validate_staged_basenames_unique(name, source)
 
 
 def url_path_basename(url: str) -> str:
@@ -189,20 +189,27 @@ def url_path_basename(url: str) -> str:
     return urlparse(url).path.rsplit("/", 1)[-1]
 
 
-def _validate_url_basenames_unique(name: str, source: tuple[str, ...]) -> None:
-    """Reject duplicate basenames among url: sources in one dataset — two URLs
-    sharing a basename would overwrite each other at ``<dest>/<name>/<basename>``."""
+_STAGED_SCHEMES = ("url:", "local:")
+
+
+def _validate_staged_basenames_unique(name: str, source: tuple[str, ...]) -> None:
+    """Reject duplicate basenames among sources that stage to a flat file in one
+    dataset — both url: and local: land at ``<dest>/<name>/<basename>``, so two
+    sources (url/url, local/local, or url/local) sharing a basename would
+    silently overwrite each other."""
     basenames = [
-        url_path_basename(src[len("url:") :])
+        url_path_basename(src[len(scheme) :])
         for src in source
-        if src.startswith("url:")
+        for scheme in _STAGED_SCHEMES
+        if src.startswith(scheme)
     ]
     counter = Counter(basenames)
     duplicates = {b for b, count in counter.items() if count > 1}
     if duplicates:
         raise ValueError(
-            f"url: sources in dataset {name!r} have colliding basenames: "
-            f"{sorted(duplicates)}; each URL must produce a unique on-disk filename"
+            f"url:/local: sources in dataset {name!r} have colliding basenames: "
+            f"{sorted(duplicates)}; each staged source must produce a unique "
+            f"on-disk filename"
         )
 
 
