@@ -37,7 +37,13 @@ class LocalHandler:
         target = target_dir / _basename(relpath)
         if target.exists() and not force:
             return
-        shutil.copyfile(bundled, target)
+        tmp = target.with_name(target.name + ".partial")
+        try:
+            shutil.copyfile(bundled, tmp)
+            tmp.replace(target)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def is_downloaded(
         self,
