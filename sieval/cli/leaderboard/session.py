@@ -241,8 +241,13 @@ _STRICT_RUNNER_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Never compared: result_dir is the target's location, auto_resume is runtime-
-# only (never persisted), stage_meta hooks are non-serializable callables.
+# Neither adjustable nor strict — listed only so the three buckets partition
+# TaskRunnerConfig exactly (see test_every_field_classified_exactly_once). The
+# strip removes result_dir at top level (reification injects it there); the rest
+# are never reached because they don't survive into a persisted runner_config
+# block: auto_resume is set by the orchestration layer at runtime, stage_meta
+# hooks are non-serializable callables. A hand-authored runner_config field from
+# this set that changed across a resume would still be compared strictly.
 _NONMATCH_RUNNER_KEYS: frozenset[str] = frozenset(
     {
         "result_dir",
@@ -258,9 +263,7 @@ def _strip_noncomparable_fields(cfg: dict[str, Any]) -> dict[str, Any]:
 
     Strips (input never mutated) top-level ``concurrency_limit`` /
     ``concurrency_limits`` / ``result_dir``, ``models.*.args.concurrency_limit``,
-    and ``_THROUGHPUT_RUNNER_KEYS`` from runner_config wherever it lives — the
-    top-level ``runner_config`` defaults block (merged into every task) and each
-    ``tasks.*.runner_config``.
+    and ``_THROUGHPUT_RUNNER_KEYS`` from every ``runner_config`` block.
     """
     out = copy.deepcopy(cfg)
 
@@ -276,7 +279,8 @@ def _strip_noncomparable_fields(cfg: dict[str, Any]) -> dict[str, Any]:
                     args.pop("concurrency_limit", None)
 
     # runner_config carries throughput knobs in two equivalent places: the
-    # top-level defaults block and per-task overrides. Strip both identically.
+    # top-level defaults block (merged into every task) and per-task overrides.
+    # Strip both identically.
     runner_config_blocks = [out.get("runner_config")]
     tasks = out.get("tasks")
     if isinstance(tasks, dict):
@@ -449,16 +453,14 @@ def _format_comment_header(
 def _append_resume_note(header: str, diff_lines: list[str]) -> str:
     """Insert a ``Resumed by …`` audit block into ``header``, before its border.
 
-    Called when ``--resume`` rewrites a persisted file because only resume-
-    mutable (throughput) fields changed. The original provenance is kept and a
-    timestamped record of ``diff_lines`` is appended, so the header accumulates
-    the full lineage of tolerated reconfigurations across resumes. New lines sit
-    inside the ``# ---`` border pair so :func:`_split_header` still treats the
-    whole block as the header on the next resume.
+    Called when ``--resume`` rewrites a file because only resume-mutable fields
+    changed. The original provenance survives and ``diff_lines`` is recorded with
+    a timestamp, so the header accumulates the full lineage across resumes. The
+    note sits inside the ``# ---`` border pair so :func:`_split_header` keeps
+    treating the whole block as the header next time.
 
-    ``header`` is assumed well-formed (two borders) — the caller only passes a
-    header produced by :func:`_format_comment_header` or recovered intact by
-    :func:`_split_header`.
+    Assumes a well-formed ``header`` (two borders) — the only kind the caller
+    passes (from :func:`_format_comment_header` or :func:`_split_header`).
     """
     from sieval import __version__
 
@@ -1512,10 +1514,9 @@ class EvalSession:
                     f"{audit_label}"
                 ) from e
 
-            # We dump a mapping, so current_cfg is always a dict; a tampered
-            # existing file may parse to a scalar/list. Refuse cleanly rather
-            # than let mutable_strip raise an opaque AttributeError — RuntimeError
-            # is the only failure the caller is documented to observe.
+            # current_cfg is always a dict (we dump a mapping); a tampered file
+            # may parse to a scalar/list. Refuse cleanly so mutable_strip can't
+            # raise an opaque AttributeError instead of the documented RuntimeError.
             if not isinstance(existing_cfg, dict) or not isinstance(current_cfg, dict):
                 raise RuntimeError(
                     f"Resume aborted: existing {target} is not a YAML mapping — "
@@ -1540,8 +1541,9 @@ class EvalSession:
             # Only resume-mutable (or formatting) fields differ — rewrite with
             # the new body. When real fields changed (not just formatting) and
             # the file had a header, append a timestamped record of the change
-            # so the header keeps the full resume lineage; otherwise keep the
-            # original header (or synthesize a fresh one for a header-less file).
+            # so the header keeps the full resume lineage. Otherwise no note is
+            # added: a formatting-only diff keeps the original header, and a
+            # header-less file gets a fresh one (it had no lineage to extend).
             logger.info(
                 "Resume: {} resume-mutable fields changed — updating file",
                 target_name,
