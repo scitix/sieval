@@ -2,7 +2,7 @@
 
 The fixed task_id 2/3/4 few-shot examples are copied verbatim (including their
 ``\r\n`` line endings) from lm-evaluation-harness:
-https://github.com/EleutherAI/lm-evaluation-harness/blob/main/lm_eval/tasks/mbpp/utils.py
+https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/mbpp/utils.py
 lm-evaluation-harness is distributed under the MIT License
 (Copyright (c) 2020 EleutherAI). The example data itself originates from the
 MBPP dataset (Austin et al., 2021), CC-BY-4.0.

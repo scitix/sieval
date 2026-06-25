@@ -4,15 +4,15 @@ MBPP few-shot base-model generative task.
 Reproduces the lm-evaluation-harness MBPP 3-shot setup: the
 ``You are an expert Python programmer...`` prompt with ``[BEGIN]``/``[DONE]``
 delimiters, the ``[DONE]`` stop token, and the fixed task_id 2/3/4 few-shot
-examples. The few-shot set and the 1-10/11-510/511-600/601-974 split ranges
-follow the original google-research MBPP README.
+examples, evaluated on the ``test`` split. The few-shot set follows the
+original google-research MBPP README.
 
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
 
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any, TypedDict, override
 
 import httpx
@@ -53,11 +53,13 @@ class Feedback(TypedDict):
         url="https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/mbpp/mbpp.yaml",
         notes=(
             "Prompt, [DONE] stop token, and default task_id 2/3/4 few-shot "
-            "samples mirror lm-eval MBPP; num_shots is configurable via YAML "
-            "task args. Greedy generation (temperature=0, top_p=1, "
+            "samples mirror lm-eval MBPP; k (few-shot count) is configurable "
+            "via YAML task args. Greedy generation (temperature=0, top_p=1, "
             "max_tokens=1024). Published Qwen2.5-72B-Base MBPP 3-shot Pass@1 "
             "is 76.0 (Qwen3 report, Table 3) and 72.6 (DeepSeek-V3 report, "
-            "Table 3)."
+            "Table 3); DeepSeek-V3 leaves its MBPP protocol unspecified, so "
+            "the gap to the Qwen-aligned number is a protocol difference, not "
+            "an implementation error."
         ),
     ),
 )
@@ -77,26 +79,15 @@ class MBPPFewShotBaseGenTask(
         model,
         name: str | None = None,
         *,
-        num_shots: int | None = None,
-        k: int | None = None,
+        k: int = DEFAULT_NUM_SHOTS,
         pass_k: int = 1,
         n: int = 1,
         max_concurrency: int = 4,
         timeout: float = 5.0,
-        stop: Sequence[str] | None = STOP_SEQUENCES,
+        stop: tuple[str, ...] = STOP_SEQUENCES,
     ):
-        if num_shots is not None and k is not None and num_shots != k:
-            raise ValueError(
-                f"num_shots and k must match when both are set; got {num_shots} and {k}"
-            )
-        if num_shots is not None:
-            resolved_num_shots = num_shots
-        elif k is not None:
-            resolved_num_shots = k
-        else:
-            resolved_num_shots = DEFAULT_NUM_SHOTS
-        if resolved_num_shots < 0:
-            raise ValueError(f"num_shots must be >= 0, got {resolved_num_shots}")
+        if k < 0:
+            raise ValueError(f"k must be >= 0, got {k}")
         if pass_k < 1:
             raise ValueError(f"pass_k must be >= 1, got {pass_k}")
         if n < 1:
@@ -112,19 +103,19 @@ class MBPPFewShotBaseGenTask(
             raise ValueError(f"timeout must be > 0, got {timeout}")
 
         available_shots = len(list_fewshot_samples())
-        if resolved_num_shots > available_shots:
+        if k > available_shots:
             raise ValueError(
                 "MBPP lm-eval few-shot prompt provides at most "
-                f"{available_shots} examples; got num_shots={resolved_num_shots}."
+                f"{available_shots} examples; got k={k}."
             )
 
         super().__init__(dataset=dataset, model=model, name=name)
-        self._num_shots = resolved_num_shots
+        self._num_shots = k
         self._pass_k = pass_k
         self._n = n
         self._max_concurrency = max_concurrency
         self._timeout = timeout
-        self._stop = tuple(stop) if stop is not None else ()
+        self._stop = stop
         self._code_eval_api = os.getenv(
             "SIEVAL_CODE_EVAL_API", "http://localhost:11451/evaluations"
         )
@@ -134,8 +125,10 @@ class MBPPFewShotBaseGenTask(
         self._few_shot_prefix: str | None = None
 
     def _format_tests(self, sample: Mapping[str, Any]) -> str:
+        # lm-eval joins the first three tests verbatim (no strip); some samples
+        # carry a trailing space, kept here for byte-exact prompt fidelity.
         tests = [str(test) for test in sample.get("test_list", [])[:3]]
-        return "\n".join(tests).strip()
+        return "\n".join(tests)
 
     def _doc_to_text(self, sample: Mapping[str, Any]) -> str:
         return (
@@ -170,12 +163,9 @@ class MBPPFewShotBaseGenTask(
 
     @override
     async def infer(self, pre, ctx):
-        # Forward the pass@k count and the stop token; decoding params come
-        # from the model config.
-        kwargs: dict[str, object] = {"n": self._n}
-        if self._stop:
-            kwargs["stop"] = list(self._stop)
-        return await self.model.agenerate(pre, **kwargs)
+        # Forward the sample count and the [DONE] stop token; decoding params
+        # come from the model config.
+        return await self.model.agenerate(pre, n=self._n, stop=list(self._stop))
 
     @override
     async def postprocess(self, inf, ctx):

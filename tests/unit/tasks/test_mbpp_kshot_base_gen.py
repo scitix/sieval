@@ -57,8 +57,8 @@ def _dataset() -> MBPPDataset:
 
 
 @pytest.mark.anyio
-async def test_preprocess_uses_yaml_configured_num_shots():
-    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), num_shots=2)
+async def test_preprocess_uses_yaml_configured_k():
+    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), k=2)
 
     prompt = await task.preprocess(_sample(), TaskContext(0, _sample()))
     await task.shutdown()
@@ -70,8 +70,8 @@ async def test_preprocess_uses_yaml_configured_num_shots():
 
 
 @pytest.mark.anyio
-async def test_num_shots_zero_is_allowed():
-    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), num_shots=0)
+async def test_k_zero_is_allowed():
+    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), k=0)
 
     prompt = await task.preprocess(_sample(), TaskContext(0, _sample()))
     await task.shutdown()
@@ -80,29 +80,9 @@ async def test_num_shots_zero_is_allowed():
     assert prompt.count("[BEGIN]") == 1
 
 
-def test_num_shots_above_lm_eval_examples_raises():
+def test_k_above_lm_eval_examples_raises():
     with pytest.raises(ValueError, match="at most 3 examples"):
-        MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), num_shots=4)
-
-
-@pytest.mark.anyio
-async def test_k_alias_matches_num_shots():
-    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), k=2)
-
-    prompt = await task.preprocess(_sample(), TaskContext(0, _sample()))
-    await task.shutdown()
-
-    assert prompt.count("[DONE]") == 2
-
-
-def test_k_and_num_shots_conflict_raises():
-    with pytest.raises(ValueError, match="must match"):
-        MBPPFewShotBaseGenTask(
-            _dataset(),
-            _CapturingGenModel(),
-            num_shots=1,
-            k=2,
-        )
+        MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), k=4)
 
 
 @pytest.mark.anyio
@@ -111,7 +91,7 @@ async def test_infer_forwards_n_and_stop_but_not_decoding_params():
     task = MBPPFewShotBaseGenTask(
         _dataset(),
         model,
-        num_shots=0,
+        k=0,
         n=3,
     )
 
@@ -136,7 +116,7 @@ def _final(feedbacks: list[dict]) -> TaskContext:
 
 @pytest.mark.anyio
 async def test_report_pass_at_1_counts_fails_in_denominator():
-    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), num_shots=0)
+    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), k=0)
     finals = [
         _final([{"correct": True, "msg": "ok", "metrics": None}]),
         _final([{"correct": False, "msg": "assertion failed", "metrics": None}]),
@@ -158,7 +138,7 @@ async def test_report_pass_at_1_counts_fails_in_denominator():
 @pytest.mark.anyio
 async def test_report_pass_at_k_and_timeouts():
     task = MBPPFewShotBaseGenTask(
-        _dataset(), _CapturingGenModel(), num_shots=0, pass_k=2, n=2
+        _dataset(), _CapturingGenModel(), k=0, pass_k=2, n=2
     )
     finals = [
         # 1 of 2 samples correct → pass@1 = 0.5, pass@2 = 1.0
@@ -181,7 +161,7 @@ async def test_report_pass_at_k_and_timeouts():
 
 @pytest.mark.anyio
 async def test_report_empty_returns_zero():
-    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), num_shots=0)
+    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), k=0)
     report = await task.report([], [])
     await task.shutdown()
 
@@ -190,7 +170,7 @@ async def test_report_empty_returns_zero():
 
 @pytest.mark.anyio
 async def test_postprocess_strips_done_token():
-    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), num_shots=0)
+    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), k=0)
     output = ModelOutput(
         model=task.model.meta(),
         texts=["def one():\n    return 1\n[DONE]"],
