@@ -242,9 +242,7 @@ def test_format_example_template_is_pinned():
     sample = _sample("壁胸膜的分部不包括", answer="B")
 
     assert task._format_example(sample, include_answer=False) == (
-        "题目：壁胸膜的分部不包括\n"
-        "A. 选项甲\nB. 选项乙\nC. 选项丙\nD. 选项丁\n"
-        "答案是："
+        "题目：壁胸膜的分部不包括\nA. 选项甲\nB. 选项乙\nC. 选项丙\nD. 选项丁\n答案是："
     )
     assert task._format_example(sample, include_answer=True) == (
         "题目：壁胸膜的分部不包括\n"
