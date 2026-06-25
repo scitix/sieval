@@ -80,7 +80,6 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         self._cot = cot
         self._k = k
         self._n = n
-        self._max_concurrency = max_concurrency
         self._timeout = timeout
         self._code_eval_api = os.getenv(
             "SIEVAL_CODE_EVAL_API", "http://localhost:11451/evaluations"
@@ -152,6 +151,7 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
                             "outputs": outputs,
                             "fn_name": fn_name,
                         },
+                        "timeout": self._timeout,
                     },
                     # allow more time for more test cases
                     # with extra buffer for network latency

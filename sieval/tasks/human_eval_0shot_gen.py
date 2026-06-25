@@ -68,7 +68,6 @@ class HumanEvalZeroShotGenTask(
         super().__init__(dataset=dataset, model=model, name=name)
         self._k = k
         self._n = n
-        self._max_concurrency = max_concurrency
         self._timeout = timeout
         self._code_eval_api = os.getenv(
             "SIEVAL_CODE_EVAL_API", "http://localhost:11451/evaluations"
@@ -123,6 +122,7 @@ class HumanEvalZeroShotGenTask(
                         "uuid": f"{idx}-{time.perf_counter_ns()}",
                         "source": "human-eval",
                         "code": check_program,
+                        "timeout": self._timeout,
                     },
                     timeout=self._timeout + 2,  # extra buffer for network latency
                 )

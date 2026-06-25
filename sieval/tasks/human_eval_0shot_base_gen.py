@@ -102,7 +102,6 @@ class HumanEvalZeroShotBaseGenTask(
         super().__init__(dataset=dataset, model=model, name=name)
         self._k = k
         self._n = n
-        self._max_concurrency = max_concurrency
         self._timeout = timeout
         self._stop = stop
         self._code_eval_api = os.getenv(
@@ -155,6 +154,7 @@ class HumanEvalZeroShotBaseGenTask(
                         "uuid": f"{idx}-{time.perf_counter_ns()}",
                         "source": "human-eval",
                         "code": check_program,
+                        "timeout": self._timeout,
                     },
                     timeout=self._timeout + 2,
                 )
