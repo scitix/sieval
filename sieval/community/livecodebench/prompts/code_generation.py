@@ -1,18 +1,16 @@
 # adapted from https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py
 import json
-from pathlib import Path
+from importlib.resources import files
 
-_FEWSHOT_DIR = Path(__file__).parent / "few_shot_examples" / "generation"
+_FEWSHOT_DIR = files(__package__).joinpath("few_shot_examples", "generation")
 
 # Upstream loads these few-shot pools at module level; we only fix the path to
-# be package-relative. Each pool is the 2 upstream examples verbatim plus 1
-# sieval-authored example (marked with a `_source` key, ignored by the template)
-# so the base-model template can reach a 3-shot setting — upstream ships only 2.
-with (_FEWSHOT_DIR / "func.json").open(encoding="utf-8") as _f:
-    func = json.load(_f)
-
-with (_FEWSHOT_DIR / "stdin.json").open(encoding="utf-8") as _f:
-    stdin = json.load(_f)
+# be package-relative (via importlib.resources so it survives non-filesystem
+# loaders). Each pool is the 2 upstream examples verbatim plus 1 sieval-authored
+# example (marked with a `_source` key, ignored by the template) so the
+# base-model template can reach a 3-shot setting — upstream ships only 2.
+func = json.loads((_FEWSHOT_DIR / "func.json").read_text(encoding="utf-8"))
+stdin = json.loads((_FEWSHOT_DIR / "stdin.json").read_text(encoding="utf-8"))
 
 
 class PromptConstants:

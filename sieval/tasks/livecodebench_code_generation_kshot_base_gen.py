@@ -158,12 +158,10 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        has_starter = bool(raw["starter_code"])
-        if has_starter not in self._fewshot_prefix:
-            self._fewshot_prefix[has_starter] = get_base_model_fewshot_prefix(
-                has_starter, self._n_shot
-            )
-        return self._fewshot_prefix[has_starter] + get_base_model_target_block(
+        # Prefixes are pre-filled by setup() (both keys), so index directly —
+        # no per-sample rebuild and no mutation of shared state under concurrency.
+        prefix = self._fewshot_prefix[bool(raw["starter_code"])]
+        return prefix + get_base_model_target_block(
             raw["question_content"], raw["starter_code"]
         )
 

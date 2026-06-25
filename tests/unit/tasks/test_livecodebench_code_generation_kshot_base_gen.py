@@ -126,6 +126,7 @@ def test_prefix_plus_target_equals_faithful_builder():
 async def test_preprocess_returns_base_prompt_string():
     task, _ = _task(n_shot=2)
     try:
+        await task.setup()  # framework contract: setup() runs before preprocess()
         prompt = await task.preprocess(
             _raw(starter_code=_STARTER),
             TaskContext(sample_id=0, raw_sample=_raw(starter_code=_STARTER)),
