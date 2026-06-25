@@ -650,7 +650,11 @@ class TestStrictResumeMatch:
         after = (result_dir / "effective_config.yaml").read_text()
         loaded = yaml.safe_load(after)
         assert loaded["concurrency_limit"] == 2  # body updated to new value
-        assert _split_header(after)[0] == original_header  # header preserved
+        after_header = _split_header(after)[0]
+        # Origin provenance preserved, and the change is appended as a record.
+        assert "Persisted by sieval" in after_header
+        assert "Resumed by sieval" in after_header
+        assert "concurrency_limit: 8 → 2" in after_header
 
     @pytest.mark.anyio
     async def test_resume_tolerates_per_model_args_concurrency_change(
@@ -824,6 +828,83 @@ class TestStrictResumeMatch:
             config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
         )
         await s._persist_effective_config()  # must NOT raise (no semantic change)
+
+        # A formatting-only rewrite records no resume note (nothing changed).
+        after = (result_dir / "effective_config.yaml").read_text()
+        assert "Resumed by sieval" not in _split_header(after)[0]
+
+    @pytest.mark.anyio
+    async def test_resume_tolerates_top_level_runner_config_throughput(
+        self, tmp_path: Path
+    ):
+        # Throughput knobs in the TOP-LEVEL runner_config defaults block (merged
+        # into every task) are as resume-mutable as per-task ones.
+        base = (
+            "runner_config:\n  concurrency_limits:\n    infer: {}\n"
+            "models:\n  base:\n    name: m\n"
+        )
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format(4))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        cfg_path.write_text(base.format(16))
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        await s2._persist_effective_config()  # must NOT raise
+
+        after = (result_dir / "effective_config.yaml").read_text()
+        loaded = yaml.safe_load(after)
+        assert loaded["runner_config"]["concurrency_limits"]["infer"] == 16
+        header = _split_header(after)[0]
+        assert "runner_config.concurrency_limits.infer: 4 → 16" in header
+
+    @pytest.mark.anyio
+    async def test_resume_appends_accumulating_notes(self, tmp_path: Path):
+        base = "concurrency_limit: {}\nmodels:\n  base:\n    name: m\n"
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format(8))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        # Two successive resumes, each changing only throughput.
+        for value in (4, 2):
+            cfg_path.write_text(base.format(value))
+            s = EvalSession(
+                config_path=str(cfg_path),
+                resume=True,
+                result_dir_override=str(result_dir),
+            )
+            await s._persist_effective_config()
+
+        after = (result_dir / "effective_config.yaml").read_text()
+        header, body = _split_header(after)
+        # Origin recorded once; every tolerated change appended in order.
+        assert header.count("Persisted by sieval") == 1
+        assert header.count("Resumed by sieval") == 2
+        assert "concurrency_limit: 8 → 4" in header
+        assert "concurrency_limit: 4 → 2" in header
+        # Body reflects the latest run; header/body partition stays intact.
+        assert yaml.safe_load(body)["concurrency_limit"] == 2
+        assert _split_header(after) == (header, body)
+
+    @pytest.mark.anyio
+    async def test_resume_aborts_on_non_mapping_existing_file(self, tmp_path: Path):
+        # A tampered persisted file that parses to a non-mapping must surface as
+        # the documented RuntimeError, not an opaque AttributeError from the strip.
+        result_dir = tmp_path / "out"
+        result_dir.mkdir()
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        (result_dir / "effective_config.yaml").write_text(header + "- a\n- b\n")
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
+        s = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        with pytest.raises(RuntimeError, match=r"not a YAML mapping"):
+            await s._persist_effective_config()
 
 
 class TestPersistTimingBeforeRunnerArun:

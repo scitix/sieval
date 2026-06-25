@@ -147,11 +147,12 @@ def _strip_header(text: str) -> str:
     return _split_header(text)[1]
 
 
-def _diff_dicts(a: dict[str, Any], b: dict[str, Any]) -> str:
-    """Return a short human-readable hint describing which keys differ.
+def _diff_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
+    """Return ``- <path>: <old> → <new>`` lines for every differing leaf.
 
-    Walks two parsed-config mappings; reports up to 10 differing leaf paths.
-    Returns a "formatting only" sentinel when nothing differs.
+    Walks two parsed-config mappings depth-first. Empty list means the two
+    parse to the same structure (any textual difference was whitespace /
+    formatting only).
     """
     diffs: list[str] = []
 
@@ -161,17 +162,27 @@ def _diff_dicts(a: dict[str, Any], b: dict[str, Any]) -> str:
                 _walk(x.get(k), y.get(k), f"{path}.{k}" if path else k)
         elif isinstance(x, list) and isinstance(y, list):
             if len(x) != len(y):
-                diffs.append(f"  - {path}: list length {len(x)} → {len(y)}")
+                diffs.append(f"- {path}: list length {len(x)} → {len(y)}")
             else:
                 for i, (xv, yv) in enumerate(zip(x, y, strict=True)):
                     _walk(xv, yv, f"{path}[{i}]")
         elif x != y:
-            diffs.append(f"  - {path}: {x!r} → {y!r}")
+            diffs.append(f"- {path}: {x!r} → {y!r}")
 
     _walk(a, b, "")
-    if not diffs:
+    return diffs
+
+
+def _diff_dicts(a: dict[str, Any], b: dict[str, Any]) -> str:
+    """Return a short human-readable hint describing which keys differ.
+
+    Thin wrapper over :func:`_diff_lines`; reports up to 10 differing leaf
+    paths and a "formatting only" sentinel when nothing differs.
+    """
+    lines = _diff_lines(a, b)
+    if not lines:
         return "Diff: (whitespace / formatting only)"
-    return "Diff:\n" + "\n".join(diffs[:10])
+    return "Diff:\n" + "\n".join(f"  {line}" for line in lines[:10])
 
 
 def _brief_diff(existing: str, current: str) -> str:
@@ -247,7 +258,9 @@ def _strip_noncomparable_fields(cfg: dict[str, Any]) -> dict[str, Any]:
 
     Strips (input never mutated) top-level ``concurrency_limit`` /
     ``concurrency_limits`` / ``result_dir``, ``models.*.args.concurrency_limit``,
-    and ``tasks.*.runner_config.<k>`` for ``k`` in ``_THROUGHPUT_RUNNER_KEYS``.
+    and ``_THROUGHPUT_RUNNER_KEYS`` from runner_config wherever it lives — the
+    top-level ``runner_config`` defaults block (merged into every task) and each
+    ``tasks.*.runner_config``.
     """
     out = copy.deepcopy(cfg)
 
@@ -262,14 +275,20 @@ def _strip_noncomparable_fields(cfg: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(args, dict):
                     args.pop("concurrency_limit", None)
 
+    # runner_config carries throughput knobs in two equivalent places: the
+    # top-level defaults block and per-task overrides. Strip both identically.
+    runner_config_blocks = [out.get("runner_config")]
     tasks = out.get("tasks")
     if isinstance(tasks, dict):
-        for tcfg in tasks.values():
-            if isinstance(tcfg, dict):
-                rc = tcfg.get("runner_config")
-                if isinstance(rc, dict):
-                    for key in _THROUGHPUT_RUNNER_KEYS:
-                        rc.pop(key, None)
+        runner_config_blocks.extend(
+            tcfg.get("runner_config")
+            for tcfg in tasks.values()
+            if isinstance(tcfg, dict)
+        )
+    for rc in runner_config_blocks:
+        if isinstance(rc, dict):
+            for key in _THROUGHPUT_RUNNER_KEYS:
+                rc.pop(key, None)
 
     return out
 
@@ -425,6 +444,32 @@ def _format_comment_header(
         lines.extend(f"# {line}" for line in extra_lines)
     lines.extend([border, ""])
     return "\n".join(lines) + "\n"
+
+
+def _append_resume_note(header: str, diff_lines: list[str]) -> str:
+    """Insert a ``Resumed by …`` audit block into ``header``, before its border.
+
+    Called when ``--resume`` rewrites a persisted file because only resume-
+    mutable (throughput) fields changed. The original provenance is kept and a
+    timestamped record of ``diff_lines`` is appended, so the header accumulates
+    the full lineage of tolerated reconfigurations across resumes. New lines sit
+    inside the ``# ---`` border pair so :func:`_split_header` still treats the
+    whole block as the header on the next resume.
+
+    ``header`` is assumed well-formed (two borders) — the caller only passes a
+    header produced by :func:`_format_comment_header` or recovered intact by
+    :func:`_split_header`.
+    """
+    from sieval import __version__
+
+    now = datetime.now(UTC).isoformat()
+    note = [f"# Resumed by sieval {__version__} at {now}:\n"]
+    note.extend(f"#   {line}\n" for line in diff_lines)
+
+    lines = header.splitlines(keepends=True)
+    borders = [i for i, line in enumerate(lines) if line.startswith("# -")]
+    close = borders[-1]
+    return "".join(lines[:close] + note + lines[close:])
 
 
 def _warn_best_effort_deterministic(
@@ -1408,7 +1453,8 @@ class EvalSession:
         plans) any other diff raises. Otherwise both bodies are parsed and
         compared with ``mutable_strip`` applied; a diff that vanishes
         (resume-mutable or formatting) is tolerated — the file is rewritten
-        with the new body, original header preserved — and any residual diff
+        with the new body, and the original header gains an appended
+        ``Resumed by …`` record of what changed — and any residual diff
         raises. ``RuntimeError`` is the only failure the caller observes; all
         else is best-effort and logged.
         """
@@ -1466,6 +1512,20 @@ class EvalSession:
                     f"{audit_label}"
                 ) from e
 
+            # We dump a mapping, so current_cfg is always a dict; a tampered
+            # existing file may parse to a scalar/list. Refuse cleanly rather
+            # than let mutable_strip raise an opaque AttributeError — RuntimeError
+            # is the only failure the caller is documented to observe.
+            if not isinstance(existing_cfg, dict) or not isinstance(current_cfg, dict):
+                raise RuntimeError(
+                    f"Resume aborted: existing {target} is not a YAML mapping — "
+                    "cannot verify match.\n"
+                    "Either:\n"
+                    "  1. Remove the result_dir and start fresh\n"
+                    f"  2. Restore {target} to valid YAML matching the persisted "
+                    f"{audit_label}"
+                )
+
             stripped_existing = mutable_strip(existing_cfg)
             stripped_current = mutable_strip(current_cfg)
             if stripped_existing != stripped_current:
@@ -1478,12 +1538,24 @@ class EvalSession:
                 )
 
             # Only resume-mutable (or formatting) fields differ — rewrite with
-            # the new body, preserving the original header when present.
+            # the new body. When real fields changed (not just formatting) and
+            # the file had a header, append a timestamped record of the change
+            # so the header keeps the full resume lineage; otherwise keep the
+            # original header (or synthesize a fresh one for a header-less file).
             logger.info(
                 "Resume: {} resume-mutable fields changed — updating file",
                 target_name,
             )
-            write_header = existing_header or header
+            # The note records genuine resume-mutable changes only; result_dir is
+            # a never-compared location field (reification injects it), so drop it
+            # to keep it out of the audit trail.
+            note_before = {k: v for k, v in existing_cfg.items() if k != "result_dir"}
+            note_after = {k: v for k, v in current_cfg.items() if k != "result_dir"}
+            change_lines = _diff_lines(note_before, note_after)
+            if existing_header and change_lines:
+                write_header = _append_resume_note(existing_header, change_lines)
+            else:
+                write_header = existing_header or header
 
         tmp_path = target.with_name(target.name + ".tmp")
         content = write_header + body

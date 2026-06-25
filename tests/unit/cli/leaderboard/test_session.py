@@ -22,9 +22,11 @@ from sieval.cli.leaderboard.session import (
     _THROUGHPUT_RUNNER_KEYS,
     DETERMINISTIC_DEFAULT_SEED,
     EvalSession,
+    _append_resume_note,
     _apply_endpoint_injection,
     _brief_diff,
     _diff_dicts,
+    _diff_lines,
     _format_comment_header,
     _guess_submodule_names,
     _reify_cli_overrides,
@@ -2450,6 +2452,22 @@ class TestStripNoncomparableFields:
         assert rc["shard_samples"] == 1024
         assert rc["max_iterations"] == 5
 
+    def test_removes_top_level_runner_config_throughput_keeps_strict(self):
+        # The top-level runner_config defaults block is merged into every task,
+        # so it carries the same throughput knobs and must be stripped too.
+        cfg = {
+            "runner_config": {
+                "concurrency_limits": {"infer": 4},
+                "write_buffer_size": 64,
+                "max_retries": 3,  # strict → kept
+            }
+        }
+        out = _strip_noncomparable_fields(cfg)
+        rc = out["runner_config"]
+        assert "concurrency_limits" not in rc
+        assert "write_buffer_size" not in rc
+        assert rc["max_retries"] == 3
+
 
 # ===================================================================
 # Best-effort deterministic warning: fires when the session talks to an
@@ -3047,6 +3065,42 @@ class TestDiffDicts:
     def test_reports_list_length_change(self):
         out = _diff_dicts({"xs": [1, 2]}, {"xs": [1, 2, 3]})
         assert "list length 2 → 3" in out
+
+
+class TestDiffLines:
+    def test_identical_returns_empty(self):
+        assert _diff_lines({"a": 1}, {"a": 1}) == []
+
+    def test_nested_leaf_path(self):
+        lines = _diff_lines({"a": {"b": 1}}, {"a": {"b": 2}})
+        assert lines == ["- a.b: 1 → 2"]
+
+
+class TestAppendResumeNote:
+    def test_note_inserted_before_closing_border_and_split_stable(self):
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        body = "models:\n  base:\n    name: m\n"
+        out = _append_resume_note(header, ["- concurrency_limit: 8 → 2"])
+
+        assert "Persisted by sieval" in out  # origin preserved
+        assert "Resumed by sieval" in out
+        assert "#   - concurrency_limit: 8 → 2" in out
+        # The note sits inside the border pair: the whole block is still parsed
+        # as header (body is not polluted) when prepended to a body.
+        h, b = _split_header(out + body)
+        assert b == body
+        assert "Resumed by sieval" in h
+
+    def test_second_append_accumulates(self):
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        once = _append_resume_note(header, ["- a: 1 → 2"])
+        twice = _append_resume_note(once, ["- a: 2 → 3"])
+        assert twice.count("Resumed by sieval") == 2
+        assert "- a: 1 → 2" in twice and "- a: 2 → 3" in twice
 
 
 class TestBriefDiff:
