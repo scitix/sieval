@@ -110,55 +110,46 @@ def discover_subpackage_tasks(subpkg_dir: Path) -> dict[str, str]:
     return _discover_task_classes(_iter_module_paths(subpkg_dir))
 
 
-def _scan_dataset_exports(module_path: Path) -> list[str]:
-    suffixes = ("Dataset", "DatasetSample", "CSVSample")
-    module_ast = ast.parse(
-        module_path.read_text(encoding="utf-8"),
-        filename=str(module_path),
-    )
-    names: list[str] = []
-    for node in module_ast.body:
-        if (
-            isinstance(node, ast.ClassDef)
-            and not node.name.startswith("_")
-            and node.name.endswith(suffixes)
-        ):
-            names.append(node.name)
-        elif (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and not node.targets[0].id.startswith("_")
-            and node.targets[0].id.endswith(suffixes)
-            and _is_typeddict_call(node.value)
-        ):
-            names.append(node.targets[0].id)
-    return names
-
-
 def discover_datasets(package_dir: Path) -> dict[str, str]:
     export_to_module: dict[str, str] = {}
+    suffixes = ("Dataset", "DatasetSample", "CSVSample")
 
-    def _register(export_name: str, module_name: str) -> None:
-        previous_module = export_to_module.get(export_name)
-        if previous_module and previous_module != module_name:
-            raise RuntimeError(
-                f"Duplicate dataset export '{export_name}' found in "
-                f"'{previous_module}' and '{module_name}'."
-            )
-        export_to_module[export_name] = module_name
-
-    # 1) Flat .py modules
     for module_path in _iter_module_paths(package_dir):
-        for name in _scan_dataset_exports(module_path):
-            _register(name, module_path.stem)
+        module_name = module_path.stem
+        module_ast = ast.parse(
+            module_path.read_text(encoding="utf-8"),
+            filename=str(module_path),
+        )
 
-    # 2) Subpackage .py modules — mapped as "subpkg.module_stem"
-    for subpkg_dir in _iter_subpackage_dirs(package_dir):
-        for module_path in _iter_module_paths(subpkg_dir):
-            qualified = f"{subpkg_dir.name}.{module_path.stem}"
-            for name in _scan_dataset_exports(module_path):
-                _register(name, qualified)
+        for node in module_ast.body:
+            export_name: str | None = None
+
+            if (
+                isinstance(node, ast.ClassDef)
+                and not node.name.startswith("_")
+                and node.name.endswith(suffixes)
+            ):
+                export_name = node.name
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and not node.targets[0].id.startswith("_")
+                and node.targets[0].id.endswith(suffixes)
+                and _is_typeddict_call(node.value)
+            ):
+                export_name = node.targets[0].id
+
+            if export_name is None:
+                continue
+
+            previous_module = export_to_module.get(export_name)
+            if previous_module and previous_module != module_name:
+                raise RuntimeError(
+                    f"Duplicate dataset export '{export_name}' found in "
+                    f"'{previous_module}' and '{module_name}'."
+                )
+            export_to_module[export_name] = module_name
 
     return export_to_module
 
