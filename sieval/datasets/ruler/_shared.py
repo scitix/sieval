@@ -1,39 +1,46 @@
+"""Shared constants and helpers used across all RULER subtask modules."""
+
 import gzip
 import json
 import os
 import re
 from typing import TypedDict, cast
 
+import numpy as np
+
 from sieval.community.ruler.datasets.constants import TASKS
+
+_NOISE_HAYSTACK = (
+    "The grass is green. The sky is blue. The sun is yellow. "
+    "Here we go. There and back again."
+)
+_CORPUS_FILE = "PaulGrahamEssays.json.gz"
+_NEEDLE = "One of the special magic {type_needle_v} for {key} is: {value}."
+_SQUAD_FILE = "dev-v2.0.json"
+_DOCUMENT_PROMPT = "Document {i}:\n{document}"
+
+# Pin the HotpotQA snapshot for reproducibility across downloads.
+_HOTPOTQA_REVISION = "1908d6afbbead072334abe2965f91bd2709910ab"
+
+# Pin english_words.json to the same RULER commit vendored into community/ruler/.
+_RULER_DATA_SHA = "ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13"
+
+# NIAH insertion depths (percentages).
+_NIAH_DEPTHS = list(np.round(np.linspace(0, 100, num=40, endpoint=True)).astype(int))
+
+# VT insertion depths (percentages).
+_VT_DEPTHS = list(np.round(np.linspace(0, 100, num=40, endpoint=True)).astype(int))
 
 
 class RulerTaskSpec(TypedDict):
-    """Typed view over one entry of the vendored RULER ``TASKS`` table."""
-
     tokens_to_generate: int
     template: str
     answer_prefix: str
 
 
 def ruler_task(name: str) -> RulerTaskSpec:
-    """Return the RULER spec for *name* with precise field types.
-
-    ``community/`` is excluded from type checking and its ``TASKS`` dict mixes
-    ``int`` and ``str`` values, so ty infers ``int | str`` at every call site
-    (breaking subscription, concatenation, and ``int`` defaults). This re-asserts
-    the per-task schema once so loaders get exact types.
-    """
+    """Return the RULER spec for *name* with precise field types."""
     return cast(RulerTaskSpec, TASKS[name])
-
-
-_NOISE_HAYSTACK = (
-    "The grass is green. The sky is blue. The sun is yellow. "
-    "Here we go. There and back again."
-)
-
-_CORPUS_FILE = "PaulGrahamEssays.json.gz"
-
-_NEEDLE = "One of the special magic {type_needle_v} for {key} is: {value}."
 
 
 def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
@@ -53,6 +60,11 @@ def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
     return ""
 
 
+def _len_tag(length: int) -> str:
+    """Convert a context length to a short tag: 4096 → '4k', 131072 → '128k'."""
+    return f"{length // 1024}k" if length % 1024 == 0 else str(length)
+
+
 def _build_haystack(name_or_path: str, type_haystack: str):
     if type_haystack == "essay":
         path = os.path.join(name_or_path, _CORPUS_FILE)
@@ -63,8 +75,7 @@ def _build_haystack(name_or_path: str, type_haystack: str):
         return _NOISE_HAYSTACK
     if type_haystack == "needle":
         return _NEEDLE
-    else:
-        raise NotImplementedError(f"{type_haystack} is not implemented.")
+    raise NotImplementedError(f"{type_haystack} is not implemented.")
 
 
 def _ensure_punkt() -> None:
