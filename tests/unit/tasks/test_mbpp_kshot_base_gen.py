@@ -137,9 +137,7 @@ async def test_report_pass_at_1_counts_fails_in_denominator():
 
 @pytest.mark.anyio
 async def test_report_pass_at_k_and_timeouts():
-    task = MBPPFewShotBaseGenTask(
-        _dataset(), _CapturingGenModel(), k=0, pass_k=2, n=2
-    )
+    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), k=0, pass_k=2, n=2)
     finals = [
         # 1 of 2 samples correct → pass@1 = 0.5, pass@2 = 1.0
         _final(
