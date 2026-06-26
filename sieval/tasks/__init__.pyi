@@ -7,6 +7,9 @@ from .aime_2024_0shot_gen import (
 from .aime_2025_0shot_gen import (
     AIME2025ZeroShotGenTask,
 )
+from .aime_2026_0shot_gen import (
+    AIME2026ZeroShotGenTask,
+)
 from .cmmlu_kshot_base_gen import (
     CMMLUFewShotBaseGenTask,
 )
@@ -18,6 +21,9 @@ from .gpqa_diamond_0shot_gen import (
 )
 from .gsm8k_kshot_base_gen import (
     GSM8KFewShotBaseGenTask,
+)
+from .hmmt_feb_2026_0shot_gen import (
+    HMMTFeb2026ZeroShotGenTask,
 )
 from .human_eval_0shot_base_gen import (
     HumanEvalZeroShotBaseGenTask,
@@ -50,10 +56,12 @@ from .theoremqa_kshot_base_gen import (
 __all__ = [
     "AIME2024ZeroShotGenTask",
     "AIME2025ZeroShotGenTask",
+    "AIME2026ZeroShotGenTask",
     "CMMLUFewShotBaseGenTask",
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
     "GSM8KFewShotBaseGenTask",
+    "HMMTFeb2026ZeroShotGenTask",
     "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
     "IFEvalZeroShotGenTask",

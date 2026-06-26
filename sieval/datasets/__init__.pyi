@@ -9,6 +9,10 @@ from .aime_2025 import (
     AIME2025Dataset,
     AIME2025DatasetSample,
 )
+from .aime_2026 import (
+    AIME2026Dataset,
+    AIME2026DatasetSample,
+)
 from .cmmlu import (
     CMMLUDataset,
     CMMLUDatasetSample,
@@ -24,6 +28,10 @@ from .gpqa_diamond import (
 from .gsm8k import (
     GSM8KDataset,
     GSM8KDatasetSample,
+)
+from .hmmt_feb_2026 import (
+    HMMTFeb2026Dataset,
+    HMMTFeb2026DatasetSample,
 )
 from .human_eval import (
     HumanEvalDataset,
@@ -63,6 +71,8 @@ __all__ = [
     "AIME2024DatasetSample",
     "AIME2025Dataset",
     "AIME2025DatasetSample",
+    "AIME2026Dataset",
+    "AIME2026DatasetSample",
     "CMMLUDataset",
     "CMMLUDatasetSample",
     "DROPDataset",
@@ -71,6 +81,8 @@ __all__ = [
     "GPQADiamondDatasetSample",
     "GSM8KDataset",
     "GSM8KDatasetSample",
+    "HMMTFeb2026Dataset",
+    "HMMTFeb2026DatasetSample",
     "HumanEvalDataset",
     "HumanEvalDatasetSample",
     "IFEvalDataset",
