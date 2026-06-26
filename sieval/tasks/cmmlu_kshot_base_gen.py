@@ -32,6 +32,13 @@ method this task reproduces. The reproduced method is the official CMMLU
 ``qwen2.py`` ``eval`` path above. Note the official CMMLU leaderboard's
 "Qwen2.5-72B" (85.67) is the *Instruct* model, not this base-model target.
 
+Few-shot selection takes the first ``k`` same-subject dev examples in order and,
+unlike the official ``gen_prompt``, does not drop the longest shots to fit a
+token budget. For CMMLU this is a no-op divergence: the official cap is
+``max_length=2048``, the dev pool is 5 examples/subject, and the longest full
+5-shot prompt across all 11,582 test rows (Qwen2.5 tokenizer) is 802 tokens — so
+the official truncation never fires and the assembled prompts are identical.
+
 AI-Generated Code - GPT-5.5 (OpenAI)
 """
 
@@ -426,32 +433,28 @@ class CMMLUFewShotBaseGenTask(
             if ctx.feedback_result and ctx.feedback_result["correct"]:
                 subject_corrects[subject] += 1
 
-        if not subject_totals:
-            return {"score": 0.0, "fails": float(len(fails)), "pass@1": 0.0}
-
         subject_acc = {
             subject: subject_corrects.get(subject, 0) * 100 / total
             for subject, total in subject_totals.items()
             if total
         }
-        overall = sum(subject_acc.values()) / len(subject_acc)
+        overall = sum(subject_acc.values()) / len(subject_acc) if subject_acc else 0.0
 
         metrics: dict[str, float] = {
             "score": overall,
             "fails": float(len(fails)),
-            "pass@1": overall,
             "overall": overall,
         }
 
+        # Only report categories that actually have evaluated subjects, so a
+        # subject-subset run omits absent categories instead of reporting a
+        # misleading 0.0 (indistinguishable from "all wrong").
         for category, subjects in CMMLU_CATEGORY_SUBJECTS.items():
             available_scores = [
                 subject_acc[subject] for subject in subjects if subject in subject_acc
             ]
-            key = category.lower().replace(" ", "_")
-            metrics[key] = (
-                sum(available_scores) / len(available_scores)
-                if available_scores
-                else 0.0
-            )
+            if available_scores:
+                key = category.lower().replace(" ", "_")
+                metrics[key] = sum(available_scores) / len(available_scores)
 
         return metrics

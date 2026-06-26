@@ -228,7 +228,14 @@ async def test_report_excludes_failures_from_subject_denominator():
     assert report["overall"] == 50.0
     assert report["score"] == 50.0
     assert report["stem"] == 100.0
+    # humanities has an evaluated subject (logical) that scored 0 — a real 0.0.
     assert report["humanities"] == 0.0
+    # Categories with no evaluated subjects are omitted, not reported as 0.0.
+    assert "social_science" not in report
+    assert "other" not in report
+    assert "china_specific" not in report
+    # pass@1 is dropped (duplicated score/overall, not a CMMLU metric).
+    assert "pass@1" not in report
 
 
 # ---------------------------------------------------------------------------
