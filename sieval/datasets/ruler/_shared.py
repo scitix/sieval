@@ -44,19 +44,19 @@ def ruler_task(name: str) -> RulerTaskSpec:
 
 
 def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
-    """Placeholder text a reasoning model prefills into the assistant turn when
-    thinking is disabled; empty string for non-reasoning models.
+    """Placeholder text a reasoning model prefills into the assistant turn.
 
-    Qwen3 keeps the ``<think>...</think>`` framing even with thinking off — the
-    empty block is injected so the model continues from the answer cue instead
-    of reopening a reasoning span. Other models (and ``enable_thinking=True``)
-    get nothing, so input-budget accounting and assistant prefill are no-ops in
-    the general case. This is the single source of truth for the placeholder:
-    both the dataset loaders (to reserve token budget) and the task base (to
-    prefill the assistant turn) consume it, so the two can never disagree.
+    Qwen3: When thinking is enabled, start the think block so the model continues
+    inside it. When disabled, inject an empty block so the model skips to the answer
+    cue instead of reopening a reasoning span.
+
+    This is the single source of truth for the placeholder: both the dataset loaders
+    (to reserve token budget) and the task base (to prefill the assistant turn)
+    consume it, so the two can never disagree.
     """
-    if not enable_thinking and "qwen3" in model_name.lower():
-        return "<think>\n\n</think>\n\n"
+    if "qwen3" in model_name.lower():
+        if not enable_thinking:
+            return "<think>\n\n</think>\n\n"  # Empty block; skip to answer
     return ""
 
 

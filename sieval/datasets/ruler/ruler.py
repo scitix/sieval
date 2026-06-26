@@ -116,9 +116,26 @@ class RulerDataset(Dataset[RulerDatasetSample]):
     ) -> HFDatasetDict:
         if subtask == "all":
             splits = []
+            # name_or_path should point to the parent data dir (e.g., ~/.sieval/data)
+            subtask_paths = {
+                "niah_single_1": f"{name_or_path}/ruler",
+                "niah_single_2": f"{name_or_path}/ruler",
+                "niah_single_3": f"{name_or_path}/ruler",
+                "niah_multikey_1": f"{name_or_path}/ruler",
+                "niah_multikey_2": f"{name_or_path}/ruler",
+                "niah_multikey_3": f"{name_or_path}/ruler",
+                "niah_multivalue": f"{name_or_path}/ruler",
+                "niah_multiquery": f"{name_or_path}/ruler",
+                "vt": f"{name_or_path}/ruler",  # VT uses NIAH corpus
+                "cwe": f"{name_or_path}/ruler",
+                "fwe": f"{name_or_path}",  # FWE is synthetic, no external data
+                "qa_squad": f"{name_or_path}/ruler",
+                "qa_hotpotqa": f"{name_or_path}",  # HotpotQA is fetched from HF
+            }
             for st in _ALL_SUBTASKS:
+                st_path = subtask_paths.get(st, name_or_path)
                 dataset = self.load(
-                    name_or_path,
+                    st_path,
                     subtask=st,
                     max_seq_length=max_seq_length,
                     tokenizer_type=tokenizer_type,
