@@ -37,6 +37,9 @@ from .mmlu_pro_0shot_gen import (
 from .t_eval_before_calling_0shot_gen import (
     TEvalBeforeCallingZeroShotGenTask,
 )
+from .theoremqa_kshot_base_gen import (
+    TheoremQAKShotBaseGenTask,
+)
 
 __all__ = [
     "AIME2024ZeroShotGenTask",
@@ -51,4 +54,5 @@ __all__ = [
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
+    "TheoremQAKShotBaseGenTask",
 ]

@@ -16,6 +16,9 @@ EM = 88.3. DeepSeek-V3 does not specify whether it used strict-match or
 flexible-match extraction, so this task states and reports strict-match EM.
 Default k=8 is chosen for that DeepSeek-V3 comparison.
 
+Decoding parameters such as max_tokens and temperature are model-owned in
+SiEval; this task only forwards stop sequences coupled to the prompt format.
+
 AI-Generated Code - GPT-5.5 (OpenAI)
 """
 
@@ -32,7 +35,6 @@ from sieval.core.tasks import (
 from sieval.datasets import GSM8KDatasetSample
 
 N_SHOT = 8
-DEFAULT_MAX_TOKENS = 2048
 DEFAULT_FEWSHOT_SEED = 1234
 STOP_SEQUENCES = ("Question:", "</s>", "<|im_end|>")
 
@@ -138,20 +140,14 @@ class GSM8KFewShotBaseGenTask(
         name: str | None = None,
         *,
         k: int = N_SHOT,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        temperature: float = 0.0,
         fewshot_split: str = "train",
         fewshot_seed: int = DEFAULT_FEWSHOT_SEED,
         stop: tuple[str, ...] = STOP_SEQUENCES,
     ):
         if k < 0:
             raise ValueError(f"k must be >= 0, got {k}")
-        if max_tokens < 1:
-            raise ValueError(f"max_tokens must be >= 1, got {max_tokens}")
         super().__init__(dataset=dataset, model=model, name=name)
         self._k = k
-        self._max_tokens = max_tokens
-        self._temperature = temperature
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
         self._stop = stop
@@ -170,10 +166,7 @@ class GSM8KFewShotBaseGenTask(
 
     @override
     async def infer(self, pre, ctx):
-        kwargs: dict[str, object] = {
-            "max_tokens": self._max_tokens,
-            "temperature": self._temperature,
-        }
+        kwargs: dict[str, object] = {}
         if self._stop:
             kwargs["stop"] = list(self._stop)
         return await self.model.agenerate(pre, **kwargs)

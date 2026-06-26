@@ -250,6 +250,31 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0"
+    },
+    {
+      "name": "theoremqa",
+      "display_name": "TheoremQA",
+      "description": "Theorem-driven STEM QA benchmark with 800 expert-written questions.",
+      "source": [
+        "hf:TIGER-Lab/TheoremQA@a340b1782960a712843aae3ed25f1e013cc008a5"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "STEM"
+        },
+        {
+          "level1": "Mathematics",
+          "level2": "AppliedMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "theorem-driven"
+      ],
+      "deps_group": null,
+      "license": "MIT"
     }
   ],
   "tasks": [
@@ -496,6 +521,27 @@
         "source": "open-compass/T-Eval",
         "url": "https://github.com/open-compass/T-Eval/tree/58f22406404d7e2a4f36856a19c7f4dc28a0a5f0/teval",
         "notes": "ResponseDataSample (schema.py) + format_load (utils/format_load.py) vendored."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "theoremqa_kshot_base_gen",
+      "display_name": "TheoremQA (k-shot, base generative)",
+      "description": "TheoremQA k-shot ICL with official short prompt and matcher.",
+      "dataset": "theoremqa",
+      "eval_mode": "gen",
+      "n_shot": 5,
+      "tags": [
+        "english",
+        "open-ended",
+        "theorem-driven"
+      ],
+      "deps_group": "math",
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "TIGER-AI-Lab/TheoremQA",
+        "url": "https://github.com/TIGER-AI-Lab/TheoremQA/blob/acfc9686aa9b49f3c8f189364a9a9ee9c53da039/run.py",
+        "notes": "Prompt follows official short-form examples by default; k can select any prefix of the built-in examples. answer_clean and numeric matching mirror official utils.py/number_utils.py."
       },
       "status": "stable"
     }
