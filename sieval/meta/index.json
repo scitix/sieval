@@ -231,99 +231,19 @@
       "license": "MIT"
     },
     {
-      "name": "ruler_cwe",
-      "display_name": "RULER CWE",
-      "description": "RULER common words extraction: report the most frequent words.",
+      "name": "ruler",
+      "display_name": "RULER",
+      "description": "RULER long-context benchmark: 13 subtasks (NIAH ×8, VT, CWE, FWE, QA ×2).",
       "source": [
-        "url:https://media.githubusercontent.com/media/NVIDIA/RULER/main/scripts/data/synthetic/json/english_words.json"
-      ],
-      "categories": [
-        {
-          "level1": "Logic",
-          "level2": "TextualReasoning"
-        }
-      ],
-      "tags": [
-        "english",
-        "open-ended",
-        "long-context"
-      ],
-      "deps_group": "ruler",
-      "license": "Apache-2.0"
-    },
-    {
-      "name": "ruler_fwe",
-      "display_name": "RULER FWE",
-      "description": "RULER frequent words extraction: report the top frequent coded words.",
-      "source": [],
-      "categories": [
-        {
-          "level1": "Logic",
-          "level2": "TextualReasoning"
-        }
-      ],
-      "tags": [
-        "english",
-        "open-ended",
-        "long-context"
-      ],
-      "deps_group": "ruler",
-      "license": "Apache-2.0"
-    },
-    {
-      "name": "ruler_niah",
-      "display_name": "RULER NIAH",
-      "description": "RULER needle-in-a-haystack: retrieve magic values from long context.",
-      "source": [
-        "local:paul_graham_essays/PaulGrahamEssays.json.gz"
-      ],
-      "categories": [
-        {
-          "level1": "Logic",
-          "level2": "TextualReasoning"
-        }
-      ],
-      "tags": [
-        "english",
-        "open-ended",
-        "long-context"
-      ],
-      "deps_group": "ruler",
-      "license": "Apache-2.0"
-    },
-    {
-      "name": "ruler_qa",
-      "display_name": "RULER QA",
-      "description": "RULER QA: answer over many distractor documents.",
-      "source": [
+        "local:paul_graham_essays/PaulGrahamEssays.json.gz",
+        "url:https://media.githubusercontent.com/media/NVIDIA/RULER/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/synthetic/json/english_words.json",
         "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
         "hf:hotpotqa/hotpot_qa@1908d6afbbead072334abe2965f91bd2709910ab"
       ],
       "categories": [
         {
-          "level1": "Logic",
-          "level2": "TextualReasoning"
-        }
-      ],
-      "tags": [
-        "english",
-        "open-ended",
-        "long-context"
-      ],
-      "deps_group": "ruler",
-      "license": "Apache-2.0"
-    },
-    {
-      "name": "ruler_vt",
-      "display_name": "RULER VT",
-      "description": "RULER variable tracking: trace multi-hop variable assignments.",
-      "source": [
-        "local:paul_graham_essays/PaulGrahamEssays.json.gz"
-      ],
-      "categories": [
-        {
-          "level1": "Logic",
-          "level2": "TextualReasoning"
+          "level1": "Language",
+          "level2": "SemanticUnderstanding"
         }
       ],
       "tags": [
@@ -583,31 +503,10 @@
       "status": "stable"
     },
     {
-      "name": "ruler_cwe_kshot_gen",
-      "display_name": "RULER CWE (few-shot, generative)",
-      "description": "RULER common words extraction: report the most frequent words.",
-      "dataset": "ruler_cwe",
-      "eval_mode": "gen",
-      "n_shot": 1,
-      "tags": [
-        "english",
-        "open-ended",
-        "long-context"
-      ],
-      "deps_group": "ruler",
-      "model_type": "chat",
-      "reference_impl": {
-        "source": "NVIDIA/RULER",
-        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
-        "notes": "This task mirrors RULER's scoring (string_match_all, vendored in community/ruler/eval). Prompt synthesis lives in the RulerCweDataset loader, ported from RULER's scripts/data/synthetic/common_words_extraction.py."
-      },
-      "status": "stable"
-    },
-    {
-      "name": "ruler_fwe_0shot_gen",
-      "display_name": "RULER FWE (0-shot, generative)",
-      "description": "RULER frequent words extraction: report the top-3 coded words.",
-      "dataset": "ruler_fwe",
+      "name": "ruler_0shot_gen",
+      "display_name": "RULER (0-shot, generative)",
+      "description": "RULER long-context benchmark: 13 subtasks (NIAH×8, VT, CWE, FWE, QA×2).",
+      "dataset": "ruler",
       "eval_mode": "gen",
       "n_shot": 0,
       "tags": [
@@ -620,70 +519,7 @@
       "reference_impl": {
         "source": "NVIDIA/RULER",
         "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
-        "notes": "This task mirrors RULER's scoring (string_match_all, vendored in community/ruler/eval). Prompt synthesis lives in the RulerFweDataset loader, ported from RULER's scripts/data/synthetic/freq_words_extraction.py."
-      },
-      "status": "stable"
-    },
-    {
-      "name": "ruler_niah_0shot_gen",
-      "display_name": "RULER NIAH (0-shot, generative)",
-      "description": "RULER needle-in-a-haystack: retrieve magic values from long context.",
-      "dataset": "ruler_niah",
-      "eval_mode": "gen",
-      "n_shot": 0,
-      "tags": [
-        "english",
-        "open-ended",
-        "long-context"
-      ],
-      "deps_group": "ruler",
-      "model_type": "chat",
-      "reference_impl": {
-        "source": "NVIDIA/RULER",
-        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
-        "notes": "This task mirrors RULER's scoring (string_match_all, vendored in community/ruler/eval). Prompt synthesis lives in the RulerNiahDataset loader, ported from RULER's scripts/data/synthetic/niah.py."
-      },
-      "status": "stable"
-    },
-    {
-      "name": "ruler_qa_0shot_gen",
-      "display_name": "RULER QA (0-shot, generative)",
-      "description": "RULER multi-doc QA: answer over many distractor documents.",
-      "dataset": "ruler_qa",
-      "eval_mode": "gen",
-      "n_shot": 0,
-      "tags": [
-        "english",
-        "open-ended",
-        "long-context"
-      ],
-      "deps_group": "ruler",
-      "model_type": "chat",
-      "reference_impl": {
-        "source": "NVIDIA/RULER",
-        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
-        "notes": "This task mirrors RULER's scoring (string_match_part, vendored in community/ruler/eval). Prompt synthesis lives in the RulerQaDataset loader, ported from RULER's scripts/data/synthetic/qa.py."
-      },
-      "status": "stable"
-    },
-    {
-      "name": "ruler_vt_kshot_gen",
-      "display_name": "RULER VT (few-shot, generative)",
-      "description": "RULER variable tracking: trace multi-hop variable assignments.",
-      "dataset": "ruler_vt",
-      "eval_mode": "gen",
-      "n_shot": 1,
-      "tags": [
-        "english",
-        "open-ended",
-        "long-context"
-      ],
-      "deps_group": "ruler",
-      "model_type": "chat",
-      "reference_impl": {
-        "source": "NVIDIA/RULER",
-        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
-        "notes": "This task mirrors RULER's scoring (string_match_all, vendored in community/ruler/eval). Prompt synthesis lives in the RulerVtDataset loader, ported from RULER's scripts/data/synthetic/variable_tracking.py."
+        "notes": "Scoring mirrors RULER's string_match_all (recall) and string_match_part (QA), vendored in community/ruler/eval."
       },
       "status": "stable"
     },

@@ -34,12 +34,8 @@ from .mmlu_0shot_gen import (
 from .mmlu_pro_0shot_gen import (
     MMLUProZeroShotGenTask,
 )
-from .ruler import (
-    RulerCweFewShotGenTask,
-    RulerFweZeroShotGenTask,
-    RulerNiahZeroShotGenTask,
-    RulerQaZeroShotGenTask,
-    RulerVtFewShotGenTask,
+from .ruler_0shot_gen import (
+    RulerZeroShotGenTask,
 )
 from .t_eval_before_calling_0shot_gen import (
     TEvalBeforeCallingZeroShotGenTask,
@@ -57,10 +53,6 @@ __all__ = [
     "MATH500ZeroShotGenTask",
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
-    "RulerCweFewShotGenTask",
-    "RulerFweZeroShotGenTask",
-    "RulerNiahZeroShotGenTask",
-    "RulerQaZeroShotGenTask",
-    "RulerVtFewShotGenTask",
+    "RulerZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
 ]

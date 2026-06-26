@@ -45,25 +45,9 @@ from .mmlu_pro import (
     MMLUProDataset,
     MMLUProDatasetSample,
 )
-from .ruler.ruler_cwe import (
-    RulerCweDataset,
-    RulerCweDatasetSample,
-)
-from .ruler.ruler_fwe import (
-    RulerFweDataset,
-    RulerFweDatasetSample,
-)
-from .ruler.ruler_niah import (
-    RulerNiahDataset,
-    RulerNiahDatasetSample,
-)
-from .ruler.ruler_qa import (
-    RulerQaDataset,
-    RulerQaDatasetSample,
-)
-from .ruler.ruler_vt import (
-    RulerVtDataset,
-    RulerVtDatasetSample,
+from .ruler import (
+    RulerDataset,
+    RulerDatasetSample,
 )
 from .t_eval import (
     TEvalBeforeCallingDataset,
@@ -93,16 +77,8 @@ __all__ = [
     "MMLUDatasetSample",
     "MMLUProDataset",
     "MMLUProDatasetSample",
-    "RulerCweDataset",
-    "RulerCweDatasetSample",
-    "RulerFweDataset",
-    "RulerFweDatasetSample",
-    "RulerNiahDataset",
-    "RulerNiahDatasetSample",
-    "RulerQaDataset",
-    "RulerQaDatasetSample",
-    "RulerVtDataset",
-    "RulerVtDatasetSample",
+    "RulerDataset",
+    "RulerDatasetSample",
     "TEvalBeforeCallingDataset",
     "TEvalBeforeCallingDatasetSample",
 ]

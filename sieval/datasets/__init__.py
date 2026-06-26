@@ -24,6 +24,17 @@ def _iter_module_paths() -> list[Path]:
     )
 
 
+def _iter_subpackage_dirs() -> list[Path]:
+    """Return sorted subdirectories that contain ``__init__.py``."""
+    return sorted(
+        path
+        for path in _PACKAGE_DIR.iterdir()
+        if path.is_dir()
+        and not path.name.startswith("_")
+        and (path / "__init__.py").exists()
+    )
+
+
 def _is_export_name(name: str) -> bool:
     return not name.startswith("_") and name.endswith(_DATASET_EXPORT_SUFFIXES)
 
@@ -42,6 +53,8 @@ def _is_typeddict_call(node: ast.AST) -> bool:
 
 def _discover_dataset_exports() -> dict[str, str]:
     export_to_module: dict[str, str] = {}
+
+    # 1) Scan flat modules
     for module_path in _iter_module_paths():
         module_name = module_path.stem
         module_ast = ast.parse(
@@ -73,6 +86,44 @@ def _discover_dataset_exports() -> dict[str, str]:
                     f"'{previous_module}' and '{module_name}'."
                 )
             export_to_module[export_name] = module_name
+
+    # 2) Scan subpackage modules
+    for subpkg_dir in _iter_subpackage_dirs():
+        subpkg_name = subpkg_dir.name
+        for module_path in sorted(
+            p
+            for p in subpkg_dir.iterdir()
+            if p.suffix == ".py" and p.name != "__init__.py" and not p.name.startswith("_")
+        ):
+            module_ast = ast.parse(
+                module_path.read_text(encoding="utf-8"),
+                filename=str(module_path),
+            )
+
+            for node in module_ast.body:
+                export_name: str | None = None
+
+                if isinstance(node, ast.ClassDef) and _is_export_name(node.name):
+                    export_name = node.name
+                elif (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and _is_export_name(node.targets[0].id)
+                    and _is_typeddict_call(node.value)
+                ):
+                    export_name = node.targets[0].id
+
+                if export_name is None:
+                    continue
+
+                previous_module = export_to_module.get(export_name)
+                if previous_module and previous_module != subpkg_name:
+                    raise RuntimeError(
+                        f"Duplicate dataset export '{export_name}' found in "
+                        f"'{previous_module}' and '{subpkg_name}'."
+                    )
+                export_to_module[export_name] = subpkg_name
 
     return export_to_module
 
