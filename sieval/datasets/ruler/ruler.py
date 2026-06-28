@@ -65,7 +65,9 @@ class RulerDatasetSample(TypedDict):
 @sieval_dataset(
     name="ruler",
     display_name="RULER",
-    description="RULER long-context benchmark: 13 subtasks (NIAH ×8, VT, CWE, FWE, QA ×2).",
+    description=(
+        "RULER long-context benchmark: 13 subtasks (NIAH ×8, VT, CWE, FWE, QA ×2)."
+    ),
     source=(
         "local:paul_graham_essays/PaulGrahamEssays.json.gz",
         f"url:https://media.githubusercontent.com/media/NVIDIA/RULER/{_RULER_DATA_SHA}/scripts/data/synthetic/json/english_words.json",
@@ -242,7 +244,8 @@ class RulerDataset(Dataset[RulerDatasetSample]):
             )
         else:
             raise ValueError(
-                f"Unknown subtask {subtask!r}. Valid subtasks: {_ALL_SUBTASKS} or 'all'."
+                f"Unknown subtask {subtask!r}. "
+                f"Valid subtasks: {_ALL_SUBTASKS} or 'all'."
             )
 
         rows = _stamp(rows, subtask=subtask, context_length=max_seq_length)

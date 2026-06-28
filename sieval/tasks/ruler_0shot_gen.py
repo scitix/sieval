@@ -37,7 +37,7 @@ from sieval.core.tasks import (
     Task,
     sieval_task,
 )
-from sieval.datasets.ruler import RulerDatasetSample, _len_tag, thinking_prefill
+from sieval.datasets.ruler import RulerDatasetSample, len_tag, thinking_prefill
 
 _QA_SUBTASKS: frozenset[str] = frozenset({"qa_squad", "qa_hotpotqa"})
 
@@ -66,9 +66,8 @@ class _ChatGenBase[TSample, TFeedback](
     async def preprocess(self, raw, ctx):
         extra_body = self.model._kwargs.get("extra_body", {})
         enable_thinking = extra_body.get("enable_thinking", True)
-        assistant_content = (
-            f"{thinking_prefill(self.model._model, enable_thinking)}{raw['answer_prefix']}"
-        )
+        prefill = thinking_prefill(self.model._model, enable_thinking)
+        assistant_content = f"{prefill}{raw['answer_prefix']}"
         return [
             {"role": "user", "content": raw["input"]},
             {"role": "assistant", "content": assistant_content},
@@ -84,7 +83,9 @@ class _ChatGenBase[TSample, TFeedback](
 @sieval_task(
     name="ruler_0shot_gen",
     display_name="RULER (0-shot, generative)",
-    description="RULER long-context benchmark: 13 subtasks (NIAH×8, VT, CWE, FWE, QA×2).",
+    description=(
+        "RULER long-context benchmark: 13 subtasks (NIAH×8, VT, CWE, FWE, QA×2)."
+    ),
     eval_mode=EvalMode.GEN,
     n_shot=0,
     tags=("english", "open-ended", "long-context"),
@@ -118,7 +119,11 @@ class RulerZeroShotGenTask(_ChatGenBase[RulerDatasetSample, RulerFeedback]):
         for (ctx_len, subtask), samples in cells.items():
             preds = [p for p, _ in samples]
             refs = [r for _, r in samples]
-            score = string_match_part(preds, refs) if subtask in _QA_SUBTASKS else string_match_all(preds, refs)
+            score = (
+                string_match_part(preds, refs)
+                if subtask in _QA_SUBTASKS
+                else string_match_all(preds, refs)
+            )
             cell_scores[(ctx_len, subtask)] = score
 
         by_length: dict[int, list[float]] = defaultdict(list)
@@ -126,11 +131,13 @@ class RulerZeroShotGenTask(_ChatGenBase[RulerDatasetSample, RulerFeedback]):
             by_length[ctx_len].append(score)
         length_means = {ctx_len: sum(s) / len(s) for ctx_len, s in by_length.items()}
 
-        overall = sum(length_means.values()) / len(length_means) if length_means else 0.0
+        overall = (
+            sum(length_means.values()) / len(length_means) if length_means else 0.0
+        )
 
         result: dict[str, float | int] = {"score": overall, "fails": len(fails)}
         for ctx_len, mean_score in sorted(length_means.items()):
-            result[f"score_{_len_tag(ctx_len)}"] = mean_score
+            result[f"score_{len_tag(ctx_len)}"] = mean_score
         for (ctx_len, subtask), score in sorted(cell_scores.items()):
-            result[f"score_{subtask}_{_len_tag(ctx_len)}"] = score
+            result[f"score_{subtask}_{len_tag(ctx_len)}"] = score
         return result

@@ -73,7 +73,7 @@ models:
     infer:
       backend: sglang
       recipe: qwen3-8b
-      checkpoint: /path/to/Qwen3-8B-Instruct        # EDIT ME
+      checkpoint: /path/to/Qwen3-8B        # EDIT ME
       overrides: { context_length: 32768 }
     infer_meta:
       gpu: H200-141G
@@ -86,16 +86,16 @@ models:
       concurrency_limit: 64
       temperature: 0.7
       top_p: 0.8
-      presence_penalty: 1.5
       extra_body:
-        enable_thinking: false
         top_k: 20
+        presence_penalty: 1.5
+        enable_thinking: false
         continue_final_message: True
         add_generation_prompt: False
     infer:
       backend: sglang
       recipe: qwen3-8b
-      checkpoint: /path/to/Qwen3-8B-Instruct        # EDIT ME
+      checkpoint: /path/to/Qwen3-8B        # EDIT ME
       overrides: {
         context_length: 131072,
         disable_cuda_graph: True,
@@ -114,19 +114,19 @@ datasets:
   ruler_4k:
     class: RulerDataset
     path: "${SIEVAL_DATA_DIR}/ruler"
-    args: { subtask: all, max_seq_length: 4096, num_samples: 500, tokenizer_type: hf, tokenizer_path: /path/to/Qwen3-8B-Instruct }  # EDIT tokenizer_path
+    args: { subtask: all, max_seq_length: 4096, num_samples: 500, tokenizer_type: hf, tokenizer_path: /path/to/Qwen3-8B }  # EDIT tokenizer_path
 
   # 32k ----------------------------------------------------------------------
   ruler_32k:
     class: RulerDataset
     path: "${SIEVAL_DATA_DIR}/ruler"
-    args: { subtask: all, max_seq_length: 32768, num_samples: 500, tokenizer_type: hf, tokenizer_path: /path/to/Qwen3-8B-Instruct }  # EDIT tokenizer_path
+    args: { subtask: all, max_seq_length: 32768, num_samples: 500, tokenizer_type: hf, tokenizer_path: /path/to/Qwen3-8B }  # EDIT tokenizer_path
 
   # 128k ---------------------------------------------------------------------
   ruler_128k:
     class: RulerDataset
     path: "${SIEVAL_DATA_DIR}/ruler"
-    args: { subtask: all, max_seq_length: 131072, num_samples: 500, tokenizer_type: hf, tokenizer_path: /path/to/Qwen3-8B-Instruct }  # EDIT tokenizer_path
+    args: { subtask: all, max_seq_length: 131072, num_samples: 500, tokenizer_type: hf, tokenizer_path: /path/to/Qwen3-8B }  # EDIT tokenizer_path
 
 # ── Tasks ──────────────────────────────────────────────────────────────────────
 

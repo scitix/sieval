@@ -93,7 +93,9 @@ def _discover_dataset_exports() -> dict[str, str]:
         for module_path in sorted(
             p
             for p in subpkg_dir.iterdir()
-            if p.suffix == ".py" and p.name != "__init__.py" and not p.name.startswith("_")
+            if p.suffix == ".py"
+            and p.name != "__init__.py"
+            and not p.name.startswith("_")
         ):
             module_ast = ast.parse(
                 module_path.read_text(encoding="utf-8"),
