@@ -42,6 +42,26 @@
       "license": "MIT"
     },
     {
+      "name": "c_eval",
+      "display_name": "C-Eval",
+      "description": "C-Eval — Chinese multi-domain exam benchmark with 52 subjects.",
+      "source": [
+        "hf:ceval/ceval-exam@617524a00b307ff6f9933702f724131fe12ca7ce"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "chinese",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "cc-by-nc-sa-4.0"
+    },
+    {
       "name": "drop",
       "display_name": "DROP",
       "description": "Discrete Reasoning Over Paragraphs — reading-comprehension benchmark.",
@@ -315,6 +335,26 @@
         "source": "simple-evals",
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
         "notes": "Math postprocess + ANSWER_PATTERN extraction aligned with simple-evals."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "c_eval_kshot_ppl",
+      "display_name": "C-Eval (few-shot, next-token logprob)",
+      "description": "C-Eval few-shot MCQ with CEval LLaMA next-token logprob scoring.",
+      "dataset": "c_eval",
+      "eval_mode": "ppl",
+      "n_shot": 5,
+      "tags": [
+        "chinese",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "ceval",
+        "url": "https://raw.githubusercontent.com/hkust-nlp/ceval/cba65ae93bcf189149ced9f66ae0c958201faed9/code/evaluator_series/evaluators/llama.py",
+        "notes": "Mirrors the non-CoT LLaMA evaluator: per-subject few-shot header with the English subject key, dev exemplars, and next-token A/B/C/D logprob argmax (equivalent to softmax(logits[A,B,C,D])). Eval split is the released test set (the reference scored val); score is the macro-average over the 52 subjects."
       },
       "status": "stable"
     },
