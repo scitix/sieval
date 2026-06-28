@@ -11,7 +11,7 @@ from ._shared import ruler_task, thinking_prefill
 
 
 def load_fwe(
-    name_or_path: str,
+    _name_or_path: str,
     *,
     max_seq_length: int,
     tokenizer_type: str,

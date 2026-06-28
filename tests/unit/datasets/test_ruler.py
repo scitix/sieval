@@ -53,7 +53,15 @@ def test_thinking_prefill(model_name, enable_thinking, expected):
 
 @_needs_ruler_deps
 def test_stamp_adds_subtask_and_context_length():
-    rows = [{"index": 0, "input": "x", "outputs": ["y"], "length": 10, "answer_prefix": "A:"}]
+    rows = [
+        {
+            "index": 0,
+            "input": "x",
+            "outputs": ["y"],
+            "length": 10,
+            "answer_prefix": "A:",
+        }
+    ]
     stamped = _stamp(rows, subtask="vt", context_length=8192)
     assert stamped[0]["subtask"] == "vt"
     assert stamped[0]["context_length"] == 8192
@@ -61,7 +69,15 @@ def test_stamp_adds_subtask_and_context_length():
 
 @_needs_ruler_deps
 def test_stamp_preserves_existing_fields():
-    rows = [{"index": 7, "input": "q", "outputs": ["a"], "length": 5, "answer_prefix": "Answer:"}]
+    rows = [
+        {
+            "index": 7,
+            "input": "q",
+            "outputs": ["a"],
+            "length": 5,
+            "answer_prefix": "Answer:",
+        }
+    ]
     result = _stamp(rows, subtask="cwe", context_length=4096)
     assert result[0]["index"] == 7
     assert result[0]["outputs"] == ["a"]
@@ -88,15 +104,25 @@ def test_fwe_load_emits_required_fields():
 
 @_needs_ruler_deps
 def test_fwe_load_is_deterministic():
-    first = list(RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=2, random_seed=42).test_set)
-    second = list(RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=2, random_seed=42).test_set)
+    first = list(
+        RulerDataset(
+            ".", subtask="fwe", max_seq_length=512, num_samples=2, random_seed=42
+        ).test_set
+    )
+    second = list(
+        RulerDataset(
+            ".", subtask="fwe", max_seq_length=512, num_samples=2, random_seed=42
+        ).test_set
+    )
     assert first[0]["input"] == second[0]["input"]
     assert first[0]["outputs"] == second[0]["outputs"]
 
 
 @_needs_ruler_deps
 def test_fwe_no_token_position_answer_field():
-    rows = list(RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=2).test_set)
+    rows = list(
+        RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=2).test_set
+    )
     for r in rows:
         assert "token_position_answer" not in r
 
@@ -108,7 +134,9 @@ def test_fwe_no_token_position_answer_field():
 
 @_needs_ruler_deps
 def test_fwe_sample_satisfies_required_schema():
-    row = list(RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=1).test_set)[0]
+    row = list(
+        RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=1).test_set
+    )[0]
     missing = set(RulerDatasetSample.__required_keys__) - set(row.keys())
     assert not missing, f"Missing required fields: {missing}"
 

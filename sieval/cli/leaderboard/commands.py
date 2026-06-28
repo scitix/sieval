@@ -87,7 +87,6 @@ def report(
     render(result, output)
 
 
-
 @leaderboard_app.command(name="list")
 def list_cmd(
     directory: Annotated[

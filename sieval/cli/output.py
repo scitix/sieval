@@ -262,7 +262,6 @@ def _render_text_dry_run(result: CommandResult) -> None:
         log_user("\nDry-run passed.")
 
 
-
 def _render_text_leaderboard_list(result: CommandResult) -> None:
     """Text renderer for leaderboard.list — NAME / MODELS / TASKS / PATH."""
     if not result.ok:
@@ -625,7 +624,7 @@ _TEXT_RENDERERS: dict[str, Callable[[CommandResult], None]] = {
     "run.dry_run": _render_text_dry_run,
     "leaderboard.run.dry_run": _render_text_dry_run,
     "leaderboard.report": _render_text_leaderboard_report,
-"leaderboard.list": _render_text_leaderboard_list,
+    "leaderboard.list": _render_text_leaderboard_list,
     "dataset.list": _render_text_dataset_list,
     "dataset.show": _render_text_dataset_show,
     "task.list": _render_text_task_list,

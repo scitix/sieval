@@ -90,7 +90,9 @@ async def test_feedback_carries_qa_subtask():
 # ---------------------------------------------------------------------------
 
 
-def _ctx(*, prediction: str, references: list[str], subtask: str, ctx_len: int) -> TaskContext:
+def _ctx(
+    *, prediction: str, references: list[str], subtask: str, ctx_len: int
+) -> TaskContext:
     raw = {
         "input": "x",
         "answer_prefix": "",
@@ -118,7 +120,12 @@ def _ctx(*, prediction: str, references: list[str], subtask: str, ctx_len: int) 
 async def test_report_recall_single_cell():
     # Both refs present → string_match_all = 100.
     finals = [
-        _ctx(prediction="alpha beta", references=["Alpha", "Beta"], subtask="niah_single_1", ctx_len=4096),
+        _ctx(
+            prediction="alpha beta",
+            references=["Alpha", "Beta"],
+            subtask="niah_single_1",
+            ctx_len=4096,
+        ),
     ]
     report = await RulerZeroShotGenTask.report(_SELF, finals, [])
     assert report["score"] == pytest.approx(100.0)
@@ -132,8 +139,15 @@ async def test_report_qa_subtask_uses_string_match_part():
     # string_match_part: sample 1 has "paris" in prediction → 1.0; sample 2 → 0.0.
     # batch = 0.5 * 100 = 50.0
     finals = [
-        _ctx(prediction="the answer is paris", references=["Paris"], subtask="qa_squad", ctx_len=4096),
-        _ctx(prediction="berlin", references=["London"], subtask="qa_squad", ctx_len=4096),
+        _ctx(
+            prediction="the answer is paris",
+            references=["Paris"],
+            subtask="qa_squad",
+            ctx_len=4096,
+        ),
+        _ctx(
+            prediction="berlin", references=["London"], subtask="qa_squad", ctx_len=4096
+        ),
     ]
     report = await RulerZeroShotGenTask.report(_SELF, finals, [])
     assert report["score_qa_squad_4k"] == pytest.approx(50.0)
@@ -143,8 +157,18 @@ async def test_report_qa_subtask_uses_string_match_part():
 async def test_report_aggregates_multiple_lengths():
     # Two lengths: 4k (score=100) and 8k (score=0). Overall = mean(100, 0) = 50.
     finals = [
-        _ctx(prediction="alpha", references=["Alpha"], subtask="niah_single_1", ctx_len=4096),
-        _ctx(prediction="nothing", references=["Alpha"], subtask="niah_single_1", ctx_len=8192),
+        _ctx(
+            prediction="alpha",
+            references=["Alpha"],
+            subtask="niah_single_1",
+            ctx_len=4096,
+        ),
+        _ctx(
+            prediction="nothing",
+            references=["Alpha"],
+            subtask="niah_single_1",
+            ctx_len=8192,
+        ),
     ]
     report = await RulerZeroShotGenTask.report(_SELF, finals, [])
     assert report["score_4k"] == pytest.approx(100.0)
@@ -156,7 +180,12 @@ async def test_report_aggregates_multiple_lengths():
 async def test_report_per_length_mean_averages_present_subtasks():
     # 4k: niah_single_1=100, vt=0 → mean=50. Only 1 length → overall=50.
     finals = [
-        _ctx(prediction="alpha", references=["Alpha"], subtask="niah_single_1", ctx_len=4096),
+        _ctx(
+            prediction="alpha",
+            references=["Alpha"],
+            subtask="niah_single_1",
+            ctx_len=4096,
+        ),
         _ctx(prediction="wrong", references=["Alpha"], subtask="vt", ctx_len=4096),
     ]
     report = await RulerZeroShotGenTask.report(_SELF, finals, [])
@@ -174,7 +203,12 @@ async def test_report_empty_returns_zero():
 @pytest.mark.anyio
 async def test_report_fails_counted():
     finals = [
-        _ctx(prediction="alpha", references=["Alpha"], subtask="niah_single_1", ctx_len=4096),
+        _ctx(
+            prediction="alpha",
+            references=["Alpha"],
+            subtask="niah_single_1",
+            ctx_len=4096,
+        ),
     ]
     report = await RulerZeroShotGenTask.report(_SELF, finals, ["fail1", "fail2"])
     assert report["fails"] == 2
@@ -183,7 +217,12 @@ async def test_report_fails_counted():
 @pytest.mark.anyio
 async def test_report_key_format_uses_len_tag():
     finals = [
-        _ctx(prediction="alpha", references=["Alpha"], subtask="niah_multiquery", ctx_len=131072),
+        _ctx(
+            prediction="alpha",
+            references=["Alpha"],
+            subtask="niah_multiquery",
+            ctx_len=131072,
+        ),
     ]
     report = await RulerZeroShotGenTask.report(_SELF, finals, [])
     assert "score_128k" in report

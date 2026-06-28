@@ -54,13 +54,12 @@ def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
     (to reserve token budget) and the task base (to prefill the assistant turn)
     consume it, so the two can never disagree.
     """
-    if "qwen3" in model_name.lower():
-        if not enable_thinking:
-            return "<think>\n\n</think>\n\n"  # Empty block; skip to answer
+    if "qwen3" in model_name.lower() and not enable_thinking:
+        return "<think>\n\n</think>\n\n"  # Empty block; skip to answer
     return ""
 
 
-def _len_tag(length: int) -> str:
+def len_tag(length: int) -> str:
     """Convert a context length to a short tag: 4096 → '4k', 131072 → '128k'."""
     return f"{length // 1024}k" if length % 1024 == 0 else str(length)
 

@@ -7,7 +7,13 @@ import random
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 from sieval.core.utils.hf import ensure_dataset
 
-from ._shared import _DOCUMENT_PROMPT, _HOTPOTQA_REVISION, _SQUAD_FILE, ruler_task, thinking_prefill
+from ._shared import (
+    _DOCUMENT_PROMPT,
+    _HOTPOTQA_REVISION,
+    _SQUAD_FILE,
+    ruler_task,
+    thinking_prefill,
+)
 
 
 def load_qa(

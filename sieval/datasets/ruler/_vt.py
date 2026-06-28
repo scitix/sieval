@@ -205,7 +205,9 @@ def _binary_search_noises(
     while lower_bound <= upper_bound:
         mid = (lower_bound + upper_bound) // 2
         text, _ = gen(mid)
-        total = len(tokenizer.text_to_tokens(text)) + example_tokens + tokens_to_generate
+        total = (
+            len(tokenizer.text_to_tokens(text)) + example_tokens + tokens_to_generate
+        )
         if total <= max_seq_length:
             optimal = mid
             lower_bound = mid + 1

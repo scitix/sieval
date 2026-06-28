@@ -196,7 +196,7 @@ def _fit_haystack_size(
     *,
     gen,
     tokenizer,
-    haystack,
+    _haystack,
     type_haystack: str,
     max_seq_length: int,
     tokens_to_generate: int,
