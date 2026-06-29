@@ -34,7 +34,10 @@ Deviations from the upstream LCB runner (complete list):
      approximate rather than exactly reproduce the reference.
   3. Eval sandbox: code is executed by an external service at
      `$SIEVAL_CODE_EVAL_API` (POST code + test cases), not upstream's in-process
-     `check_correctness`; the per-execution timeout is owned by that service.
+     `check_correctness`. The execution budget is client-owned — sent in the
+     request body, scaled by case count (`timeout + len(inputs) * 2.0`) since the
+     service runs all cases under one sequential budget — approximating upstream's
+     per-case 6s.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
@@ -137,7 +140,6 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         self._k = k
         self._n = n
         self._stop = stop
-        self._max_concurrency = max_concurrency
         self._timeout = timeout
         # Fixed few-shot prefixes, keyed by whether the target has starter code
         # (func vs stdin pool). Computed once in setup(); never per sample.
@@ -219,6 +221,9 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
                             "outputs": outputs,
                             "fn_name": fn_name,
                         },
+                        # All N cases share one sequential budget, so scale by N.
+                        # Approximates official per-case 6s within a single run.
+                        "timeout": self._timeout + len(inputs) * 2.0,
                     },
                     # allow more time for more test cases
                     # with extra buffer for network latency
