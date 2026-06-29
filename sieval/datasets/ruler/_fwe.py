@@ -7,7 +7,7 @@ import numpy as np
 
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 
-from ._shared import ruler_task, thinking_prefill
+from ._shared import ruler_task, tokens_to_generate
 
 
 def load_fwe(
@@ -20,22 +20,20 @@ def load_fwe(
     random_seed: int,
     remove_newline_tab: bool,
     enable_thinking: bool,
+    think_budget: int = 0,
     alpha: float,
     coded_wordlen: int,
     vocab_size: int,
 ) -> list[dict]:
     from scipy.special import zeta
 
-    tokens_to_generate = ruler_task("freq_words_extraction")["tokens_to_generate"]
+    gen_budget = tokens_to_generate("freq_words_extraction", enable_thinking=enable_thinking, think_budget=think_budget)
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
     np.random.seed(random_seed)
 
-    thinking_overhead = len(
-        tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
-    )
-    input_max_len = max_seq_length - tokens_to_generate - thinking_overhead
+    input_max_len = max_seq_length - gen_budget
     if vocab_size == -1:
         vocab_size = input_max_len // 50
 
@@ -66,8 +64,7 @@ def load_fwe(
         )
         length = (
             len(tokenizer.text_to_tokens(input_text))
-            + tokens_to_generate
-            + thinking_overhead
+            + gen_budget
         )
         if remove_newline_tab:
             input_text = " ".join(

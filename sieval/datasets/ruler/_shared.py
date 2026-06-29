@@ -43,20 +43,15 @@ def ruler_task(name: str) -> RulerTaskSpec:
     return cast(RulerTaskSpec, TASKS[name])
 
 
-def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
-    """Placeholder text a reasoning model prefills into the assistant turn.
+def tokens_to_generate(task_name: str, *, enable_thinking: bool, think_budget: int) -> int:
+    """Compute the total generation budget for a RULER task.
 
-    Qwen3: When thinking is enabled, start the think block so the model continues
-    inside it. When disabled, inject an empty block so the model skips to the answer
-    cue instead of reopening a reasoning span.
-
-    This is the single source of truth for the placeholder: both the dataset loaders
-    (to reserve token budget) and the task base (to prefill the assistant turn)
-    consume it, so the two can never disagree.
+    When thinking is enabled the model must first emit the full think block before
+    the answer, so the budget is think_budget + base answer tokens.  When thinking
+    is disabled the budget is just the base answer tokens from the task spec.
     """
-    if "qwen3" in model_name.lower() and not enable_thinking:
-        return "<think>\n\n</think>\n\n"  # Empty block; skip to answer
-    return ""
+    base = ruler_task(task_name)["tokens_to_generate"]
+    return think_budget + base if enable_thinking else base
 
 
 def len_tag(length: int) -> str:

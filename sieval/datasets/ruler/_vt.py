@@ -13,7 +13,7 @@ from ._shared import (
     _build_haystack,
     _ensure_punkt,
     ruler_task,
-    thinking_prefill,
+    tokens_to_generate,
 )
 
 
@@ -27,11 +27,12 @@ def load_vt(
     random_seed: int,
     remove_newline_tab: bool,
     enable_thinking: bool,
+    think_budget: int = 0,
     num_chains: int,
     num_hops: int,
     type_haystack: str,
 ) -> list[dict]:
-    tokens_to_generate = ruler_task("variable_tracking")["tokens_to_generate"]
+    gen_budget = tokens_to_generate("variable_tracking", enable_thinking=enable_thinking, think_budget=think_budget)
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
@@ -52,8 +53,6 @@ def load_vt(
         type_haystack=type_haystack,
         haystack=haystack,
         final_output=False,
-        enable_thinking=enable_thinking,
-        tokenizer_path=tokenizer_path,
     )[0]
 
     return _synthesize(
@@ -62,15 +61,13 @@ def load_vt(
         max_seq_length=max_seq_length,
         num_chains=num_chains,
         num_hops=num_hops,
-        tokens_to_generate=tokens_to_generate,
+        tokens_to_generate=gen_budget,
         add_fewshot=True,
         icl_example=icl_example,
         remove_newline_tab=remove_newline_tab,
         type_haystack=type_haystack,
         haystack=haystack,
         final_output=True,
-        enable_thinking=enable_thinking,
-        tokenizer_path=tokenizer_path,
     )
 
 
@@ -88,13 +85,8 @@ def _synthesize(
     haystack,
     final_output: bool = False,
     add_fewshot: bool = True,
-    enable_thinking: bool = False,
-    tokenizer_path: str = "cl100k_base",
 ) -> list[dict]:
     is_icl = add_fewshot and (icl_example is None)
-    thinking_overhead = len(
-        tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
-    )
 
     if icl_example is not None:
         incremental = 500 if type_haystack == "essay" else 10
@@ -151,7 +143,6 @@ def _synthesize(
                 length = (
                     len(tokenizer.text_to_tokens(input_text))
                     + tokens_to_generate
-                    + thinking_overhead
                 )
                 assert length <= max_seq_length, "exceeds max_seq_length"
                 break
