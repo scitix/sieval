@@ -18,6 +18,9 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset
 
+# Pin the MathArena HF snapshot for reproducibility (see check_datasets / #8).
+HMMT_FEB_2026_REVISION = "02fba4f74d8e68e73e66a02d540fd979c05c274c"
+
 
 class HMMTFeb2026DatasetSample(TypedDict):
     question: str
@@ -28,7 +31,7 @@ class HMMTFeb2026DatasetSample(TypedDict):
     name="hmmt_feb_2026",
     display_name="HMMT Feb 2026",
     description="Harvard-MIT Mathematics Tournament, February 2026, 33 problems.",
-    source="hf:MathArena/hmmt_feb_2026",
+    source=f"hf:MathArena/hmmt_feb_2026@{HMMT_FEB_2026_REVISION}",
     categories=(Category(Level1Category.MATHEMATICS, "CompetitionMath"),),
     tags=("english", "open-ended"),
     license="CC-BY-NC-SA-4.0",

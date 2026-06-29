@@ -46,7 +46,7 @@
       "display_name": "AIME 2026",
       "description": "American Invitational Mathematics Examination 2026, 30 problems.",
       "source": [
-        "hf:MathArena/aime_2026"
+        "hf:MathArena/aime_2026@d2de22f3c656b4f56cf8981212186377d1e23bc3"
       ],
       "categories": [
         {
@@ -153,7 +153,7 @@
       "display_name": "HMMT Feb 2026",
       "description": "Harvard-MIT Mathematics Tournament, February 2026, 33 problems.",
       "source": [
-        "hf:MathArena/hmmt_feb_2026"
+        "hf:MathArena/hmmt_feb_2026@02fba4f74d8e68e73e66a02d540fd979c05c274c"
       ],
       "categories": [
         {

@@ -18,6 +18,9 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset
 
+# Pin the MathArena HF snapshot for reproducibility (see check_datasets / #8).
+AIME_2026_REVISION = "d2de22f3c656b4f56cf8981212186377d1e23bc3"
+
 
 class AIME2026DatasetSample(TypedDict):
     question: str
@@ -28,7 +31,7 @@ class AIME2026DatasetSample(TypedDict):
     name="aime_2026",
     display_name="AIME 2026",
     description="American Invitational Mathematics Examination 2026, 30 problems.",
-    source="hf:MathArena/aime_2026",
+    source=f"hf:MathArena/aime_2026@{AIME_2026_REVISION}",
     categories=(Category(Level1Category.MATHEMATICS, "CompetitionMath"),),
     tags=("english", "open-ended"),
     license="CC-BY-NC-SA-4.0",
