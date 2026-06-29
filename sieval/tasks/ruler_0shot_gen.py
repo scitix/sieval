@@ -12,10 +12,9 @@ per sample in ``feedback()`` based on ``subtask``:
 - overall headline: ``score``
 
 The prompt is fully synthesized in the dataset loader; this task just sends
-it and scores the reply. The chat endpoint prefills the RULER answer-cue as
-an assistant turn so the model *continues* it rather than re-answering. This
-requires ``continue_final_message: True`` + ``add_generation_prompt: False``
-in the model's ``extra_body`` — set in the run config, not here.
+it and scores the reply. The RULER answer-cue (``answer_prefix``) is appended
+directly to the user message so the model produces the answer inline without
+needing a prefilled assistant turn.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
@@ -37,7 +36,7 @@ from sieval.core.tasks import (
     Task,
     sieval_task,
 )
-from sieval.datasets.ruler import RulerDatasetSample, len_tag, thinking_prefill
+from sieval.datasets.ruler import RulerDatasetSample, len_tag
 
 _QA_SUBTASKS: frozenset[str] = frozenset({"qa_squad", "qa_hotpotqa"})
 
@@ -64,13 +63,8 @@ class _ChatGenBase[TSample, TFeedback](
         super().__init__(dataset=dataset, model=model, name=name)
 
     async def preprocess(self, raw, ctx):
-        extra_body = self.model._kwargs.get("extra_body", {})
-        enable_thinking = extra_body.get("enable_thinking", True)
-        prefill = thinking_prefill(self.model._model, enable_thinking)
-        assistant_content = f"{prefill}{raw['answer_prefix']}"
         return [
-            {"role": "user", "content": raw["input"]},
-            {"role": "assistant", "content": assistant_content},
+            {"role": "user", "content": raw["input"] + raw["answer_prefix"]},
         ]
 
     async def infer(self, pre, ctx):

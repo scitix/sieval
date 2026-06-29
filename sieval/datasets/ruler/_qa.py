@@ -12,7 +12,7 @@ from ._shared import (
     _HOTPOTQA_REVISION,
     _SQUAD_FILE,
     ruler_task,
-    thinking_prefill,
+    tokens_to_generate,
 )
 
 
@@ -27,9 +27,10 @@ def load_qa(
     random_seed: int,
     remove_newline_tab: bool,
     enable_thinking: bool,
+    think_budget: int = 0,
     pre_samples: int,
 ) -> list[dict]:
-    tokens_to_generate = ruler_task("qa")["tokens_to_generate"]
+    gen_budget = tokens_to_generate("qa", enable_thinking=enable_thinking, think_budget=think_budget)
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
@@ -55,13 +56,10 @@ def load_qa(
         gen=gen,
         tokenizer=tokenizer,
         max_seq_length=max_seq_length,
-        tokens_to_generate=tokens_to_generate,
+        tokens_to_generate=gen_budget,
         incremental=incremental,
     )
 
-    thinking_overhead = len(
-        tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
-    )
     qa_answer_prefix = ruler_task("qa")["answer_prefix"]
 
     rows: list[dict] = []
@@ -72,8 +70,7 @@ def load_qa(
                 input_text, answer = gen(index + pre_samples, used_docs)
                 length = (
                     len(tokenizer.text_to_tokens(input_text))
-                    + tokens_to_generate
-                    + thinking_overhead
+                    + gen_budget
                 )
                 assert length <= max_seq_length, f"{length} exceeds max_seq_length"
                 break

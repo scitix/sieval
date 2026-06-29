@@ -6,7 +6,7 @@ import random
 
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 
-from ._shared import ruler_task, thinking_prefill
+from ._shared import ruler_task, tokens_to_generate
 
 
 def load_cwe(
@@ -19,12 +19,13 @@ def load_cwe(
     random_seed: int,
     remove_newline_tab: bool,
     enable_thinking: bool,
+    think_budget: int = 0,
     freq_cw: int,
     freq_ucw: int,
     num_cw: int,
     num_fewshot: int,
 ) -> list[dict]:
-    tokens_to_generate = ruler_task("common_words_extraction")["tokens_to_generate"]
+    gen_budget = tokens_to_generate("common_words_extraction", enable_thinking=enable_thinking, think_budget=think_budget)
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
@@ -56,13 +57,10 @@ def load_cwe(
         tokenizer=tokenizer,
         vocab_size=len(words),
         max_seq_length=max_seq_length,
-        tokens_to_generate=tokens_to_generate,
+        tokens_to_generate=gen_budget,
         incremental=incremental,
     )
 
-    thinking_overhead = len(
-        tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
-    )
     cwe_answer_prefix = ruler_task("common_words_extraction")["answer_prefix"]
 
     rows: list[dict] = []
@@ -73,8 +71,7 @@ def load_cwe(
                 input_text, answer = gen(used_words)
                 length = (
                     len(tokenizer.text_to_tokens(input_text))
-                    + tokens_to_generate
-                    + thinking_overhead
+                    + gen_budget
                 )
                 assert length <= max_seq_length, "exceeds max_seq_length"
                 break

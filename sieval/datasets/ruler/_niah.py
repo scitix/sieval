@@ -12,7 +12,7 @@ from ._shared import (
     _build_haystack,
     _ensure_punkt,
     ruler_task,
-    thinking_prefill,
+    tokens_to_generate,
 )
 
 # NIAH subtask → load() kwargs, from synthetic.yaml.
@@ -94,6 +94,7 @@ def load_niah(
     random_seed: int,
     remove_newline_tab: bool,
     enable_thinking: bool,
+    think_budget: int = 0,
     num_needle_k: int,
     num_needle_v: int,
     num_needle_q: int,
@@ -101,7 +102,7 @@ def load_niah(
     type_needle_k: str,
     type_needle_v: str,
 ) -> list[dict]:
-    tokens_to_generate = ruler_task("niah")["tokens_to_generate"]
+    gen_budget = tokens_to_generate("niah", enable_thinking=enable_thinking, think_budget=think_budget)
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
@@ -132,12 +133,9 @@ def load_niah(
         haystack=haystack,
         type_haystack=type_haystack,
         max_seq_length=max_seq_length,
-        tokens_to_generate=tokens_to_generate,
+        tokens_to_generate=gen_budget,
     )
 
-    thinking_overhead = len(
-        tokenizer.text_to_tokens(thinking_prefill(tokenizer_path, enable_thinking))
-    )
     incremental = _incremental(type_haystack, max_seq_length)
     niah_answer_prefix_template = ruler_task("niah")["answer_prefix"]
 
@@ -149,8 +147,7 @@ def load_niah(
                 input_text, answer = gen(used_haystack)
                 length = (
                     len(tokenizer.text_to_tokens(input_text))
-                    + tokens_to_generate
-                    + thinking_overhead
+                    + gen_budget
                 )
                 assert length <= max_seq_length, "exceeds max_seq_length"
                 break

@@ -14,20 +14,13 @@ from sieval.tasks.ruler_0shot_gen import RulerZeroShotGenTask
 _SELF: Any = None
 
 
-class _StubModel:
-    """Minimal stand-in for the chat model preprocess reads."""
-
-    _model = "test-model"
-    _kwargs: dict = {}
-
-
 # ---------------------------------------------------------------------------
 # preprocess
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_preprocess_splits_body_and_answer_prefix():
+async def test_preprocess_appends_answer_prefix_to_user():
     raw = {
         "input": "find the needle",
         "answer_prefix": " Answer:",
@@ -37,12 +30,27 @@ async def test_preprocess_splits_body_and_answer_prefix():
     }
     ctx = TaskContext(sample_id=0, raw_sample=raw)
     task = RulerZeroShotGenTask.__new__(RulerZeroShotGenTask)
-    task._model = _StubModel()
     pre = await RulerZeroShotGenTask.preprocess(task, raw, ctx)
     assert pre == [
-        {"role": "user", "content": "find the needle"},
-        {"role": "assistant", "content": " Answer:"},
+        {"role": "user", "content": "find the needle Answer:"},
     ]
+
+
+@pytest.mark.anyio
+async def test_preprocess_single_user_turn_no_assistant():
+    raw = {
+        "input": "what is 2+2?",
+        "answer_prefix": " The answer is",
+        "outputs": ["4"],
+        "subtask": "qa_squad",
+        "context_length": 4096,
+    }
+    ctx = TaskContext(sample_id=0, raw_sample=raw)
+    task = RulerZeroShotGenTask.__new__(RulerZeroShotGenTask)
+    pre = await RulerZeroShotGenTask.preprocess(task, raw, ctx)
+    assert len(pre) == 1
+    assert pre[0]["role"] == "user"
+    assert pre[0]["content"] == "what is 2+2? The answer is"
 
 
 # ---------------------------------------------------------------------------

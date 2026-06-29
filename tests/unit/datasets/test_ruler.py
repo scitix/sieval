@@ -7,7 +7,7 @@ group (tiktoken / wonderwords / scipy) — they are skipped when unavailable.
 
 import pytest
 
-from sieval.datasets.ruler import thinking_prefill
+from sieval.datasets.ruler import tokens_to_generate
 
 try:
     import tiktoken as _tiktoken  # noqa: F401
@@ -25,25 +25,29 @@ if _ruler_deps:
 
 
 # ---------------------------------------------------------------------------
-# thinking_prefill helper
+# tokens_to_generate helper
 # ---------------------------------------------------------------------------
-
-_QWEN3_TAGS = "<think>\n\n</think>\n\n"
 
 
 @pytest.mark.parametrize(
-    ("model_name", "enable_thinking", "expected"),
+    ("task_name", "enable_thinking", "think_budget", "expected"),
     [
-        ("Qwen/Qwen3-8B", False, _QWEN3_TAGS),
-        ("qwen3-8b-instruct", False, _QWEN3_TAGS),
-        ("Qwen/Qwen3-8B", True, ""),
-        ("meta-llama/Llama-3-8B", False, ""),
-        ("gpt-4o", False, ""),
-        ("cl100k_base", True, ""),
+        # No thinking: base tokens only
+        ("niah", False, 0, 128),
+        ("qa", False, 0, 32),
+        ("variable_tracking", False, 0, 30),
+        ("common_words_extraction", False, 0, 120),
+        ("freq_words_extraction", False, 0, 50),
+        # Thinking enabled: base + think_budget
+        ("niah", True, 1024, 1024 + 128),
+        ("qa", True, 512, 512 + 32),
+        ("variable_tracking", True, 2048, 2048 + 30),
+        # think_budget=0 with enable_thinking=True still adds 0
+        ("niah", True, 0, 128),
     ],
 )
-def test_thinking_prefill(model_name, enable_thinking, expected):
-    assert thinking_prefill(model_name, enable_thinking) == expected
+def test_tokens_to_generate(task_name, enable_thinking, think_budget, expected):
+    assert tokens_to_generate(task_name, enable_thinking=enable_thinking, think_budget=think_budget) == expected
 
 
 # ---------------------------------------------------------------------------
