@@ -906,6 +906,23 @@ class TestStrictResumeMatch:
         with pytest.raises(RuntimeError, match=r"not a YAML mapping"):
             await s._persist_effective_config()
 
+    @pytest.mark.anyio
+    async def test_resume_aborts_on_unparseable_existing_file(self, tmp_path: Path):
+        # A tampered persisted body that is not valid YAML must surface as the
+        # documented RuntimeError, not the raw yaml.YAMLError from the strip path.
+        result_dir = tmp_path / "out"
+        result_dir.mkdir()
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        (result_dir / "effective_config.yaml").write_text(header + "key: [unclosed\n")
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
+        s = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        with pytest.raises(RuntimeError, match=r"cannot parse existing"):
+            await s._persist_effective_config()
+
 
 class TestPersistTimingBeforeRunnerArun:
     """Regression guard for spec §3.7: persistence must happen BEFORE
