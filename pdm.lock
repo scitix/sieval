@@ -5,7 +5,7 @@
 groups = ["default", "dev", "drop", "ifeval", "math", "t-eval", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:ebaa5d1f062279a3b3ff9ee40e86c3802f501f2e1b8a6745237e9aeb45959411"
+content_hash = "sha256:350a1f7d48a8e9e79516ac7b989c8a10c01e9ef73bae7b421c8a918b7d751830"
 
 [[metadata.targets]]
 requires_python = ">=3.12,<3.15"
@@ -2343,7 +2343,7 @@ name = "regex"
 version = "2025.11.3"
 requires_python = ">=3.9"
 summary = "Alternative regular expression module, to replace re."
-groups = ["ifeval", "t-eval"]
+groups = ["ifeval", "math", "t-eval"]
 files = [
     {file = "regex-2025.11.3-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:bc8ab71e2e31b16e40868a40a69007bc305e1109bd4658eb6cad007e0bf67c41"},
     {file = "regex-2025.11.3-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:22b29dda7e1f7062a52359fca6e58e548e28c6686f205e780b02ad8ef710de36"},

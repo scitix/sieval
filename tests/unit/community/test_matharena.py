@@ -58,3 +58,26 @@ def test_extract_answer_nonstrict_falls_back_to_integer():
 
 def test_extract_answer_strict_no_box_returns_none():
     assert extract_answer("final answer is 156", strict_parsing=True) is None
+
+
+def test_extract_walks_back_over_approximation_box():
+    # The last box is a bare "≈ …" approximation → prefer the earlier exact box
+    # (matharena parser.py walk-back; the old hand-rolled parser returned the
+    # trailing approximation).
+    text = "Exact: \\boxed{\\sqrt{2}}, numerically \\boxed{\\approx 1.41421}"
+    assert extract_answer(text, strict_parsing=False) == "\\sqrt{2}"
+
+
+def test_extract_walks_back_over_decimal_approximation():
+    # The last box is a pure decimal → prefer the earlier exact (\frac) box.
+    text = "value is \\boxed{\\frac{1}{3}} \\approx \\boxed{0.333}"
+    assert extract_answer(text, strict_parsing=False) == "\\frac{1}{3}"
+
+
+def test_extract_boxed_recursive_braces():
+    assert extract_boxed_answer("\\boxed{\\frac{a}{b}^{2}}") == "\\frac{a}{b}^{2}"
+
+
+def test_extract_last_integer_is_unsigned_word_bounded():
+    # matharena uses \b\d+\b: the leading sign is not part of the integer.
+    assert extract_last_integer("the result is -5") == "5"
