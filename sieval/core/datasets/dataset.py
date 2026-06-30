@@ -18,7 +18,8 @@ TRetrieveStrategy = Literal["random", "fixed"]
 class Dataset[TSample](ABC):
     """Abstract evaluation dataset backed by a HuggingFace DatasetDict.
 
-    Transformations (repeat/select/shuffle) return immutable shallow copies.
+    Transformations (repeat/slice/shuffle/stratified_sample) return immutable
+    shallow copies.
     """
 
     def __init__(
@@ -74,17 +75,17 @@ class Dataset[TSample](ABC):
         new_dict[split] = new_dict[split].repeat(times)
         return self._clone_with_new_dict(new_dict)
 
-    def select(self, num: int, split: str = "test") -> Self:
+    def slice(self, num: int, split: str = "test") -> Self:
         """Return a shallow clone with only the first *num* samples of *split*.
 
-        Keeps all samples if *num* exceeds split length. Returns ``self``
-        unchanged if *split* is absent.
+        Positional, deterministic prefix. Keeps all samples if *num* exceeds
+        split length. Returns ``self`` unchanged if *split* is absent.
         """
         if split not in self._dataset_dict:
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
-        num_to_select = min(num, len(new_dict[split]))
-        new_dict[split] = new_dict[split].select(range(num_to_select))
+        num_to_keep = min(num, len(new_dict[split]))
+        new_dict[split] = new_dict[split].select(range(num_to_keep))
         return self._clone_with_new_dict(new_dict)
 
     def shuffle(self, seed: int = 0, split: str = "test") -> Self:
@@ -98,7 +99,7 @@ class Dataset[TSample](ABC):
         new_dict[split] = new_dict[split].shuffle(seed=seed)
         return self._clone_with_new_dict(new_dict)
 
-    def stratified_select(
+    def stratified_sample(
         self,
         num: int,
         by: str,
@@ -125,7 +126,7 @@ class Dataset[TSample](ABC):
             return self
         if by not in hf.column_names:
             raise ValueError(
-                f"stratified_select: column {by!r} not found; "
+                f"stratified_sample: column {by!r} not found; "
                 f"available columns: {hf.column_names}"
             )
 
@@ -144,7 +145,7 @@ class Dataset[TSample](ABC):
         target = min(max(num, sum(alloc.values())), total)
         if target > num:
             logger.warning(
-                "stratified_select: min_per_group={} across {} groups requires "
+                "stratified_sample: min_per_group={} across {} groups requires "
                 "{} rows, exceeding the requested num={}",
                 min_per_group,
                 len(keys),

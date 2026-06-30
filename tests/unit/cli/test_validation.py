@@ -364,7 +364,7 @@ class TestValidateDatasets:
         cfg = {
             "models": {},
             "tasks": {},
-            "datasets": {"d": {"class": "X", "operations": [{"select": "bad"}]}},
+            "datasets": {"d": {"class": "X", "operations": [{"slice": "bad"}]}},
         }
         result = validate_eval_config(cfg)
         assert not result.ok
@@ -397,7 +397,7 @@ class TestValidateDatasets:
             "datasets": {
                 "d": {
                     "class": "X",
-                    "operations": [{"select": {"num": 10}, "shuffle": {}}],
+                    "operations": [{"slice": {"num": 10}, "shuffle": {}}],
                 }
             },
         }
@@ -414,6 +414,20 @@ class TestValidateDatasets:
         assert not result.ok
         assert any("sort" in e for e in result.errors)
 
+    @pytest.mark.parametrize(
+        "old,new",
+        [("select", "slice"), ("stratified_select", "stratified_sample")],
+    )
+    def test_operations_renamed_op_gives_migration_hint(self, old, new):
+        cfg = {
+            "models": {},
+            "tasks": {},
+            "datasets": {"d": {"class": "X", "operations": [{old: {"num": 5}}]}},
+        }
+        result = validate_eval_config(cfg)
+        assert not result.ok
+        assert any(f"'{old}' was renamed to '{new}'" in e for e in result.errors)
+
     def test_valid_operations(self):
         cfg = {
             "models": {},
@@ -423,7 +437,7 @@ class TestValidateDatasets:
                     "class": "X",
                     "operations": [
                         {"shuffle": {"seed": 42}},
-                        {"select": {"num": 100}},
+                        {"slice": {"num": 100}},
                     ],
                 }
             },
@@ -431,7 +445,7 @@ class TestValidateDatasets:
         result = validate_eval_config(cfg)
         assert result.ok
 
-    def test_valid_stratified_select_operation(self):
+    def test_valid_stratified_sample_operation(self):
         cfg = {
             "models": {},
             "tasks": {},
@@ -440,7 +454,7 @@ class TestValidateDatasets:
                     "class": "X",
                     "operations": [
                         {
-                            "stratified_select": {
+                            "stratified_sample": {
                                 "by": "Subject",
                                 "num": 800,
                                 "min_per_group": 5,

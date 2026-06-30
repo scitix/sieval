@@ -33,19 +33,19 @@ datasets:
     class: MMLUDataset
     path: "${SIEVAL_DATA_DIR}/mmlu"
     operations:
-      - select: { num: 100 }
+      - slice: { num: 100 }
 
   aime_2024:
     class: AIME2024Dataset
     path: "HuggingFaceH4/aime_2024"
     operations:
-      - select: { num: 5 }
+      - slice: { num: 5 }
 
   aime_2025:
     class: AIME2025Dataset
     path: "opencompass/AIME2025"
     operations:
-      - select: { num: 5 }
+      - slice: { num: 5 }
 
 tasks:
   mmlu_0shot_gen:
