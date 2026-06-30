@@ -414,19 +414,31 @@ class TestValidateDatasets:
         assert not result.ok
         assert any("sort" in e for e in result.errors)
 
-    @pytest.mark.parametrize(
-        "old,new",
-        [("select", "slice"), ("stratified_select", "stratified_sample")],
-    )
-    def test_operations_renamed_op_gives_migration_hint(self, old, new):
+    def test_operations_renamed_op_gives_migration_hint(self):
         cfg = {
             "models": {},
             "tasks": {},
-            "datasets": {"d": {"class": "X", "operations": [{old: {"num": 5}}]}},
+            "datasets": {"d": {"class": "X", "operations": [{"select": {"num": 5}}]}},
         }
         result = validate_eval_config(cfg)
         assert not result.ok
-        assert any(f"'{old}' was renamed to '{new}'" in e for e in result.errors)
+        assert any("'select' was renamed to 'slice'" in e for e in result.errors)
+
+    def test_operations_never_shipped_name_is_unknown_not_renamed(self):
+        # 'stratified_select' never shipped (introduced and renamed within the
+        # same unreleased change), so it must read as an unknown op, not carry a
+        # migration hint for a name users never saw.
+        cfg = {
+            "models": {},
+            "tasks": {},
+            "datasets": {
+                "d": {"class": "X", "operations": [{"stratified_select": {"num": 5}}]}
+            },
+        }
+        result = validate_eval_config(cfg)
+        assert not result.ok
+        assert any("unknown operation 'stratified_select'" in e for e in result.errors)
+        assert not any("was renamed" in e for e in result.errors)
 
     def test_valid_operations(self):
         cfg = {

@@ -38,7 +38,6 @@ _VALID_OPERATIONS: set[str] = {"slice", "shuffle", "repeat", "stratified_sample"
 # get a migration hint instead of a bare "unknown operation".
 _RENAMED_OPERATIONS: dict[str, str] = {
     "select": "slice",
-    "stratified_select": "stratified_sample",
 }
 
 # Valid TaskRunnerConfig field names

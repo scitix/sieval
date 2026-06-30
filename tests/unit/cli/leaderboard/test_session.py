@@ -266,15 +266,21 @@ class TestDatasetOperations:
         with pytest.raises(ValueError, match=error_match):
             runner._apply_dataset_operations(ds, operations, "test_ds")
 
-    @pytest.mark.parametrize(
-        "op,new_name",
-        [("select", "slice"), ("stratified_select", "stratified_sample")],
-    )
-    def test_renamed_operation_raises_migration_hint(self, op, new_name):
+    def test_renamed_operation_raises_migration_hint(self):
         runner = self._make_runner()
         ds = MagicMock()
-        with pytest.raises(ValueError, match=f"'{op}' was renamed to '{new_name}'"):
-            runner._apply_dataset_operations(ds, [{op: {"num": 5}}], "test_ds")
+        with pytest.raises(ValueError, match="'select' was renamed to 'slice'"):
+            runner._apply_dataset_operations(ds, [{"select": {"num": 5}}], "test_ds")
+
+    def test_never_shipped_operation_raises_unknown_not_renamed(self):
+        # 'stratified_select' never shipped, so it must hit the generic unknown
+        # branch — no migration hint for a name users never saw.
+        runner = self._make_runner()
+        ds = MagicMock()
+        with pytest.raises(ValueError, match="Unknown operation 'stratified_select'"):
+            runner._apply_dataset_operations(
+                ds, [{"stratified_select": {"num": 5}}], "test_ds"
+            )
 
     # (op_name, missing_args, expected_error_pattern)
     @pytest.mark.parametrize(

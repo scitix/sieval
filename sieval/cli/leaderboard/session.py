@@ -1233,12 +1233,6 @@ class EvalSession:
                         f"to 'slice'; update your config."
                     )
 
-                case "stratified_select":
-                    raise ValueError(
-                        f"Dataset '{dataset_name}': operation 'stratified_select' "
-                        f"was renamed to 'stratified_sample'; update your config."
-                    )
-
                 case "slice":
                     num = op_args.get("num", op_args.get("n"))
                     split = op_args.get("split", "test")
