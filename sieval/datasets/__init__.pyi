@@ -45,6 +45,10 @@ from .ifeval import (
     IFEvalDataset,
     IFEvalDatasetSample,
 )
+from .imo_answer_bench import (
+    IMOAnswerBenchDataset,
+    IMOAnswerBenchDatasetSample,
+)
 from .livecodebench_code_generation import (
     LiveCodeBenchDataset,
     LiveCodeBenchDatasetSample,
@@ -93,6 +97,8 @@ __all__ = [
     "HumanEvalDatasetSample",
     "IFEvalDataset",
     "IFEvalDatasetSample",
+    "IMOAnswerBenchDataset",
+    "IMOAnswerBenchDatasetSample",
     "LiveCodeBenchDataset",
     "LiveCodeBenchDatasetSample",
     "MATH500Dataset",

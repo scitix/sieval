@@ -247,6 +247,26 @@
       "checksums": {}
     },
     {
+      "name": "imo_answer_bench",
+      "display_name": "IMO-AnswerBench",
+      "description": "IMO-Bench AnswerBench (Google DeepMind) — 400 short-answer olympiad problems.",
+      "source": [
+        "hf:Hwilner/imo-answerbench@0258becbd00fc07d34862bc8539e61c8742f0d14"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-4.0"
+    },
+    {
       "name": "livecodebench_code_generation",
       "display_name": "LiveCodeBench Code Generation",
       "description": "LiveCodeBench code generation lite — contamination-free benchmark.",
@@ -627,6 +647,26 @@
         "source": "google-research/instruction_following_eval",
         "url": "https://github.com/google-research/google-research/blob/f97f6adab57bd3065b24169bcfc559dc34d0db84/instruction_following_eval/evaluation_lib.py",
         "notes": "evaluation_lib + instructions_registry vendored from google-research."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "imo_answer_bench_0shot_gen",
+      "display_name": "IMO-AnswerBench (0-shot, generative)",
+      "description": "IMO-Bench AnswerBench (Google DeepMind) — 400 short-answer olympiad problems.",
+      "dataset": "imo_answer_bench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "IMO-Bench (Google DeepMind)",
+        "url": "https://github.com/EnvCommons/IMO-Bench/blob/66b014f1b3799972ddfc32dbacea51b802586141/answer_verification.py",
+        "notes": "IMO-Bench AnswerBench: reason-step-by-step prompt; answer equivalence via math-verify with a normalized-string fallback (vendored in community/imo_bench.py). Boxed answer format added for non-agentic extraction."
       },
       "status": "stable"
     },
