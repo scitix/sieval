@@ -376,6 +376,8 @@ class TestDatasetOperations:
             runner._apply_dataset_operations(
                 ds, [{"stratified_sample": {"num": 5}}], "test_ds"
             )
+        with pytest.raises(ValueError, match="requires 'by'"):
+            runner._apply_dataset_operations(ds, [{"stratified_sample": {}}], "test_ds")
 
     def test_stratified_sample_requires_exactly_one_budget(self):
         runner = self._make_runner()
