@@ -14,6 +14,9 @@ _NOISE_HAYSTACK = (
     "The grass is green. The sky is blue. The sun is yellow. "
     "Here we go. There and back again."
 )
+
+# Qwen3 thinking tag overhead: <think>\n\n</think>\n\n (4 tokens)
+QWEN3_THINKING_TAG_OVERHEAD = 4
 _CORPUS_FILE = "PaulGrahamEssays.json.gz"
 _NEEDLE = "One of the special magic {type_needle_v} for {key} is: {value}."
 _SQUAD_FILE = "dev-v2.0.json"
@@ -43,15 +46,43 @@ def ruler_task(name: str) -> RulerTaskSpec:
     return cast(RulerTaskSpec, TASKS[name])
 
 
-def tokens_to_generate(task_name: str, *, enable_thinking: bool, think_budget: int) -> int:
+def tokens_to_generate(
+    task_name: str,
+    *,
+    enable_thinking: bool,
+    think_budget: int,
+    model_name: str = "",
+) -> int:
     """Compute the total generation budget for a RULER task.
 
-    When thinking is enabled the model must first emit the full think block before
-    the answer, so the budget is think_budget + base answer tokens.  When thinking
-    is disabled the budget is just the base answer tokens from the task spec.
+    Args:
+        task_name: Name of the RULER task (e.g., "niah", "qa")
+        enable_thinking: Whether thinking mode is enabled
+        think_budget: Token budget for thinking content (only used if enable_thinking=True)
+        model_name: Model identifier (default "qwen3"). Only Qwen3-family models
+                    have thinking tag overhead. Other models (e.g., "gpt-4", "llama")
+                    should pass their own model_name for correct token calculation.
+
+    Returns:
+        Total tokens needed for generation, accounting for:
+        - Thinking tag overhead (Qwen3 only): 4 tokens for <think>\n\n</think>\n\n
+        - Thinking content (if enabled): think_budget tokens
+        - Final answer: base tokens from task spec
     """
     base = ruler_task(task_name)["tokens_to_generate"]
-    return think_budget + base if enable_thinking else base
+
+    # Only Qwen3-family models have thinking tag overhead
+    is_qwen3 = model_name.lower().startswith("qwen3")
+
+    if not is_qwen3:
+        # Other models: no thinking tag overhead
+        return think_budget + base if enable_thinking else base
+
+    # Qwen3: always includes thinking tag overhead
+    if enable_thinking:
+        return QWEN3_THINKING_TAG_OVERHEAD + think_budget + base
+    else:
+        return QWEN3_THINKING_TAG_OVERHEAD + 1 + base
 
 
 def len_tag(length: int) -> str:

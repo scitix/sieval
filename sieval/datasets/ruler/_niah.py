@@ -95,6 +95,7 @@ def load_niah(
     remove_newline_tab: bool,
     enable_thinking: bool,
     think_budget: int = 0,
+    model_name: str = "qwen3",
     num_needle_k: int,
     num_needle_v: int,
     num_needle_q: int,
@@ -102,7 +103,7 @@ def load_niah(
     type_needle_k: str,
     type_needle_v: str,
 ) -> list[dict]:
-    gen_budget = tokens_to_generate("niah", enable_thinking=enable_thinking, think_budget=think_budget)
+    gen_budget = tokens_to_generate("niah", enable_thinking=enable_thinking, think_budget=think_budget, model_name=model_name)
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
@@ -193,7 +194,7 @@ def _fit_haystack_size(
     *,
     gen,
     tokenizer,
-    _haystack,
+    haystack,
     type_haystack: str,
     max_seq_length: int,
     tokens_to_generate: int,

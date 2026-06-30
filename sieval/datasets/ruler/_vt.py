@@ -28,11 +28,12 @@ def load_vt(
     remove_newline_tab: bool,
     enable_thinking: bool,
     think_budget: int = 0,
+    model_name: str = "qwen3",
     num_chains: int,
     num_hops: int,
     type_haystack: str,
 ) -> list[dict]:
-    gen_budget = tokens_to_generate("variable_tracking", enable_thinking=enable_thinking, think_budget=think_budget)
+    gen_budget = tokens_to_generate("variable_tracking", enable_thinking=enable_thinking, think_budget=think_budget, model_name=model_name)
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)

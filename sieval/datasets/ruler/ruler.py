@@ -85,7 +85,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         self,
         name_or_path: str,
         *,
-        subtask: str,
+        subtask: str | list[str],
         max_seq_length: int = 4096,
         tokenizer_type: str = "openai",
         tokenizer_path: str = "cl100k_base",
@@ -94,6 +94,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         remove_newline_tab: bool = False,
         enable_thinking: bool = False,
         think_budget: int = 0,
+        model_name: str = "qwen3",
         # NIAH-specific (ignored for non-NIAH subtasks)
         num_needle_k: int = 1,
         num_needle_v: int = 1,
@@ -117,6 +118,59 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         pre_samples: int = 0,
         **kwargs,
     ) -> HFDatasetDict:
+        # Handle list of subtasks
+        if isinstance(subtask, list):
+            splits = []
+            subtask_paths = {
+                "niah_single_1": f"{name_or_path}/ruler",
+                "niah_single_2": f"{name_or_path}/ruler",
+                "niah_single_3": f"{name_or_path}/ruler",
+                "niah_multikey_1": f"{name_or_path}/ruler",
+                "niah_multikey_2": f"{name_or_path}/ruler",
+                "niah_multikey_3": f"{name_or_path}/ruler",
+                "niah_multivalue": f"{name_or_path}/ruler",
+                "niah_multiquery": f"{name_or_path}/ruler",
+                "vt": f"{name_or_path}/ruler",  # VT uses NIAH corpus
+                "cwe": f"{name_or_path}/ruler",
+                "fwe": f"{name_or_path}",  # FWE is synthetic, no external data
+                "qa_squad": f"{name_or_path}/ruler",
+                "qa_hotpotqa": f"{name_or_path}",  # HotpotQA is fetched from HF
+            }
+            for st in subtask:
+                st_path = subtask_paths.get(st, name_or_path)
+                dataset = self.load(
+                    st_path,
+                    subtask=st,
+                    max_seq_length=max_seq_length,
+                    tokenizer_type=tokenizer_type,
+                    tokenizer_path=tokenizer_path,
+                    num_samples=num_samples,
+                    random_seed=random_seed,
+                    remove_newline_tab=remove_newline_tab,
+                    enable_thinking=enable_thinking,
+                    think_budget=think_budget,
+                    model_name=model_name,
+                    num_needle_k=num_needle_k,
+                    num_needle_v=num_needle_v,
+                    num_needle_q=num_needle_q,
+                    type_haystack=type_haystack,
+                    type_needle_k=type_needle_k,
+                    type_needle_v=type_needle_v,
+                    freq_cw=freq_cw,
+                    freq_ucw=freq_ucw,
+                    num_cw=num_cw,
+                    num_fewshot=num_fewshot,
+                    num_chains=num_chains,
+                    num_hops=num_hops,
+                    alpha=alpha,
+                    coded_wordlen=coded_wordlen,
+                    vocab_size=vocab_size,
+                    pre_samples=pre_samples,
+                )
+                splits.append(dataset["test"])
+            combined = concatenate_datasets(splits)
+            return HFDatasetDict({"test": combined})
+
         if subtask == "all":
             splits = []
             # name_or_path should point to the parent data dir (e.g., ~/.sieval/data)
@@ -148,6 +202,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                     remove_newline_tab=remove_newline_tab,
                     enable_thinking=enable_thinking,
                     think_budget=think_budget,
+                    model_name=model_name,
                     num_needle_k=num_needle_k,
                     num_needle_v=num_needle_v,
                     num_needle_q=num_needle_q,
@@ -181,6 +236,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                 remove_newline_tab=remove_newline_tab,
                 enable_thinking=enable_thinking,
                 think_budget=think_budget,
+                model_name=model_name,
                 num_needle_k=niah_kwargs["num_needle_k"],
                 num_needle_v=niah_kwargs["num_needle_v"],
                 num_needle_q=niah_kwargs["num_needle_q"],
@@ -199,6 +255,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                 remove_newline_tab=remove_newline_tab,
                 enable_thinking=enable_thinking,
                 think_budget=think_budget,
+                model_name=model_name,
                 num_chains=num_chains,
                 num_hops=num_hops,
                 type_haystack="noise",
@@ -214,6 +271,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                 remove_newline_tab=remove_newline_tab,
                 enable_thinking=enable_thinking,
                 think_budget=think_budget,
+                model_name=model_name,
                 freq_cw=freq_cw,
                 freq_ucw=freq_ucw,
                 num_cw=num_cw,
@@ -230,6 +288,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                 remove_newline_tab=remove_newline_tab,
                 enable_thinking=enable_thinking,
                 think_budget=think_budget,
+                model_name=model_name,
                 alpha=alpha,
                 coded_wordlen=coded_wordlen,
                 vocab_size=vocab_size,
@@ -247,6 +306,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                 remove_newline_tab=remove_newline_tab,
                 enable_thinking=enable_thinking,
                 think_budget=think_budget,
+                model_name=model_name,
                 pre_samples=pre_samples,
             )
         else:
