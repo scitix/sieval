@@ -29,6 +29,10 @@ from .gsm8k import (
     GSM8KDataset,
     GSM8KDatasetSample,
 )
+from .hmmt_feb_2025 import (
+    HMMTFeb2025Dataset,
+    HMMTFeb2025DatasetSample,
+)
 from .hmmt_feb_2026 import (
     HMMTFeb2026Dataset,
     HMMTFeb2026DatasetSample,
@@ -81,6 +85,8 @@ __all__ = [
     "GPQADiamondDatasetSample",
     "GSM8KDataset",
     "GSM8KDatasetSample",
+    "HMMTFeb2025Dataset",
+    "HMMTFeb2025DatasetSample",
     "HMMTFeb2026Dataset",
     "HMMTFeb2026DatasetSample",
     "HumanEvalDataset",

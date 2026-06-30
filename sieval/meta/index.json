@@ -163,6 +163,26 @@
       "checksums": {}
     },
     {
+      "name": "hmmt_feb_2025",
+      "display_name": "HMMT Feb 2025",
+      "description": "Harvard-MIT Mathematics Tournament, February 2025, 30 problems.",
+      "source": [
+        "hf:MathArena/hmmt_feb_2025@6fdc4277120810ff75aa22d2d5489b91f7a262a1"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-SA-4.0"
+    },
+    {
       "name": "hmmt_feb_2026",
       "display_name": "HMMT Feb 2026",
       "description": "Harvard-MIT Mathematics Tournament, February 2026, 33 problems.",
@@ -504,6 +524,26 @@
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/gsm8k/gsm8k.yaml",
         "notes": "Uses lm-eval-harness strict-match extraction, aligned with the original GSM8K dataset.py #### answer delimiter. Also reports lm-eval-harness flexible-extract as a secondary metric, not as the original GSM8K official metric. Default k=8 follows the DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs flexible extraction."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "hmmt_feb_2025_0shot_gen",
+      "display_name": "HMMT Feb 2025 (0-shot, generative)",
+      "description": "HMMT February 2025 — Harvard-MIT Mathematics Tournament, 30 problems.",
+      "dataset": "hmmt_feb_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "matharena",
+        "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2025.yaml",
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify."
       },
       "status": "stable"
     },
