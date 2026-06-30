@@ -480,6 +480,28 @@ class TestValidateDatasets:
         result = validate_eval_config(cfg)
         assert result.ok
 
+    def test_valid_stratified_sample_equal_composite_operation(self):
+        cfg = {
+            "models": {},
+            "tasks": {},
+            "datasets": {
+                "d": {
+                    "class": "X",
+                    "operations": [
+                        {
+                            "stratified_sample": {
+                                "by": ["locale", "subject"],
+                                "per_group": 20,
+                                "seed": 42,
+                            }
+                        }
+                    ],
+                }
+            },
+        }
+        result = validate_eval_config(cfg)
+        assert result.ok
+
 
 # ---------------------------------------------------------------------------
 # Schema validation — tasks

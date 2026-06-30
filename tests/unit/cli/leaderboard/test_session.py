@@ -350,7 +350,7 @@ class TestDatasetOperations:
             "test_ds",
         )
         ds.stratified_sample.assert_called_once_with(
-            800, by="Subject", min_per_group=5, seed=42, split="test"
+            "Subject", num=800, per_group=None, min_per_group=5, seed=42, split="test"
         )
 
     def test_stratified_sample_defaults(self):
@@ -361,20 +361,79 @@ class TestDatasetOperations:
             ds, [{"stratified_sample": {"by": "category", "num": 600}}], "test_ds"
         )
         ds.stratified_sample.assert_called_once_with(
-            600, by="category", min_per_group=1, seed=0, split="test"
+            "category",
+            num=600,
+            per_group=None,
+            min_per_group=None,
+            seed=0,
+            split="test",
         )
 
-    @pytest.mark.parametrize(
-        "op_args",
-        [{"num": 5}, {"by": "Subject"}, {}],
-    )
-    def test_stratified_sample_requires_num_and_by(self, op_args):
+    def test_stratified_sample_requires_by(self):
         runner = self._make_runner()
         ds = MagicMock()
-        with pytest.raises(ValueError, match="requires 'num' and 'by'"):
+        with pytest.raises(ValueError, match="requires 'by'"):
             runner._apply_dataset_operations(
-                ds, [{"stratified_sample": op_args}], "test_ds"
+                ds, [{"stratified_sample": {"num": 5}}], "test_ds"
             )
+
+    def test_stratified_sample_requires_exactly_one_budget(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        with pytest.raises(ValueError, match="exactly one of 'num' or 'per_group'"):
+            runner._apply_dataset_operations(
+                ds, [{"stratified_sample": {"by": "Subject"}}], "test_ds"
+            )
+        with pytest.raises(ValueError, match="exactly one of 'num' or 'per_group'"):
+            runner._apply_dataset_operations(
+                ds,
+                [{"stratified_sample": {"by": "Subject", "num": 5, "per_group": 2}}],
+                "test_ds",
+            )
+
+    def test_stratified_sample_min_per_group_excludes_per_group(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        with pytest.raises(ValueError, match="cannot be combined with 'per_group'"):
+            runner._apply_dataset_operations(
+                ds,
+                [
+                    {
+                        "stratified_sample": {
+                            "by": "Subject",
+                            "per_group": 5,
+                            "min_per_group": 1,
+                        }
+                    }
+                ],
+                "test_ds",
+            )
+
+    def test_stratified_sample_per_group_dispatch(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        ds.stratified_sample.return_value = ds
+        runner._apply_dataset_operations(
+            ds,
+            [
+                {
+                    "stratified_sample": {
+                        "by": ["locale", "subject"],
+                        "per_group": 20,
+                        "seed": 42,
+                    }
+                }
+            ],
+            "test_ds",
+        )
+        ds.stratified_sample.assert_called_once_with(
+            ["locale", "subject"],
+            num=None,
+            per_group=20,
+            min_per_group=None,
+            seed=42,
+            split="test",
+        )
 
 
 # ===================================================================

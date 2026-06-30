@@ -1266,30 +1266,44 @@ class EvalSession:
                     logger.debug("Dataset '{}': repeated {} times", dataset_name, times)
 
                 case "stratified_sample":
-                    num = op_args.get("num", op_args.get("n"))
                     by = op_args.get("by")
-                    if num is None or by is None:
+                    num = op_args.get("num", op_args.get("n"))
+                    per_group = op_args.get("per_group")
+                    min_per_group = op_args.get("min_per_group")
+                    if by is None:
                         raise ValueError(
                             f"Dataset '{dataset_name}': 'stratified_sample' "
-                            f"requires 'num' and 'by'"
+                            f"requires 'by'"
                         )
-                    min_per_group = op_args.get("min_per_group", 1)
+                    if (num is None) == (per_group is None):
+                        raise ValueError(
+                            f"Dataset '{dataset_name}': 'stratified_sample' "
+                            f"requires exactly one of 'num' or 'per_group'"
+                        )
+                    if per_group is not None and min_per_group is not None:
+                        raise ValueError(
+                            f"Dataset '{dataset_name}': 'stratified_sample' "
+                            f"'min_per_group' cannot be combined with 'per_group'"
+                        )
                     seed = op_args.get("seed", 0)
                     split = op_args.get("split", "test")
                     dataset = dataset.stratified_sample(
-                        num,
-                        by=by,
+                        by,
+                        num=num,
+                        per_group=per_group,
                         min_per_group=min_per_group,
                         seed=seed,
                         split=split,
                     )
                     logger.debug(
-                        "Dataset '{}': stratified-sampled {} by '{}' "
-                        "(min_per_group={}, seed={})",
+                        "Dataset '{}': stratified-sampled by '{}' ({}, seed={})",
                         dataset_name,
-                        num,
                         by,
-                        min_per_group,
+                        (
+                            f"per_group={per_group}"
+                            if per_group is not None
+                            else f"num={num}, min_per_group={min_per_group}"
+                        ),
                         seed,
                     )
 
