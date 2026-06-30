@@ -326,6 +326,12 @@ class TestStratifiedSample:
         )
         assert "exceeding the requested num=2" in log
 
+    def test_default_floor_overshoot_logs_warning(self):
+        ds = _make_grouped({"a": 1, "b": 1, "c": 1})
+        log = _capture_logs(lambda: ds.stratified_sample(num=2, by="subject", seed=0))
+        assert "min_per_group=1" in log
+        assert "exceeding the requested num=2" in log
+
     def test_proportional_target_does_not_warn(self):
         ds = _make_grouped({"a": 100, "b": 50, "c": 50})
         log = _capture_logs(
@@ -401,12 +407,15 @@ class TestStratifiedSample:
 
     def test_equal_allocation_caps_short_stratum_and_warns(self):
         ds = _make_grouped({"a": 2, "b": 5})
-        log = _capture_logs(
-            lambda: ds.stratified_sample(by="subject", per_group=3, seed=0)
-        )
-        result = ds.stratified_sample(by="subject", per_group=3, seed=0)
-        assert _subject_counts(result) == {"a": 2, "b": 3}
+        result = {}
+
+        def run():
+            result["ds"] = ds.stratified_sample(by="subject", per_group=3, seed=0)
+
+        log = _capture_logs(run)
+        assert _subject_counts(result["ds"]) == {"a": 2, "b": 3}
         assert "per_group=3 unmet for 1 of 2 strata" in log
+        assert "short 1 rows total" in log
 
     def test_composite_key_same_seed_deterministic(self):
         ds = _make_grouped2({("en", "math"): 10, ("fr", "math"): 10})
