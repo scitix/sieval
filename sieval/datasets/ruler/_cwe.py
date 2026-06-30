@@ -20,12 +20,13 @@ def load_cwe(
     remove_newline_tab: bool,
     enable_thinking: bool,
     think_budget: int = 0,
+    model_name: str = "qwen3",
     freq_cw: int,
     freq_ucw: int,
     num_cw: int,
     num_fewshot: int,
 ) -> list[dict]:
-    gen_budget = tokens_to_generate("common_words_extraction", enable_thinking=enable_thinking, think_budget=think_budget)
+    gen_budget = tokens_to_generate("common_words_extraction", enable_thinking=enable_thinking, think_budget=think_budget, model_name=model_name)
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)

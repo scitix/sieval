@@ -21,13 +21,14 @@ def load_fwe(
     remove_newline_tab: bool,
     enable_thinking: bool,
     think_budget: int = 0,
+    model_name: str = "qwen3",
     alpha: float,
     coded_wordlen: int,
     vocab_size: int,
 ) -> list[dict]:
     from scipy.special import zeta
 
-    gen_budget = tokens_to_generate("freq_words_extraction", enable_thinking=enable_thinking, think_budget=think_budget)
+    gen_budget = tokens_to_generate("freq_words_extraction", enable_thinking=enable_thinking, think_budget=think_budget, model_name=model_name)
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
