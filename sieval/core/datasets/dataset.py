@@ -8,6 +8,7 @@ from typing import Literal, Self, overload
 
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
+from loguru import logger
 
 from sieval.core.utils.hf import maybe_resolve_hf_path
 
@@ -65,9 +66,9 @@ class Dataset[TSample](ABC):
     def repeat(self, times: int, split: str = "test") -> Self:
         """Return a shallow clone with *split* repeated *times* times.
 
-        Returns ``self`` unchanged if the test set is absent.
+        Returns ``self`` unchanged if *split* is absent.
         """
-        if self.test_set is None:
+        if split not in self._dataset_dict:
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
         new_dict[split] = new_dict[split].repeat(times)
@@ -76,9 +77,10 @@ class Dataset[TSample](ABC):
     def select(self, num: int, split: str = "test") -> Self:
         """Return a shallow clone with only the first *num* samples of *split*.
 
-        Keeps all samples if *num* exceeds split length.
+        Keeps all samples if *num* exceeds split length. Returns ``self``
+        unchanged if *split* is absent.
         """
-        if self.test_set is None:
+        if split not in self._dataset_dict:
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
         num_to_select = min(num, len(new_dict[split]))
@@ -86,8 +88,11 @@ class Dataset[TSample](ABC):
         return self._clone_with_new_dict(new_dict)
 
     def shuffle(self, seed: int = 0, split: str = "test") -> Self:
-        """Return a shallow clone with *split* shuffled (deterministic via *seed*)."""
-        if self.test_set is None:
+        """Return a shallow clone with *split* shuffled (deterministic via *seed*).
+
+        Returns ``self`` unchanged if *split* is absent.
+        """
+        if split not in self._dataset_dict:
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
         new_dict[split] = new_dict[split].shuffle(seed=seed)
@@ -107,15 +112,17 @@ class Dataset[TSample](ABC):
         least ``min(min_per_group, group_size)`` rows; the remaining budget
         toward *num* is distributed proportionally to group size (capped by
         availability). If the per-group floors already sum above *num*, the
-        total is raised to honour them. Within each group, rows are chosen by a
-        deterministic *seed*-driven shuffle, so the selection reproduces across
-        runs and processes.
+        total is raised to honour them and a warning is logged. Within each
+        group, rows are chosen by a deterministic *seed*-driven shuffle, so the
+        selection reproduces across runs and processes.
 
-        Returns ``self`` unchanged if *split* is absent.
+        Returns ``self`` unchanged if *split* is absent or empty.
         """
         if split not in self._dataset_dict:
             return self
         hf = self._dataset_dict[split]
+        if len(hf) == 0:
+            return self
         if by not in hf.column_names:
             raise ValueError(
                 f"stratified_select: column {by!r} not found; "
@@ -135,6 +142,15 @@ class Dataset[TSample](ABC):
         # the target. Floors take priority: the target rises to meet them.
         alloc = {key: min(min_per_group, sizes[key]) for key in keys}
         target = min(max(num, sum(alloc.values())), total)
+        if target > num:
+            logger.warning(
+                "stratified_select: min_per_group={} across {} groups requires "
+                "{} rows, exceeding the requested num={}",
+                min_per_group,
+                len(keys),
+                target,
+                num,
+            )
         while sum(alloc.values()) < target:
             candidates = [key for key in keys if alloc[key] < sizes[key]]
             if not candidates:

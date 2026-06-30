@@ -7,11 +7,24 @@ _clone_with_new_dict, property accessors.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import io
+
 import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
+from loguru import logger
 
 from sieval.core.datasets import Dataset
+
+
+def _capture_logs(fn) -> str:
+    sink = io.StringIO()
+    logger_id = logger.add(sink, format="{message}")
+    try:
+        fn()
+    finally:
+        logger.remove(logger_id)
+    return sink.getvalue()
 
 
 # ===================================================================
@@ -104,6 +117,21 @@ class TestSelect:
         result = ds.select(3)
         assert result is ds
 
+    def test_select_acts_on_explicit_non_test_split(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict(
+                {"validation": HFDataset.from_list([{"id": i} for i in range(10)])}
+            )
+        )
+        result = ds.select(3, split="validation")
+        assert len(result.dataset_dict["validation"]) == 3
+
+    def test_select_missing_split_returns_self(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict({"test": HFDataset.from_list([{"id": 0}])})
+        )
+        assert ds.select(1, split="train") is ds
+
 
 # ===================================================================
 # repeat
@@ -122,6 +150,21 @@ class TestRepeat:
 
         ds = _NoTestDataset([], None)
         assert ds.repeat(3) is ds
+
+    def test_repeat_acts_on_explicit_non_test_split(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict(
+                {"validation": HFDataset.from_list([{"id": i} for i in range(3)])}
+            )
+        )
+        result = ds.repeat(2, split="validation")
+        assert len(result.dataset_dict["validation"]) == 6
+
+    def test_repeat_missing_split_returns_self(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict({"test": HFDataset.from_list([{"id": 0}])})
+        )
+        assert ds.repeat(2, split="train") is ds
 
 
 # ===================================================================
@@ -151,6 +194,22 @@ class TestShuffle:
 
         ds = _NoTestDataset([], None)
         assert ds.shuffle(seed=123) is ds
+
+    def test_shuffle_acts_on_explicit_non_test_split(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict(
+                {"validation": HFDataset.from_list([{"id": i} for i in range(10)])}
+            )
+        )
+        result = ds.shuffle(seed=1, split="validation")
+        assert result is not ds
+        assert len(result.dataset_dict["validation"]) == 10
+
+    def test_shuffle_missing_split_returns_self(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict({"test": HFDataset.from_list([{"id": 0}])})
+        )
+        assert ds.shuffle(seed=1, split="train") is ds
 
 
 # ===================================================================
@@ -231,6 +290,26 @@ class TestStratifiedSelect:
 
         ds = _NoTestDataset([], None)
         assert ds.stratified_select(num=2, by="subject", seed=0) is ds
+
+    def test_empty_split_returns_self(self):
+        # An empty split is schema-less; the guard must short-circuit before the
+        # column check so it doesn't misreport 'by' as a missing column.
+        ds = _ListDataset([])
+        assert ds.stratified_select(num=2, by="subject", seed=0) is ds
+
+    def test_floor_overshoot_logs_warning(self):
+        ds = _make_grouped({"a": 5, "b": 5, "c": 5})
+        log = _capture_logs(
+            lambda: ds.stratified_select(num=2, by="subject", min_per_group=2, seed=0)
+        )
+        assert "exceeding the requested num=2" in log
+
+    def test_proportional_target_does_not_warn(self):
+        ds = _make_grouped({"a": 100, "b": 50, "c": 50})
+        log = _capture_logs(
+            lambda: ds.stratified_select(num=40, by="subject", min_per_group=0, seed=0)
+        )
+        assert log == ""
 
 
 # ===================================================================
