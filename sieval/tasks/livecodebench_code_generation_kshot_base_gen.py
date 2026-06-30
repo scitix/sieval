@@ -172,11 +172,11 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         # Decoding params (temperature/max_tokens/...) come from model config or
         # per-task infer_args, NOT this task — avoid silently overriding the
         # model's configured args. Forward only `n` (pass@k) and the
-        # prompt-coupled `stop`.
-        kwargs: dict[str, object] = {"n": self._n}
+        # prompt-coupled `stop`. The branch keeps `stop` out of the kwargs when
+        # unset so it can't clobber the model's configured stop via the merge.
         if self._stop:
-            kwargs["stop"] = list(self._stop)
-        return await self.model.agenerate(pre, **kwargs)
+            return await self.model.agenerate(pre, n=self._n, stop=list(self._stop))
+        return await self.model.agenerate(pre, n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):

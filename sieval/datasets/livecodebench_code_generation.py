@@ -64,7 +64,9 @@ class LiveCodeBenchDataset(Dataset[LiveCodeBenchDatasetSample]):
     def load(
         self,
         name_or_path: str,
-        version_tag: str = "release_v1",  # 'release_vX' or 'vX_vY'
+        # 'release_vX' or 'vX_vY'; v6 is the current superset — v1 predates the
+        # 2024-08+ contest windows, so the default must not strand date filters.
+        version_tag: str = "release_v6",
         start_date: str | None = None,
         end_date: str | None = None,
         **kwargs,
@@ -99,5 +101,13 @@ class LiveCodeBenchDataset(Dataset[LiveCodeBenchDatasetSample]):
         if end_date is not None:
             p_end_date = datetime.strptime(end_date, "%Y-%m-%d")
             dataset = dataset.filter(lambda e: e["contest_date"] <= p_end_date)
+
+        # Surface an empty window loudly instead of a silent score of 0.0.
+        if any(len(split) == 0 for split in dataset.values()):
+            raise ValueError(
+                "LiveCodeBench dataset is empty after filtering "
+                f"(version_tag={version_tag!r}, start_date={start_date!r}, "
+                f"end_date={end_date!r}); check the window against the release."
+            )
 
         return dataset

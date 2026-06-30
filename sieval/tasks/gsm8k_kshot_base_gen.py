@@ -166,10 +166,11 @@ class GSM8KFewShotBaseGenTask(
 
     @override
     async def infer(self, pre, ctx):
-        kwargs: dict[str, object] = {}
+        # Keep `stop` out of the kwargs when unset so it can't clobber the
+        # model's configured stop via the `{**self._kwargs, **kwargs}` merge.
         if self._stop:
-            kwargs["stop"] = list(self._stop)
-        return await self.model.agenerate(pre, **kwargs)
+            return await self.model.agenerate(pre, stop=list(self._stop))
+        return await self.model.agenerate(pre)
 
     @override
     async def postprocess(self, inf, ctx):
