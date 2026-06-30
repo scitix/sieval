@@ -101,67 +101,116 @@ class Dataset[TSample](ABC):
 
     def stratified_sample(
         self,
-        num: int,
-        by: str,
-        min_per_group: int = 1,
+        by: str | list[str],
+        *,
+        num: int | None = None,
+        per_group: int | None = None,
+        min_per_group: int | None = None,
         seed: int = 0,
         split: str = "test",
     ) -> Self:
-        """Return a clone keeping a proportional, group-balanced subsample.
+        """Return a clone keeping a group-balanced subsample of *split*.
 
-        Rows in *split* are grouped by column *by*. Each group is guaranteed at
-        least ``min(min_per_group, group_size)`` rows; the remaining budget
-        toward *num* is distributed proportionally to group size (capped by
-        availability). If the per-group floors already sum above *num*, the
-        total is raised to honour them and a warning is logged. Within each
-        group, rows are chosen by a deterministic *seed*-driven shuffle, so the
-        selection reproduces across runs and processes.
+        Rows are grouped into strata by the column(s) named in *by* (a single
+        name, or a list whose values form a composite key). Exactly one budget
+        must be given:
+
+        * ``num`` — **proportional** allocation. Each stratum gets a floor of
+          ``min(min_per_group, stratum_size)`` (``min_per_group`` defaults to 1);
+          the remaining budget toward *num* is distributed proportionally to
+          stratum size (capped by availability). If the floors already sum above
+          *num*, the total rises to honour them and a warning is logged.
+        * ``per_group`` — **equal** allocation. Each stratum keeps exactly
+          ``min(per_group, stratum_size)`` rows; strata smaller than *per_group*
+          keep all their rows and a single summary warning is logged.
+
+        ``min_per_group`` applies only to the proportional (``num``) path and may
+        not be combined with ``per_group``. Within each stratum rows are chosen by
+        a deterministic *seed*-driven shuffle, so the selection reproduces across
+        runs and processes.
 
         Returns ``self`` unchanged if *split* is absent or empty.
         """
+        if (num is None) == (per_group is None):
+            raise ValueError(
+                "stratified_sample: provide exactly one of 'num' or 'per_group'"
+            )
+        if per_group is not None and min_per_group is not None:
+            raise ValueError(
+                "stratified_sample: 'min_per_group' applies only to proportional "
+                "('num') sampling and cannot be combined with 'per_group'"
+            )
+
         if split not in self._dataset_dict:
             return self
         hf = self._dataset_dict[split]
         if len(hf) == 0:
             return self
-        if by not in hf.column_names:
+
+        cols = [by] if isinstance(by, str) else list(by)
+        if not cols:
+            raise ValueError("stratified_sample: 'by' must name at least one column")
+        missing = [c for c in cols if c not in hf.column_names]
+        if missing:
             raise ValueError(
-                f"stratified_sample: column {by!r} not found; "
+                f"stratified_sample: column(s) {missing!r} not found; "
                 f"available columns: {hf.column_names}"
             )
 
-        # Group row indices by value (first-seen order preserved per group).
+        # Group row indices by composite key. A single column keeps a scalar key
+        # (not a 1-tuple) so the within-stratum seed string stays byte-identical
+        # with the pre-multikey behaviour.
+        column_data = [hf[c] for c in cols]
+        single = len(cols) == 1
         groups: dict[object, list[int]] = {}
-        for index, value in enumerate(hf[by]):
-            groups.setdefault(value, []).append(index)
+        for index in range(len(hf)):
+            values = tuple(col[index] for col in column_data)
+            key = values[0] if single else values
+            groups.setdefault(key, []).append(index)
 
-        total = len(hf)
         keys = sorted(groups, key=str)
         sizes = {key: len(groups[key]) for key in keys}
 
-        # Floor allocation (capped by group size), then proportional fill toward
-        # the target. Floors take priority: the target rises to meet them.
-        alloc = {key: min(min_per_group, sizes[key]) for key in keys}
-        target = min(max(num, sum(alloc.values())), total)
-        if target > num:
-            logger.warning(
-                "stratified_sample: min_per_group={} across {} groups requires "
-                "{} rows, exceeding the requested num={}",
-                min_per_group,
-                len(keys),
-                target,
-                num,
-            )
-        while sum(alloc.values()) < target:
-            candidates = [key for key in keys if alloc[key] < sizes[key]]
-            if not candidates:
-                break
-            # Group furthest below its proportional quota; ties → smallest key.
-            chosen = max(
-                candidates,
-                key=lambda key: sizes[key] * target / total - alloc[key],
-            )
-            alloc[chosen] += 1
+        if per_group is not None:
+            # Equal allocation: K per stratum, capped at availability.
+            alloc = {key: min(per_group, sizes[key]) for key in keys}
+            short = [key for key in keys if sizes[key] < per_group]
+            if short:
+                logger.warning(
+                    "stratified_sample: per_group={} unmet for {} of {} strata "
+                    "(short {} rows total); kept all available in those",
+                    per_group,
+                    len(short),
+                    len(keys),
+                    sum(per_group - sizes[key] for key in short),
+                )
+        else:
+            # Proportional allocation toward num, honouring the floor.
+            # num is non-None here (the per_group is None branch guarantees it).
+            assert num is not None
+            floor = 1 if min_per_group is None else min_per_group
+            total = len(hf)
+            alloc = {key: min(floor, sizes[key]) for key in keys}
+            target = min(max(num, sum(alloc.values())), total)
+            if target > num:
+                logger.warning(
+                    "stratified_sample: min_per_group={} across {} groups requires "
+                    "{} rows, exceeding the requested num={}",
+                    floor,
+                    len(keys),
+                    target,
+                    num,
+                )
+            while sum(alloc.values()) < target:
+                candidates = [key for key in keys if alloc[key] < sizes[key]]
+                if not candidates:
+                    break
+                # Group furthest below its proportional quota; ties → smallest key.
+                chosen = max(
+                    candidates,
+                    key=lambda key: sizes[key] * target / total - alloc[key],
+                )
+                alloc[chosen] += 1
 
         # Deterministic within-group selection.
         selected: list[int] = []
