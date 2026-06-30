@@ -44,7 +44,7 @@ _MD_RELATIVE_LINK = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _GH_NON_PERMANENT = re.compile(r"github\.com/[^/]+/[^/]+/blob/(main|master|develop)/")
 
 _TASK_FILE_PATTERN = re.compile(
-    r"^[a-z][a-z0-9_]*_(\d+|k)shot_(gen|base_gen|ppl|llmjudge_gen)\.py$"
+    r"^[a-z][a-z0-9_]*_(\d+|k)shot_(gen|base_gen|ppl|clp|llmjudge_gen)\.py$"
 )
 _DATASET_SUFFIX_PATTERN = re.compile(r"(Dataset|DatasetSample|CSVSample)$")
 
