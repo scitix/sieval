@@ -24,7 +24,7 @@ from loguru import logger
 
 from sieval.cli.leaderboard.card import AlignmentCard, load_card
 from sieval.core.datasets import Dataset
-from sieval.core.models import ChatModel, GenModel, Model
+from sieval.core.models import ChatModel, GenModel, Model, SglangGenModel
 from sieval.core.runners import MultiTaskRunner, TaskRunnerConfig
 from sieval.core.tasks.context import TaskAction
 from sieval.core.types import JSONValue
@@ -62,6 +62,7 @@ class _InferMetaDict(TypedDict, total=False):
 class ModelConfigDict(TypedDict, total=False):
     name: str  # For base models
     type: Literal["chat", "gen"]  # "chat" or "gen" (default: "chat")
+    engine: Literal["vllm", "sglang"]  # gen backend (default: "vllm")
     base: str  # For derived models
     args: dict[str, Any]
     api_key: str
@@ -978,7 +979,16 @@ class EvalSession:
             model_type = self._infer_model_type(name, explicit_type)
 
             if model_type == "gen":
-                self.models[name] = GenModel(model=model_name, **args)
+                engine = cfg.get("engine", "vllm")
+                if engine == "sglang":
+                    self.models[name] = SglangGenModel(model=model_name, **args)
+                elif engine == "vllm":
+                    self.models[name] = GenModel(model=model_name, **args)
+                else:
+                    raise ValueError(
+                        f"Model '{name}' has invalid engine '{engine}'. "
+                        "Expected 'vllm' or 'sglang'"
+                    )
             elif model_type == "chat":
                 self.models[name] = ChatModel(model=model_name, **args)
             else:
