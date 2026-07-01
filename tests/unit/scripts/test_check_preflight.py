@@ -1364,6 +1364,13 @@ class TestDatasetIntegrity:
         assert len(out) == 1 and "b" in out[0]
         assert "url source missing checksum" in out[0]
 
+    def test_malformed_hf_pin_flagged_not_raised(self):
+        # Trailing '@' makes parse_hf_source raise; the check must report it as
+        # a violation, not abort the whole preflight with a traceback.
+        out = _dataset_integrity_violations([self._meta("d", ["hf:org/d@"])])
+        assert len(out) == 1 and "d" in out[0]
+        assert "hf source not pinned" in out[0]
+
     def test_local_source_exempt(self):
         out = _dataset_integrity_violations([self._meta("c", ["local:/data/c"])])
         assert out == []

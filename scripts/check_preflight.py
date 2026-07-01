@@ -18,7 +18,10 @@ import sys
 import tomllib
 import warnings
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from sieval.core.datasets.meta import DatasetMeta
 
 # Known import-name → package-name mismatches
 _IMPORT_TO_PACKAGE: dict[str, str] = {
@@ -74,7 +77,7 @@ def format_json(results: list[CheckResult]) -> str:
     )
 
 
-def _dataset_integrity_violations(metas: list) -> list[str]:
+def _dataset_integrity_violations(metas: "list[DatasetMeta]") -> list[str]:
     """Each hf: source must be revision-pinned; each url: source must have a
     checksum. local: sources are exempt. Returns human-readable violations."""
     from sieval.core.datasets.meta import url_path_basename
@@ -85,7 +88,13 @@ def _dataset_integrity_violations(metas: list) -> list[str]:
         declared = {basename for basename, _ in meta.checksums}
         for src in meta.source:
             if src.startswith("hf:"):
-                if parse_hf_source(src).revision is None:
+                # A malformed pin (e.g. trailing '@') is itself a violation,
+                # not a reason to abort the whole check with a traceback.
+                try:
+                    pinned = parse_hf_source(src).revision is not None
+                except ValueError:
+                    pinned = False
+                if not pinned:
                     violations.append(f"{meta.name}: hf source not pinned: {src}")
             elif src.startswith("url:"):
                 basename = url_path_basename(src[len("url:") :])
