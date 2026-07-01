@@ -180,7 +180,8 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "CC-BY-NC-SA-4.0"
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
     },
     {
       "name": "hmmt_feb_2026",
@@ -264,7 +265,8 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "CC-BY-4.0"
+      "license": "CC-BY-4.0",
+      "checksums": {}
     },
     {
       "name": "livecodebench_code_generation",
