@@ -10,6 +10,8 @@ module stays free of the optional ``[math]`` dependency (sieval import disciplin
 upstream imports it at module top.
 """
 
+import re
+
 
 def parse_answer(answer: str) -> list:
     """Parse a math answer with LaTeX handling; returns [] if it can't be parsed."""
@@ -48,3 +50,93 @@ def verify_math_answer(gold: str, pred: str) -> bool:
         return bool(verify(parsed_gold, parsed_pred))
     except Exception:
         return gold.strip().lower() == pred.strip().lower()
+
+
+# ---------------------------------------------------------------------------
+# sieval gen-mode wrapper (NOT upstream).
+#
+# Upstream AnswerBench is agentic: the agent submits a clean answer string via a
+# tool call, so verify_math_answer above sees exactly the gold's format. In a
+# non-agentic generative run the model writes its answer inside \boxed{}, often
+# verbosely — "P(x) = -1 \quad\text{or}\quad P(x) = x+1", "-2(m-1)", "$2^{u-2}$",
+# function-prefixed, $-wrapped, with \left/\right, or a multi-answer list.
+# math_verify.parse then mis-parses these and marks correct answers wrong.
+#
+# verify_answer_gen normalizes the boxed answer into the shape an agent would
+# submit and does a set-wise comparison for multi-answer golds, delegating every
+# atomic equivalence check to the vendored verify_math_answer. The fast path is
+# the verbatim upstream check, so this never grades *more strictly* than upstream.
+# ---------------------------------------------------------------------------
+
+_FN_PREFIX = re.compile(r"^\s*[A-Za-z]\s*\(\s*[A-Za-z0-9]\s*\)\s*=\s*")
+_SEP_WORDS = re.compile(r"\\text\s*\{\s*(?:and|or)\s*\}|\b(?:and|or)\b")
+_TEXT_ANNOT = re.compile(r"\\text\s*\{[^{}]*\}")
+_LATEX_NOISE = re.compile(r"\\left|\\right|\\displaystyle|\\!|\\,|\\;|\\:")
+
+
+def _normalize(s: str) -> str:
+    s = s.strip()
+    if s.startswith("$") and s.endswith("$"):
+        s = s[1:-1]
+    s = s.replace("$", "")
+    s = _SEP_WORDS.sub(",", s)  # "A or B" / "A and B" list separators -> comma
+    s = _TEXT_ANNOT.sub(" ", s)  # drop \text{...} prose annotations
+    s = _LATEX_NOISE.sub(" ", s)
+    s = re.sub(r"\\quad|\\qquad", " ", s)
+    s = re.sub(r"\s+", " ", s).strip().rstrip(".").strip()
+    return s
+
+
+def _split_top_level(s: str) -> list[str]:
+    """Split on top-level commas only; commas inside (), [], {} stay (tuples)."""
+    parts: list[str] = []
+    depth = 0
+    cur = ""
+    for ch in s:
+        if ch in "([{":
+            depth += 1
+            cur += ch
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+            cur += ch
+        elif ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _atom_equiv(a: str, b: str) -> bool:
+    # Identity-only (modulo whitespace, and modulo a leading "f(x)=" prefix).
+    # We deliberately do NOT call math_verify per split-item: math_verify.parse
+    # grabs a coincidental number out of expression/equation answers (e.g. "n=3k"
+    # -> 3), which produced false positives. Whole-answer math equivalence is still
+    # handled by the verify_math_answer fast path in verify_answer_gen.
+    if a.replace(" ", "") == b.replace(" ", ""):
+        return True
+    a2, b2 = _FN_PREFIX.sub("", a).strip(), _FN_PREFIX.sub("", b).strip()
+    return (a2, b2) != (a, b) and a2.replace(" ", "") == b2.replace(" ", "")
+
+
+def verify_answer_gen(gold: str, pred: str | None) -> bool:
+    """Grade a generative (boxed) answer against gold, IMO-Bench style.
+
+    Fast path is the verbatim official ``verify_math_answer``; only when that fails
+    do we normalize and set-match, so we never grade more strictly than upstream.
+    Kept intentionally conservative — prefer under- to over-counting; genuinely
+    free-form / prose answers (which need the upstream agentic clean submission or
+    an LLM judge) are left as-is.
+    """
+    if pred is None:
+        return False
+    if verify_math_answer(gold, pred):
+        return True
+    gold_items = _split_top_level(_normalize(gold))
+    pred_items = _split_top_level(_normalize(pred))
+    if not gold_items or not pred_items:
+        return _atom_equiv(_normalize(gold), _normalize(pred))
+    return all(any(_atom_equiv(x, y) for y in pred_items) for x in gold_items) and all(
+        any(_atom_equiv(y, x) for x in gold_items) for y in pred_items
+    )

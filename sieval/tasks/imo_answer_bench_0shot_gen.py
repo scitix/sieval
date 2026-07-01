@@ -8,7 +8,7 @@ from typing import TypedDict, override
 from loguru import logger
 from openai.types.chat import ChatCompletionUserMessageParam
 
-from sieval.community.imo_bench import verify_math_answer
+from sieval.community.imo_bench import verify_answer_gen
 from sieval.community.matharena import build_prompt, extract_answer
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -97,8 +97,9 @@ class IMOAnswerBenchZeroShotGenTask(
                 feedbacks.append({"correct": False, "answer": ground_truth})
                 continue
             try:
-                # IMO-Bench equivalence (math-verify + string fallback); gold first.
-                correct = verify_math_answer(ground_truth, pred)
+                # IMO-Bench equivalence: official math-verify grader + gen-mode
+                # normalization / multi-answer set matching; gold first.
+                correct = verify_answer_gen(ground_truth, pred)
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
                 correct = False
