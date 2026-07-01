@@ -42,6 +42,12 @@ class CMMLUDatasetSample(TypedDict):
     display_name="CMMLU",
     description="CMMLU Chinese multi-domain exam benchmark with 67 subjects.",
     source=f"url:{CMMLU_SOURCE_URL}",
+    # Key is the archive basename, which embeds the pinned commit SHA; bumping
+    # CMMLU_REVISION requires refreshing this digest (the key must equal the
+    # url: basename or @sieval_dataset registration fails).
+    checksums={
+        "d6e7b716d8ac694f38969a6c0407437d1fded799.zip": "sha256:154593336d5074d793ed990222876b83490b0aed97638a62618d1fe2da7c2cac",  # noqa: E501
+    },
     categories=(Category(Level1Category.KNOWLEDGE, "Multi-domain"),),
     tags=("chinese", "multiple-choice"),
     license="CC-BY-NC-SA-4.0",

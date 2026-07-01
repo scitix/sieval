@@ -83,7 +83,9 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {
+        "d6e7b716d8ac694f38969a6c0407437d1fded799.zip": "sha256:154593336d5074d793ed990222876b83490b0aed97638a62618d1fe2da7c2cac"
+      }
     },
     {
       "name": "drop",
