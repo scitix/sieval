@@ -547,6 +547,23 @@ class TestSetupModelsEngine:
         with pytest.raises(ValueError, match="invalid engine"):
             runner._setup_models()
 
+    def test_engine_on_chat_model_raises(self):
+        runner = self._make_runner(
+            {"m": {"name": "x", "type": "chat", "engine": "sglang", "api_key": "local"}}
+        )
+        with pytest.raises(ValueError, match="only valid for type: gen"):
+            runner._setup_models()
+
+    def test_engine_on_derived_model_raises(self):
+        runner = self._make_runner(
+            {
+                "base_m": {"name": "x", "type": "gen", "api_key": "local"},
+                "d": {"base": "base_m", "engine": "sglang"},
+            }
+        )
+        with pytest.raises(ValueError, match="cannot set 'engine'"):
+            runner._setup_models()
+
 
 # ===================================================================
 # Resolve task model / dataset helpers

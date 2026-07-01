@@ -978,6 +978,13 @@ class EvalSession:
             explicit_type = cfg.get("type")
             model_type = self._infer_model_type(name, explicit_type)
 
+            # `engine` selects the gen backend; it is meaningless for chat.
+            if "engine" in cfg and model_type != "gen":
+                raise ValueError(
+                    f"Model '{name}': 'engine' is only valid for type: gen, "
+                    f"but this model is '{model_type}'."
+                )
+
             if model_type == "gen":
                 engine = cfg.get("engine", "vllm")
                 if engine == "sglang":
@@ -1030,6 +1037,12 @@ class EvalSession:
                     raise ValueError(
                         f"Derived model '{name}' cannot override api_key/api_base from "
                         f"base model '{base_name}'. Create a new base model instead."
+                    )
+
+                if "engine" in cfg:
+                    raise ValueError(
+                        f"Derived model '{name}' cannot set 'engine'; it is inherited "
+                        f"from base model '{base_name}'. Set it on the base instead."
                     )
 
                 # Extract concurrency_limit separately for with_args
