@@ -64,13 +64,17 @@ class _ChatGenBase[TSample, TFeedback](
 
     async def preprocess(self, raw, ctx):
         # Support both message patterns:
-        # 1. User-message pattern (feat/ruler_exp): answer_prefix appended to user message
-        # 2. Assistant-message pattern (feat/ruler): answer_prefix in prefilled assistant turn
+        # 1. User-message pattern: answer_prefix appended to user message
+        # 2. Assistant-message pattern: answer_prefix in prefilled assistant turn
         #
         # Detection logic:
         # - If model has continue_final_message + add_generation_prompt in extra_body → assistant pattern
         # - Otherwise → user message pattern (default)
         extra_body = self.model._kwargs.get("extra_body", {})
+        # Detect prefill mode: both flags must be set explicitly to enable assistant prefill pattern
+        # - continue_final_message=True: continue from assistant's last message
+        # - add_generation_prompt=False: suppress default generation prompt
+        # Both must match for assistant-pattern detection; otherwise defaults to user-message pattern
         use_assistant_prefill = (
             extra_body.get("continue_final_message", False)
             and not extra_body.get("add_generation_prompt", True)
@@ -78,7 +82,7 @@ class _ChatGenBase[TSample, TFeedback](
 
         if use_assistant_prefill:
             # Assistant-message pattern: prefilled assistant turn with thinking placeholder
-            enable_thinking = extra_body.get("enable_thinking", True)
+            enable_thinking = extra_body.get("enable_thinking", False)
             prefill = thinking_prefill(self.model._model, enable_thinking)
             assistant_content = f"{prefill}{raw['answer_prefix']}"
             return [
