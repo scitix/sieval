@@ -21,6 +21,7 @@ if _SCRIPTS_DIR not in sys.path:
 from check_preflight import (  # noqa: E402  # type: ignore[unresolved-import]  # scripts/ added to sys.path at runtime
     CheckResult,
     PreflightRunner,
+    _dataset_integrity_violations,
     format_json,
     format_text,
     main,
@@ -1354,28 +1355,20 @@ class TestDatasetIntegrity:
         )
 
     def test_unpinned_hf_flagged(self):
-        from check_preflight import _dataset_integrity_violations
-
         out = _dataset_integrity_violations([self._meta("a", ["hf:org/a"])])
         assert len(out) == 1 and "a" in out[0]
         assert "hf source not pinned" in out[0]
 
     def test_url_without_checksum_flagged(self):
-        from check_preflight import _dataset_integrity_violations
-
         out = _dataset_integrity_violations([self._meta("b", ["url:https://x/y.csv"])])
         assert len(out) == 1 and "b" in out[0]
         assert "url source missing checksum" in out[0]
 
     def test_local_source_exempt(self):
-        from check_preflight import _dataset_integrity_violations
-
         out = _dataset_integrity_violations([self._meta("c", ["local:/data/c"])])
         assert out == []
 
     def test_pinned_and_checksummed_pass(self):
-        from check_preflight import _dataset_integrity_violations
-
         metas = [
             self._meta("a", ["hf:org/a@" + "0" * 40]),
             self._meta(
