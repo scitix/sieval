@@ -20,6 +20,7 @@ _NIAH_SUBTASK_KWARGS: dict[str, dict] = {
     "niah_single_1": {
         "type_haystack": "noise",
         "type_needle_k": "words",
+        
         "type_needle_v": "numbers",
         "num_needle_k": 1,
         "num_needle_v": 1,

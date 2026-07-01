@@ -85,6 +85,25 @@ def tokens_to_generate(
         return QWEN3_THINKING_TAG_OVERHEAD + 1 + base
 
 
+def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
+    """Placeholder text a reasoning model prefills into the assistant turn.
+
+    Compatibility layer supporting both assistant-message and user-message patterns.
+
+    Qwen3 specifics:
+    - When thinking is enabled: Returns empty string (model continues in existing <think> block)
+    - When thinking is disabled: Returns "<think>\n\n</think>\n\n" (empty block to skip reasoning)
+
+    Other models: Always returns empty string (no special handling needed)
+
+    This maintains backward compatibility with feat/ruler branch while supporting
+    feat/ruler_exp's message pattern (appending answer_prefix to user message).
+    """
+    if "qwen3" in model_name.lower() and not enable_thinking:
+        return "<think>\n\n</think>\n\n"  # Empty block; skip to answer
+    return ""
+
+
 def len_tag(length: int) -> str:
     """Convert a context length to a short tag: 4096 → '4k', 131072 → '128k'."""
     return f"{length // 1024}k" if length % 1024 == 0 else str(length)

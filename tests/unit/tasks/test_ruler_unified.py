@@ -1,6 +1,9 @@
 """Test RULER unified implementation supporting all model scenarios."""
 
+import asyncio
 from unittest.mock import Mock
+
+import pytest
 
 from sieval.datasets.ruler._shared import thinking_prefill, tokens_to_generate
 from sieval.tasks.ruler_0shot_gen import _ChatGenBase
@@ -93,10 +96,9 @@ class TestThinkingPrefill:
 class TestMessageModes:
     """Test automatic message mode detection and construction."""
 
-    def test_user_message_mode_default(self):
+    @pytest.mark.asyncio
+    async def test_user_message_mode_default(self):
         """Default mode: answer_prefix appended to user message."""
-        import asyncio
-
         task = Mock(spec=_ChatGenBase)
         task.model = Mock()
         task.model._model = "Qwen3-8b"
@@ -109,16 +111,15 @@ class TestMessageModes:
 
         raw = {"input": "Context here.", "answer_prefix": "Answer: "}
 
-        messages = asyncio.run(_ChatGenBase.preprocess(task, raw, None))
+        messages = await _ChatGenBase.preprocess(task, raw, None)
 
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "Context here.Answer: "
 
-    def test_assistant_message_mode_with_thinking_disabled(self):
+    @pytest.mark.asyncio
+    async def test_assistant_message_mode_with_thinking_disabled(self):
         """Assistant mode: prefilled assistant turn with thinking_prefill."""
-        import asyncio
-
         task = Mock(spec=_ChatGenBase)
         task.model = Mock()
         task.model._model = "Qwen3-8b"
@@ -132,7 +133,7 @@ class TestMessageModes:
 
         raw = {"input": "Context here.", "answer_prefix": "Answer: "}
 
-        messages = asyncio.run(_ChatGenBase.preprocess(task, raw, None))
+        messages = await _ChatGenBase.preprocess(task, raw, None)
 
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
@@ -141,10 +142,9 @@ class TestMessageModes:
         # Should include thinking_prefill + answer_prefix
         assert messages[1]["content"] == "<think>\n\n</think>\n\nAnswer: "
 
-    def test_assistant_message_mode_with_thinking_enabled(self):
+    @pytest.mark.asyncio
+    async def test_assistant_message_mode_with_thinking_enabled(self):
         """Assistant mode with thinking: prefill returns empty string."""
-        import asyncio
-
         task = Mock(spec=_ChatGenBase)
         task.model = Mock()
         task.model._model = "Qwen3-8b"
@@ -158,17 +158,16 @@ class TestMessageModes:
 
         raw = {"input": "Context here.", "answer_prefix": "Answer: "}
 
-        messages = asyncio.run(_ChatGenBase.preprocess(task, raw, None))
+        messages = await _ChatGenBase.preprocess(task, raw, None)
 
         assert len(messages) == 2
         assert messages[1]["role"] == "assistant"
         # Empty prefill + answer_prefix
         assert messages[1]["content"] == "Answer: "
 
-    def test_default_extra_body_missing(self):
+    @pytest.mark.asyncio
+    async def test_default_extra_body_missing(self):
         """Default behavior when extra_body is missing."""
-        import asyncio
-
         task = Mock(spec=_ChatGenBase)
         task.model = Mock()
         task.model._model = "gpt-4"
@@ -176,7 +175,7 @@ class TestMessageModes:
 
         raw = {"input": "Context.", "answer_prefix": "Q: "}
 
-        messages = asyncio.run(_ChatGenBase.preprocess(task, raw, None))
+        messages = await _ChatGenBase.preprocess(task, raw, None)
 
         # Should default to user-message mode
         assert len(messages) == 1
