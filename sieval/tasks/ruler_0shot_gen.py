@@ -36,7 +36,7 @@ from sieval.core.tasks import (
     Task,
     sieval_task,
 )
-from sieval.datasets.ruler import RulerDatasetSample, len_tag
+from sieval.datasets.ruler import RulerDatasetSample, len_tag, thinking_prefill
 
 _QA_SUBTASKS: frozenset[str] = frozenset({"qa_squad", "qa_hotpotqa"})
 
@@ -63,9 +63,33 @@ class _ChatGenBase[TSample, TFeedback](
         super().__init__(dataset=dataset, model=model, name=name)
 
     async def preprocess(self, raw, ctx):
-        return [
-            {"role": "user", "content": raw["input"] + raw["answer_prefix"]},
-        ]
+        # Support both message patterns:
+        # 1. User-message pattern (feat/ruler_exp): answer_prefix appended to user message
+        # 2. Assistant-message pattern (feat/ruler): answer_prefix in prefilled assistant turn
+        #
+        # Detection logic:
+        # - If model has continue_final_message + add_generation_prompt in extra_body → assistant pattern
+        # - Otherwise → user message pattern (default)
+        extra_body = self.model._kwargs.get("extra_body", {})
+        use_assistant_prefill = (
+            extra_body.get("continue_final_message", False)
+            and not extra_body.get("add_generation_prompt", True)
+        )
+
+        if use_assistant_prefill:
+            # Assistant-message pattern: prefilled assistant turn with thinking placeholder
+            enable_thinking = extra_body.get("enable_thinking", True)
+            prefill = thinking_prefill(self.model._model, enable_thinking)
+            assistant_content = f"{prefill}{raw['answer_prefix']}"
+            return [
+                {"role": "user", "content": raw["input"]},
+                {"role": "assistant", "content": assistant_content},
+            ]
+        else:
+            # User-message pattern: answer_prefix appended to user message (default)
+            return [
+                {"role": "user", "content": raw["input"] + raw["answer_prefix"]},
+            ]
 
     async def infer(self, pre, ctx):
         return await self.model.agenerate(pre)
