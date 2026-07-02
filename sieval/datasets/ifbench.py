@@ -3,7 +3,6 @@
 AI-Generated Code - GPT-5 (OpenAI)
 """
 
-from pathlib import Path
 from typing import Any, TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
@@ -41,24 +40,6 @@ class IFBenchDatasetSample(TypedDict):
 class IFBenchDataset(Dataset[IFBenchDatasetSample]):
     @override
     def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
-        path = Path(name_or_path).expanduser()
-
-        if path.is_file():
-            return self._load_jsonl(path, **kwargs)
-
-        if path.is_dir():
-            jsonl_path = path / "IFBench_test.jsonl"
-            if jsonl_path.is_file():
-                return self._load_jsonl(jsonl_path, **kwargs)
-
-        load_source = str(path) if path.exists() else name_or_path
-        dataset = ensure_dataset_dict(load_dataset(load_source, **kwargs))
+        # IFBench_test ships a single split; mirror it to "test" for the runner.
+        dataset = ensure_dataset_dict(load_dataset(name_or_path, **kwargs))
         return apply_eval_split(dataset, "train")
-
-    def _load_jsonl(self, path: Path, **kwargs) -> HFDatasetDict:
-        dataset = load_dataset(
-            "json",
-            data_files={"train": str(path), "test": str(path)},
-            **kwargs,
-        )
-        return ensure_dataset_dict(dataset)

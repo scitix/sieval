@@ -8,7 +8,7 @@ Deviations from the official AllenAI IFBench evaluation:
 - The upstream ``stop=["</answer>"]`` sequence is not set: with backend-side
   reasoning separation the answer arrives in ``content`` without answer tags.
 
-Official decoding values for reproduction (allenai/IFBench#5): temperature=0,
+Official leaderboard decoding (allenai/IFBench#5): temperature=0,
 max_gen_toks=32768, stop=["</answer>"], process_output="r1_style", thinking
 enabled. Set decoding via the model config, not in this task.
 

@@ -10,7 +10,8 @@ RUN pip install --no-cache-dir "fastapi[standard]==0.123.5" psutil==7.2.2
 
 RUN python3 -m nltk.downloader \
     punkt punkt_tab \
-    wordnet omw-1.4
+    wordnet omw-1.4 \
+    stopwords averaged_perceptron_tagger_eng
 
 WORKDIR /app
 
