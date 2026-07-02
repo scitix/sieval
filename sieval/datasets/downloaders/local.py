@@ -1,9 +1,11 @@
-"""local scheme handler: stage a package-bundled file into ``dest_root/<name>/``.
+"""local scheme handler: stage a locally materialized file into ``dest_root/<name>/``.
 
-For datasets whose corpus is generated once and committed inside the package
-(under ``sieval/datasets/_data/``) rather than fetched from a remote. ``download``
-copies the bundled file into the same ``{dest_root}/<dataset_name>/`` layout the
-url/hf handlers use, so the runtime ``load(name_or_path)`` path is identical.
+For datasets whose corpus is produced out-of-band by a generation script (e.g.
+``scripts/gen_paul_graham_essays.py``) into ``sieval/datasets/_data/`` rather than
+fetched from a remote. The user runs the generator themselves; the file is *not*
+committed to the repo. ``download`` copies that locally-present file into the same
+``{dest_root}/<dataset_name>/`` layout the url/hf handlers use, so the runtime
+``load(name_or_path)`` path is identical.
 
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
@@ -15,7 +17,8 @@ from posixpath import normpath
 
 from sieval.core.datasets.meta import url_path_basename
 
-# Bundled-data root inside the package; `local:<relpath>` resolves under here.
+# Local-data root inside the package tree (generator-populated, not committed);
+# `local:<relpath>` resolves under here.
 _DATA_ANCHOR = "sieval.datasets"
 _DATA_SUBDIR = "_data"
 
