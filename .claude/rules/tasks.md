@@ -10,8 +10,10 @@ paths:
 - File naming must follow `<task>_<N>shot_<mode>.py` pattern (authoritative table in `sieval/tasks/CLAUDE.md`):
     - `_gen.py` → `model_type = "chat"`
     - `_base_gen.py` → `model_type = "gen"` (base model, uses GenModel)
-    - `_ppl.py` → `model_type = "gen"` (perplexity, uses GenModel)
+    - `_ppl.py` → `model_type = "gen"` (perplexity / full-sequence likelihood, uses GenModel)
+    - `_clp.py` → `model_type = "gen"` (conditional next-token log-prob over fixed option tokens via `top_logprobs`, uses GenModel)
 - Class naming: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `FewShot`)
+- `ppl` vs `clp` (per [OpenCompass](https://opencompass.readthedocs.io/zh-cn/latest/get_started/faq.html#ppl-gen)): `ppl` concatenates each candidate continuation with the context and compares full-sequence perplexity (`n` inferences; multi-token answers); `clp` reads next-token conditional log-prob over a fixed set of option tokens in a single inference (single-token / labelled-choice answers; tokenizer-sensitive).
 
 ## Checklist for New Benchmarks
 

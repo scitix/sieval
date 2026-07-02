@@ -9,8 +9,19 @@ File: `<task>_<N>shot_<mode>.py` — suffix determines `model_type`:
 | `_gen.py` | `"chat"` |
 | `_base_gen.py` | `"gen"` |
 | `_ppl.py` | `"gen"` |
+| `_clp.py` | `"gen"` |
 
 Class: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `FewShot`).
+
+### `ppl` vs `clp` (per [OpenCompass](https://opencompass.readthedocs.io/zh-cn/latest/get_started/faq.html#ppl-gen))
+
+- **`ppl`** = sequence-likelihood selection: concatenate each candidate
+  continuation with the context and compare full-sequence perplexity
+  (`n` inferences; supports multi-token answers).
+- **`clp`** = next-token conditional log-prob over a fixed set of option
+  tokens in a single inference (single-token / labelled-choice answers;
+  tokenizer-sensitive). Reads the option tokens from the API's
+  `top_logprobs` rather than a local tokenizer.
 
 ## Key Rules
 

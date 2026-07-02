@@ -19,6 +19,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from check_preflight import (  # noqa: E402  # type: ignore[unresolved-import]  # scripts/ added to sys.path at runtime
+    _TASK_FILE_PATTERN,
     CheckResult,
     PreflightRunner,
     _dataset_integrity_violations,
@@ -751,6 +752,35 @@ class TestCheckTasks:
         results = runner.check_tasks()
         naming_results = [r for r in results if "naming" in r.message.lower()]
         assert len(naming_results) >= 1
+
+
+class TestTaskFileNamingPattern:
+    """Unit tests for the task-file naming regex (`_TASK_FILE_PATTERN`)."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "cmmlu_kshot_clp.py",
+            "foo_5shot_clp.py",
+            "foo_0shot_gen.py",
+            "foo_kshot_base_gen.py",
+            "foo_3shot_ppl.py",
+            "foo_2shot_llmjudge_gen.py",
+        ],
+    )
+    def test_accepts_valid_suffixes(self, name):
+        assert _TASK_FILE_PATTERN.match(name) is not None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "foo_clp.py",  # missing shot segment
+            "foo_5shot_clp_extra.py",  # trailing junk
+            "foo_5shot_clpx.py",  # not a known mode
+        ],
+    )
+    def test_rejects_malformed(self, name):
+        assert _TASK_FILE_PATTERN.match(name) is None
 
 
 class TestCheckDatasets:

@@ -99,6 +99,25 @@ class TestDetectEmptyInferPpl:
             ctx = _make_final_ctx(infer_result=infer_result)
             assert detect_empty_infer_ppl(ctx) == expected, case_name
 
+    def test_top_logprobs_variants(self, sample_model_meta):
+        """CLP tasks populate top_logprobs; empty top_logprobs is flagged."""
+
+        def _make_output(top_logprobs):
+            return ModelOutput(
+                model=sample_model_meta,
+                texts=["x"],
+                top_logprobs=top_logprobs,
+            )
+
+        cases = [
+            (_make_output([]), {0}, "empty_top_logprobs"),
+            (_make_output([{"A": -0.1, "B": -2.0}]), set(), "non_empty_top_logprobs"),
+            (_make_output(None), set(), "no_top_logprobs"),
+        ]
+        for infer_result, expected, case_name in cases:
+            ctx = _make_final_ctx(infer_result=infer_result)
+            assert detect_empty_infer_ppl(ctx) == expected, case_name
+
 
 class TestDetectTruncatedOutput:
     def test_single_sample(self, sample_model_meta):
@@ -641,6 +660,26 @@ class TestDetectWithTaskTags:
         ctx = _make_final_ctx(infer_result=output, postprocess_result="ok")
         result = detector.detect(ctx, task_tags={"gen", "zero_shot"})
         assert "empty_infer_ppl" not in result
+
+    def test_ppl_rule_runs_for_clp_task_on_empty_top_logprobs(
+        self, tmp_path, sample_model_meta
+    ):
+        """A clp-tagged FINAL ctx with empty top_logprobs is flagged; the
+        empty_infer_ppl rule's applies_to includes clp."""
+        assert "clp" in _DETECTION_RULES["empty_infer_ppl"]["definition"]["applies_to"]
+
+        detector = TaskAnomalyDetector(root_dir=tmp_path)
+        empty = ModelOutput(model=sample_model_meta, texts=["x"], top_logprobs=[])
+        ctx = _make_final_ctx(infer_result=empty, postprocess_result="ok")
+        assert "empty_infer_ppl" in detector.detect(ctx, task_tags={"clp", "few_shot"})
+
+        non_empty = ModelOutput(
+            model=sample_model_meta, texts=["x"], top_logprobs=[{"A": -0.1}]
+        )
+        ctx_ok = _make_final_ctx(infer_result=non_empty, postprocess_result="ok")
+        assert "empty_infer_ppl" not in detector.detect(
+            ctx_ok, task_tags={"clp", "few_shot"}
+        )
 
     def test_all_tasks_rule_always_runs(self, tmp_path, sample_model_meta):
         detector = TaskAnomalyDetector(root_dir=tmp_path)

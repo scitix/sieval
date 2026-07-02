@@ -414,11 +414,18 @@ def detect_empty_infer_gen(ctx: TaskContext) -> set[int]:
 
 
 @sieval_detection_rule(
-    description="Inference result is empty for perplexity tasks (logprobs=[])",
+    description=(
+        "Inference result is empty for perplexity/conditional-logprob tasks "
+        "(logprobs=[] or top_logprobs=[])"
+    ),
     category="output_quality",
-    rationale=("Empty logprobs indicate API failures or unsupported model features."),
-    applies_to=["ppl"],
-    tags=["perplexity", "api_failure", "empty_output"],
+    rationale=(
+        "Empty logprobs/top_logprobs indicate API failures or unsupported "
+        "model features. PPL tasks populate logprobs/logprobs_tokens; CLP "
+        "tasks populate top_logprobs (per-token top-k)."
+    ),
+    applies_to=["ppl", "clp"],
+    tags=["perplexity", "conditional_logprob", "api_failure", "empty_output"],
 )
 def detect_empty_infer_ppl(ctx: TaskContext) -> set[int]:
     if ctx.infer_result is None:
@@ -426,14 +433,16 @@ def detect_empty_infer_ppl(ctx: TaskContext) -> set[int]:
     result = _unwrap_result(ctx.infer_result)
     if not isinstance(result, ModelOutput):
         return set()
-    # For PPL tasks, we need both logprobs and logprobs_tokens
+    # PPL tasks need logprobs / logprobs_tokens; CLP tasks need top_logprobs.
     has_logprobs = result.logprobs is not None
     has_logprobs_tokens = result.logprobs_tokens is not None
-    if has_logprobs or has_logprobs_tokens:
+    has_top = result.top_logprobs is not None
+    if has_logprobs or has_logprobs_tokens or has_top:
         logprobs_empty = has_logprobs and not result.logprobs
         logprobs_tokens_empty = has_logprobs_tokens and not result.logprobs_tokens
-        # Report index 0 as sentinel if any field is empty
-        return {0} if (logprobs_empty or logprobs_tokens_empty) else set()
+        top_empty = has_top and not result.top_logprobs
+        # Report index 0 as sentinel if any populated field is empty
+        return {0} if (logprobs_empty or logprobs_tokens_empty or top_empty) else set()
     return set()
 
 

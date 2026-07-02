@@ -114,7 +114,12 @@ def test_eval_mode_is_str_enum():
 
 
 def test_eval_mode_has_expected_members():
-    assert {m.value for m in EvalMode} == {"gen", "ppl"}
+    assert {m.value for m in EvalMode} == {"gen", "ppl", "clp"}
+
+
+def test_eval_mode_clp_value_and_roundtrip():
+    assert EvalMode.CLP.value == "clp"
+    assert EvalMode("clp") is EvalMode.CLP
 
 
 def test_reference_impl_requires_source_and_url():
@@ -453,6 +458,12 @@ def test_sieval_task_sets_protocol_tags_from_eval_mode_and_n_shot():
         pass
 
     assert TGenFew.tags == frozenset({"gen", "few_shot"})
+
+    @sieval_task(**_valid_kwargs(name="p_clp_zero", eval_mode=EvalMode.CLP, n_shot=0))
+    class TClpZero(_StubTask):
+        pass
+
+    assert TClpZero.tags == frozenset({"clp", "zero_shot"})
 
 
 def test_sieval_task_sets_class_model_type():

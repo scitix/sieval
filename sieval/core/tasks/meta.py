@@ -14,7 +14,7 @@ Not frozen (may change within schema_version=1):
     Python-side internals.
 
 Frozen enum values:
-    EvalMode: gen, ppl.
+    EvalMode: gen, ppl, clp.
     Status: stable, experimental, deprecated.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
@@ -40,6 +40,9 @@ class EvalMode(StrEnum):
     # PPL covers perplexity-based (logprobs).
     GEN = "gen"
     PPL = "ppl"
+    # CLP: next-token conditional log-prob over a fixed set of option tokens
+    # (single inference); vs PPL = full-sequence perplexity (n inferences).
+    CLP = "clp"
 
 
 @dataclass(frozen=True, slots=True)
