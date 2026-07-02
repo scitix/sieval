@@ -20,7 +20,6 @@ _NIAH_SUBTASK_KWARGS: dict[str, dict] = {
     "niah_single_1": {
         "type_haystack": "noise",
         "type_needle_k": "words",
-        
         "type_needle_v": "numbers",
         "num_needle_k": 1,
         "num_needle_v": 1,
@@ -104,7 +103,12 @@ def load_niah(
     type_needle_k: str,
     type_needle_v: str,
 ) -> list[dict]:
-    gen_budget = tokens_to_generate("niah", enable_thinking=enable_thinking, think_budget=think_budget, model_name=model_name)
+    gen_budget = tokens_to_generate(
+        "niah",
+        enable_thinking=enable_thinking,
+        think_budget=think_budget,
+        model_name=model_name,
+    )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
@@ -132,7 +136,6 @@ def load_niah(
     num_haystack = _fit_haystack_size(
         gen=gen,
         tokenizer=tokenizer,
-        haystack=haystack,
         type_haystack=type_haystack,
         max_seq_length=max_seq_length,
         tokens_to_generate=gen_budget,
@@ -147,10 +150,7 @@ def load_niah(
         while True:
             try:
                 input_text, answer = gen(used_haystack)
-                length = (
-                    len(tokenizer.text_to_tokens(input_text))
-                    + gen_budget
-                )
+                length = len(tokenizer.text_to_tokens(input_text)) + gen_budget
                 assert length <= max_seq_length, "exceeds max_seq_length"
                 break
             except Exception:
@@ -195,7 +195,6 @@ def _fit_haystack_size(
     *,
     gen,
     tokenizer,
-    haystack,
     type_haystack: str,
     max_seq_length: int,
     tokens_to_generate: int,

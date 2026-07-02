@@ -58,7 +58,8 @@ def tokens_to_generate(
     Args:
         task_name: Name of the RULER task (e.g., "niah", "qa")
         enable_thinking: Whether thinking mode is enabled
-        think_budget: Token budget for thinking content (only used if enable_thinking=True)
+        think_budget: Token budget for thinking content (used only when
+                    enable_thinking=True)
         model_name: Model identifier (default "qwen3"). Only Qwen3-family models
                     have thinking tag overhead. Other models (e.g., "gpt-4", "llama")
                     should pass their own model_name for correct token calculation.
@@ -91,8 +92,10 @@ def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
     Compatibility layer supporting both assistant-message and user-message patterns.
 
     Qwen3 specifics:
-    - When thinking is enabled: Returns empty string (model continues in existing <think> block)
-    - When thinking is disabled: Returns "<think>\n\n</think>\n\n" (empty block to skip reasoning)
+    - When thinking is enabled: Returns empty string (model continues in the
+      existing <think> block)
+    - When thinking is disabled: Returns "<think>\n\n</think>\n\n" (empty block
+      to skip reasoning)
 
     Other models: Always returns empty string (no special handling needed)
 

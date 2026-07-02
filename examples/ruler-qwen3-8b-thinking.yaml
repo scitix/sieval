@@ -58,7 +58,7 @@ models:
     infer_meta:
       gpu: L40
       image: lmsysorg/sglang:latest
-      
+
 datasets:
   ruler_16k:
     class: RulerDataset

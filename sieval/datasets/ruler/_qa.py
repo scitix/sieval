@@ -31,7 +31,12 @@ def load_qa(
     model_name: str = "qwen3",
     pre_samples: int,
 ) -> list[dict]:
-    gen_budget = tokens_to_generate("qa", enable_thinking=enable_thinking, think_budget=think_budget, model_name=model_name)
+    gen_budget = tokens_to_generate(
+        "qa",
+        enable_thinking=enable_thinking,
+        think_budget=think_budget,
+        model_name=model_name,
+    )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
@@ -69,10 +74,7 @@ def load_qa(
         while True:
             try:
                 input_text, answer = gen(index + pre_samples, used_docs)
-                length = (
-                    len(tokenizer.text_to_tokens(input_text))
-                    + gen_budget
-                )
+                length = len(tokenizer.text_to_tokens(input_text)) + gen_budget
                 assert length <= max_seq_length, f"{length} exceeds max_seq_length"
                 break
             except AssertionError:

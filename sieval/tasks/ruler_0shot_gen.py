@@ -75,10 +75,9 @@ class _ChatGenBase[TSample, TFeedback](
         # - continue_final_message=True: continue from assistant's last message
         # - add_generation_prompt=False: suppress default generation prompt
         # Both must match for assistant-pattern; otherwise defaults to user-message
-        use_assistant_prefill = (
-            extra_body.get("continue_final_message", False)
-            and not extra_body.get("add_generation_prompt", True)
-        )
+        use_assistant_prefill = extra_body.get(
+            "continue_final_message", False
+        ) and not extra_body.get("add_generation_prompt", True)
 
         if use_assistant_prefill:
             # Assistant-message pattern: prefilled turn with thinking placeholder

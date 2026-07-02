@@ -151,6 +151,15 @@ include = ["scripts/gen_paul_graham_essays.py"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 
+# ruler lazy-imports its deps group (tiktoken / wonderwords / scipy), absent from
+# CI's light env, so ty can't resolve those imports. Intentional — keeps CI free
+# of the ruler deps. The unit test guards the same imports behind a try/except.
+[[tool.ty.overrides]]
+include = ["sieval/datasets/ruler/**", "tests/unit/datasets/test_ruler.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
 [tool.coverage.run]
 source = ["sieval/core"]
 branch = true

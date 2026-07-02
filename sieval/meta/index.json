@@ -377,7 +377,11 @@
         "long-context"
       ],
       "deps_group": "ruler",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "checksums": {
+        "dev-v2.0.json": "sha256:80a5225e94905956a6446d296ca1093975c4d3b3260f1d6c8f68bc2ab77182d8",
+        "english_words.json": "sha256:affcd6d45fdf3cc843d585c99c97ad615094e760e6c4756b654bab6c73bc2eca"
+      }
     },
     {
       "name": "t_eval_before_calling",
