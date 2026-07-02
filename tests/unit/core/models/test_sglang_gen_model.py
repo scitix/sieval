@@ -245,12 +245,15 @@ class TestParsing:
 
     @pytest.mark.anyio
     async def test_usage_parsed(self, model):
+        # input count must equal prompt_tokens under echo (cold cache).
         meta = _meta(
-            input_entries=[[-0.1, 1, " A"]], prompt_tokens=7, completion_tokens=1
+            input_entries=[[None, 1, "Q"], [-0.1, 2, " A"]],
+            prompt_tokens=2,
+            completion_tokens=1,
         )
         _patch_post(model, {"text": "", "meta_info": meta})
         out = await model._alogprobs_impl("prompt")
-        assert out.usage == {"input_tokens": 7, "output_tokens": 1, "total_tokens": 8}
+        assert out.usage == {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3}
 
     @pytest.mark.anyio
     async def test_usage_none_when_counts_absent(self, model):
@@ -408,3 +411,61 @@ class TestGuards:
         out = await model._alogprobs_impl("prompt")
         assert out.model["model"] == "test-sglang"
         assert out.response_model == "test-sglang"
+
+    @pytest.mark.anyio
+    async def test_non_dict_response_raises(self, model):
+        """A list response (only valid for n>1 generation) is rejected here."""
+        _patch_post(model, [{"text": "", "meta_info": _meta()}])
+        with pytest.raises(RuntimeError, match="expected an object"):
+            await model._alogprobs_impl("prompt")
+
+
+# ===================================================================
+# Radix-cache truncation guard (echo=True completeness)
+# ===================================================================
+class TestEchoCompletenessGuard:
+    """echo=True must fail loud when sglang's prefix cache truncates input logprobs."""
+
+    @pytest.mark.anyio
+    async def test_cached_tokens_nonzero_raises(self, model):
+        # Cache hit: input_token_logprobs truncated to the uncached tail.
+        meta = _meta(
+            input_entries=[[-0.1, 1, " star"]],
+            prompt_tokens=5,
+            cached_tokens=4,
+        )
+        _patch_post(model, {"text": "", "meta_info": meta})
+        with pytest.raises(RuntimeError, match="disable-radix-cache"):
+            await model._alogprobs_impl("prompt", echo=True)
+
+    @pytest.mark.anyio
+    async def test_count_mismatch_raises(self, model):
+        # cached_tokens field absent, but returned count < prompt_tokens.
+        meta = _meta(input_entries=[[-0.1, 1, " star"]], prompt_tokens=5)
+        _patch_post(model, {"text": "", "meta_info": meta})
+        with pytest.raises(RuntimeError, match="partial echoed-input"):
+            await model._alogprobs_impl("prompt", echo=True)
+
+    @pytest.mark.anyio
+    async def test_full_input_passes(self, model):
+        meta = _meta(
+            input_entries=[[None, 1, "a"], [-0.1, 2, " b"]],
+            prompt_tokens=2,
+            cached_tokens=0,
+        )
+        _patch_post(model, {"text": "", "meta_info": meta})
+        out = await model._alogprobs_impl("prompt", echo=True)
+        assert out.logprobs_tokens == ["a", " b"]
+
+    @pytest.mark.anyio
+    async def test_echo_false_ignores_cache(self, model):
+        """echo=False (CMMLU) reads output only — cache truncation is irrelevant."""
+        meta = _meta(
+            output_entries=[[-0.1, 1, " A"]],
+            output_top=[[[-0.1, 1, " A"]]],
+            prompt_tokens=5,
+            cached_tokens=4,
+        )
+        _patch_post(model, {"text": "", "meta_info": meta})
+        out = await model._alogprobs_impl("prompt", echo=False)
+        assert out.top_logprobs == [{" A": -0.1}]
