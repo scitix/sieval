@@ -1,0 +1,119 @@
+# ==============================================================================
+# Ruler Long-Context Evaluation — Qwen3-8B Non-Thinking Baseline
+# ==============================================================================
+# Evaluation scenario: Test model's ability to handle 4K/8K/16K/32K long
+#   contexts without enabling internal thinking chains.
+# Task: Ruler benchmark (0-shot, generative) — multi-length contexts × single model
+#
+# Configuration highlights:
+#   - enable_thinking: false (no internal reasoning chain)
+#   - Multi-length datasets: 4K, 8K, 16K, 32K contexts
+#   - Concurrency limit: 64 (standard throughput)
+#   - Temperature/top_p: 0.7 / 0.8 (moderate randomness)
+#   - Assistant prefill mode: enabled (continue_final_message=true)
+#
+# Setup steps:
+#   1. Prepare data: sieval dataset download ruler
+#      or configure $SIEVAL_DATA_DIR to point to Ruler dataset
+#   2. Check model paths: edit checkpoint field
+#   3. Run evaluation:
+#      sieval run ruler-qwen3-8b-nonthinking.yaml (launch + eval)
+#      sieval eval ruler-qwen3-8b-nonthinking.yaml (model already served)
+#
+# Editable fields:
+#   models.qwen3-8b.infer.checkpoint         — local model path
+#   datasets.ruler_*.args.tokenizer_path     — tokenizer path (same as model)
+#
+# Output:
+#   result_dir: ./outputs/ruler_qwen3_8b_nonthinking
+#   Evaluation results for 4 tasks (grouped by context length)
+# ==============================================================================
+
+result_dir: ./outputs/ruler_qwen3_8b_nonthinking
+models:
+  qwen3-8b:
+    args:
+      concurrency_limit: 64
+      temperature: 0.7
+      top_p: 0.8
+      extra_body:
+        enable_thinking: false
+        top_k: 20
+        presence_penalty: 1.5
+        continue_final_message: true
+        add_generation_prompt: false
+    infer:
+      backend: sglang
+      recipe: qwen3-8b
+      checkpoint: /root/models/qwen3-8b
+      overrides:
+        context_length: 32768
+    infer_meta:
+      gpu: H200-141G
+      image: lmsysorg/sglang:latest
+
+datasets:
+  ruler_4k:
+    class: RulerDataset
+    path: ${SIEVAL_DATA_DIR}
+    args:
+      subtask: all
+      max_seq_length: 4096
+      num_samples: 500
+      tokenizer_type: hf
+      tokenizer_path: /root/models/qwen3-8b
+      enable_thinking: false
+
+  ruler_8k:
+    class: RulerDataset
+    path: ${SIEVAL_DATA_DIR}
+    args:
+      subtask: all
+      max_seq_length: 8192
+      num_samples: 500
+      tokenizer_type: hf
+      tokenizer_path: /root/models/qwen3-8b
+      enable_thinking: false
+
+  ruler_16k:
+    class: RulerDataset
+    path: ${SIEVAL_DATA_DIR}
+    args:
+      subtask: all
+      max_seq_length: 16384
+      num_samples: 500
+      tokenizer_type: hf
+      tokenizer_path: /root/models/qwen3-8b
+      enable_thinking: false
+      
+  ruler_32k:
+    class: RulerDataset
+    path: ${SIEVAL_DATA_DIR}
+    args:
+      subtask: all
+      max_seq_length: 32768
+      num_samples: 500
+      tokenizer_type: hf
+      tokenizer_path: /root/models/qwen3-8b
+      enable_thinking: false
+
+tasks:
+  ruler_4k:
+    class: RulerZeroShotGenTask
+    dataset: ruler_4k
+    model: qwen3-8b
+
+  ruler_8k:
+    class: RulerZeroShotGenTask
+    dataset: ruler_8k
+    model: qwen3-8b
+
+  ruler_16k:
+    class: RulerZeroShotGenTask
+    dataset: ruler_16k
+    model: qwen3-8b
+    
+  ruler_32k:
+    class: RulerZeroShotGenTask
+    dataset: ruler_32k
+    model: qwen3-8b
