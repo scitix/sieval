@@ -163,6 +163,27 @@
       "checksums": {}
     },
     {
+      "name": "hmmt_feb_2025",
+      "display_name": "HMMT Feb 2025",
+      "description": "Harvard-MIT Mathematics Tournament, February 2025, 30 problems.",
+      "source": [
+        "hf:MathArena/hmmt_feb_2025@6fdc4277120810ff75aa22d2d5489b91f7a262a1"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
+    },
+    {
       "name": "hmmt_feb_2026",
       "display_name": "HMMT Feb 2026",
       "description": "Harvard-MIT Mathematics Tournament, February 2026, 33 problems.",
@@ -224,6 +245,27 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0",
+      "checksums": {}
+    },
+    {
+      "name": "imo_answer_bench",
+      "display_name": "IMO-AnswerBench",
+      "description": "IMO-Bench AnswerBench (Google DeepMind) — 400 short-answer olympiad problems.",
+      "source": [
+        "hf:Hwilner/imo-answerbench@0258becbd00fc07d34862bc8539e61c8742f0d14"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-4.0",
       "checksums": {}
     },
     {
@@ -532,6 +574,26 @@
       "status": "stable"
     },
     {
+      "name": "hmmt_feb_2025_0shot_gen",
+      "display_name": "HMMT Feb 2025 (0-shot, generative)",
+      "description": "HMMT February 2025 — Harvard-MIT Mathematics Tournament, 30 problems.",
+      "dataset": "hmmt_feb_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "matharena",
+        "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2025.yaml",
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify."
+      },
+      "status": "stable"
+    },
+    {
       "name": "hmmt_feb_2026_0shot_gen",
       "display_name": "HMMT Feb 2026 (0-shot, generative)",
       "description": "HMMT February 2026 — Harvard-MIT Mathematics Tournament, 33 problems.",
@@ -613,6 +675,26 @@
         "notes": "evaluation_lib + instructions_registry vendored from google-research."
       },
       "status": "stable"
+    },
+    {
+      "name": "imo_answer_bench_0shot_gen",
+      "display_name": "IMO-AnswerBench (0-shot, generative)",
+      "description": "IMO-Bench AnswerBench (Google DeepMind) — 400 short-answer olympiad problems.",
+      "dataset": "imo_answer_bench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "IMO-Bench (Google DeepMind) + eth-sri/matharena",
+        "url": "https://github.com/EnvCommons/IMO-Bench/blob/66b014f1b3799972ddfc32dbacea51b802586141/answer_verification.py",
+        "notes": "NON-STRICT / EXPERIMENTAL port of IMO-Bench AnswerBench. Deviations from upstream:\n1. Harness type: upstream is agentic (answer submitted via an `answer` tool call); this is generative — last-\\boxed{} extraction.\n2. Prompt: upstream is the bare 'Please reason step by step.'; we append 'Put your final answer within \\boxed{}.' plus a blank-line separator before the problem.\n3. Grading: verify_math_answer is vendored verbatim (math-verify + normalized-string fallback), but a NON-upstream normalizer verify_answer_gen (gen-mode formatting + multi-answer set matching) contributes ~11% of the score — raw verify_math_answer alone = 260/400 = 65.0%, verify_answer_gen = 293/400 = 73.25% (DeepSeek-V4-Pro).\n4. Data source: HF mirror hf:Hwilner/imo-answerbench (functionally equivalent to upstream's OpenReward answerbench.csv).\n5. Dual lineage: prompt + last-\\boxed{} extraction are from eth-sri/matharena (community/matharena.py); the answer grader is IMO-Bench (community/imo_bench.py, @66b014f1).\nKnown limitation: \\boxed{} extraction conflates format-compliance with math ability; a function-calling submission channel reproducing upstream's answer tool (and dropping verify_answer_gen) is the fidelity fix. Infer prereqs: large max_tokens (~131072) + generous client read-timeout (300s+); the score is budget-sensitive."
+      },
+      "status": "experimental"
     },
     {
       "name": "livecodebench_code_generation_0shot_gen",

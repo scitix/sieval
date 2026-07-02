@@ -22,6 +22,9 @@ from .gpqa_diamond_0shot_gen import (
 from .gsm8k_kshot_base_gen import (
     GSM8KFewShotBaseGenTask,
 )
+from .hmmt_feb_2025_0shot_gen import (
+    HMMTFeb2025ZeroShotGenTask,
+)
 from .hmmt_feb_2026_0shot_gen import (
     HMMTFeb2026ZeroShotGenTask,
 )
@@ -33,6 +36,9 @@ from .human_eval_0shot_gen import (
 )
 from .ifeval_0shot_gen import (
     IFEvalZeroShotGenTask,
+)
+from .imo_answer_bench_0shot_gen import (
+    IMOAnswerBenchZeroShotGenTask,
 )
 from .livecodebench_code_generation_0shot_gen import (
     LiveCodeBenchCodeGenerationZeroShotGenTask,
@@ -67,10 +73,12 @@ __all__ = [
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
     "GSM8KFewShotBaseGenTask",
+    "HMMTFeb2025ZeroShotGenTask",
     "HMMTFeb2026ZeroShotGenTask",
     "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
     "IFEvalZeroShotGenTask",
+    "IMOAnswerBenchZeroShotGenTask",
     "LiveCodeBenchCodeGenerationFewShotBaseGenTask",
     "LiveCodeBenchCodeGenerationZeroShotGenTask",
     "MATH500ZeroShotGenTask",

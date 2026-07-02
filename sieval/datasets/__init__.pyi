@@ -29,6 +29,10 @@ from .gsm8k import (
     GSM8KDataset,
     GSM8KDatasetSample,
 )
+from .hmmt_feb_2025 import (
+    HMMTFeb2025Dataset,
+    HMMTFeb2025DatasetSample,
+)
 from .hmmt_feb_2026 import (
     HMMTFeb2026Dataset,
     HMMTFeb2026DatasetSample,
@@ -40,6 +44,10 @@ from .human_eval import (
 from .ifeval import (
     IFEvalDataset,
     IFEvalDatasetSample,
+)
+from .imo_answer_bench import (
+    IMOAnswerBenchDataset,
+    IMOAnswerBenchDatasetSample,
 )
 from .livecodebench_code_generation import (
     LiveCodeBenchDataset,
@@ -85,12 +93,16 @@ __all__ = [
     "GPQADiamondDatasetSample",
     "GSM8KDataset",
     "GSM8KDatasetSample",
+    "HMMTFeb2025Dataset",
+    "HMMTFeb2025DatasetSample",
     "HMMTFeb2026Dataset",
     "HMMTFeb2026DatasetSample",
     "HumanEvalDataset",
     "HumanEvalDatasetSample",
     "IFEvalDataset",
     "IFEvalDatasetSample",
+    "IMOAnswerBenchDataset",
+    "IMOAnswerBenchDatasetSample",
     "LiveCodeBenchDataset",
     "LiveCodeBenchDatasetSample",
     "MATH500Dataset",
