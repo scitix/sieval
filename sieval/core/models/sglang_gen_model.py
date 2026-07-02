@@ -17,7 +17,7 @@ wrappers) lives in ``Model`` and is inherited directly.
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-from typing import Any, override
+from typing import cast, override
 
 from sieval.core.types import JSONValue
 
@@ -49,6 +49,10 @@ def _normalize_token_text(text: str) -> str:
     ``"ĠA"`` would silently never match and the prediction would degrade.
     Normalize here so downstream scoring is fed the same token text the
     OpenAI path would produce.
+
+    Limitation: only GPT-2 byte-level markers are handled. SentencePiece
+    (``▁``, U+2581) and other tokenizer conventions pass through unchanged —
+    add them here if a tokenizer that uses them needs the same contract.
     """
     return text.replace("Ġ", " ").replace("Ċ", "\n")
 
@@ -64,19 +68,24 @@ class SglangGenModel(Model[str]):
         base = (self._api_base or "").rstrip("/").removesuffix("/v1").rstrip("/")
         return f"{base}/generate"
 
-    async def _post(self, body: dict[str, JSONValue]) -> Any:
+    async def _post(self, body: dict[str, JSONValue]) -> dict | list:
         """POST ``body`` to ``/generate`` via the OpenAI client.
 
-        Using the public ``self._client.post`` (not the private httpx handle)
-        keeps the configured auth and ``max_retries`` behaviour; an absolute
-        URL is required because the client would otherwise append the path to
-        the ``/v1`` base. Returns the parsed JSON (a dict, or a list when
+        Reuses the OpenAI SDK's low-level ``self._client.post`` to speak the
+        native ``/generate`` protocol: this keeps the configured auth and
+        ``max_retries``, and an absolute URL is required because the client
+        would otherwise append the path to the ``/v1`` base. It couples us to
+        an SDK-internal surface — the client/protocol decoupling is tracked in
+        RFC #25. Returns the parsed JSON (a dict, or a list when
         ``sampling_params.n > 1``).
         """
-        return await self._client.post(self._generate_url(), cast_to=object, body=body)
+        return cast(
+            "dict | list",
+            await self._client.post(self._generate_url(), cast_to=object, body=body),
+        )
 
     @staticmethod
-    def _validate_n(final_kwargs: dict[str, Any]) -> int:
+    def _validate_n(final_kwargs: dict) -> int:
         """Validate and return ``n`` (mirrors GenModel's guard)."""
         n = final_kwargs.get("n", 1)
         if isinstance(n, bool) or not isinstance(n, int):
@@ -87,7 +96,7 @@ class SglangGenModel(Model[str]):
 
     @classmethod
     def _sampling_params(
-        cls, final_kwargs: dict[str, Any], *, temperature: float | None = None
+        cls, final_kwargs: dict, *, temperature: float | None = None
     ) -> dict[str, JSONValue]:
         """Translate recognized OpenAI-style kwargs into sglang sampling_params."""
         params: dict[str, JSONValue] = {}
@@ -136,7 +145,7 @@ class SglangGenModel(Model[str]):
         server sent no top-k at all, matching ``ModelOutput.top_logprobs``'s
         optional shape. CMMLU keys A/B/C/D off ``top_logprobs[0]``.
         """
-        entries: list[Any] = []
+        entries: list = []
         if echo:
             entries.extend(meta.get("input_top_logprobs") or [])
         entries.extend(meta.get("output_top_logprobs") or [])
@@ -244,7 +253,32 @@ class SglangGenModel(Model[str]):
         }
 
         data = await self._post(body)
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"sglang /generate returned {type(data).__name__}, expected an object."
+            )
         meta = data["meta_info"]
+
+        # sglang's radix prefix cache does not recompute logprobs for cached
+        # positions: on a cache hit it truncates input_token_logprobs to
+        # (prompt_tokens - cached_tokens). echo-based scoring reads the full
+        # echoed input sequence, so a truncated set would score silently wrong
+        # (vLLM errors in this case; sglang stays silent). Fail loud instead.
+        if echo:
+            input_lps = meta.get("input_token_logprobs") or []
+            prompt_tokens = meta.get("prompt_tokens")
+            cached_tokens = meta.get("cached_tokens") or 0
+            if cached_tokens or (
+                prompt_tokens is not None and len(input_lps) != prompt_tokens
+            ):
+                raise RuntimeError(
+                    "sglang returned partial echoed-input logprobs "
+                    f"({len(input_lps)} of {prompt_tokens} prompt tokens, "
+                    f"cached_tokens={cached_tokens}): its radix prefix cache does "
+                    "not recompute logprobs for cached positions, so echo-based "
+                    "scoring would be silently wrong. Launch sglang with "
+                    "--disable-radix-cache."
+                )
 
         tokens, token_logprobs = self._parse_logprobs(meta, echo)
         top_logprobs = self._parse_top_logprobs(meta, echo)
