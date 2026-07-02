@@ -39,6 +39,18 @@ _SAMPLING_PARAM_MAP: dict[str, str] = {
 }
 
 
+def _request_params(body: dict[str, JSONValue]) -> dict[str, JSONValue]:
+    """Return the persisted request params: the /generate body minus the prompt.
+
+    ``body["text"]`` is the full prompt, already recorded as the sample input —
+    copying it verbatim into every per-call record would duplicate it. This
+    shape is sglang-native (``sampling_params`` etc.) and intentionally differs
+    from the OpenAI-flavoured ``GenModel``/``ChatModel`` request_params; the
+    client/protocol decoupling that would unify them is tracked in RFC #25.
+    """
+    return {k: v for k, v in body.items() if k != "text"}
+
+
 def _normalize_token_text(text: str) -> str:
     """Map GPT-2 byte-level BPE markers back to literal whitespace.
 
@@ -195,6 +207,13 @@ class SglangGenModel(Model[str]):
 
         # n>1 yields a list of per-sample dicts; n==1 a single dict.
         results = raw if isinstance(raw, list) else [raw]
+        if not results or not all(
+            isinstance(r, dict) and "meta_info" in r for r in results
+        ):
+            raise RuntimeError(
+                "sglang /generate returned an unexpected response shape "
+                "(missing meta_info)."
+            )
         texts = [r.get("text", "") for r in results]
         metas = [r["meta_info"] for r in results]
         finish_reasons = [self._finish_reason(m) for m in metas]
@@ -217,7 +236,7 @@ class SglangGenModel(Model[str]):
             texts=texts,
             finish_reasons=finish_reasons,
             usage=usage,
-            request_params=body,
+            request_params=_request_params(body),
             response_model=self._model,
         )
 
@@ -263,14 +282,21 @@ class SglangGenModel(Model[str]):
         # positions: on a cache hit it truncates input_token_logprobs to
         # (prompt_tokens - cached_tokens). echo-based scoring reads the full
         # echoed input sequence, so a truncated set would score silently wrong
-        # (vLLM errors in this case; sglang stays silent). Fail loud instead.
+        # (vLLM errors in this case; sglang stays silent). Deliberate stance:
+        # ANY cache touch — or a response we can't verify against because it
+        # omitted prompt_tokens — is untrusted, so fail loud. echo-based scoring
+        # requires launching sglang with --disable-radix-cache.
         if echo:
             input_lps = meta.get("input_token_logprobs") or []
             prompt_tokens = meta.get("prompt_tokens")
             cached_tokens = meta.get("cached_tokens") or 0
-            if cached_tokens or (
-                prompt_tokens is not None and len(input_lps) != prompt_tokens
-            ):
+            if prompt_tokens is None:
+                raise RuntimeError(
+                    "sglang response omitted prompt_tokens, so echoed-input "
+                    "completeness cannot be verified; refusing to score silently. "
+                    "Launch sglang with --disable-radix-cache."
+                )
+            if cached_tokens or len(input_lps) != prompt_tokens:
                 raise RuntimeError(
                     "sglang returned partial echoed-input logprobs "
                     f"({len(input_lps)} of {prompt_tokens} prompt tokens, "
@@ -293,6 +319,6 @@ class SglangGenModel(Model[str]):
             logprobs=token_logprobs,
             top_logprobs=top_logprobs,
             usage=self._parse_usage(meta),
-            request_params=body,
+            request_params=_request_params(body),
             response_model=self._model,
         )

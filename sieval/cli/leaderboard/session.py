@@ -1050,23 +1050,35 @@ class EvalSession:
 
                 # Check if type conversion is needed
                 target_type = cfg.get("type")
-                if target_type:
-                    # Convert to target type
-                    if target_type == "gen":
-                        new_model = base_model.as_type(GenModel)
-                    elif target_type == "chat":
-                        new_model = base_model.as_type(ChatModel)
+                if target_type == "gen":
+                    # An sglang-backed base is already "gen"; as_type(GenModel)
+                    # would swap it to the OpenAI /v1/completions path (which
+                    # rejects echo+logprobs), silently defeating engine: sglang.
+                    # Preserve it. A plain GenModel base is unaffected.
+                    if isinstance(base_model, SglangGenModel):
+                        new_model = base_model
                     else:
-                        raise ValueError(
-                            f"Model '{name}' has invalid type '{target_type}'. "
-                            "Expected 'chat' or 'gen'"
-                        )
+                        new_model = base_model.as_type(GenModel)
                     logger.info(
                         "Created derived model '{}' from '{}' "
                         "with type conversion to '{}'",
                         name,
                         base_name,
                         target_type,
+                    )
+                elif target_type == "chat":
+                    new_model = base_model.as_type(ChatModel)
+                    logger.info(
+                        "Created derived model '{}' from '{}' "
+                        "with type conversion to '{}'",
+                        name,
+                        base_name,
+                        target_type,
+                    )
+                elif target_type:
+                    raise ValueError(
+                        f"Model '{name}' has invalid type '{target_type}'. "
+                        "Expected 'chat' or 'gen'"
                     )
                 else:
                     # No type conversion, just derive

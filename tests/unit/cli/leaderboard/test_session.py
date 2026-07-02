@@ -564,6 +564,25 @@ class TestSetupModelsEngine:
         with pytest.raises(ValueError, match="cannot set 'engine'"):
             runner._setup_models()
 
+    def test_derived_type_gen_preserves_sglang_base(self):
+        """`type: gen` on a derived model of an sglang base must NOT downgrade it
+        to GenModel (which would silently switch to /v1/completions)."""
+        from sieval.core.models import SglangGenModel
+
+        runner = self._make_runner(
+            {
+                "base_m": {
+                    "name": "x",
+                    "type": "gen",
+                    "engine": "sglang",
+                    "api_key": "local",
+                },
+                "d": {"base": "base_m", "type": "gen", "args": {"temperature": 0.5}},
+            }
+        )
+        runner._setup_models()
+        assert isinstance(runner.models["d"], SglangGenModel)
+
 
 # ===================================================================
 # Resolve task model / dataset helpers

@@ -164,6 +164,27 @@ class TestAgenerate:
         with pytest.raises(ValueError, match="n must be >= 1"):
             await model._agenerate_impl("hi", n=0)
 
+    @pytest.mark.anyio
+    async def test_invalid_response_missing_meta_info_raises(self, model):
+        """A response without meta_info fails loud instead of a bare KeyError."""
+        _patch_post(model, {"text": "hi"})  # no meta_info
+        with pytest.raises(RuntimeError, match="missing meta_info"):
+            await model._agenerate_impl("hi")
+
+    @pytest.mark.anyio
+    async def test_request_params_excludes_prompt(self, model):
+        post = _patch_post(
+            model,
+            {"text": "x", "meta_info": _meta(prompt_tokens=1, completion_tokens=1)},
+        )
+        out = await model._agenerate_impl("secret prompt", temperature=0.0)
+        # the raw prompt is sent on the wire...
+        assert post.call_args[1]["body"]["text"] == "secret prompt"
+        # ...but is NOT persisted into per-call request_params.
+        assert out.request_params is not None
+        assert "text" not in out.request_params
+        assert "sampling_params" in out.request_params
+
 
 # ===================================================================
 # _alogprobs_impl request body
@@ -172,7 +193,11 @@ class TestRequestBody:
     @pytest.mark.anyio
     async def test_echo_true_request_body(self, model):
         post = _patch_post(
-            model, {"text": "", "meta_info": _meta(input_entries=[[-0.1, 1, " A"]])}
+            model,
+            {
+                "text": "",
+                "meta_info": _meta(input_entries=[[-0.1, 1, " A"]], prompt_tokens=1),
+            },
         )
         await model._alogprobs_impl("prompt", max_tokens=1, logprobs=5, echo=True)
         body = post.call_args[1]["body"]
@@ -198,10 +223,28 @@ class TestRequestBody:
     @pytest.mark.anyio
     async def test_max_tokens_floored_to_one(self, model):
         post = _patch_post(
-            model, {"text": "", "meta_info": _meta(input_entries=[[-0.1, 1, " A"]])}
+            model,
+            {
+                "text": "",
+                "meta_info": _meta(input_entries=[[-0.1, 1, " A"]], prompt_tokens=1),
+            },
         )
         await model._alogprobs_impl("prompt", max_tokens=0)
         assert post.call_args[1]["body"]["sampling_params"]["max_new_tokens"] == 1
+
+    @pytest.mark.anyio
+    async def test_request_params_excludes_prompt(self, model):
+        _patch_post(
+            model,
+            {
+                "text": "",
+                "meta_info": _meta(input_entries=[[-0.1, 1, " A"]], prompt_tokens=1),
+            },
+        )
+        out = await model._alogprobs_impl("secret prompt", echo=True)
+        assert out.request_params is not None
+        assert "text" not in out.request_params
+        assert out.request_params["return_logprob"] is True
 
 
 # ===================================================================
@@ -212,6 +255,7 @@ class TestParsing:
     async def test_input_logprobs_to_tokens_and_logprobs(self, model):
         meta = _meta(
             input_entries=[[None, 1, "The"], [-0.5, 2, " cat"], [-0.1, 3, " A"]],
+            prompt_tokens=3,
         )
         _patch_post(model, {"text": "", "meta_info": meta})
         out = await model._alogprobs_impl("prompt")
@@ -220,7 +264,9 @@ class TestParsing:
 
     @pytest.mark.anyio
     async def test_token_text_normalized(self, model):
-        meta = _meta(input_entries=[[None, 1, "ĠThe"], [-0.1, 2, "ĠA"]])
+        meta = _meta(
+            input_entries=[[None, 1, "ĠThe"], [-0.1, 2, "ĠA"]], prompt_tokens=2
+        )
         _patch_post(model, {"text": "", "meta_info": meta})
         out = await model._alogprobs_impl("prompt")
         assert out.logprobs_tokens == [" The", " A"]
@@ -230,6 +276,7 @@ class TestParsing:
         meta = _meta(
             input_entries=[[None, 1, "Q"], [-0.2, 2, " B"]],
             output_entries=[[-0.3, 3, " gen"]],
+            prompt_tokens=2,
         )
         _patch_post(model, {"text": " gen", "meta_info": meta})
         out = await model._alogprobs_impl("prompt", echo=True)
@@ -238,7 +285,11 @@ class TestParsing:
 
     @pytest.mark.anyio
     async def test_finish_reason_on_logprobs(self, model):
-        meta = _meta(input_entries=[[-0.1, 1, " A"]], finish_reason={"type": "length"})
+        meta = _meta(
+            input_entries=[[-0.1, 1, " A"]],
+            prompt_tokens=1,
+            finish_reason={"type": "length"},
+        )
         _patch_post(model, {"text": "", "meta_info": meta})
         out = await model._alogprobs_impl("prompt")
         assert out.finish_reasons == ["length"]
@@ -257,9 +308,11 @@ class TestParsing:
 
     @pytest.mark.anyio
     async def test_usage_none_when_counts_absent(self, model):
-        meta = _meta(input_entries=[[-0.1, 1, " A"]])
+        # echo=False so the radix guard (which requires prompt_tokens) is skipped;
+        # this isolates _parse_usage returning None when counts are absent.
+        meta = _meta(output_entries=[[-0.1, 1, " A"]])
         _patch_post(model, {"text": "", "meta_info": meta})
-        out = await model._alogprobs_impl("prompt")
+        out = await model._alogprobs_impl("prompt", echo=False)
         assert out.usage is None
 
 
@@ -296,6 +349,7 @@ class TestTopLogprobs:
             output_entries=[[-0.3, 3, " g"]],
             input_top=[None, [[-0.2, 2, " B"], [-0.9, 9, " C"]]],
             output_top=[[[-0.3, 3, " g"]]],
+            prompt_tokens=2,
         )
         _patch_post(model, {"text": " g", "meta_info": meta})
         out = await model._alogprobs_impl("prompt", echo=True)
@@ -303,7 +357,7 @@ class TestTopLogprobs:
 
     @pytest.mark.anyio
     async def test_top_logprobs_none_when_absent(self, model):
-        meta = _meta(input_entries=[[-0.1, 1, " A"]])
+        meta = _meta(input_entries=[[-0.1, 1, " A"]], prompt_tokens=1)
         _patch_post(model, {"text": "", "meta_info": meta})
         out = await model._alogprobs_impl("prompt")
         assert out.top_logprobs is None
@@ -358,6 +412,7 @@ class TestPplConsumption:
                 [-2.0, 2, " text"],
                 [-0.7, 3, " A"],
             ],
+            prompt_tokens=3,
         )
         _patch_post(model, {"text": "", "meta_info": meta})
         out = await model._alogprobs_impl("Question: text A", echo=True)
@@ -367,6 +422,7 @@ class TestPplConsumption:
     async def test_total_logprob_sums_continuation(self, model):
         meta = _meta(
             input_entries=[[None, 1, "Ctx"], [-1.0, 2, " the"], [-2.0, 3, " end"]],
+            prompt_tokens=3,
         )
         _patch_post(model, {"text": "", "meta_info": meta})
         out = await model._alogprobs_impl("Ctx the end", echo=True)
@@ -398,15 +454,25 @@ class TestGuards:
 
     @pytest.mark.anyio
     async def test_empty_response_raises(self, model):
-        """No token logprobs AND no top logprobs → raise (retryable failure)."""
-        _patch_post(model, {"text": "", "meta_info": _meta(input_entries=[])})
+        """No token logprobs AND no top logprobs → raise (retryable failure).
+
+        prompt_tokens=0 so the empty input matches (passes the radix guard) and
+        we reach the no-logprobs check.
+        """
+        _patch_post(
+            model, {"text": "", "meta_info": _meta(input_entries=[], prompt_tokens=0)}
+        )
         with pytest.raises(RuntimeError, match="no logprobs"):
             await model._alogprobs_impl("prompt")
 
     @pytest.mark.anyio
     async def test_meta_attached(self, model):
         _patch_post(
-            model, {"text": "", "meta_info": _meta(input_entries=[[-0.1, 1, " A"]])}
+            model,
+            {
+                "text": "",
+                "meta_info": _meta(input_entries=[[-0.1, 1, " A"]], prompt_tokens=1),
+            },
         )
         out = await model._alogprobs_impl("prompt")
         assert out.model["model"] == "test-sglang"
@@ -444,6 +510,15 @@ class TestEchoCompletenessGuard:
         meta = _meta(input_entries=[[-0.1, 1, " star"]], prompt_tokens=5)
         _patch_post(model, {"text": "", "meta_info": meta})
         with pytest.raises(RuntimeError, match="partial echoed-input"):
+            await model._alogprobs_impl("prompt", echo=True)
+
+    @pytest.mark.anyio
+    async def test_missing_prompt_tokens_raises(self, model):
+        # Without prompt_tokens the count can't be verified → fail loud rather
+        # than let possibly-truncated logprobs through.
+        meta = _meta(input_entries=[[None, 1, "a"], [-0.1, 2, " b"]])
+        _patch_post(model, {"text": "", "meta_info": meta})
+        with pytest.raises(RuntimeError, match="omitted prompt_tokens"):
             await model._alogprobs_impl("prompt", echo=True)
 
     @pytest.mark.anyio
