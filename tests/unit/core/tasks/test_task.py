@@ -15,6 +15,7 @@ from sieval.core.datasets import Dataset
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.models.gen_model import GenModel
+from sieval.core.models.sglang_gen_model import SglangGenModel
 from sieval.core.tasks.task import Task
 
 
@@ -50,6 +51,17 @@ class _MockChatModel(ChatModel):
 class _MockGenModel(GenModel):
     def __init__(self):
         super().__init__(model="mock-gen", api_key="fake")
+
+    async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
+        return ModelOutput(model=self.meta(), texts=["ok"])
+
+    async def _alogprobs_impl(self, prompt, **kwargs) -> ModelOutput:
+        raise NotImplementedError
+
+
+class _MockSglangGenModel(SglangGenModel):
+    def __init__(self):
+        super().__init__(model="mock-sglang", api_key="fake")
 
     async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
         return ModelOutput(model=self.meta(), texts=["ok"])
@@ -121,6 +133,10 @@ class TestValidateModelType:
 
     def test_gen_task_with_gen_model_ok(self):
         _GenOnlyTask(_SimpleDataset(), _MockGenModel())
+
+    def test_gen_task_with_sglang_gen_model_ok(self):
+        """SglangGenModel extends Model[str], not GenModel — still counts as 'gen'."""
+        _GenOnlyTask(_SimpleDataset(), _MockSglangGenModel())
 
     def test_chat_task_with_gen_model_raises(self):
         with pytest.raises(TypeError, match="chat"):

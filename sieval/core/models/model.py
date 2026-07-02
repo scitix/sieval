@@ -66,6 +66,11 @@ class ModelOutput:
     texts: list[str]
     finish_reasons: list[str] | None = None
     reasoning_texts: list[str] | None = None
+    # Token texts follow the OpenAI / literal-whitespace convention (leading
+    # spaces preserved, e.g. " A"). Backends that emit other markers (e.g.
+    # sglang byte-level "ĠA") normalize to this contract before populating it,
+    # so consumers can match on literal whitespace rather than per-tokenizer
+    # markers.
     logprobs_tokens: list[str] | None = None
     logprobs: list[float | None] | None = None
     top_logprobs: list[dict[str, float]] | None = None
