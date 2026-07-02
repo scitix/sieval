@@ -46,7 +46,7 @@ class URLHandler:
                 received = r.num_bytes_downloaded
                 if expected is not None and received != expected:
                     raise RuntimeError(
-                        f"truncated download from {url}: "
+                        f"size mismatch on download from {url}: "
                         f"Content-Length={expected} but received {received} bytes"
                     )
             tmp.replace(target)
