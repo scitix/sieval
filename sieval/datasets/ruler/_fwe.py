@@ -28,7 +28,12 @@ def load_fwe(
 ) -> list[dict]:
     from scipy.special import zeta
 
-    gen_budget = tokens_to_generate("freq_words_extraction", enable_thinking=enable_thinking, think_budget=think_budget, model_name=model_name)
+    gen_budget = tokens_to_generate(
+        "freq_words_extraction",
+        enable_thinking=enable_thinking,
+        think_budget=think_budget,
+        model_name=model_name,
+    )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
@@ -63,10 +68,7 @@ def load_fwe(
             random_seed=random_seed,
             zeta=zeta,
         )
-        length = (
-            len(tokenizer.text_to_tokens(input_text))
-            + gen_budget
-        )
+        length = len(tokenizer.text_to_tokens(input_text)) + gen_budget
         if remove_newline_tab:
             input_text = " ".join(
                 input_text.replace("\n", " ").replace("\t", " ").strip().split()

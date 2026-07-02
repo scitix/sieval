@@ -148,6 +148,9 @@ def test_dataset_download_all_iterates_all_pilots(tmp_path):
     expected_url_sources = sum(
         1 for m in datasets for s in m.source if s.startswith("url:")
     )
+    expected_local_sources = sum(
+        1 for m in datasets for s in m.source if s.startswith("local:")
+    )
 
     with (
         patch(
@@ -157,8 +160,13 @@ def test_dataset_download_all_iterates_all_pilots(tmp_path):
             "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
             return_value=True,
         ) as mock_url_probe,
+        patch(
+            "sieval.datasets.downloaders.local.LocalHandler.is_downloaded",
+            return_value=True,
+        ) as mock_local_probe,
         patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_hf,
         patch("sieval.datasets.downloaders.url.URLHandler.download") as mock_url,
+        patch("sieval.datasets.downloaders.local.LocalHandler.download") as mock_local,
         patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         result = runner.invoke(
@@ -169,9 +177,11 @@ def test_dataset_download_all_iterates_all_pilots(tmp_path):
         # Iteration proof: every registered source was probed exactly once.
         assert mock_hf_probe.call_count == expected_hf_sources
         assert mock_url_probe.call_count == expected_url_sources
+        assert mock_local_probe.call_count == expected_local_sources
         # Already-downloaded short-circuit means download() itself stays cold.
         mock_hf.assert_not_called()
         mock_url.assert_not_called()
+        mock_local.assert_not_called()
 
 
 def test_dataset_download_all_aggregates_failures(tmp_path):

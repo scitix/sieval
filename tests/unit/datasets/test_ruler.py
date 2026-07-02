@@ -47,7 +47,12 @@ if _ruler_deps:
     ],
 )
 def test_tokens_to_generate(task_name, enable_thinking, think_budget, expected):
-    assert tokens_to_generate(task_name, enable_thinking=enable_thinking, think_budget=think_budget) == expected
+    assert (
+        tokens_to_generate(
+            task_name, enable_thinking=enable_thinking, think_budget=think_budget
+        )
+        == expected
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +100,7 @@ def test_stamp_preserves_existing_fields():
 @_needs_ruler_deps
 def test_fwe_load_emits_required_fields():
     ds = RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=3)
+    assert ds.test_set is not None
     rows = list(ds.test_set)
     assert len(rows) == 3
     for r in rows:
@@ -108,25 +114,24 @@ def test_fwe_load_emits_required_fields():
 
 @_needs_ruler_deps
 def test_fwe_load_is_deterministic():
-    first = list(
-        RulerDataset(
-            ".", subtask="fwe", max_seq_length=512, num_samples=2, random_seed=42
-        ).test_set
+    ds1 = RulerDataset(
+        ".", subtask="fwe", max_seq_length=512, num_samples=2, random_seed=42
     )
-    second = list(
-        RulerDataset(
-            ".", subtask="fwe", max_seq_length=512, num_samples=2, random_seed=42
-        ).test_set
+    ds2 = RulerDataset(
+        ".", subtask="fwe", max_seq_length=512, num_samples=2, random_seed=42
     )
+    assert ds1.test_set is not None and ds2.test_set is not None
+    first = list(ds1.test_set)
+    second = list(ds2.test_set)
     assert first[0]["input"] == second[0]["input"]
     assert first[0]["outputs"] == second[0]["outputs"]
 
 
 @_needs_ruler_deps
 def test_fwe_no_token_position_answer_field():
-    rows = list(
-        RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=2).test_set
-    )
+    ds = RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=2)
+    assert ds.test_set is not None
+    rows = list(ds.test_set)
     for r in rows:
         assert "token_position_answer" not in r
 
@@ -138,9 +143,9 @@ def test_fwe_no_token_position_answer_field():
 
 @_needs_ruler_deps
 def test_fwe_sample_satisfies_required_schema():
-    row = list(
-        RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=1).test_set
-    )[0]
+    ds = RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=1)
+    assert ds.test_set is not None
+    row = list(ds.test_set)[0]
     missing = set(RulerDatasetSample.__required_keys__) - set(row.keys())
     assert not missing, f"Missing required fields: {missing}"
 

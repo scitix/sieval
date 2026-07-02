@@ -63,14 +63,14 @@ models:
     infer_meta:
       gpu: H200-141G
       image: lmsysorg/sglang:latest
-      
+
 datasets:
   ruler_128k:
     class: RulerDataset
     path: ${SIEVAL_DATA_DIR}
     args:
       subtask: all
-      max_seq_length: 1131072
+      max_seq_length: 131072
       num_samples: 500
       tokenizer_type: hf
       tokenizer_path: /root/models/qwen3-8b
@@ -79,6 +79,6 @@ datasets:
 
 tasks:
   ruler_128k:
-    class: RulerCweZeroShotGenTask
+    class: RulerZeroShotGenTask
     dataset: ruler_128k
     model: qwen3-8b-yarn128k

@@ -85,7 +85,7 @@ datasets:
       tokenizer_type: hf
       tokenizer_path: /root/models/qwen3-8b
       enable_thinking: false
-      
+
   ruler_32k:
     class: RulerDataset
     path: ${SIEVAL_DATA_DIR}
@@ -112,7 +112,7 @@ tasks:
     class: RulerZeroShotGenTask
     dataset: ruler_16k
     model: qwen3-8b
-    
+
   ruler_32k:
     class: RulerZeroShotGenTask
     dataset: ruler_32k

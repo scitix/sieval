@@ -74,6 +74,10 @@ class RulerDatasetSample(TypedDict):
         "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
         f"hf:hotpotqa/hotpot_qa@{_HOTPOTQA_REVISION}",
     ),
+    checksums={
+        "english_words.json": "sha256:affcd6d45fdf3cc843d585c99c97ad615094e760e6c4756b654bab6c73bc2eca",  # noqa: E501
+        "dev-v2.0.json": "sha256:80a5225e94905956a6446d296ca1093975c4d3b3260f1d6c8f68bc2ab77182d8",  # noqa: E501
+    },
     categories=(Category(Level1Category.LANGUAGE, "SemanticUnderstanding"),),
     tags=("english", "open-ended", "long-context"),
     license="Apache-2.0",
@@ -85,7 +89,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         self,
         name_or_path: str,
         *,
-        subtask: str | list[str],
+        subtask: str | list[str] | None = None,
         max_seq_length: int = 4096,
         tokenizer_type: str = "openai",
         tokenizer_path: str = "cl100k_base",
@@ -118,6 +122,8 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         pre_samples: int = 0,
         **kwargs,
     ) -> HFDatasetDict:
+        if subtask is None:
+            raise ValueError("RulerDataset.load requires `subtask`")
         # Handle list of subtasks
         if isinstance(subtask, list):
             splits = []

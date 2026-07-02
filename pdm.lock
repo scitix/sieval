@@ -5,7 +5,7 @@
 groups = ["default", "dev", "drop", "ifeval", "math", "ruler", "t-eval", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:350a1f7d48a8e9e79516ac7b989c8a10c01e9ef73bae7b421c8a918b7d751830"
+content_hash = "sha256:87e1424f8d23f729f61dbd37b9cf71e19e2966d40523c3d01871f50016446a57"
 
 [[metadata.targets]]
 requires_python = ">=3.12,<3.15"

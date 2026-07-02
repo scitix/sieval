@@ -33,7 +33,12 @@ def load_vt(
     num_hops: int,
     type_haystack: str,
 ) -> list[dict]:
-    gen_budget = tokens_to_generate("variable_tracking", enable_thinking=enable_thinking, think_budget=think_budget, model_name=model_name)
+    gen_budget = tokens_to_generate(
+        "variable_tracking",
+        enable_thinking=enable_thinking,
+        think_budget=think_budget,
+        model_name=model_name,
+    )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 
     random.seed(random_seed)
@@ -141,10 +146,7 @@ def _synthesize(
                     input_text = " ".join(
                         input_text.replace("\n", " ").replace("\t", " ").strip().split()
                     )
-                length = (
-                    len(tokenizer.text_to_tokens(input_text))
-                    + tokens_to_generate
-                )
+                length = len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
                 assert length <= max_seq_length, "exceeds max_seq_length"
                 break
             except Exception:
