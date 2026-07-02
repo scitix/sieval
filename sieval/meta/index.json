@@ -312,6 +312,28 @@
       "checksums": {}
     },
     {
+      "name": "mbpp",
+      "display_name": "MBPP",
+      "description": "Mostly Basic Python Problems: 974 entry-level Python tasks.",
+      "source": [
+        "hf:google-research-datasets/mbpp@4bb6404fdc6cacfda99d4ac4205087b89d32030c"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        }
+      ],
+      "tags": [
+        "english",
+        "python",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-4.0",
+      "checksums": {}
+    },
+    {
       "name": "mmlu",
       "display_name": "MMLU",
       "description": "Massive Multitask Language Understanding — 57 academic subjects, MCQ.",
@@ -732,6 +754,28 @@
         "source": "simple-evals",
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
         "notes": "Math postprocess aligned with simple-evals."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "mbpp_kshot_base_gen",
+      "display_name": "MBPP (few-shot, base generative)",
+      "description": "MBPP few-shot code generation with pass@k execution scoring.",
+      "dataset": "mbpp",
+      "eval_mode": "gen",
+      "n_shot": 3,
+      "tags": [
+        "english",
+        "python",
+        "code-exec",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "lm-evaluation-harness",
+        "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/mbpp/mbpp.yaml",
+        "notes": "Prompt, [DONE] stop token, and default task_id 2/3/4 few-shot samples mirror lm-eval MBPP; k (few-shot count) is configurable via YAML task args. Greedy generation (temperature=0, top_p=1, max_tokens=1024). Published Qwen2.5-72B-Base MBPP 3-shot Pass@1 is 76.0 (Qwen3 report, Table 3) and 72.6 (DeepSeek-V3 report, Table 3); DeepSeek-V3 leaves its MBPP protocol unspecified, so the gap to the Qwen-aligned number is a protocol difference, not an implementation error."
       },
       "status": "stable"
     },

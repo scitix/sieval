@@ -57,6 +57,10 @@ from .math_500 import (
     MATH500Dataset,
     MATH500DatasetSample,
 )
+from .mbpp import (
+    MBPPDataset,
+    MBPPDatasetSample,
+)
 from .mmlu import (
     MMLUDataset,
     MMLUDatasetSample,
@@ -103,6 +107,8 @@ __all__ = [
     "LiveCodeBenchDatasetSample",
     "MATH500Dataset",
     "MATH500DatasetSample",
+    "MBPPDataset",
+    "MBPPDatasetSample",
     "MMLUDataset",
     "MMLUDatasetSample",
     "MMLUProDataset",
