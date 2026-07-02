@@ -18,6 +18,7 @@ from sieval.core.datasets.meta import DatasetMeta, Level1Category
 from sieval.core.utils.logging import configure_logging
 from sieval.core.utils.paths import resolve_data_dir
 from sieval.datasets.downloaders import resolve as resolve_handler
+from sieval.datasets.downloaders.local import LocalSourceUnavailable
 from sieval.datasets.downloaders.resolver import extras_unsatisfied
 from sieval.datasets.downloaders.verify import verify_checksums
 from sieval.meta import load_index
@@ -186,7 +187,12 @@ def _download_one(m: DatasetMeta, dest_root: Path, force: bool) -> None:
             typer.echo(f"[{m.name}] already present: {src}")
             continue
         typer.echo(f"[{m.name}] fetching {src}")
-        h.download(src, dest_root, m.name, force=force)
+        try:
+            h.download(src, dest_root, m.name, force=force)
+        except LocalSourceUnavailable as e:
+            # BYO corpus: not an error — surface the instructions and move on so
+            # the remaining (fetchable) sources still download.
+            typer.secho(f"[{m.name}] {e}", fg=typer.colors.YELLOW)
 
     mismatches = verify_checksums(m, dest_root)
     if mismatches:

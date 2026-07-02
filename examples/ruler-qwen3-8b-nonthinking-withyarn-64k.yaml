@@ -72,7 +72,7 @@ datasets:
       num_samples: 500
       tokenizer_type: hf
       tokenizer_path: /root/models/qwen3-8b
-      enable_thinking: true
+      enable_thinking: false
       model_name: qwen3
 
 tasks:

@@ -1,13 +1,15 @@
-"""Tests for the local: source handler.
+"""Tests for the local: source handler (bring-your-own corpus).
 
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
 
-from unittest.mock import patch
-
 import pytest
 
-from sieval.datasets.downloaders.local import LocalHandler, _basename
+from sieval.datasets.downloaders.local import (
+    LocalHandler,
+    LocalSourceUnavailable,
+    _basename,
+)
 
 
 def test_scheme():
@@ -24,72 +26,41 @@ def test_basename():
     assert _basename("trailing/") == "download"
 
 
-@pytest.mark.parametrize(
-    "bad",
-    ["", "/abs/path.json", "../escape.json", "a/../../b.json", "a/./b.json"],
-)
-def test_bundled_path_rejects_traversal(bad):
-    """`local:` may only read normalized, package-relative paths — an absolute
-    path or a `..` segment that escapes the bundled `_data/` root is a hard
-    error, never a silently-resolved path."""
-    with pytest.raises(ValueError, match="package-relative"):
-        LocalHandler._bundled_path(bad)
-
-
-def test_download_copies_to_basename(tmp_path):
-    """Layout: <dest>/<dataset_name>/<basename>, copied from the bundled file."""
-    src = tmp_path / "bundled.json"
-    src.write_text("payload")
+def test_download_noop_when_present(tmp_path):
+    """BYO: an already-staged corpus is a no-op, even with force (nothing to
+    re-fetch), and never touches the bytes."""
+    target_dir = tmp_path / "ruler"
+    target_dir.mkdir()
+    (target_dir / "PaulGrahamEssays.json.gz").write_bytes(b"corpus")
     h = LocalHandler()
-    with patch.object(LocalHandler, "_bundled_path", return_value=src):
+    for force in (False, True):
         h.download(
-            "local:pg/bundled.json",
+            "local:pg/PaulGrahamEssays.json.gz",
             dest_root=tmp_path,
-            dataset_name="pg",
+            dataset_name="ruler",
+            force=force,
+        )
+    assert (target_dir / "PaulGrahamEssays.json.gz").read_bytes() == b"corpus"
+
+
+def test_download_raises_with_instructions_when_missing(tmp_path):
+    """BYO: an absent corpus is not silently fetched — it raises with the
+    expected staging path so the caller can tell the user how to produce it."""
+    h = LocalHandler()
+    with pytest.raises(LocalSourceUnavailable, match="bring-your-own") as exc:
+        h.download(
+            "local:pg/PaulGrahamEssays.json.gz",
+            dest_root=tmp_path,
+            dataset_name="ruler",
             force=False,
         )
-    target = tmp_path / "pg" / "bundled.json"
-    assert target.read_text() == "payload"
-
-
-def test_download_skips_when_target_exists(tmp_path):
-    src = tmp_path / "bundled.json"
-    src.write_text("fresh")
-    target_dir = tmp_path / "pg"
-    target_dir.mkdir()
-    (target_dir / "bundled.json").write_text("cached")
-    h = LocalHandler()
-    with patch.object(LocalHandler, "_bundled_path", return_value=src):
-        h.download(
-            "local:pg/bundled.json",
-            dest_root=tmp_path,
-            dataset_name="pg",
-            force=False,
-        )
-    assert (target_dir / "bundled.json").read_text() == "cached"
-
-
-def test_download_force_recopies(tmp_path):
-    src = tmp_path / "bundled.json"
-    src.write_text("fresh")
-    target_dir = tmp_path / "pg"
-    target_dir.mkdir()
-    (target_dir / "bundled.json").write_text("cached")
-    h = LocalHandler()
-    with patch.object(LocalHandler, "_bundled_path", return_value=src):
-        h.download(
-            "local:pg/bundled.json",
-            dest_root=tmp_path,
-            dataset_name="pg",
-            force=True,
-        )
-    assert (target_dir / "bundled.json").read_text() == "fresh"
+    assert str(tmp_path / "ruler" / "PaulGrahamEssays.json.gz") in str(exc.value)
 
 
 def test_is_downloaded(tmp_path):
     h = LocalHandler()
-    assert not h.is_downloaded("local:pg/bundled.json", tmp_path, "pg")
-    target_dir = tmp_path / "pg"
+    assert not h.is_downloaded("local:pg/PaulGrahamEssays.json.gz", tmp_path, "ruler")
+    target_dir = tmp_path / "ruler"
     target_dir.mkdir()
-    (target_dir / "bundled.json").write_text("x")
-    assert h.is_downloaded("local:pg/bundled.json", tmp_path, "pg")
+    (target_dir / "PaulGrahamEssays.json.gz").write_text("x")
+    assert h.is_downloaded("local:pg/PaulGrahamEssays.json.gz", tmp_path, "ruler")

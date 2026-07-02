@@ -1,26 +1,26 @@
-"""local scheme handler: stage a locally materialized file into ``dest_root/<name>/``.
+"""local scheme handler: a bring-your-own corpus staged at ``dest_root/<name>/``.
 
-For datasets whose corpus is produced out-of-band by a generation script (e.g.
-``scripts/gen_paul_graham_essays.py``) into ``sieval/datasets/_data/`` rather than
-fetched from a remote. The user runs the generator themselves; the file is *not*
-committed to the repo. ``download`` copies that locally-present file into the same
-``{dest_root}/<dataset_name>/`` layout the url/hf handlers use, so the runtime
-``load(name_or_path)`` path is identical.
+Some datasets depend on a corpus that cannot be redistributed — e.g. RULER's
+Paul Graham essays, where Apache-2.0 covers NVIDIA's scraper but not the essay
+text itself. Such a file is produced out-of-band by a generation script (e.g.
+``scripts/gen_paul_graham_essays.py``) written *directly* into the data dir at
+``{dest_root}/<dataset_name>/``; it is never bundled in the package or committed.
+
+``download`` therefore moves no bytes: if the file is already staged it is a
+no-op, otherwise it raises :class:`LocalSourceUnavailable` with instructions.
+``is_downloaded`` reports actual presence, so ``sieval dataset download`` can
+surface the BYO requirement instead of silently succeeding.
 
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
 
-import shutil
-from importlib.resources import files
 from pathlib import Path
-from posixpath import normpath
 
 from sieval.core.datasets.meta import url_path_basename
 
-# Local-data root inside the package tree (generator-populated, not committed);
-# `local:<relpath>` resolves under here.
-_DATA_ANCHOR = "sieval.datasets"
-_DATA_SUBDIR = "_data"
+
+class LocalSourceUnavailable(RuntimeError):
+    """A ``local:`` corpus is required but absent from the data dir (BYO)."""
 
 
 class LocalHandler:
@@ -34,19 +34,16 @@ class LocalHandler:
         force: bool,
     ) -> None:
         relpath = self._strip_scheme(source)
-        bundled = self._bundled_path(relpath)
-        target_dir = dest_root / dataset_name
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / _basename(relpath)
-        if target.exists() and not force:
+        target = dest_root / dataset_name / _basename(relpath)
+        # BYO: nothing to fetch. Present → no-op; absent → tell the user how to
+        # produce it (force cannot re-fetch a corpus that was never remote).
+        if target.exists():
             return
-        tmp = target.with_name(target.name + ".partial")
-        try:
-            shutil.copyfile(bundled, tmp)
-            tmp.replace(target)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+        raise LocalSourceUnavailable(
+            f"{source} is a bring-your-own corpus and cannot be fetched "
+            f"automatically. Generate or place it at {target} — see the "
+            f"dataset's regeneration script under scripts/."
+        )
 
     def is_downloaded(
         self,
@@ -63,28 +60,8 @@ class LocalHandler:
             raise ValueError(f"Expected local: scheme, got {source!r}")
         return source[len("local:") :]
 
-    @staticmethod
-    def _bundled_path(relpath: str) -> Path:
-        """Resolve *relpath* under the package data root, rejecting traversal.
-
-        ``local:`` must only ever read files committed inside the package, so an
-        absolute path or a ``..`` segment that would escape ``_data/`` is a hard
-        error rather than a silently-resolved path.
-        """
-        if (
-            not relpath
-            or relpath.startswith("/")
-            or ".." in relpath.split("/")
-            or normpath(relpath) != relpath
-        ):
-            raise ValueError(
-                f"local: path must be a normalized, package-relative path, "
-                f"got {relpath!r}"
-            )
-        return Path(str(files(_DATA_ANCHOR).joinpath(_DATA_SUBDIR, relpath)))
-
 
 def _basename(relpath: str) -> str:
-    """Filename the bundled file lands under; shares the url-handler primitive
-    so the on-disk name matches the ``url:`` convention."""
+    """Filename the corpus is staged under; shares the url-handler primitive so
+    the on-disk name matches the ``url:`` convention."""
     return url_path_basename(relpath) or "download"

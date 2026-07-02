@@ -12,28 +12,36 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License
-"""Regenerate the bundled Paul Graham Essays haystack corpus.
+"""Regenerate RULER's Paul Graham Essays haystack corpus (bring-your-own).
 
 Adapted from NVIDIA RULER's ``scripts/data/synthetic/json/
 download_paulgraham_essay.py`` (Apache-2.0). Fetches ~218 essays (paulgraham.com
 HTML + gkamradt's needle-haystack repo text), concatenates them into a single
-``{"text": ...}`` document, and writes it to the package-bundled location that
-the ``local:`` source scheme reads.
+``{"text": ...}`` document, and writes it *directly* into the data dir at
+``<data-dir>/ruler/PaulGrahamEssays.json.gz`` — exactly where the RULER loader
+reads it.
 
-The URL list is pinned to a RULER commit SHA (not ``main``) so re-runs are
-reproducible against a fixed essay set. This is a one-time / regeneration tool;
-its html2text/beautifulsoup4/tqdm deps are intentionally NOT part of sieval's
-runtime dependency graph (this file lives under ``scripts/`` and is never
-imported by ``sieval/``).
+The essay text is not redistributable (Apache-2.0 covers NVIDIA's scraper, not
+Paul Graham's essays), so it is never bundled in the package or committed. The
+``local:`` source scheme treats it as bring-your-own: run this script to produce
+the file. The URL list is pinned to a RULER commit SHA (not ``main``) so re-runs
+are reproducible against a fixed essay set. This is a regeneration tool; its
+html2text/beautifulsoup4/tqdm deps are intentionally NOT part of sieval's runtime
+dependency graph (this file lives under ``scripts/`` and is never imported by
+``sieval/``).
 
 Usage:
+    pdm run python scripts/gen_paul_graham_essays.py --data-dir "$SIEVAL_DATA_DIR"
+    # or, with SIEVAL_DATA_DIR exported:
     pdm run python scripts/gen_paul_graham_essays.py
 
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
 
+import argparse
 import gzip
 import json
+import os
 import ssl
 import time
 import urllib.request
@@ -67,16 +75,19 @@ _URL_LIST = (
     "scripts/data/synthetic/json/PaulGrahamEssays_URLs.txt"
 )
 
-# Stored gzip-compressed (~3 MB text → ~1 MB) to keep the repo and wheel light;
-# the dataset loader reads it back with `gzip.open`.
-_OUT_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "sieval"
-    / "datasets"
-    / "_data"
-    / "paul_graham_essays"
-    / "PaulGrahamEssays.json.gz"
-)
+# The corpus is staged under ``<data-dir>/ruler/`` (the RULER dataset name), the
+# same layout the ``local:`` handler reports and the loader reads via `gzip.open`.
+_CORPUS_RELPATH = Path("ruler") / "PaulGrahamEssays.json.gz"
+
+
+def _resolve_out_path(data_dir: str | None) -> Path:
+    data_dir = data_dir or os.environ.get("SIEVAL_DATA_DIR")
+    if not data_dir:
+        raise SystemExit(
+            "no data dir: pass --data-dir <path> or export SIEVAL_DATA_DIR; "
+            "the corpus is written to <data-dir>/ruler/PaulGrahamEssays.json.gz"
+        )
+    return Path(data_dir).expanduser() / _CORPUS_RELPATH
 
 
 def _html_to_text(content: str, converter: html2text.HTML2Text) -> str:
@@ -102,6 +113,16 @@ def _fetch(url: str) -> bytes:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Regenerate RULER's PG corpus.")
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Data dir root (defaults to $SIEVAL_DATA_DIR); the corpus is written "
+        "to <data-dir>/ruler/PaulGrahamEssays.json.gz",
+    )
+    args = parser.parse_args()
+    out_path = _resolve_out_path(args.data_dir)
+
     converter = html2text.HTML2Text()
     converter.ignore_images = True
     converter.ignore_tables = True
@@ -139,16 +160,16 @@ def main() -> None:
         )
 
     text = "".join(essays)
-    _OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # mtime=0 so the gzip header is byte-stable across regenerations (the file
-    # is committed; a wall-clock mtime would dirty the diff on every run).
-    with gzip.GzipFile(_OUT_PATH, "wb", mtime=0) as gz:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # mtime=0 so the gzip header is byte-stable across regenerations — the same
+    # essay set always yields identical bytes regardless of when it was run.
+    with gzip.GzipFile(out_path, "wb", mtime=0) as gz:
         gz.write(json.dumps({"text": text}, ensure_ascii=False).encode("utf-8"))
 
-    size = _OUT_PATH.stat().st_size
+    size = out_path.stat().st_size
     print(
         f"Wrote {len(essays)}/{len(urls)} essays "
-        f"({size / 1_000_000:.1f} MB) -> {_OUT_PATH}"
+        f"({size / 1_000_000:.1f} MB) -> {out_path}"
     )
 
 
