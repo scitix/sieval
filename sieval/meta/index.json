@@ -330,7 +330,8 @@
         "code-exec"
       ],
       "deps_group": null,
-      "license": "CC-BY-4.0"
+      "license": "CC-BY-4.0",
+      "checksums": {}
     },
     {
       "name": "mmlu",

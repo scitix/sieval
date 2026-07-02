@@ -83,6 +83,9 @@ class MBPPFewShotBaseGenTask(
         pass_k: int = 1,
         n: int = 1,
         max_concurrency: int = 4,
+        # lm-eval scores MBPP via HF code_eval (default 3.0s). 5.0s is an
+        # intentional, more-lenient value shared with human_eval_0shot_gen to
+        # keep the code-exec task family aligned; observed timeouts stay at 0.
         timeout: float = 5.0,
         stop: tuple[str, ...] = STOP_SEQUENCES,
     ):
