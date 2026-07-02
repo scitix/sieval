@@ -1,15 +1,17 @@
 """IMO-AnswerBench zero-shot generative task.
 
-**Experimental / non-strict port** (``status="experimental"`` — not a frozen
-leaderboard contract). IMO-Bench's upstream AnswerBench is an *agentic* harness:
-the agent submits its answer via an ``answer`` tool call. This task reproduces it
-in a *generative* setting (last-``\\boxed{}`` extraction) instead. Every deviation
-from upstream is enumerated in ``reference_impl.notes`` below.
+Non-strict *generative* port of Google DeepMind's IMO-Bench AnswerBench (upstream
+is agentic — the agent submits its answer via an ``answer`` tool call; here the
+model answers generatively and we extract the last ``\\boxed{}``). Grading is 100%
+the vendored upstream grader: a parsing-layer ``normalize_answer`` first
+reconstructs the clean string an agent would submit, then ``verify_math_answer``
+(math_verify, with symmetric ``$``-wrapping like the HMMT sibling) does ALL the
+equivalence — commutativity, factoring, set-equality. No bespoke matching logic.
+Every deviation from upstream is enumerated in ``reference_impl.notes`` below.
 
 Dual-source lineage: the boxed prompt + last-``\\boxed{}`` extraction follow
-eth-sri/matharena; answer equivalence is vendored verbatim from IMO-Bench's
-``answer_verification.py`` (``community/imo_bench.py``), plus a documented gen-mode
-normalizer (``verify_answer_gen``).
+eth-sri/matharena (``community/matharena.py``); the answer grader is IMO-Bench's
+``verify_math_answer`` (``community/imo_bench.py``, vendored verbatim).
 
 Infer prerequisites: olympiad reasoning traces are very long — set a large output
 budget (``max_tokens`` ≈ 131072) and a generous client read-timeout (300s+). At
@@ -24,7 +26,7 @@ from typing import TypedDict, override
 from loguru import logger
 from openai.types.chat import ChatCompletionUserMessageParam
 
-from sieval.community.imo_bench import verify_answer_gen
+from sieval.community.imo_bench import normalize_answer, verify_math_answer
 from sieval.community.matharena import build_prompt, extract_answer
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -60,33 +62,34 @@ class Feedback(TypedDict):
     tags=("english", "open-ended"),
     deps_group="math",
     model_type="chat",
-    status="experimental",
+    status="stable",
     reference_impl=ReferenceImpl(
         source="IMO-Bench (Google DeepMind) + eth-sri/matharena",
         url="https://github.com/EnvCommons/IMO-Bench/blob/66b014f1b3799972ddfc32dbacea51b802586141/answer_verification.py",
         notes=(
-            "NON-STRICT / EXPERIMENTAL port of IMO-Bench AnswerBench. Deviations "
-            "from upstream:\n"
-            "1. Harness type: upstream is agentic (answer submitted via an `answer` "
-            "tool call); this is generative — last-\\boxed{} extraction.\n"
+            "Non-strict GENERATIVE port of IMO-Bench AnswerBench. Deviations from "
+            "upstream:\n"
+            "1. Harness: upstream is agentic (answer via an `answer` tool call); this "
+            "is generative — last-\\boxed{} extraction (matharena extractor).\n"
             "2. Prompt: upstream is the bare 'Please reason step by step.'; we append "
-            "'Put your final answer within \\boxed{}.' plus a blank-line separator "
-            "before the problem.\n"
-            "3. Grading: verify_math_answer is vendored verbatim (math-verify + "
-            "normalized-string fallback), but a NON-upstream normalizer "
-            "verify_answer_gen (gen-mode formatting + multi-answer set matching) "
-            "contributes ~11% of the score — raw verify_math_answer alone = "
-            "260/400 = 65.0%, verify_answer_gen = 293/400 = 73.25% (DeepSeek-V4-Pro).\n"
-            "4. Data source: HF mirror hf:Hwilner/imo-answerbench (functionally "
-            "equivalent to upstream's OpenReward answerbench.csv).\n"
-            "5. Dual lineage: prompt + last-\\boxed{} extraction are from "
-            "eth-sri/matharena (community/matharena.py); the answer grader is "
-            "IMO-Bench (community/imo_bench.py, @66b014f1).\n"
-            "Known limitation: \\boxed{} extraction conflates format-compliance with "
-            "math ability; a function-calling submission channel reproducing "
-            "upstream's answer tool (and dropping verify_answer_gen) is the fidelity "
-            "fix. Infer prereqs: large max_tokens (~131072) + generous client "
-            "read-timeout (300s+); the score is budget-sensitive."
+            "'Put your final answer within \\boxed{}.' + a blank-line separator.\n"
+            "3. Data: HF mirror hf:Hwilner/imo-answerbench (functionally equivalent to "
+            "upstream's OpenReward answerbench.csv).\n"
+            "Grading is 100% the vendored upstream verify_math_answer (math_verify): a "
+            "parsing-layer normalize_answer reconstructs the clean answer an agent "
+            "would submit, then math_verify (symmetric $-wrap, HMMT-aligned) does all "
+            "equivalence — commutativity / factoring / set-equality; no bespoke "
+            "matching. DeepSeek-V4-Pro pass@1 = 307/400 = 76.75% (boxed answers graded "
+            "without normalization = 260/400 = 65.0%; the delta is a parsing concern, "
+            "not a scoring layer). Dual lineage: prompt+extraction = "
+            "eth-sri/matharena; grader = IMO-Bench @66b014f1.\n"
+            "Out of scope (needs upstream's agentic answer-tool channel or an LLM "
+            "judge, not parsing): prose answers ('all odd primes'), infinite sets, "
+            "quantified functional families — a few genuinely-correct such answers "
+            "stay ungraded. \\boxed{} conflates format-compliance with math ability; "
+            "the fidelity fix is a function-calling submission channel reproducing "
+            "upstream's answer tool. Infer prereqs: large max_tokens (~131072) + "
+            "generous client read-timeout (300s+); the score is budget-sensitive."
         ),
     ),
 )
@@ -120,21 +123,28 @@ class IMOAnswerBenchZeroShotGenTask(
 
     @override
     async def postprocess(self, inf, ctx):
-        # Last \boxed{}; non-strict -> fall back to last integer (matharena extractor).
-        return [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+        # Extract the last \boxed{} (matharena extractor), then reconstruct the
+        # clean answer an agent would submit (parsing layer) so math_verify can
+        # judge equivalence. None => no boxed answer found.
+        return [
+            normalize_answer(extract_answer(choice, strict_parsing=False))
+            for choice in inf.texts
+        ]
 
     @override
     async def feedback(self, post, ctx):
         feedbacks: list[Feedback] = []
         ground_truth = ctx.raw_sample["answer"]
+        gold = normalize_answer(ground_truth)
         for pred in post:
-            if pred is None:
+            if pred is None or gold is None:
                 feedbacks.append({"correct": False, "answer": ground_truth})
                 continue
             try:
-                # IMO-Bench equivalence: official math-verify grader + gen-mode
-                # normalization / multi-answer set matching; gold first.
-                correct = verify_answer_gen(ground_truth, pred)
+                # Verbatim upstream grader (math_verify); symmetric $-wrapping like
+                # the HMMT sibling so full expressions parse, gold first. math_verify
+                # handles commutativity / factoring / set-equality — no bespoke logic.
+                correct = verify_math_answer(f"${gold}$", f"${pred}$")
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
                 correct = False
