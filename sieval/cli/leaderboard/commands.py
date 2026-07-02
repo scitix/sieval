@@ -25,6 +25,17 @@ leaderboard_app = typer.Typer(
 )
 
 
+def _resolve_run_models(runs: list[RunInfo]) -> list[RunInfo]:
+    """Fill in missing model names from inference output (same as `report`)."""
+    resolved: list[RunInfo] = []
+    for run in runs:
+        if run.model_name:
+            resolved.append(run)
+        else:
+            resolved.append(replace(run, model_name=resolve_model_name(run.run_dir)))
+    return resolved
+
+
 @leaderboard_app.command()
 def report(
     dirs: Annotated[
@@ -64,17 +75,7 @@ def report(
         else:
             warnings.append(f"Directory not found, skipping: {d}")
 
-    runs = scan_runs(valid_dirs)
-
-    # Resolve model names for runs that lack one
-    resolved_runs: list[RunInfo] = []
-    for run in runs:
-        if not run.model_name:
-            model = resolve_model_name(run.run_dir)
-            resolved_runs.append(replace(run, model_name=model))
-        else:
-            resolved_runs.append(run)
-
+    resolved_runs = _resolve_run_models(scan_runs(valid_dirs))
     matrix = build_matrix(resolved_runs, all_runs=all_runs)
 
     result = CommandResult(

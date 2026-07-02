@@ -356,6 +356,34 @@
       "checksums": {}
     },
     {
+      "name": "ruler",
+      "display_name": "RULER",
+      "description": "RULER long-context benchmark: 13 subtasks (NIAH ×8, VT, CWE, FWE, QA ×2).",
+      "source": [
+        "local:paul_graham_essays/PaulGrahamEssays.json.gz",
+        "url:https://media.githubusercontent.com/media/NVIDIA/RULER/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/synthetic/json/english_words.json",
+        "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
+        "hf:hotpotqa/hotpot_qa@1908d6afbbead072334abe2965f91bd2709910ab"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "SemanticUnderstanding"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "license": "Apache-2.0",
+      "checksums": {
+        "dev-v2.0.json": "sha256:80a5225e94905956a6446d296ca1093975c4d3b3260f1d6c8f68bc2ab77182d8",
+        "english_words.json": "sha256:affcd6d45fdf3cc843d585c99c97ad615094e760e6c4756b654bab6c73bc2eca"
+      }
+    },
+    {
       "name": "t_eval_before_calling",
       "display_name": "T-Eval Before-Calling",
       "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
@@ -772,6 +800,27 @@
         "source": "opencompass",
         "url": "https://github.com/open-compass/opencompass/blob/568572803ab108eb0e2ae73b770d965b7de078de/opencompass/configs/datasets/mmlu_pro/mmlu_pro_0shot_cot_gen_08c1de.py",
         "notes": "QUERY_TEMPLATE / CHOICES adapted from opencompass 0-shot CoT config."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ruler_0shot_gen",
+      "display_name": "RULER (0-shot, generative)",
+      "description": "RULER long-context benchmark: 13 subtasks (NIAH×8, VT, CWE, FWE, QA×2).",
+      "dataset": "ruler",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "long-context"
+      ],
+      "deps_group": "ruler",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "NVIDIA/RULER",
+        "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
+        "notes": "Scoring mirrors RULER's string_match_all (recall) and string_match_part (QA), vendored in community/ruler/eval."
       },
       "status": "stable"
     },

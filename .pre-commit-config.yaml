@@ -9,6 +9,10 @@ repos:
     rev: v6.0.0
     hooks:
       - id: check-added-large-files
+        args:
+          # Bundled dataset corpora (e.g. RULER's Paul Graham Essays, ~1.1MB
+          # gzipped under sieval/datasets/_data/) exceed the 500KB default.
+          - --maxkb=2000
       - id: check-toml
       - id: check-yaml
         args:

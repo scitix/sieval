@@ -110,11 +110,15 @@ def discover_subpackage_tasks(subpkg_dir: Path) -> dict[str, str]:
     return _discover_task_classes(_iter_module_paths(subpkg_dir))
 
 
-def discover_datasets(package_dir: Path) -> dict[str, str]:
+def _discover_dataset_classes(module_paths: list[Path]) -> dict[str, str]:
+    """Scan *module_paths* for public Dataset/DatasetSample/CSVSample class definitions.
+
+    Returns ``{ClassName: module_stem}`` mapping.
+    """
     export_to_module: dict[str, str] = {}
     suffixes = ("Dataset", "DatasetSample", "CSVSample")
 
-    for module_path in _iter_module_paths(package_dir):
+    for module_path in module_paths:
         module_name = module_path.stem
         module_ast = ast.parse(
             module_path.read_text(encoding="utf-8"),
@@ -143,13 +147,26 @@ def discover_datasets(package_dir: Path) -> dict[str, str]:
             if export_name is None:
                 continue
 
-            previous_module = export_to_module.get(export_name)
-            if previous_module and previous_module != module_name:
-                raise RuntimeError(
-                    f"Duplicate dataset export '{export_name}' found in "
-                    f"'{previous_module}' and '{module_name}'."
-                )
-            export_to_module[export_name] = module_name
+            _register_export(export_to_module, export_name, module_name, "dataset")
+
+    return export_to_module
+
+
+def discover_datasets(package_dir: Path) -> dict[str, str]:
+    """Discover all dataset exports from flat modules and subpackages."""
+    export_to_module: dict[str, str] = {}
+
+    # 1) Flat .py modules
+    for name, mod in _discover_dataset_classes(_iter_module_paths(package_dir)).items():
+        _register_export(export_to_module, name, mod, "dataset")
+
+    # 2) Subpackage dataset modules — scan .py files inside each subpackage
+    for subpkg_dir in _iter_subpackage_dirs(package_dir):
+        subpkg_name = subpkg_dir.name
+        for name, _mod in _discover_dataset_classes(
+            _iter_module_paths(subpkg_dir)
+        ).items():
+            _register_export(export_to_module, name, subpkg_name, "dataset")
 
     return export_to_module
 

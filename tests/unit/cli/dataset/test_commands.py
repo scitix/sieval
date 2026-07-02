@@ -148,6 +148,9 @@ def test_dataset_download_all_iterates_all_pilots(tmp_path):
     expected_url_sources = sum(
         1 for m in datasets for s in m.source if s.startswith("url:")
     )
+    expected_local_sources = sum(
+        1 for m in datasets for s in m.source if s.startswith("local:")
+    )
 
     with (
         patch(
@@ -157,8 +160,13 @@ def test_dataset_download_all_iterates_all_pilots(tmp_path):
             "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
             return_value=True,
         ) as mock_url_probe,
+        patch(
+            "sieval.datasets.downloaders.local.LocalHandler.is_downloaded",
+            return_value=True,
+        ) as mock_local_probe,
         patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_hf,
         patch("sieval.datasets.downloaders.url.URLHandler.download") as mock_url,
+        patch("sieval.datasets.downloaders.local.LocalHandler.download") as mock_local,
         patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         result = runner.invoke(
@@ -169,9 +177,11 @@ def test_dataset_download_all_iterates_all_pilots(tmp_path):
         # Iteration proof: every registered source was probed exactly once.
         assert mock_hf_probe.call_count == expected_hf_sources
         assert mock_url_probe.call_count == expected_url_sources
+        assert mock_local_probe.call_count == expected_local_sources
         # Already-downloaded short-circuit means download() itself stays cold.
         mock_hf.assert_not_called()
         mock_url.assert_not_called()
+        mock_local.assert_not_called()
 
 
 def test_dataset_download_all_aggregates_failures(tmp_path):
@@ -317,12 +327,22 @@ def test_dataset_download_domain_filter(tmp_path):
 
 
 def test_dataset_list_ready_no_when_cache_empty(tmp_path, monkeypatch):
-    """Empty data dir → all rows report ready=no."""
+    """Empty data dir → every dataset with a download source reports ready=no.
+
+    Fully-synthetic datasets (empty ``source``, e.g. RULER vt/cwe/fwe) have
+    nothing to download, so their readiness is decided by deps alone — they are
+    excluded here.
+    """
+    from sieval.meta import load_index
+
     monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
     result = runner.invoke(dataset_app, ["list", "-o", "json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)["data"]
-    assert payload and all(row["ready"] == "no" for row in payload)
+    datasets, _ = load_index()
+    with_source = {m.name for m in datasets if m.source}
+    sourced = [row for row in payload if row["name"] in with_source]
+    assert sourced and all(row["ready"] == "no" for row in sourced)
 
 
 def test_dataset_list_ready_yes_only_for_present_dataset(tmp_path, monkeypatch):
