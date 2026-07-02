@@ -7,6 +7,12 @@ from .aime_2024_0shot_gen import (
 from .aime_2025_0shot_gen import (
     AIME2025ZeroShotGenTask,
 )
+from .aime_2026_0shot_gen import (
+    AIME2026ZeroShotGenTask,
+)
+from .cmmlu_kshot_base_gen import (
+    CMMLUFewShotBaseGenTask,
+)
 from .drop_kshot_gen import (
     DROPFewShotGenTask,
 )
@@ -16,14 +22,29 @@ from .gpqa_diamond_0shot_gen import (
 from .gsm8k_kshot_base_gen import (
     GSM8KFewShotBaseGenTask,
 )
+from .hmmt_feb_2025_0shot_gen import (
+    HMMTFeb2025ZeroShotGenTask,
+)
+from .hmmt_feb_2026_0shot_gen import (
+    HMMTFeb2026ZeroShotGenTask,
+)
+from .human_eval_0shot_base_gen import (
+    HumanEvalZeroShotBaseGenTask,
+)
 from .human_eval_0shot_gen import (
     HumanEvalZeroShotGenTask,
 )
 from .ifeval_0shot_gen import (
     IFEvalZeroShotGenTask,
 )
+from .imo_answer_bench_0shot_gen import (
+    IMOAnswerBenchZeroShotGenTask,
+)
 from .livecodebench_code_generation_0shot_gen import (
     LiveCodeBenchCodeGenerationZeroShotGenTask,
+)
+from .livecodebench_code_generation_kshot_base_gen import (
+    LiveCodeBenchCodeGenerationFewShotBaseGenTask,
 )
 from .math_500_0shot_gen import (
     MATH500ZeroShotGenTask,
@@ -40,19 +61,30 @@ from .ruler_0shot_gen import (
 from .t_eval_before_calling_0shot_gen import (
     TEvalBeforeCallingZeroShotGenTask,
 )
+from .theoremqa_kshot_base_gen import (
+    TheoremQAKShotBaseGenTask,
+)
 
 __all__ = [
     "AIME2024ZeroShotGenTask",
     "AIME2025ZeroShotGenTask",
+    "AIME2026ZeroShotGenTask",
+    "CMMLUFewShotBaseGenTask",
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
     "GSM8KFewShotBaseGenTask",
+    "HMMTFeb2025ZeroShotGenTask",
+    "HMMTFeb2026ZeroShotGenTask",
+    "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
     "IFEvalZeroShotGenTask",
+    "IMOAnswerBenchZeroShotGenTask",
+    "LiveCodeBenchCodeGenerationFewShotBaseGenTask",
     "LiveCodeBenchCodeGenerationZeroShotGenTask",
     "MATH500ZeroShotGenTask",
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
     "RulerZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
+    "TheoremQAKShotBaseGenTask",
 ]

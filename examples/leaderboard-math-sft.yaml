@@ -1,12 +1,13 @@
 # ------------------------------------------------------------------------------
 # Math SFT leaderboard — cover the 3 pilot math tasks against one or more models
 # ------------------------------------------------------------------------------
-# Tasks evaluated: AIME 2024, AIME 2025, MATH-500 (all 0-shot, generative).
+# Tasks evaluated: AIME 2024, AIME 2025, AIME 2026, HMMT Feb 2026, MATH-500
+# (all 0-shot, generative).
 # Shape: multi-task × multi-model matrix. Add/remove models.* entries to scale
 # the matrix horizontally.
 #
 # Two-step flow:
-#   1. sieval dataset download aime_2024 aime_2025 math_500
+#   1. sieval dataset download aime_2024 aime_2025 aime_2026 hmmt_feb_2026 math_500
 #      (or: sieval dataset download --all)
 #   2. sieval eval leaderboard-math-sft.yaml
 #
@@ -49,6 +50,14 @@ datasets:
     class: AIME2025Dataset
     path: "opencompass/AIME2025"
 
+  aime_2026:
+    class: AIME2026Dataset
+    path: "MathArena/aime_2026"
+
+  hmmt_feb_2026:
+    class: HMMTFeb2026Dataset
+    path: "MathArena/hmmt_feb_2026"
+
   math_500:
     class: MATH500Dataset
     path: "HuggingFaceH4/MATH-500"
@@ -68,6 +77,28 @@ tasks:
   aime_2025_0shot_gen:
     class: AIME2025ZeroShotGenTask
     dataset: aime_2025
+    model: qwen3-4b
+    args:
+      k: 1
+      n: 32
+    runner_config:
+      concurrency_limits:
+        infer: 4
+
+  aime_2026_0shot_gen:
+    class: AIME2026ZeroShotGenTask
+    dataset: aime_2026
+    model: qwen3-4b
+    args:
+      k: 1
+      n: 32
+    runner_config:
+      concurrency_limits:
+        infer: 4
+
+  hmmt_feb_2026_0shot_gen:
+    class: HMMTFeb2026ZeroShotGenTask
+    dataset: hmmt_feb_2026
     model: qwen3-4b
     args:
       k: 1

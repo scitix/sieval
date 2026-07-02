@@ -68,6 +68,7 @@ class ModelOutput:
     reasoning_texts: list[str] | None = None
     logprobs_tokens: list[str] | None = None
     logprobs: list[float | None] | None = None
+    top_logprobs: list[dict[str, float]] | None = None
     usage: ModelUsage | None = None
     request_params: dict[str, JSONValue] | None = None
     # From API response — what the server actually used

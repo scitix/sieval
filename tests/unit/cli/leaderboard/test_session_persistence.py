@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 
-from sieval.cli.leaderboard.session import EvalSession
+from sieval.cli.leaderboard.session import (
+    EvalSession,
+    _format_comment_header,
+    _split_header,
+)
 from sieval.infer.topology.models import WellKnownRole
 
 
@@ -621,6 +625,303 @@ class TestStrictResumeMatch:
 
         # File unchanged (including header timestamp from first write)
         assert (result_dir / "infer_plans.yaml").read_text() == original
+
+    @pytest.mark.anyio
+    async def test_resume_tolerates_top_level_concurrency_change(self, tmp_path: Path):
+        cfg_path = _write_yaml(
+            tmp_path,
+            "cfg.yaml",
+            "concurrency_limit: 8\nmodels:\n  base:\n    name: m\n",
+        )
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+        original = (result_dir / "effective_config.yaml").read_text()
+        original_header = _split_header(original)[0]
+        assert original_header != ""  # sanity: a real header was written
+
+        # User lowers concurrency and resumes.
+        cfg_path.write_text("concurrency_limit: 2\nmodels:\n  base:\n    name: m\n")
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        await s2._persist_effective_config()  # must NOT raise
+
+        after = (result_dir / "effective_config.yaml").read_text()
+        loaded = yaml.safe_load(after)
+        assert loaded["concurrency_limit"] == 2  # body updated to new value
+        after_header = _split_header(after)[0]
+        # Origin provenance preserved, and the change is appended as a record.
+        assert "Persisted by sieval" in after_header
+        assert "Resumed by sieval" in after_header
+        assert "concurrency_limit: 8 → 2" in after_header
+
+    @pytest.mark.anyio
+    async def test_resume_tolerates_per_model_args_concurrency_change(
+        self, tmp_path: Path
+    ):
+        cfg_path = _write_yaml(
+            tmp_path,
+            "cfg.yaml",
+            "models:\n  base:\n    name: m\n    args:\n"
+            "      concurrency_limit: 64\n      temperature: 0.0\n",
+        )
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        cfg_path.write_text(
+            "models:\n  base:\n    name: m\n    args:\n"
+            "      concurrency_limit: 8\n      temperature: 0.0\n"
+        )
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        await s2._persist_effective_config()  # must NOT raise
+
+        loaded = yaml.safe_load((result_dir / "effective_config.yaml").read_text())
+        assert loaded["models"]["base"]["args"]["concurrency_limit"] == 8
+        assert loaded["models"]["base"]["args"]["temperature"] == 0.0
+
+    @pytest.mark.anyio
+    async def test_resume_aborts_on_max_retries_change(self, tmp_path: Path):
+        # max_retries is the failure signal (written into FAILED records) — strict.
+        base = (
+            "models:\n  base:\n    name: m\ntasks:\n  t:\n"
+            "    runner_config:\n      max_retries: {}\n"
+        )
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format(3))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        cfg_path.write_text(base.format(10))
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        with pytest.raises(RuntimeError, match=r"Resume aborted"):
+            await s2._persist_effective_config()
+
+    @pytest.mark.anyio
+    async def test_resume_aborts_on_profile_change(self, tmp_path: Path):
+        # profile_* write per-record meta + the profiler summary file — strict.
+        base = (
+            "models:\n  base:\n    name: m\ntasks:\n  t:\n"
+            "    runner_config:\n      profile_usage: {}\n"
+        )
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format("true"))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        cfg_path.write_text(base.format("false"))
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        with pytest.raises(RuntimeError, match=r"Resume aborted"):
+            await s2._persist_effective_config()
+
+    @pytest.mark.anyio
+    async def test_resume_tolerates_console_progress_change(self, tmp_path: Path):
+        # show_progress is console-only (never the progress.json dump) — adjustable.
+        base = (
+            "models:\n  base:\n    name: m\ntasks:\n  t:\n"
+            "    runner_config:\n      show_progress: {}\n"
+        )
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format("true"))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        cfg_path.write_text(base.format("false"))
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        await s2._persist_effective_config()  # must NOT raise
+
+        loaded = yaml.safe_load((result_dir / "effective_config.yaml").read_text())
+        assert loaded["tasks"]["t"]["runner_config"]["show_progress"] is False
+
+    @pytest.mark.anyio
+    async def test_resume_aborts_on_throughput_plus_result_change(self, tmp_path: Path):
+        cfg_path = _write_yaml(
+            tmp_path,
+            "cfg.yaml",
+            "concurrency_limit: 8\nmodels:\n  base:\n    name: m\n",
+        )
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        # Throughput AND a result-affecting field change together.
+        cfg_path.write_text(
+            "concurrency_limit: 2\ndeterministic: true\nmodels:\n  base:\n    name: m\n"
+        )
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        with pytest.raises(RuntimeError, match=r"Resume aborted") as exc:
+            await s2._persist_effective_config()
+        # Diff surfaces the result field, not the throughput noise.
+        assert "deterministic" in str(exc.value)
+        assert "concurrency_limit" not in str(exc.value)
+
+    @pytest.mark.anyio
+    async def test_resume_aborts_on_shard_samples_change(self, tmp_path: Path):
+        base = (
+            "models:\n  base:\n    name: m\ntasks:\n  t:\n"
+            "    runner_config:\n      shard_samples: {}\n"
+        )
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format(1024))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        cfg_path.write_text(base.format(512))
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        with pytest.raises(RuntimeError, match=r"Resume aborted"):
+            await s2._persist_effective_config()
+
+    @pytest.mark.anyio
+    async def test_resume_rewrite_with_missing_header_emits_fresh_header(
+        self, tmp_path: Path
+    ):
+        result_dir = tmp_path / "out"
+        result_dir.mkdir()
+        # Pre-seed a header-less persisted file whose throughput differs.
+        (result_dir / "effective_config.yaml").write_text(
+            "concurrency_limit: 8\nmodels:\n  base:\n    name: m\n"
+        )
+        cfg_path = _write_yaml(
+            tmp_path,
+            "cfg.yaml",
+            "concurrency_limit: 2\nmodels:\n  base:\n    name: m\n",
+        )
+        # result_dir is injected into the body by result_dir_override but stripped from
+        # the resume comparison, so it does not count as a diff here.
+        s = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        await s._persist_effective_config()  # must NOT raise
+
+        after = (result_dir / "effective_config.yaml").read_text()
+        assert after.startswith("# -")  # a fresh header was emitted
+        assert yaml.safe_load(after)["concurrency_limit"] == 2
+
+    @pytest.mark.anyio
+    async def test_resume_tolerates_formatting_only_diff(self, tmp_path: Path):
+        result_dir = tmp_path / "out"
+        result_dir.mkdir()
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        # Flow-style body, semantically identical to the canonical block dump.
+        (result_dir / "effective_config.yaml").write_text(
+            header + "models: {base: {name: m}}\n"
+        )
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
+        # result_dir is injected into the body by result_dir_override but stripped from
+        # the resume comparison, so it does not count as a diff here.
+        s = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        await s._persist_effective_config()  # must NOT raise (no semantic change)
+
+        # A formatting-only rewrite records no resume note (nothing changed).
+        after = (result_dir / "effective_config.yaml").read_text()
+        assert "Resumed by sieval" not in _split_header(after)[0]
+
+    @pytest.mark.anyio
+    async def test_resume_tolerates_top_level_runner_config_throughput(
+        self, tmp_path: Path
+    ):
+        # Throughput knobs in the TOP-LEVEL runner_config defaults block (merged
+        # into every task) are as resume-mutable as per-task ones.
+        base = (
+            "runner_config:\n  concurrency_limits:\n    infer: {}\n"
+            "models:\n  base:\n    name: m\n"
+        )
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format(4))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        cfg_path.write_text(base.format(16))
+        s2 = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        await s2._persist_effective_config()  # must NOT raise
+
+        after = (result_dir / "effective_config.yaml").read_text()
+        loaded = yaml.safe_load(after)
+        assert loaded["runner_config"]["concurrency_limits"]["infer"] == 16
+        header = _split_header(after)[0]
+        assert "runner_config.concurrency_limits.infer: 4 → 16" in header
+
+    @pytest.mark.anyio
+    async def test_resume_appends_accumulating_notes(self, tmp_path: Path):
+        base = "concurrency_limit: {}\nmodels:\n  base:\n    name: m\n"
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format(8))
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+
+        # Two successive resumes, each changing only throughput.
+        for value in (4, 2):
+            cfg_path.write_text(base.format(value))
+            s = EvalSession(
+                config_path=str(cfg_path),
+                resume=True,
+                result_dir_override=str(result_dir),
+            )
+            await s._persist_effective_config()
+
+        after = (result_dir / "effective_config.yaml").read_text()
+        header, body = _split_header(after)
+        # Origin recorded once; every tolerated change appended in order.
+        assert header.count("Persisted by sieval") == 1
+        assert header.count("Resumed by sieval") == 2
+        assert "concurrency_limit: 8 → 4" in header
+        assert "concurrency_limit: 4 → 2" in header
+        # Body reflects the latest run; header/body partition stays intact.
+        assert yaml.safe_load(body)["concurrency_limit"] == 2
+        assert _split_header(after) == (header, body)
+
+    @pytest.mark.anyio
+    async def test_resume_aborts_on_non_mapping_existing_file(self, tmp_path: Path):
+        # A tampered persisted file that parses to a non-mapping must surface as
+        # the documented RuntimeError, not an opaque AttributeError from the strip.
+        result_dir = tmp_path / "out"
+        result_dir.mkdir()
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        (result_dir / "effective_config.yaml").write_text(header + "- a\n- b\n")
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
+        s = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        with pytest.raises(RuntimeError, match=r"not a YAML mapping"):
+            await s._persist_effective_config()
+
+    @pytest.mark.anyio
+    async def test_resume_aborts_on_unparseable_existing_file(self, tmp_path: Path):
+        # A tampered persisted body that is not valid YAML must surface as the
+        # documented RuntimeError, not the raw yaml.YAMLError from the strip path.
+        result_dir = tmp_path / "out"
+        result_dir.mkdir()
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        (result_dir / "effective_config.yaml").write_text(header + "key: [unclosed\n")
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
+        s = EvalSession(
+            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
+        )
+        with pytest.raises(RuntimeError, match=r"cannot parse existing"):
+            await s._persist_effective_config()
 
 
 class TestPersistTimingBeforeRunnerArun:

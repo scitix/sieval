@@ -11,6 +11,10 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import apply_eval_split, ensure_dataset_dict
 
+# Pinned to the snapshot behind current results. HF main has advanced since
+# (an eval.yaml-only change; sample data is byte-identical) — don't bump blindly.
+MMLU_PRO_REVISION = "54611cde22c74cca43dd78732198de6abe971398"
+
 
 class MMLUProDatasetSample(TypedDict):
     question: str
@@ -23,7 +27,7 @@ class MMLUProDatasetSample(TypedDict):
     name="mmlu_pro",
     display_name="MMLU-Pro",
     description="MMLU-Pro — harder MCQ with 10 options, filtered for reasoning.",
-    source="hf:TIGER-Lab/MMLU-Pro",
+    source=f"hf:TIGER-Lab/MMLU-Pro@{MMLU_PRO_REVISION}",
     categories=(Category(Level1Category.KNOWLEDGE, "Multi-domain"),),
     tags=("english", "multiple-choice"),
     license="MIT",

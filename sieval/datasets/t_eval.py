@@ -13,6 +13,8 @@ from sieval.core.datasets import (
     sieval_dataset,
 )
 
+T_EVAL_REVISION = "af355ab2b62cdbae4262ac41c7529ffeae395012"
+
 
 class TEvalBeforeCallingDatasetSampleMetaData(TypedDict):
     response_format: Literal["json"]
@@ -29,7 +31,7 @@ class TEvalBeforeCallingDatasetSample(TypedDict):
     name="t_eval_before_calling",
     display_name="T-Eval Before-Calling",
     description="T-Eval tool-use benchmark — before-calling stage (plan/reason).",
-    source="hf:lovesnowbest/T-Eval",
+    source=f"hf:lovesnowbest/T-Eval@{T_EVAL_REVISION}",
     categories=(Category(Level1Category.AGENT, "ToolUseSimple"),),
     tags=("chinese", "english", "open-ended"),
     license="Apache-2.0",

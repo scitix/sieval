@@ -84,7 +84,8 @@ class MATH500ZeroShotGenTask(
             try:
                 parsed_pred = parse(pred_with_env)
                 parsed_ref = parse(ref_with_env)
-                correct = verify(parsed_pred, parsed_ref)
+                # math_verify.verify expects the gold answer as the first arg.
+                correct = verify(parsed_ref, parsed_pred)
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
                 correct = False

@@ -18,7 +18,10 @@ import sys
 import tomllib
 import warnings
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from sieval.core.datasets.meta import DatasetMeta
 
 # Known import-name → package-name mismatches
 _IMPORT_TO_PACKAGE: dict[str, str] = {
@@ -72,6 +75,34 @@ def format_json(results: list[CheckResult]) -> str:
         [dataclasses.asdict(r) for r in results],
         indent=2,
     )
+
+
+def _dataset_integrity_violations(metas: "list[DatasetMeta]") -> list[str]:
+    """Each hf: source must be revision-pinned; each url: source must have a
+    checksum. local: sources are exempt. Returns human-readable violations."""
+    from sieval.core.datasets.meta import url_path_basename
+    from sieval.datasets.downloaders.hf import parse_hf_source
+
+    violations: list[str] = []
+    for meta in metas:
+        declared = {basename for basename, _ in meta.checksums}
+        for src in meta.source:
+            if src.startswith("hf:"):
+                # A malformed pin (e.g. trailing '@') is itself a violation,
+                # not a reason to abort the whole check with a traceback.
+                try:
+                    pinned = parse_hf_source(src).revision is not None
+                except ValueError:
+                    pinned = False
+                if not pinned:
+                    violations.append(f"{meta.name}: hf source not pinned: {src}")
+            elif src.startswith("url:"):
+                basename = url_path_basename(src[len("url:") :])
+                if basename not in declared:
+                    violations.append(
+                        f"{meta.name}: url source missing checksum: {src}"
+                    )
+    return violations
 
 
 class PreflightRunner:
@@ -826,6 +857,28 @@ class PreflightRunner:
                     "PASS",
                     "check_datasets",
                     "all dataset exports follow naming convention",
+                )
+            )
+
+        # Step 4: source-integrity policy (hf pinned, url checksummed)
+        from sieval.core.datasets.meta import iter_dataset_metas
+
+        integrity = _dataset_integrity_violations(list(iter_dataset_metas()))
+        if integrity:
+            results.append(
+                CheckResult(
+                    "FAIL",
+                    "check_datasets",
+                    f"{len(integrity)} dataset source(s) not pinned/checksummed",
+                    integrity,
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    "PASS",
+                    "check_datasets",
+                    "all dataset sources pinned (hf) / checksummed (url)",
                 )
             )
 

@@ -21,6 +21,7 @@ if _SCRIPTS_DIR not in sys.path:
 from check_preflight import (  # noqa: E402  # type: ignore[unresolved-import]  # scripts/ added to sys.path at runtime
     CheckResult,
     PreflightRunner,
+    _dataset_integrity_violations,
     format_json,
     format_text,
     main,
@@ -1338,3 +1339,50 @@ class TestMainNameGuard:
         assert code in (0, 1)
         captured = capsys.readouterr()
         assert "check_links" in captured.out
+
+
+class TestDatasetIntegrity:
+    def _meta(self, name, source, checksums=()):
+        from sieval.core.datasets.meta import Category, DatasetMeta, Level1Category
+
+        return DatasetMeta(
+            name=name,
+            display_name=name,
+            description="d",
+            source=tuple(source),
+            categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+            checksums=tuple(checksums),
+        )
+
+    def test_unpinned_hf_flagged(self):
+        out = _dataset_integrity_violations([self._meta("a", ["hf:org/a"])])
+        assert len(out) == 1 and "a" in out[0]
+        assert "hf source not pinned" in out[0]
+
+    def test_url_without_checksum_flagged(self):
+        out = _dataset_integrity_violations([self._meta("b", ["url:https://x/y.csv"])])
+        assert len(out) == 1 and "b" in out[0]
+        assert "url source missing checksum" in out[0]
+
+    def test_malformed_hf_pin_flagged_not_raised(self):
+        # Trailing '@' makes parse_hf_source raise; the check must report it as
+        # a violation, not abort the whole preflight with a traceback.
+        out = _dataset_integrity_violations([self._meta("d", ["hf:org/d@"])])
+        assert len(out) == 1 and "d" in out[0]
+        assert "hf source not pinned" in out[0]
+
+    def test_local_source_exempt(self):
+        out = _dataset_integrity_violations([self._meta("c", ["local:/data/c"])])
+        assert out == []
+
+    def test_pinned_and_checksummed_pass(self):
+        metas = [
+            self._meta("a", ["hf:org/a@" + "0" * 40]),
+            self._meta(
+                "b",
+                ["url:https://x/y.csv"],
+                checksums=[("y.csv", "sha256:" + "a" * 64)],
+            ),
+            self._meta("c", ["local:/data/c"]),  # local exempt
+        ]
+        assert _dataset_integrity_violations(metas) == []

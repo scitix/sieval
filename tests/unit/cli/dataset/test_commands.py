@@ -4,7 +4,7 @@ AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
@@ -82,6 +82,7 @@ def test_dataset_download_by_name_invokes_handler(tmp_path):
             "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
             return_value=False,
         ),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         mock_url_dl.return_value = tmp_path
         result = runner.invoke(
@@ -104,6 +105,7 @@ def test_dataset_download_skips_when_already_present(tmp_path):
             "sieval.datasets.downloaders.hf.HFHandler.is_downloaded", return_value=True
         ),
         patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_hf_dl,
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         result = runner.invoke(
             dataset_app,
@@ -121,6 +123,7 @@ def test_dataset_download_force_redownloads(tmp_path):
             return_value=True,
         ),
         patch("sieval.datasets.downloaders.url.URLHandler.download") as mock_url_dl,
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         mock_url_dl.return_value = tmp_path
         result = runner.invoke(
@@ -156,6 +159,7 @@ def test_dataset_download_all_iterates_all_pilots(tmp_path):
         ) as mock_url_probe,
         patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_hf,
         patch("sieval.datasets.downloaders.url.URLHandler.download") as mock_url,
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
     ):
         result = runner.invoke(
             dataset_app,
@@ -393,6 +397,17 @@ def test_dataset_show_suggested_path_for_hf_source():
     assert data["suggested_path"] == "HuggingFaceH4/aime_2024"
 
 
+def test_dataset_show_suggested_path_strips_hf_revision_pin():
+    """Pinned HF dataset source still suggests the bare repo id for YAML path."""
+    result = runner.invoke(dataset_app, ["show", "theoremqa", "-o", "json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["suggested_path"] == "TIGER-Lab/TheoremQA"
+    assert data["source"] == [
+        "hf:TIGER-Lab/TheoremQA@a340b1782960a712843aae3ed25f1e013cc008a5"
+    ]
+
+
 def test_dataset_show_suggested_path_for_url_source():
     """URL dataset → suggested_path is ${SIEVAL_DATA_DIR}/<name> (literal)."""
     result = runner.invoke(dataset_app, ["show", "drop", "-o", "json"])
@@ -413,6 +428,64 @@ def test_dataset_list_text_shows_ready_and_drops_downloaded(tmp_path, monkeypatc
     assert result.exit_code == 0
     assert "READY" in result.output
     assert "DOWNLOADED" not in result.output
+
+
+def test_download_one_deletes_and_raises_on_checksum_mismatch(tmp_path):
+    import pytest
+
+    from sieval.cli.dataset.commands import _download_one
+    from sieval.core.datasets.meta import Category, DatasetMeta, Level1Category
+
+    meta = DatasetMeta(
+        name="ds",
+        display_name="ds",
+        description="d",
+        source=("url:https://example.com/f.csv",),
+        categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+        checksums=(("f.csv", "sha256:" + "a" * 64),),
+    )
+
+    def fake_download(_source, dest_root, dataset_name, **_kwargs):  # noqa: ARG001
+        (dest_root / dataset_name).mkdir(parents=True, exist_ok=True)
+        (dest_root / dataset_name / "f.csv").write_bytes(b"wrong-bytes")
+
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = False
+    fake_handler.download.side_effect = fake_download
+
+    with (
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        pytest.raises(RuntimeError, match="checksum verification failed"),
+    ):
+        _download_one(meta, tmp_path, force=False)
+
+    assert not (tmp_path / "ds" / "f.csv").exists()  # bad file deleted
+
+
+def test_download_one_verifies_even_when_already_present(tmp_path):
+    import pytest
+
+    from sieval.cli.dataset.commands import _download_one
+    from sieval.core.datasets.meta import Category, DatasetMeta, Level1Category
+
+    meta = DatasetMeta(
+        name="ds",
+        display_name="ds",
+        description="d",
+        source=("url:https://example.com/f.csv",),
+        categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+        checksums=(("f.csv", "sha256:" + "a" * 64),),
+    )
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = True  # already present, download skipped
+
+    with (
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        pytest.raises(RuntimeError, match="checksum verification failed"),
+    ):
+        _download_one(meta, tmp_path, force=False)
+
+    fake_handler.download.assert_not_called()  # verify ran despite the skip
 
 
 def test_dataset_show_text_renders_ready_and_missing(tmp_path, monkeypatch):

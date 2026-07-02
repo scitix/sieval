@@ -35,7 +35,11 @@ ifeval = [
   "nltk>=3.9.2",
   "immutabledict>=4.2.2",
 ]
-math = ["math-verify>=0.8.0"]
+math = [
+  "latex2sympy2-extended>=1.10.2",
+  "math-verify>=0.8.0",
+  "regex>=2024.0.0",
+]
 ruler = ["tiktoken>=0.8.0", "wonderwords>=2.2.0", "numpy<=2.2", "scipy>=1.16.3"]
 t-eval = ["numpy<=2.2", "sentence-transformers>=5.1.2"]
 

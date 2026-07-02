@@ -12,6 +12,7 @@ from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import TaskContext
 from sieval.datasets.gsm8k import GSM8KDataset, GSM8KDatasetSample
 from sieval.tasks.gsm8k_kshot_base_gen import (
+    STOP_SEQUENCES,
     GSM8KFewShotBaseGenTask,
     _extract_answer,
     _extract_flexible_match,
@@ -69,12 +70,12 @@ def test_strict_and_flexible_extractors_are_distinct():
 
 
 @pytest.mark.anyio
-async def test_infer_does_not_forward_n():
+async def test_infer_only_forwards_prompt_coupled_stop():
     task, model = _task()
 
     await task.infer("prompt", TaskContext(sample_id=0, raw_sample=_sample()))
 
-    assert "n" not in model.last_kwargs
+    assert model.last_kwargs == {"stop": list(STOP_SEQUENCES)}
 
 
 @pytest.mark.anyio

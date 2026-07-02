@@ -15,6 +15,7 @@ from sieval.core.datasets.meta import (
     Category,
     DatasetMeta,
     Level1Category,
+    dataset_meta_from_dict,
     dataset_meta_to_dict,
     get_dataset_meta,
     iter_dataset_metas,
@@ -100,6 +101,7 @@ def test_dataset_meta_to_dict_roundtrip():
         "tags": [],
         "deps_group": None,
         "license": None,
+        "checksums": {},
     }
 
 
@@ -541,3 +543,62 @@ def test_sieval_dataset_accepts_different_url_basenames():
     # Must not have raised; cleanup: remove from registry to avoid polluting later tests
     DATASET_REGISTRY.pop("ok_test_distinct_basenames", None)
     SAMPLE_TO_DATASET.pop(OkSample, None)
+
+
+class CkSample(TypedDict):
+    prompt: str
+
+
+def test_checksums_normalized_sorted_and_round_trips():
+    digest = "sha256:" + "a" * 64
+
+    @sieval_dataset(
+        name="ck",
+        display_name="Ck",
+        description="checksum dataset.",
+        source="url:https://example.com/y.csv",
+        categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+        checksums={"y.csv": digest},
+    )
+    class CkDataset(Dataset[CkSample]):
+        pass
+
+    meta = get_dataset_meta(CkDataset)
+    assert meta.checksums == (("y.csv", digest),)
+
+    wire = dataset_meta_to_dict(meta)
+    assert wire["checksums"] == {"y.csv": digest}
+    assert dataset_meta_from_dict(wire).checksums == meta.checksums
+    # absent key defaults to empty tuple
+    no_ck = {k: v for k, v in wire.items() if k != "checksums"}
+    assert dataset_meta_from_dict(no_ck).checksums == ()
+
+
+def test_checksums_bad_format_rejected():
+    with pytest.raises(ValueError, match="sha256"):
+
+        @sieval_dataset(
+            name="ckbad",
+            display_name="CkBad",
+            description="bad checksum.",
+            source="url:https://example.com/y.csv",
+            categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+            checksums={"y.csv": "deadbeef"},
+        )
+        class CkBadDataset(Dataset[CkSample]):
+            pass
+
+
+def test_checksums_key_must_be_url_basename():
+    with pytest.raises(ValueError, match="basename"):
+
+        @sieval_dataset(
+            name="ckkey",
+            display_name="CkKey",
+            description="bad key.",
+            source="url:https://example.com/y.csv",
+            categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+            checksums={"other.csv": "sha256:" + "a" * 64},
+        )
+        class CkKeyDataset(Dataset[CkSample]):
+            pass

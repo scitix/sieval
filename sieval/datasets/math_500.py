@@ -13,6 +13,8 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset_dict
 
+MATH_500_REVISION = "6e4ed1a2a79af7d8630a6b768ec859cb5af4d3be"
+
 
 class MATH500DatasetSample(TypedDict):
     problem: str
@@ -23,7 +25,7 @@ class MATH500DatasetSample(TypedDict):
     name="math_500",
     display_name="MATH-500",
     description="Hendrycks MATH-500 subset — 500 problems across difficulty levels.",
-    source="hf:HuggingFaceH4/MATH-500",
+    source=f"hf:HuggingFaceH4/MATH-500@{MATH_500_REVISION}",
     categories=(Category(Level1Category.MATHEMATICS, "AdvancedMath"),),
     tags=("english", "open-ended"),
     license="MIT",

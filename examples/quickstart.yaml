@@ -32,7 +32,7 @@ datasets:
     class: AIME2024Dataset
     path: "HuggingFaceH4/aime_2024"   # `sieval dataset download aime_2024` stages this
     operations:
-      - select: { num: 5 }
+      - slice: { num: 5 }
 
 tasks:
   aime_2024_smoke:

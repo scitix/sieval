@@ -19,6 +19,7 @@ from sieval.core.utils.logging import configure_logging
 from sieval.core.utils.paths import resolve_data_dir
 from sieval.datasets.downloaders import resolve as resolve_handler
 from sieval.datasets.downloaders.resolver import extras_unsatisfied
+from sieval.datasets.downloaders.verify import verify_checksums
 from sieval.meta import load_index
 
 dataset_app = typer.Typer(help="Dataset discovery and download.")
@@ -186,6 +187,20 @@ def _download_one(m: DatasetMeta, dest_root: Path, force: bool) -> None:
             continue
         typer.echo(f"[{m.name}] fetching {src}")
         h.download(src, dest_root, m.name, force=force)
+
+    mismatches = verify_checksums(m, dest_root)
+    if mismatches:
+        for mm in mismatches:
+            (dest_root / m.name / mm.basename).unlink(missing_ok=True)
+        details = "; ".join(
+            f"{mm.basename}: expected {mm.expected}, got {mm.actual or 'MISSING'}"
+            for mm in mismatches
+        )
+        raise RuntimeError(
+            f"checksum verification failed for {m.name!r} ({details}); "
+            f"deleted the mismatched file(s) — re-run "
+            f"`sieval dataset download {m.name}` to refetch"
+        )
 
     # Post-download hint; print-only, never installs.
     if m.deps_group:

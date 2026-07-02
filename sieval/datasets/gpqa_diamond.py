@@ -29,6 +29,9 @@ GPQADiamondDatasetSample = TypedDict(
     display_name="GPQA Diamond",
     description="Graduate-level science MCQ — diamond subset, 198 questions.",
     source="url:https://openaipublic.blob.core.windows.net/simple-evals/gpqa_diamond.csv",
+    checksums={
+        "gpqa_diamond.csv": "sha256:41d1213cd7a4998605a26c2798500652572007161b3a92817ba46b35befcd305",  # noqa: E501
+    },
     categories=(
         Category(Level1Category.LOGIC, "ComplexLogic"),
         Category(Level1Category.KNOWLEDGE, "STEM"),

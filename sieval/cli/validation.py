@@ -32,7 +32,13 @@ _ROOT_KEYS: set[str] = set(RootConfigDict.__annotations__)
 _CONCURRENCY_KEYS: set[str] = {a.value for a in TaskAction}
 
 # Valid dataset operations
-_VALID_OPERATIONS: set[str] = {"select", "shuffle", "repeat"}
+_VALID_OPERATIONS: set[str] = {"slice", "shuffle", "repeat", "stratified_sample"}
+
+# Operations renamed away from earlier names; map old -> new so stale configs
+# get a migration hint instead of a bare "unknown operation".
+_RENAMED_OPERATIONS: dict[str, str] = {
+    "select": "slice",
+}
 
 # Valid TaskRunnerConfig field names
 _RUNNER_CONFIG_FIELDS: set[str] = set(TaskRunnerConfig.__dataclass_fields__)
@@ -234,7 +240,12 @@ def _validate_operations(
             )
             continue
         op_name = next(iter(op))
-        if op_name not in _VALID_OPERATIONS:
+        if op_name in _RENAMED_OPERATIONS:
+            result.errors.append(
+                f"Dataset '{dataset_name}': operation '{op_name}' was renamed to "
+                f"'{_RENAMED_OPERATIONS[op_name]}'; update your config."
+            )
+        elif op_name not in _VALID_OPERATIONS:
             result.errors.append(
                 f"Dataset '{dataset_name}': unknown operation '{op_name}'. "
                 f"Valid: {', '.join(sorted(_VALID_OPERATIONS))}"

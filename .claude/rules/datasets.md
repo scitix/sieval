@@ -16,3 +16,7 @@ paths:
 - The sample `TypedDict` is the reverse-lookup key for `@sieval_task`; it must be globally unique across registered Datasets. `name` is also globally unique across Datasets and Tasks.
 - `source` must use scheme `hf:` / `url:` / `local:` and is consumed by `sieval dataset download` to stage data into `$SIEVAL_DATA_DIR`.
 - `deps_group` here is **loader-side** deps; evaluator-side deps stay on the Task.
+- `hf:` sources MUST be revision-pinned (`hf:org/name@<sha>`); `url:` sources MUST declare
+  per-file `checksums` (sha256). `check_datasets` enforces both.
+- Re-run `scripts/sync_meta_index.py` after editing `source`/`checksums` (the runtime reads
+  the generated `index.json`).

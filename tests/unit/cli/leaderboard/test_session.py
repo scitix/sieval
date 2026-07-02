@@ -17,14 +17,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sieval.cli.leaderboard.session import (
+    _NONMATCH_RUNNER_KEYS,
+    _STRICT_RUNNER_KEYS,
+    _THROUGHPUT_RUNNER_KEYS,
     DETERMINISTIC_DEFAULT_SEED,
     EvalSession,
+    _append_resume_note,
     _apply_endpoint_injection,
     _brief_diff,
+    _diff_dicts,
+    _diff_lines,
     _format_comment_header,
     _guess_submodule_names,
     _reify_cli_overrides,
+    _split_header,
     _strip_header,
+    _strip_noncomparable_fields,
     arun_session,
     load_class_from_name,
     load_class_from_path,
@@ -34,6 +42,7 @@ from sieval.cli.leaderboard.session import (
     unwrap_proxies,
 )
 from sieval.core.models.model import Model
+from sieval.core.runners import TaskRunnerConfig
 from sieval.core.runners.multi_runner import MultiTaskRunner
 from tests.conftest import MockChatModel
 
@@ -210,9 +219,9 @@ class TestDatasetOperations:
         "op,op_args,method_name,method_args,method_kwargs",
         [
             (
-                "select",
+                "slice",
                 {"num": 10},
-                "select",
+                "slice",
                 (10,),
                 {"split": "test"},
             ),
@@ -257,11 +266,27 @@ class TestDatasetOperations:
         with pytest.raises(ValueError, match=error_match):
             runner._apply_dataset_operations(ds, operations, "test_ds")
 
+    def test_renamed_operation_raises_migration_hint(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        with pytest.raises(ValueError, match="'select' was renamed to 'slice'"):
+            runner._apply_dataset_operations(ds, [{"select": {"num": 5}}], "test_ds")
+
+    def test_never_shipped_operation_raises_unknown_not_renamed(self):
+        # 'stratified_select' never shipped, so it must hit the generic unknown
+        # branch — no migration hint for a name users never saw.
+        runner = self._make_runner()
+        ds = MagicMock()
+        with pytest.raises(ValueError, match="Unknown operation 'stratified_select'"):
+            runner._apply_dataset_operations(
+                ds, [{"stratified_select": {"num": 5}}], "test_ds"
+            )
+
     # (op_name, missing_args, expected_error_pattern)
     @pytest.mark.parametrize(
         "op,missing_args,error_match",
         [
-            ("select", {}, "'select' requires 'num'"),
+            ("slice", {}, "'slice' requires 'num'"),
             ("repeat", {}, "'repeat' requires 'times'"),
         ],
     )
@@ -275,36 +300,142 @@ class TestDatasetOperations:
         runner = self._make_runner()
         ds = MagicMock()
         ds.shuffle.return_value = ds
-        ds.select.return_value = ds
+        ds.slice.return_value = ds
 
         _result = runner._apply_dataset_operations(
             ds,
-            [{"shuffle": {"seed": 0}}, {"select": {"num": 5}}],
+            [{"shuffle": {"seed": 0}}, {"slice": {"num": 5}}],
             "test_ds",
         )
         ds.shuffle.assert_called_once()
-        ds.select.assert_called_once()
+        ds.slice.assert_called_once()
 
     def test_operation_argument_variants(self):
         """Validate alias, custom split, and None-arg default behaviors."""
         runner = self._make_runner()
 
         ds_alias = MagicMock()
-        ds_alias.select.return_value = ds_alias
-        runner._apply_dataset_operations(ds_alias, [{"select": {"n": 7}}], "test_ds")
-        ds_alias.select.assert_called_once_with(7, split="test")
+        ds_alias.slice.return_value = ds_alias
+        runner._apply_dataset_operations(ds_alias, [{"slice": {"n": 7}}], "test_ds")
+        ds_alias.slice.assert_called_once_with(7, split="test")
 
         ds_custom_split = MagicMock()
-        ds_custom_split.select.return_value = ds_custom_split
+        ds_custom_split.slice.return_value = ds_custom_split
         runner._apply_dataset_operations(
-            ds_custom_split, [{"select": {"num": 5, "split": "train"}}], "test_ds"
+            ds_custom_split, [{"slice": {"num": 5, "split": "train"}}], "test_ds"
         )
-        ds_custom_split.select.assert_called_once_with(5, split="train")
+        ds_custom_split.slice.assert_called_once_with(5, split="train")
 
         ds_none_args = MagicMock()
         ds_none_args.shuffle.return_value = ds_none_args
         runner._apply_dataset_operations(ds_none_args, [{"shuffle": None}], "test_ds")
         ds_none_args.shuffle.assert_called_once_with(seed=0, split="test")
+
+    def test_stratified_sample_dispatch(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        ds.stratified_sample.return_value = ds
+        runner._apply_dataset_operations(
+            ds,
+            [
+                {
+                    "stratified_sample": {
+                        "by": "Subject",
+                        "num": 800,
+                        "min_per_group": 5,
+                        "seed": 42,
+                    }
+                }
+            ],
+            "test_ds",
+        )
+        ds.stratified_sample.assert_called_once_with(
+            "Subject", num=800, per_group=None, min_per_group=5, seed=42, split="test"
+        )
+
+    def test_stratified_sample_defaults(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        ds.stratified_sample.return_value = ds
+        runner._apply_dataset_operations(
+            ds, [{"stratified_sample": {"by": "category", "num": 600}}], "test_ds"
+        )
+        ds.stratified_sample.assert_called_once_with(
+            "category",
+            num=600,
+            per_group=None,
+            min_per_group=None,
+            seed=0,
+            split="test",
+        )
+
+    def test_stratified_sample_requires_by(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        with pytest.raises(ValueError, match="requires 'by'"):
+            runner._apply_dataset_operations(
+                ds, [{"stratified_sample": {"num": 5}}], "test_ds"
+            )
+        with pytest.raises(ValueError, match="requires 'by'"):
+            runner._apply_dataset_operations(ds, [{"stratified_sample": {}}], "test_ds")
+
+    def test_stratified_sample_requires_exactly_one_budget(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        with pytest.raises(ValueError, match="exactly one of 'num' or 'per_group'"):
+            runner._apply_dataset_operations(
+                ds, [{"stratified_sample": {"by": "Subject"}}], "test_ds"
+            )
+        with pytest.raises(ValueError, match="exactly one of 'num' or 'per_group'"):
+            runner._apply_dataset_operations(
+                ds,
+                [{"stratified_sample": {"by": "Subject", "num": 5, "per_group": 2}}],
+                "test_ds",
+            )
+
+    def test_stratified_sample_min_per_group_excludes_per_group(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        with pytest.raises(ValueError, match="cannot be combined with 'per_group'"):
+            runner._apply_dataset_operations(
+                ds,
+                [
+                    {
+                        "stratified_sample": {
+                            "by": "Subject",
+                            "per_group": 5,
+                            "min_per_group": 1,
+                        }
+                    }
+                ],
+                "test_ds",
+            )
+
+    def test_stratified_sample_per_group_dispatch(self):
+        runner = self._make_runner()
+        ds = MagicMock()
+        ds.stratified_sample.return_value = ds
+        runner._apply_dataset_operations(
+            ds,
+            [
+                {
+                    "stratified_sample": {
+                        "by": ["locale", "subject"],
+                        "per_group": 20,
+                        "seed": 42,
+                    }
+                }
+            ],
+            "test_ds",
+        )
+        ds.stratified_sample.assert_called_once_with(
+            ["locale", "subject"],
+            num=None,
+            per_group=20,
+            min_per_group=None,
+            seed=42,
+            split="test",
+        )
 
 
 # ===================================================================
@@ -637,7 +768,7 @@ tasks:
 
     @pytest.mark.anyio
     async def test_yaml_dataset_operations(self, tmp_path):
-        """Dataset operations (shuffle, select) should be applied from YAML."""
+        """Dataset operations (shuffle, slice) should be applied from YAML."""
         yaml_content = """\
 result_dir: "{result_dir}"
 
@@ -654,7 +785,7 @@ datasets:
     args: {{}}
     operations:
       - shuffle: {{seed: 42}}
-      - select: {{num: 2}}
+      - slice: {{num: 2}}
 
 tasks:
   ops_eval:
@@ -678,7 +809,7 @@ tasks:
         results = await task_runner.arun()
 
         assert "ops_eval" in results
-        # select num=2 should reduce dataset to 2 samples
+        # slice num=2 should reduce dataset to 2 samples
         assert results["ops_eval"]["total"] == 2
 
     @pytest.mark.anyio
@@ -2379,6 +2510,88 @@ class TestResolveDeterministic:
 
 
 # ===================================================================
+# Runner field classification: throughput vs strict vs non-match
+# ===================================================================
+class TestRunnerFieldClassification:
+    def test_every_field_classified_exactly_once(self):
+        all_fields = set(TaskRunnerConfig.__dataclass_fields__)
+        buckets = [
+            _THROUGHPUT_RUNNER_KEYS,
+            _STRICT_RUNNER_KEYS,
+            _NONMATCH_RUNNER_KEYS,
+        ]
+        union = set().union(*buckets)
+        assert union == all_fields, f"unclassified: {all_fields ^ union}"
+        # pairwise disjoint
+        for i in range(len(buckets)):
+            for j in range(i + 1, len(buckets)):
+                assert buckets[i].isdisjoint(buckets[j])
+
+
+class TestStripNoncomparableFields:
+    def test_removes_top_level_concurrency_without_mutating_input(self):
+        cfg = {"concurrency_limit": 8, "concurrency_limits": {"infer": 4}, "models": {}}
+        out = _strip_noncomparable_fields(cfg)
+        assert "concurrency_limit" not in out
+        assert "concurrency_limits" not in out
+        assert cfg["concurrency_limit"] == 8  # original untouched
+
+    def test_removes_per_model_args_concurrency_only(self):
+        cfg = {"models": {"m": {"args": {"concurrency_limit": 64, "temperature": 0.0}}}}
+        out = _strip_noncomparable_fields(cfg)
+        assert "concurrency_limit" not in out["models"]["m"]["args"]
+        assert out["models"]["m"]["args"]["temperature"] == 0.0
+
+    def test_removes_runner_config_throughput_keeps_strict(self):
+        cfg = {
+            "tasks": {
+                "t": {
+                    "runner_config": {
+                        # Scheduling + console-only → stripped
+                        "concurrency_limits": {"infer": 4},
+                        "show_progress": False,
+                        # Affect on-disk content / result semantics → kept strict
+                        "max_retries": 3,
+                        "profile_usage": False,
+                        "detect_anomalies": False,
+                        "dump_progress": False,
+                        "shard_samples": 1024,
+                        "max_iterations": 5,
+                    }
+                }
+            }
+        }
+        out = _strip_noncomparable_fields(cfg)
+        rc = out["tasks"]["t"]["runner_config"]
+        # stripped (adjustable on resume)
+        assert "concurrency_limits" not in rc
+        assert "show_progress" not in rc
+        # kept (must match on resume — touch disk content / failure signal)
+        assert rc["max_retries"] == 3
+        assert rc["profile_usage"] is False
+        assert rc["detect_anomalies"] is False
+        assert rc["dump_progress"] is False
+        assert rc["shard_samples"] == 1024
+        assert rc["max_iterations"] == 5
+
+    def test_removes_top_level_runner_config_throughput_keeps_strict(self):
+        # The top-level runner_config defaults block is merged into every task,
+        # so it carries the same throughput knobs and must be stripped too.
+        cfg = {
+            "runner_config": {
+                "concurrency_limits": {"infer": 4},
+                "write_buffer_size": 64,
+                "max_retries": 3,  # strict → kept
+            }
+        }
+        out = _strip_noncomparable_fields(cfg)
+        rc = out["runner_config"]
+        assert "concurrency_limits" not in rc
+        assert "write_buffer_size" not in rc
+        assert rc["max_retries"] == 3
+
+
+# ===================================================================
 # Best-effort deterministic warning: fires when the session talks to an
 # externally-managed api_base, because sieval can only pin `seed` — it
 # cannot verify batch-invariant kernels on the remote engine.
@@ -2844,6 +3057,36 @@ class TestStripHeader:
         assert _strip_header(text) == text
 
 
+class TestSplitHeader:
+    def test_valid_header_is_an_exact_partition(self):
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        body = "models:\n  base:\n    name: m\n"
+        h, b = _split_header(header + body)
+        assert b == body
+        assert h + b == header + body
+
+    def test_no_header_returns_empty_header(self):
+        body = "models:\n  base: {}\n"
+        h, b = _split_header(body)
+        assert h == ""
+        assert b == body
+
+    def test_malformed_header_returns_empty_header(self):
+        broken = "# " + "-" * 70 + "\n# only one border\nmodels: {}\n"
+        h, b = _split_header(broken)
+        assert h == ""
+        assert b == broken
+
+    def test_strip_header_delegates_to_split(self):
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        body = "models:\n  base:\n    name: m\n"
+        assert _strip_header(header + body) == _split_header(header + body)[1]
+
+
 class TestEvalSessionRawConfig:
     def test_raw_config_is_pristine_after_reification(self, tmp_path):
         """Raw YAML is preserved for persistence — CLI overrides don't leak into it."""
@@ -2929,6 +3172,57 @@ class TestEvalSessionRawConfig:
         # Reification must survive runner initialization.
         assert session.config["deterministic"] is True
         assert session.config["models"]["base"]["args"]["seed"] == 0
+
+
+class TestDiffDicts:
+    def test_reports_changed_scalar(self):
+        out = _diff_dicts({"a": 1, "b": 2}, {"a": 1, "b": 3})
+        assert "b" in out
+        assert "2" in out and "3" in out
+
+    def test_identical_reports_formatting_only(self):
+        out = _diff_dicts({"a": 1}, {"a": 1})
+        assert "formatting only" in out
+
+    def test_reports_list_length_change(self):
+        out = _diff_dicts({"xs": [1, 2]}, {"xs": [1, 2, 3]})
+        assert "list length 2 → 3" in out
+
+
+class TestDiffLines:
+    def test_identical_returns_empty(self):
+        assert _diff_lines({"a": 1}, {"a": 1}) == []
+
+    def test_nested_leaf_path(self):
+        lines = _diff_lines({"a": {"b": 1}}, {"a": {"b": 2}})
+        assert lines == ["- a.b: 1 → 2"]
+
+
+class TestAppendResumeNote:
+    def test_note_inserted_before_closing_border_and_split_stable(self):
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        body = "models:\n  base:\n    name: m\n"
+        out = _append_resume_note(header, ["- concurrency_limit: 8 → 2"])
+
+        assert "Persisted by sieval" in out  # origin preserved
+        assert "Resumed by sieval" in out
+        assert "#   - concurrency_limit: 8 → 2" in out
+        # The note sits inside the border pair: the whole block is still parsed
+        # as header (body is not polluted) when prepended to a body.
+        h, b = _split_header(out + body)
+        assert b == body
+        assert "Resumed by sieval" in h
+
+    def test_second_append_accumulates(self):
+        header = _format_comment_header(
+            title="Persisted by", source_config="/x", invocation="sieval run x"
+        )
+        once = _append_resume_note(header, ["- a: 1 → 2"])
+        twice = _append_resume_note(once, ["- a: 2 → 3"])
+        assert twice.count("Resumed by sieval") == 2
+        assert "- a: 1 → 2" in twice and "- a: 2 → 3" in twice
 
 
 class TestBriefDiff:

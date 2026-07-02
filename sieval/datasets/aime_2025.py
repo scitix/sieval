@@ -13,6 +13,8 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset_list
 
+AIME_2025_REVISION = "a6ad95f611d72cf628a80b58bd0432ef6638f958"
+
 
 class AIME2025DatasetSample(TypedDict):
     question: str
@@ -23,7 +25,7 @@ class AIME2025DatasetSample(TypedDict):
     name="aime_2025",
     display_name="AIME 2025",
     description="American Invitational Mathematics Examination 2025, 30 problems.",
-    source="hf:opencompass/AIME2025",
+    source=f"hf:opencompass/AIME2025@{AIME_2025_REVISION}",
     categories=(Category(Level1Category.MATHEMATICS, "CompetitionMath"),),
     tags=("english", "open-ended"),
     license="MIT",

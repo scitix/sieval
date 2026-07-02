@@ -364,7 +364,7 @@ class TestValidateDatasets:
         cfg = {
             "models": {},
             "tasks": {},
-            "datasets": {"d": {"class": "X", "operations": [{"select": "bad"}]}},
+            "datasets": {"d": {"class": "X", "operations": [{"slice": "bad"}]}},
         }
         result = validate_eval_config(cfg)
         assert not result.ok
@@ -397,7 +397,7 @@ class TestValidateDatasets:
             "datasets": {
                 "d": {
                     "class": "X",
-                    "operations": [{"select": {"num": 10}, "shuffle": {}}],
+                    "operations": [{"slice": {"num": 10}, "shuffle": {}}],
                 }
             },
         }
@@ -414,6 +414,32 @@ class TestValidateDatasets:
         assert not result.ok
         assert any("sort" in e for e in result.errors)
 
+    def test_operations_renamed_op_gives_migration_hint(self):
+        cfg = {
+            "models": {},
+            "tasks": {},
+            "datasets": {"d": {"class": "X", "operations": [{"select": {"num": 5}}]}},
+        }
+        result = validate_eval_config(cfg)
+        assert not result.ok
+        assert any("'select' was renamed to 'slice'" in e for e in result.errors)
+
+    def test_operations_never_shipped_name_is_unknown_not_renamed(self):
+        # 'stratified_select' never shipped (introduced and renamed within the
+        # same unreleased change), so it must read as an unknown op, not carry a
+        # migration hint for a name users never saw.
+        cfg = {
+            "models": {},
+            "tasks": {},
+            "datasets": {
+                "d": {"class": "X", "operations": [{"stratified_select": {"num": 5}}]}
+            },
+        }
+        result = validate_eval_config(cfg)
+        assert not result.ok
+        assert any("unknown operation 'stratified_select'" in e for e in result.errors)
+        assert not any("was renamed" in e for e in result.errors)
+
     def test_valid_operations(self):
         cfg = {
             "models": {},
@@ -423,7 +449,52 @@ class TestValidateDatasets:
                     "class": "X",
                     "operations": [
                         {"shuffle": {"seed": 42}},
-                        {"select": {"num": 100}},
+                        {"slice": {"num": 100}},
+                    ],
+                }
+            },
+        }
+        result = validate_eval_config(cfg)
+        assert result.ok
+
+    def test_valid_stratified_sample_operation(self):
+        cfg = {
+            "models": {},
+            "tasks": {},
+            "datasets": {
+                "d": {
+                    "class": "X",
+                    "operations": [
+                        {
+                            "stratified_sample": {
+                                "by": "Subject",
+                                "num": 800,
+                                "min_per_group": 5,
+                                "seed": 42,
+                            }
+                        }
+                    ],
+                }
+            },
+        }
+        result = validate_eval_config(cfg)
+        assert result.ok
+
+    def test_valid_stratified_sample_equal_composite_operation(self):
+        cfg = {
+            "models": {},
+            "tasks": {},
+            "datasets": {
+                "d": {
+                    "class": "X",
+                    "operations": [
+                        {
+                            "stratified_sample": {
+                                "by": ["locale", "subject"],
+                                "per_group": 20,
+                                "seed": 42,
+                            }
+                        }
                     ],
                 }
             },

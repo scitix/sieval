@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sieval.core.models.gen_model import GenModel
+from sieval.core.models.gen_model import GenModel, _completion_top_logprobs
 from sieval.core.models.model import ModelOutput
 
 
@@ -316,7 +316,9 @@ class TestGenAGenerate:
 # _alogprobs_impl
 # ===================================================================
 class TestGenALogprobs:
-    def _make_logprobs_chunk(self, token, logprob, index=0, finish_reason=""):
+    def _make_logprobs_chunk(
+        self, token, logprob, index=0, finish_reason="", top_logprobs=None
+    ):
         chunk = MagicMock()
         chunk.usage = None
 
@@ -328,6 +330,7 @@ class TestGenALogprobs:
         lp_obj = MagicMock()
         lp_obj.tokens = [token]
         lp_obj.token_logprobs = [logprob]
+        lp_obj.top_logprobs = top_logprobs
         choice.logprobs = lp_obj
         chunk.choices = [choice]
         return chunk
@@ -350,7 +353,12 @@ class TestGenALogprobs:
     @pytest.mark.anyio
     async def test_logprobs_extracted(self, model):
         chunks = [
-            self._make_logprobs_chunk("A", -0.1, finish_reason="stop"),
+            self._make_logprobs_chunk(
+                "A",
+                -0.1,
+                finish_reason="stop",
+                top_logprobs=[{"A": -0.1, "B": -0.5}],
+            ),
             self._make_logprobs_chunk("B", -0.5),
         ]
         self._patch_logprobs_create(model, chunks)
@@ -359,6 +367,7 @@ class TestGenALogprobs:
         assert "A" in out.logprobs_tokens
         assert out.logprobs is not None
         assert -0.1 in out.logprobs
+        assert out.top_logprobs == [{"A": -0.1, "B": -0.5}]
 
     @pytest.mark.anyio
     async def test_no_logprobs_raises(self, model):
@@ -739,3 +748,18 @@ class TestGenLogprobsNullBranches:
             "prompt", max_tokens=1, logprobs=5, stream=False
         )
         assert out.usage is None
+
+
+class TestCompletionTopLogprobs:
+    """Cover _completion_top_logprobs parsing and its defensive branches."""
+
+    def test_non_sequence_returns_empty(self):
+        assert _completion_top_logprobs(None) == []
+        assert _completion_top_logprobs("AB") == []
+
+    def test_parses_and_skips_malformed_entries(self):
+        # Mix of: a valid dict; a None entry (→ {}); a non-Mapping entry
+        # (skipped); and a dict whose non-numeric value ("no") and non-str key
+        # (2) are both filtered out, leaving only the valid pair.
+        raw = [{"A": -0.1}, None, "x", {"y": -0.5, "1": "no", 2: -0.3}]
+        assert _completion_top_logprobs(raw) == [{"A": -0.1}, {}, {"y": -0.5}]

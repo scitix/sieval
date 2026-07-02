@@ -9,6 +9,14 @@ from .aime_2025 import (
     AIME2025Dataset,
     AIME2025DatasetSample,
 )
+from .aime_2026 import (
+    AIME2026Dataset,
+    AIME2026DatasetSample,
+)
+from .cmmlu import (
+    CMMLUDataset,
+    CMMLUDatasetSample,
+)
 from .drop import (
     DROPDataset,
     DROPDatasetSample,
@@ -21,6 +29,14 @@ from .gsm8k import (
     GSM8KDataset,
     GSM8KDatasetSample,
 )
+from .hmmt_feb_2025 import (
+    HMMTFeb2025Dataset,
+    HMMTFeb2025DatasetSample,
+)
+from .hmmt_feb_2026 import (
+    HMMTFeb2026Dataset,
+    HMMTFeb2026DatasetSample,
+)
 from .human_eval import (
     HumanEvalDataset,
     HumanEvalDatasetSample,
@@ -28,6 +44,10 @@ from .human_eval import (
 from .ifeval import (
     IFEvalDataset,
     IFEvalDatasetSample,
+)
+from .imo_answer_bench import (
+    IMOAnswerBenchDataset,
+    IMOAnswerBenchDatasetSample,
 )
 from .livecodebench_code_generation import (
     LiveCodeBenchDataset,
@@ -53,22 +73,36 @@ from .t_eval import (
     TEvalBeforeCallingDataset,
     TEvalBeforeCallingDatasetSample,
 )
+from .theoremqa import (
+    TheoremQADataset,
+    TheoremQADatasetSample,
+)
 
 __all__ = [
     "AIME2024Dataset",
     "AIME2024DatasetSample",
     "AIME2025Dataset",
     "AIME2025DatasetSample",
+    "AIME2026Dataset",
+    "AIME2026DatasetSample",
+    "CMMLUDataset",
+    "CMMLUDatasetSample",
     "DROPDataset",
     "DROPDatasetSample",
     "GPQADiamondDataset",
     "GPQADiamondDatasetSample",
     "GSM8KDataset",
     "GSM8KDatasetSample",
+    "HMMTFeb2025Dataset",
+    "HMMTFeb2025DatasetSample",
+    "HMMTFeb2026Dataset",
+    "HMMTFeb2026DatasetSample",
     "HumanEvalDataset",
     "HumanEvalDatasetSample",
     "IFEvalDataset",
     "IFEvalDatasetSample",
+    "IMOAnswerBenchDataset",
+    "IMOAnswerBenchDatasetSample",
     "LiveCodeBenchDataset",
     "LiveCodeBenchDatasetSample",
     "MATH500Dataset",
@@ -81,4 +115,6 @@ __all__ = [
     "RulerDatasetSample",
     "TEvalBeforeCallingDataset",
     "TEvalBeforeCallingDatasetSample",
+    "TheoremQADataset",
+    "TheoremQADatasetSample",
 ]

@@ -106,7 +106,7 @@ datasets:
     #   path: "${SIEVAL_DATA_DIR}/mmlu"
     #   operations:
     #     - shuffle: { seed: 42 }
-    #     - select: { num: 100 }
+    #     - slice: { num: 100 }
 
 # =============================================================================
 # Tasks

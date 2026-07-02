@@ -1,8 +1,30 @@
 """GenModel: text completions API backend."""
 
+from collections.abc import Mapping, Sequence
 from typing import override
 
 from .model import Model, ModelOutput, ModelUsage
+
+
+def _completion_top_logprobs(raw: object) -> list[dict[str, float]]:
+    if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
+        return []
+
+    top_logprobs = []
+    for item in raw:
+        if item is None:
+            top_logprobs.append({})
+            continue
+        if not isinstance(item, Mapping):
+            continue
+        top_logprobs.append(
+            {
+                token: float(logprob)
+                for token, logprob in item.items()
+                if isinstance(token, str) and isinstance(logprob, int | float)
+            }
+        )
+    return top_logprobs
 
 
 class GenModel(Model[str]):
@@ -133,6 +155,7 @@ class GenModel(Model[str]):
         usage: ModelUsage | None = None
         tokens: list[str] = []
         token_logprobs: list[float | None] = []
+        top_token_logprobs: list[dict[str, float]] = []
         saw_logprobs = False
 
         # Snapshot params for stable meta serialization
@@ -148,7 +171,7 @@ class GenModel(Model[str]):
         if stream_mode and "stream_options" not in request_params:
             request_params["stream_options"] = {"include_usage": True}
 
-        resp = await self._client.completions.create(  # type: ignore[no-matching-overload]
+        resp = await self._client.completions.create(  # ty: ignore[no-matching-overload]
             model=self._model,
             prompt=prompt,
             **request_params,
@@ -178,6 +201,11 @@ class GenModel(Model[str]):
                                     tokens.extend(logprobs_obj.tokens)
                                 if logprobs_obj.token_logprobs:
                                     token_logprobs.extend(logprobs_obj.token_logprobs)
+                                top_token_logprobs.extend(
+                                    _completion_top_logprobs(
+                                        getattr(logprobs_obj, "top_logprobs", None)
+                                    )
+                                )
 
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage is not None:
@@ -204,6 +232,11 @@ class GenModel(Model[str]):
                             tokens.extend(logprobs_obj.tokens)
                         if logprobs_obj.token_logprobs:
                             token_logprobs.extend(logprobs_obj.token_logprobs)
+                        top_token_logprobs.extend(
+                            _completion_top_logprobs(
+                                getattr(logprobs_obj, "top_logprobs", None)
+                            )
+                        )
 
             raw_usage = resp.usage
             if raw_usage is not None:
@@ -225,6 +258,7 @@ class GenModel(Model[str]):
             finish_reasons=finish_reasons,
             logprobs_tokens=tokens,
             logprobs=token_logprobs,
+            top_logprobs=top_token_logprobs or None,
             usage=usage,
             request_params=request_params,
             response_model=response_model,
