@@ -114,6 +114,13 @@ def _atom_equiv(a: str, b: str) -> bool:
     # grabs a coincidental number out of expression/equation answers (e.g. "n=3k"
     # -> 3), which produced false positives. Whole-answer math equivalence is still
     # handled by the verify_math_answer fast path in verify_answer_gen.
+    #
+    # An empty side (both reduced to "" by _normalize, e.g. "\\text{No}" vs
+    # "\\text{Yes}") is never a match — upstream verify_math_answer returns False
+    # there, and matching "" == "" would over-count. (Identical text answers are
+    # already caught by the verify_math_answer fast path before we normalize.)
+    if not a.strip() or not b.strip():
+        return False
     if a.replace(" ", "") == b.replace(" ", ""):
         return True
     a2, b2 = _FN_PREFIX.sub("", a).strip(), _FN_PREFIX.sub("", b).strip()

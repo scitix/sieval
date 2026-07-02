@@ -666,11 +666,11 @@
       "deps_group": "math",
       "model_type": "chat",
       "reference_impl": {
-        "source": "IMO-Bench (Google DeepMind)",
+        "source": "IMO-Bench (Google DeepMind) + eth-sri/matharena",
         "url": "https://github.com/EnvCommons/IMO-Bench/blob/66b014f1b3799972ddfc32dbacea51b802586141/answer_verification.py",
-        "notes": "IMO-Bench AnswerBench: reason-step-by-step prompt; answer equivalence via math-verify with a normalized-string fallback (vendored in community/imo_bench.py). Boxed answer format added for non-agentic extraction."
+        "notes": "NON-STRICT / EXPERIMENTAL port of IMO-Bench AnswerBench. Deviations from upstream:\n1. Harness type: upstream is agentic (answer submitted via an `answer` tool call); this is generative — last-\\boxed{} extraction.\n2. Prompt: upstream is the bare 'Please reason step by step.'; we append 'Put your final answer within \\boxed{}.' plus a blank-line separator before the problem.\n3. Grading: verify_math_answer is vendored verbatim (math-verify + normalized-string fallback), but a NON-upstream normalizer verify_answer_gen (gen-mode formatting + multi-answer set matching) contributes ~11% of the score — raw verify_math_answer alone = 260/400 = 65.0%, verify_answer_gen = 293/400 = 73.25% (DeepSeek-V4-Pro).\n4. Data source: HF mirror hf:Hwilner/imo-answerbench (functionally equivalent to upstream's OpenReward answerbench.csv).\n5. Dual lineage: prompt + last-\\boxed{} extraction are from eth-sri/matharena (community/matharena.py); the answer grader is IMO-Bench (community/imo_bench.py, @66b014f1).\nKnown limitation: \\boxed{} extraction conflates format-compliance with math ability; a function-calling submission channel reproducing upstream's answer tool (and dropping verify_answer_gen) is the fidelity fix. Infer prereqs: large max_tokens (~131072) + generous client read-timeout (300s+); the score is budget-sensitive."
       },
-      "status": "stable"
+      "status": "experimental"
     },
     {
       "name": "livecodebench_code_generation_0shot_gen",

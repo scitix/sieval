@@ -70,3 +70,11 @@ def test_gen_is_conservative_no_false_positive():
     )
     assert verify_answer_gen("5", "7") is False
     assert verify_answer_gen("5", None) is False
+
+
+def test_gen_empty_after_normalize_is_not_a_match():
+    # Both reduce to "" under _normalize (\text{...} stripped) — must NOT grade
+    # equal; upstream verify_math_answer returns False here.
+    assert verify_answer_gen("\\text{No}", "\\text{Yes}") is False
+    # Identical text answers are still matched by the verify_math_answer fast path.
+    assert verify_answer_gen("\\text{Yes}", "\\text{Yes}") is True

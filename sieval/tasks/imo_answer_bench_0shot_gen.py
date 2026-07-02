@@ -1,5 +1,21 @@
 """IMO-AnswerBench zero-shot generative task.
 
+**Experimental / non-strict port** (``status="experimental"`` — not a frozen
+leaderboard contract). IMO-Bench's upstream AnswerBench is an *agentic* harness:
+the agent submits its answer via an ``answer`` tool call. This task reproduces it
+in a *generative* setting (last-``\\boxed{}`` extraction) instead. Every deviation
+from upstream is enumerated in ``reference_impl.notes`` below.
+
+Dual-source lineage: the boxed prompt + last-``\\boxed{}`` extraction follow
+eth-sri/matharena; answer equivalence is vendored verbatim from IMO-Bench's
+``answer_verification.py`` (``community/imo_bench.py``), plus a documented gen-mode
+normalizer (``verify_answer_gen``).
+
+Infer prerequisites: olympiad reasoning traces are very long — set a large output
+budget (``max_tokens`` ≈ 131072) and a generous client read-timeout (300s+). At
+``max_tokens=65536`` ~22% of samples truncate mid-reasoning with no boxed answer
+(scored wrong); the score is therefore budget-sensitive.
+
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
@@ -44,14 +60,33 @@ class Feedback(TypedDict):
     tags=("english", "open-ended"),
     deps_group="math",
     model_type="chat",
+    status="experimental",
     reference_impl=ReferenceImpl(
-        source="IMO-Bench (Google DeepMind)",
+        source="IMO-Bench (Google DeepMind) + eth-sri/matharena",
         url="https://github.com/EnvCommons/IMO-Bench/blob/66b014f1b3799972ddfc32dbacea51b802586141/answer_verification.py",
         notes=(
-            "IMO-Bench AnswerBench: reason-step-by-step prompt; answer equivalence "
-            "via math-verify with a normalized-string fallback (vendored in "
-            "community/imo_bench.py). Boxed answer format added for non-agentic "
-            "extraction."
+            "NON-STRICT / EXPERIMENTAL port of IMO-Bench AnswerBench. Deviations "
+            "from upstream:\n"
+            "1. Harness type: upstream is agentic (answer submitted via an `answer` "
+            "tool call); this is generative — last-\\boxed{} extraction.\n"
+            "2. Prompt: upstream is the bare 'Please reason step by step.'; we append "
+            "'Put your final answer within \\boxed{}.' plus a blank-line separator "
+            "before the problem.\n"
+            "3. Grading: verify_math_answer is vendored verbatim (math-verify + "
+            "normalized-string fallback), but a NON-upstream normalizer "
+            "verify_answer_gen (gen-mode formatting + multi-answer set matching) "
+            "contributes ~11% of the score — raw verify_math_answer alone = "
+            "260/400 = 65.0%, verify_answer_gen = 293/400 = 73.25% (DeepSeek-V4-Pro).\n"
+            "4. Data source: HF mirror hf:Hwilner/imo-answerbench (functionally "
+            "equivalent to upstream's OpenReward answerbench.csv).\n"
+            "5. Dual lineage: prompt + last-\\boxed{} extraction are from "
+            "eth-sri/matharena (community/matharena.py); the answer grader is "
+            "IMO-Bench (community/imo_bench.py, @66b014f1).\n"
+            "Known limitation: \\boxed{} extraction conflates format-compliance with "
+            "math ability; a function-calling submission channel reproducing "
+            "upstream's answer tool (and dropping verify_answer_gen) is the fidelity "
+            "fix. Infer prereqs: large max_tokens (~131072) + generous client "
+            "read-timeout (300s+); the score is budget-sensitive."
         ),
     ),
 )
