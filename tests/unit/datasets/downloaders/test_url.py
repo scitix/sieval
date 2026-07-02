@@ -108,7 +108,7 @@ def test_download_rejects_truncated_stream(tmp_path):
         mock_resp.headers = {"content-length": "100"}
         mock_resp.num_bytes_downloaded = 3  # connection died after 3 raw bytes
         mock_stream.return_value.__enter__.return_value = mock_resp
-        with pytest.raises(RuntimeError, match="truncated download"):
+        with pytest.raises(RuntimeError, match="size mismatch"):
             h.download(
                 "url:https://example.com/foo.csv",
                 dest_root=tmp_path,
@@ -127,8 +127,9 @@ def test_download_accepts_compressed_response(tmp_path):
     Content-Length, not the decompressed bytes written — otherwise every
     compressed download falsely trips the truncation guard.
 
-    Regression: SQuAD's train-v2.0.json is gzip-served; Content-Length=9551051
-    but the decoded body is ~42MB, which the old written-bytes check rejected."""
+    Regression: RULER's SQuAD source (dev-v2.0.json) is gzip-served;
+    Content-Length=800683 but the decoded body is ~4.4MB, which the old
+    written-bytes check rejected."""
     h = URLHandler()
     with patch("sieval.datasets.downloaders.url.httpx.stream") as mock_stream:
         mock_resp = MagicMock()
