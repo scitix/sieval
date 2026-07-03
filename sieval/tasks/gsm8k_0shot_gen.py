@@ -17,8 +17,9 @@ path (pinned commit ``b8b0f8ce``, ``configs/zero_shot_test_configs.json``):
   isclose with %-variants, then sympy symbolic fallback). We call ``is_correct``
   directly. ``score`` is this accuracy.
 
-All extraction/scoring lives verbatim in ``sieval.community.deepseek_math`` (the
-same vendored module the MATH task uses).
+All extraction/scoring lives verbatim in ``sieval.community.deepseek_math``
+(vendored byte-faithfully from DeepSeek-Math's ``answer_extraction.py`` /
+``eval_utils.py`` / ``eval_script.py`` at the pinned commit).
 
 Deviations from the DeepSeek-Math repo (documented, not silent):
 
@@ -139,9 +140,12 @@ class GSM8KZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
-        count = len(finals)
-        if count == 0:
+        # Accuracy over the full requested set (finals + fails), matching the
+        # math-0shot-gen family and DeepSeek's full-set accuracy: a pipeline
+        # failure counts as wrong, not as an excluded sample.
+        total = len(finals) + len(fails)
+        if total == 0:
             return {"score": 0.0, "fails": len(fails), "accuracy": 0.0}
         correct_num = sum(1 for ctx in finals if ctx.feedback_result["correct"])
-        accuracy = 100 * correct_num / count
+        accuracy = 100 * correct_num / total
         return {"score": accuracy, "fails": len(fails), "accuracy": accuracy}

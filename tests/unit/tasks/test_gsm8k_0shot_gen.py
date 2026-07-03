@@ -156,6 +156,20 @@ async def test_report_empty_finals():
 
 
 @pytest.mark.anyio
+async def test_report_counts_fails_in_denominator():
+    # Denominator is len(finals) + len(fails), matching the math-0shot-gen
+    # family: a pipeline failure counts as wrong, not as an excluded sample.
+    task, _ = _task("x")
+    raw = _sample()
+    finals = [
+        TaskContext(sample_id=0, raw_sample=raw, feedback_result={"correct": True}),
+    ]
+    fails = [TaskContext(sample_id=1, raw_sample=raw)]
+    report = await task.report(finals, fails)
+    assert report == {"score": 50.0, "fails": 1, "accuracy": 50.0}
+
+
+@pytest.mark.anyio
 async def test_infer_injects_no_decode_params():
     task, model = _task("x")
     pre = await task.preprocess(
