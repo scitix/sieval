@@ -180,7 +180,7 @@ class HumanEvalZeroShotBaseGenTask(
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
         if total == 0:
-            return {"score": 0.0, "fails": len(fails)}
+            return {"score": 0.0, "fails": len(fails), "timeouts": 0, "pass@1": 0.0}
 
         pass_at_1_total = 0.0
         pass_at_k_total = 0.0
