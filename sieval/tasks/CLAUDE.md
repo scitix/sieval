@@ -9,8 +9,17 @@ File: `<task>_<N>shot_<mode>.py` — suffix determines `model_type`:
 | `_gen.py` | `"chat"` |
 | `_base_gen.py` | `"gen"` |
 | `_ppl.py` | `"gen"` |
+| `_clp.py` | `"gen"` |
 
 Class: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `FewShot`).
+
+### `ppl` vs `clp`
+
+- `ppl` — pick the answer whose full `context + candidate` has the highest
+  sequence likelihood; one inference per candidate, any answer length.
+- `clp` — pick the answer by the next single token's log-prob over a fixed set
+  of option tokens, read from the API's `top_logprobs` in one inference.
+  Single-token / labeled-choice answers only; tokenizer-sensitive.
 
 ## Key Rules
 

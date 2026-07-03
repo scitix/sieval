@@ -11,7 +11,9 @@ paths:
     - `_gen.py` → `model_type = "chat"`
     - `_base_gen.py` → `model_type = "gen"` (base model, uses GenModel)
     - `_ppl.py` → `model_type = "gen"` (perplexity, uses GenModel)
+    - `_clp.py` → `model_type = "gen"` (conditional next-token log-prob, uses GenModel)
 - Class naming: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `FewShot`)
+- `ppl` vs `clp` distinction: see `sieval/tasks/CLAUDE.md`.
 
 ## Checklist for New Benchmarks
 

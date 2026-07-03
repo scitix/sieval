@@ -37,7 +37,8 @@ def list_cmd(
         str | None, typer.Option("--domain", help="Filter by Level1Category.")
     ] = None,
     eval_mode: Annotated[
-        str | None, typer.Option("--eval-mode", help="Filter by eval mode (gen/ppl).")
+        str | None,
+        typer.Option("--eval-mode", help="Filter by eval mode (gen/ppl/clp)."),
     ] = None,
     data_dir: Annotated[
         str | None, typer.Option("--data-dir", help="Override data directory.")
