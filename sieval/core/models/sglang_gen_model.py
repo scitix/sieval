@@ -51,7 +51,7 @@ def _request_params(body: dict[str, JSONValue]) -> dict[str, JSONValue]:
     return {k: v for k, v in body.items() if k != "text"}
 
 
-def _normalize_token_text(text: str) -> str:
+def _normalize_token_text(text: str | None) -> str:
     """Map GPT-2 byte-level BPE markers back to literal whitespace.
 
     sglang detokenizes when ``return_text_in_logprobs=True``, but some
@@ -62,10 +62,22 @@ def _normalize_token_text(text: str) -> str:
     Normalize here so downstream scoring is fed the same token text the
     OpenAI path would produce.
 
+    ``text`` is ``None`` when the server did not detokenize the logprobs
+    (a server launched with ``--skip-tokenizer-init`` ignores
+    ``return_text_in_logprobs``). Letter/option scoring cannot work without
+    token text, so fail loud with an actionable message rather than crash on
+    ``None.replace`` or silently degrade every token to ``""``.
+
     Limitation: only GPT-2 byte-level markers are handled. SentencePiece
     (``▁``, U+2581) and other tokenizer conventions pass through unchanged —
     add them here if a tokenizer that uses them needs the same contract.
     """
+    if text is None:
+        raise RuntimeError(
+            "sglang returned a logprob entry with no token text; option/letter "
+            "scoring needs detokenized text. Do not launch sglang with "
+            "--skip-tokenizer-init (it ignores return_text_in_logprobs)."
+        )
     return text.replace("Ġ", " ").replace("Ċ", "\n")
 
 
@@ -156,6 +168,11 @@ class SglangGenModel(Model[str]):
         (e.g. the first input token) becomes ``{}``. Returns ``None`` when the
         server sent no top-k at all, matching ``ModelOutput.top_logprobs``'s
         optional shape. CMMLU keys A/B/C/D off ``top_logprobs[0]``.
+
+        Distinct token ids can normalize to identical text (e.g. a byte-level
+        ``"ĠA"`` and a literal ``" A"`` both → ``" A"``). Coalescing them by
+        keeping the highest logprob prevents a low-probability duplicate from
+        clobbering the real one, matching CMMLU's max-over-strip semantics.
         """
         entries: list = []
         if echo:
@@ -169,12 +186,12 @@ class SglangGenModel(Model[str]):
             if not per_token:
                 result.append({})
                 continue
-            result.append(
-                {
-                    _normalize_token_text(token_text): logprob
-                    for logprob, _token_id, token_text in per_token
-                }
-            )
+            merged: dict[str, float] = {}
+            for logprob, _token_id, token_text in per_token:
+                key = _normalize_token_text(token_text)
+                if key not in merged or logprob > merged[key]:
+                    merged[key] = logprob
+            result.append(merged)
         return result
 
     @staticmethod

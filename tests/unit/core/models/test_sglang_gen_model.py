@@ -88,6 +88,12 @@ class TestNormalizeTokenText:
     def test_plain_unchanged(self):
         assert _normalize_token_text(" A") == " A"
 
+    def test_none_text_raises(self):
+        # Server without detokenization (--skip-tokenizer-init) returns no text;
+        # fail loud rather than crash on None.replace or degrade to "".
+        with pytest.raises(RuntimeError, match="no token text"):
+            _normalize_token_text(None)
+
 
 # ===================================================================
 # _agenerate_impl (native /generate generation)
@@ -398,6 +404,33 @@ class TestTopLogprobs:
             (lp for tok, lp in out.top_logprobs[0].items() if tok.strip() == "B")
         )
         assert best == -0.007
+
+    @pytest.mark.anyio
+    async def test_duplicate_normalized_tokens_keep_max(self, model):
+        """Two token ids normalizing to the SAME text keep the highest logprob.
+
+        A byte-level "ĠA" (high) and a literal " A" (low) both normalize to
+        " A"; the dict must not let the later, lower entry clobber the real
+        one — otherwise CMMLU would score the option at the wrong logprob.
+        """
+        meta = _meta(
+            output_entries=[[-0.05, 100, "ĠA"]],
+            output_top=[[[-0.05, 100, "ĠA"], [-9.9, 55, " A"]]],
+        )
+        _patch_post(model, {"text": " A", "meta_info": meta})
+        out = await model._alogprobs_impl("prompt", echo=False, logprobs=100)
+        assert out.top_logprobs == [{" A": -0.05}]
+
+    @pytest.mark.anyio
+    async def test_none_token_text_in_top_raises(self, model):
+        """A top-k entry with no token text (no detokenization) fails loud."""
+        meta = _meta(
+            output_entries=[[-0.1, 1, " A"]],
+            output_top=[[[-0.1, 1, None]]],
+        )
+        _patch_post(model, {"text": "", "meta_info": meta})
+        with pytest.raises(RuntimeError, match="no token text"):
+            await model._alogprobs_impl("prompt", echo=False)
 
 
 # ===================================================================
