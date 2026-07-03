@@ -8,9 +8,13 @@ Deviations from the official AllenAI IFBench evaluation:
 - The upstream ``stop=["</answer>"]`` sequence is not set: with backend-side
   reasoning separation the answer arrives in ``content`` without answer tags.
 
-Official leaderboard decoding (allenai/IFBench#5): temperature=0,
+Official leaderboard hyperparameters (allenai/IFBench#5): temperature=0,
 max_gen_toks=32768, stop=["</answer>"], process_output="r1_style", thinking
-enabled. Set decoding via the model config, not in this task.
+enabled. These do not reproduce the score on Qwen3 thinking mode — greedy
+decoding (temperature=0) makes the reasoning trace loop and overrun the token
+budget, yielding empty answers scored as failures; reproduction requires
+Qwen3's recommended sampling (temperature=0.6, top_p=0.95, top_k=20). Set
+decoding via the model config, not in this task.
 
 AI-Generated Code - GPT-5 (OpenAI)
 """
@@ -49,8 +53,14 @@ from sieval.datasets import IFBenchDatasetSample
         notes=(
             "evaluation_lib + instructions registry/checkers vendored from "
             "AllenAI IFBench. Headline score is prompt-level loose accuracy, "
-            "the metric the IFBench paper reports. Comparison target: AllenAI "
-            "leaderboard Qwen3-32B = 37.3 (allenai/IFBench#5)."
+            "the metric the IFBench paper reports. Comparison target: "
+            "Qwen3-32B = 37.3 (AllenAI README leaderboard). The authors' "
+            "hyperparameters in allenai/IFBench#5 use greedy temperature=0, "
+            "which does not reproduce the score on this thinking model; "
+            "reproduced with Qwen3's recommended sampling (temperature=0.6, "
+            "top_p=0.95, top_k=20, max_tokens=38912). As that sampling is "
+            "non-greedy the score is a stochastic band with 37.3 at the top "
+            "edge, not a deterministic value."
         ),
     ),
 )
