@@ -198,6 +198,10 @@ class SglangGenModel(Model[str]):
         final_kwargs = {**self._kwargs, **kwargs}
         num_choices = self._validate_n(final_kwargs)
 
+        # Cross-engine parity note: with max_tokens unset no max_new_tokens is
+        # sent, so sglang applies its own default (128) while the vllm/OpenAI
+        # completions path applies the OpenAI default. Set max_tokens explicitly
+        # for identical output length when flipping engine: vllm <-> sglang.
         sampling = self._sampling_params(final_kwargs)
         if num_choices > 1:
             sampling["n"] = num_choices
