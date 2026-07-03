@@ -572,6 +572,27 @@
       "status": "stable"
     },
     {
+      "name": "gsm8k_0shot_gen",
+      "display_name": "GSM8K (0-shot, generative)",
+      "description": "GSM8K 0-shot chat-model eval aligned with the DeepSeek-Math pipeline.",
+      "dataset": "gsm8k",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "deepseek-ai/DeepSeek-Math",
+        "url": "https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
+        "notes": "gsm8k-test zero-shot CoT protocol: user turn = question + \"Please reason step by step, and put your final answer within \\boxed{}.\", chat template applied by the serving backend; extract_answer(exhaust=False) (= extract_last_single_answer) and is_correct/math_equal (= eval_last_single_answer) scoring are vendored byte-for-byte in sieval.community.deepseek_math. Gold derived from openai/gsm8k like process_gsm8k_test (answer.split('####')[-1], commas removed)."
+      },
+      "status": "stable"
+    },
+    {
       "name": "gsm8k_kshot_base_gen",
       "display_name": "GSM8K (few-shot, base generative)",
       "description": "GSM8K few-shot base-model strict-match EM evaluation.",
