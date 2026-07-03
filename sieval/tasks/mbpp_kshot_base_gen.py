@@ -53,7 +53,8 @@ class Feedback(TypedDict):
         url="https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/mbpp/mbpp.yaml",
         notes=(
             "Prompt, [DONE] stop token, and default task_id 2/3/4 few-shot "
-            "samples mirror lm-eval MBPP; k (few-shot count) is configurable "
+            "samples mirror lm-eval MBPP; n_shot (few-shot count) is "
+            "configurable "
             "via YAML task args. Greedy generation (temperature=0, top_p=1, "
             "max_tokens=1024). Published Qwen2.5-72B-Base MBPP 3-shot Pass@1 "
             "is 76.0 (Qwen3 report, Table 3) and 72.6 (DeepSeek-V3 report, "
@@ -79,25 +80,24 @@ class MBPPFewShotBaseGenTask(
         model,
         name: str | None = None,
         *,
-        k: int = DEFAULT_NUM_SHOTS,
-        pass_k: int = 1,
+        n_shot: int = DEFAULT_NUM_SHOTS,
+        k: int = 1,
         n: int = 1,
         max_concurrency: int = 4,
-        # lm-eval scores MBPP via HF code_eval (default 3.0s). 5.0s is an
-        # intentional, more-lenient value shared with human_eval_0shot_gen to
-        # keep the code-exec task family aligned; observed timeouts stay at 0.
-        timeout: float = 5.0,
+        # lm-eval scores MBPP via HF code_eval, whose default timeout is 3.0s
+        # (lm-eval does not override it); match upstream.
+        timeout: float = 3.0,
         stop: tuple[str, ...] = STOP_SEQUENCES,
     ):
-        if k < 0:
-            raise ValueError(f"k must be >= 0, got {k}")
-        if pass_k < 1:
-            raise ValueError(f"pass_k must be >= 1, got {pass_k}")
+        if n_shot < 0:
+            raise ValueError(f"n_shot must be >= 0, got {n_shot}")
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
         if n < 1:
             raise ValueError(f"n must be >= 1, got {n}")
-        if pass_k > n:
+        if k > n:
             raise ValueError(
-                f"pass_k must be <= n; got pass_k={pass_k} and n={n}. "
+                f"k must be <= n; got k={k} and n={n}. "
                 "pass@k needs at least k samples per problem."
             )
         if max_concurrency < 1:
@@ -106,15 +106,15 @@ class MBPPFewShotBaseGenTask(
             raise ValueError(f"timeout must be > 0, got {timeout}")
 
         available_shots = len(list_fewshot_samples())
-        if k > available_shots:
+        if n_shot > available_shots:
             raise ValueError(
                 "MBPP lm-eval few-shot prompt provides at most "
-                f"{available_shots} examples; got k={k}."
+                f"{available_shots} examples; got n_shot={n_shot}."
             )
 
         super().__init__(dataset=dataset, model=model, name=name)
-        self._num_shots = k
-        self._pass_k = pass_k
+        self._n_shot = n_shot
+        self._k = k
         self._n = n
         self._max_concurrency = max_concurrency
         self._timeout = timeout
@@ -144,13 +144,13 @@ class MBPPFewShotBaseGenTask(
 
     def _build_few_shot_str(self) -> str:
         parts: list[str] = []
-        for example in list_fewshot_samples()[: self._num_shots]:
+        for example in list_fewshot_samples()[: self._n_shot]:
             parts.append(self._doc_to_text(example))
             parts.append(f"{example['code']}\n[DONE]\n\n")
         return "".join(parts)
 
     def _get_few_shot_prefix(self) -> str:
-        # The prefix only depends on self._num_shots, so build it once and
+        # The prefix only depends on self._n_shot, so build it once and
         # reuse it for every sample rather than rebuilding per preprocess call.
         if self._few_shot_prefix is None:
             self._few_shot_prefix = self._build_few_shot_str()
@@ -220,7 +220,7 @@ class MBPPFewShotBaseGenTask(
     async def report(self, finals, fails) -> dict[str, float]:
         total = len(finals) + len(fails)
         if total == 0:
-            return {"score": 0.0, "fails": len(fails)}
+            return {"score": 0.0, "fails": len(fails), "timeouts": 0, "pass@1": 0.0}
 
         pass_at_1_total = 0.0
         pass_at_k_total = 0.0
@@ -230,8 +230,8 @@ class MBPPFewShotBaseGenTask(
             n_samples = len(feedbacks)
             correct_num = sum(1 for fb in feedbacks if fb["correct"])
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
-            if self._pass_k > 1:
-                pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._pass_k)
+            if self._k > 1:
+                pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
             timeouts += sum(1 for fb in feedbacks if "timeout" in fb["msg"].lower())
 
         pass_at_1 = pass_at_1_total * 100 / total
@@ -241,8 +241,8 @@ class MBPPFewShotBaseGenTask(
             "timeouts": timeouts,
             "pass@1": pass_at_1,
         }
-        if self._pass_k > 1:
-            metrics[f"pass@{self._pass_k}"] = pass_at_k_total * 100 / total
+        if self._k > 1:
+            metrics[f"pass@{self._k}"] = pass_at_k_total * 100 / total
         return metrics
 
     @override
