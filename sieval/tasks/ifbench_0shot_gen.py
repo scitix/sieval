@@ -16,6 +16,11 @@ budget, yielding empty answers scored as failures; reproduction requires
 Qwen3's recommended sampling (temperature=0.6, top_p=0.95, top_k=20). Set
 decoding via the model config, not in this task.
 
+Infra: scoring lazily fetches the NLTK corpora it needs (punkt, stopwords,
+averaged_perceptron_tagger_eng) on first use if absent — an eval-time network
+dependency. The Docker image pre-bakes them; offline runs must pre-stage them
+(see SIEVAL_IFBENCH_NLTK_DATA in sieval.community.ifbench).
+
 AI-Generated Code - GPT-5 (OpenAI)
 """
 
@@ -63,6 +68,10 @@ from sieval.datasets import IFBenchDatasetSample
             "edge, not a deterministic value."
         ),
     ),
+    # Not empirically validated as equivalent: the official temperature=0
+    # protocol does not reproduce, and the 37.3 match is a stochastic sample
+    # under substituted sampling. Faithful port, unverified reproduction.
+    status="experimental",
 )
 class IFBenchZeroShotGenTask(
     Task[

@@ -736,7 +736,7 @@
         "url": "https://github.com/allenai/IFBench/blob/1091c4c3de6c1f6ed12c012ed68f11ea450b0117/evaluation_lib.py",
         "notes": "evaluation_lib + instructions registry/checkers vendored from AllenAI IFBench. Headline score is prompt-level loose accuracy, the metric the IFBench paper reports. Comparison target: Qwen3-32B = 37.3 (AllenAI README leaderboard). The authors' hyperparameters in allenai/IFBench#5 use greedy temperature=0, which does not reproduce the score on this thinking model; reproduced with Qwen3's recommended sampling (temperature=0.6, top_p=0.95, top_k=20, max_tokens=38912). As that sampling is non-greedy the score is a stochastic band with 37.3 at the top edge, not a deterministic value."
       },
-      "status": "stable"
+      "status": "experimental"
     },
     {
       "name": "ifeval_0shot_gen",
