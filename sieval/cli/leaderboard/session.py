@@ -24,7 +24,7 @@ from loguru import logger
 
 from sieval.cli.leaderboard.card import AlignmentCard, load_card
 from sieval.core.datasets import Dataset
-from sieval.core.models import ChatModel, GenModel, Model
+from sieval.core.models import ChatModel, GenModel, Model, SglangGenModel
 from sieval.core.runners import MultiTaskRunner, TaskRunnerConfig
 from sieval.core.tasks.context import TaskAction
 from sieval.core.types import JSONValue
@@ -62,6 +62,7 @@ class _InferMetaDict(TypedDict, total=False):
 class ModelConfigDict(TypedDict, total=False):
     name: str  # For base models
     type: Literal["chat", "gen"]  # "chat" or "gen" (default: "chat")
+    engine: Literal["vllm", "sglang"]  # gen backend (default: "vllm")
     base: str  # For derived models
     args: dict[str, Any]
     api_key: str
@@ -977,8 +978,24 @@ class EvalSession:
             explicit_type = cfg.get("type")
             model_type = self._infer_model_type(name, explicit_type)
 
+            # `engine` selects the gen backend; it is meaningless for chat.
+            if "engine" in cfg and model_type != "gen":
+                raise ValueError(
+                    f"Model '{name}': 'engine' is only valid for type: gen, "
+                    f"but this model is '{model_type}'."
+                )
+
             if model_type == "gen":
-                self.models[name] = GenModel(model=model_name, **args)
+                engine = cfg.get("engine", "vllm")
+                if engine == "sglang":
+                    self.models[name] = SglangGenModel(model=model_name, **args)
+                elif engine == "vllm":
+                    self.models[name] = GenModel(model=model_name, **args)
+                else:
+                    raise ValueError(
+                        f"Model '{name}' has invalid engine '{engine}'. "
+                        "Expected 'vllm' or 'sglang'"
+                    )
             elif model_type == "chat":
                 self.models[name] = ChatModel(model=model_name, **args)
             else:
@@ -1022,28 +1039,46 @@ class EvalSession:
                         f"base model '{base_name}'. Create a new base model instead."
                     )
 
+                if "engine" in cfg:
+                    raise ValueError(
+                        f"Derived model '{name}' cannot set 'engine'; it is inherited "
+                        f"from base model '{base_name}'. Set it on the base instead."
+                    )
+
                 # Extract concurrency_limit separately for with_args
                 concurrency_limit = args.pop("concurrency_limit", None)
 
                 # Check if type conversion is needed
                 target_type = cfg.get("type")
-                if target_type:
-                    # Convert to target type
-                    if target_type == "gen":
-                        new_model = base_model.as_type(GenModel)
-                    elif target_type == "chat":
-                        new_model = base_model.as_type(ChatModel)
+                if target_type == "gen":
+                    # An sglang-backed base is already "gen"; as_type(GenModel)
+                    # would swap it to the OpenAI /v1/completions path (which
+                    # rejects echo+logprobs), silently defeating engine: sglang.
+                    # Preserve it. A plain GenModel base is unaffected.
+                    if isinstance(base_model, SglangGenModel):
+                        new_model = base_model
                     else:
-                        raise ValueError(
-                            f"Model '{name}' has invalid type '{target_type}'. "
-                            "Expected 'chat' or 'gen'"
-                        )
+                        new_model = base_model.as_type(GenModel)
                     logger.info(
                         "Created derived model '{}' from '{}' "
                         "with type conversion to '{}'",
                         name,
                         base_name,
                         target_type,
+                    )
+                elif target_type == "chat":
+                    new_model = base_model.as_type(ChatModel)
+                    logger.info(
+                        "Created derived model '{}' from '{}' "
+                        "with type conversion to '{}'",
+                        name,
+                        base_name,
+                        target_type,
+                    )
+                elif target_type:
+                    raise ValueError(
+                        f"Model '{name}' has invalid type '{target_type}'. "
+                        "Expected 'chat' or 'gen'"
                     )
                 else:
                     # No type conversion, just derive

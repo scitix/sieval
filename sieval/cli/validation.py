@@ -153,6 +153,25 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                 f"Model '{name}': type must be 'chat' or 'gen', got '{model_type}'"
             )
 
+        # `engine` selects the gen backend (mirrors _setup_models' guards; the
+        # engine-on-non-gen check there uses the *inferred* type, so here we
+        # can only flag the statically-decidable explicit `type: chat` case).
+        if "engine" in mcfg:
+            engine = mcfg.get("engine")
+            if has_base:
+                result.errors.append(
+                    f"Model '{name}': derived models cannot set 'engine'; it is "
+                    "inherited from the base model. Set it on the base instead."
+                )
+            elif engine not in ("vllm", "sglang"):
+                result.errors.append(
+                    f"Model '{name}': engine must be 'vllm' or 'sglang', got {engine!r}"
+                )
+            elif model_type == "chat":
+                result.errors.append(
+                    f"Model '{name}': 'engine' is only valid for type: gen, not 'chat'"
+                )
+
         if has_base:
             base_ref = mcfg["base"]
             if not isinstance(base_ref, str) or not base_ref:

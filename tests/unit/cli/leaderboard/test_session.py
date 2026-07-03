@@ -500,6 +500,90 @@ class TestInferModelType:
             runner._infer_model_type("m", None)
 
 
+class TestSetupModelsEngine:
+    """`engine` field dispatches a gen model to GenModel vs SglangGenModel."""
+
+    def _make_runner(self, models_cfg):
+        runner = object.__new__(EvalSession)
+        runner.config = {"models": models_cfg, "tasks": {}}
+        runner.models = {}
+        runner.deterministic = False
+        runner.model_override = None
+        return runner
+
+    def test_default_engine_is_gen_model(self):
+        from sieval.core.models import GenModel, SglangGenModel
+
+        runner = self._make_runner(
+            {"m": {"name": "x", "type": "gen", "api_key": "local"}}
+        )
+        runner._setup_models()
+        assert isinstance(runner.models["m"], GenModel)
+        assert not isinstance(runner.models["m"], SglangGenModel)
+
+    def test_sglang_engine_is_sglang_gen_model(self):
+        from sieval.core.models import SglangGenModel
+
+        runner = self._make_runner(
+            {"m": {"name": "x", "type": "gen", "engine": "sglang", "api_key": "local"}}
+        )
+        runner._setup_models()
+        assert isinstance(runner.models["m"], SglangGenModel)
+
+    def test_explicit_vllm_engine_is_gen_model(self):
+        from sieval.core.models import GenModel, SglangGenModel
+
+        runner = self._make_runner(
+            {"m": {"name": "x", "type": "gen", "engine": "vllm", "api_key": "local"}}
+        )
+        runner._setup_models()
+        assert isinstance(runner.models["m"], GenModel)
+        assert not isinstance(runner.models["m"], SglangGenModel)
+
+    def test_invalid_engine_raises(self):
+        runner = self._make_runner(
+            {"m": {"name": "x", "type": "gen", "engine": "bogus", "api_key": "local"}}
+        )
+        with pytest.raises(ValueError, match="invalid engine"):
+            runner._setup_models()
+
+    def test_engine_on_chat_model_raises(self):
+        runner = self._make_runner(
+            {"m": {"name": "x", "type": "chat", "engine": "sglang", "api_key": "local"}}
+        )
+        with pytest.raises(ValueError, match="only valid for type: gen"):
+            runner._setup_models()
+
+    def test_engine_on_derived_model_raises(self):
+        runner = self._make_runner(
+            {
+                "base_m": {"name": "x", "type": "gen", "api_key": "local"},
+                "d": {"base": "base_m", "engine": "sglang"},
+            }
+        )
+        with pytest.raises(ValueError, match="cannot set 'engine'"):
+            runner._setup_models()
+
+    def test_derived_type_gen_preserves_sglang_base(self):
+        """`type: gen` on a derived model of an sglang base must NOT downgrade it
+        to GenModel (which would silently switch to /v1/completions)."""
+        from sieval.core.models import SglangGenModel
+
+        runner = self._make_runner(
+            {
+                "base_m": {
+                    "name": "x",
+                    "type": "gen",
+                    "engine": "sglang",
+                    "api_key": "local",
+                },
+                "d": {"base": "base_m", "type": "gen", "args": {"temperature": 0.5}},
+            }
+        )
+        runner._setup_models()
+        assert isinstance(runner.models["d"], SglangGenModel)
+
+
 # ===================================================================
 # Resolve task model / dataset helpers
 # ===================================================================

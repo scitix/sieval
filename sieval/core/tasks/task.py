@@ -61,12 +61,12 @@ class Task[
 
     def _validate_model_type(self) -> None:
         """Raise ``TypeError`` if the model's kind does not match :attr:`model_type`."""
-        from sieval.core.models import ChatModel, GenModel
+        from sieval.core.models import ChatModel, GenModel, SglangGenModel
 
         expected_type = self.model_type
         if isinstance(self._model, ChatModel):
             actual_type = "chat"
-        elif isinstance(self._model, GenModel):
+        elif isinstance(self._model, (GenModel, SglangGenModel)):
             actual_type = "gen"
         else:
             raise TypeError(
