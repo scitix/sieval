@@ -7,7 +7,7 @@ SiEval is a **model delivery quality verification system** with an asynchronous 
 - **Asynchronous streaming** — process samples concurrently without waiting for batch completion
 - **Iterative feedback loop** — multi-turn evaluation with feedback
 - **Resilient persistence** — sharded, append-only storage for crash recovery
-- **15 registered benchmark datasets** — AIME 2024, AIME 2025, AIME 2026, CMMLU, DROP, GPQA-Diamond, GSM8K, HMMT Feb 2026, HumanEval, IFEval, LiveCodeBench, MATH-500, MMLU, MMLU-Pro, T-Eval (math, code, reasoning, knowledge, instruction-following, tool-use)
+- **21 registered benchmark datasets** — AIME 2024, AIME 2025, AIME 2026, CMMLU, DROP, GPQA-Diamond, GSM8K, HMMT Feb 2025, HMMT Feb 2026, HumanEval, IFBench, IFEval, IMO-AnswerBench, LiveCodeBench, MATH-500, MBPP, MMLU, MMLU-Pro, OpenBookQA, TheoremQA, T-Eval (math, code, reasoning, knowledge, instruction-following, tool-use)
 - **Type-safe pipelines** — fully typed task stages (preprocess → infer → postprocess → feedback)
 - **YAML-based configuration** — batch evaluation with model derivation and quota allocation
 - **Inference orchestration** — recipe-driven inference with auto-resolve and backend abstraction (vLLM, SGLang)
@@ -29,9 +29,10 @@ Optional extras (per-benchmark dependencies):
 ```bash
 pip install -e ".[math]"     # AIME 2024/2025/2026, HMMT Feb 2026, MATH-500 (math-verify)
 pip install -e ".[drop]"     # DROP (numpy, scipy)
+pip install -e ".[ifbench]"  # IFBench (emoji, nltk, setuptools, syllapy)
 pip install -e ".[ifeval]"   # IFEval (absl, langdetect, nltk, immutabledict)
 pip install -e ".[t-eval]"   # T-Eval (numpy, sentence-transformers)
-pip install -e ".[math,drop,ifeval,t-eval]"   # all extras at once
+pip install -e ".[math,drop,ifbench,ifeval,t-eval]"   # all extras at once
 ```
 
 ## Quick Start

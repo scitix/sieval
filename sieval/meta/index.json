@@ -227,6 +227,27 @@
       "checksums": {}
     },
     {
+      "name": "ifbench",
+      "display_name": "IFBench",
+      "description": "Precise instruction-following benchmark with verifiable OOD constraints.",
+      "source": [
+        "hf:allenai/IFBench_test@2e8a48de45ff3bf41242f927254ca81b59ca3ae2"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "ODC-BY-1.0",
+      "checksums": {}
+    },
+    {
       "name": "ifeval",
       "display_name": "IFEval",
       "description": "Instruction-Following Eval — 541 prompts with verifiable constraints.",
@@ -696,6 +717,26 @@
         "notes": "Prompt style follows simple-evals HumanEval; QUERY_TEMPLATE is sieval-local."
       },
       "status": "stable"
+    },
+    {
+      "name": "ifbench_0shot_gen",
+      "display_name": "IFBench (0-shot, generative)",
+      "description": "Precise instruction-following benchmark with verifiable OOD constraints.",
+      "dataset": "ifbench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "ifbench",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "allenai/IFBench",
+        "url": "https://github.com/allenai/IFBench/blob/1091c4c3de6c1f6ed12c012ed68f11ea450b0117/evaluation_lib.py",
+        "notes": "evaluation_lib + instructions registry/checkers vendored from AllenAI IFBench. Headline score is prompt-level loose accuracy, the metric the IFBench paper reports. Comparison target: Qwen3-32B = 37.3 (AllenAI README leaderboard). The authors' hyperparameters in allenai/IFBench#5 use greedy temperature=0, which does not reproduce the score on this thinking model; reproduced with Qwen3's recommended sampling (temperature=0.6, top_p=0.95, top_k=20, max_tokens=38912). As that sampling is non-greedy the score is a stochastic band with 37.3 at the top edge, not a deterministic value."
+      },
+      "status": "experimental"
     },
     {
       "name": "ifeval_0shot_gen",
