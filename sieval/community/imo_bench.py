@@ -3,7 +3,15 @@
 
 IMO-AnswerBench grades a short answer against the gold with ``math_verify`` and a
 normalized-string fallback when either side cannot be parsed (or ``verify()``
-raises). Vendored from the upstream ``answer_verification.py``.
+raises).
+
+Authoritative benchmark: google-deepmind/superhuman (``imobench/``) +
+imobench.github.io + arXiv 2511.01846. AnswerBench is scored SOLELY by
+``math_verify`` ("No LLM graders"; the LLM autograders are for GradingBench /
+ProofBench, which sieval does not use). This file is vendored VERBATIM from
+``EnvCommons/IMO-Bench`` (a third-party OpenReward re-implementation, not a GDM
+artifact); its ``answer_verification.py`` is byte-identical to that math_verify-
+only scoring and byte-stable between the pinned commit and upstream HEAD.
 
 ``math_verify`` is imported lazily inside the functions so importing a task
 module stays free of the optional ``[math]`` dependency (sieval import discipline);
