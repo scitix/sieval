@@ -230,6 +230,57 @@ class TestValidateModels:
         assert not result.ok
         assert any("type" in e for e in result.errors)
 
+    def test_invalid_engine_value(self):
+        cfg = {
+            "models": {"m": {"name": "x", "type": "gen", "engine": "bogus"}},
+            "datasets": {},
+            "tasks": {},
+        }
+        result = validate_eval_config(cfg)
+        assert not result.ok
+        assert any("engine must be" in e for e in result.errors)
+
+    def test_engine_on_chat_model(self):
+        cfg = {
+            "models": {"m": {"name": "x", "type": "chat", "engine": "sglang"}},
+            "datasets": {},
+            "tasks": {},
+        }
+        result = validate_eval_config(cfg)
+        assert not result.ok
+        assert any("only valid for type: gen" in e for e in result.errors)
+
+    def test_engine_on_derived_model(self):
+        cfg = {
+            "models": {
+                "base": {"name": "x", "type": "gen", "engine": "sglang"},
+                "d": {"base": "base", "engine": "sglang"},
+            },
+            "datasets": {},
+            "tasks": {},
+        }
+        result = validate_eval_config(cfg)
+        assert not result.ok
+        assert any("cannot set 'engine'" in e for e in result.errors)
+
+    def test_valid_engine_sglang(self):
+        cfg = {
+            "models": {"m": {"name": "x", "type": "gen", "engine": "sglang"}},
+            "datasets": {},
+            "tasks": {},
+        }
+        result = validate_eval_config(cfg)
+        assert result.ok, result.errors
+
+    def test_valid_engine_vllm(self):
+        cfg = {
+            "models": {"m": {"name": "x", "type": "gen", "engine": "vllm"}},
+            "datasets": {},
+            "tasks": {},
+        }
+        result = validate_eval_config(cfg)
+        assert result.ok, result.errors
+
     def test_name_and_base_coexist(self):
         cfg = {
             "models": {"m": {"name": "gpt-4", "base": "other"}},
