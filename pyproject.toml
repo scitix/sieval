@@ -155,7 +155,11 @@ unresolved-import = "ignore"
 
 # ruler: wonderwords, tiktoken; not in CI light env. Tests import tiktoken behind try/except.
 [[tool.ty.overrides]]
-include = ["sieval/datasets/ruler/_niah.py", "sieval/datasets/ruler/_cwe.py", "tests/unit/datasets/test_ruler.py"]
+include = [
+  "sieval/datasets/ruler/_niah.py",
+  "sieval/datasets/ruler/_cwe.py",
+  "tests/unit/datasets/test_ruler.py",
+]
 
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
