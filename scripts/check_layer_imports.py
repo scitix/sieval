@@ -277,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
             all_errors.extend(_check_file(p))
 
     for err in all_errors:
-        print(err, file=sys.stderr)
+        print(err, file=sys.stderr)  # noqa: T201
     return 1 if all_errors else 0
 
 

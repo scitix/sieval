@@ -146,7 +146,7 @@ def main() -> None:
             else:
                 parsed = raw.decode("utf-8")
         except Exception as e:  # noqa: BLE001 — best-effort, record and skip
-            print(f"Fail download {url} ({e})")
+            print(f"Fail download {url} ({e})")  # noqa: T201
             failed.append(url)
             continue
         essays.append(parsed)
@@ -167,7 +167,7 @@ def main() -> None:
         gz.write(json.dumps({"text": text}, ensure_ascii=False).encode("utf-8"))
 
     size = out_path.stat().st_size
-    print(
+    print(  # noqa: T201
         f"Wrote {len(essays)}/{len(urls)} essays "
         f"({size / 1_000_000:.1f} MB) -> {out_path}"
     )
