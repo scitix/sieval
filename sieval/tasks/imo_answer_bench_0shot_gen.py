@@ -2,16 +2,17 @@
 
 Non-strict *generative* port of Google DeepMind's IMO-Bench AnswerBench (upstream
 is agentic — the agent submits its answer via an ``answer`` tool call; here the
-model answers generatively and we extract the last ``\\boxed{}``). Grading is 100%
-the vendored upstream grader: a parsing-layer ``normalize_answer`` first
-reconstructs the clean string an agent would submit, then ``verify_math_answer``
-(math_verify, with symmetric ``$``-wrapping like the HMMT sibling) does ALL the
-equivalence — commutativity, factoring, set-equality. No bespoke matching logic.
-Every deviation from upstream is enumerated in ``reference_impl.notes`` below.
+model answers generatively and we extract the last ``\\boxed{}``). The OFFICIAL
+grader is an LLM autograder (AnswerAutoGrader, Gemini 2.5 Pro); as a deterministic,
+reproducible SUBSTITUTE we vendor EnvCommons's ``verify_math_answer`` (math_verify)
+fed by a parsing-layer ``normalize_answer`` (symmetric ``$``-wrapping like the HMMT
+sibling) so it handles commutativity / factoring / set-equality. This is a
+deliberate, strictly-more-conservative deviation from the official grader — every
+divergence is enumerated in ``reference_impl.notes`` below.
 
 Dual-source lineage: the boxed prompt + last-``\\boxed{}`` extraction follow
-eth-sri/matharena (``community/matharena.py``); the answer grader is IMO-Bench's
-``verify_math_answer`` (``community/imo_bench.py``, vendored verbatim).
+eth-sri/matharena (``community/matharena.py``); the answer grader is EnvCommons's
+deterministic re-impl of IMO-Bench (``community/imo_bench.py``).
 
 Infer prerequisites: olympiad reasoning traces are very long — set a large output
 budget (``max_tokens`` ≈ 131072) and a generous client read-timeout (300s+). At
@@ -82,13 +83,21 @@ class Feedback(TypedDict):
             "the Category 'Algebra') and imo-bench-geometry-004 (gold Excel-"
             "autoformatted to the date serial '45752'); both grade wrong for ~any "
             "model (score impact <=0.5%).\n"
-            "4. Grader: vendored VERBATIM from EnvCommons/IMO-Bench@66b014f1 — a "
-            "third-party OpenReward re-implementation (not a GDM artifact / not a "
-            "fork). AnswerBench is scored solely by math_verify (paper: 'No LLM "
-            "graders'; LLM autograders exist only for GradingBench/ProofBench, which "
-            "we don't use); our verify_math_answer / parse_answer is byte-identical to "
-            "EnvCommons and byte-stable pin->HEAD, so the grader is equivalent to "
-            "official.\n"
+            "4. Grader: a DELIBERATE deviation from official. The official "
+            "AnswerBench grader is an LLM autograder (AnswerAutoGrader, Gemini "
+            "2.5 Pro; arXiv 2511.01846 §2.3/§5.1) and the paper rejects "
+            "symbolic/SymPy matching as too narrow; the official imobench/ ships "
+            "DATA ONLY (no grader code). With no runnable official grader, we "
+            "vendor EnvCommons/IMO-Bench@66b014f1's deterministic "
+            "verify_math_answer (its OpenReward re-impl; the 'No LLM graders / "
+            "math_verify' wording is EnvCommons's README, not the paper). A "
+            "deterministic grader fits sieval's reproducibility contract (an LLM "
+            "grader would not) and is strictly MORE conservative — it cannot "
+            "grade prose / infinite-set / functional-family answers, so sieval "
+            "UNDER-counts vs the official autograder (see 'Out of scope' below). "
+            "verify_math_answer / parse_answer are behaviorally identical to the "
+            "pinned EnvCommons source (imports made lazy per sieval discipline), "
+            "unchanged pin->HEAD.\n"
             "Grading path: a parsing-layer normalize_answer reconstructs the clean "
             "answer an agent would submit, then math_verify (symmetric $-wrap, HMMT-"
             "aligned) does all equivalence — commutativity / factoring / set-equality; "

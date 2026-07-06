@@ -6,12 +6,19 @@ normalized-string fallback when either side cannot be parsed (or ``verify()``
 raises).
 
 Authoritative benchmark: google-deepmind/superhuman (``imobench/``) +
-imobench.github.io + arXiv 2511.01846. AnswerBench is scored SOLELY by
-``math_verify`` ("No LLM graders"; the LLM autograders are for GradingBench /
-ProofBench, which sieval does not use). This file is vendored VERBATIM from
-``EnvCommons/IMO-Bench`` (a third-party OpenReward re-implementation, not a GDM
-artifact); its ``answer_verification.py`` is byte-identical to that math_verify-
-only scoring and byte-stable between the pinned commit and upstream HEAD.
+imobench.github.io + arXiv 2511.01846. The OFFICIAL AnswerBench grader is an LLM
+autograder (AnswerAutoGrader, Gemini 2.5 Pro; paper §2.3/§5.1); the paper
+deliberately rejects symbolic/SymPy-style matching as too narrow, and the official
+``imobench/`` dir ships DATA ONLY (no runnable grader code). Since there is no
+official runnable grader, this file is vendored from ``EnvCommons/IMO-Bench`` — a
+third-party OpenReward re-implementation whose deterministic ``verify_math_answer``
+uses ``math_verify`` (the "No LLM graders / math_verify" wording is EnvCommons's
+own README, NOT the paper). This deterministic grader is a deliberate, reproducible
+SUBSTITUTE for the official LLM autograder (which sieval's reproducibility contract
+precludes); it is strictly MORE conservative — it cannot grade prose / infinite-set
+/ functional-family answers, so sieval UNDER-counts vs official. ``verify_math_answer``
+/ ``parse_answer`` are behaviorally identical to the pinned EnvCommons source
+(imports made lazy per sieval discipline), unchanged pinned-commit -> upstream HEAD.
 
 ``math_verify`` is imported lazily inside the functions so importing a task
 module stays free of the optional ``[math]`` dependency (sieval import discipline);
