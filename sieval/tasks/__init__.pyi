@@ -67,6 +67,9 @@ from .mmlu_pro_0shot_gen import (
 from .openbookqa_kshot_gen import (
     OpenBookQAFewShotGenTask,
 )
+from .ruler_0shot_gen import (
+    RulerZeroShotGenTask,
+)
 from .t_eval_before_calling_0shot_gen import (
     TEvalBeforeCallingZeroShotGenTask,
 )
@@ -97,6 +100,7 @@ __all__ = [
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
     "OpenBookQAFewShotGenTask",
+    "RulerZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
     "TheoremQAKShotBaseGenTask",
 ]

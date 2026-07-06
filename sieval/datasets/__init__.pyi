@@ -77,6 +77,10 @@ from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
 )
+from .ruler import (
+    RulerDataset,
+    RulerDatasetSample,
+)
 from .t_eval import (
     TEvalBeforeCallingDataset,
     TEvalBeforeCallingDatasetSample,
@@ -125,6 +129,8 @@ __all__ = [
     "MMLUProDatasetSample",
     "OpenBookQADataset",
     "OpenBookQADatasetSample",
+    "RulerDataset",
+    "RulerDatasetSample",
     "TEvalBeforeCallingDataset",
     "TEvalBeforeCallingDatasetSample",
     "TheoremQADataset",
