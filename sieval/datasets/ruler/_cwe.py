@@ -139,6 +139,9 @@ def _binary_search_words(
 def _word_pool(random_seed: int) -> list[str]:
     import wonderwords
 
+    # wonderwords >= 2.2.0: uses private _get_words_from_text_file(name) API to load
+    # word lists from internal data files. This is not stable across versions; pin to
+    # the tested version in pyproject.toml [project.optional-dependencies.ruler].
     nouns = wonderwords.random_word._get_words_from_text_file("nounlist.txt")
     adjs = wonderwords.random_word._get_words_from_text_file("adjectivelist.txt")
     verbs = wonderwords.random_word._get_words_from_text_file("verblist.txt")

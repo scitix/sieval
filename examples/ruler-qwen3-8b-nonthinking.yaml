@@ -27,6 +27,12 @@
 # Output:
 #   result_dir: ./outputs/ruler_qwen3_8b_nonthinking
 #   Evaluation results for 4 tasks (grouped by context length)
+#
+# Extension variants (optional):
+#   - YaRN rope scaling: Add to infer.overrides:
+#     json_model_override_args: '{"rope_scaling": {"rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 32768}}'
+#     context_length: 131072 (to test 128K)
+#   - GPU requirements: Standard (H200) for 32K; H200 for YaRN 128K
 # ==============================================================================
 
 result_dir: ./outputs/ruler_qwen3_8b_nonthinking

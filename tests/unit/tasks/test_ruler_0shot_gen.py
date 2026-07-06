@@ -99,12 +99,14 @@ class TestMessageModes:
 
         task = Mock(spec=RulerZeroShotGenTask)
         task.model = Mock()
-        task.model._model = "Qwen3-8b"
-        task.model._kwargs = {
-            "extra_body": {
-                "continue_final_message": False,
-                "add_generation_prompt": True,
-            }
+        task.model.meta.return_value = {
+            "model": "Qwen3-8b",
+            "default_params": {
+                "extra_body": {
+                    "continue_final_message": False,
+                    "add_generation_prompt": True,
+                }
+            },
         }
 
         raw = {"input": "Context here.", "answer_prefix": "Answer: "}
@@ -121,13 +123,15 @@ class TestMessageModes:
 
         task = Mock(spec=RulerZeroShotGenTask)
         task.model = Mock()
-        task.model._model = "Qwen3-8b"
-        task.model._kwargs = {
-            "extra_body": {
-                "enable_thinking": False,
-                "continue_final_message": True,
-                "add_generation_prompt": False,
-            }
+        task.model.meta.return_value = {
+            "model": "Qwen3-8b",
+            "default_params": {
+                "extra_body": {
+                    "enable_thinking": False,
+                    "continue_final_message": True,
+                    "add_generation_prompt": False,
+                }
+            },
         }
 
         raw = {"input": "Context here.", "answer_prefix": "Answer: "}
@@ -147,13 +151,15 @@ class TestMessageModes:
 
         task = Mock(spec=RulerZeroShotGenTask)
         task.model = Mock()
-        task.model._model = "Qwen3-8b"
-        task.model._kwargs = {
-            "extra_body": {
-                "enable_thinking": True,
-                "continue_final_message": True,
-                "add_generation_prompt": False,
-            }
+        task.model.meta.return_value = {
+            "model": "Qwen3-8b",
+            "default_params": {
+                "extra_body": {
+                    "enable_thinking": True,
+                    "continue_final_message": True,
+                    "add_generation_prompt": False,
+                }
+            },
         }
 
         raw = {"input": "Context here.", "answer_prefix": "Answer: "}
@@ -171,8 +177,10 @@ class TestMessageModes:
 
         task = Mock(spec=RulerZeroShotGenTask)
         task.model = Mock()
-        task.model._model = "gpt-4"
-        task.model._kwargs = {}  # No extra_body
+        task.model.meta.return_value = {
+            "model": "gpt-4",
+            "default_params": {},  # No extra_body
+        }
 
         raw = {"input": "Context.", "answer_prefix": "Q: "}
 

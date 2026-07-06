@@ -40,6 +40,15 @@ math = [
   "math-verify>=0.8.0",
   "regex>=2024.0.0",
 ]
+# ruler: benchmark + BYO corpus generation script (gen_paul_graham_essays.py)
+# Generator adds: html2text>=2020.1.16, beautifulsoup4>=4.12.0, certifi>=2024.7.4
+ruler = [
+  "tiktoken>=0.8.0",
+  "wonderwords>=2.2.0,<3",
+  "numpy<=2.2",
+  "scipy>=1.16.3",
+  "nltk>=3.9.2",
+]
 t-eval = ["numpy<=2.2", "sentence-transformers>=5.1.2"]
 
 [project.scripts]
@@ -111,9 +120,6 @@ select = [
   "E501",
   "T201",
 ] # community/ follows upstream implementations — do not enforce line-length or print restrictions
-"scripts/**/*.py" = [
-  "T201",
-] # scripts/ are CLI tools — print() for progress output
 "tests/**/*.py" = ["T201"] # tests/ may use print() for debugging
 
 [tool.ty.environment]
@@ -146,15 +152,6 @@ unresolved-import = "ignore"
 # never imported by sieval/.
 [[tool.ty.overrides]]
 include = ["scripts/gen_paul_graham_essays.py"]
-
-[tool.ty.overrides.rules]
-unresolved-import = "ignore"
-
-# ruler lazy-imports its deps group (tiktoken / wonderwords / scipy), absent from
-# CI's light env, so ty can't resolve those imports. Intentional — keeps CI free
-# of the ruler deps. The unit test guards the same imports behind a try/except.
-[[tool.ty.overrides]]
-include = ["sieval/datasets/ruler/**", "tests/unit/datasets/test_ruler.py"]
 
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"

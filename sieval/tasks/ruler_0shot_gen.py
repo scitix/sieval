@@ -20,7 +20,6 @@ mode is supported for thinking model compatibility.
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-from abc import ABC
 from collections import defaultdict
 from typing import TypedDict
 
@@ -49,59 +48,6 @@ class RulerFeedback(TypedDict):
     context_length: int
 
 
-class _ChatGenBase[TSample, TFeedback](
-    Task[
-        TSample,
-        list[ChatCompletionMessageParam],
-        ModelOutput,
-        str,
-        TFeedback,
-        dict[str, float],
-    ],
-    ABC,
-):
-    def __init__(self, dataset, model, name: str | None = None):
-        super().__init__(dataset=dataset, model=model, name=name)
-
-    async def preprocess(self, raw, ctx):
-        # Support both message patterns:
-        # 1. User-message pattern: answer_prefix appended to user message
-        # 2. Assistant-message pattern: answer_prefix in prefilled assistant turn
-        #
-        # Detection logic:
-        # - If both flags in extra_body → assistant pattern
-        # - Otherwise → user message pattern (default)
-        extra_body = self.model._kwargs.get("extra_body", {})
-        # Detect prefill mode: both flags must be set explicitly to enable prefill
-        # - continue_final_message=True: continue from assistant's last message
-        # - add_generation_prompt=False: suppress default generation prompt
-        # Both must match for assistant-pattern; otherwise defaults to user-message
-        use_assistant_prefill = extra_body.get(
-            "continue_final_message", False
-        ) and not extra_body.get("add_generation_prompt", True)
-
-        if use_assistant_prefill:
-            # Assistant-message pattern: prefilled turn with thinking placeholder
-            enable_thinking = extra_body.get("enable_thinking", False)
-            prefill = thinking_prefill(self.model._model, enable_thinking)
-            assistant_content = f"{prefill}{raw['answer_prefix']}"
-            return [
-                {"role": "user", "content": raw["input"]},
-                {"role": "assistant", "content": assistant_content},
-            ]
-        else:
-            # User-message pattern: answer_prefix appended to user message (default)
-            return [
-                {"role": "user", "content": raw["input"] + raw["answer_prefix"]},
-            ]
-
-    async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre)
-
-    async def postprocess(self, inf, ctx):
-        return inf.texts[0]
-
-
 @sieval_task(
     name="ruler_0shot_gen",
     display_name="RULER (0-shot, generative)",
@@ -120,8 +66,61 @@ class _ChatGenBase[TSample, TFeedback](
         "string_match_part (QA), vendored in community/ruler/eval.",
     ),
 )
-class RulerZeroShotGenTask(_ChatGenBase[RulerDatasetSample, RulerFeedback]):
-    async def feedback(self, post: str, ctx) -> tuple[bool, RulerFeedback]:
+class RulerZeroShotGenTask(
+    Task[
+        RulerDatasetSample,
+        list[ChatCompletionMessageParam],
+        ModelOutput,
+        str,
+        RulerFeedback,
+        dict[str, float],
+    ]
+):
+    async def preprocess(self, raw, ctx):  # noqa: ARG002
+        # Support both message patterns:
+        # 1. User-message pattern: answer_prefix appended to user message
+        # 2. Assistant-message pattern: answer_prefix in prefilled assistant turn
+        #
+        # Detection logic:
+        # - If both flags in extra_body → assistant pattern
+        # - Otherwise → user message pattern (default)
+        model_meta = self.model.meta()
+        extra_body: dict = model_meta.get("default_params", {}).get(  # type: ignore[assignment]
+            "extra_body", {}
+        )
+        # Detect prefill mode: both flags must be set explicitly to enable prefill
+        # - continue_final_message=True: continue from assistant's last message
+        # - add_generation_prompt=False: suppress default generation prompt
+        # Both must match for assistant-pattern; otherwise defaults to user-message
+        use_assistant_prefill = extra_body.get(
+            "continue_final_message", False
+        ) and not extra_body.get("add_generation_prompt", True)
+
+        if use_assistant_prefill:
+            # Assistant-message pattern: prefilled turn with thinking placeholder
+            enable_thinking = extra_body.get("enable_thinking", False)
+            prefill = thinking_prefill(model_meta["model"], enable_thinking)
+            assistant_content = f"{prefill}{raw['answer_prefix']}"
+            return [
+                {"role": "user", "content": raw["input"]},
+                {"role": "assistant", "content": assistant_content},
+            ]
+        else:
+            # User-message pattern: answer_prefix appended to user message (default)
+            return [
+                {
+                    "role": "user",
+                    "content": raw["input"] + raw["answer_prefix"],
+                },
+            ]
+
+    async def infer(self, pre, ctx):  # noqa: ARG002
+        return await self.model.agenerate(pre)
+
+    async def postprocess(self, inf, ctx):  # noqa: ARG002
+        return inf.texts[0]
+
+    async def feedback(self, post: str, ctx) -> tuple[bool, RulerFeedback]:  # noqa: ARG002
         return True, {
             "prediction": post,
             "references": ctx.raw_sample["outputs"],

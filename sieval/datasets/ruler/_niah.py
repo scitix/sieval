@@ -218,6 +218,9 @@ def _fit_haystack_size(
 def _niah_word_pool() -> list[str]:
     import wonderwords
 
+    # wonderwords >= 2.2.0: uses private _get_words_from_text_file(name) API to load
+    # word lists from internal data files. This is not stable across versions; pin to
+    # the tested version in pyproject.toml [project.optional-dependencies.ruler].
     nouns = wonderwords.random_word._get_words_from_text_file("nounlist.txt")
     adjs = wonderwords.random_word._get_words_from_text_file("adjectivelist.txt")
     words = [f"{adj}-{noun}" for adj in adjs for noun in nouns]
