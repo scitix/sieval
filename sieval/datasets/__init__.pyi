@@ -33,6 +33,10 @@ from .hellaswag import (
     HellaSwagDataset,
     HellaSwagDatasetSample,
 )
+from .hendrycks_math import (
+    HendrycksMathDataset,
+    HendrycksMathDatasetSample,
+)
 from .hmmt_feb_2025 import (
     HMMTFeb2025Dataset,
     HMMTFeb2025DatasetSample,
@@ -115,6 +119,8 @@ __all__ = [
     "HMMTFeb2026DatasetSample",
     "HellaSwagDataset",
     "HellaSwagDatasetSample",
+    "HendrycksMathDataset",
+    "HendrycksMathDatasetSample",
     "HumanEvalDataset",
     "HumanEvalDatasetSample",
     "IFBenchDataset",

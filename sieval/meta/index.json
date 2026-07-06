@@ -185,6 +185,27 @@
       "checksums": {}
     },
     {
+      "name": "hendrycks_math",
+      "display_name": "Hendrycks MATH",
+      "description": "Full Hendrycks MATH — 12,500 competition problems across 7 subjects.",
+      "source": [
+        "hf:EleutherAI/hendrycks_math@21a5633873b6a120296cce3e2df9d5550074f4a3"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "AdvancedMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
       "name": "hmmt_feb_2025",
       "display_name": "HMMT Feb 2025",
       "description": "Harvard-MIT Mathematics Tournament, February 2025, 30 problems.",
@@ -696,6 +717,27 @@
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/hellaswag/hellaswag.yaml",
         "notes": "multiple_choice log-likelihood; acc + acc_norm (character-length normalized, reported as score). Few-shot exemplars (k, default 10) sampled from train, rendered 'query gold_ending' and joined by blank lines per lm-eval; k=0 is 0-shot. Continuation log-probs read via echoed alogprobs; context/continuation split by char offset (no tokenizer at this layer). Infra requirement: echo scoring reads the prompt's input logprobs, so the serving backend's prefix caching must be disabled (cached positions are not recomputed -> truncated logprobs); the backend layer owns the specific flag."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "hendrycks_math_kshot_base_gen",
+      "display_name": "Hendrycks MATH (few-shot, base generative)",
+      "description": "Full Hendrycks MATH DeepSeek-Math 4-shot CoT base-model eval.",
+      "dataset": "hendrycks_math",
+      "eval_mode": "gen",
+      "n_shot": 4,
+      "tags": [
+        "english",
+        "open-ended",
+        "base-model"
+      ],
+      "deps_group": "math",
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "DeepSeek-Math",
+        "url": "https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
+        "notes": "math-cot-test path: MinervaMathPrompt 4-shot, extract_math_few_shot_cot_answer (list-valued) + eval_math/math_equal. symbolic_equal's parse_latex degraded via DeepSeek's own fallback (antlr4 conflict with math_verify); other math_equal layers intact."
       },
       "status": "stable"
     },

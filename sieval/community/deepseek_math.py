@@ -16,12 +16,15 @@ answer-handling utilities from the pinned commit
 * `math_equal` / `is_correct` — string, then numeric (with percentage /
   interval / matrix / equation handling), then sympy symbolic equivalence.
 
-`sieval.tasks.gsm8k_0shot_gen` calls `extract_answer(exhaust=False)` (=
-DeepSeek's `extract_last_single_answer`) and `is_correct` (=
-`eval_last_single_answer`). DeepSeek's MATH multi-answer helpers
-(`extract_math_answer` / `eval_math`) and few-shot prompt are intentionally
-omitted; they can be vendored byte-faithfully alongside a future MATH task that
-needs them.
+Shared across the DeepSeek-Math GSM8K and MATH tasks:
+* `sieval.tasks.gsm8k_0shot_gen` calls `extract_answer(exhaust=False)` (=
+  DeepSeek's `extract_last_single_answer`) and `is_correct` (=
+  `eval_last_single_answer`).
+* `sieval.tasks.hendrycks_math_kshot_base_gen` calls the Minerva 4-shot prompt
+  (`few_shot_prompt` / `format_prompt` / `STOP_WORDS`), the multi-answer
+  extractors (`extract_math_answer` / `extract_math_few_shot_cot_answer`), and
+  `eval_math` — all vendored byte-faithfully from the same pinned commit
+  (`few_shot_prompts/cot_minerva_math_4_shot.py` + the `math-cot-test` path).
 
 Deviations from upstream:
 - `symbolic_equal` calls `sympy.parsing.latex.parse_latex`, whose ANTLR backend
@@ -491,3 +494,102 @@ def is_correct(item, pred_key='prediction', prec=1e-3):
     else:
         print(item, flush=True)
         raise NotImplementedError()
+
+
+# --- MATH (CoT) path: Minerva 4-shot prompt + multi-answer extraction/scoring ---
+# Vendored from the same pinned commit: few_shot_prompts/cot_minerva_math_4_shot.py
+# (MinervaMathPrompt) and the math-cot-test extract_math_answer / eval_math path.
+
+few_shot_prompt = """Problem:
+Find the domain of the expression $\\frac{\\sqrt{x-2}}{\\sqrt{5-x}}$.}
+
+Solution:
+The expressions inside each square root must be non-negative.
+Therefore, $x-2 \\ge 0$, so $x\\ge2$, and $5 - x \\ge 0$, so $x \\le 5$.
+Also, the denominator cannot be equal to zero, so $5-x>0$, which gives $x<5$.
+Therefore, the domain of the expression is $\\boxed{[2,5)}$.
+Final Answer: The final answer is $[2,5)$. I hope it is correct.
+
+Problem:
+If $\\det \\mathbf{A} = 2$ and $\\det \\mathbf{B} = 12,$ then find $\\det (\\mathbf{A} \\mathbf{B}).$
+
+Solution:
+We have that $\\det (\\mathbf{A} \\mathbf{B}) = (\\det \\mathbf{A})(\\det \\mathbf{B}) = (2)(12) = \\boxed{24}.$
+Final Answer: The final answer is $24$. I hope it is correct.
+
+Problem:
+Terrell usually lifts two 20-pound weights 12 times. If he uses two 15-pound weights instead, how many times must Terrell lift them in order to lift the same total weight?
+
+Solution:
+If Terrell lifts two 20-pound weights 12 times, he lifts a total of $2\\cdot 12\\cdot20=480$ pounds of weight.  If he lifts two 15-pound weights instead for $n$ times, he will lift a total of $2\\cdot15\\cdot n=30n$ pounds of weight.  Equating this to 480 pounds, we can solve for $n$: \\begin{align*}
+30n&=480\\\\
+\\Rightarrow\\qquad n&=480/30=\\boxed{16}
+\\end{align*}
+Final Answer: The final answer is $16$. I hope it is correct.
+
+Problem:
+If the system of equations
+
+\\begin{align*}
+6x-4y&=a,\\\\
+6y-9x &=b.
+\\end{align*}has a solution $(x, y)$ where $x$ and $y$ are both nonzero, find $\\frac{a}{b},$ assuming $b$ is nonzero.
+
+Solution:
+If we multiply the first equation by $-\\frac{3}{2}$, we obtain
+
+$$6y-9x=-\\frac{3}{2}a.$$Since we also know that $6y-9x=b$, we have
+
+$$-\\frac{3}{2}a=b\\Rightarrow\\frac{a}{b}=\\boxed{-\\frac{2}{3}}.$$
+Final Answer: The final answer is $-\\frac{2}{3}$. I hope it is correct."""
+
+
+STOP_WORDS = ["\nProblem:"]
+
+
+def format_prompt(task_input: str, task_output: str = "") -> str:
+    prompt = f"{few_shot_prompt}\n\nProblem:\n{task_input}\n\nSolution:\n{task_output}"
+    return prompt.rstrip()
+
+
+def extract_math_answer(question, reasoning, task):
+    answer = []
+    for ans in extract_answer(reasoning, exhaust=True):
+        if 'separated by commas' in question and all(ch not in ans for ch in '()[]'):
+            answer.extend([a.strip() for a in ans.split(",")])
+        elif regex.search(r"\\text\{\s*and\s*\}", ans):
+            answer.extend([a.strip() for a in regex.sub(r"\\text\{\s*and\s*\}", "[SEP]", ans).split("[SEP]")])
+        else:
+            answer.append(ans.strip())
+    return answer
+
+def extract_math_few_shot_cot_answer(question, reasoning, task):
+    if 'Problem:' in reasoning:
+        reasoning = reasoning.split("Problem:", 1)[0]
+    return extract_math_answer(question, reasoning, task)
+
+def eval_math(item, pred_key='prediction', prec=1e-3):
+    pred = item[pred_key]
+    if pred_key == 'program_output' and isinstance(pred, str):
+        pred = [pred]
+    ans = item['answer']
+    if isinstance(pred, list) and isinstance(ans, list):
+        # for some questions in MATH, `reference` repeats answers
+        _ans = []
+        for a in ans:
+            if a not in _ans:
+                _ans.append(a)
+        ans = _ans
+        # some predictions for MATH questions also repeats answers
+        _pred = []
+        for a in pred:
+            if a not in _pred:
+                _pred.append(a)
+        # some predictions mistakenly box non-answer strings
+        pred = _pred[-len(ans):]
+
+    item.update({
+        pred_key: pred,
+        'answer': ans
+    })
+    return is_correct(item, pred_key=pred_key, prec=prec)

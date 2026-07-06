@@ -28,6 +28,9 @@ from .gsm8k_kshot_base_gen import (
 from .hellaswag_kshot_ppl import (
     HellaSwagFewShotPPLTask,
 )
+from .hendrycks_math_kshot_base_gen import (
+    HendrycksMathFewShotBaseGenTask,
+)
 from .hmmt_feb_2025_0shot_gen import (
     HMMTFeb2025ZeroShotGenTask,
 )
@@ -95,6 +98,7 @@ __all__ = [
     "HMMTFeb2025ZeroShotGenTask",
     "HMMTFeb2026ZeroShotGenTask",
     "HellaSwagFewShotPPLTask",
+    "HendrycksMathFewShotBaseGenTask",
     "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
     "IFBenchZeroShotGenTask",
