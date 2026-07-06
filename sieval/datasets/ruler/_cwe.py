@@ -81,8 +81,6 @@ def load_cwe(
             except Exception:
                 if used_words > incremental:
                     used_words -= incremental
-                else:
-                    break
         if remove_newline_tab:
             input_text = " ".join(
                 input_text.replace("\n", " ").replace("\t", " ").strip().split()

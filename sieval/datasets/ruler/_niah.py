@@ -156,9 +156,6 @@ def load_niah(
             except Exception:
                 if used_haystack > incremental:
                     used_haystack -= incremental
-                else:
-                    input_text, answer = gen(used_haystack)
-                    break
         if remove_newline_tab:
             input_text = " ".join(
                 input_text.replace("\n", " ").replace("\t", " ").strip().split()

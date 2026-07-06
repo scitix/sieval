@@ -181,6 +181,7 @@ def download_cmd(
 
 
 def _download_one(m: DatasetMeta, dest_root: Path, force: bool) -> None:
+    missing_local_sources: list[str] = []
     for src in m.source:
         h = resolve_handler(src)
         if h.is_downloaded(src, dest_root, m.name) and not force:
@@ -190,9 +191,9 @@ def _download_one(m: DatasetMeta, dest_root: Path, force: bool) -> None:
         try:
             h.download(src, dest_root, m.name, force=force)
         except LocalSourceUnavailable as e:
-            # BYO corpus: not an error — surface the instructions and move on so
-            # the remaining (fetchable) sources still download.
+            # BYO corpus: surface the instructions and track for a summary.
             typer.secho(f"[{m.name}] {e}", fg=typer.colors.YELLOW)
+            missing_local_sources.append(src)
 
     mismatches = verify_checksums(m, dest_root)
     if mismatches:
@@ -206,6 +207,15 @@ def _download_one(m: DatasetMeta, dest_root: Path, force: bool) -> None:
             f"checksum verification failed for {m.name!r} ({details}); "
             f"deleted the mismatched file(s) — re-run "
             f"`sieval dataset download {m.name}` to refetch"
+        )
+
+    # BYO corpus: exit non-zero if any local: sources were unavailable.
+    if missing_local_sources:
+        raise RuntimeError(
+            f"{m.name!r} requires {len(missing_local_sources)} bring-your-own "
+            f"corpus file(s). Run `pdm run python "
+            f"scripts/gen_paul_graham_essays.py --data-dir $SIEVAL_DATA_DIR` "
+            f"to produce it, then re-run this download."
         )
 
     # Post-download hint; print-only, never installs.

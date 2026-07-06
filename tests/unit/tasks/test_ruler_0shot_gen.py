@@ -3,7 +3,7 @@
 from unittest.mock import Mock
 
 from sieval.datasets.ruler._shared import thinking_prefill, tokens_to_generate
-from sieval.tasks.ruler_0shot_gen import _ChatGenBase
+from sieval.tasks.ruler_0shot_gen import RulerZeroShotGenTask
 
 
 class TestTokensToGenerate:
@@ -97,7 +97,7 @@ class TestMessageModes:
         """Default mode: answer_prefix appended to user message."""
         import asyncio
 
-        task = Mock(spec=_ChatGenBase)
+        task = Mock(spec=RulerZeroShotGenTask)
         task.model = Mock()
         task.model._model = "Qwen3-8b"
         task.model._kwargs = {
@@ -109,7 +109,7 @@ class TestMessageModes:
 
         raw = {"input": "Context here.", "answer_prefix": "Answer: "}
 
-        messages = asyncio.run(_ChatGenBase.preprocess(task, raw, None))
+        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))
 
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
@@ -119,7 +119,7 @@ class TestMessageModes:
         """Assistant mode: prefilled assistant turn with thinking_prefill."""
         import asyncio
 
-        task = Mock(spec=_ChatGenBase)
+        task = Mock(spec=RulerZeroShotGenTask)
         task.model = Mock()
         task.model._model = "Qwen3-8b"
         task.model._kwargs = {
@@ -132,7 +132,7 @@ class TestMessageModes:
 
         raw = {"input": "Context here.", "answer_prefix": "Answer: "}
 
-        messages = asyncio.run(_ChatGenBase.preprocess(task, raw, None))
+        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))
 
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
@@ -145,7 +145,7 @@ class TestMessageModes:
         """Assistant mode with thinking: prefill returns empty string."""
         import asyncio
 
-        task = Mock(spec=_ChatGenBase)
+        task = Mock(spec=RulerZeroShotGenTask)
         task.model = Mock()
         task.model._model = "Qwen3-8b"
         task.model._kwargs = {
@@ -158,7 +158,7 @@ class TestMessageModes:
 
         raw = {"input": "Context here.", "answer_prefix": "Answer: "}
 
-        messages = asyncio.run(_ChatGenBase.preprocess(task, raw, None))
+        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))
 
         assert len(messages) == 2
         assert messages[1]["role"] == "assistant"
@@ -169,14 +169,14 @@ class TestMessageModes:
         """Default behavior when extra_body is missing."""
         import asyncio
 
-        task = Mock(spec=_ChatGenBase)
+        task = Mock(spec=RulerZeroShotGenTask)
         task.model = Mock()
         task.model._model = "gpt-4"
         task.model._kwargs = {}  # No extra_body
 
         raw = {"input": "Context.", "answer_prefix": "Q: "}
 
-        messages = asyncio.run(_ChatGenBase.preprocess(task, raw, None))
+        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))
 
         # Should default to user-message mode
         assert len(messages) == 1

@@ -12,9 +12,10 @@ per sample in ``feedback()`` based on ``subtask``:
 - overall headline: ``score``
 
 The prompt is fully synthesized in the dataset loader; this task just sends
-it and scores the reply. The RULER answer-cue (``answer_prefix``) is appended
-directly to the user message so the model produces the answer inline without
-needing a prefilled assistant turn.
+it and scores the reply. The RULER answer-cue (``answer_prefix``) is prefilled
+in an assistant turn (when continue_final_message: true is set), validated
+against NVIDIA/RULER at commit ab17b78. An alternative user-message append
+mode is supported for thinking model compatibility.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
