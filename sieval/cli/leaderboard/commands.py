@@ -16,24 +16,13 @@ import typer
 from sieval.cli.output import CommandResult, OutputFormat, cli_error_message, render
 
 from .catalog import scan_leaderboards
-from .scanner import RunInfo, build_matrix, resolve_model_name, scan_runs
+from .scanner import build_matrix, resolve_model_name, scan_runs
 
 leaderboard_app = typer.Typer(
     name="leaderboard",
     help="Cross-run score aggregation and leaderboard display.",
     no_args_is_help=True,
 )
-
-
-def _resolve_run_models(runs: list[RunInfo]) -> list[RunInfo]:
-    """Fill in missing model names from inference output (same as `report`)."""
-    resolved: list[RunInfo] = []
-    for run in runs:
-        if run.model_name:
-            resolved.append(run)
-        else:
-            resolved.append(replace(run, model_name=resolve_model_name(run.run_dir)))
-    return resolved
 
 
 @leaderboard_app.command()
@@ -75,7 +64,13 @@ def report(
         else:
             warnings.append(f"Directory not found, skipping: {d}")
 
-    resolved_runs = _resolve_run_models(scan_runs(valid_dirs))
+    # Fill in missing model names from inference output.
+    resolved_runs = [
+        run
+        if run.model_name
+        else replace(run, model_name=resolve_model_name(run.run_dir))
+        for run in scan_runs(valid_dirs)
+    ]
     matrix = build_matrix(resolved_runs, all_runs=all_runs)
 
     result = CommandResult(

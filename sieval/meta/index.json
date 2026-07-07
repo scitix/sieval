@@ -971,7 +971,7 @@
       "reference_impl": {
         "source": "NVIDIA/RULER",
         "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
-        "notes": "Scoring mirrors RULER's string_match_all (recall) and string_match_part (QA), vendored in community/ruler/eval."
+        "notes": "Scoring mirrors RULER's string_match_all (recall) and string_match_part (QA), vendored in community/ruler/eval. Divergence: upstream sets a per-subtask generation cap (tokens_to_generate = 128 NIAH / 30 VT / 120 CWE / 50 FWE / 32 QA); this single class serves all 13 subtasks and cannot express a per-subtask cap through one YAML infer_args, so max_tokens is left to the model's default_params (see infer()). Recall subtasks are unaffected as long as the answer precedes the natural stop."
       },
       "status": "stable"
     },

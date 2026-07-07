@@ -1,9 +1,23 @@
 """Test RULER unified implementation supporting all model scenarios."""
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from sieval.datasets.ruler._shared import thinking_prefill, tokens_to_generate
 from sieval.tasks.ruler_0shot_gen import RulerZeroShotGenTask
+
+
+def _final(context_length, subtask, prediction, references):
+    """Build a minimal `finals` entry carrying only what report() reads."""
+    return SimpleNamespace(
+        feedback_result={
+            "prediction": prediction,
+            "references": references,
+            "subtask": subtask,
+            "context_length": context_length,
+        }
+    )
 
 
 class TestTokensToGenerate:
@@ -190,6 +204,69 @@ class TestMessageModes:
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "Context.Q: "
+
+
+class TestReport:
+    """Test report() score aggregation: cell → per-length mean → mean-of-means."""
+
+    def test_mean_of_means_weights_lengths_equally(self):
+        """Headline `score` averages per-length means, not raw cells/samples.
+
+        Layout (one sample per cell, string_match_all → 100 hit / 0 miss):
+          - 4k: niah=100, vt=0  → length mean 50.0
+          - 8k: niah=0          → length mean 0.0
+        Mean-of-means = (50 + 0) / 2 = 25.0. A flat mean over the three cells
+        would be (100 + 0 + 0) / 3 = 33.33 — so 25.0 discriminates the two.
+        """
+        finals = [
+            _final(4096, "niah_single_1", "the answer is cat", ["cat"]),
+            _final(4096, "vt", "wrong", ["dog"]),
+            _final(8192, "niah_single_1", "wrong", ["cat"]),
+        ]
+
+        result = asyncio.run(RulerZeroShotGenTask.report(Mock(), finals, []))
+
+        assert result["score"] == 25.0
+        assert result["score_4k"] == 50.0
+        assert result["score_8k"] == 0.0
+        assert result["score_niah_single_1_4k"] == 100.0
+        assert result["score_vt_4k"] == 0.0
+        assert result["score_niah_single_1_8k"] == 0.0
+        assert result["fails"] == 0
+
+    def test_qa_subtasks_use_part_match(self):
+        """QA cells score with string_match_part (any ref hit), not _all.
+
+        Prediction contains one of two references:
+          - string_match_part → max(1, 0) = 100.0
+          - string_match_all  → (1 + 0) / 2 = 50.0
+        A single QA cell makes `score` equal the cell score, so 100.0 proves
+        the part-match branch is taken for QA subtasks.
+        """
+        finals = [
+            _final(4096, "qa_squad", "the answer is paris", ["paris", "france"]),
+        ]
+
+        result = asyncio.run(RulerZeroShotGenTask.report(Mock(), finals, []))
+
+        assert result["score"] == 100.0
+        assert result["score_qa_squad_4k"] == 100.0
+
+    def test_fails_are_counted_not_scored(self):
+        """`fails` reflects the fails list length; only finals feed scoring."""
+        finals = [_final(4096, "niah_single_1", "cat", ["cat"])]
+
+        result = asyncio.run(RulerZeroShotGenTask.report(Mock(), finals, [1, 2, 3]))
+
+        assert result["score"] == 100.0
+        assert result["fails"] == 3
+
+    def test_empty_finals_yield_zero_score(self):
+        """No finals → overall 0.0 without ZeroDivisionError."""
+        result = asyncio.run(RulerZeroShotGenTask.report(Mock(), [], []))
+
+        assert result["score"] == 0.0
+        assert result["fails"] == 0
 
 
 class TestScenarios:

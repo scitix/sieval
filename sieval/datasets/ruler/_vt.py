@@ -55,7 +55,7 @@ def load_vt(
         tokens_to_generate=0,
         add_fewshot=True,
         icl_example=None,
-        remove_newline_tab=False,
+        remove_newline_tab=remove_newline_tab,
         type_haystack=type_haystack,
         haystack=haystack,
         final_output=False,
@@ -152,8 +152,6 @@ def _synthesize(
             except Exception:
                 if used_noises > incremental:
                     used_noises -= incremental
-                else:
-                    break
         if final_output:
             answer_prefix_index = input_text.rfind(
                 ruler_task("variable_tracking")["answer_prefix"][:10]
