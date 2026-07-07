@@ -330,6 +330,34 @@ async def test_setup_samples_deterministically_by_locale_subject():
     }
 
 
+@pytest.mark.anyio
+async def test_setup_sampling_is_idempotent_under_repeated_calls():
+    samples = [
+        *[_sample(i, locale="zh_cn", subject="abstract_algebra") for i in range(4)],
+        *[_sample(i, locale="zh_cn", subject="business_ethics") for i in range(4)],
+    ]
+    task = _task(
+        samples,
+        k=0,
+        sample_fraction=0.5,
+        sample_seed=42,
+        sample_by="locale_subject",
+    )
+
+    await task.setup()
+    first_set = task.dataset.test_set
+    assert first_set is not None
+    first = [row["Question"] for row in first_set]
+    # A second setup() must not sample a sample (0.5 of the already-sampled set).
+    await task.setup()
+    second_set = task.dataset.test_set
+    assert second_set is not None
+    second = [row["Question"] for row in second_set]
+
+    assert len(first) == 4
+    assert first == second
+
+
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [

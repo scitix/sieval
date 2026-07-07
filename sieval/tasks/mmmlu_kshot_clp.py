@@ -25,6 +25,13 @@ Reproduction decoding: greedy ``temperature=0`` with ``max_tokens=1`` and
 top-``logprobs`` scoring.  These are structural to ``alogprobs`` (next-token
 logprob scoring with no text generation), not free decoding knobs.
 
+Infra requirement: the serving backend must return a top-k large enough to
+include all of ``" A"``/``" B"``/``" C"``/``" D"``.  Unlike the CMMLU sibling
+(which fails loud), a missing option is filled with ``-100`` *silently* (per
+Hendrycks ``evaluate.py``), so a too-small server top-k depresses the score with
+no error.  ``logprobs`` defaults to 100; SGLang serves 100 out of the box, but
+on vLLM start the server with ``--max-logprobs 100`` (its default is 20).
+
 AI-Generated Code - GPT-5-Codex (OpenAI)
 """
 
@@ -182,6 +189,9 @@ def _normalize_sample_by(sample_by: str) -> str:
             "reads the next token's top-logprobs over the space-prefixed option "
             "tokens ' A'/' B'/' C'/' D' (a missing option is filled with -100 "
             "per Hendrycks, not failed loudly; empirically ~0.009% of samples). "
+            "Because the -100 fill is silent, faithful reproduction needs a "
+            "server top-k that returns all four option tokens: SGLang serves 100 "
+            "by default; on vLLM start with --max-logprobs 100 (default 20). "
             "Validated on Qwen2.5-72B (sglang): full 14-locale 5-shot = 76.13, "
             "zh_cn = 82.43. Those runs used the pre-rename PPL/base_gen "
             "packaging at an out-of-tree SHA; the scoring mechanism (single "
@@ -230,6 +240,7 @@ class MMMLUKShotClpTask(
         self._fewshot_by_group = None
         self._fewshot_source_indices: set[int] = set()
         self._eval_split_excludes_fewshot = False
+        self._sampling_applied = False
         self._prompt_cache: dict[tuple[str, str], str] = {}
 
     @override
@@ -418,6 +429,10 @@ class MMMLUKShotClpTask(
         return prompt
 
     def _apply_sampling(self) -> None:
+        # Idempotent like _ensure_fewshot_pool / _exclude_fewshot_examples: the
+        # runner calls setup() once, but a second call must not sample a sample.
+        if self._sampling_applied:
+            return
         if self._sample_fraction is None:
             return
 
@@ -440,6 +455,7 @@ class MMMLUKShotClpTask(
             sampled_indices.extend(indices[:sample_size])
 
         self.dataset.dataset_dict["test"] = test_split.select(sampled_indices)
+        self._sampling_applied = True
 
     def _sample_key(self, row: dict[str, object]) -> tuple[str, ...]:
         locale = str(row.get("Locale", "")).strip()
