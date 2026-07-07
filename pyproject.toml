@@ -129,7 +129,9 @@ select = [
   "E501",
   "T201",
 ] # community/ follows upstream implementations — do not enforce line-length or print restrictions
-"scripts/**/*.py" = ["T201"] # scripts/ are CLI tools — print() is their output mechanism
+"scripts/**/*.py" = [
+  "T201",
+] # scripts/ are CLI tools — print() is their output mechanism
 "tests/**/*.py" = ["T201"] # tests/ may use print() for debugging
 
 [tool.ty.environment]
