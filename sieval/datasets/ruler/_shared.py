@@ -98,9 +98,6 @@ def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
       to skip reasoning)
 
     Other models: Always returns empty string (no special handling needed)
-
-    This maintains backward compatibility with feat/ruler branch while supporting
-    feat/ruler_exp's message pattern (appending answer_prefix to user message).
     """
     if "qwen3" in model_name.lower() and not enable_thinking:
         return "<think>\n\n</think>\n\n"  # Empty block; skip to answer

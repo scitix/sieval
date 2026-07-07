@@ -78,6 +78,14 @@ def load_qa(
                 assert length <= max_seq_length, f"{length} exceeds max_seq_length"
                 break
             except AssertionError:
+                # Sibling loaders (_niah/_cwe/_vt) use a broader `except Exception`.
+                # Here only the length guard is caught: if used_docs ever shrank
+                # below len(curr_docs), gen() would raise ValueError from
+                # random.sample(curr_more, negative) and it would propagate rather
+                # than shrink further. Unreachable in practice — _fit_num_docs
+                # starts from a fitting count and the gold-doc count is small — so
+                # kept narrow; widen to `except Exception` to match the siblings if
+                # that assumption ever changes.
                 if used_docs > incremental:
                     used_docs -= incremental
         if remove_newline_tab:

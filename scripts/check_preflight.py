@@ -1262,9 +1262,9 @@ def main(argv: list[str] | None = None) -> int:
     results = runner.run(only=args.check)
 
     if args.fmt == "json":
-        print(format_json(results))  # noqa: T201
+        print(format_json(results))
     else:
-        print(format_text(results))  # noqa: T201
+        print(format_text(results))
 
     has_failure = any(r.status == "FAIL" for r in results)
     return 1 if has_failure else 0

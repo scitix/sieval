@@ -32,6 +32,15 @@
 #   Single task evaluation with separated thinking chain and final answer stats
 #
 # Note: Thinking configuration must be used with reasoning_parser: qwen3
+#
+# Budget coupling (do not decouple without re-checking the arithmetic below):
+#   The dataset does NOT set think_budget, so it defaults to 0 and the prompt is
+#   packed to fill max_seq_length (16384) reserving only the answer budget — the
+#   serving-side thinking_budget: 8192 is invisible to that reservation. It fits
+#   at inference only because context_length (32768) is 2× max_seq_length, so
+#   input (≤16384) + thinking (8192) + answer stays under 32768. Raising
+#   max_seq_length to 32768 (or lowering context_length) would overflow: pass a
+#   matching think_budget: 8192 to the dataset args if you change either.
 # ==============================================================================
 
 result_dir: ./outputs/ruler_qwen3_8b_thinking

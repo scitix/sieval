@@ -115,6 +115,14 @@ class RulerZeroShotGenTask(
             ]
 
     async def infer(self, pre, ctx):  # noqa: ARG002
+        # Divergence from NVIDIA/RULER: upstream caps generation per subtask
+        # (tokens_to_generate = 128 NIAH / 30 VT / 120 CWE / 50 FWE / 32 QA).
+        # This single class serves all 13 subtasks, so a per-subtask cap can't
+        # be expressed through one YAML infer_args value; we leave max_tokens to
+        # the model's default_params. Only the recall (string_match_all) subtasks
+        # can over-generate, and their score is unaffected as long as the answer
+        # appears before the natural stop — repro stays within target. Set
+        # max_tokens in infer_args if you need to bound cost.
         return await self.model.agenerate(pre)
 
     async def postprocess(self, inf, ctx):  # noqa: ARG002

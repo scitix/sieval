@@ -69,7 +69,7 @@ def main() -> int:
     os.replace(tmp, INDEX_PATH)
     payload = json.loads(rendered)
     relative = INDEX_PATH.relative_to(ROOT)
-    print(  # noqa: T201
+    print(
         f"Wrote {len(payload['datasets'])} dataset and "
         f"{len(payload['tasks'])} task entries to {relative}"
     )

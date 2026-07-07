@@ -55,6 +55,8 @@ ruler = [
   "numpy<=2.2",
   "scipy>=1.16.3",
   "nltk>=3.9.2",
+  # tokenizer_type: hf (both example configs) → transformers.AutoTokenizer in community/ruler/scripts/tokenizer.py
+  "transformers>=4.44.0",
 ]
 t-eval = ["numpy<=2.2", "sentence-transformers>=5.1.2"]
 
@@ -127,6 +129,7 @@ select = [
   "E501",
   "T201",
 ] # community/ follows upstream implementations — do not enforce line-length or print restrictions
+"scripts/**/*.py" = ["T201"] # scripts/ are CLI tools — print() is their output mechanism
 "tests/**/*.py" = ["T201"] # tests/ may use print() for debugging
 
 [tool.ty.environment]
