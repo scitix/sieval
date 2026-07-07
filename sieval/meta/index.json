@@ -531,11 +531,11 @@
       "status": "stable"
     },
     {
-      "name": "cmmlu_kshot_base_gen",
-      "display_name": "CMMLU (few-shot, base logprob)",
+      "name": "cmmlu_kshot_clp",
+      "display_name": "CMMLU (few-shot, base CLP)",
       "description": "CMMLU few-shot MCQ with same-subject dev examples and macro scoring.",
       "dataset": "cmmlu",
-      "eval_mode": "ppl",
+      "eval_mode": "clp",
       "n_shot": 5,
       "tags": [
         "chinese",

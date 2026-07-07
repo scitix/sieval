@@ -1,10 +1,13 @@
 """
-CMMLU few-shot base-model generative task.
+CMMLU few-shot base-model conditional-log-prob (CLP) task.
 
 Mirrors the official CMMLU ``qwen2.py`` *base* path (``eval``, not
 ``eval_instruct``): non-CoT prompt, same-subject dev shots, and next-token
-A/B/C/D choice scoring. Here scoring reads one next token from ``top_logprobs``
-and argmaxes over A/B/C/D; the official ``eval`` argmaxes raw last-token logits
+A/B/C/D choice scoring. This is a ``clp`` task (``EvalMode.CLP``): the answer is
+picked from a single inference's next-token log-probs over the fixed option-token
+set A/B/C/D, not from full-sequence perplexity. Here scoring reads one next token
+from ``top_logprobs`` and argmaxes over A/B/C/D; the official ``eval`` argmaxes
+raw last-token logits
 over the same token IDs. The two agree whenever all four option tokens are in
 the requested top-k (softmax is monotonic). To keep partial coverage loud
 rather than silent, scoring *requires all four* option tokens to be present and
@@ -265,10 +268,10 @@ def _choice_scores_from_top_logprobs(
 
 
 @sieval_task(
-    name="cmmlu_kshot_base_gen",
-    display_name="CMMLU (few-shot, base logprob)",
+    name="cmmlu_kshot_clp",
+    display_name="CMMLU (few-shot, base CLP)",
     description="CMMLU few-shot MCQ with same-subject dev examples and macro scoring.",
-    eval_mode=EvalMode.PPL,
+    eval_mode=EvalMode.CLP,
     n_shot=DEFAULT_N_SHOT,
     tags=("chinese", "multiple-choice", "base-model"),
     model_type="gen",
@@ -297,7 +300,7 @@ def _choice_scores_from_top_logprobs(
         ),
     ),
 )
-class CMMLUFewShotBaseGenTask(
+class CMMLUFewShotClpTask(
     Task[
         CMMLUDatasetSample,
         str,
