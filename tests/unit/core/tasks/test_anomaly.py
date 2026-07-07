@@ -15,6 +15,7 @@ from sieval.core.tasks.anomaly import (
     TaskAnomalyDetector,
     _rule_applies,
     _unwrap_result,
+    detect_empty_infer_clp,
     detect_empty_infer_gen,
     detect_empty_infer_ppl,
     detect_empty_postprocess,
@@ -100,6 +101,28 @@ class TestDetectEmptyInferPpl:
             assert detect_empty_infer_ppl(ctx) == expected, case_name
 
 
+class TestDetectEmptyInferClp:
+    def test_top_logprobs_variants(self, sample_model_meta):
+        def _make_output(top_logprobs):
+            return ModelOutput(
+                model=sample_model_meta,
+                texts=["A"],
+                top_logprobs=top_logprobs,
+            )
+
+        cases = [
+            # GenModel coalesces an empty top-k to None; both must fire.
+            (_make_output(None), {0}, "none_top_logprobs"),
+            (_make_output([]), {0}, "empty_top_logprobs"),
+            (_make_output([{"A": -0.1, "B": -1.0}]), set(), "non_empty_top_logprobs"),
+            ("not_model_output", set(), "non_model_output"),
+            (None, set(), "none"),
+        ]
+        for infer_result, expected, case_name in cases:
+            ctx = _make_final_ctx(infer_result=infer_result)
+            assert detect_empty_infer_clp(ctx) == expected, case_name
+
+
 class TestDetectTruncatedOutput:
     def test_single_sample(self, sample_model_meta):
         """Single-sample (n=1) finish reason variants."""
@@ -161,6 +184,7 @@ class TestDetectionRuleRegistry:
         rules = get_applied_rules()
         assert "empty_infer_gen" in rules
         assert "empty_infer_ppl" in rules
+        assert "empty_infer_clp" in rules
         assert "truncated_output" in rules
         assert "empty_postprocess" in rules
 
@@ -169,6 +193,7 @@ class TestDetectionRuleRegistry:
         rule_names = {r["name"] for r in schema["rules"]}
         assert "empty_infer_gen" in rule_names
         assert "empty_infer_ppl" in rule_names
+        assert "empty_infer_clp" in rule_names
         assert "truncated_output" in rule_names
         assert "empty_postprocess" in rule_names
 
