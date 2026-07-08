@@ -401,6 +401,27 @@
       "checksums": {}
     },
     {
+      "name": "mmmlu",
+      "display_name": "MMMLU",
+      "description": "OpenAI MMMLU - human-translated MMLU test split covering 57 subjects across 14 locales.",
+      "source": [
+        "hf:openai/MMMLU@325a01dc3e173cac1578df94120499aaca2e2504"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "multilingual",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
       "name": "openbookqa",
       "display_name": "OpenBookQA",
       "description": "OpenBookQA elementary-science open-book multiple-choice QA.",
@@ -930,6 +951,26 @@
         "source": "opencompass",
         "url": "https://github.com/open-compass/opencompass/blob/568572803ab108eb0e2ae73b770d965b7de078de/opencompass/configs/datasets/mmlu_pro/mmlu_pro_0shot_cot_gen_08c1de.py",
         "notes": "QUERY_TEMPLATE / CHOICES adapted from opencompass 0-shot CoT config."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "mmmlu_kshot_clp",
+      "display_name": "MMMLU (k-shot, CLP)",
+      "description": "OpenAI MMMLU multilingual k-shot MCQ with weighted groups.",
+      "dataset": "mmmlu",
+      "eval_mode": "clp",
+      "n_shot": 5,
+      "tags": [
+        "multilingual",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "lm-evaluation-harness + hendrycks/test",
+        "url": "https://github.com/EleutherAI/lm-evaluation-harness/tree/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/openai-mmmlu",
+        "notes": "MMMLU locale/category/subject organization and size-weighted (micro) aggregation from lm-evaluation-harness; Hendrycks evaluate.py completion scoring via a single alogprobs call that reads the next token's top-logprobs over the space-prefixed option tokens ' A'/' B'/' C'/' D' (a missing option is filled with -100 per Hendrycks, not failed loudly; empirically ~0.009% of samples). Because the -100 fill is silent, faithful reproduction needs a server top-k that returns all four option tokens: SGLang serves 100 by default; on vLLM start with --max-logprobs 100 (default 20). Validated on Qwen2.5-72B (sglang): full 14-locale 5-shot = 76.13, zh_cn = 82.43. Those runs used the pre-rename PPL/base_gen packaging at an out-of-tree SHA; the scoring mechanism (single alogprobs call) is identical to this clp task, so the numbers carry over."
       },
       "status": "stable"
     },

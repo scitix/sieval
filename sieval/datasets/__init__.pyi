@@ -73,6 +73,10 @@ from .mmlu_pro import (
     MMLUProDataset,
     MMLUProDatasetSample,
 )
+from .mmmlu import (
+    MMMLUDataset,
+    MMMLUDatasetSample,
+)
 from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
@@ -127,6 +131,8 @@ __all__ = [
     "MMLUDatasetSample",
     "MMLUProDataset",
     "MMLUProDatasetSample",
+    "MMMLUDataset",
+    "MMMLUDatasetSample",
     "OpenBookQADataset",
     "OpenBookQADatasetSample",
     "RulerDataset",
