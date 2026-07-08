@@ -184,11 +184,9 @@ def _read_hotpotqa(name_or_path: str) -> tuple[list[dict], list[str]]:
             doc = f"{title}\n{''.join(sents)}"
             if doc not in total_docs_set:
                 total_docs_set[doc] = len(total_docs_set)
-    # Divergence from upstream qa.py (alphabetical `sorted(set(...))`): keep
-    # first-seen insertion order. Yields a different distractor byte layout per
-    # seed but is score-neutral — the gold docs and answer are unchanged, only
-    # filler order differs. Enumerated in RulerZeroShotGenTask.reference_impl.notes.
-    total_docs = sorted(total_docs_set, key=lambda d: total_docs_set[d])
+    # Alphabetical order, matching upstream qa.py's `sorted(list(set(...)))` so the
+    # document indexing (and thus distractor selection) is byte-identical to upstream.
+    total_docs = sorted(set(total_docs_set))
     total_docs_dict = {d: i for i, d in enumerate(total_docs)}
     total_qas = []
     for row in data:
