@@ -18,7 +18,7 @@
 #   1. Prepare data: sieval dataset download ruler
 #      Pass enable_thinking=true to dataset config
 #   2. Check model path and GPU:
-#      - checkpoint: /root/models/Qwen3-8b
+#      - checkpoint: /path/to/Qwen3-8b
 #      - ensure enable_custom_logit_processor: true
 #   3. Run evaluation: sieval run ruler-qwen3-8b-thinking.yaml
 #
@@ -59,7 +59,7 @@ models:
     infer:
       backend: sglang
       recipe: qwen3-8b
-      checkpoint: /root/models/Qwen3-8b
+      checkpoint: /path/to/Qwen3-8b
       overrides:
         context_length: 32768
         reasoning_parser: qwen3
@@ -77,7 +77,7 @@ datasets:
       max_seq_length: 16384
       num_samples: 500
       tokenizer_type: hf
-      tokenizer_path: /root/models/Qwen3-8b
+      tokenizer_path: /path/to/Qwen3-8b
       enable_thinking: true
       model_name: qwen3
 
