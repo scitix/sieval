@@ -697,7 +697,7 @@
       "reference_impl": {
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/hellaswag/hellaswag.yaml",
-        "notes": "multiple_choice log-likelihood; acc + acc_norm (character-length normalized, reported as score). Few-shot exemplars (k, default 10) sampled from train, rendered 'query gold_ending' and joined by blank lines per lm-eval; k=0 is 0-shot. Continuation log-probs read via echoed alogprobs; context/continuation split by char offset (no tokenizer at this layer)."
+        "notes": "multiple_choice log-likelihood; acc + acc_norm (character-length normalized, reported as score). Few-shot exemplars (k, default 10) sampled from train, rendered 'query gold_ending' and joined by blank lines per lm-eval; k=0 is 0-shot. Continuation log-probs read via echoed alogprobs; context/continuation split by char offset (no tokenizer at this layer). Infra requirement: echo scoring reads the prompt's input logprobs, so the serving backend's prefix caching must be disabled (cached positions are not recomputed -> truncated logprobs); the backend layer owns the specific flag."
       },
       "status": "stable"
     },

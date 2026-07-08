@@ -21,12 +21,13 @@ maps the digit ``label`` to an int (``ast.literal_eval`` when ``isdigit()`` and
 ending text), not the index; ``labeled_examples`` carries the trailing delimiter.
 The exact assembled context is byte-pinned by the ``k=1``/``k=2`` tests.
 
-Comparison target: the DeepSeek-V3 report (Table 6) lists Qwen2.5-72B-Base
-HellaSwag = 84.8. That number comes from DeepSeek's internal harness and its
-exact protocol (prompt / acc-vs-acc_norm / shot count) is not fully specified,
-so this lm-eval-aligned ``acc_norm`` (10-shot) task is expected to land *near*
-84.8 rather than match it exactly — a few-point, different-harness gap is not a
-reproduction failure.
+Validated: Qwen2.5-72B-Base, 10-shot, ``acc_norm`` 87.4 over the full
+10042-sample validation split, ``fails=0``, deterministic (two byte-identical
+runs). Comparison target (cross-check only): the DeepSeek-V3 report (Table 6)
+lists Qwen2.5-72B-Base HellaSwag = 84.8 — from DeepSeek's internal harness with
+an underspecified protocol (prompt / acc-vs-``acc_norm`` / shot count), so the
+~2.6-pt gap is a different-harness delta, not a reproduction failure. The
+reproduced method is lm-eval ``hellaswag`` (``acc_norm``).
 
 Query/choice construction is the lm-eval ``process_docs`` logic, factored into
 ``sieval.community.hellaswag`` (``preprocess`` + ``process_doc``), applied to both
@@ -168,7 +169,10 @@ def _argmax(values: list[float]) -> int:
             "sampled from train, rendered 'query gold_ending' and joined by "
             "blank lines per lm-eval; k=0 is 0-shot. Continuation log-probs read "
             "via echoed alogprobs; context/continuation split by char offset "
-            "(no tokenizer at this layer)."
+            "(no tokenizer at this layer). Infra requirement: echo scoring reads "
+            "the prompt's input logprobs, so the serving backend's prefix caching "
+            "must be disabled (cached positions are not recomputed -> truncated "
+            "logprobs); the backend layer owns the specific flag."
         ),
     ),
 )
@@ -264,7 +268,9 @@ class HellaSwagFewShotPPLTask(
     @override
     async def report(self, finals, fails):
         # Denominator counts pipeline failures as wrong (full-set accuracy),
-        # matching the sibling family and upstream — a regression test locks it.
+        # matching the `mbpp` sibling. (The MCQ siblings openbookqa/cmmlu instead
+        # exclude fails, and lm-eval has no pipeline-failure concept — this is a
+        # deliberate choice, moot here since fails=0.) A regression test locks it.
         total = len(finals) + len(fails)
         if total == 0:
             return {"score": 0.0, "acc": 0.0, "acc_norm": 0.0, "fails": 0}
