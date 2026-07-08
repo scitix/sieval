@@ -206,9 +206,10 @@ def test_stamp_adds_subtask_and_context_length():
             "answer_prefix": "A:",
         }
     ]
-    stamped = _stamp(rows, subtask="vt", context_length=8192)
+    stamped = _stamp(rows, subtask="vt", context_length=8192, gen_budget=30)
     assert stamped[0]["subtask"] == "vt"
     assert stamped[0]["context_length"] == 8192
+    assert stamped[0]["gen_budget"] == 30
 
 
 @_needs_ruler_deps
@@ -222,7 +223,7 @@ def test_stamp_preserves_existing_fields():
             "answer_prefix": "Answer:",
         }
     ]
-    result = _stamp(rows, subtask="cwe", context_length=4096)
+    result = _stamp(rows, subtask="cwe", context_length=4096, gen_budget=120)
     assert result[0]["index"] == 7
     assert result[0]["outputs"] == ["a"]
 

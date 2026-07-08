@@ -206,6 +206,23 @@ class TestMessageModes:
         assert messages[0]["content"] == "Context.Q: "
 
 
+class TestInferCap:
+    """infer() caps generation at the sample's per-subtask gen_budget."""
+
+    def test_infer_passes_gen_budget_as_max_tokens(self):
+        from unittest.mock import AsyncMock
+
+        task = Mock(spec=RulerZeroShotGenTask)
+        task.model = Mock()
+        task.model.agenerate = AsyncMock(return_value="out")
+        ctx = SimpleNamespace(raw_sample={"gen_budget": 32})
+
+        result = asyncio.run(RulerZeroShotGenTask.infer(task, ["msg"], ctx))
+
+        assert result == "out"
+        task.model.agenerate.assert_awaited_once_with(["msg"], max_tokens=32)
+
+
 class TestReport:
     """Test report() score aggregation: cell → per-length mean → mean-of-means."""
 

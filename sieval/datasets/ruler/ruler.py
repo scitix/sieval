@@ -31,7 +31,12 @@ from ._cwe import load_cwe
 from ._fwe import load_fwe
 from ._niah import _NIAH_SUBTASK_KWARGS, load_niah
 from ._qa import load_qa
-from ._shared import _HOTPOTQA_REPO_ID, _HOTPOTQA_REVISION, _RULER_DATA_SHA
+from ._shared import (
+    _HOTPOTQA_REPO_ID,
+    _HOTPOTQA_REVISION,
+    _RULER_DATA_SHA,
+    tokens_to_generate,
+)
 from ._vt import load_vt
 
 _ALL_SUBTASKS = (
@@ -68,6 +73,21 @@ def _subtask_data_path(name_or_path: str, subtask: str) -> str:
     return name_or_path if subtask in _BASE_DIR_SUBTASKS else f"{name_or_path}/ruler"
 
 
+# Each subtask's RULER task name, for the per-subtask generation budget
+# (tokens_to_generate). All 8 NIAH variants share "niah".
+_NON_NIAH_RULER_TASK = {
+    "vt": "variable_tracking",
+    "cwe": "common_words_extraction",
+    "fwe": "freq_words_extraction",
+    "qa_squad": "qa",
+    "qa_hotpotqa": "qa",
+}
+
+
+def _ruler_task_name(subtask: str) -> str:
+    return "niah" if subtask in _NIAH_SUBTASK_KWARGS else _NON_NIAH_RULER_TASK[subtask]
+
+
 class RulerDatasetSample(TypedDict):
     index: int
     input: str
@@ -76,6 +96,7 @@ class RulerDatasetSample(TypedDict):
     answer_prefix: str
     subtask: str
     context_length: int
+    gen_budget: int  # per-subtask generation cap (tokens_to_generate)
     token_position_answer: NotRequired[int]  # NIAH only
 
 
@@ -278,12 +299,26 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                 f"Valid subtasks: {_ALL_SUBTASKS} or 'all'."
             )
 
-        rows = _stamp(rows, subtask=subtask, context_length=max_seq_length)
+        gen_budget = tokens_to_generate(
+            _ruler_task_name(subtask),
+            enable_thinking=enable_thinking,
+            think_budget=think_budget,
+            model_name=model_name,
+        )
+        rows = _stamp(
+            rows,
+            subtask=subtask,
+            context_length=max_seq_length,
+            gen_budget=gen_budget,
+        )
         return HFDatasetDict({"test": HFDataset.from_list(rows)})
 
 
-def _stamp(rows: list[dict], *, subtask: str, context_length: int) -> list[dict]:
+def _stamp(
+    rows: list[dict], *, subtask: str, context_length: int, gen_budget: int
+) -> list[dict]:
     for row in rows:
         row["subtask"] = subtask
         row["context_length"] = context_length
+        row["gen_budget"] = gen_budget
     return rows
