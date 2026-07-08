@@ -77,17 +77,21 @@ def load_qa(
                 length = len(tokenizer.text_to_tokens(input_text)) + gen_budget
                 assert length <= max_seq_length, f"{length} exceeds max_seq_length"
                 break
-            except AssertionError:
-                # Sibling loaders (_niah/_cwe/_vt) use a broader `except Exception`.
-                # Here only the length guard is caught: if used_docs ever shrank
-                # below len(curr_docs), gen() would raise ValueError from
-                # random.sample(curr_more, negative) and it would propagate rather
-                # than shrink further. Unreachable in practice — _fit_num_docs
-                # starts from a fitting count and the gold-doc count is small — so
-                # kept narrow; widen to `except Exception` to match the siblings if
-                # that assumption ever changes.
-                if used_docs > incremental:
-                    used_docs -= incremental
+            except Exception:
+                # Shrink the distractor count until the prompt fits — catch broadly
+                # like the sibling loaders (_niah/_cwe/_vt). HotpotQA carries a fixed
+                # gold-doc set (~10), so once used_docs drops below it gen() raises
+                # ValueError from random.sample(curr_more, negative), not just the
+                # length AssertionError. That IS reachable at max_seq_length < 4096,
+                # so fail loud with a clear message instead of letting a bare
+                # ValueError escape or spinning forever. (>=4k fits on the first try
+                # — verified — so this path is inert there.)
+                if used_docs <= incremental:
+                    raise ValueError(
+                        f"max_seq_length={max_seq_length} is too small to fit "
+                        f"HotpotQA's gold documents; use max_seq_length >= 4096."
+                    ) from None
+                used_docs -= incremental
         if remove_newline_tab:
             input_text = " ".join(
                 input_text.replace("\n", " ").replace("\t", " ").strip().split()
@@ -180,6 +184,10 @@ def _read_hotpotqa(name_or_path: str) -> tuple[list[dict], list[str]]:
             doc = f"{title}\n{''.join(sents)}"
             if doc not in total_docs_set:
                 total_docs_set[doc] = len(total_docs_set)
+    # Divergence from upstream qa.py (alphabetical `sorted(set(...))`): keep
+    # first-seen insertion order. Yields a different distractor byte layout per
+    # seed but is score-neutral — the gold docs and answer are unchanged, only
+    # filler order differs. Enumerated in RulerZeroShotGenTask.reference_impl.notes.
     total_docs = sorted(total_docs_set, key=lambda d: total_docs_set[d])
     total_docs_dict = {d: i for i, d in enumerate(total_docs)}
     total_qas = []

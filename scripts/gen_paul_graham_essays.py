@@ -139,9 +139,13 @@ def main() -> None:
         try:
             raw = _fetch(url)
             if ".html" in url:
-                # Mirror RULER's exact (quirky) decode so the haystack bytes
-                # match upstream — `unicode_escape` here is faithful to the
-                # original download_paulgraham_essay.py, not an oversight.
+                # Mirror RULER's exact per-essay decode: `unicode_escape`
+                # here is faithful to the original download_paulgraham_essay.py,
+                # not an oversight. (Full-corpus bytes still differ from upstream:
+                # this script concatenates essays in the pinned URL-list order,
+                # while upstream groups them repo-then-html by folder — glob order
+                # within each group. Score-neutral, enumerated in
+                # RulerZeroShotGenTask.reference_impl.notes.)
                 parsed = _html_to_text(raw.decode("unicode_escape", "utf-8"), converter)
             else:
                 parsed = raw.decode("utf-8")

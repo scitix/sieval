@@ -22,6 +22,65 @@ _needs_ruler_deps = pytest.mark.skipif(
 
 if _ruler_deps:
     from sieval.datasets.ruler import RulerDataset, RulerDatasetSample, _stamp
+    from sieval.datasets.ruler.ruler import _subtask_data_path
+
+
+# ---------------------------------------------------------------------------
+# _subtask_data_path — single-subtask staging path (regression)
+# ---------------------------------------------------------------------------
+
+
+@_needs_ruler_deps
+def test_subtask_data_path_appends_ruler_subdir_for_staged_subtasks():
+    # Regression: a direct single-subtask load must resolve the same ``/ruler``
+    # staging path the "all"/list branches use. Previously only the aggregate
+    # branches appended it, so a direct essay/squad subtask hit FileNotFoundError.
+    for st in ("niah_single_2", "niah_multikey_1", "vt", "cwe", "qa_squad"):
+        assert _subtask_data_path("/data", st) == "/data/ruler"
+
+
+@_needs_ruler_deps
+def test_subtask_data_path_uses_base_dir_for_synthetic_and_hf():
+    # FWE is fully synthetic and qa_hotpotqa is fetched from HF → base data dir.
+    assert _subtask_data_path("/data", "fwe") == "/data"
+    assert _subtask_data_path("/data", "qa_hotpotqa") == "/data"
+
+
+@_needs_ruler_deps
+def test_single_subtask_load_applies_ruler_subdir_to_loader(monkeypatch):
+    # Regression: a direct single-subtask load must pass the /ruler-suffixed path
+    # to the loader. Previously only the all/list branches appended it, so a
+    # direct essay/squad subtask read the base dir → FileNotFoundError. Mock the
+    # loader to capture the path without needing the staged corpus.
+    import sieval.datasets.ruler.ruler as ruler_mod
+
+    captured: dict[str, str] = {}
+
+    def fake_load_niah(path, **_kwargs):
+        captured["path"] = path
+        return []
+
+    monkeypatch.setattr(ruler_mod, "load_niah", fake_load_niah)
+    ds = RulerDataset(".", subtask="niah_single_2", max_seq_length=512, num_samples=1)
+    assert ds.test_set is not None  # force the load
+    assert captured["path"] == "./ruler"
+
+
+@_needs_ruler_deps
+def test_single_subtask_load_uses_base_dir_for_synthetic(monkeypatch):
+    # FWE reads the base dir (no /ruler subdir) — the mirror of the case above.
+    import sieval.datasets.ruler.ruler as ruler_mod
+
+    captured: dict[str, str] = {}
+
+    def fake_load_fwe(path, **_kwargs):
+        captured["path"] = path
+        return []
+
+    monkeypatch.setattr(ruler_mod, "load_fwe", fake_load_fwe)
+    ds = RulerDataset(".", subtask="fwe", max_seq_length=512, num_samples=1)
+    assert ds.test_set is not None
+    assert captured["path"] == "."
 
 
 # ---------------------------------------------------------------------------

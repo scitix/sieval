@@ -50,6 +50,23 @@ _ALL_SUBTASKS = (
     "qa_hotpotqa",
 )
 
+# Subtasks that read from the base data dir rather than ``<data_dir>/ruler/``:
+# FWE is fully synthetic (no external files) and qa_hotpotqa is fetched from HF.
+# Everything else reads staged files under the ``ruler`` staging subdir.
+_BASE_DIR_SUBTASKS = frozenset({"fwe", "qa_hotpotqa"})
+
+
+def _subtask_data_path(name_or_path: str, subtask: str) -> str:
+    """Resolve the data dir a single subtask reads from.
+
+    Centralizes the ``/ruler`` staging-subdir rule so every entry point — a
+    direct single-subtask ``load``, ``"all"``, and explicit subtask lists — maps
+    the path identically. Previously only the aggregate branches appended
+    ``/ruler``, so a direct ``subtask="niah_single_2"`` looked in the wrong dir
+    and raised ``FileNotFoundError``.
+    """
+    return name_or_path if subtask in _BASE_DIR_SUBTASKS else f"{name_or_path}/ruler"
+
 
 class RulerDatasetSample(TypedDict):
     index: int
@@ -124,81 +141,16 @@ class RulerDataset(Dataset[RulerDatasetSample]):
     ) -> HFDatasetDict:
         if subtask is None:
             raise ValueError("RulerDataset.load requires `subtask`")
-        # Handle list of subtasks
-        if isinstance(subtask, list):
-            splits = []
-            subtask_paths = {
-                "niah_single_1": f"{name_or_path}/ruler",
-                "niah_single_2": f"{name_or_path}/ruler",
-                "niah_single_3": f"{name_or_path}/ruler",
-                "niah_multikey_1": f"{name_or_path}/ruler",
-                "niah_multikey_2": f"{name_or_path}/ruler",
-                "niah_multikey_3": f"{name_or_path}/ruler",
-                "niah_multivalue": f"{name_or_path}/ruler",
-                "niah_multiquery": f"{name_or_path}/ruler",
-                "vt": f"{name_or_path}/ruler",  # VT uses NIAH corpus
-                "cwe": f"{name_or_path}/ruler",
-                "fwe": f"{name_or_path}",  # FWE is synthetic, no external data
-                "qa_squad": f"{name_or_path}/ruler",
-                "qa_hotpotqa": f"{name_or_path}",  # HotpotQA is fetched from HF
-            }
-            for st in subtask:
-                st_path = subtask_paths.get(st, name_or_path)
-                dataset = self.load(
-                    st_path,
-                    subtask=st,
-                    max_seq_length=max_seq_length,
-                    tokenizer_type=tokenizer_type,
-                    tokenizer_path=tokenizer_path,
-                    num_samples=num_samples,
-                    random_seed=random_seed,
-                    remove_newline_tab=remove_newline_tab,
-                    enable_thinking=enable_thinking,
-                    think_budget=think_budget,
-                    model_name=model_name,
-                    num_needle_k=num_needle_k,
-                    num_needle_v=num_needle_v,
-                    num_needle_q=num_needle_q,
-                    type_haystack=type_haystack,
-                    type_needle_k=type_needle_k,
-                    type_needle_v=type_needle_v,
-                    freq_cw=freq_cw,
-                    freq_ucw=freq_ucw,
-                    num_cw=num_cw,
-                    num_fewshot=num_fewshot,
-                    num_chains=num_chains,
-                    num_hops=num_hops,
-                    alpha=alpha,
-                    coded_wordlen=coded_wordlen,
-                    vocab_size=vocab_size,
-                    pre_samples=pre_samples,
-                )
-                splits.append(dataset["test"])
-            combined = concatenate_datasets(splits)
-            return HFDatasetDict({"test": combined})
 
-        if subtask == "all":
-            splits = []
-            # name_or_path should point to the parent data dir (e.g., ~/.sieval/data)
-            subtask_paths = {
-                "niah_single_1": f"{name_or_path}/ruler",
-                "niah_single_2": f"{name_or_path}/ruler",
-                "niah_single_3": f"{name_or_path}/ruler",
-                "niah_multikey_1": f"{name_or_path}/ruler",
-                "niah_multikey_2": f"{name_or_path}/ruler",
-                "niah_multikey_3": f"{name_or_path}/ruler",
-                "niah_multivalue": f"{name_or_path}/ruler",
-                "niah_multiquery": f"{name_or_path}/ruler",
-                "vt": f"{name_or_path}/ruler",  # VT uses NIAH corpus
-                "cwe": f"{name_or_path}/ruler",
-                "fwe": f"{name_or_path}",  # FWE is synthetic, no external data
-                "qa_squad": f"{name_or_path}/ruler",
-                "qa_hotpotqa": f"{name_or_path}",  # HotpotQA is fetched from HF
-            }
-            for st in _ALL_SUBTASKS:
-                st_path = subtask_paths.get(st, name_or_path)
-                dataset = self.load(
-                    st_path,
+        # Aggregate entry points — an explicit list or "all" — load each single
+        # subtask and concatenate. Recurse with the *base* ``name_or_path``; the
+        # per-subtask ``/ruler`` staging path is resolved once, below, so every
+        # entry point (including a direct single-subtask load) maps it the same way.
+        if isinstance(subtask, list) or subtask == "all":
+            targets = subtask if isinstance(subtask, list) else _ALL_SUBTASKS
+            splits = [
+                self.load(
+                    name_or_path,
                     subtask=st,
                     max_seq_length=max_seq_length,
                     tokenizer_type=tokenizer_type,
@@ -225,15 +177,17 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                     coded_wordlen=coded_wordlen,
                     vocab_size=vocab_size,
                     pre_samples=pre_samples,
-                )
-                splits.append(dataset["test"])
-            combined = concatenate_datasets(splits)
-            return HFDatasetDict({"test": combined})
+                )["test"]
+                for st in targets
+            ]
+            return HFDatasetDict({"test": concatenate_datasets(list(splits))})
+
+        data_path = _subtask_data_path(name_or_path, subtask)
 
         if subtask in _NIAH_SUBTASK_KWARGS:
             niah_kwargs = _NIAH_SUBTASK_KWARGS[subtask]
             rows = load_niah(
-                name_or_path,
+                data_path,
                 max_seq_length=max_seq_length,
                 tokenizer_type=tokenizer_type,
                 tokenizer_path=tokenizer_path,
@@ -252,7 +206,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
             )
         elif subtask == "vt":
             rows = load_vt(
-                name_or_path,
+                data_path,
                 max_seq_length=max_seq_length,
                 tokenizer_type=tokenizer_type,
                 tokenizer_path=tokenizer_path,
@@ -268,7 +222,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
             )
         elif subtask == "cwe":
             rows = load_cwe(
-                name_or_path,
+                data_path,
                 max_seq_length=max_seq_length,
                 tokenizer_type=tokenizer_type,
                 tokenizer_path=tokenizer_path,
@@ -285,7 +239,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
             )
         elif subtask == "fwe":
             rows = load_fwe(
-                name_or_path,
+                data_path,
                 max_seq_length=max_seq_length,
                 tokenizer_type=tokenizer_type,
                 tokenizer_path=tokenizer_path,
@@ -302,7 +256,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         elif subtask in ("qa_squad", "qa_hotpotqa"):
             qa_dataset = "squad" if subtask == "qa_squad" else "hotpotqa"
             rows = load_qa(
-                name_or_path,
+                data_path,
                 dataset=qa_dataset,
                 max_seq_length=max_seq_length,
                 tokenizer_type=tokenizer_type,

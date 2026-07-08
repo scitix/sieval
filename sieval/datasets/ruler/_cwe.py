@@ -116,11 +116,16 @@ def _binary_search_words(
     estimated_max_words = int(max_seq_length // tokens_per_word) * 2
     lower_bound = incremental
     upper_bound = max(estimated_max_words, incremental * 2)
+    # The wonderwords pool (~8k words) fills prompts to >=98% at <=32k but
+    # underfills at 64k/128k. We keep the cap and scope the `stable` contract to
+    # <=32k (see RulerZeroShotGenTask.reference_impl.notes); 64k/128k are
+    # experimental. Dropping the cap would route long contexts through the
+    # english_words.json fallback, which is not yet validated.
     if upper_bound > vocab_size:
         logger.warning(
             f"RULER CWE: estimated word count {upper_bound} exceeds wonderwords "
             f"vocab {vocab_size}; capping. Prompts at "
-            f"max_seq_length={max_seq_length} may underfill."
+            f"max_seq_length={max_seq_length} may underfill (expected at >32k)."
         )
         upper_bound = vocab_size
     optimal: int | None = None
