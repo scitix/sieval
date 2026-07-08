@@ -25,6 +25,7 @@ from sieval.datasets import TEvalBeforeCallingDatasetSample
     eval_mode=EvalMode.GEN,
     n_shot=0,
     tags=("chinese", "english", "open-ended"),
+    deps_group="t-eval",
     model_type="chat",
     reference_impl=ReferenceImpl(
         source="open-compass/T-Eval",

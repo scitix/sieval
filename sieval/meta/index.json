@@ -1022,7 +1022,7 @@
         "english",
         "open-ended"
       ],
-      "deps_group": null,
+      "deps_group": "t-eval",
       "model_type": "chat",
       "reference_impl": {
         "source": "open-compass/T-Eval",
