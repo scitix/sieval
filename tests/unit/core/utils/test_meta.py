@@ -115,3 +115,15 @@ class TestBuildStageMeta:
         assert len(meta["model_calls"]) == 1
         assert meta["extra"]["note"] == "test"
         assert "timestamp" in meta
+
+    def test_includes_version(self):
+        from sieval import __version__
+
+        meta = build_stage_meta()
+        assert meta["version"] == __version__
+
+    def test_version_present_with_outputs(self, sample_model_output):
+        from sieval import __version__
+
+        meta = build_stage_meta(sample_model_output, timing_s=1.0)
+        assert meta["version"] == __version__

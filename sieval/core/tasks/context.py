@@ -25,6 +25,7 @@ class TaskStageMeta(TypedDict, total=False):
     """Per-stage metadata recorded alongside each stage execution."""
 
     timestamp: float
+    version: str  # producing sieval version — per-record provenance (RFC #24)
     timing_s: float
     model_calls: list[ModelCallMeta]
     env: dict[str, JSONValue]

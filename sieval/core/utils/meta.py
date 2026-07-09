@@ -2,6 +2,7 @@
 
 import time
 
+from sieval import __version__
 from sieval.core.models import ModelCallMeta, ModelOutput
 from sieval.core.tasks.context import TaskStageMeta
 
@@ -28,7 +29,7 @@ def build_stage_meta(
     extra: dict | None = None,
 ) -> TaskStageMeta:
     """Build a TaskStageMeta dict for one pipeline stage execution."""
-    meta: TaskStageMeta = {"timestamp": time.time()}
+    meta: TaskStageMeta = {"timestamp": time.time(), "version": __version__}
     if timing_s is not None:
         meta["timing_s"] = timing_s
     if outputs:
