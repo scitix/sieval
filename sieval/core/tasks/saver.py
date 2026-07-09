@@ -153,6 +153,9 @@ class TaskSaver:
         try:
             if await anyio.Path(meta_path).exists():
                 return
+            # Lazy: keeps the version lookup inside this try/except so a broken
+            # install (unresolvable __version__) degrades meta.json writing
+            # gracefully instead of hard-failing saver import.
             from sieval import __version__
 
             meta: TaskRunMeta = {

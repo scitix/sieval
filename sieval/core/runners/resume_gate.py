@@ -1,9 +1,10 @@
 """Resume version-compatibility decision logic.
 
 Pure, I/O-free: decides whether a run persisted under one sieval version
-may be resumed under another. The go/no-go ladder is EM-first, then rejects
-unparseable / unknown / dev-local mismatches and incompatible version series;
-otherwise the resume is compatible and recorded via per-record provenance.
+may be resumed under another. The go/no-go ladder is exact-match-first, then
+rejects unparseable / unknown / dev-local mismatches and incompatible version
+series; otherwise the resume is compatible and recorded via per-record
+provenance.
 
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
@@ -51,6 +52,17 @@ def resume_version_verdict(v_run: str, v_cur: str) -> ResumeVerdict:
     3. either side is a dev/local build             -> REJECT (unpinnable)
     4. incompatible break-axis (compat_key differs) -> REJECT
     5. otherwise (same series, non-exact)           -> COMPATIBLE
+
+    Rule 1 matches the raw strings before parsing, so it deliberately wins over
+    every reject below it: an identical pair resumes even when the string is
+    ``0.0.0`` or a dev/local build — you are resuming *your own* build, which is
+    always safe. The rule-2/3 rejects only bite a *non-exact* pair.
+
+    Only dev/local builds are rejected non-exactly (rule 3), because they are
+    unpinnable — the same tag can name different code. Published pre-/post-
+    releases (``rc``/``a``/``b``/``.post``) are pinnable and reinstallable, so
+    they carry no special case: they fall through to the series check (rule 4/5)
+    like any other point in their series.
     """
     if v_run == v_cur:
         return ResumeVerdict(ResumeAction.EXACT)
@@ -64,6 +76,9 @@ def resume_version_verdict(v_run: str, v_cur: str) -> ResumeVerdict:
     if parsed_run == _ZERO or parsed_cur == _ZERO:
         return ResumeVerdict(ResumeAction.REJECT, "version is unknown (0.0.0)")
 
+    # Dev/local only: an unpinnable tag can name different code. Published
+    # pre-/post-releases are pinnable, so they are NOT rejected here — they fall
+    # through to the series check below.
     if (
         parsed_run.local is not None
         or parsed_run.is_devrelease
