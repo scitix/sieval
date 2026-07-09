@@ -1,13 +1,25 @@
-"""Unit tests for the vendored IMO-Bench answer verification.
+"""Unit tests for IMO-Bench answer grading + gen-mode normalization.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
 from sieval.community.imo_bench import (
+    normalize_answer,
     parse_answer,
-    verify_answer_gen,
     verify_math_answer,
 )
+
+
+def _grade(gold: str, pred: str | None) -> bool:
+    """Mirror the task's feedback: normalize both, then the verbatim upstream
+    grader with symmetric $-wrapping (HMMT-aligned)."""
+    g, p = normalize_answer(gold), normalize_answer(pred)
+    if g is None or p is None:
+        return False
+    return bool(verify_math_answer(f"${g}$", f"${p}$"))
+
+
+# --- vendored upstream verify_math_answer / parse_answer (unchanged) --------
 
 
 def test_integer_match():
@@ -16,65 +28,63 @@ def test_integer_match():
 
 
 def test_latex_equivalence_via_math_verify():
-    # math-verify treats these as equal even though the strings differ.
     assert verify_math_answer("\\frac{1}{2}", "0.5") is True
 
 
 def test_unparseable_falls_back_to_normalized_string():
-    # Non-mathy answers can't be parsed -> case/space-insensitive string compare.
     assert verify_math_answer("Yes", "yes") is True
     assert verify_math_answer("red", "blue") is False
 
 
 def test_parse_answer_handles_bare_latex():
-    # Bare LaTeX without $...$ is retried wrapped in a math environment.
     assert parse_answer("\\frac{1}{2}") != []
     assert parse_answer("") == []
 
 
-def test_gen_recovers_formatting_only_differences():
-    # $-wrapping / whitespace / \left\right / trailing newline: clearly equal.
-    assert verify_answer_gen("$2^{u-2}$", "2^{u-2}") is True
-    assert verify_answer_gen("(0, 0)", "(0,0)") is True
-    assert verify_answer_gen("$2^n$\n", "2^n") is True
-    assert verify_answer_gen("$\\frac{3}{2}(XZ-XY)$", "\\frac{3}{2}(XZ - XY)") is True
+# --- gen-mode normalize_answer (parsing layer) ------------------------------
 
 
-def test_gen_recovers_multi_answer_lists():
-    # comma-separated set + "and"/"or" list separators (agent would submit clean).
-    assert verify_answer_gen("3,7", "3 \\text{ and } 7") is True
+def test_normalize_strips_wrappers_and_prefix():
+    assert normalize_answer("$2^{u-2}$") == "2^{u-2}"
+    assert normalize_answer("A(x)=x+1") == "x+1"
+    assert normalize_answer("180^\\circ") == "180"
+    assert normalize_answer(None) is None
+    assert normalize_answer("$$") is None
+
+
+def test_normalize_strips_trailing_qualifier_only():
+    # a trailing "for/where/such/with" qualifier is dropped ...
+    assert normalize_answer("2x^3 \\text{ for any real constant}") == "2x^3"
+    # ... but a meaningful inline \text (piecewise condition) is kept.
+    assert "if" in (normalize_answer("x \\text{ if } x \\ge 2") or "")
+
+
+# --- effective grading: normalize + verbatim math_verify --------------------
+
+
+def test_grading_recovers_math_equivalence():
+    assert _grade("$\\sqrt{2}+1$", "1+\\sqrt{2}") is True  # commutativity
+    assert _grade("$12^{10}$", "2^{20} \\cdot 3^{10}") is True  # factoring
+    assert _grade("847288609444", "3^{25} + 1") is True  # evaluation
+    assert _grade("1/2,1,2", "\\left\\{\\frac{1}{2}, 1, 2\\right\\}") is True  # set
+    assert _grade("$180 - 2\\alpha$", "180^\\circ - 2\\alpha") is True  # degree
     assert (
-        verify_answer_gen(
-            "P(x)=-1, P(x)=x+1",
-            "P(x) = -1 \\quad\\text{or}\\quad P(x) = x+1",
-        )
+        _grade("$A(x)=\\frac{1}{2}(x^2-x-4)$", "\\frac{1}{2}x^2 - \\frac{1}{2}x - 2")
         is True
     )
 
 
-def test_gen_is_conservative_no_false_positive():
-    # Different parameterization / prose-vs-formula must stay wrong (no over-count).
-    assert (
-        verify_answer_gen(
-            "$X(y)=1+(u-1)\\bar{y}$",
-            "X(z)=c\\overline{z}+1 \\text{ for some } c \\text{ with } |c|=1",
-        )
-        is False
-    )
-    assert (
-        verify_answer_gen(
-            "$n=2k, n=3k$",
-            "\\text{All } n \\ge 2 \\text{ divisible by } 2 \\text{ or } 3",
-        )
-        is False
-    )
-    assert verify_answer_gen("5", "7") is False
-    assert verify_answer_gen("5", None) is False
+def test_grading_no_false_positive():
+    assert _grade("5", "7") is False
+    assert _grade("f(x)=2x^3+c", "f(x)=2x^3") is False  # missing the +c
+    assert _grade("\\{1,2,3\\}", "\\{1,2,4\\}") is False  # distinct sets
+    assert _grade("5", None) is False
 
 
-def test_gen_empty_after_normalize_is_not_a_match():
-    # Both reduce to "" under _normalize (\text{...} stripped) — must NOT grade
-    # equal; upstream verify_math_answer returns False here.
-    assert verify_answer_gen("\\text{No}", "\\text{Yes}") is False
-    # Identical text answers are still matched by the verify_math_answer fast path.
-    assert verify_answer_gen("\\text{Yes}", "\\text{Yes}") is True
+def test_grading_prose_is_out_of_scope():
+    # Prose answers can't be math-verified — left wrong (needs the agentic answer
+    # channel or an LLM judge, per reference_impl.notes), never a false positive.
+    assert (
+        _grade("1 and odd prime numbers", "1 \\text{ and all odd prime numbers}")
+        is False
+    )

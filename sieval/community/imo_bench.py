@@ -3,11 +3,31 @@
 
 IMO-AnswerBench grades a short answer against the gold with ``math_verify`` and a
 normalized-string fallback when either side cannot be parsed (or ``verify()``
-raises). Vendored from the upstream ``answer_verification.py``.
+raises).
+
+Authoritative benchmark: google-deepmind/superhuman (``imobench/``) +
+imobench.github.io + arXiv 2511.01846. The OFFICIAL AnswerBench grader is an LLM
+autograder (AnswerAutoGrader, Gemini 2.5 Pro; paper §2.3/§5.1); the paper
+deliberately rejects symbolic/SymPy-style matching as too narrow, and the official
+``imobench/`` dir ships DATA ONLY (no runnable grader code). Since there is no
+official runnable grader, this file is vendored from ``EnvCommons/IMO-Bench`` — a
+third-party OpenReward re-implementation whose deterministic ``verify_math_answer``
+uses ``math_verify`` (the "No LLM graders / math_verify" wording is EnvCommons's
+own README, NOT the paper). This deterministic grader is a deliberate, reproducible
+SUBSTITUTE for the official LLM autograder (which sieval's reproducibility contract
+precludes); it is strictly MORE conservative — it cannot grade prose / infinite-set
+/ functional-family answers, so sieval UNDER-counts vs official. ``verify_math_answer``
+/ ``parse_answer`` are behaviorally identical to the pinned EnvCommons source
+(imports made lazy per sieval discipline), unchanged pinned-commit -> upstream HEAD.
 
 ``math_verify`` is imported lazily inside the functions so importing a task
 module stays free of the optional ``[math]`` dependency (sieval import discipline);
 upstream imports it at module top.
+
+``verify_math_answer`` is the verbatim upstream grader. ``normalize_answer`` below
+is a sieval-added *parsing* helper (not upstream) for the generative port: it
+turns the model's verbose ``\\boxed{}`` answer into the clean string an agent would
+submit, so the grader (math_verify) does all the equivalence itself.
 """
 
 import re
@@ -53,97 +73,48 @@ def verify_math_answer(gold: str, pred: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# sieval gen-mode wrapper (NOT upstream).
+# sieval gen-mode answer normalization (NOT upstream) — a PARSING concern.
 #
-# Upstream AnswerBench is agentic: the agent submits a clean answer string via a
-# tool call, so verify_math_answer above sees exactly the gold's format. In a
-# non-agentic generative run the model writes its answer inside \boxed{}, often
-# verbosely — "P(x) = -1 \quad\text{or}\quad P(x) = x+1", "-2(m-1)", "$2^{u-2}$",
-# function-prefixed, $-wrapped, with \left/\right, or a multi-answer list.
-# math_verify.parse then mis-parses these and marks correct answers wrong.
+# Upstream AnswerBench is agentic: the agent submits a clean answer string, so
+# verify_math_answer / math_verify grade it directly. In our generative port the
+# model writes the answer inside \boxed{} verbosely ($-wrapped, function-prefixed,
+# \left/\right, ^\circ degrees, trailing "for any real c" qualifiers, \{...\}
+# sets). normalize_answer reconstructs the clean string an agent would submit; the
+# task then grades with the vendored verify_math_answer above, so math_verify does
+# ALL the equivalence (commutativity, factoring, set-equality). No bespoke matching.
 #
-# verify_answer_gen normalizes the boxed answer into the shape an agent would
-# submit and does a set-wise comparison for multi-answer golds, delegating every
-# atomic equivalence check to the vendored verify_math_answer. The fast path is
-# the verbatim upstream check, so this never grades *more strictly* than upstream.
+# Conservative by design (acceptance: 0 false positives): only a TRAILING
+# ``\text{... for|where|such|with ...}`` qualifier is stripped, never inline
+# ``\text`` (a piecewise ``\text{ if } x \ge 2`` is meaningful and is kept).
 # ---------------------------------------------------------------------------
 
+_DEGREE = re.compile(r"\^\{?\\circ\}?")
+_SPACING = re.compile(r"\\left|\\right|\\displaystyle|\\!|\\,|\\;|\\:")
+_TRAILING_QUALIFIER = re.compile(
+    r"\\text\s*\{[^{}]*\b(?:for|where|such|with)\b[^{}]*\}\s*$", re.I
+)
 _FN_PREFIX = re.compile(r"^\s*[A-Za-z]\s*\(\s*[A-Za-z0-9]\s*\)\s*=\s*")
-_SEP_WORDS = re.compile(r"\\text\s*\{\s*(?:and|or)\s*\}|\b(?:and|or)\b")
-_TEXT_ANNOT = re.compile(r"\\text\s*\{[^{}]*\}")
-_LATEX_NOISE = re.compile(r"\\left|\\right|\\displaystyle|\\!|\\,|\\;|\\:")
 
 
-def _normalize(s: str) -> str:
+def normalize_answer(s: str | None) -> str | None:
+    """Reconstruct the clean answer an agent would submit (parsing only — no math
+    decisions), so the vendored ``verify_math_answer`` can judge equivalence.
+
+    Strips ``$`` wrapping, ``^\\circ``, ``\\left``/``\\right``/spacing macros, a
+    leading ``f(x)=`` function prefix and a trailing
+    ``\\text{… for/where/such/with …}`` qualifier; rewrites ``\\{…\\}`` to ``{…}``
+    which math_verify parses as a set. Returns ``None`` if nothing is left.
+    """
+    if s is None:
+        return None
     s = s.strip()
     if s.startswith("$") and s.endswith("$"):
         s = s[1:-1]
     s = s.replace("$", "")
-    s = _SEP_WORDS.sub(",", s)  # "A or B" / "A and B" list separators -> comma
-    s = _TEXT_ANNOT.sub(" ", s)  # drop \text{...} prose annotations
-    s = _LATEX_NOISE.sub(" ", s)
-    s = re.sub(r"\\quad|\\qquad", " ", s)
+    s = _DEGREE.sub("", s)
+    s = _SPACING.sub(" ", s)
+    s = _TRAILING_QUALIFIER.sub("", s)
+    s = _FN_PREFIX.sub("", s)
+    s = s.replace("\\{", "{").replace("\\}", "}")
     s = re.sub(r"\s+", " ", s).strip().rstrip(".").strip()
-    return s
-
-
-def _split_top_level(s: str) -> list[str]:
-    """Split on top-level commas only; commas inside (), [], {} stay (tuples)."""
-    parts: list[str] = []
-    depth = 0
-    cur = ""
-    for ch in s:
-        if ch in "([{":
-            depth += 1
-            cur += ch
-        elif ch in ")]}":
-            depth = max(0, depth - 1)
-            cur += ch
-        elif ch == "," and depth == 0:
-            parts.append(cur)
-            cur = ""
-        else:
-            cur += ch
-    parts.append(cur)
-    return [p.strip() for p in parts if p.strip()]
-
-
-def _atom_equiv(a: str, b: str) -> bool:
-    # Identity-only (modulo whitespace, and modulo a leading "f(x)=" prefix).
-    # We deliberately do NOT call math_verify per split-item: math_verify.parse
-    # grabs a coincidental number out of expression/equation answers (e.g. "n=3k"
-    # -> 3), which produced false positives. Whole-answer math equivalence is still
-    # handled by the verify_math_answer fast path in verify_answer_gen.
-    #
-    # An empty side (both reduced to "" by _normalize, e.g. "\\text{No}" vs
-    # "\\text{Yes}") is never a match — upstream verify_math_answer returns False
-    # there, and matching "" == "" would over-count. (Identical text answers are
-    # already caught by the verify_math_answer fast path before we normalize.)
-    if not a.strip() or not b.strip():
-        return False
-    if a.replace(" ", "") == b.replace(" ", ""):
-        return True
-    a2, b2 = _FN_PREFIX.sub("", a).strip(), _FN_PREFIX.sub("", b).strip()
-    return (a2, b2) != (a, b) and a2.replace(" ", "") == b2.replace(" ", "")
-
-
-def verify_answer_gen(gold: str, pred: str | None) -> bool:
-    """Grade a generative (boxed) answer against gold, IMO-Bench style.
-
-    Fast path is the verbatim official ``verify_math_answer``; only when that fails
-    do we normalize and set-match, so we never grade more strictly than upstream.
-    Kept intentionally conservative — prefer under- to over-counting; genuinely
-    free-form / prose answers (which need the upstream agentic clean submission or
-    an LLM judge) are left as-is.
-    """
-    if pred is None:
-        return False
-    if verify_math_answer(gold, pred):
-        return True
-    gold_items = _split_top_level(_normalize(gold))
-    pred_items = _split_top_level(_normalize(pred))
-    if not gold_items or not pred_items:
-        return _atom_equiv(_normalize(gold), _normalize(pred))
-    return all(any(_atom_equiv(x, y) for y in pred_items) for x in gold_items) and all(
-        any(_atom_equiv(y, x) for x in gold_items) for y in pred_items
-    )
+    return s or None

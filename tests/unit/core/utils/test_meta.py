@@ -7,7 +7,12 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 import time
 
 from sieval.core.models.model import ModelOutput
-from sieval.core.utils.meta import build_model_call_meta, build_stage_meta
+from sieval.core.utils.meta import (
+    build_model_call_meta,
+    build_stage_meta,
+    collect_versions,
+    report_versions,
+)
 
 
 class TestBuildModelCallMeta:
@@ -115,3 +120,68 @@ class TestBuildStageMeta:
         assert len(meta["model_calls"]) == 1
         assert meta["extra"]["note"] == "test"
         assert "timestamp" in meta
+
+    def test_includes_version(self):
+        from sieval import __version__
+
+        meta = build_stage_meta()
+        assert meta["version"] == __version__
+
+    def test_version_present_with_outputs(self, sample_model_output):
+        from sieval import __version__
+
+        meta = build_stage_meta(sample_model_output, timing_s=1.0)
+        assert meta["version"] == __version__
+
+
+class TestCollectVersions:
+    def test_empty_input(self):
+        assert collect_versions([]) == []
+
+    def test_single_version_deduped(self):
+        sm = {"infer": [{"version": "0.6.0"}], "postprocess": [{"version": "0.6.0"}]}
+        assert collect_versions([sm]) == ["0.6.0"]
+
+    def test_blended_sorted_semver(self):
+        sm1 = {"infer": [{"version": "0.6.10"}]}
+        sm2 = {"infer": [{"version": "0.6.2"}]}
+        assert collect_versions([sm1, sm2]) == ["0.6.2", "0.6.10"]
+
+    def test_missing_version_ignored(self):
+        assert collect_versions([{"infer": [{"timestamp": 1.0}]}]) == []
+
+    def test_unparseable_sorts_after_valid(self):
+        sm = {"a": [{"version": "0.6.0"}, {"version": "weird"}]}
+        assert collect_versions([sm]) == ["0.6.0", "weird"]
+
+
+class TestReportVersions:
+    def test_all_stamped_no_sentinel(self):
+        finals = [{"infer": [{"version": "0.6.0"}]}, {"infer": [{"version": "0.6.0"}]}]
+        assert report_versions(finals, []) == ["0.6.0"]
+
+    def test_empty_inputs(self):
+        assert report_versions([], []) == []
+
+    def test_unstamped_final_appends_unknown(self):
+        finals = [{"infer": [{"version": "0.7.0"}]}, {"feedback": [{"timestamp": 1.0}]}]
+        assert report_versions(finals, []) == ["0.7.0", "unknown"]
+
+    def test_fully_legacy_finals_is_unknown_only(self):
+        finals = [{}, {"infer": [{"timestamp": 1.0}]}]
+        assert report_versions(finals, []) == ["unknown"]
+
+    def test_unstamped_failed_does_not_add_sentinel(self):
+        # A FAILED record with no version is legitimate (failed before any
+        # stage produced versioned work) — only unstamped FINALs are legacy.
+        finals = [{"infer": [{"version": "0.7.0"}]}]
+        fails = [{}]
+        assert report_versions(finals, fails) == ["0.7.0"]
+
+    def test_blended_sorted_then_unknown_last(self):
+        finals = [
+            {"infer": [{"version": "0.6.0"}]},
+            {"infer": [{"version": "0.6.10"}]},
+            {},  # legacy, pre-provenance
+        ]
+        assert report_versions(finals, []) == ["0.6.0", "0.6.10", "unknown"]

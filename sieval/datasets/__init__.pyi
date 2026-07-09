@@ -29,6 +29,10 @@ from .gsm8k import (
     GSM8KDataset,
     GSM8KDatasetSample,
 )
+from .hellaswag import (
+    HellaSwagDataset,
+    HellaSwagDatasetSample,
+)
 from .hmmt_feb_2025 import (
     HMMTFeb2025Dataset,
     HMMTFeb2025DatasetSample,
@@ -73,6 +77,10 @@ from .mmlu_pro import (
     MMLUProDataset,
     MMLUProDatasetSample,
 )
+from .mmmlu import (
+    MMMLUDataset,
+    MMMLUDatasetSample,
+)
 from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
@@ -105,6 +113,8 @@ __all__ = [
     "HMMTFeb2025DatasetSample",
     "HMMTFeb2026Dataset",
     "HMMTFeb2026DatasetSample",
+    "HellaSwagDataset",
+    "HellaSwagDatasetSample",
     "HumanEvalDataset",
     "HumanEvalDatasetSample",
     "IFBenchDataset",
@@ -123,6 +133,8 @@ __all__ = [
     "MMLUDatasetSample",
     "MMLUProDataset",
     "MMLUProDatasetSample",
+    "MMMLUDataset",
+    "MMMLUDatasetSample",
     "OpenBookQADataset",
     "OpenBookQADatasetSample",
     "TEvalBeforeCallingDataset",

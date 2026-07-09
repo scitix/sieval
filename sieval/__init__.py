@@ -1,7 +1,5 @@
 """SiEval — Model Delivery Quality Verification System."""
 
-from sieval.meta import load_index as load_index
-
 try:
     from sieval._version import (  # type: ignore[unresolved-import]
         __version__ as __version__,
@@ -14,3 +12,5 @@ except ImportError:
         __version__: str = version("sieval")
     except PackageNotFoundError:
         __version__: str = "0.0.0"
+
+from sieval.meta import load_index as load_index

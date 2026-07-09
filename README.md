@@ -7,7 +7,7 @@ SiEval is a **model delivery quality verification system** with an asynchronous 
 - **Asynchronous streaming** — process samples concurrently without waiting for batch completion
 - **Iterative feedback loop** — multi-turn evaluation with feedback
 - **Resilient persistence** — sharded, append-only storage for crash recovery
-- **21 registered benchmark datasets** — AIME 2024, AIME 2025, AIME 2026, CMMLU, DROP, GPQA-Diamond, GSM8K, HMMT Feb 2025, HMMT Feb 2026, HumanEval, IFBench, IFEval, IMO-AnswerBench, LiveCodeBench, MATH-500, MBPP, MMLU, MMLU-Pro, OpenBookQA, TheoremQA, T-Eval (math, code, reasoning, knowledge, instruction-following, tool-use)
+- **Broad benchmark coverage** — mathematics (AIME, HMMT, MATH-500), knowledge & reasoning (MMLU, MMLU-Pro, GPQA-Diamond, CMMLU), code (HumanEval, MBPP, LiveCodeBench), instruction-following (IFEval, IFBench), and tool-use (T-Eval Before-Calling); run `sieval dataset list` for the full roster
 - **Type-safe pipelines** — fully typed task stages (preprocess → infer → postprocess → feedback)
 - **YAML-based configuration** — batch evaluation with model derivation and quota allocation
 - **Inference orchestration** — recipe-driven inference with auto-resolve and backend abstraction (vLLM, SGLang)
@@ -27,13 +27,17 @@ pdm install          # or: pip install -e .
 Optional extras (per-benchmark dependencies):
 
 ```bash
-pip install -e ".[math]"     # AIME 2024/2025/2026, HMMT Feb 2026, MATH-500 (math-verify)
+pip install -e ".[math]"     # AIME, GSM8K, HMMT, IMO-AnswerBench, MATH-500, TheoremQA (math-verify)
 pip install -e ".[drop]"     # DROP (numpy, scipy)
 pip install -e ".[ifbench]"  # IFBench (emoji, nltk, setuptools, syllapy)
 pip install -e ".[ifeval]"   # IFEval (absl, langdetect, nltk, immutabledict)
 pip install -e ".[t-eval]"   # T-Eval (numpy, sentence-transformers)
 pip install -e ".[math,drop,ifbench,ifeval,t-eval]"   # all extras at once
 ```
+
+> `sieval task list` includes a `DEPS_GROUP` column showing which extra each task
+> requires (`sieval task show <task>` prints it too), and `sieval dataset download <name>`
+> prints the exact install command when a required extra is missing.
 
 ## Quick Start
 
@@ -123,6 +127,7 @@ anyio.run(main)
 - [Concurrency Control](docs/guide/concurrency.md) — four-level concurrency model
 - [Profiling & Observability](docs/guide/profiling.md) — stage timing, I/O metrics, token tracking
 - [Inference Management](docs/guide/infer.md) — full infer subcommand reference
+- [FAQ](docs/guide/faq.md) — common questions and troubleshooting
 
 ## Contributing
 

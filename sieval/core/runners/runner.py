@@ -7,13 +7,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import anyio
+import orjson
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from loguru import logger
 
+from sieval import __version__
 from sieval.core.models import ModelOutput
 from sieval.core.tasks.anomaly import TaskAnomalyDetector
 from sieval.core.tasks.concurrency import (
@@ -35,8 +37,16 @@ from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
+from sieval.core.types import JSONValue
 from sieval.core.utils.concurrency import CompositeLimiter
-from sieval.core.utils.meta import build_stage_meta
+from sieval.core.utils.meta import build_stage_meta, report_versions
+
+from .resume_gate import (
+    ResumeAction,
+    ResumeVersionError,
+    format_reject_message,
+    resume_version_verdict,
+)
 
 # Type Aliases
 type TaskStageMetaHook = Callable[[Any, TaskStage, TaskContext], TaskStageMeta | None]
@@ -116,6 +126,46 @@ class TaskRunnerConfig:
     deterministic: bool = False
 
 
+def gate_resume_version(root_dir: Path, current_version: str) -> None:
+    """Refuse to resume across an incompatible sieval version.
+
+    Reads the format-stable ``version`` from ``root_dir/meta.json`` and
+    applies :func:`resume_version_verdict`. Missing, unreadable, or
+    version-less ``meta.json`` is fail-closed (reject). Raises
+    :class:`ResumeVersionError` on reject; logs a warning on a compatible
+    non-exact resume; silent on an exact match.
+    """
+    meta_path = root_dir / "meta.json"
+    v_run: object = None
+    try:
+        meta = orjson.loads(meta_path.read_bytes())
+        v_run = meta.get("version") if isinstance(meta, dict) else None
+    except (OSError, orjson.JSONDecodeError):
+        v_run = None
+
+    if not isinstance(v_run, str):
+        raise ResumeVersionError(
+            format_reject_message(
+                "<missing>",
+                current_version,
+                "meta.json is missing, unreadable, or has no version",
+            )
+        )
+
+    verdict = resume_version_verdict(v_run, current_version)
+    if verdict.action is ResumeAction.REJECT:
+        raise ResumeVersionError(
+            format_reject_message(v_run, current_version, verdict.reason)
+        )
+    if verdict.action is ResumeAction.COMPATIBLE:
+        logger.warning(
+            "Resuming across compatible sieval versions (persisted={}, current={}); "
+            "per-record provenance will record the blend.",
+            v_run,
+            current_version,
+        )
+
+
 class TaskRunner:
     """Core execution engine for a single evaluation task.
 
@@ -170,6 +220,7 @@ class TaskRunner:
             self._config.result_dir, task, self._auto_resume
         )
         if self._resumed_from_existing:
+            gate_resume_version(self._root_dir, __version__)
             logger.info("Auto resumed from: {}", self._root_dir)
 
         # Profiling
@@ -336,6 +387,10 @@ class TaskRunner:
             # 0.5. Lifecycle Setup
             await self._task.setup()
 
+            # Write the version handshake up front so interrupted-then-resumed
+            # runs always have a meta.json for the resume gate to read.
+            await self._saver.write_run_meta()
+
             # 1. Load Initial State
             self._contexts = await self._loader.load_initial_state()
 
@@ -466,8 +521,7 @@ class TaskRunner:
                 finals, fails = self._final_and_failed()
                 report = await self._task.report(finals, fails)
                 # Always save report on completion
-                if report is not None:
-                    await self._saver.save_report(report)
+                await self._save_report_with_versions(report, finals, fails)
                 return report
 
             # 6. Setup Progress Tracker
@@ -539,8 +593,8 @@ class TaskRunner:
             finals, fails = self._final_and_failed()
             report = await self._task.report(finals, fails)
             # Always save report on completion
-            if report is not None:
-                await self._saver.save_report(report)
+            await self._save_report_with_versions(report, finals, fails)
+            # Backstop: create-if-absent, normally a no-op (written at run start).
             await self._saver.write_run_meta()
             # Generate anomaly report
             if self._config.detect_anomalies:
@@ -854,6 +908,27 @@ class TaskRunner:
         finals = [c for c in self._contexts.values() if c.stage == TaskStage.FINAL]
         fails = [c for c in self._contexts.values() if c.stage == TaskStage.FAILED]
         return finals, fails
+
+    async def _save_report_with_versions(
+        self,
+        report: JSONValue,
+        finals: list[TaskContext],
+        fails: list[TaskContext],
+    ) -> None:
+        """Inject the distinct producing-version list into a dict report, then save.
+
+        Aggregates over the in-memory terminal contexts' ``stage_meta`` at zero
+        extra I/O; :func:`report_versions` owns the ``"unknown"`` sentinel rule.
+        Non-dict reports are saved unchanged; ``None`` skips the save.
+        """
+        if report is None:
+            return
+        if isinstance(report, dict):
+            cast(dict[str, JSONValue], report)["sieval_versions"] = report_versions(
+                (c.stage_meta for c in finals),
+                (c.stage_meta for c in fails),
+            )
+        await self._saver.save_report(report)
 
     def _resolve_result_dir(
         self, result_dir: str | None, task: Task, auto_resume: bool

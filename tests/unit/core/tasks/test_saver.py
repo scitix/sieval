@@ -377,6 +377,51 @@ class TestSaveReport:
 
 
 # ===================================================================
+# write_run_meta — create-if-absent + self-mkdir (run-start handshake)
+# ===================================================================
+class TestWriteRunMeta:
+    @pytest.mark.anyio
+    async def test_creates_dir_and_file(self, tmp_path):
+        from sieval import __version__
+
+        root = tmp_path / "fresh"
+        saver = TaskSaver(root_dir=root, deterministic=True)
+        assert not root.exists()
+
+        await saver.write_run_meta()
+
+        meta_path = root / "meta.json"
+        assert meta_path.exists()
+        meta = orjson.loads(meta_path.read_bytes())
+        assert meta["version"] == __version__
+        assert meta["deterministic"] is True
+
+    @pytest.mark.anyio
+    async def test_create_if_absent_does_not_clobber(self, tmp_path):
+        root = tmp_path / "existing"
+        saver = TaskSaver(root_dir=root, deterministic=False)
+        await saver.write_run_meta()
+        # Simulate an originating version already recorded under this dir.
+        (root / "meta.json").write_bytes(
+            orjson.dumps({"version": "0.1.0", "deterministic": False})
+        )
+
+        await saver.write_run_meta()  # must NOT overwrite
+
+        meta = orjson.loads((root / "meta.json").read_bytes())
+        assert meta["version"] == "0.1.0"
+
+    @pytest.mark.anyio
+    async def test_exists_check_failure_is_non_fatal(self, tmp_path, monkeypatch):
+        async def _boom(_self):
+            raise OSError("simulated stat failure")
+
+        monkeypatch.setattr(anyio.Path, "exists", _boom)
+        saver = TaskSaver(root_dir=tmp_path / "x", deterministic=False)
+        await saver.write_run_meta()  # must NOT raise
+
+
+# ===================================================================
 # consume_stream
 # ===================================================================
 class TestConsumeStream:

@@ -25,6 +25,9 @@ from .gsm8k_0shot_gen import (
 from .gsm8k_kshot_base_gen import (
     GSM8KFewShotBaseGenTask,
 )
+from .hellaswag_kshot_ppl import (
+    HellaSwagFewShotPPLTask,
+)
 from .hmmt_feb_2025_0shot_gen import (
     HMMTFeb2025ZeroShotGenTask,
 )
@@ -64,6 +67,9 @@ from .mmlu_0shot_gen import (
 from .mmlu_pro_0shot_gen import (
     MMLUProZeroShotGenTask,
 )
+from .mmmlu_kshot_clp import (
+    MMMLUKShotClpTask,
+)
 from .openbookqa_kshot_gen import (
     OpenBookQAFewShotGenTask,
 )
@@ -85,6 +91,7 @@ __all__ = [
     "GSM8KZeroShotGenTask",
     "HMMTFeb2025ZeroShotGenTask",
     "HMMTFeb2026ZeroShotGenTask",
+    "HellaSwagFewShotPPLTask",
     "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
     "IFBenchZeroShotGenTask",
@@ -96,6 +103,7 @@ __all__ = [
     "MBPPFewShotBaseGenTask",
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
+    "MMMLUKShotClpTask",
     "OpenBookQAFewShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
     "TheoremQAKShotBaseGenTask",
