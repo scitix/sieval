@@ -91,6 +91,11 @@ class MixedOutcomeTask(MockTask):
         return await super().preprocess(raw, ctx)
 
 
+class ListReportTask(MockTask):
+    async def report(self, finals, fails):
+        return ["not", "a", "dict"]
+
+
 class ProgressUpdateCall(TypedDict):
     sample_id: str | int
     current_hydrated_count: int
@@ -1258,7 +1263,7 @@ class TestRunnerResumeState:
         monkeypatch.setattr(runner._loader, "hydrate", AsyncMock(return_value=None))
 
         report = await runner.arun()
-        assert report == {"total": 1}
+        assert report["total"] == 1
         assert observed_failure["reason"] == "retry_limit"
         assert observed_failure["msg"] == "Max retries 1 reached"
 
@@ -2231,3 +2236,26 @@ class TestResumeVersionGate:
             task2, make_config(tmp_path, result_dir=result_dir, auto_resume=True)
         )  # meta.json holds the current version -> EXACT -> no raise
         assert runner2._resumed_from_existing
+
+
+class TestReportVersions:
+    @pytest.mark.anyio
+    async def test_report_includes_current_version(self, tmp_path):
+        from sieval import __version__
+
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = MockTask(dataset=MockDataset(), model=model, name="ver_report")
+        runner = TaskRunner(task, make_config(tmp_path))
+        report = await runner.arun()
+
+        assert report["versions"] == [__version__]
+        saved = orjson.loads((runner.root_dir / "report.json").read_bytes())
+        assert saved["versions"] == [__version__]
+
+    @pytest.mark.anyio
+    async def test_non_dict_report_not_injected(self, tmp_path):
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = ListReportTask(dataset=MockDataset(), model=model, name="listrep")
+        report = await TaskRunner(task, make_config(tmp_path)).arun()
+
+        assert report == ["not", "a", "dict"]  # unchanged, no crash

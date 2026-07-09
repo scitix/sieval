@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import anyio
 import orjson
@@ -37,8 +37,9 @@ from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
+from sieval.core.types import JSONValue
 from sieval.core.utils.concurrency import CompositeLimiter
-from sieval.core.utils.meta import build_stage_meta
+from sieval.core.utils.meta import build_stage_meta, collect_versions
 
 from .resume_gate import (
     ResumeAction,
@@ -520,8 +521,7 @@ class TaskRunner:
                 finals, fails = self._final_and_failed()
                 report = await self._task.report(finals, fails)
                 # Always save report on completion
-                if report is not None:
-                    await self._saver.save_report(report)
+                await self._save_report_with_versions(report, finals, fails)
                 return report
 
             # 6. Setup Progress Tracker
@@ -593,8 +593,7 @@ class TaskRunner:
             finals, fails = self._final_and_failed()
             report = await self._task.report(finals, fails)
             # Always save report on completion
-            if report is not None:
-                await self._saver.save_report(report)
+            await self._save_report_with_versions(report, finals, fails)
             # Backstop: create-if-absent, normally a no-op (written at run start).
             await self._saver.write_run_meta()
             # Generate anomaly report
@@ -909,6 +908,26 @@ class TaskRunner:
         finals = [c for c in self._contexts.values() if c.stage == TaskStage.FINAL]
         fails = [c for c in self._contexts.values() if c.stage == TaskStage.FAILED]
         return finals, fails
+
+    async def _save_report_with_versions(
+        self,
+        report: JSONValue,
+        finals: list[TaskContext],
+        fails: list[TaskContext],
+    ) -> None:
+        """Inject the distinct producing-version list into a dict report, then save.
+
+        Aggregates over the in-memory terminal contexts' ``stage_meta`` — the
+        records that produced the scored results — at zero extra I/O. Non-dict
+        reports are saved unchanged.
+        """
+        if report is None:
+            return
+        if isinstance(report, dict):
+            cast(dict[str, JSONValue], report)["versions"] = collect_versions(
+                c.stage_meta for c in (*finals, *fails)
+            )
+        await self._saver.save_report(report)
 
     def _resolve_result_dir(
         self, result_dir: str | None, task: Task, auto_resume: bool
