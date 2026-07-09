@@ -9,11 +9,11 @@ set A/B/C/D, not from full-sequence perplexity. Here scoring reads one next
 token from ``top_logprobs`` and argmaxes over A/B/C/D; the official ``eval``
 argmaxes raw last-token logits over the same token IDs. The two agree whenever
 all four option tokens are in the requested top-k (softmax is monotonic). To
-keep partial coverage loud
-rather than silent, scoring *requires all four* option tokens to be present and
-raises otherwise — so a too-small top-k surfaces as a sample failure instead of
-a best-of-present guess. In the validated Qwen2.5-72B 5-shot run with
-``logprobs=100``, all 11,582 samples had the full A/B/C/D set.
+keep partial coverage loud rather than silent, scoring *requires all four*
+option tokens to be present and raises otherwise — so a too-small top-k
+surfaces as a sample failure instead of a best-of-present guess. In the
+validated Qwen2.5-72B 5-shot run with ``logprobs=100``, all 11,582 samples
+had the full A/B/C/D set.
 
 Infra requirement for faithful reproduction: the serving backend must return a
 top-k large enough to always include A/B/C/D. SGLang serves ``logprobs=100`` out

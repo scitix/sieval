@@ -41,6 +41,15 @@ class TestChoiceScoresFromTopLogprobs:
         assert all_present is True
         assert scores["A"] == -0.5  # max over the two "A" spellings
 
+    def test_non_option_tokens_are_ignored(self):
+        # A real top-k is mostly non-option tokens; only A/B/C/D must be kept,
+        # and distractors must not leak into scores or inflate all_present.
+        top = [{"A": -1.0, "B": -0.1, "C": -2.0, "D": -3.0, "的": -0.5, " the": -4.0}]
+        scores, all_present = choice_scores_from_top_logprobs(top, CHOICES)
+        assert all_present is True
+        assert set(scores) == set(CHOICES)
+        assert max(scores, key=lambda k: scores[k]) == "B"
+
     def test_empty_or_none(self):
         expected = dict.fromkeys(CHOICES, float("-inf"))
         assert choice_scores_from_top_logprobs(None, CHOICES) == (expected, False)
