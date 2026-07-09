@@ -30,6 +30,32 @@ def extract_option_logprob(
     return None
 
 
+def choice_scores_from_top_logprobs(
+    top_logprobs: list[dict[str, float]] | None,
+    choices: tuple[str, ...],
+) -> tuple[dict[str, float], bool]:
+    """Map the first generated token's top-k onto per-choice logprobs.
+
+    Reads ``top_logprobs[0]`` (the next-token distribution) and records, for
+    each label in *choices*, the logprob of the matching token — matched by the
+    stripped token string, so ``" A"`` maps to ``"A"``. Returns
+    ``(scores, all_present)``; *all_present* is ``True`` only when every choice
+    label appears in the top-k, so a caller can fail loudly instead of
+    argmax-ing a subset. Missing labels keep a ``-inf`` score.
+    """
+    scores = {label: float("-inf") for label in choices}
+    if not top_logprobs:
+        return scores, False
+
+    seen: set[str] = set()
+    for token, logprob in top_logprobs[0].items():
+        label = token.strip()
+        if label in scores:
+            scores[label] = max(scores[label], logprob)
+            seen.add(label)
+    return scores, len(seen) == len(choices)
+
+
 def total_logprob(
     tokens: list[str],
     token_logprobs: list[float | None],

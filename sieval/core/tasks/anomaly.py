@@ -438,29 +438,6 @@ def detect_empty_infer_ppl(ctx: TaskContext) -> set[int]:
 
 
 @sieval_detection_rule(
-    description="Inference result is empty for clp tasks (top_logprobs missing)",
-    category="output_quality",
-    rationale=(
-        "Empty top_logprobs indicate API failures or a returned top-k that "
-        "dropped the option tokens the clp score reads."
-    ),
-    applies_to=["clp"],
-    tags=["clp", "api_failure", "empty_output"],
-)
-def detect_empty_infer_clp(ctx: TaskContext) -> set[int]:
-    if ctx.infer_result is None:
-        return set()
-    result = _unwrap_result(ctx.infer_result)
-    if not isinstance(result, ModelOutput):
-        return set()
-    # clp reads the next-token distribution from top_logprobs. GenModel coalesces
-    # an empty top-k to None, so — unlike the ppl rule's present-but-empty check —
-    # a falsy value (None or []) is the empty signal. Sentinel index 0 mirrors the
-    # gen/ppl infer rules.
-    return {0} if not result.top_logprobs else set()
-
-
-@sieval_detection_rule(
     description="Output was truncated due to length limit",
     category="output_quality",
     rationale=(
