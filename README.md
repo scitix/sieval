@@ -35,8 +35,9 @@ pip install -e ".[t-eval]"   # T-Eval (numpy, sentence-transformers)
 pip install -e ".[math,drop,ifbench,ifeval,t-eval]"   # all extras at once
 ```
 
-> `sieval dataset list` includes a `DEPS_GROUP` column indicating which extra each
-> benchmark requires, and `sieval dataset show <name>` prints the exact install command.
+> `sieval task list` includes a `DEPS_GROUP` column showing which extra each task
+> requires (`sieval task show <task>` prints it too), and `sieval dataset download <name>`
+> prints the exact install command when a required extra is missing.
 
 ## Quick Start
 
