@@ -81,6 +81,12 @@ def report_versions(
     report from being silently reported as single-version. FAILED records are
     not sentinel-flagged: a sample that failed before any stage legitimately
     produced no versioned work.
+
+    "Always stamped" assumes ``stage_meta`` survives to report time. On a fresh
+    run it does (built in-memory per stage); on a resume it does only under
+    ``record_meta=True`` — with ``record_meta=False`` the loader has no
+    persisted ``stage_meta`` to hydrate, so disk-resident finals honestly
+    surface as ``"unknown"`` (their provenance was never recorded).
     """
     final_metas = list(final_stage_metas)
     versions = collect_versions([*final_metas, *failed_stage_metas])

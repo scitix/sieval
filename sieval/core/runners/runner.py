@@ -927,7 +927,7 @@ class TaskRunner:
         if report is None:
             return
         if isinstance(report, dict):
-            cast(dict[str, JSONValue], report)["versions"] = report_versions(
+            cast(dict[str, JSONValue], report)["sieval_versions"] = report_versions(
                 (c.stage_meta for c in finals),
                 (c.stage_meta for c in fails),
             )

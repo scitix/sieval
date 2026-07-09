@@ -96,6 +96,11 @@ class ListReportTask(MockTask):
         return ["not", "a", "dict"]
 
 
+class NoneReportTask(MockTask):
+    async def report(self, finals, fails):
+        return None
+
+
 class ProgressUpdateCall(TypedDict):
     sample_id: str | int
     current_hydrated_count: int
@@ -2248,9 +2253,9 @@ class TestReportVersions:
         runner = TaskRunner(task, make_config(tmp_path))
         report = await runner.arun()
 
-        assert report["versions"] == [__version__]
+        assert report["sieval_versions"] == [__version__]
         saved = orjson.loads((runner.root_dir / "report.json").read_bytes())
-        assert saved["versions"] == [__version__]
+        assert saved["sieval_versions"] == [__version__]
 
     @pytest.mark.anyio
     async def test_non_dict_report_not_injected(self, tmp_path):
@@ -2259,3 +2264,16 @@ class TestReportVersions:
         report = await TaskRunner(task, make_config(tmp_path)).arun()
 
         assert report == ["not", "a", "dict"]  # unchanged, no crash
+
+    @pytest.mark.anyio
+    async def test_none_report_not_saved(self, tmp_path):
+        # A task returning None must skip save_report entirely: no report.json
+        # is written and arun returns None. Guards the `report is None` branch
+        # (removing it would serialize `null` to report.json).
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = NoneReportTask(dataset=MockDataset(), model=model, name="nonerep")
+        runner = TaskRunner(task, make_config(tmp_path))
+        report = await runner.arun()
+
+        assert report is None
+        assert not (runner.root_dir / "report.json").exists()
