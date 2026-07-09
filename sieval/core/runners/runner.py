@@ -917,12 +917,9 @@ class TaskRunner:
     ) -> None:
         """Inject the distinct producing-version list into a dict report, then save.
 
-        Aggregates over the in-memory terminal contexts' ``stage_meta`` — the
-        records that produced the scored results — at zero extra I/O. A scored
-        (FINAL) record with no stamped version predates per-record provenance
-        and surfaces as the ``"unknown"`` sentinel so a legacy-blended report is
-        not silently reported as single-version. Non-dict reports are saved
-        unchanged.
+        Aggregates over the in-memory terminal contexts' ``stage_meta`` at zero
+        extra I/O; :func:`report_versions` owns the ``"unknown"`` sentinel rule.
+        Non-dict reports are saved unchanged; ``None`` skips the save.
         """
         if report is None:
             return
