@@ -336,6 +336,10 @@ class TaskRunner:
             # 0.5. Lifecycle Setup
             await self._task.setup()
 
+            # Write the version handshake up front so interrupted-then-resumed
+            # runs always have a meta.json for the resume gate to read.
+            await self._saver.write_run_meta()
+
             # 1. Load Initial State
             self._contexts = await self._loader.load_initial_state()
 
@@ -541,6 +545,7 @@ class TaskRunner:
             # Always save report on completion
             if report is not None:
                 await self._saver.save_report(report)
+            # Backstop: create-if-absent, normally a no-op (written at run start).
             await self._saver.write_run_meta()
             # Generate anomaly report
             if self._config.detect_anomalies:
