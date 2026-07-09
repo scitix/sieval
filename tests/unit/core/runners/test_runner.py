@@ -13,6 +13,8 @@ import anyio
 import orjson
 import pytest
 
+from sieval import __version__
+from sieval.core.runners.resume_gate import ResumeVersionError
 from sieval.core.runners.runner import ResultDirExistsError, TaskRunner
 from sieval.core.tasks.concurrency import compute_stream_buffer_capacity
 from sieval.core.tasks.consts import TaskAction, TaskStage
@@ -709,6 +711,13 @@ class TestResolveResultDir:
         latest.mkdir(parents=True, exist_ok=True)
         (older / "manifest.json").write_text("[]", encoding="utf-8")
         (latest / "manifest.json").write_text("[]", encoding="utf-8")
+        # Real resumable dirs always carry a meta.json handshake (Task 4);
+        # give the fabricated fixture one so the version gate (Task 5) sees
+        # an EXACT match and this test stays focused on dir-selection logic.
+        for d in (older, latest):
+            (d / "meta.json").write_bytes(
+                orjson.dumps({"version": __version__, "deterministic": False})
+            )
 
         dataset = MockDataset()
         model = MockChatModel(answers=DEFAULT_ANSWERS)
@@ -2189,3 +2198,36 @@ class TestLazyContextCreation:
         report = await runner.arun()
         assert report["total"] == 2
         assert runner._total_samples == 2
+
+
+class TestResumeVersionGate:
+    @pytest.mark.anyio
+    async def test_incompatible_version_blocks_resume(self, tmp_path):
+        result_dir = str(tmp_path / "gated")
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = MockTask(dataset=MockDataset(), model=model, name="gate_block")
+        await TaskRunner(task, make_config(tmp_path, result_dir=result_dir)).arun()
+
+        # Tamper meta.json to an incompatible series.
+        (Path(result_dir) / "meta.json").write_bytes(
+            orjson.dumps({"version": "999.0.0", "deterministic": False})
+        )
+
+        task2 = MockTask(dataset=MockDataset(), model=model, name="gate_block")
+        with pytest.raises(ResumeVersionError):
+            TaskRunner(
+                task2, make_config(tmp_path, result_dir=result_dir, auto_resume=True)
+            )
+
+    @pytest.mark.anyio
+    async def test_same_version_resume_allowed(self, tmp_path):
+        result_dir = str(tmp_path / "same")
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = MockTask(dataset=MockDataset(), model=model, name="gate_ok")
+        await TaskRunner(task, make_config(tmp_path, result_dir=result_dir)).arun()
+
+        task2 = MockTask(dataset=MockDataset(), model=model, name="gate_ok")
+        runner2 = TaskRunner(
+            task2, make_config(tmp_path, result_dir=result_dir, auto_resume=True)
+        )  # meta.json holds the current version -> EXACT -> no raise
+        assert runner2._resumed_from_existing

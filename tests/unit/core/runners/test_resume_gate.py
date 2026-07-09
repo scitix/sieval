@@ -1,11 +1,24 @@
 """Tests for sieval.core.runners.resume_gate — pure version-verdict ladder."""
 
+from pathlib import Path
+
+import orjson
+import pytest
+
 from sieval.core.runners.resume_gate import (
     ResumeAction,
     ResumeVersionError,
     format_reject_message,
     resume_version_verdict,
 )
+from sieval.core.runners.runner import gate_resume_version
+
+
+def _write_meta(root: Path, version: str) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "meta.json").write_bytes(
+        orjson.dumps({"version": version, "deterministic": False})
+    )
 
 
 class TestResumeVersionVerdict:
@@ -85,3 +98,32 @@ class TestFormatRejectMessage:
 
 def test_resume_version_error_is_runtimeerror():
     assert issubclass(ResumeVersionError, RuntimeError)
+
+
+class TestGateResumeVersion:
+    def test_exact_passes(self, tmp_path):
+        _write_meta(tmp_path, "0.6.0")
+        gate_resume_version(tmp_path, "0.6.0")  # no raise
+
+    def test_compatible_passes(self, tmp_path):
+        _write_meta(tmp_path, "0.6.0")
+        gate_resume_version(tmp_path, "0.6.3")  # no raise
+
+    def test_incompatible_raises(self, tmp_path):
+        _write_meta(tmp_path, "0.6.0")
+        with pytest.raises(ResumeVersionError, match="incompatible version series"):
+            gate_resume_version(tmp_path, "0.7.0")
+
+    def test_missing_meta_raises(self, tmp_path):
+        with pytest.raises(ResumeVersionError):
+            gate_resume_version(tmp_path, "0.6.0")
+
+    def test_unreadable_meta_raises(self, tmp_path):
+        (tmp_path / "meta.json").write_bytes(b"not json{")
+        with pytest.raises(ResumeVersionError):
+            gate_resume_version(tmp_path, "0.6.0")
+
+    def test_meta_without_version_key_raises(self, tmp_path):
+        (tmp_path / "meta.json").write_bytes(orjson.dumps({"deterministic": True}))
+        with pytest.raises(ResumeVersionError):
+            gate_resume_version(tmp_path, "0.6.0")

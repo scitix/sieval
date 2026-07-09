@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 import anyio
+import orjson
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from loguru import logger
 
+from sieval import __version__
 from sieval.core.models import ModelOutput
 from sieval.core.tasks.anomaly import TaskAnomalyDetector
 from sieval.core.tasks.concurrency import (
@@ -37,6 +39,13 @@ from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
 from sieval.core.utils.concurrency import CompositeLimiter
 from sieval.core.utils.meta import build_stage_meta
+
+from .resume_gate import (
+    ResumeAction,
+    ResumeVersionError,
+    format_reject_message,
+    resume_version_verdict,
+)
 
 # Type Aliases
 type TaskStageMetaHook = Callable[[Any, TaskStage, TaskContext], TaskStageMeta | None]
@@ -116,6 +125,46 @@ class TaskRunnerConfig:
     deterministic: bool = False
 
 
+def gate_resume_version(root_dir: Path, current_version: str) -> None:
+    """Refuse to resume across an incompatible sieval version.
+
+    Reads the format-stable ``version`` from ``root_dir/meta.json`` and
+    applies :func:`resume_version_verdict`. Missing, unreadable, or
+    version-less ``meta.json`` is fail-closed (reject). Raises
+    :class:`ResumeVersionError` on reject; logs a warning on a compatible
+    non-exact resume; silent on an exact match.
+    """
+    meta_path = root_dir / "meta.json"
+    v_run: object = None
+    try:
+        meta = orjson.loads(meta_path.read_bytes())
+        v_run = meta.get("version") if isinstance(meta, dict) else None
+    except (OSError, orjson.JSONDecodeError):
+        v_run = None
+
+    if not isinstance(v_run, str):
+        raise ResumeVersionError(
+            format_reject_message(
+                "<missing>",
+                current_version,
+                "meta.json is missing, unreadable, or has no version",
+            )
+        )
+
+    verdict = resume_version_verdict(v_run, current_version)
+    if verdict.action is ResumeAction.REJECT:
+        raise ResumeVersionError(
+            format_reject_message(v_run, current_version, verdict.reason)
+        )
+    if verdict.action is ResumeAction.COMPATIBLE:
+        logger.warning(
+            "Resuming across compatible sieval versions (persisted={}, current={}); "
+            "per-record provenance will record the blend.",
+            v_run,
+            current_version,
+        )
+
+
 class TaskRunner:
     """Core execution engine for a single evaluation task.
 
@@ -170,6 +219,7 @@ class TaskRunner:
             self._config.result_dir, task, self._auto_resume
         )
         if self._resumed_from_existing:
+            gate_resume_version(self._root_dir, __version__)
             logger.info("Auto resumed from: {}", self._root_dir)
 
         # Profiling
