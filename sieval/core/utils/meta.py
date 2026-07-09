@@ -65,3 +65,29 @@ def collect_versions(stage_metas: Iterable[Mapping[str, list]]) -> list[str]:
             return (1, s)
 
     return sorted(seen, key=_key)
+
+
+def report_versions(
+    final_stage_metas: Iterable[Mapping[str, list]],
+    failed_stage_metas: Iterable[Mapping[str, list]],
+) -> list[str]:
+    """Distinct producing versions for a report's terminal records.
+
+    Aggregates versions across all terminal records (finals + fails) via
+    :func:`collect_versions`. If any FINAL (scored) record carries no version,
+    appends the ``"unknown"`` sentinel: a completed sample always ran the full
+    pipeline, so a post-provenance FINAL is always stamped — an unstamped FINAL
+    predates per-record provenance, and surfacing it keeps a legacy-blended
+    report from being silently reported as single-version. FAILED records are
+    not sentinel-flagged: a sample that failed before any stage legitimately
+    produced no versioned work.
+    """
+    final_metas = list(final_stage_metas)
+    versions = collect_versions([*final_metas, *failed_stage_metas])
+    has_unstamped_final = any(
+        not any(entry.get("version") for entries in sm.values() for entry in entries)
+        for sm in final_metas
+    )
+    if has_unstamped_final:
+        versions.append("unknown")
+    return versions

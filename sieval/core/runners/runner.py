@@ -39,7 +39,7 @@ from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 from sieval.core.utils.concurrency import CompositeLimiter
-from sieval.core.utils.meta import build_stage_meta, collect_versions
+from sieval.core.utils.meta import build_stage_meta, report_versions
 
 from .resume_gate import (
     ResumeAction,
@@ -918,14 +918,18 @@ class TaskRunner:
         """Inject the distinct producing-version list into a dict report, then save.
 
         Aggregates over the in-memory terminal contexts' ``stage_meta`` — the
-        records that produced the scored results — at zero extra I/O. Non-dict
-        reports are saved unchanged.
+        records that produced the scored results — at zero extra I/O. A scored
+        (FINAL) record with no stamped version predates per-record provenance
+        and surfaces as the ``"unknown"`` sentinel so a legacy-blended report is
+        not silently reported as single-version. Non-dict reports are saved
+        unchanged.
         """
         if report is None:
             return
         if isinstance(report, dict):
-            cast(dict[str, JSONValue], report)["versions"] = collect_versions(
-                c.stage_meta for c in (*finals, *fails)
+            cast(dict[str, JSONValue], report)["versions"] = report_versions(
+                (c.stage_meta for c in finals),
+                (c.stage_meta for c in fails),
             )
         await self._saver.save_report(report)
 
