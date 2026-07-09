@@ -1,6 +1,9 @@
 """Helpers for building model-call and stage metadata dicts."""
 
 import time
+from collections.abc import Iterable, Mapping
+
+from packaging.version import InvalidVersion, Version
 
 from sieval import __version__
 from sieval.core.models import ModelCallMeta, ModelOutput
@@ -37,3 +40,28 @@ def build_stage_meta(
     if extra:
         meta["extra"] = extra
     return meta
+
+
+def collect_versions(stage_metas: Iterable[Mapping[str, list]]) -> list[str]:
+    """Distinct sieval versions across the given per-context stage-meta maps.
+
+    Walks each context's ``stage_meta`` history (stage name -> list of
+    per-stage meta dicts) and collects every ``version`` entry present.
+    Returned sorted semver-aware; unparseable tags sort last (by string).
+    A context/stage that carries no ``version`` contributes nothing.
+    """
+    seen: set[str] = set()
+    for stage_meta in stage_metas:
+        for entries in stage_meta.values():
+            for entry in entries:
+                v = entry.get("version")
+                if v:
+                    seen.add(v)
+
+    def _key(s: str) -> tuple[int, object]:
+        try:
+            return (0, Version(s))
+        except InvalidVersion:
+            return (1, s)
+
+    return sorted(seen, key=_key)

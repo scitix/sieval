@@ -7,7 +7,11 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 import time
 
 from sieval.core.models.model import ModelOutput
-from sieval.core.utils.meta import build_model_call_meta, build_stage_meta
+from sieval.core.utils.meta import (
+    build_model_call_meta,
+    build_stage_meta,
+    collect_versions,
+)
 
 
 class TestBuildModelCallMeta:
@@ -127,3 +131,24 @@ class TestBuildStageMeta:
 
         meta = build_stage_meta(sample_model_output, timing_s=1.0)
         assert meta["version"] == __version__
+
+
+class TestCollectVersions:
+    def test_empty_input(self):
+        assert collect_versions([]) == []
+
+    def test_single_version_deduped(self):
+        sm = {"infer": [{"version": "0.6.0"}], "postprocess": [{"version": "0.6.0"}]}
+        assert collect_versions([sm]) == ["0.6.0"]
+
+    def test_blended_sorted_semver(self):
+        sm1 = {"infer": [{"version": "0.6.10"}]}
+        sm2 = {"infer": [{"version": "0.6.2"}]}
+        assert collect_versions([sm1, sm2]) == ["0.6.2", "0.6.10"]
+
+    def test_missing_version_ignored(self):
+        assert collect_versions([{"infer": [{"timestamp": 1.0}]}]) == []
+
+    def test_unparseable_sorts_after_valid(self):
+        sm = {"a": [{"version": "0.6.0"}, {"version": "weird"}]}
+        assert collect_versions([sm]) == ["0.6.0", "weird"]
