@@ -1,16 +1,19 @@
 """
-CMMLU few-shot base-model generative task.
+CMMLU few-shot base-model conditional-log-prob (CLP) task.
 
 Mirrors the official CMMLU ``qwen2.py`` *base* path (``eval``, not
 ``eval_instruct``): non-CoT prompt, same-subject dev shots, and next-token
-A/B/C/D choice scoring. Here scoring reads one next token from ``top_logprobs``
-and argmaxes over A/B/C/D; the official ``eval`` argmaxes raw last-token logits
-over the same token IDs. The two agree whenever all four option tokens are in
-the requested top-k (softmax is monotonic). To keep partial coverage loud
-rather than silent, scoring *requires all four* option tokens to be present and
-raises otherwise — so a too-small top-k surfaces as a sample failure instead of
-a best-of-present guess. In the validated Qwen2.5-72B 5-shot run with
-``logprobs=100``, all 11,582 samples had the full A/B/C/D set.
+A/B/C/D choice scoring. This is a ``clp`` task (``EvalMode.CLP``): the answer is
+picked from a single inference's next-token log-probs over the fixed option-token
+set A/B/C/D, not from full-sequence perplexity. Here scoring reads one next
+token from ``top_logprobs`` and argmaxes over A/B/C/D; the official ``eval``
+argmaxes raw last-token logits over the same token IDs. The two agree whenever
+all four option tokens are in the requested top-k (softmax is monotonic). To
+keep partial coverage loud rather than silent, scoring *requires all four*
+option tokens to be present and raises otherwise — so a too-small top-k
+surfaces as a sample failure instead of a best-of-present guess. In the
+validated Qwen2.5-72B 5-shot run with ``logprobs=100``, all 11,582 samples
+had the full A/B/C/D set.
 
 Infra requirement for faithful reproduction: the serving backend must return a
 top-k large enough to always include A/B/C/D. SGLang serves ``logprobs=100`` out
@@ -52,6 +55,7 @@ from sieval.core.tasks import (
     Task,
     sieval_task,
 )
+from sieval.core.utils.ppl import choice_scores_from_top_logprobs
 from sieval.datasets import CMMLUDatasetSample
 
 CHOICES = ("A", "B", "C", "D")
@@ -242,33 +246,11 @@ class Feedback(TypedDict):
     answer: str
 
 
-def _choice_scores_from_top_logprobs(
-    top_logprobs: list[dict[str, float]] | None,
-) -> tuple[dict[str, float], bool]:
-    """Map the first token's top-k onto A/B/C/D logprobs.
-
-    Returns ``(scores, all_present)`` where *all_present* is ``True`` only when
-    every one of A/B/C/D appears in the top-k. Partial coverage is reported as
-    ``False`` so the caller can fail loudly rather than argmax a subset.
-    """
-    scores = {label: float("-inf") for label in CHOICES}
-    if not top_logprobs:
-        return scores, False
-
-    seen: set[str] = set()
-    for token, logprob in top_logprobs[0].items():
-        label = token.strip()
-        if label in scores:
-            scores[label] = max(scores[label], logprob)
-            seen.add(label)
-    return scores, len(seen) == len(CHOICES)
-
-
 @sieval_task(
-    name="cmmlu_kshot_base_gen",
-    display_name="CMMLU (few-shot, base logprob)",
+    name="cmmlu_kshot_clp",
+    display_name="CMMLU (few-shot, base CLP)",
     description="CMMLU few-shot MCQ with same-subject dev examples and macro scoring.",
-    eval_mode=EvalMode.PPL,
+    eval_mode=EvalMode.CLP,
     n_shot=DEFAULT_N_SHOT,
     tags=("chinese", "multiple-choice", "base-model"),
     model_type="gen",
@@ -297,7 +279,7 @@ def _choice_scores_from_top_logprobs(
         ),
     ),
 )
-class CMMLUFewShotBaseGenTask(
+class CMMLUFewShotClpTask(
     Task[
         CMMLUDatasetSample,
         str,
@@ -399,7 +381,7 @@ class CMMLUFewShotBaseGenTask(
 
     @override
     async def postprocess(self, inf, ctx):
-        scores, all_present = _choice_scores_from_top_logprobs(inf.top_logprobs)
+        scores, all_present = choice_scores_from_top_logprobs(inf.top_logprobs, CHOICES)
         if not all_present:
             missing = [label for label in CHOICES if scores[label] == float("-inf")]
             raise RuntimeError(

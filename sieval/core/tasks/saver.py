@@ -138,16 +138,30 @@ class TaskSaver:
             logger.error("Failed to save report.json: {}", e)
 
     async def write_run_meta(self) -> None:
-        """Atomically write ``meta.json`` to the result directory."""
+        """Write ``meta.json`` create-if-absent to the result directory.
+
+        Written at run start so the format-stable version handshake exists
+        for interrupted-then-resumed runs (resume is detected via
+        ``manifest.json``, which may exist without a completed run). Never
+        overwrites an existing ``meta.json`` — the file records the run's
+        originating version and stays stable across compatible resumes.
+        Self-creates ``_root_dir`` since at run start no shard exists yet.
+        All failures are non-fatal: logged, never raised.
+        """
         meta_path = self._root_dir / "meta.json"
         tmp_path = meta_path.with_suffix(".tmp")
         try:
+            if await anyio.Path(meta_path).exists():
+                return
+            # Lazy: keeps the version lookup inside this try/except so an
+            # unresolvable __version__ degrades gracefully, not a hard import fail.
             from sieval import __version__
 
             meta: TaskRunMeta = {
                 "version": __version__,
                 "deterministic": self._deterministic,
             }
+            await anyio.Path(self._root_dir).mkdir(parents=True, exist_ok=True)
             async with await anyio.open_file(tmp_path, "wb") as f:
                 await f.write(orjson.dumps(meta))
             await anyio.Path(tmp_path).replace(meta_path)

@@ -10,8 +10,8 @@ from .aime_2025_0shot_gen import (
 from .aime_2026_0shot_gen import (
     AIME2026ZeroShotGenTask,
 )
-from .cmmlu_kshot_base_gen import (
-    CMMLUFewShotBaseGenTask,
+from .cmmlu_kshot_clp import (
+    CMMLUFewShotClpTask,
 )
 from .drop_kshot_gen import (
     DROPFewShotGenTask,
@@ -24,6 +24,9 @@ from .gsm8k_0shot_gen import (
 )
 from .gsm8k_kshot_base_gen import (
     GSM8KFewShotBaseGenTask,
+)
+from .hellaswag_kshot_ppl import (
+    HellaSwagFewShotPPLTask,
 )
 from .hmmt_feb_2025_0shot_gen import (
     HMMTFeb2025ZeroShotGenTask,
@@ -84,13 +87,14 @@ __all__ = [
     "AIME2024ZeroShotGenTask",
     "AIME2025ZeroShotGenTask",
     "AIME2026ZeroShotGenTask",
-    "CMMLUFewShotBaseGenTask",
+    "CMMLUFewShotClpTask",
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
     "GSM8KFewShotBaseGenTask",
     "GSM8KZeroShotGenTask",
     "HMMTFeb2025ZeroShotGenTask",
     "HMMTFeb2026ZeroShotGenTask",
+    "HellaSwagFewShotPPLTask",
     "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
     "IFBenchZeroShotGenTask",

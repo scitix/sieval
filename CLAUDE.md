@@ -25,7 +25,7 @@ Precise reproducibility is a product contract, not a nicety.
 * Package manager: `pdm` — see `.claude/rules/deps.md` for lock procedures
 * Formatting & lint: `ruff`; type checking: `ty` (primary), `mypy` (strict mode, secondary)
 * Tests: `pytest`
-* CLI: `typer` — top-level shortcuts `sieval run`, `sieval eval`; resource groups `infer`, `leaderboard` (e.g. `sieval leaderboard report`, `sieval infer start`)
+* CLI: `typer` — top-level shortcuts `sieval run`, `sieval eval`; resource groups `dataset`, `task`, `infer`, `leaderboard` (e.g. `sieval dataset list`, `sieval infer start`)
 
 ## Layer Boundaries & Dependencies
 

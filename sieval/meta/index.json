@@ -163,6 +163,28 @@
       "checksums": {}
     },
     {
+      "name": "hellaswag",
+      "display_name": "HellaSwag",
+      "description": "Commonsense sentence completion — pick the most plausible ending.",
+      "source": [
+        "hf:Rowan/hellaswag@218ec52e09a7e7462a5400043bb9a69a41d06b76"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "CommonSense"
+        }
+      ],
+      "tags": [
+        "english",
+        "multiple-choice",
+        "commonsense"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
       "name": "hmmt_feb_2025",
       "display_name": "HMMT Feb 2025",
       "description": "Harvard-MIT Mathematics Tournament, February 2025, 30 problems.",
@@ -582,11 +604,11 @@
       "status": "stable"
     },
     {
-      "name": "cmmlu_kshot_base_gen",
-      "display_name": "CMMLU (few-shot, base logprob)",
+      "name": "cmmlu_kshot_clp",
+      "display_name": "CMMLU (few-shot, base CLP)",
       "description": "CMMLU few-shot MCQ with same-subject dev examples and macro scoring.",
       "dataset": "cmmlu",
-      "eval_mode": "ppl",
+      "eval_mode": "clp",
       "n_shot": 5,
       "tags": [
         "chinese",
@@ -683,6 +705,27 @@
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/gsm8k/gsm8k.yaml",
         "notes": "Uses lm-eval-harness strict-match extraction, aligned with the original GSM8K dataset.py #### answer delimiter. Also reports lm-eval-harness flexible-extract as a secondary metric, not as the original GSM8K official metric. Default k=8 follows the DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs flexible extraction."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "hellaswag_kshot_ppl",
+      "display_name": "HellaSwag (k-shot, log-likelihood)",
+      "description": "Commonsense sentence completion via per-ending log-likelihood.",
+      "dataset": "hellaswag",
+      "eval_mode": "ppl",
+      "n_shot": 10,
+      "tags": [
+        "english",
+        "multiple-choice",
+        "commonsense"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "lm-evaluation-harness",
+        "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/hellaswag/hellaswag.yaml",
+        "notes": "multiple_choice log-likelihood; acc + acc_norm (character-length normalized, reported as score). Few-shot exemplars (k, default 10) sampled from train, rendered 'query gold_ending' and joined by blank lines per lm-eval; k=0 is 0-shot. Continuation log-probs read via echoed alogprobs; context/continuation split by char offset (no tokenizer at this layer). Infra requirement: echo scoring reads the prompt's input logprobs, so the serving backend's prefix caching must be disabled (cached positions are not recomputed -> truncated logprobs); the backend layer owns the specific flag."
       },
       "status": "stable"
     },
@@ -1028,7 +1071,7 @@
         "english",
         "open-ended"
       ],
-      "deps_group": null,
+      "deps_group": "t-eval",
       "model_type": "chat",
       "reference_impl": {
         "source": "open-compass/T-Eval",
