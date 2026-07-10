@@ -185,16 +185,16 @@ def _read_hotpotqa(name_or_path: str) -> tuple[list[dict], list[str]]:
             revision=_HOTPOTQA_REVISION,
         )
     data = ensure_dataset(raw)
-    total_docs_set: dict[str, int] = {}
-    for row in data:
-        ctx = row["context"]
-        for title, sents in zip(ctx["title"], ctx["sentences"], strict=True):
-            doc = f"{title}\n{''.join(sents)}"
-            if doc not in total_docs_set:
-                total_docs_set[doc] = len(total_docs_set)
+    total_docs_set = {
+        f"{title}\n{''.join(sents)}"
+        for row in data
+        for title, sents in zip(
+            row["context"]["title"], row["context"]["sentences"], strict=True
+        )
+    }
     # Alphabetical order, matching upstream qa.py's `sorted(list(set(...)))` so the
     # document indexing (and thus distractor selection) is byte-identical to upstream.
-    total_docs = sorted(set(total_docs_set))
+    total_docs = sorted(total_docs_set)
     total_docs_dict = {d: i for i, d in enumerate(total_docs)}
     total_qas = []
     for row in data:
