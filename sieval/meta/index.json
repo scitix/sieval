@@ -737,7 +737,7 @@
       "reference_impl": {
         "source": "DeepSeek-Math",
         "url": "https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
-        "notes": "math-cot-test path: MinervaMathPrompt 4-shot, extract_math_few_shot_cot_answer (list-valued) + eval_math/math_equal. symbolic_equal's parse_latex degraded via DeepSeek's own fallback (antlr4 conflict with math_verify); other math_equal layers intact."
+        "notes": "math-cot-test path: MinervaMathPrompt 4-shot, extract_math_few_shot_cot_answer (list-valued) + eval_math/math_equal."
       },
       "status": "stable"
     },

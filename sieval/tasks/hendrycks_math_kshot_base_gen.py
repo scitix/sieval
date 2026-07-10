@@ -15,11 +15,11 @@ The shot count is fixed at 4 (the exemplars are a single baked-in prompt string
 upstream; there is no per-shot knob), and the reference answer is extracted from
 the ``solution`` column the same way DeepSeek's ``process_math_test`` does.
 
-Deviation: ``math_equal``'s ``symbolic_equal`` calls ``parse_latex`` (needs
-``antlr4-python3-runtime==4.11``, conflicting with the ``4.9.x`` pinned by
-``math_verify``); DeepSeek's own ``parse_expr``/string fallback then applies.
-``symbolic_equal`` is ``math_equal``'s last layer — string/numeric/tuple/matrix
-layers are intact. See the community module docstring.
+Deviation from upstream ``process_math_test``: reference extraction is not
+wrapped in a ``try/except`` that drops the sample — a failed boxed extraction
+counts as a wrong answer, not a dropped one. Immaterial in practice (all 5,000
+test rows carry a ``\\boxed`` answer). Extraction/equivalence deviations
+(dropped debug prints, unused ``timeout`` path) are in the community docstring.
 
 Repro decoding (greedy, matching DeepSeek's ``run_cot_eval.py``): temperature=0,
 top_p=1, max_gen_toks=1024.
@@ -68,9 +68,7 @@ class Feedback(TypedDict):
         url="https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
         notes=(
             "math-cot-test path: MinervaMathPrompt 4-shot, "
-            "extract_math_few_shot_cot_answer (list-valued) + eval_math/math_equal. "
-            "symbolic_equal's parse_latex degraded via DeepSeek's own fallback "
-            "(antlr4 conflict with math_verify); other math_equal layers intact."
+            "extract_math_few_shot_cot_answer (list-valued) + eval_math/math_equal."
         ),
     ),
 )
@@ -129,11 +127,11 @@ class HendrycksMathFewShotBaseGenTask(
         # a pipeline failure counts as wrong, not as an excluded sample.
         total = len(finals) + len(fails)
         if total == 0:
-            return {"score": 0.0, "fails": len(fails), "exact_match": 0.0}
+            return {"score": 0.0, "fails": len(fails), "accuracy": 0.0}
         correct_num = sum(1 for ctx in finals if ctx.feedback_result["correct"])
-        exact_match = 100 * correct_num / total
+        accuracy = 100 * correct_num / total
         return {
-            "score": exact_match,
+            "score": accuracy,
             "fails": len(fails),
-            "exact_match": exact_match,
+            "accuracy": accuracy,
         }

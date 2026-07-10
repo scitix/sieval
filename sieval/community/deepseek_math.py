@@ -27,17 +27,13 @@ Shared across the DeepSeek-Math GSM8K and MATH tasks:
   (`few_shot_prompts/cot_minerva_math_4_shot.py` + the `math-cot-test` path).
 
 Deviations from upstream:
-- `symbolic_equal` calls `sympy.parsing.latex.parse_latex`, whose ANTLR backend
-  requires the `antlr4-python3-runtime` build that sympy's LaTeX grammar was
-  generated against. The version resolved in this env (transitively, via
-  `math_verify`'s `latex2sympy2_extended`) does not match, so `parse_latex`
-  raises and DeepSeek's own `_parse` fallback (`parse_expr`, then the raw
-  string) takes over. `symbolic_equal` is the LAST layer of `math_equal`; the
-  string / numeric (with percentage) / tuple-interval / matrix / equation
-  layers above it are unaffected. (`math_equal` is called with the default
-  `timeout=False`, so the `symbolic_equal_process` / `call_with_timeout` path is
-  unused here, but both are kept so `math_equal` stays byte-faithful and
-  callable with `timeout=True`.)
+- `math_equal` is only ever called with the default `timeout=False` (via
+  `eval_math` / `is_correct` and the GSM8K path), so the
+  `symbolic_equal_process` / `call_with_timeout` multiprocessing path is unused
+  here; both are kept verbatim so `math_equal` stays byte-faithful and callable
+  with `timeout=True`. (`symbolic_equal`'s `parse_latex` works once
+  `antlr4-python3-runtime` is pinned to 4.11.0 in the `[math]` extra — sympy
+  1.14's LaTeX grammar requires that ANTLR runtime.)
 - The two debug `print` statements in `is_correct`'s list-branch ``'2,3,4'``
   guard are dropped (they fire during normal scoring — a library must not write
   to stdout). The lone `print(item)` before the final `NotImplementedError`

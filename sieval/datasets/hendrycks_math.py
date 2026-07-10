@@ -6,6 +6,10 @@ complete benchmark — 7,500 train + 5,000 test problems. The source schema has
 no ``answer`` column; the answer is the ``\\boxed{...}`` value inside
 ``solution`` (extract task-side, e.g. via ``sieval.community.deepseek_math``).
 
+Data-source note: DeepSeek-Math's ``math-cot-test`` loads its bundled
+``datasets/math/test.jsonl``; this loads ``EleutherAI/hendrycks_math`` instead —
+verified equivalent (5,000 test rows, same 7 subjects).
+
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 

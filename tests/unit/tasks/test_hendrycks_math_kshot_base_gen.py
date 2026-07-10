@@ -163,11 +163,11 @@ async def test_report_counts_fails_as_wrong():
     report = await task.report([correct, wrong], [failed])
     assert report["fails"] == 1
     assert report["score"] == pytest.approx(100 / 3)
-    assert report["exact_match"] == pytest.approx(100 / 3)
+    assert report["accuracy"] == pytest.approx(100 / 3)
 
 
 @pytest.mark.anyio
 async def test_report_empty_is_zero():
     task, _ = _task()
     report = await task.report([], [])
-    assert report == {"score": 0.0, "fails": 0, "exact_match": 0.0}
+    assert report == {"score": 0.0, "fails": 0, "accuracy": 0.0}
