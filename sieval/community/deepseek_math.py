@@ -4,10 +4,10 @@
 """
 DeepSeek-Math answer extraction and answer equivalence.
 
-Faithful port — trimmed to exactly what the GSM8K 0-shot task consumes — of the
-answer-handling utilities from the pinned commit
-(`data_processing/answer_extraction.py`, `eval/eval_utils.py`,
-`eval/eval_script.py`):
+Faithful port of the DeepSeek-Math answer-handling utilities from the pinned
+commit (`data_processing/answer_extraction.py`, `eval/eval_utils.py`,
+`eval/eval_script.py`), serving both the GSM8K 0-shot task and the MATH few-shot
+task (per-consumer breakdown below):
 
 * `extract_answer` (with `extract_boxed_answers` / `extract_program_output` /
   `strip_string`) — pull the final answer out of a model's reasoning: last

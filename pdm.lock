@@ -5,7 +5,7 @@
 groups = ["default", "dev", "drop", "ifbench", "ifeval", "math", "t-eval", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:d2e318510436de5f2157f0c79e01dedbbaa05f5388f4fd0867ac7da504c31612"
+content_hash = "sha256:aadbe110ed98781ee5c51ae38bd40780304ed26da3c371a0fd3f5ff1fd1256ef"
 
 [[metadata.targets]]
 requires_python = ">=3.12,<3.15"
@@ -928,7 +928,7 @@ files = [
 
 [[package]]
 name = "latex2sympy2-extended"
-version = "1.11.0"
+version = "1.10.2"
 requires_python = ">=3.10"
 summary = "Convert LaTeX math to SymPy expressions"
 groups = ["math"]
@@ -937,24 +937,24 @@ dependencies = [
     "sympy",
 ]
 files = [
-    {file = "latex2sympy2_extended-1.11.0-py3-none-any.whl", hash = "sha256:aebb77d52ce269e25028e4bea89ddb14d242ba36bcf7b636496fb5fd9728d234"},
-    {file = "latex2sympy2_extended-1.11.0.tar.gz", hash = "sha256:9695657c81b50abba2636638638618db59f4663ed2a4a12d62cef74a40e28fec"},
+    {file = "latex2sympy2_extended-1.10.2-py3-none-any.whl", hash = "sha256:f910442c5b02a466c1046f47d05cc5285181068b882399281f30102715337fb7"},
+    {file = "latex2sympy2_extended-1.10.2.tar.gz", hash = "sha256:41a517ffcc5a140e910a7d1646ce6ff440817e5f9d48fc8279d88bd0925bc389"},
 ]
 
 [[package]]
 name = "latex2sympy2-extended"
-version = "1.11.0"
+version = "1.10.2"
 extras = ["antlr4_11_0"]
 requires_python = ">=3.10"
 summary = "Convert LaTeX math to SymPy expressions"
 groups = ["math"]
 dependencies = [
     "antlr4-python3-runtime==4.11.0",
-    "latex2sympy2-extended==1.11.0",
+    "latex2sympy2-extended==1.10.2",
 ]
 files = [
-    {file = "latex2sympy2_extended-1.11.0-py3-none-any.whl", hash = "sha256:aebb77d52ce269e25028e4bea89ddb14d242ba36bcf7b636496fb5fd9728d234"},
-    {file = "latex2sympy2_extended-1.11.0.tar.gz", hash = "sha256:9695657c81b50abba2636638638618db59f4663ed2a4a12d62cef74a40e28fec"},
+    {file = "latex2sympy2_extended-1.10.2-py3-none-any.whl", hash = "sha256:f910442c5b02a466c1046f47d05cc5285181068b882399281f30102715337fb7"},
+    {file = "latex2sympy2_extended-1.10.2.tar.gz", hash = "sha256:41a517ffcc5a140e910a7d1646ce6ff440817e5f9d48fc8279d88bd0925bc389"},
 ]
 
 [[package]]
@@ -1195,32 +1195,32 @@ files = [
 
 [[package]]
 name = "math-verify"
-version = "0.9.0"
+version = "0.8.0"
 requires_python = ">=3.10"
 summary = "HuggingFace library for verifying mathematical answers"
 groups = ["math"]
 dependencies = [
-    "latex2sympy2-extended==1.11.0",
+    "latex2sympy2-extended==1.10.2",
 ]
 files = [
-    {file = "math_verify-0.9.0-py3-none-any.whl", hash = "sha256:3703e7c4885354027fa84409d762a596a2906d1fd4deb78361876bd905a76194"},
-    {file = "math_verify-0.9.0.tar.gz", hash = "sha256:45ac6c61344ba056b9e99a660a4bc8d044ed408f730aed68c60435aa5eec4645"},
+    {file = "math_verify-0.8.0-py3-none-any.whl", hash = "sha256:31ca651296d817a9bb3fd58ca1fd0d192dcea709b1e5ecf2d0a4514c16f89087"},
+    {file = "math_verify-0.8.0.tar.gz", hash = "sha256:3295e0adb94bfe553ff6e3189c44f1916a85aa24ab5d1900f2086a706e28f7c4"},
 ]
 
 [[package]]
 name = "math-verify"
-version = "0.9.0"
+version = "0.8.0"
 extras = ["antlr4-11-0"]
 requires_python = ">=3.10"
 summary = "HuggingFace library for verifying mathematical answers"
 groups = ["math"]
 dependencies = [
     "latex2sympy2-extended[antlr4_11_0]",
-    "math-verify==0.9.0",
+    "math-verify==0.8.0",
 ]
 files = [
-    {file = "math_verify-0.9.0-py3-none-any.whl", hash = "sha256:3703e7c4885354027fa84409d762a596a2906d1fd4deb78361876bd905a76194"},
-    {file = "math_verify-0.9.0.tar.gz", hash = "sha256:45ac6c61344ba056b9e99a660a4bc8d044ed408f730aed68c60435aa5eec4645"},
+    {file = "math_verify-0.8.0-py3-none-any.whl", hash = "sha256:31ca651296d817a9bb3fd58ca1fd0d192dcea709b1e5ecf2d0a4514c16f89087"},
+    {file = "math_verify-0.8.0.tar.gz", hash = "sha256:3295e0adb94bfe553ff6e3189c44f1916a85aa24ab5d1900f2086a706e28f7c4"},
 ]
 
 [[package]]
