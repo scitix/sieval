@@ -9,6 +9,7 @@ from sieval.core.utils.hf import ensure_dataset
 
 from ._shared import (
     _DOCUMENT_PROMPT,
+    _HOTPOTQA_REPO_ID,
     _HOTPOTQA_REVISION,
     _SQUAD_FILE,
     ruler_task,
@@ -167,11 +168,18 @@ def _read_squad(path: str) -> tuple[list[dict], list[str]]:
 def _read_hotpotqa(name_or_path: str) -> tuple[list[dict], list[str]]:
     from datasets import load_dataset as hf_load_dataset
 
+    # `qa_hotpotqa` is routed to the base data dir (ruler.py `_BASE_DIR_SUBTASKS`),
+    # where `sieval dataset download` mirrors the HF repo at `<data_dir>/<repo_id>`.
+    # Read that pinned staged copy first so eval works under HF_HUB_OFFLINE=1; the
+    # base dir itself is not a `distractor`-config dataset, so pointing the loader
+    # there would always miss the download and silently fetch online. Fall back to
+    # an online fetch only when the staged copy is absent or unreadable.
+    staged_path = os.path.join(name_or_path, *_HOTPOTQA_REPO_ID.split("/"))
     try:
-        raw = hf_load_dataset(name_or_path, "distractor", split="validation")
+        raw = hf_load_dataset(staged_path, "distractor", split="validation")
     except (ValueError, FileNotFoundError):
         raw = hf_load_dataset(
-            "hotpotqa/hotpot_qa",
+            _HOTPOTQA_REPO_ID,
             "distractor",
             split="validation",
             revision=_HOTPOTQA_REVISION,

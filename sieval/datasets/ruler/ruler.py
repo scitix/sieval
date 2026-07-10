@@ -31,7 +31,7 @@ from ._cwe import load_cwe
 from ._fwe import load_fwe
 from ._niah import _NIAH_SUBTASK_KWARGS, load_niah
 from ._qa import load_qa
-from ._shared import _HOTPOTQA_REVISION, _RULER_DATA_SHA
+from ._shared import _HOTPOTQA_REPO_ID, _HOTPOTQA_REVISION, _RULER_DATA_SHA
 from ._vt import load_vt
 
 _ALL_SUBTASKS = (
@@ -89,7 +89,7 @@ class RulerDatasetSample(TypedDict):
         "local:paul_graham_essays/PaulGrahamEssays.json.gz",
         f"url:https://media.githubusercontent.com/media/NVIDIA/RULER/{_RULER_DATA_SHA}/scripts/data/synthetic/json/english_words.json",
         "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
-        f"hf:hotpotqa/hotpot_qa@{_HOTPOTQA_REVISION}",
+        f"hf:{_HOTPOTQA_REPO_ID}@{_HOTPOTQA_REVISION}",
     ),
     checksums={
         "english_words.json": "sha256:affcd6d45fdf3cc843d585c99c97ad615094e760e6c4756b654bab6c73bc2eca",  # noqa: E501

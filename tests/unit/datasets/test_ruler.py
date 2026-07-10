@@ -84,6 +84,82 @@ def test_single_subtask_load_uses_base_dir_for_synthetic(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _read_hotpotqa — staged-copy-first path resolution (regression)
+# ---------------------------------------------------------------------------
+
+
+def _fake_hotpotqa_dataset():
+    # Minimal shape _read_hotpotqa consumes: nested `context` with title/sentences,
+    # plus `question`/`answer`.
+    from datasets import Dataset as HFDataset
+
+    return HFDataset.from_list(
+        [
+            {
+                "question": "Q?",
+                "answer": "A",
+                "context": {"title": ["T1", "T2"], "sentences": [["s1."], ["s2."]]},
+            }
+        ]
+    )
+
+
+@_needs_ruler_deps
+def test_read_hotpotqa_reads_staged_copy_and_skips_online(monkeypatch):
+    # Regression: qa_hotpotqa is routed to the base data dir, so the loader must
+    # join the HF repo id onto it and read the pinned staged mirror. Previously it
+    # passed the bare base dir to load_dataset, which raised (not a distractor-config
+    # dataset) and silently fell back to an online fetch — dead staged download,
+    # broken under HF_HUB_OFFLINE=1.
+    import datasets
+
+    from sieval.datasets.ruler._qa import _read_hotpotqa
+    from sieval.datasets.ruler._shared import _HOTPOTQA_REPO_ID
+
+    calls: list[dict] = []
+
+    def fake_load_dataset(path, config=None, *, revision=None, **_):
+        calls.append({"path": path, "config": config, "revision": revision})
+        return _fake_hotpotqa_dataset()
+
+    monkeypatch.setattr(datasets, "load_dataset", fake_load_dataset)
+
+    qas, docs = _read_hotpotqa("/data")
+
+    assert len(calls) == 1  # online fallback never touched
+    assert calls[0]["path"] == f"/data/{_HOTPOTQA_REPO_ID}"
+    assert calls[0]["config"] == "distractor"
+    assert calls[0]["revision"] is None  # local staged read, not a pinned online pull
+    assert qas and docs
+
+
+@_needs_ruler_deps
+def test_read_hotpotqa_falls_back_online_when_staged_absent(monkeypatch):
+    # Online remains an explicit last resort: only when the staged copy is missing.
+    import datasets
+
+    from sieval.datasets.ruler._qa import _read_hotpotqa
+    from sieval.datasets.ruler._shared import _HOTPOTQA_REPO_ID, _HOTPOTQA_REVISION
+
+    calls: list[dict] = []
+
+    def fake_load_dataset(path, *_args, revision=None, **_):
+        calls.append({"path": path, "revision": revision})
+        if revision is None:  # staged read
+            raise FileNotFoundError(path)
+        return _fake_hotpotqa_dataset()
+
+    monkeypatch.setattr(datasets, "load_dataset", fake_load_dataset)
+
+    _read_hotpotqa("/data")
+
+    assert len(calls) == 2
+    assert calls[0]["path"] == f"/data/{_HOTPOTQA_REPO_ID}"
+    assert calls[1]["path"] == _HOTPOTQA_REPO_ID
+    assert calls[1]["revision"] == _HOTPOTQA_REVISION
+
+
+# ---------------------------------------------------------------------------
 # tokens_to_generate helper
 # ---------------------------------------------------------------------------
 

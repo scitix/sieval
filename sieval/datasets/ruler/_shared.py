@@ -22,6 +22,11 @@ _NEEDLE = "One of the special magic {type_needle_v} for {key} is: {value}."
 _SQUAD_FILE = "dev-v2.0.json"
 _DOCUMENT_PROMPT = "Document {i}:\n{document}"
 
+# HotpotQA HuggingFace repo id. `sieval dataset download` mirrors it to
+# `<data_dir>/hotpotqa/hotpot_qa` (downloaders/hf.py: `dest_root / repo_id`), so
+# the loader resolves the staged copy by joining this onto the base data dir.
+_HOTPOTQA_REPO_ID = "hotpotqa/hotpot_qa"
+
 # Pin the HotpotQA snapshot for reproducibility across downloads.
 _HOTPOTQA_REVISION = "1908d6afbbead072334abe2965f91bd2709910ab"
 
