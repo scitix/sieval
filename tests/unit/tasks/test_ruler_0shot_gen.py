@@ -35,15 +35,19 @@ class TestTokensToGenerate:
         assert result == 5132
 
     def test_qwen3_without_thinking(self):
-        """Qwen3 without thinking: overhead + 1 (minimum) + base."""
-        # 4 (overhead) + 1 (minimum) + 128 (base)
+        """Qwen3 without thinking: base only.
+
+        The empty <think></think> block is prefilled in the prompt template
+        (counted by calculate_prompt_tokens), not generated — so the generation
+        budget is just the answer base.
+        """
         result = tokens_to_generate(
             "niah",
             enable_thinking=False,
             think_budget=0,
             model_name="Qwen3-8b",
         )
-        assert result == 133
+        assert result == 128
 
     def test_other_model_with_thinking(self):
         """Non-Qwen3 with thinking: budget + base (no overhead)."""
@@ -76,7 +80,7 @@ class TestTokensToGenerate:
             think_budget=0,
             model_name="QWEN3-8B",
         )
-        assert result == 133  # Still includes Qwen3 overhead
+        assert result == 128  # non-thinking → base only
 
 
 class TestThinkingPrefill:
@@ -312,7 +316,7 @@ class TestScenarios:
         )
         prefill = thinking_prefill("Qwen3-8b", enable_thinking=False)
 
-        assert tokens == 133
+        assert tokens == 128
         assert prefill == "<think>\n\n</think>\n\n"
 
     def test_scenario_gpt4_thinking(self):

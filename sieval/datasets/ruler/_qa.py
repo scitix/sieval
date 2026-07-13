@@ -12,6 +12,7 @@ from ._shared import (
     _HOTPOTQA_REPO_ID,
     _HOTPOTQA_REVISION,
     _SQUAD_FILE,
+    calculate_prompt_tokens,
     ruler_task,
     tokens_to_generate,
 )
@@ -64,6 +65,8 @@ def load_qa(
         tokenizer=tokenizer,
         max_seq_length=max_seq_length,
         tokens_to_generate=gen_budget,
+        enable_thinking=enable_thinking,
+        model_name=model_name,
         incremental=incremental,
     )
 
@@ -75,7 +78,15 @@ def load_qa(
         while True:
             try:
                 input_text, answer = gen(index + pre_samples, used_docs)
-                length = len(tokenizer.text_to_tokens(input_text)) + gen_budget
+                length = (
+                    calculate_prompt_tokens(
+                        tokenizer,
+                        input_text,
+                        model_name=model_name,
+                        enable_thinking=enable_thinking,
+                    )
+                    + gen_budget
+                )
                 assert length <= max_seq_length, f"{length} exceeds max_seq_length"
                 break
             except Exception:
@@ -118,10 +129,18 @@ def _fit_num_docs(
     tokenizer,
     max_seq_length: int,
     tokens_to_generate: int,
+    enable_thinking: bool = False,
+    model_name: str = "qwen3",
     incremental: int = 10,
 ) -> int:
     sample_input_text, _ = gen(0, incremental)
-    tokens_per_doc = len(tokenizer.text_to_tokens(sample_input_text)) / incremental
+    sample_tokens = calculate_prompt_tokens(
+        tokenizer,
+        sample_input_text,
+        model_name=model_name,
+        enable_thinking=enable_thinking,
+    )
+    tokens_per_doc = sample_tokens / incremental
     estimated_max_docs = int((max_seq_length / tokens_per_doc) * 3)
     lower_bound = incremental
     upper_bound = max(estimated_max_docs, incremental * 2)
@@ -129,7 +148,15 @@ def _fit_num_docs(
     while lower_bound <= upper_bound:
         mid = (lower_bound + upper_bound) // 2
         input_text, _ = gen(0, mid)
-        total_tokens = len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+        total_tokens = (
+            calculate_prompt_tokens(
+                tokenizer,
+                input_text,
+                model_name=model_name,
+                enable_thinking=enable_thinking,
+            )
+            + tokens_to_generate
+        )
         if total_tokens <= max_seq_length:
             optimal = mid
             lower_bound = mid + 1

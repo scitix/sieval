@@ -58,37 +58,43 @@ def tokens_to_generate(
     think_budget: int,
     model_name: str = "",
 ) -> int:
-    """Compute the total generation budget for a RULER task.
+    """Compute the generation budget (``max_tokens``) for a RULER task.
+
+    This is what ``infer()`` passes as ``max_tokens``, so it must cover
+    everything the model *generates*:
+
+    - Thinking content (``think_budget``) when thinking is enabled — the model
+      generates the reasoning, so it needs room for it.
+    - The generated ``<think>...</think>`` tags (Qwen3, thinking mode only).
+    - The final answer (``base`` from the task spec).
+
+    The message-template overhead (role markers, and the *prefilled* empty
+    ``<think></think>`` block in Qwen3 non-thinking mode) belongs to the prompt,
+    not to generation, and is counted by :func:`calculate_prompt_tokens`.
 
     Args:
         task_name: Name of the RULER task (e.g., "niah", "qa")
         enable_thinking: Whether thinking mode is enabled
-        think_budget: Token budget for thinking content (used only when
-                    enable_thinking=True)
-        model_name: Model identifier (default "qwen3"). Only Qwen3-family models
-                    have thinking tag overhead. Other models (e.g., "gpt-4", "llama")
-                    should pass their own model_name for correct token calculation.
+        think_budget: Token budget for generated thinking content
+        model_name: Model identifier. Only Qwen3-family models generate the
+            ``<think>`` tags that add the tag overhead.
 
     Returns:
-        Total tokens needed for generation, accounting for:
-        - Thinking tag overhead (Qwen3 only): 4 tokens for <think>\n\n</think>\n\n
-        - Thinking content (if enabled): think_budget tokens
-        - Final answer: base tokens from task spec
+        Total tokens the model may generate (thinking + tags + answer).
     """
     base = ruler_task(task_name)["tokens_to_generate"]
-
-    # Only Qwen3-family models have thinking tag overhead
     is_qwen3 = model_name.lower().startswith("qwen3")
 
-    if not is_qwen3:
-        # Other models: no thinking tag overhead
-        return think_budget + base if enable_thinking else base
+    if not enable_thinking:
+        # Non-thinking: the empty <think></think> block (Qwen3) is prefilled in
+        # the prompt template, so only the answer is generated.
+        return base
 
-    # Qwen3: always includes thinking tag overhead
-    if enable_thinking:
+    # Thinking: the model generates think_budget tokens of reasoning + answer.
+    # Qwen3 also generates the <think>...</think> tags.
+    if is_qwen3:
         return QWEN3_THINKING_TAG_OVERHEAD + think_budget + base
-    else:
-        return QWEN3_THINKING_TAG_OVERHEAD + 1 + base
+    return think_budget + base
 
 
 def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
@@ -134,3 +140,66 @@ def _ensure_punkt() -> None:
         nltk.data.find("tokenizers/punkt_tab")
     except LookupError:
         nltk.download("punkt_tab")
+
+
+def get_template(model_name: str, enable_thinking: bool) -> str:
+    """Get the message template for a model and thinking mode.
+
+    Returns the formatting template that will be used during inference.
+    This ensures data generation uses the same format as actual inference.
+
+    Args:
+        model_name: Model identifier (e.g., "qwen3", "gpt-4", "llama")
+        enable_thinking: Whether thinking mode is enabled
+
+    Returns:
+        Template string with {task_template} placeholder
+    """
+    from sieval.community.ruler.datasets.template import Templates
+
+    if model_name.lower().startswith("qwen3"):
+        template_key = "qwen3-thinking" if enable_thinking else "qwen3-nonthinking"
+    else:
+        # Other models: use the model's named template if present, else base
+        template_key = model_name if model_name in Templates else "base"
+    return Templates.get(template_key, "{task_template}")
+
+
+def calculate_prompt_tokens(
+    tokenizer,
+    prompt: str,
+    *,
+    model_name: str = "qwen3",
+    enable_thinking: bool = False,
+) -> int:
+    """Count the prompt tokens as the inference engine will see them.
+
+    Wraps *prompt* in the inference-time message template (role markers, and the
+    prefilled empty ``<think></think>`` block in Qwen3 non-thinking mode) and
+    returns the token count. This is the input side only.
+
+    The generation budget — including ``think_budget`` when thinking is enabled —
+    is NOT counted here; it is returned separately by :func:`tokens_to_generate`
+    and added by callers when sizing prompts against ``max_seq_length``. Keeping
+    the two apart avoids double-counting the thinking budget.
+
+    Args:
+        tokenizer: RULER tokenizer wrapper exposing ``text_to_tokens``
+        prompt: The prompt/task text
+        model_name: Model identifier for template selection
+        enable_thinking: Whether thinking mode is enabled (selects the template)
+
+    Returns:
+        Token count of the templated prompt.
+
+    Example:
+        >>> tokens = calculate_prompt_tokens(
+        ...     tokenizer, "What is 2+2?", model_name="qwen3", enable_thinking=False
+        ... )
+        >>> # Result: template overhead (~13 tokens) + prompt content tokens
+    """
+    template = get_template(model_name, enable_thinking)
+    formatted_prompt = template.format(task_template=prompt)
+    # RULER tokenizers (HFTokenizer / OpenAITokenizer) expose ``text_to_tokens``,
+    # matching the interface used throughout the subtask loaders.
+    return len(tokenizer.text_to_tokens(formatted_prompt))

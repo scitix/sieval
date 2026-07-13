@@ -6,7 +6,7 @@ import random
 
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 
-from ._shared import ruler_task, tokens_to_generate
+from ._shared import calculate_prompt_tokens, ruler_task, tokens_to_generate
 
 
 def load_cwe(
@@ -64,6 +64,8 @@ def load_cwe(
         vocab_size=len(words),
         max_seq_length=max_seq_length,
         tokens_to_generate=gen_budget,
+        enable_thinking=enable_thinking,
+        model_name=model_name,
         incremental=incremental,
     )
 
@@ -75,7 +77,15 @@ def load_cwe(
         while True:
             try:
                 input_text, answer = gen(used_words)
-                length = len(tokenizer.text_to_tokens(input_text)) + gen_budget
+                length = (
+                    calculate_prompt_tokens(
+                        tokenizer,
+                        input_text,
+                        model_name=model_name,
+                        enable_thinking=enable_thinking,
+                    )
+                    + gen_budget
+                )
                 assert length <= max_seq_length, "exceeds max_seq_length"
                 break
             except Exception:
@@ -107,12 +117,20 @@ def _binary_search_words(
     vocab_size: int,
     max_seq_length: int,
     tokens_to_generate: int,
+    enable_thinking: bool = False,
+    model_name: str = "qwen3",
     incremental: int,
 ) -> int:
     from loguru import logger
 
     sample_text, _ = gen(min(4096, vocab_size))
-    tokens_per_word = len(tokenizer.text_to_tokens(sample_text)) / min(4096, vocab_size)
+    sample_tokens = calculate_prompt_tokens(
+        tokenizer,
+        sample_text,
+        model_name=model_name,
+        enable_thinking=enable_thinking,
+    )
+    tokens_per_word = sample_tokens / min(4096, vocab_size)
     estimated_max_words = int(max_seq_length // tokens_per_word) * 2
     lower_bound = incremental
     upper_bound = max(estimated_max_words, incremental * 2)
@@ -132,7 +150,15 @@ def _binary_search_words(
     while lower_bound <= upper_bound:
         mid = (lower_bound + upper_bound) // 2
         input_text, _ = gen(mid)
-        total_tokens = len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+        total_tokens = (
+            calculate_prompt_tokens(
+                tokenizer,
+                input_text,
+                model_name=model_name,
+                enable_thinking=enable_thinking,
+            )
+            + tokens_to_generate
+        )
         if total_tokens <= max_seq_length:
             optimal = mid
             lower_bound = mid + 1

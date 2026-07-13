@@ -164,27 +164,39 @@ def test_read_hotpotqa_falls_back_online_when_staged_absent(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# QWEN3_THINKING_TAG_OVERHEAD (4 tokens) is added only for qwen3 in thinking mode
+# (the model generates the <think>...</think> tags). Non-thinking prefills an empty
+# block in the prompt template, so no tag overhead in the generation budget.
 @pytest.mark.parametrize(
-    ("task_name", "enable_thinking", "think_budget", "expected"),
+    ("task_name", "enable_thinking", "think_budget", "model_name", "expected"),
     [
-        # No thinking: base tokens only
-        ("niah", False, 0, 128),
-        ("qa", False, 0, 32),
-        ("variable_tracking", False, 0, 30),
-        ("common_words_extraction", False, 0, 120),
-        ("freq_words_extraction", False, 0, 50),
-        # Thinking enabled: base + think_budget
-        ("niah", True, 1024, 1024 + 128),
-        ("qa", True, 512, 512 + 32),
-        ("variable_tracking", True, 2048, 2048 + 30),
-        # think_budget=0 with enable_thinking=True still adds 0
-        ("niah", True, 0, 128),
+        # Non-thinking: base answer tokens only (empty think block is prefilled).
+        ("niah", False, 0, "qwen3", 128),
+        ("qa", False, 0, "qwen3", 32),
+        ("variable_tracking", False, 0, "qwen3", 30),
+        ("common_words_extraction", False, 0, "qwen3", 120),
+        ("freq_words_extraction", False, 0, "qwen3", 50),
+        # Non-thinking is unaffected by a stray think_budget.
+        ("niah", False, 8192, "qwen3", 128),
+        # qwen3 thinking: tag overhead (4) + think_budget + base.
+        ("niah", True, 1024, "qwen3", 4 + 1024 + 128),
+        ("qa", True, 512, "qwen3", 4 + 512 + 32),
+        ("niah", True, 0, "qwen3", 4 + 0 + 128),
+        # Non-qwen3 thinking: think_budget + base, no tag overhead.
+        ("niah", True, 1024, "gpt-4", 1024 + 128),
+        ("variable_tracking", True, 2048, "llama", 2048 + 30),
     ],
 )
-def test_tokens_to_generate(task_name, enable_thinking, think_budget, expected):
+def test_tokens_to_generate(
+    task_name, enable_thinking, think_budget, model_name, expected
+):
+    """tokens_to_generate is the max_tokens budget: it must include think_budget."""
     assert (
         tokens_to_generate(
-            task_name, enable_thinking=enable_thinking, think_budget=think_budget
+            task_name,
+            enable_thinking=enable_thinking,
+            think_budget=think_budget,
+            model_name=model_name,
         )
         == expected
     )

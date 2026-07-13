@@ -7,7 +7,7 @@ import numpy as np
 
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 
-from ._shared import ruler_task, tokens_to_generate
+from ._shared import calculate_prompt_tokens, ruler_task, tokens_to_generate
 
 
 def load_fwe(
@@ -39,7 +39,26 @@ def load_fwe(
     random.seed(random_seed)
     np.random.seed(random_seed)
 
-    input_max_len = max_seq_length - gen_budget
+    # Reserve room for the inference-time message-template overhead (role markers,
+    # and the prefilled empty <think></think> block in non-thinking mode), since
+    # the raw coded text is filled to ``input_max_len`` tokens. gen_budget already
+    # covers generation (answer + any think_budget). calculate_prompt_tokens("")
+    # returns exactly the template overhead. Without this reservation the wrapped
+    # prompt would overflow max_seq_length — FWE has no shrink-retry loop.
+    template_overhead = calculate_prompt_tokens(
+        tokenizer,
+        "",
+        model_name=model_name,
+        enable_thinking=enable_thinking,
+    )
+    input_max_len = max_seq_length - gen_budget - template_overhead
+    if input_max_len <= 0:
+        raise ValueError(
+            f"RULER FWE: no room for content — max_seq_length={max_seq_length} is "
+            f"fully consumed by generation budget ({gen_budget}, incl. any "
+            f"think_budget) + template overhead ({template_overhead}). Lower "
+            f"think_budget or raise max_seq_length."
+        )
     if vocab_size == -1:
         vocab_size = input_max_len // 50
 
@@ -68,7 +87,15 @@ def load_fwe(
             random_seed=random_seed,
             zeta=zeta,
         )
-        length = len(tokenizer.text_to_tokens(input_text)) + gen_budget
+        length = (
+            calculate_prompt_tokens(
+                tokenizer,
+                input_text,
+                model_name=model_name,
+                enable_thinking=enable_thinking,
+            )
+            + gen_budget
+        )
         if remove_newline_tab:
             input_text = " ".join(
                 input_text.replace("\n", " ").replace("\t", " ").strip().split()

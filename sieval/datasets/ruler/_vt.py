@@ -12,9 +12,37 @@ from ._shared import (
     _VT_DEPTHS,
     _build_haystack,
     _ensure_punkt,
+    calculate_prompt_tokens,
     ruler_task,
     tokens_to_generate,
 )
+
+
+def _count_prompt_tokens(
+    tokenizer,
+    text: str,
+    *,
+    apply_template: bool,
+    model_name: str,
+    enable_thinking: bool,
+) -> int:
+    """Count tokens for VT prompt sizing.
+
+    When *apply_template* is True the text is the real final prompt, so it is
+    wrapped in the inference-time message template (role markers, prefilled
+    think block) via :func:`calculate_prompt_tokens`. When False the text is a
+    fragment (e.g. the ICL example being synthesized for later embedding), so a
+    raw token count is used — wrapping a fragment would double-count the
+    template overhead once it is spliced into the real prompt.
+    """
+    if not apply_template:
+        return len(tokenizer.text_to_tokens(text))
+    return calculate_prompt_tokens(
+        tokenizer,
+        text,
+        model_name=model_name,
+        enable_thinking=enable_thinking,
+    )
 
 
 def load_vt(
@@ -59,6 +87,8 @@ def load_vt(
         type_haystack=type_haystack,
         haystack=haystack,
         final_output=False,
+        enable_thinking=enable_thinking,
+        model_name=model_name,
     )[0]
 
     return _synthesize(
@@ -74,6 +104,8 @@ def load_vt(
         type_haystack=type_haystack,
         haystack=haystack,
         final_output=True,
+        enable_thinking=enable_thinking,
+        model_name=model_name,
     )
 
 
@@ -91,8 +123,13 @@ def _synthesize(
     haystack,
     final_output: bool = False,
     add_fewshot: bool = True,
+    enable_thinking: bool = False,
+    model_name: str = "qwen3",
 ) -> list[dict]:
     is_icl = add_fewshot and (icl_example is None)
+    # The ICL example is synthesized as a raw fragment for later embedding; only
+    # the real prompt (is_icl=False) is wrapped in the inference-time template.
+    apply_template = not is_icl
 
     if icl_example is not None:
         incremental = 500 if type_haystack == "essay" else 10
@@ -124,6 +161,9 @@ def _synthesize(
         tokens_to_generate=tokens_to_generate,
         example_tokens=example_tokens,
         incremental=incremental,
+        apply_template=apply_template,
+        enable_thinking=enable_thinking,
+        model_name=model_name,
     )
 
     rows: list[dict] = []
@@ -146,7 +186,16 @@ def _synthesize(
                     input_text = " ".join(
                         input_text.replace("\n", " ").replace("\t", " ").strip().split()
                     )
-                length = len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
+                length = (
+                    _count_prompt_tokens(
+                        tokenizer,
+                        input_text,
+                        apply_template=apply_template,
+                        model_name=model_name,
+                        enable_thinking=enable_thinking,
+                    )
+                    + tokens_to_generate
+                )
                 assert length <= max_seq_length, "exceeds max_seq_length"
                 break
             except Exception:
@@ -187,9 +236,21 @@ def _binary_search_noises(
     tokens_to_generate: int,
     example_tokens: int,
     incremental: int,
+    apply_template: bool = False,
+    enable_thinking: bool = False,
+    model_name: str = "qwen3",
 ) -> int:
+    # ``example_tokens`` is a raw fragment count added on top; the sized ``text``
+    # carries the template overhead once via _count_prompt_tokens. The generation
+    # budget (answer + any think_budget) is added separately as tokens_to_generate.
     sample_text, _ = gen(incremental)
-    sample_tokens = len(tokenizer.text_to_tokens(sample_text))
+    sample_tokens = _count_prompt_tokens(
+        tokenizer,
+        sample_text,
+        apply_template=apply_template,
+        model_name=model_name,
+        enable_thinking=enable_thinking,
+    )
     tokens_per_haystack = sample_tokens / incremental
     estimated_max = int((max_seq_length / tokens_per_haystack) * 3)
     lower_bound, upper_bound = incremental, max(estimated_max, incremental * 2)
@@ -198,7 +259,15 @@ def _binary_search_noises(
         mid = (lower_bound + upper_bound) // 2
         text, _ = gen(mid)
         total = (
-            len(tokenizer.text_to_tokens(text)) + example_tokens + tokens_to_generate
+            _count_prompt_tokens(
+                tokenizer,
+                text,
+                apply_template=apply_template,
+                model_name=model_name,
+                enable_thinking=enable_thinking,
+            )
+            + example_tokens
+            + tokens_to_generate
         )
         if total <= max_seq_length:
             optimal = mid
