@@ -78,6 +78,31 @@ def test_get_template_unknown_model_uses_base():
 
 
 @_needs_ruler_deps
+def test_get_template_qwen3_case_insensitive_and_not_base():
+    """Regression: qwen3 must resolve to the real template regardless of the
+
+    capitalization used for the key in template.py ("Qwen3-nonthinking"). A
+    case mismatch previously fell back to base, counting ZERO template overhead
+    and overflowing max_seq_length. Resolution is case-insensitive and never base.
+    """
+    for name in ("qwen3", "Qwen3-8b", "QWEN3-8B"):
+        for thinking in (False, True):
+            tmpl = get_template(name, thinking)
+            assert tmpl != "{task_template}"
+            assert "<|im_start|>" in tmpl
+
+
+@_needs_ruler_deps
+def test_get_template_missing_qwen3_key_fails_loud(monkeypatch):
+    """A missing Qwen3 template raises rather than silently degrading to base."""
+    import sieval.datasets.ruler._shared as shared_mod
+
+    monkeypatch.setattr(shared_mod, "Templates", {"base": "{task_template}"})
+    with pytest.raises(KeyError, match="qwen3-nonthinking"):
+        get_template("qwen3", enable_thinking=False)
+
+
+@_needs_ruler_deps
 def test_template_has_task_template_placeholder():
     """Every resolved template must carry the {task_template} placeholder."""
     for model in ["qwen3", "meta-llama3", "unknown-model"]:
@@ -132,6 +157,20 @@ def test_tokens_to_generate_non_qwen3_thinking_no_tag_overhead():
 # ---------------------------------------------------------------------------
 # calculate_prompt_tokens() — Full token count with message template
 # ---------------------------------------------------------------------------
+
+
+@_needs_ruler_deps
+def test_calculate_prompt_tokens_qwen3_overhead_nonzero(tokenizer):
+    """Regression: the qwen3 template overhead must be counted, not zero.
+
+    The overflow bug was a silent base fallback (empty template) that made this
+    overhead 0, so prompts were sized ~13 tokens too large and overran context.
+    """
+    overhead = calculate_prompt_tokens(
+        tokenizer, "", model_name="qwen3", enable_thinking=False
+    )
+    # role markers + prefilled <think></think> block ≈ 13 tokens
+    assert overhead >= 10
 
 
 @_needs_ruler_deps

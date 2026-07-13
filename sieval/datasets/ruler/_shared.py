@@ -9,6 +9,7 @@ from typing import TypedDict, cast
 import numpy as np
 
 from sieval.community.ruler.datasets.constants import TASKS
+from sieval.community.ruler.datasets.template import Templates
 
 _NOISE_HAYSTACK = (
     "The grass is green. The sky is blue. The sun is yellow. "
@@ -155,14 +156,28 @@ def get_template(model_name: str, enable_thinking: bool) -> str:
     Returns:
         Template string with {task_template} placeholder
     """
-    from sieval.community.ruler.datasets.template import Templates
+
+    # Case-insensitive lookup: template.py capitalizes model names inconsistently
+    # (e.g. "Qwen3-nonthinking", "Phi3", "meta-llama3"). Matching on lowercase
+    # avoids the silent base-fallback bug where a case mismatch made the template
+    # overhead count as zero and prompts overflowed max_seq_length.
+    by_lower = {k.lower(): k for k in Templates}
 
     if model_name.lower().startswith("qwen3"):
-        template_key = "qwen3-thinking" if enable_thinking else "qwen3-nonthinking"
-    else:
-        # Other models: use the model's named template if present, else base
-        template_key = model_name if model_name in Templates else "base"
-    return Templates.get(template_key, "{task_template}")
+        want = "qwen3-thinking" if enable_thinking else "qwen3-nonthinking"
+        if want not in by_lower:
+            # Fail loud: a missing Qwen3 template must not silently degrade to
+            # base (zero overhead) — that under-sizes prompts.
+            raise KeyError(
+                f"RULER template {want!r} not found in Templates "
+                f"(available: {sorted(Templates)}). Check "
+                f"sieval/community/ruler/datasets/template.py."
+            )
+        return Templates[by_lower[want]]
+
+    # Other models: use the model's named template if present, else base.
+    key = by_lower.get(model_name.lower())
+    return Templates[key] if key is not None else "{task_template}"
 
 
 def calculate_prompt_tokens(

@@ -39,6 +39,6 @@ Templates = {
     'nemotron5-instruct': "<SPECIAL_10>System\n\n<SPECIAL_11>User\n{task_template}\n<SPECIAL_11>Assistant\n",
 
     'Qwen3-nonthinking': "<|im_start|>user\n{task_template} <|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
-    
-    'Qwen3-thinking': "<|im_start|>user\n{task_template} <|im_end|>\n"
+
+    'Qwen3-thinking': "<|im_start|>user\n{task_template} /think<|im_end|>\n<|im_start|>assistant\n"
 }
