@@ -71,7 +71,10 @@ class GradeFeedback(TypedDict):
             "revision) — pin the grader model + temperature=0; the per-sample "
             "grade and grader model id are persisted in the feedback record. "
             "VALIDATION: google/gemma-4-31B-it scored F1 9.95 (n=1000, grader "
-            "openai/gpt-4.1 via OpenRouter), within the official 10.7±2.1 band."
+            "openai/gpt-4.1 via OpenRouter), within the official 10.7±2.1 band. "
+            "Official numbers (Gemini 2.5 Pro 55.6; the band above) are from the "
+            "DeepMind SimpleQA Verified leaderboard: "
+            "https://www.kaggle.com/benchmarks/deepmind/simpleqa-verified"
         ),
     ),
 )
@@ -156,7 +159,13 @@ class SimpleQAVerifiedZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
-        grades = [fb["grade"] for f in finals for fb in (f.feedback_result or [])]
+        graded = [fb["grade"] for f in finals for fb in (f.feedback_result or [])]
+        # Pipeline failures (exhausted retries) never produced a gradeable
+        # answer; count each failed sample's requested attempts as
+        # NOT_ATTEMPTED so the F1 spans the full requested set — matching the
+        # official full-set metric and the gen-task family (imo_answer_bench,
+        # gsm8k), rather than only the successfully-graded subset.
+        grades = graded + ["NOT_ATTEMPTED"] * (self._n * len(fails))
         m = aggregate_metrics(grades)
         return {
             "score": m["f1"] * 100,
@@ -165,6 +174,6 @@ class SimpleQAVerifiedZeroShotGenTask(
             "correct": m["is_correct"] * 100,
             "incorrect": m["is_incorrect"] * 100,
             "not_attempted": m["is_not_attempted"] * 100,
-            "n_graded": len(grades),
+            "n_graded": len(graded),
             "fails": len(fails),
         }

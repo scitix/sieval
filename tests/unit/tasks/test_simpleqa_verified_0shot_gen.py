@@ -162,6 +162,60 @@ async def test_report_f1_matches_hand_computation():
     assert report["score"] == report["f1"]
 
 
+@pytest.mark.anyio
+async def test_report_counts_fails_as_not_attempted():
+    # Failed samples must dilute the F1 (full-set metric), not be excluded.
+    task, _ = _task()  # n=1
+    finals = [
+        TaskContext(
+            sample_id=i,
+            feedback_result=[
+                {"grade": g, "gold": "", "predicted": "", "grader_model": "m"}
+            ],
+        )
+        for i, g in enumerate(["CORRECT", "INCORRECT"])
+    ]
+    fails = [TaskContext(sample_id=10), TaskContext(sample_id=11)]
+    report = await task.report(finals, fails)
+
+    # 2 graded (1 correct, 1 incorrect) + 2 fails-as-NOT_ATTEMPTED => 4 units.
+    # correct=0.25, incorrect=0.25 -> acc_given_attempted=0.5 -> f1=0.3333.
+    # Excluding fails would give correct=0.5, f1=50.0, so this discriminates.
+    assert report["n_graded"] == 2
+    assert report["fails"] == 2
+    assert report["correct"] == pytest.approx(25.0)
+    assert report["not_attempted"] == pytest.approx(50.0)
+    assert report["f1"] == pytest.approx(33.3333, abs=1e-3)
+
+
+@pytest.mark.anyio
+async def test_report_fails_weighted_by_n():
+    # Each failed sample stands in for its n requested attempts.
+    dataset = SimpleQAVerifiedDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
+    )
+    model = _ScriptedChatModel(reply="x", model="candidate")
+    grader = _ScriptedChatModel(reply="A", model="grader")
+    task = SimpleQAVerifiedZeroShotGenTask(dataset, model, grader=grader, n=2)
+    finals = [
+        TaskContext(
+            sample_id=0,
+            feedback_result=[
+                {"grade": "CORRECT", "gold": "", "predicted": "", "grader_model": "m"},
+                {"grade": "CORRECT", "gold": "", "predicted": "", "grader_model": "m"},
+            ],
+        )
+    ]
+    fails = [TaskContext(sample_id=1)]
+    report = await task.report(finals, fails)
+
+    # 2 correct attempts + n*1 = 2 NOT_ATTEMPTED => 4 units, correct rate 0.5.
+    # A per-sample (unweighted) count would give 3 units and correct=66.7.
+    assert report["n_graded"] == 2
+    assert report["correct"] == pytest.approx(50.0)
+    assert report["not_attempted"] == pytest.approx(50.0)
+
+
 def test_report_empty_is_zero():
     # aggregate_metrics is the pure kernel report() delegates to.
     m = aggregate_metrics([])
