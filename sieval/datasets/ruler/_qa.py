@@ -12,7 +12,7 @@ from ._shared import (
     _HOTPOTQA_REPO_ID,
     _HOTPOTQA_REVISION,
     _SQUAD_FILE,
-    calculate_prompt_tokens,
+    model_template_token,
     ruler_task,
     tokens_to_generate,
 )
@@ -40,6 +40,10 @@ def load_qa(
         model_name=model_name,
     )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
+    # Upstream template reserve, computed once (sample-invariant).
+    mtt = model_template_token(
+        tokenizer, model_name=model_name, enable_thinking=enable_thinking
+    )
 
     random.seed(random_seed)
 
@@ -65,8 +69,7 @@ def load_qa(
         tokenizer=tokenizer,
         max_seq_length=max_seq_length,
         tokens_to_generate=gen_budget,
-        enable_thinking=enable_thinking,
-        model_name=model_name,
+        template_token=mtt,
         incremental=incremental,
     )
 
@@ -78,15 +81,7 @@ def load_qa(
         while True:
             try:
                 input_text, answer = gen(index + pre_samples, used_docs)
-                length = (
-                    calculate_prompt_tokens(
-                        tokenizer,
-                        input_text,
-                        model_name=model_name,
-                        enable_thinking=enable_thinking,
-                    )
-                    + gen_budget
-                )
+                length = len(tokenizer.text_to_tokens(input_text)) + mtt + gen_budget
                 assert length <= max_seq_length, f"{length} exceeds max_seq_length"
                 break
             except Exception:
@@ -129,17 +124,11 @@ def _fit_num_docs(
     tokenizer,
     max_seq_length: int,
     tokens_to_generate: int,
-    enable_thinking: bool = False,
-    model_name: str = "qwen3",
+    template_token: int = 0,
     incremental: int = 10,
 ) -> int:
     sample_input_text, _ = gen(0, incremental)
-    sample_tokens = calculate_prompt_tokens(
-        tokenizer,
-        sample_input_text,
-        model_name=model_name,
-        enable_thinking=enable_thinking,
-    )
+    sample_tokens = len(tokenizer.text_to_tokens(sample_input_text)) + template_token
     tokens_per_doc = sample_tokens / incremental
     estimated_max_docs = int((max_seq_length / tokens_per_doc) * 3)
     lower_bound = incremental
@@ -149,12 +138,8 @@ def _fit_num_docs(
         mid = (lower_bound + upper_bound) // 2
         input_text, _ = gen(0, mid)
         total_tokens = (
-            calculate_prompt_tokens(
-                tokenizer,
-                input_text,
-                model_name=model_name,
-                enable_thinking=enable_thinking,
-            )
+            len(tokenizer.text_to_tokens(input_text))
+            + template_token
             + tokens_to_generate
         )
         if total_tokens <= max_seq_length:

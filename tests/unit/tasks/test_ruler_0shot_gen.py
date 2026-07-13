@@ -38,7 +38,7 @@ class TestTokensToGenerate:
         """Qwen3 without thinking: base only.
 
         The empty <think></think> block is prefilled in the prompt template
-        (counted by calculate_prompt_tokens), not generated — so the generation
+        (reserved via model_template_token), not generated — so the generation
         budget is just the answer base.
         """
         result = tokens_to_generate(

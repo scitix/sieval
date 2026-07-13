@@ -7,7 +7,7 @@ import numpy as np
 
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 
-from ._shared import calculate_prompt_tokens, ruler_task, tokens_to_generate
+from ._shared import model_template_token, ruler_task, tokens_to_generate
 
 
 def load_fwe(
@@ -42,14 +42,11 @@ def load_fwe(
     # Reserve room for the inference-time message-template overhead (role markers,
     # and the prefilled empty <think></think> block in non-thinking mode), since
     # the raw coded text is filled to ``input_max_len`` tokens. gen_budget already
-    # covers generation (answer + any think_budget). calculate_prompt_tokens("")
-    # returns exactly the template overhead. Without this reservation the wrapped
-    # prompt would overflow max_seq_length — FWE has no shrink-retry loop.
-    template_overhead = calculate_prompt_tokens(
-        tokenizer,
-        "",
-        model_name=model_name,
-        enable_thinking=enable_thinking,
+    # covers generation (answer + any think_budget). model_template_token is the
+    # upstream reserve. Without this reservation the wrapped prompt would overflow
+    # max_seq_length — FWE has no shrink-retry loop.
+    template_overhead = model_template_token(
+        tokenizer, model_name=model_name, enable_thinking=enable_thinking
     )
     input_max_len = max_seq_length - gen_budget - template_overhead
     if input_max_len <= 0:
@@ -88,13 +85,7 @@ def load_fwe(
             zeta=zeta,
         )
         length = (
-            calculate_prompt_tokens(
-                tokenizer,
-                input_text,
-                model_name=model_name,
-                enable_thinking=enable_thinking,
-            )
-            + gen_budget
+            len(tokenizer.text_to_tokens(input_text)) + template_overhead + gen_budget
         )
         if remove_newline_tab:
             input_text = " ".join(

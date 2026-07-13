@@ -2,12 +2,13 @@
 
 Tests the unified token calculation system:
 - get_template(): Message format template selection
-- calculate_prompt_tokens(): Full token count including message format
-- tokens_to_generate(): Base answer generation budget
+- model_template_token(): upstream per-config template reserve
+- tokens_to_generate(): generation budget (answer + any think_budget)
 
-calculate_prompt_tokens() consumes the RULER tokenizer wrappers
+model_template_token() consumes the RULER tokenizer wrappers
 (HFTokenizer / OpenAITokenizer) via their ``text_to_tokens`` interface, so
 tests build one through ``select_tokenizer`` — the same path the loaders use.
+Loaders size prompts as ``len(text_to_tokens(content)) + model_template_token``.
 """
 
 import pytest
@@ -26,8 +27,8 @@ _needs_ruler_deps = pytest.mark.skipif(
 if _ruler_deps:
     from sieval.community.ruler.scripts.tokenizer import select_tokenizer
     from sieval.datasets.ruler._shared import (
-        calculate_prompt_tokens,
         get_template,
+        model_template_token,
         tokens_to_generate,
     )
 
@@ -101,13 +102,19 @@ def test_get_template_qwen3_case_insensitive_and_not_base():
 
 
 @_needs_ruler_deps
-def test_get_template_missing_qwen3_key_fails_loud(monkeypatch):
-    """A missing Qwen3 template raises rather than silently degrading to base."""
+def test_get_template_qwen3_is_sieval_owned_not_vendored(monkeypatch):
+    """Qwen3 templates are sieval-owned, independent of the vendored Templates.
+
+    Regression for the community/ vendor-fidelity fix: even if the vendored
+    upstream Templates dict has no Qwen3 entry (as upstream indeed doesn't),
+    get_template still resolves Qwen3 from the local _QWEN3_TEMPLATES.
+    """
     import sieval.datasets.ruler._shared as shared_mod
 
     monkeypatch.setattr(shared_mod, "Templates", {"base": "{task_template}"})
-    with pytest.raises(KeyError, match="qwen3-nonthinking"):
-        get_template("qwen3", enable_thinking=False)
+    for thinking in (False, True):
+        tmpl = get_template("qwen3", enable_thinking=thinking)
+        assert "<|im_start|>" in tmpl and "{task_template}" in tmpl
 
 
 @_needs_ruler_deps
@@ -163,124 +170,94 @@ def test_tokens_to_generate_non_qwen3_thinking_no_tag_overhead():
 
 
 # ---------------------------------------------------------------------------
-# calculate_prompt_tokens() — Full token count with message template
+# model_template_token() — upstream per-config template reserve
 # ---------------------------------------------------------------------------
 
 
 @_needs_ruler_deps
-def test_calculate_prompt_tokens_qwen3_overhead_nonzero(tokenizer):
-    """Regression: the qwen3 template overhead must be counted, not zero.
+def test_model_template_token_qwen3_nonzero(tokenizer):
+    """Regression: the qwen3 template reserve must be non-zero.
 
     The overflow bug was a silent base fallback (empty template) that made this
-    overhead 0, so prompts were sized ~13 tokens too large and overran context.
+    reserve 0, so prompts were sized ~13 tokens too large and overran context.
     """
-    overhead = calculate_prompt_tokens(
-        tokenizer, "", model_name="qwen3", enable_thinking=False
-    )
-    # role markers + prefilled <think></think> block ≈ 13 tokens
-    assert overhead >= 10
+    reserve = model_template_token(tokenizer, model_name="qwen3", enable_thinking=False)
+    # role markers + prefilled <think></think> block
+    assert reserve >= 10
 
 
 @_needs_ruler_deps
-def test_calculate_prompt_tokens_nonthinking_is_template_plus_content(tokenizer):
-    """Non-thinking count == empty-template overhead + raw content tokens."""
-    prompt = "What is 2+2?"
-
-    total = calculate_prompt_tokens(
-        tokenizer, prompt, model_name="qwen3", enable_thinking=False
-    )
-    template_overhead = calculate_prompt_tokens(
-        tokenizer, "", model_name="qwen3", enable_thinking=False
-    )
-    content = len(tokenizer.text_to_tokens(prompt))
-
-    # RULER prompts tokenize additively across the template boundary.
-    assert total == template_overhead + content
+def test_model_template_token_equals_raw_template_count(tokenizer):
+    """Matches upstream: len(text_to_tokens(RAW template incl {task_template}))."""
+    for thinking in (False, True):
+        reserve = model_template_token(
+            tokenizer, model_name="qwen3", enable_thinking=thinking
+        )
+        raw = get_template("qwen3", thinking)  # placeholder NOT replaced
+        assert reserve == len(tokenizer.text_to_tokens(raw))
 
 
 @_needs_ruler_deps
-def test_calculate_prompt_tokens_excludes_generation_budget(tokenizer):
-    """calculate_prompt_tokens is prompt-only: it must NOT add any think budget.
-
-    The thinking budget lives in tokens_to_generate (max_tokens), so switching
-    thinking on/off changes only the template overhead, never by a think budget.
-    """
-    prompt = "What is 2+2?"
-    thinking = calculate_prompt_tokens(
-        tokenizer, prompt, model_name="qwen3", enable_thinking=True
+def test_model_template_token_unknown_model_is_base(tokenizer):
+    """Unknown model → base template reserve = len(tokenize("{task_template}"))."""
+    reserve = model_template_token(
+        tokenizer, model_name="unknown", enable_thinking=False
     )
-    nonthinking = calculate_prompt_tokens(
-        tokenizer, prompt, model_name="qwen3", enable_thinking=False
-    )
-    # Both are prompt-side only; the difference is the small template delta
-    # (/think marker vs prefilled <think></think> block), never thousands.
-    assert abs(thinking - nonthinking) < 20
-
-
-@_needs_ruler_deps
-def test_calculate_prompt_tokens_monotonic_in_content(tokenizer):
-    """More content yields more tokens."""
-    short = calculate_prompt_tokens(
-        tokenizer, "a", model_name="qwen3", enable_thinking=False
-    )
-    long = calculate_prompt_tokens(
-        tokenizer, "a " * 100, model_name="qwen3", enable_thinking=False
-    )
-    assert long > short
-
-
-@_needs_ruler_deps
-def test_calculate_prompt_tokens_unknown_model_base_template(tokenizer):
-    """Unknown model uses the base template ("{task_template}").
-
-    Upstream reserves the base template's token count too
-    (model_template_token = len(tokenize("{task_template}"))), so the count is
-    content tokens plus that small placeholder reserve.
-    """
-    prompt = "hello world"
-    total = calculate_prompt_tokens(
-        tokenizer, prompt, model_name="unknown", enable_thinking=False
-    )
-    base_reserve = len(tokenizer.text_to_tokens("{task_template}"))
-    assert total == len(tokenizer.text_to_tokens(prompt)) + base_reserve
+    assert reserve == len(tokenizer.text_to_tokens("{task_template}"))
 
 
 # ---------------------------------------------------------------------------
-# Integration: prompt tokens + generation budget fits within max_seq_length
+# Integration: content + template reserve + generation budget fits max_seq_length
 # ---------------------------------------------------------------------------
+
+
+def _sizing(tokenizer, prompt, *, model_name, enable_thinking, think_budget):
+    """Loader sizing: content + template reserve + generation budget."""
+    reserve = model_template_token(
+        tokenizer, model_name=model_name, enable_thinking=enable_thinking
+    )
+    gen = tokens_to_generate(
+        "niah",
+        enable_thinking=enable_thinking,
+        think_budget=think_budget,
+        model_name=model_name,
+    )
+    return len(tokenizer.text_to_tokens(prompt)) + reserve + gen
 
 
 @_needs_ruler_deps
 def test_full_budget_nonthinking_fits(tokenizer):
-    """prompt tokens + answer budget stays within a modest max_seq_length."""
+    """content + reserve + answer budget stays within a modest max_seq_length."""
     max_seq_length = 4096
     prompt = "Context sentence. " * 100
-
-    total = calculate_prompt_tokens(
-        tokenizer, prompt, model_name="qwen3", enable_thinking=False
-    ) + tokens_to_generate(
-        "niah", enable_thinking=False, think_budget=0, model_name="qwen3"
+    total = _sizing(
+        tokenizer, prompt, model_name="qwen3", enable_thinking=False, think_budget=0
     )
     assert total <= max_seq_length
 
 
 @_needs_ruler_deps
-def test_full_budget_thinking_includes_think_budget_via_gen(tokenizer):
-    """The think_budget enters the fitting total through tokens_to_generate."""
+def test_full_budget_thinking_reserves_think_budget(tokenizer):
+    """The think_budget enters the sizing total via tokens_to_generate, not the
+
+    template reserve — enabling thinking must add think_budget (+ qwen3 tag
+    overhead) of room beyond the non-thinking sizing.
+    """
     think_budget = 2048
     prompt = "Context sentence. " * 100
-
-    prompt_tokens = calculate_prompt_tokens(
-        tokenizer, prompt, model_name="qwen3", enable_thinking=True
+    thinking = _sizing(
+        tokenizer,
+        prompt,
+        model_name="qwen3",
+        enable_thinking=True,
+        think_budget=think_budget,
     )
-    gen_thinking = tokens_to_generate(
-        "niah", enable_thinking=True, think_budget=think_budget, model_name="qwen3"
+    nonthinking = _sizing(
+        tokenizer, prompt, model_name="qwen3", enable_thinking=False, think_budget=0
     )
-    gen_nonthinking = tokens_to_generate(
-        "niah", enable_thinking=False, think_budget=0, model_name="qwen3"
-    )
-    # The thinking fitting total reserves think_budget more room, and it comes
-    # from the generation budget — not from calculate_prompt_tokens.
-    assert (prompt_tokens + gen_thinking) - (prompt_tokens + gen_nonthinking) == (
-        think_budget + 4  # + qwen3 <think></think> tag overhead
-    )
+    # Difference is think_budget + the 4-token generated <think></think> tags,
+    # adjusted by the small template delta between the two qwen3 templates.
+    template_delta = model_template_token(
+        tokenizer, model_name="qwen3", enable_thinking=True
+    ) - model_template_token(tokenizer, model_name="qwen3", enable_thinking=False)
+    assert thinking - nonthinking == think_budget + 4 + template_delta

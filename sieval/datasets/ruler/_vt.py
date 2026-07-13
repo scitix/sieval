@@ -12,7 +12,7 @@ from ._shared import (
     _VT_DEPTHS,
     _build_haystack,
     _ensure_punkt,
-    calculate_prompt_tokens,
+    model_template_token,
     ruler_task,
     tokens_to_generate,
 )
@@ -23,26 +23,19 @@ def _count_prompt_tokens(
     text: str,
     *,
     apply_template: bool,
-    model_name: str,
-    enable_thinking: bool,
+    template_token: int,
 ) -> int:
     """Count tokens for VT prompt sizing.
 
-    When *apply_template* is True the text is the real final prompt, so it is
-    wrapped in the inference-time message template (role markers, prefilled
-    think block) via :func:`calculate_prompt_tokens`. When False the text is a
-    fragment (e.g. the ICL example being synthesized for later embedding), so a
-    raw token count is used — wrapping a fragment would double-count the
-    template overhead once it is spliced into the real prompt.
+    When *apply_template* is True the text is the real final prompt, so the
+    (precomputed) message-template reserve ``template_token`` is added. When
+    False the text is a fragment (e.g. the ICL example being synthesized for
+    later embedding), so a raw token count is used — adding the reserve to a
+    fragment would double-count it once the fragment is spliced into the real
+    prompt.
     """
-    if not apply_template:
-        return len(tokenizer.text_to_tokens(text))
-    return calculate_prompt_tokens(
-        tokenizer,
-        text,
-        model_name=model_name,
-        enable_thinking=enable_thinking,
-    )
+    n = len(tokenizer.text_to_tokens(text))
+    return n + template_token if apply_template else n
 
 
 def load_vt(
@@ -68,6 +61,10 @@ def load_vt(
         model_name=model_name,
     )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
+    # Upstream template reserve, computed once (sample-invariant).
+    mtt = model_template_token(
+        tokenizer, model_name=model_name, enable_thinking=enable_thinking
+    )
 
     random.seed(random_seed)
     np.random.seed(random_seed)
@@ -87,8 +84,7 @@ def load_vt(
         type_haystack=type_haystack,
         haystack=haystack,
         final_output=False,
-        enable_thinking=enable_thinking,
-        model_name=model_name,
+        template_token=mtt,
     )[0]
 
     return _synthesize(
@@ -104,8 +100,7 @@ def load_vt(
         type_haystack=type_haystack,
         haystack=haystack,
         final_output=True,
-        enable_thinking=enable_thinking,
-        model_name=model_name,
+        template_token=mtt,
     )
 
 
@@ -123,8 +118,7 @@ def _synthesize(
     haystack,
     final_output: bool = False,
     add_fewshot: bool = True,
-    enable_thinking: bool = False,
-    model_name: str = "qwen3",
+    template_token: int = 0,
 ) -> list[dict]:
     is_icl = add_fewshot and (icl_example is None)
     # The ICL example is synthesized as a raw fragment for later embedding; only
@@ -162,8 +156,7 @@ def _synthesize(
         example_tokens=example_tokens,
         incremental=incremental,
         apply_template=apply_template,
-        enable_thinking=enable_thinking,
-        model_name=model_name,
+        template_token=template_token,
     )
 
     rows: list[dict] = []
@@ -191,8 +184,7 @@ def _synthesize(
                         tokenizer,
                         input_text,
                         apply_template=apply_template,
-                        model_name=model_name,
-                        enable_thinking=enable_thinking,
+                        template_token=template_token,
                     )
                     + tokens_to_generate
                 )
@@ -237,19 +229,17 @@ def _binary_search_noises(
     example_tokens: int,
     incremental: int,
     apply_template: bool = False,
-    enable_thinking: bool = False,
-    model_name: str = "qwen3",
+    template_token: int = 0,
 ) -> int:
     # ``example_tokens`` is a raw fragment count added on top; the sized ``text``
-    # carries the template overhead once via _count_prompt_tokens. The generation
+    # carries the template reserve once via _count_prompt_tokens. The generation
     # budget (answer + any think_budget) is added separately as tokens_to_generate.
     sample_text, _ = gen(incremental)
     sample_tokens = _count_prompt_tokens(
         tokenizer,
         sample_text,
         apply_template=apply_template,
-        model_name=model_name,
-        enable_thinking=enable_thinking,
+        template_token=template_token,
     )
     tokens_per_haystack = sample_tokens / incremental
     estimated_max = int((max_seq_length / tokens_per_haystack) * 3)
@@ -263,8 +253,7 @@ def _binary_search_noises(
                 tokenizer,
                 text,
                 apply_template=apply_template,
-                model_name=model_name,
-                enable_thinking=enable_thinking,
+                template_token=template_token,
             )
             + example_tokens
             + tokens_to_generate

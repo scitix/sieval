@@ -6,7 +6,7 @@ import random
 
 from sieval.community.ruler.scripts.tokenizer import select_tokenizer
 
-from ._shared import calculate_prompt_tokens, ruler_task, tokens_to_generate
+from ._shared import model_template_token, ruler_task, tokens_to_generate
 
 
 def load_cwe(
@@ -33,6 +33,10 @@ def load_cwe(
         model_name=model_name,
     )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
+    # Upstream template reserve, computed once (sample-invariant).
+    mtt = model_template_token(
+        tokenizer, model_name=model_name, enable_thinking=enable_thinking
+    )
 
     random.seed(random_seed)
 
@@ -64,8 +68,7 @@ def load_cwe(
         vocab_size=len(words),
         max_seq_length=max_seq_length,
         tokens_to_generate=gen_budget,
-        enable_thinking=enable_thinking,
-        model_name=model_name,
+        template_token=mtt,
         incremental=incremental,
     )
 
@@ -77,15 +80,7 @@ def load_cwe(
         while True:
             try:
                 input_text, answer = gen(used_words)
-                length = (
-                    calculate_prompt_tokens(
-                        tokenizer,
-                        input_text,
-                        model_name=model_name,
-                        enable_thinking=enable_thinking,
-                    )
-                    + gen_budget
-                )
+                length = len(tokenizer.text_to_tokens(input_text)) + mtt + gen_budget
                 assert length <= max_seq_length, "exceeds max_seq_length"
                 break
             except Exception:
@@ -117,19 +112,13 @@ def _binary_search_words(
     vocab_size: int,
     max_seq_length: int,
     tokens_to_generate: int,
-    enable_thinking: bool = False,
-    model_name: str = "qwen3",
+    template_token: int = 0,
     incremental: int,
 ) -> int:
     from loguru import logger
 
     sample_text, _ = gen(min(4096, vocab_size))
-    sample_tokens = calculate_prompt_tokens(
-        tokenizer,
-        sample_text,
-        model_name=model_name,
-        enable_thinking=enable_thinking,
-    )
+    sample_tokens = len(tokenizer.text_to_tokens(sample_text)) + template_token
     tokens_per_word = sample_tokens / min(4096, vocab_size)
     estimated_max_words = int(max_seq_length // tokens_per_word) * 2
     lower_bound = incremental
@@ -151,12 +140,8 @@ def _binary_search_words(
         mid = (lower_bound + upper_bound) // 2
         input_text, _ = gen(mid)
         total_tokens = (
-            calculate_prompt_tokens(
-                tokenizer,
-                input_text,
-                model_name=model_name,
-                enable_thinking=enable_thinking,
-            )
+            len(tokenizer.text_to_tokens(input_text))
+            + template_token
             + tokens_to_generate
         )
         if total_tokens <= max_seq_length:

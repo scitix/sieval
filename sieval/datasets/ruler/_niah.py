@@ -11,7 +11,7 @@ from ._shared import (
     _NIAH_DEPTHS,
     _build_haystack,
     _ensure_punkt,
-    calculate_prompt_tokens,
+    model_template_token,
     ruler_task,
     tokens_to_generate,
 )
@@ -111,6 +111,10 @@ def load_niah(
         model_name=model_name,
     )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
+    # Upstream template reserve, computed once (sample-invariant).
+    mtt = model_template_token(
+        tokenizer, model_name=model_name, enable_thinking=enable_thinking
+    )
 
     random.seed(random_seed)
     np.random.seed(random_seed)
@@ -140,8 +144,7 @@ def load_niah(
         type_haystack=type_haystack,
         max_seq_length=max_seq_length,
         tokens_to_generate=gen_budget,
-        enable_thinking=enable_thinking,
-        model_name=model_name,
+        template_token=mtt,
     )
 
     incremental = _incremental(type_haystack, max_seq_length)
@@ -153,15 +156,7 @@ def load_niah(
         while True:
             try:
                 input_text, answer = gen(used_haystack)
-                length = (
-                    calculate_prompt_tokens(
-                        tokenizer,
-                        input_text,
-                        model_name=model_name,
-                        enable_thinking=enable_thinking,
-                    )
-                    + gen_budget
-                )
+                length = len(tokenizer.text_to_tokens(input_text)) + mtt + gen_budget
                 assert length <= max_seq_length, "exceeds max_seq_length"
                 break
             except Exception:
@@ -206,17 +201,11 @@ def _fit_haystack_size(
     type_haystack: str,
     max_seq_length: int,
     tokens_to_generate: int,
-    enable_thinking: bool = False,
-    model_name: str = "qwen3",
+    template_token: int = 0,
 ) -> int:
     incremental = _incremental(type_haystack, max_seq_length)
     sample_prompt, _ = gen(incremental)
-    sample_tokens = calculate_prompt_tokens(
-        tokenizer,
-        sample_prompt,
-        model_name=model_name,
-        enable_thinking=enable_thinking,
-    )
+    sample_tokens = len(tokenizer.text_to_tokens(sample_prompt)) + template_token
     tokens_per_haystack = sample_tokens / incremental
     estimated_max = int((max_seq_length / tokens_per_haystack) * 3)
     lower_bound = incremental
@@ -226,13 +215,7 @@ def _fit_haystack_size(
         mid = (lower_bound + upper_bound) // 2
         prompt, _ = gen(mid)
         total = (
-            calculate_prompt_tokens(
-                tokenizer,
-                prompt,
-                model_name=model_name,
-                enable_thinking=enable_thinking,
-            )
-            + tokens_to_generate
+            len(tokenizer.text_to_tokens(prompt)) + template_token + tokens_to_generate
         )
         if total <= max_seq_length:
             optimal = mid

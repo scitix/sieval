@@ -71,7 +71,7 @@ def tokens_to_generate(
 
     The message-template overhead (role markers, and the *prefilled* empty
     ``<think></think>`` block in Qwen3 non-thinking mode) belongs to the prompt,
-    not to generation, and is counted by :func:`calculate_prompt_tokens`.
+    not to generation, and is reserved via :func:`model_template_token`.
 
     Args:
         task_name: Name of the RULER task (e.g., "niah", "qa")
@@ -143,83 +143,65 @@ def _ensure_punkt() -> None:
         nltk.download("punkt_tab")
 
 
+# Qwen3 message templates. These are a sieval addition — upstream RULER's
+# vendored template.py (community/ruler/datasets, @ab17b78) has no Qwen3 entry —
+# so they live here to keep the vendored file byte-faithful to upstream.
+# Non-thinking prefills an empty <think></think> block to suppress reasoning;
+# thinking opens the assistant turn and lets the model generate the block.
+_QWEN3_TEMPLATES = {
+    False: (
+        "<|im_start|>user\n{task_template} <|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    ),
+    True: "<|im_start|>user\n{task_template} <|im_end|>\n<|im_start|>assistant\n",
+}
+
+
 def get_template(model_name: str, enable_thinking: bool) -> str:
     """Get the message template for a model and thinking mode.
 
-    Returns the formatting template that will be used during inference.
-    This ensures data generation uses the same format as actual inference.
+    Qwen3 templates are sieval-owned (see ``_QWEN3_TEMPLATES``); other models use
+    the vendored upstream ``Templates`` (case-insensitive), falling back to the
+    passthrough ``base`` template for unknown models.
 
     Args:
         model_name: Model identifier (e.g., "qwen3", "gpt-4", "llama")
         enable_thinking: Whether thinking mode is enabled
 
     Returns:
-        Template string with {task_template} placeholder
+        Template string with a ``{task_template}`` placeholder.
     """
-    # Case-insensitive lookup: template.py capitalizes model names inconsistently
-    # (e.g. "Qwen3-nonthinking", "Phi3", "meta-llama3"). Matching on lowercase
-    # avoids the silent base-fallback bug where a case mismatch made the template
-    # overhead count as zero and prompts overflowed max_seq_length.
-    by_lower = {k.lower(): k for k in Templates}
-
     if model_name.lower().startswith("qwen3"):
-        want = "qwen3-thinking" if enable_thinking else "qwen3-nonthinking"
-        if want not in by_lower:
-            # Fail loud: a missing Qwen3 template must not silently degrade to
-            # base (zero overhead) — that under-sizes prompts.
-            raise KeyError(
-                f"RULER template {want!r} not found in Templates "
-                f"(available: {sorted(Templates)}). Check "
-                f"sieval/community/ruler/datasets/template.py."
-            )
-        return Templates[by_lower[want]]
+        return _QWEN3_TEMPLATES[enable_thinking]
 
-    # Other models: use the model's named template if present, else base.
+    # Other models: vendored template by name (case-insensitive), else base.
+    by_lower = {k.lower(): k for k in Templates}
     key = by_lower.get(model_name.lower())
     return Templates[key] if key is not None else "{task_template}"
 
 
-def calculate_prompt_tokens(
+def model_template_token(
     tokenizer,
-    prompt: str,
-    *,
     model_name: str = "qwen3",
     enable_thinking: bool = False,
 ) -> int:
-    """Count prompt tokens the way NVIDIA/RULER's prepare.py + niah.py do.
+    """Per-config template-token reserve, as NVIDIA/RULER computes it (@ab17b78).
 
-    Mirrors upstream exactly (commit ab17b78): content tokens plus the
-    ``model_template_token`` reserve, where::
+    Mirrors upstream ``prepare.py``::
 
         model_template_token = len(text_to_tokens(model_template))
 
-    and ``model_template`` is the RAW template string *including* the literal
-    ``{task_template}`` placeholder (it is NOT formatted with the content first).
-    Upstream then does ``max_seq_length -= model_template_token`` and fits with
-    ``content + tokens_to_generate <= max_seq_length``; folding the reserve into
-    the returned count here is algebraically identical.
+    where ``model_template`` is the RAW template string — the literal
+    ``{task_template}`` placeholder is NOT replaced. Upstream then does
+    ``max_seq_length -= model_template_token`` before fitting; callers here add
+    this reserve to the content token count, which is algebraically identical.
 
-    Counting the unformatted template means the placeholder's own tokens are
-    reserved but never emitted at inference (they are replaced by real content),
-    leaving a few tokens of headroom — this is why upstream never fills the
-    context to exactly ``max_seq_length``, and why sizing on the *formatted*
-    template (exact overhead, zero headroom) let requests hit the limit exactly
-    and get rejected by the serving engine.
+    Counting the unformatted template reserves the placeholder's own tokens,
+    which are replaced by real content at inference and never emitted — that is
+    the headroom that keeps prompts off the exact ``max_seq_length`` boundary.
 
-    The generation budget — including ``think_budget`` when thinking is enabled —
-    is NOT counted here; it is returned separately by :func:`tokens_to_generate`.
-
-    Args:
-        tokenizer: RULER tokenizer wrapper exposing ``text_to_tokens``
-        prompt: The prompt/task text (bare content, unwrapped)
-        model_name: Model identifier for template selection
-        enable_thinking: Whether thinking mode is enabled (selects the template)
-
-    Returns:
-        content tokens + model_template_token (the upstream reserve).
+    This value is invariant per ``(model_name, enable_thinking)``, so compute it
+    once per dataset build and reuse it across the fitting loop and per-sample
+    checks rather than recomputing it for every candidate.
     """
-    template = get_template(model_name, enable_thinking)
-    # Upstream reserve: tokenize the RAW template (placeholder unreplaced).
-    model_template_token = len(tokenizer.text_to_tokens(template))
-    # RULER tokenizers (HFTokenizer / OpenAITokenizer) expose ``text_to_tokens``.
-    return len(tokenizer.text_to_tokens(prompt)) + model_template_token
+    return len(tokenizer.text_to_tokens(get_template(model_name, enable_thinking)))
