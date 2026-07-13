@@ -101,6 +101,10 @@ from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
 )
+from .simpleqa_verified import (
+    SimpleQAVerifiedDataset,
+    SimpleQAVerifiedDatasetSample,
+)
 from .t_eval import (
     TEvalBeforeCallingDataset,
     TEvalBeforeCallingDatasetSample,
@@ -161,6 +165,8 @@ __all__ = [
     "MMMLUDatasetSample",
     "OpenBookQADataset",
     "OpenBookQADatasetSample",
+    "SimpleQAVerifiedDataset",
+    "SimpleQAVerifiedDatasetSample",
     "TEvalBeforeCallingDataset",
     "TEvalBeforeCallingDatasetSample",
     "TheoremQADataset",

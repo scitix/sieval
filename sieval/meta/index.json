@@ -550,6 +550,28 @@
       "checksums": {}
     },
     {
+      "name": "simpleqa_verified",
+      "display_name": "SimpleQA Verified",
+      "description": "SimpleQA Verified — 1,000-prompt short-form factuality benchmark.",
+      "source": [
+        "hf:google/simpleqa-verified@0dc97e0d28d8233463e005cdc4475cc2a13ba2dc"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "english",
+        "factuality",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
       "name": "t_eval_before_calling",
       "display_name": "T-Eval Before-Calling",
       "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
@@ -1241,6 +1263,27 @@
         "source": "opencompass",
         "url": "https://github.com/open-compass/opencompass/blob/5767b74899806c0c37efdc5529ffea01e7340e48/opencompass/configs/datasets/obqa/obqa_gen_9069e4.py",
         "notes": "Prompt template (main variant) and first_option_postprocess vendored from OpenCompass. At k=0 the prompt and extraction match the upstream 0-shot config; k>0 is a sieval extension (fixed first-k train rows)."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "simpleqa_verified_0shot_gen",
+      "display_name": "SimpleQA Verified (0-shot, generative)",
+      "description": "Short-form factuality; free-form answer graded by an LLM autorater.",
+      "dataset": "simpleqa_verified",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "factuality",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simpleqa-verified",
+        "url": "https://arxiv.org/abs/2509.07968",
+        "notes": "Generative port of SimpleQA Verified (Google DeepMind, arXiv:2509.07968) — a 1,000-prompt curated subset of OpenAI SimpleQA. The autorater prompt is the paper's updated prompt (Appendix A); grade parsing (A/B/C -> CORRECT/INCORRECT/NOT_ATTEMPTED, default C) and the F1 aggregation mirror openai/simple-evals@5e623c2b simpleqa_eval.py. Headline metric = F1 (harmonic mean of overall-correct and correct-given-attempted; official Gemini 2.5 Pro = 55.6). Grader is a REAL LLM (official autorater: gpt-4.1-2025-04-14) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: unlike deterministic-grader tasks, scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample grade and grader model id are persisted in the feedback record. VALIDATION: google/gemma-4-31B-it scored F1 9.95 (n=1000, grader openai/gpt-4.1 via OpenRouter), within the official 10.7±2.1 band."
       },
       "status": "stable"
     },
