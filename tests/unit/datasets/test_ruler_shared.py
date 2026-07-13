@@ -55,11 +55,19 @@ def test_get_template_qwen3_nonthinking():
 
 @_needs_ruler_deps
 def test_get_template_qwen3_thinking():
-    """qwen3 thinking mode uses thinking template with /think marker."""
+    """qwen3 thinking mode opens the assistant turn WITHOUT a prefilled block.
+
+    In thinking mode the model generates its own <think>...</think>, so the
+    template must NOT prefill an empty block (that is the non-thinking behavior).
+    """
     template = get_template("qwen3", enable_thinking=True)
     assert "<|im_start|>user" in template
-    assert "/think" in template
+    assert "<|im_start|>assistant" in template
     assert "{task_template}" in template
+    # Distinguishing feature vs non-thinking: no prefilled closed think block.
+    assert "</think>" not in template
+    # Non-thinking, by contrast, DOES prefill the empty block.
+    assert "</think>" in get_template("qwen3", enable_thinking=False)
 
 
 @_needs_ruler_deps
@@ -223,12 +231,18 @@ def test_calculate_prompt_tokens_monotonic_in_content(tokenizer):
 
 @_needs_ruler_deps
 def test_calculate_prompt_tokens_unknown_model_base_template(tokenizer):
-    """Unknown model uses base template — count equals raw content tokens."""
+    """Unknown model uses the base template ("{task_template}").
+
+    Upstream reserves the base template's token count too
+    (model_template_token = len(tokenize("{task_template}"))), so the count is
+    content tokens plus that small placeholder reserve.
+    """
     prompt = "hello world"
     total = calculate_prompt_tokens(
         tokenizer, prompt, model_name="unknown", enable_thinking=False
     )
-    assert total == len(tokenizer.text_to_tokens(prompt))
+    base_reserve = len(tokenizer.text_to_tokens("{task_template}"))
+    assert total == len(tokenizer.text_to_tokens(prompt)) + base_reserve
 
 
 # ---------------------------------------------------------------------------

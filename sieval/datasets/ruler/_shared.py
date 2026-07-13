@@ -156,7 +156,6 @@ def get_template(model_name: str, enable_thinking: bool) -> str:
     Returns:
         Template string with {task_template} placeholder
     """
-
     # Case-insensitive lookup: template.py capitalizes model names inconsistently
     # (e.g. "Qwen3-nonthinking", "Phi3", "meta-llama3"). Matching on lowercase
     # avoids the silent base-fallback bug where a case mismatch made the template
@@ -187,34 +186,40 @@ def calculate_prompt_tokens(
     model_name: str = "qwen3",
     enable_thinking: bool = False,
 ) -> int:
-    """Count the prompt tokens as the inference engine will see them.
+    """Count prompt tokens the way NVIDIA/RULER's prepare.py + niah.py do.
 
-    Wraps *prompt* in the inference-time message template (role markers, and the
-    prefilled empty ``<think></think>`` block in Qwen3 non-thinking mode) and
-    returns the token count. This is the input side only.
+    Mirrors upstream exactly (commit ab17b78): content tokens plus the
+    ``model_template_token`` reserve, where::
+
+        model_template_token = len(text_to_tokens(model_template))
+
+    and ``model_template`` is the RAW template string *including* the literal
+    ``{task_template}`` placeholder (it is NOT formatted with the content first).
+    Upstream then does ``max_seq_length -= model_template_token`` and fits with
+    ``content + tokens_to_generate <= max_seq_length``; folding the reserve into
+    the returned count here is algebraically identical.
+
+    Counting the unformatted template means the placeholder's own tokens are
+    reserved but never emitted at inference (they are replaced by real content),
+    leaving a few tokens of headroom — this is why upstream never fills the
+    context to exactly ``max_seq_length``, and why sizing on the *formatted*
+    template (exact overhead, zero headroom) let requests hit the limit exactly
+    and get rejected by the serving engine.
 
     The generation budget — including ``think_budget`` when thinking is enabled —
-    is NOT counted here; it is returned separately by :func:`tokens_to_generate`
-    and added by callers when sizing prompts against ``max_seq_length``. Keeping
-    the two apart avoids double-counting the thinking budget.
+    is NOT counted here; it is returned separately by :func:`tokens_to_generate`.
 
     Args:
         tokenizer: RULER tokenizer wrapper exposing ``text_to_tokens``
-        prompt: The prompt/task text
+        prompt: The prompt/task text (bare content, unwrapped)
         model_name: Model identifier for template selection
         enable_thinking: Whether thinking mode is enabled (selects the template)
 
     Returns:
-        Token count of the templated prompt.
-
-    Example:
-        >>> tokens = calculate_prompt_tokens(
-        ...     tokenizer, "What is 2+2?", model_name="qwen3", enable_thinking=False
-        ... )
-        >>> # Result: template overhead (~13 tokens) + prompt content tokens
+        content tokens + model_template_token (the upstream reserve).
     """
     template = get_template(model_name, enable_thinking)
-    formatted_prompt = template.format(task_template=prompt)
-    # RULER tokenizers (HFTokenizer / OpenAITokenizer) expose ``text_to_tokens``,
-    # matching the interface used throughout the subtask loaders.
-    return len(tokenizer.text_to_tokens(formatted_prompt))
+    # Upstream reserve: tokenize the RAW template (placeholder unreplaced).
+    model_template_token = len(tokenizer.text_to_tokens(template))
+    # RULER tokenizers (HFTokenizer / OpenAITokenizer) expose ``text_to_tokens``.
+    return len(tokenizer.text_to_tokens(prompt)) + model_template_token
