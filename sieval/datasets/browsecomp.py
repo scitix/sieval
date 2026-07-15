@@ -87,7 +87,9 @@ class BrowseCompDataset(Dataset[BrowseCompDatasetSample]):
             if os.path.isdir(name_or_path)
             else name_or_path
         )
-        rows: list[BrowseCompDatasetSample] = []
+        # list[dict] (not the TypedDict) so HFDataset.from_list type-checks;
+        # the sample schema is declared via Dataset[BrowseCompDatasetSample].
+        rows: list[dict] = []
         with open(csv_path, newline="", encoding="utf-8") as f:
             for i, row in enumerate(csv.DictReader(f)):
                 canary = row.get("canary", "")
