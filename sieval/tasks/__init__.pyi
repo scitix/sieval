@@ -22,6 +22,9 @@ from .arc_easy_kshot_clp import (
 from .arc_easy_kshot_ppl import (
     ARCEasyFewShotPplTask,
 )
+from .browsecomp_0shot_gen import (
+    BrowseCompZeroShotGenTask,
+)
 from .c_eval_kshot_clp import (
     CEvalFewShotCLPTask,
 )
@@ -112,6 +115,7 @@ __all__ = [
     "ARCChallengeFewShotPplTask",
     "ARCEasyFewShotClpTask",
     "ARCEasyFewShotPplTask",
+    "BrowseCompZeroShotGenTask",
     "CEvalFewShotCLPTask",
     "CMMLUFewShotClpTask",
     "DROPFewShotGenTask",

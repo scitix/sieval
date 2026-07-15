@@ -109,6 +109,31 @@
       "checksums": {}
     },
     {
+      "name": "browsecomp",
+      "display_name": "BrowseComp",
+      "description": "BrowseComp — 1,266-question hard live-web browsing benchmark.",
+      "source": [
+        "url:https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "english",
+        "browsing",
+        "deep-research",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {
+        "browse_comp_test_set.csv": "sha256:7b24471cd5b3eb2a46830a14802b5c029ea62f488ff75a0f88af7923d1454abf"
+      }
+    },
+    {
       "name": "c_eval",
       "display_name": "C-Eval",
       "description": "C-Eval — Chinese multi-domain exam benchmark with 52 subjects.",
@@ -766,6 +791,28 @@
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/arc/arc_easy.yaml",
         "notes": "Shares the ARC-Easy split/dataset/revision with lm-evaluation-harness, but scores in the SEPARATION regime (Qwen2.5-report style), not upstream acc/acc_norm: each option's full TEXT is scored as the continuation of 'Question: {q}\\nAnswer:' and normalized UNCONDITIONALLY (Brown et al. 2020) as logP(opt|context) - logP(opt|'Answer:'), argmax = prediction. This is the ppl protocol (one inference per option; full answer text), not the single-letter clp method. Requires the sglang server launched with --disable-radix-cache (SglangGenModel fails loud on a cache hit that truncates echoed logprobs). Comparison target — the SEPARATION regime (arXiv 2412.17758), Qwen2.5-report style. The 98.4 options/letter figure is the clp sibling, not this task."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "browsecomp_0shot_gen",
+      "display_name": "BrowseComp (0-shot, generative)",
+      "description": "Hard live-web browsing QA graded yes/no by an LLM autorater.",
+      "dataset": "browsecomp",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "browsing",
+        "deep-research",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "browsecomp",
+        "url": "https://arxiv.org/abs/2504.12516",
+        "notes": "Generative port of BrowseComp (OpenAI, arXiv:2504.12516) — 1,266 hard live-web questions with short verifiable answers. QUERY_TEMPLATE, GRADER_TEMPLATE (HLE-derived yes/no autorater), and grade parsing (correct: yes|no, default no) are verbatim from openai/simple-evals@652c89d0 browsecomp_eval.py; headline metric = accuracy. Grader is a REAL LLM (official autorater: gpt-4.1-2025-04-14) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample grade/confidence and grader model id are persisted. BrowseComp requires browsing: closed-book models score near-zero (e.g. gemma-3-27b-it ~0.3% on the full set), so a meaningful score needs a browsing-capable model/scaffold."
       },
       "status": "experimental"
     },

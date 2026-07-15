@@ -21,6 +21,10 @@ from .arc_easy import (
     ARCEasyDataset,
     ARCEasyDatasetSample,
 )
+from .browsecomp import (
+    BrowseCompDataset,
+    BrowseCompDatasetSample,
+)
 from .c_eval import (
     CEvalDataset,
     CEvalDatasetSample,
@@ -125,6 +129,8 @@ __all__ = [
     "ARCChallengeDatasetSample",
     "ARCEasyDataset",
     "ARCEasyDatasetSample",
+    "BrowseCompDataset",
+    "BrowseCompDatasetSample",
     "CEvalDataset",
     "CEvalDatasetSample",
     "CMMLUDataset",
