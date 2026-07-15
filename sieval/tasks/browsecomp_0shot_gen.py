@@ -79,9 +79,9 @@ class GradeFeedback(TypedDict):
             "depend on the grader endpoint's model version (not pinnable like a Hub "
             "revision) — pin the grader model + temperature=0; the per-sample grade/"
             "confidence and grader model id are persisted. BrowseComp requires "
-            "browsing: closed-book models score near-zero (e.g. gemma-3-27b-it "
-            "~0.3% on the full set), so a meaningful score needs a browsing-capable "
-            "model/scaffold."
+            "browsing: closed-book models score near-zero — validated at 0.316% "
+            "(4/1266) for gemma-3-27b-it with the gpt-4.1 autorater — so a "
+            "meaningful score needs a browsing-capable model/scaffold."
         ),
     ),
 )
