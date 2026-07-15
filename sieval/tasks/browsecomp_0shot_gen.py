@@ -70,10 +70,13 @@ class GradeFeedback(TypedDict):
         url="https://arxiv.org/abs/2504.12516",
         notes=(
             "Generative port of BrowseComp (OpenAI, arXiv:2504.12516) — 1,266 "
-            "hard live-web questions with short verifiable answers. QUERY_TEMPLATE, "
-            "GRADER_TEMPLATE (HLE-derived yes/no autorater), and grade parsing "
-            "(correct: yes|no, default no) are verbatim from openai/simple-evals@"
-            "652c89d0 browsecomp_eval.py; headline metric = accuracy. Grader is a "
+            "hard live-web questions with short verifiable answers. QUERY_TEMPLATE "
+            "and GRADER_TEMPLATE (HLE-derived yes/no autorater) are verbatim from "
+            "openai/simple-evals@652c89d0 browsecomp_eval.py; grade parsing matches "
+            "upstream except it reads the yes/no capture group (upstream compares "
+            "its whole match to bare 'yes', a latent bug). Headline metric = "
+            "accuracy. "
+            "Grader is a "
             "REAL LLM (official autorater: gpt-4.1-2025-04-14) supplied via the "
             "`grader` task arg on its own api_base/api_key. REPRODUCIBILITY: scores "
             "depend on the grader endpoint's model version (not pinnable like a Hub "

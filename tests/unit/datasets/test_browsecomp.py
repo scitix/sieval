@@ -24,7 +24,7 @@ def _encrypt(plaintext: str, password: str) -> str:
     data = plaintext.encode()
     key = derive_key(password, len(data))
     return base64.b64encode(
-        bytes(a ^ b for a, b in zip(data, key, strict=False))
+        bytes(a ^ b for a, b in zip(data, key, strict=True))
     ).decode()
 
 

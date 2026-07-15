@@ -1,4 +1,4 @@
-# query + grader prompts and grade parsing: verbatim from OpenAI simple-evals
+# query + grader prompts: verbatim from OpenAI simple-evals
 # https://github.com/openai/simple-evals/blob/652c89d0ca9df547706735883097e9537d40dc47/browsecomp_eval.py
 # (BrowseComp, Wei et al., arXiv:2504.12516). The grader prompt is adapted by
 # OpenAI from the Humanity's-Last-Exam autorater.
@@ -19,8 +19,9 @@ module holds:
 * ``aggregate_metrics`` — accuracy over all grades (BrowseComp's headline
   metric; there is no NOT_ATTEMPTED bucket — a non-answer is simply incorrect).
 
-Kept verbatim from upstream so scores are comparable to the official harness;
-the only local wrapper is the CORRECT/INCORRECT labelling + accuracy rollup.
+Prompts are byte-for-byte upstream. Local additions: the CORRECT/INCORRECT +
+accuracy rollup, ``parse_confidence`` (upstream parses none), and the extraction
+fix in ``parse_grade`` (see its docstring).
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
@@ -64,8 +65,10 @@ confidence: The extracted confidence score between 0|\\%| and 100|\\%| from [res
 def parse_grade(grading_response: str) -> str:
     """Map a grader reply to ``CORRECT``/``INCORRECT``.
 
-    Mirrors upstream: the first ``correct: yes|no`` wins, defaulting to ``no``
-    (INCORRECT) when the grader emits no recognizable verdict.
+    Regex and default-``no`` are upstream's. Extraction deviates on purpose:
+    upstream compares its whole match (``"correct: yes"``) to bare ``"yes"``, so
+    its ``is_correct`` is never true (a latent bug at 652c89d0 / main); we read
+    group 1 so ``correct: yes`` scores CORRECT, matching published numbers.
     """
     match = re.search(r"correct: (yes|no)", grading_response)
     verdict = match.group(1) if match else "no"

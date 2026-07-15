@@ -62,7 +62,8 @@ def decrypt(ciphertext_b64: str, password: str) -> str:
     """Decrypt base64-encoded ciphertext with XOR."""
     encrypted = base64.b64decode(ciphertext_b64)
     key = derive_key(password, len(encrypted))
-    decrypted = bytes(a ^ b for a, b in zip(encrypted, key, strict=False))
+    # derive_key returns exactly len(encrypted) bytes, so strict=True never fires.
+    decrypted = bytes(a ^ b for a, b in zip(encrypted, key, strict=True))
     return decrypted.decode()
 
 
@@ -87,8 +88,10 @@ class BrowseCompDataset(Dataset[BrowseCompDatasetSample]):
             if os.path.isdir(name_or_path)
             else name_or_path
         )
-        # list[dict] (not the TypedDict) so HFDataset.from_list type-checks;
-        # the sample schema is declared via Dataset[BrowseCompDatasetSample].
+        # Hand-read + from_list (not load_dataset(...).map(decrypt)): .map()
+        # caches to ~/.cache/huggingface/datasets, which would persist decrypted
+        # plaintext to disk and defeat the contamination hygiene noted above.
+        # list[dict] (not the TypedDict) so HFDataset.from_list type-checks.
         rows: list[dict] = []
         with open(csv_path, newline="", encoding="utf-8") as f:
             for i, row in enumerate(csv.DictReader(f)):
