@@ -97,6 +97,8 @@ class RulerDatasetSample(TypedDict):
     subtask: str
     context_length: int
     gen_budget: int  # per-subtask generation cap (tokens_to_generate)
+    think_budget: NotRequired[int]  # thinking budget, added if enable_thinking=True
+    enable_thinking: NotRequired[bool]  # whether thinking mode is enabled
     token_position_answer: NotRequired[int]  # NIAH only
 
 
@@ -304,21 +306,34 @@ class RulerDataset(Dataset[RulerDatasetSample]):
             enable_thinking=enable_thinking,
             think_budget=think_budget,
             model_name=model_name,
+            context_length=max_seq_length,
+            for_dataset=True,
         )
         rows = _stamp(
             rows,
             subtask=subtask,
             context_length=max_seq_length,
             gen_budget=gen_budget,
+            think_budget=think_budget,
+            enable_thinking=enable_thinking,
         )
         return HFDatasetDict({"test": HFDataset.from_list(rows)})
 
 
 def _stamp(
-    rows: list[dict], *, subtask: str, context_length: int, gen_budget: int
+    rows: list[dict],
+    *,
+    subtask: str,
+    context_length: int,
+    gen_budget: int,
+    think_budget: int = 0,
+    enable_thinking: bool = False,
 ) -> list[dict]:
     for row in rows:
         row["subtask"] = subtask
         row["context_length"] = context_length
         row["gen_budget"] = gen_budget
+        if enable_thinking:
+            row["think_budget"] = think_budget
+            row["enable_thinking"] = True
     return rows

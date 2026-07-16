@@ -170,6 +170,108 @@ def test_tokens_to_generate_non_qwen3_thinking_no_tag_overhead():
 
 
 # ---------------------------------------------------------------------------
+# tokens_to_generate() — Qwen3 extended thinking: dataset vs inference split
+# ---------------------------------------------------------------------------
+
+
+def test_tokens_to_generate_qwen3_small_context_dataset_no_think_budget():
+    """Small context (4k) dataset generation: skip think_budget (uses native context)."""
+    budget = tokens_to_generate(
+        "niah",
+        enable_thinking=True,
+        think_budget=8192,
+        model_name="qwen3",
+        context_length=4096,
+        for_dataset=True,
+    )
+    # Only tag overhead + base, not think_budget
+    assert budget == 4 + 128
+
+
+def test_tokens_to_generate_qwen3_large_context_dataset_with_think_budget():
+    """Large context (32k) dataset generation: reserve think_budget upfront."""
+    budget = tokens_to_generate(
+        "niah",
+        enable_thinking=True,
+        think_budget=8192,
+        model_name="qwen3",
+        context_length=32768,
+        for_dataset=True,
+    )
+    # Tag overhead + think_budget + base
+    assert budget == 4 + 8192 + 128
+
+
+def test_tokens_to_generate_qwen3_128k_context_dataset_with_think_budget():
+    """Large context (128k) dataset generation: reserve think_budget upfront."""
+    budget = tokens_to_generate(
+        "niah",
+        enable_thinking=True,
+        think_budget=8192,
+        model_name="qwen3",
+        context_length=131072,
+        for_dataset=True,
+    )
+    assert budget == 4 + 8192 + 128
+
+
+def test_tokens_to_generate_qwen3_small_context_inference_with_think_budget():
+    """Small context (4k) inference: add think_budget (omitted in dataset generation)."""
+    budget = tokens_to_generate(
+        "niah",
+        enable_thinking=True,
+        think_budget=8192,
+        model_name="qwen3",
+        context_length=4096,
+        for_dataset=False,
+    )
+    # Tag overhead + think_budget + base (same as 32k case, think_budget is included)
+    assert budget == 4 + 8192 + 128
+
+
+def test_tokens_to_generate_qwen3_large_context_inference_with_think_budget():
+    """Large context (32k) inference: think_budget already in gen_budget from dataset."""
+    budget = tokens_to_generate(
+        "niah",
+        enable_thinking=True,
+        think_budget=8192,
+        model_name="qwen3",
+        context_length=32768,
+        for_dataset=False,
+    )
+    # Tag overhead + think_budget + base
+    assert budget == 4 + 8192 + 128
+
+
+def test_tokens_to_generate_gpt_small_context_dataset():
+    """Non-Qwen3 small context dataset: no tag overhead, no think_budget."""
+    budget = tokens_to_generate(
+        "niah",
+        enable_thinking=True,
+        think_budget=8192,
+        model_name="gpt-4",
+        context_length=4096,
+        for_dataset=True,
+    )
+    # Only base, no tags, no think_budget
+    assert budget == 128
+
+
+def test_tokens_to_generate_gpt_large_context_dataset():
+    """Non-Qwen3 large context dataset: no tag overhead, but include think_budget."""
+    budget = tokens_to_generate(
+        "niah",
+        enable_thinking=True,
+        think_budget=8192,
+        model_name="gpt-4",
+        context_length=32768,
+        for_dataset=True,
+    )
+    # think_budget + base, no tags
+    assert budget == 8192 + 128
+
+
+# ---------------------------------------------------------------------------
 # model_template_token() — upstream per-config template reserve
 # ---------------------------------------------------------------------------
 

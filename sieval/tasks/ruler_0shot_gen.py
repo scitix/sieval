@@ -135,7 +135,28 @@ class RulerZeroShotGenTask(
         # per-subtask budget on each sample (`gen_budget` = base + any thinking
         # overhead), so one class serving all 13 subtasks applies the right cap
         # without a per-subtask YAML infer_args.
-        return await self.model.agenerate(pre, max_tokens=ctx.raw_sample["gen_budget"])
+        max_tokens = ctx.raw_sample["gen_budget"]
+
+        # Qwen3 extended thinking adaptation: allocate max_tokens based on context_length.
+        # (Diverges from upstream RULER's single-budget approach)
+        #
+        # During dataset generation, gen_budget was computed differently based on
+        # context_length (see _shared.py:tokens_to_generate for rationale):
+        # - Small contexts (!=32k/128k): gen_budget excludes think_budget
+        # - Large contexts (32k/128k): gen_budget includes think_budget
+        #
+        # Now at inference, restore think_budget for small contexts where it was omitted.
+        if (
+            ctx.raw_sample.get("enable_thinking", False)
+            and "think_budget" in ctx.raw_sample
+            and ctx.raw_sample.get("context_length") not in (32768, 131072)
+        ):
+            # Small context: gen_budget didn't account for thinking tokens,
+            # so add think_budget to ensure sufficient generation capacity.
+            max_tokens += ctx.raw_sample["think_budget"]
+        # Large context: gen_budget already includes think_budget, no adjustment needed.
+
+        return await self.model.agenerate(pre, max_tokens=max_tokens)
 
     async def postprocess(self, inf, ctx):  # noqa: ARG002
         return inf.texts[0]

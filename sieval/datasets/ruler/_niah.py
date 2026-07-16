@@ -109,6 +109,8 @@ def load_niah(
         enable_thinking=enable_thinking,
         think_budget=think_budget,
         model_name=model_name,
+        context_length=max_seq_length,
+        for_dataset=True,
     )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
     # Upstream template reserve, computed once (sample-invariant).

@@ -58,6 +58,8 @@ def tokens_to_generate(
     enable_thinking: bool,
     think_budget: int,
     model_name: str = "",
+    context_length: int | None = None,
+    for_dataset: bool = False,
 ) -> int:
     """Compute the generation budget (``max_tokens``) for a RULER task.
 
@@ -73,12 +75,35 @@ def tokens_to_generate(
     ``<think></think>`` block in Qwen3 non-thinking mode) belongs to the prompt,
     not to generation, and is reserved via :func:`model_template_token`.
 
+    Qwen3 Think Adaptation:
+        This implementation diverges from upstream RULER (@NVIDIA/RULER ab17b78)
+        to support Qwen3's extended thinking mode (per Qwen3 technical report).
+
+        Upstream RULER: Computes a single ``tokens_to_generate`` value that accounts
+        for the model's generation capacity without distinguishing between dataset
+        fitting (context window calculation) and inference (max_tokens constraint).
+
+        Qwen3 Adaptation: Splits the budget calculation based on context_length:
+        - Small contexts (!=32k/128k): During dataset generation, assume thinking
+          content uses the native context window space (don't reserve think_budget
+          for fitting). During inference, max_tokens = gen_budget + think_budget.
+        - Large contexts (32k/128k): During dataset generation, reserve think_budget
+          space (model can't reuse thinking tokens). During inference, max_tokens
+          already includes think_budget.
+
+        This ensures generated samples fit within their target context window
+        while allocating sufficient max_tokens for thinking during inference.
+
     Args:
         task_name: Name of the RULER task (e.g., "niah", "qa")
         enable_thinking: Whether thinking mode is enabled
-        think_budget: Token budget for generated thinking content
+        think_budget: Token budget for generated thinking content (Qwen3: typically 8192)
         model_name: Model identifier. Only Qwen3-family models generate the
             ``<think>`` tags that add the tag overhead.
+        context_length: Context length in tokens (4096, 8192, 32768, 131072, etc.).
+            Used to determine think_budget allocation strategy during dataset generation.
+        for_dataset: Whether this is being called during dataset generation (True)
+            or inference (False). Affects think_budget inclusion based on context_length.
 
     Returns:
         Total tokens the model may generate (thinking + tags + answer).
@@ -91,8 +116,34 @@ def tokens_to_generate(
         # the prompt template, so only the answer is generated.
         return base
 
-    # Thinking: the model generates think_budget tokens of reasoning + answer.
-    # Qwen3 also generates the <think>...</think> tags.
+    # Thinking mode: Qwen3-adapted budget allocation based on context_length
+    # (Diverges from upstream RULER which always includes think_budget)
+    should_skip_think_budget = (
+        for_dataset
+        and context_length is not None
+        and context_length not in (32768, 131072)  # 32k and 128k
+    )
+
+    if should_skip_think_budget:
+        # SMALL CONTEXT (4k, 8k, etc.) DATASET GENERATION:
+        # Assume thinking content reuses the native context window space.
+        # Don't reserve think_budget in gen_budget — this makes the generated
+        # samples shorter, fitting within the small context window.
+        # Inference will later add think_budget via max_tokens = gen_budget + think_budget.
+        #
+        # Rationale: In Qwen3's thinking mode, models can perform inference over
+        # the thinking tokens within the same context pass for small windows.
+        if is_qwen3:
+            return QWEN3_THINKING_TAG_OVERHEAD + base
+        return base
+
+    # LARGE CONTEXT (32k, 128k) OR INFERENCE:
+    # For large contexts during dataset generation: reserve think_budget upfront
+    # (model cannot reuse thinking tokens efficiently across context boundaries).
+    # For inference regardless of context_length: always include think_budget
+    # (inference max_tokens must cover all generated output including thinking).
+    #
+    # Thinking budget = tags (Qwen3 only) + think_budget + answer base
     if is_qwen3:
         return QWEN3_THINKING_TAG_OVERHEAD + think_budget + base
     return think_budget + base
