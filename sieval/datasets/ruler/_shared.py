@@ -97,13 +97,13 @@ def tokens_to_generate(
     Args:
         task_name: Name of the RULER task (e.g., "niah", "qa")
         enable_thinking: Whether thinking mode is enabled
-        think_budget: Token budget for generated thinking content (Qwen3: typically 8192)
-        model_name: Model identifier. Only Qwen3-family models generate the
+        think_budget: Token budget for thinking (Qwen3: typically 8192)
+        model_name: Model identifier. Only Qwen3-family models generate
             ``<think>`` tags that add the tag overhead.
         context_length: Context length in tokens (4096, 8192, 32768, 131072, etc.).
-            Used to determine think_budget allocation strategy during dataset generation.
-        for_dataset: Whether this is being called during dataset generation (True)
-            or inference (False). Affects think_budget inclusion based on context_length.
+            Determines think_budget allocation strategy during dataset generation.
+        for_dataset: Whether this is called during dataset generation (True) or
+            inference (False). Affects think_budget inclusion based on context_length.
 
     Returns:
         Total tokens the model may generate (thinking + tags + answer).
@@ -129,7 +129,8 @@ def tokens_to_generate(
         # Assume thinking content reuses the native context window space.
         # Don't reserve think_budget in gen_budget — this makes the generated
         # samples shorter, fitting within the small context window.
-        # Inference will later add think_budget via max_tokens = gen_budget + think_budget.
+        # Inference will later add think_budget via:
+        # max_tokens = gen_budget + think_budget.
         #
         # Rationale: In Qwen3's thinking mode, models can perform inference over
         # the thinking tokens within the same context pass for small windows.

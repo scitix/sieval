@@ -137,15 +137,16 @@ class RulerZeroShotGenTask(
         # without a per-subtask YAML infer_args.
         max_tokens = ctx.raw_sample["gen_budget"]
 
-        # Qwen3 extended thinking adaptation: allocate max_tokens based on context_length.
-        # (Diverges from upstream RULER's single-budget approach)
+        # Qwen3 extended thinking adaptation: allocate max_tokens based on
+        # context_length. (Diverges from upstream RULER's single-budget approach)
         #
         # During dataset generation, gen_budget was computed differently based on
         # context_length (see _shared.py:tokens_to_generate for rationale):
         # - Small contexts (!=32k/128k): gen_budget excludes think_budget
         # - Large contexts (32k/128k): gen_budget includes think_budget
         #
-        # Now at inference, restore think_budget for small contexts where it was omitted.
+        # Now at inference, restore think_budget for small contexts where it was
+        # omitted.
         if (
             ctx.raw_sample.get("enable_thinking", False)
             and "think_budget" in ctx.raw_sample

@@ -175,7 +175,7 @@ def test_tokens_to_generate_non_qwen3_thinking_no_tag_overhead():
 
 
 def test_tokens_to_generate_qwen3_small_context_dataset_no_think_budget():
-    """Small context (4k) dataset generation: skip think_budget (uses native context)."""
+    """Small context (4k) dataset generation: skip think_budget in gen_budget."""
     budget = tokens_to_generate(
         "niah",
         enable_thinking=True,
@@ -216,7 +216,7 @@ def test_tokens_to_generate_qwen3_128k_context_dataset_with_think_budget():
 
 
 def test_tokens_to_generate_qwen3_small_context_inference_with_think_budget():
-    """Small context (4k) inference: add think_budget (omitted in dataset generation)."""
+    """Small context (4k) inference: add think_budget (omitted in dataset gen)."""
     budget = tokens_to_generate(
         "niah",
         enable_thinking=True,
@@ -230,7 +230,7 @@ def test_tokens_to_generate_qwen3_small_context_inference_with_think_budget():
 
 
 def test_tokens_to_generate_qwen3_large_context_inference_with_think_budget():
-    """Large context (32k) inference: think_budget already in gen_budget from dataset."""
+    """Large context (32k) inference: think_budget already in gen_budget."""
     budget = tokens_to_generate(
         "niah",
         enable_thinking=True,
