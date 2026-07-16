@@ -44,7 +44,11 @@ ifeval = [
 ]
 math = [
   "latex2sympy2-extended>=1.10.2",
-  "math-verify>=0.8.0",
+  # antlr4-11-0 extra pins antlr4-python3-runtime==4.11.0, which sympy 1.14's
+  # LaTeX grammar needs for DeepSeek symbolic_equal's parse_latex to work.
+  # Pinned ==0.8.0: a >= floor re-resolves to 0.9.0, which changes `%` parsing
+  # and shifts sibling scorers (math_500_0shot_gen, imo_answer_bench).
+  "math-verify[antlr4-11-0]==0.8.0",
   "regex>=2024.0.0",
 ]
 # ruler: benchmark + BYO corpus generation script (gen_paul_graham_essays.py)

@@ -10,6 +10,24 @@ from .aime_2025_0shot_gen import (
 from .aime_2026_0shot_gen import (
     AIME2026ZeroShotGenTask,
 )
+from .arc_challenge_kshot_clp import (
+    ARCChallengeFewShotClpTask,
+)
+from .arc_challenge_kshot_ppl import (
+    ARCChallengeFewShotPplTask,
+)
+from .arc_easy_kshot_clp import (
+    ARCEasyFewShotClpTask,
+)
+from .arc_easy_kshot_ppl import (
+    ARCEasyFewShotPplTask,
+)
+from .browsecomp_0shot_gen import (
+    BrowseCompZeroShotGenTask,
+)
+from .c_eval_kshot_clp import (
+    CEvalFewShotCLPTask,
+)
 from .cmmlu_kshot_clp import (
     CMMLUFewShotClpTask,
 )
@@ -27,6 +45,9 @@ from .gsm8k_kshot_base_gen import (
 )
 from .hellaswag_kshot_ppl import (
     HellaSwagFewShotPPLTask,
+)
+from .hendrycks_math_kshot_base_gen import (
+    HendrycksMathFewShotBaseGenTask,
 )
 from .hmmt_feb_2025_0shot_gen import (
     HMMTFeb2025ZeroShotGenTask,
@@ -64,6 +85,9 @@ from .mbpp_kshot_base_gen import (
 from .mmlu_0shot_gen import (
     MMLUZeroShotGenTask,
 )
+from .mmlu_kshot_clp import (
+    MMLUFewShotCLPTask,
+)
 from .mmlu_pro_0shot_gen import (
     MMLUProZeroShotGenTask,
 )
@@ -76,6 +100,9 @@ from .openbookqa_kshot_gen import (
 from .ruler_0shot_gen import (
     RulerZeroShotGenTask,
 )
+from .simpleqa_verified_0shot_gen import (
+    SimpleQAVerifiedZeroShotGenTask,
+)
 from .t_eval_before_calling_0shot_gen import (
     TEvalBeforeCallingZeroShotGenTask,
 )
@@ -87,6 +114,12 @@ __all__ = [
     "AIME2024ZeroShotGenTask",
     "AIME2025ZeroShotGenTask",
     "AIME2026ZeroShotGenTask",
+    "ARCChallengeFewShotClpTask",
+    "ARCChallengeFewShotPplTask",
+    "ARCEasyFewShotClpTask",
+    "ARCEasyFewShotPplTask",
+    "BrowseCompZeroShotGenTask",
+    "CEvalFewShotCLPTask",
     "CMMLUFewShotClpTask",
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
@@ -95,6 +128,7 @@ __all__ = [
     "HMMTFeb2025ZeroShotGenTask",
     "HMMTFeb2026ZeroShotGenTask",
     "HellaSwagFewShotPPLTask",
+    "HendrycksMathFewShotBaseGenTask",
     "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
     "IFBenchZeroShotGenTask",
@@ -104,11 +138,13 @@ __all__ = [
     "LiveCodeBenchCodeGenerationZeroShotGenTask",
     "MATH500ZeroShotGenTask",
     "MBPPFewShotBaseGenTask",
+    "MMLUFewShotCLPTask",
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
     "MMMLUKShotClpTask",
     "OpenBookQAFewShotGenTask",
     "RulerZeroShotGenTask",
+    "SimpleQAVerifiedZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
     "TheoremQAKShotBaseGenTask",
 ]

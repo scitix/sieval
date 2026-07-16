@@ -13,6 +13,22 @@ from .aime_2026 import (
     AIME2026Dataset,
     AIME2026DatasetSample,
 )
+from .arc_challenge import (
+    ARCChallengeDataset,
+    ARCChallengeDatasetSample,
+)
+from .arc_easy import (
+    ARCEasyDataset,
+    ARCEasyDatasetSample,
+)
+from .browsecomp import (
+    BrowseCompDataset,
+    BrowseCompDatasetSample,
+)
+from .c_eval import (
+    CEvalDataset,
+    CEvalDatasetSample,
+)
 from .cmmlu import (
     CMMLUDataset,
     CMMLUDatasetSample,
@@ -32,6 +48,10 @@ from .gsm8k import (
 from .hellaswag import (
     HellaSwagDataset,
     HellaSwagDatasetSample,
+)
+from .hendrycks_math import (
+    HendrycksMathDataset,
+    HendrycksMathDatasetSample,
 )
 from .hmmt_feb_2025 import (
     HMMTFeb2025Dataset,
@@ -89,6 +109,10 @@ from .ruler import (
     RulerDataset,
     RulerDatasetSample,
 )
+from .simpleqa_verified import (
+    SimpleQAVerifiedDataset,
+    SimpleQAVerifiedDatasetSample,
+)
 from .t_eval import (
     TEvalBeforeCallingDataset,
     TEvalBeforeCallingDatasetSample,
@@ -105,6 +129,14 @@ __all__ = [
     "AIME2025DatasetSample",
     "AIME2026Dataset",
     "AIME2026DatasetSample",
+    "ARCChallengeDataset",
+    "ARCChallengeDatasetSample",
+    "ARCEasyDataset",
+    "ARCEasyDatasetSample",
+    "BrowseCompDataset",
+    "BrowseCompDatasetSample",
+    "CEvalDataset",
+    "CEvalDatasetSample",
     "CMMLUDataset",
     "CMMLUDatasetSample",
     "DROPDataset",
@@ -119,6 +151,8 @@ __all__ = [
     "HMMTFeb2026DatasetSample",
     "HellaSwagDataset",
     "HellaSwagDatasetSample",
+    "HendrycksMathDataset",
+    "HendrycksMathDatasetSample",
     "HumanEvalDataset",
     "HumanEvalDatasetSample",
     "IFBenchDataset",
@@ -143,6 +177,8 @@ __all__ = [
     "OpenBookQADatasetSample",
     "RulerDataset",
     "RulerDatasetSample",
+    "SimpleQAVerifiedDataset",
+    "SimpleQAVerifiedDatasetSample",
     "TEvalBeforeCallingDataset",
     "TEvalBeforeCallingDatasetSample",
     "TheoremQADataset",

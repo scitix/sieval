@@ -65,6 +65,96 @@
       "checksums": {}
     },
     {
+      "name": "arc_challenge",
+      "display_name": "ARC-Challenge",
+      "description": "ARC-Challenge science MCQ split from AI2 ARC, normalized for evaluation.",
+      "source": [
+        "hf:allenai/ai2_arc@210d026faf9955653af8916fad021475a3f00453"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "STEM"
+        }
+      ],
+      "tags": [
+        "english",
+        "science",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "cc-by-sa-4.0",
+      "checksums": {}
+    },
+    {
+      "name": "arc_easy",
+      "display_name": "ARC-Easy",
+      "description": "ARC-Easy science MCQ split from AI2 ARC, normalized for evaluation.",
+      "source": [
+        "hf:allenai/ai2_arc@210d026faf9955653af8916fad021475a3f00453"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "STEM"
+        }
+      ],
+      "tags": [
+        "english",
+        "science",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "cc-by-sa-4.0",
+      "checksums": {}
+    },
+    {
+      "name": "browsecomp",
+      "display_name": "BrowseComp",
+      "description": "BrowseComp — 1,266-question hard live-web browsing benchmark.",
+      "source": [
+        "url:https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "english",
+        "browsing",
+        "deep-research",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {
+        "browse_comp_test_set.csv": "sha256:7b24471cd5b3eb2a46830a14802b5c029ea62f488ff75a0f88af7923d1454abf"
+      }
+    },
+    {
+      "name": "c_eval",
+      "display_name": "C-Eval",
+      "description": "C-Eval — Chinese multi-domain exam benchmark with 52 subjects.",
+      "source": [
+        "hf:ceval/ceval-exam@617524a00b307ff6f9933702f724131fe12ca7ce"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "chinese",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "cc-by-nc-sa-4.0",
+      "checksums": {}
+    },
+    {
       "name": "cmmlu",
       "display_name": "CMMLU",
       "description": "CMMLU Chinese multi-domain exam benchmark with 67 subjects.",
@@ -179,6 +269,27 @@
         "english",
         "multiple-choice",
         "commonsense"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
+      "name": "hendrycks_math",
+      "display_name": "Hendrycks MATH",
+      "description": "Full Hendrycks MATH — 12,500 competition problems across 7 subjects.",
+      "source": [
+        "hf:EleutherAI/hendrycks_math@21a5633873b6a120296cce3e2df9d5550074f4a3"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "AdvancedMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
       ],
       "deps_group": null,
       "license": "MIT",
@@ -383,7 +494,7 @@
       "display_name": "MMLU",
       "description": "Massive Multitask Language Understanding — 57 academic subjects, MCQ.",
       "source": [
-        "url:https://openaipublic.blob.core.windows.net/simple-evals/mmlu.csv"
+        "hf:cais/mmlu@c30699e8356da336a370243923dbaf21066bb9fe"
       ],
       "categories": [
         {
@@ -397,9 +508,7 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {
-        "mmlu.csv": "sha256:15b6785d49e0012602e089558a7a0dfb916baf97e9295aa25b48062f13c6afbb"
-      }
+      "checksums": {}
     },
     {
       "name": "mmlu_pro",
@@ -492,6 +601,28 @@
         "dev-v2.0.json": "sha256:80a5225e94905956a6446d296ca1093975c4d3b3260f1d6c8f68bc2ab77182d8",
         "english_words.json": "sha256:affcd6d45fdf3cc843d585c99c97ad615094e760e6c4756b654bab6c73bc2eca"
       }
+    },
+    {
+      "name": "simpleqa_verified",
+      "display_name": "SimpleQA Verified",
+      "description": "SimpleQA Verified — 1,000-prompt short-form factuality benchmark.",
+      "source": [
+        "hf:google/simpleqa-verified@0dc97e0d28d8233463e005cdc4475cc2a13ba2dc"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "english",
+        "factuality",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
     },
     {
       "name": "t_eval_before_calling",
@@ -600,6 +731,136 @@
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/aime/aime_2026.yaml",
         "notes": "MathArena-aligned: boxed prompt + 0-999 integer hint, last-boxed extraction; equivalence via math-verify."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "arc_challenge_kshot_clp",
+      "display_name": "ARC-Challenge (few-shot, conditional log-prob)",
+      "description": "ARC-Challenge few-shot options-format next-token letter accuracy.",
+      "dataset": "arc_challenge",
+      "eval_mode": "clp",
+      "n_shot": 25,
+      "tags": [
+        "english",
+        "science",
+        "multiple-choice",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "lm-evaluation-harness",
+        "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/arc/arc_challenge.yaml",
+        "notes": "Shares the ARC-Challenge split/dataset/revision with lm-evaluation-harness. Uses the 'options' MCQ format (arXiv 2412.17758): options listed A/B/C/... in the prompt, answer is the option letter, scored by one-call next-token top_logprobs argmax (the clp protocol; mirrors cmmlu_kshot_base_gen). Requires all option letters in the top-k and fails the sample otherwise (default logprobs=100; SGLang serves 100, on vLLM use --max-logprobs 100). Comparison target: Qwen2.5-72B-Base ARC-Challenge 25-shot EM = 94.5, from the DeepSeek-V3 report's Table 3 (Qwen2.5-72B-Base column; DeepSeek switched separation->options after V1, and the ppl sibling reproduces the separation number, e.g. the Qwen2.5 report's ~72.4)."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "arc_challenge_kshot_ppl",
+      "display_name": "ARC-Challenge (few-shot, perplexity)",
+      "description": "ARC-Challenge few-shot full-text unconditional-normalized accuracy.",
+      "dataset": "arc_challenge",
+      "eval_mode": "ppl",
+      "n_shot": 25,
+      "tags": [
+        "english",
+        "science",
+        "multiple-choice",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "lm-evaluation-harness",
+        "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/arc/arc_challenge.yaml",
+        "notes": "Shares the ARC-Challenge split/dataset/revision with lm-evaluation-harness, but scores in the SEPARATION regime (Qwen2.5-report style), not upstream acc/acc_norm: each option's full TEXT is scored as the continuation of 'Question: {q}\\nAnswer:' and normalized UNCONDITIONALLY (Brown et al. 2020) as logP(opt|context) - logP(opt|'Answer:'), argmax = prediction. This is the ppl protocol (one inference per option; full answer text), not the single-letter clp method. Requires the sglang server launched with --disable-radix-cache (SglangGenModel fails loud on a cache hit that truncates echoed logprobs). Comparison target — the SEPARATION regime (arXiv 2412.17758): Qwen2.5-72B-Base ARC-Challenge 25-shot ≈ 72.4 (Qwen2.5 report). The 94.5 options/letter figure is the clp sibling, not this task."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "arc_easy_kshot_clp",
+      "display_name": "ARC-Easy (few-shot, conditional log-prob)",
+      "description": "ARC-Easy few-shot options-format next-token letter accuracy.",
+      "dataset": "arc_easy",
+      "eval_mode": "clp",
+      "n_shot": 25,
+      "tags": [
+        "english",
+        "science",
+        "multiple-choice",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "lm-evaluation-harness",
+        "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/arc/arc_easy.yaml",
+        "notes": "Shares the ARC-Easy split/dataset/revision with lm-evaluation-harness. Uses the 'options' MCQ format (arXiv 2412.17758): options listed A/B/C/... in the prompt, answer is the option letter, scored by one-call next-token top_logprobs argmax (the clp protocol; mirrors cmmlu_kshot_base_gen). Requires all option letters in the top-k and fails the sample otherwise (default logprobs=100; SGLang serves 100, on vLLM use --max-logprobs 100). Comparison target: Qwen2.5-72B-Base ARC-Easy 25-shot EM = 98.4, from the DeepSeek-V3 report's Table 3 (Qwen2.5-72B-Base column; DeepSeek switched separation->options after V1, and the ppl sibling reproduces the separation number)."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "arc_easy_kshot_ppl",
+      "display_name": "ARC-Easy (few-shot, perplexity)",
+      "description": "ARC-Easy few-shot full-text unconditional-normalized accuracy.",
+      "dataset": "arc_easy",
+      "eval_mode": "ppl",
+      "n_shot": 25,
+      "tags": [
+        "english",
+        "science",
+        "multiple-choice",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "lm-evaluation-harness",
+        "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/arc/arc_easy.yaml",
+        "notes": "Shares the ARC-Easy split/dataset/revision with lm-evaluation-harness, but scores in the SEPARATION regime (Qwen2.5-report style), not upstream acc/acc_norm: each option's full TEXT is scored as the continuation of 'Question: {q}\\nAnswer:' and normalized UNCONDITIONALLY (Brown et al. 2020) as logP(opt|context) - logP(opt|'Answer:'), argmax = prediction. This is the ppl protocol (one inference per option; full answer text), not the single-letter clp method. Requires the sglang server launched with --disable-radix-cache (SglangGenModel fails loud on a cache hit that truncates echoed logprobs). Comparison target — the SEPARATION regime (arXiv 2412.17758), Qwen2.5-report style. The 98.4 options/letter figure is the clp sibling, not this task."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "browsecomp_0shot_gen",
+      "display_name": "BrowseComp (0-shot, generative)",
+      "description": "Hard live-web browsing QA graded yes/no by an LLM autorater.",
+      "dataset": "browsecomp",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "browsing",
+        "deep-research",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "browsecomp",
+        "url": "https://arxiv.org/abs/2504.12516",
+        "notes": "Generative port of BrowseComp (OpenAI, arXiv:2504.12516) — 1,266 hard live-web questions with short verifiable answers. QUERY_TEMPLATE and GRADER_TEMPLATE (HLE-derived yes/no autorater) are verbatim from openai/simple-evals@652c89d0 browsecomp_eval.py; grade parsing matches upstream except it reads the yes/no capture group (upstream compares its whole match to bare 'yes', a latent bug). Headline metric = accuracy. Grader is a REAL LLM (official autorater: gpt-4.1-2025-04-14) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample grade/confidence and grader model id are persisted. BrowseComp requires browsing: closed-book models score near-zero — validated at 0.316% (4/1266) for gemma-3-27b-it with the gpt-4.1 autorater — so a meaningful score needs a browsing-capable model/scaffold."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "c_eval_kshot_clp",
+      "display_name": "C-Eval (few-shot, next-token logprob)",
+      "description": "C-Eval few-shot MCQ with CEval LLaMA next-token logprob scoring.",
+      "dataset": "c_eval",
+      "eval_mode": "clp",
+      "n_shot": 5,
+      "tags": [
+        "chinese",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "ceval",
+        "url": "https://raw.githubusercontent.com/hkust-nlp/ceval/cba65ae93bcf189149ced9f66ae0c958201faed9/code/evaluator_series/evaluators/llama.py",
+        "notes": "Mirrors the non-CoT LLaMA evaluator: per-subject few-shot header with the English subject key, dev exemplars, and next-token A/B/C/D argmax via one-call top_logprobs (equivalent to the reference's softmax(logits[A,B,C,D]) while all four option tokens are in top-k; requires them present and fails otherwise). Faithful reproduction needs a top-k covering A/B/C/D (default logprobs=100; vLLM --max-logprobs 100, default 20; SGLang serves 100). Eval split is the released test set (reference scored val). Score is the macro-average over the 52 subjects (C-Eval paper Table 3), unlike lm-eval ceval-valid which micro-averages (weight_by_size). Comparison target: DeepSeek-V3 Table 3, C-Eval 5-shot 89.2 (Qwen2.5-72B-Base); the validated Qwen2.5-72B-Base 5-shot run on the test split scores 90.19 (macro)."
       },
       "status": "stable"
     },
@@ -726,6 +987,27 @@
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/hellaswag/hellaswag.yaml",
         "notes": "multiple_choice log-likelihood; acc + acc_norm (character-length normalized, reported as score). Few-shot exemplars (k, default 10) sampled from train, rendered 'query gold_ending' and joined by blank lines per lm-eval; k=0 is 0-shot. Continuation log-probs read via echoed alogprobs; context/continuation split by char offset (no tokenizer at this layer). Infra requirement: echo scoring reads the prompt's input logprobs, so the serving backend's prefix caching must be disabled (cached positions are not recomputed -> truncated logprobs); the backend layer owns the specific flag."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "hendrycks_math_kshot_base_gen",
+      "display_name": "Hendrycks MATH (few-shot, base generative)",
+      "description": "Full Hendrycks MATH DeepSeek-Math 4-shot CoT base-model eval.",
+      "dataset": "hendrycks_math",
+      "eval_mode": "gen",
+      "n_shot": 4,
+      "tags": [
+        "english",
+        "open-ended",
+        "base-model"
+      ],
+      "deps_group": "math",
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "DeepSeek-Math",
+        "url": "https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
+        "notes": "math-cot-test path: MinervaMathPrompt 4-shot, extract_math_few_shot_cot_answer (list-valued) + eval_math/math_equal."
       },
       "status": "stable"
     },
@@ -973,7 +1255,28 @@
       "reference_impl": {
         "source": "simple-evals",
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/mmlu_eval.py",
-        "notes": "0-shot generative MMLU with letter extraction; aligned with simple-evals."
+        "notes": "0-shot generative MMLU with letter extraction; scoring aligned with simple-evals, data loaded from cais/mmlu (same 14042-item test set)."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "mmlu_kshot_clp",
+      "display_name": "MMLU (few-shot, base clp)",
+      "description": "MMLU few-shot MCQ, base-model next-token A/B/C/D logprob scoring.",
+      "dataset": "mmlu",
+      "eval_mode": "clp",
+      "n_shot": 5,
+      "tags": [
+        "english",
+        "multiple-choice",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "hendrycks/test",
+        "url": "https://github.com/hendrycks/test/blob/4450500f923c49f1fb1dd3d99108a0bd9717b660/evaluate_flan.py",
+        "notes": "Next-token A/B/C/D scoring via one alogprobs(echo=False) call, argmax over the option tokens in top_logprobs; equivalent to the reference softmax over the restricted letter logits (OpenCompass clp). Few-shot = first k dev examples per subject in dataset order. Requires all of A/B/C/D in the top-k and fails the sample otherwise (default logprobs=100; vLLM needs --max-logprobs 100, default 20; SGLang serves 100). Micro-average score over the finalized set (infra failures reported separately, not scored wrong) + per-category via subject2category, matching evaluate_flan weighted_acc and the CLP siblings cmmlu/mmmlu. No client-side 2048-token truncation. Validated: Qwen2.5-72B base, 5-shot, 14042/14042, score 86.11 (target 85.0), 0 fails, deterministic across two runs."
       },
       "status": "stable"
     },
@@ -1056,6 +1359,27 @@
         "source": "NVIDIA/RULER",
         "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
         "notes": "Scoring mirrors RULER's string_match_all (recall) and string_match_part (QA), vendored in community/ruler/eval. Verified byte-exact against NVIDIA/RULER at ab17b78 and reproduces published recall on a Qwen3-8B run (repro table in the PR). Generation is capped per subtask to upstream's tokens_to_generate (via the sample's gen_budget, see infer()), and HotpotQA document ordering matches upstream's sorted(set()). Remaining divergences, each score-neutral:\n1. Paul Graham essay corpus: the BYO generator concatenates essays in the pinned URL-list order, while upstream groups them repo-then-html (glob order within each group), so the full-corpus bytes differ. NIAH/VT needles and QA answers don't depend on filler-text order, so recall is unchanged.\n2. CWE word count is capped at the wonderwords pool, which fills >=98% only at <=32k; at 64k/128k CWE underfills. The stable contract is scoped to context lengths <=32k; 64k/128k are experimental."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "simpleqa_verified_0shot_gen",
+      "display_name": "SimpleQA Verified (0-shot, generative)",
+      "description": "Short-form factuality; free-form answer graded by an LLM autorater.",
+      "dataset": "simpleqa_verified",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "factuality",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simpleqa-verified",
+        "url": "https://arxiv.org/abs/2509.07968",
+        "notes": "Generative port of SimpleQA Verified (Google DeepMind, arXiv:2509.07968) — a 1,000-prompt curated subset of OpenAI SimpleQA. The autorater prompt is the paper's updated prompt (Appendix A); grade parsing (A/B/C -> CORRECT/INCORRECT/NOT_ATTEMPTED, default C) and the F1 aggregation mirror openai/simple-evals@5e623c2b simpleqa_eval.py. Headline metric = F1 (harmonic mean of overall-correct and correct-given-attempted; official Gemini 2.5 Pro = 55.6). Grader is a REAL LLM (official autorater: gpt-4.1-2025-04-14) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: unlike deterministic-grader tasks, scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample grade and grader model id are persisted in the feedback record. VALIDATION: google/gemma-4-31B-it scored F1 9.95 (n=1000, grader openai/gpt-4.1 via OpenRouter), within the official 10.7±2.1 band. Official numbers (Gemini 2.5 Pro 55.6; the band above) are from the DeepMind SimpleQA Verified leaderboard: https://www.kaggle.com/benchmarks/deepmind/simpleqa-verified"
       },
       "status": "stable"
     },

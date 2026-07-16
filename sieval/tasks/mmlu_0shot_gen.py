@@ -43,7 +43,9 @@ class Feedback(TypedDict):
         source="simple-evals",
         url="https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/mmlu_eval.py",
         notes=(
-            "0-shot generative MMLU with letter extraction; aligned with simple-evals."
+            "0-shot generative MMLU with letter extraction; scoring aligned "
+            "with simple-evals, data loaded from cais/mmlu (same 14042-item "
+            "test set)."
         ),
     ),
 )
@@ -59,12 +61,13 @@ class MMLUZeroShotGenTask(
 ):
     @override
     async def preprocess(self, raw, ctx):
+        choices = raw["choices"]
         data = {
-            "Question": raw["Question"],
-            "A": raw["A"],
-            "B": raw["B"],
-            "C": raw["C"],
-            "D": raw["D"],
+            "Question": raw["question"],
+            "A": choices[0],
+            "B": choices[1],
+            "C": choices[2],
+            "D": choices[3],
         }
         return [
             {"role": "user", "content": QUERY_TEMPLATE_MULTICHOICE.format(**data)},
@@ -88,8 +91,8 @@ class MMLUZeroShotGenTask(
 
     @override
     async def feedback(self, post, ctx):
-        answer = ctx.raw_sample["Answer"]
-        subject = ctx.raw_sample.get("Subject", "unknown")
+        answer = "ABCD"[ctx.raw_sample["answer"]]
+        subject = ctx.raw_sample.get("subject", "unknown")
         category = subject2category.get(subject, "other")
         return True, {
             "correct": post == answer,

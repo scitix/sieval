@@ -442,9 +442,12 @@ def detect_empty_infer_ppl(ctx: TaskContext) -> set[int]:
     category="output_quality",
     rationale=(
         "Truncated outputs may indicate insufficient max_tokens setting "
-        "or unexpectedly long responses."
+        "or unexpectedly long responses. Scoped to gen: single-token logprob "
+        "tasks (ppl/clp) infer with max_tokens=1 and always finish with "
+        "'length', so the signal is only meaningful for generation."
     ),
     severity="info",
+    applies_to=["gen"],
     tags=["truncation", "length_limit", "incomplete_output"],
 )
 def detect_truncated_output(ctx: TaskContext) -> set[int]:

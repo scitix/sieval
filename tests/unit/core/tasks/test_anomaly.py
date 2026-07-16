@@ -643,15 +643,24 @@ class TestDetectWithTaskTags:
         assert "empty_infer_ppl" not in result
 
     def test_all_tasks_rule_always_runs(self, tmp_path, sample_model_meta):
+        # empty_postprocess is an all_tasks rule: it runs regardless of tags.
+        # (truncated_output was the old sentinel but is now scoped to gen.)
+        detector = TaskAnomalyDetector(root_dir=tmp_path)
+        output = ModelOutput(model=sample_model_meta, texts=["x"])
+        ctx = _make_final_ctx(infer_result=output, postprocess_result="")
+        result = detector.detect(ctx, task_tags={"ppl"})
+        assert "empty_postprocess" in result
+
+    def test_truncated_output_scoped_to_gen(self, tmp_path, sample_model_meta):
+        # clp/ppl infer at max_tokens=1 → always finish "length"; truncation is
+        # only meaningful for generation, so the rule must not fire for them.
         detector = TaskAnomalyDetector(root_dir=tmp_path)
         output = ModelOutput(
-            model=sample_model_meta,
-            texts=["x"],
-            finish_reasons=["length"],
+            model=sample_model_meta, texts=["x"], finish_reasons=["length"]
         )
         ctx = _make_final_ctx(infer_result=output, postprocess_result="ok")
-        result = detector.detect(ctx, task_tags={"ppl"})
-        assert "truncated_output" in result
+        assert "truncated_output" not in detector.detect(ctx, task_tags={"clp"})
+        assert "truncated_output" in detector.detect(ctx, task_tags={"gen"})
 
     def test_empty_tags_skips_detection_with_warning(self, tmp_path, sample_model_meta):
         """Empty tags → skip detection and warn."""
