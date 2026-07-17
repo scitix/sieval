@@ -133,6 +133,7 @@ def test_template_has_task_template_placeholder():
 # ---------------------------------------------------------------------------
 
 
+@_needs_ruler_deps
 @pytest.mark.parametrize(
     ("task_name", "expected_base"),
     [
@@ -153,6 +154,7 @@ def test_tokens_to_generate_nonthinking_is_base(task_name, expected_base):
     )
 
 
+@_needs_ruler_deps
 def test_tokens_to_generate_qwen3_thinking_includes_budget_and_tags():
     """qwen3 thinking budget = tag overhead + think_budget + base (the max_tokens)."""
     budget = tokens_to_generate(
@@ -161,6 +163,7 @@ def test_tokens_to_generate_qwen3_thinking_includes_budget_and_tags():
     assert budget == 4 + 8192 + 128
 
 
+@_needs_ruler_deps
 def test_tokens_to_generate_non_qwen3_thinking_no_tag_overhead():
     """Non-qwen3 thinking = think_budget + base (no <think> tag generation)."""
     budget = tokens_to_generate(
@@ -174,6 +177,7 @@ def test_tokens_to_generate_non_qwen3_thinking_no_tag_overhead():
 # ---------------------------------------------------------------------------
 
 
+@_needs_ruler_deps
 def test_tokens_to_generate_qwen3_small_context_dataset_no_think_budget():
     """Small context (4k) dataset generation: skip think_budget in gen_budget."""
     budget = tokens_to_generate(
@@ -188,6 +192,7 @@ def test_tokens_to_generate_qwen3_small_context_dataset_no_think_budget():
     assert budget == 4 + 128
 
 
+@_needs_ruler_deps
 def test_tokens_to_generate_qwen3_large_context_dataset_with_think_budget():
     """Large context (32k) dataset generation: reserve think_budget upfront."""
     budget = tokens_to_generate(
@@ -202,6 +207,7 @@ def test_tokens_to_generate_qwen3_large_context_dataset_with_think_budget():
     assert budget == 4 + 8192 + 128
 
 
+@_needs_ruler_deps
 def test_tokens_to_generate_qwen3_128k_context_dataset_with_think_budget():
     """Large context (128k) dataset generation: reserve think_budget upfront."""
     budget = tokens_to_generate(
@@ -215,6 +221,7 @@ def test_tokens_to_generate_qwen3_128k_context_dataset_with_think_budget():
     assert budget == 4 + 8192 + 128
 
 
+@_needs_ruler_deps
 def test_tokens_to_generate_qwen3_small_context_inference_with_think_budget():
     """Small context (4k) inference: add think_budget (omitted in dataset gen)."""
     budget = tokens_to_generate(
@@ -229,6 +236,7 @@ def test_tokens_to_generate_qwen3_small_context_inference_with_think_budget():
     assert budget == 4 + 8192 + 128
 
 
+@_needs_ruler_deps
 def test_tokens_to_generate_qwen3_large_context_inference_with_think_budget():
     """Large context (32k) inference: think_budget already in gen_budget."""
     budget = tokens_to_generate(
@@ -243,6 +251,7 @@ def test_tokens_to_generate_qwen3_large_context_inference_with_think_budget():
     assert budget == 4 + 8192 + 128
 
 
+@_needs_ruler_deps
 def test_tokens_to_generate_gpt_small_context_dataset():
     """Non-Qwen3 small context dataset: no tag overhead, no think_budget."""
     budget = tokens_to_generate(
@@ -257,6 +266,7 @@ def test_tokens_to_generate_gpt_small_context_dataset():
     assert budget == 128
 
 
+@_needs_ruler_deps
 def test_tokens_to_generate_gpt_large_context_dataset():
     """Non-Qwen3 large context dataset: no tag overhead, but include think_budget."""
     budget = tokens_to_generate(
