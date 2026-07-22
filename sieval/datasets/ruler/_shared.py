@@ -84,10 +84,10 @@ def tokens_to_generate(
         fitting (context window calculation) and inference (max_tokens constraint).
 
         Qwen3 Adaptation: Splits the budget calculation based on context_length:
-        - Small contexts (!=32k/128k): During dataset generation, assume thinking
+        - Small contexts (!128k): During dataset generation, assume thinking
           content uses the native context window space (don't reserve think_budget
           for fitting). During inference, max_tokens = gen_budget + think_budget.
-        - Large contexts (32k/128k): During dataset generation, reserve think_budget
+        - Large contexts (128k): During dataset generation, reserve think_budget
           space (model can't reuse thinking tokens). During inference, max_tokens
           already includes think_budget.
 
@@ -121,7 +121,7 @@ def tokens_to_generate(
     should_skip_think_budget = (
         for_dataset
         and context_length is not None
-        and context_length not in (32768, 131072)  # 32k and 128k
+        and context_length != 131072  # 128k
     )
 
     if should_skip_think_budget:
@@ -138,7 +138,7 @@ def tokens_to_generate(
             return QWEN3_THINKING_TAG_OVERHEAD + base
         return base
 
-    # LARGE CONTEXT (32k, 128k) OR INFERENCE:
+    # LARGE CONTEXT (128k) OR INFERENCE:
     # For large contexts during dataset generation: reserve think_budget upfront
     # (model cannot reuse thinking tokens efficiently across context boundaries).
     # For inference regardless of context_length: always include think_budget
