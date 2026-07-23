@@ -193,8 +193,9 @@ def test_tokens_to_generate_qwen3_small_context_dataset_no_think_budget():
 
 
 @_needs_ruler_deps
-def test_tokens_to_generate_qwen3_large_context_dataset_with_think_budget():
-    """Large context (32k) dataset generation: reserve think_budget upfront."""
+def test_tokens_to_generate_qwen3_32k_context_dataset_no_think_budget():
+    """32k dataset generation: under the 128k-only rule 32k is treated as small,
+    so think_budget is NOT reserved in gen_budget (added later at inference)."""
     budget = tokens_to_generate(
         "niah",
         enable_thinking=True,
@@ -203,8 +204,8 @@ def test_tokens_to_generate_qwen3_large_context_dataset_with_think_budget():
         context_length=32768,
         for_dataset=True,
     )
-    # Tag overhead + think_budget + base
-    assert budget == 4 + 8192 + 128
+    # Only tag overhead + base, not think_budget
+    assert budget == 4 + 128
 
 
 @_needs_ruler_deps
@@ -237,8 +238,9 @@ def test_tokens_to_generate_qwen3_small_context_inference_with_think_budget():
 
 
 @_needs_ruler_deps
-def test_tokens_to_generate_qwen3_large_context_inference_with_think_budget():
-    """Large context (32k) inference: think_budget already in gen_budget."""
+def test_tokens_to_generate_qwen3_32k_context_inference_with_think_budget():
+    """32k inference: think_budget is always included at inference — 32k gen
+    omitted it under the 128k-only rule, so it is added on top here."""
     budget = tokens_to_generate(
         "niah",
         enable_thinking=True,
@@ -267,8 +269,9 @@ def test_tokens_to_generate_gpt_small_context_dataset():
 
 
 @_needs_ruler_deps
-def test_tokens_to_generate_gpt_large_context_dataset():
-    """Non-Qwen3 large context dataset: no tag overhead, but include think_budget."""
+def test_tokens_to_generate_gpt_32k_context_dataset():
+    """Non-Qwen3 32k dataset generation: under the 128k-only rule 32k is treated
+    as small — no tag overhead, no think_budget (added later at inference)."""
     budget = tokens_to_generate(
         "niah",
         enable_thinking=True,
@@ -277,8 +280,8 @@ def test_tokens_to_generate_gpt_large_context_dataset():
         context_length=32768,
         for_dataset=True,
     )
-    # think_budget + base, no tags
-    assert budget == 8192 + 128
+    # Only base, no tags, no think_budget
+    assert budget == 128
 
 
 # ---------------------------------------------------------------------------
