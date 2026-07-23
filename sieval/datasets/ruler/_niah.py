@@ -16,7 +16,7 @@ from ._shared import (
     tokens_to_generate,
 )
 
-# NIAH subtask → load() kwargs, from synthetic.yaml.
+# NIAH subtask → load() kwargs, transcribed from NVIDIA/RULER synthetic.yaml @ab17b78.
 _NIAH_SUBTASK_KWARGS: dict[str, dict] = {
     "niah_single_1": {
         "type_haystack": "noise",

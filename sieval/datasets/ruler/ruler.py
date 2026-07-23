@@ -5,7 +5,8 @@ Each call to ``load()`` targets one subtask (or ``"all"`` to concatenate all
 ``RulerZeroShotGenTask.report()`` can group and score without any external
 aggregation command.
 
-The 13 canonical subtask names mirror ``synthetic.yaml``:
+The 13 canonical subtask names (transcribed from NVIDIA/RULER's synthetic.yaml
+@ab17b78; the two QA subtasks are RULER's separate qa config):
     niah_single_1, niah_single_2, niah_single_3,
     niah_multikey_1, niah_multikey_2, niah_multikey_3,
     niah_multivalue, niah_multiquery,
