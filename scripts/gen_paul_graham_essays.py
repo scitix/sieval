@@ -126,8 +126,9 @@ def main() -> None:
     converter = html2text.HTML2Text()
     converter.ignore_images = True
     converter.ignore_tables = True
-    converter.escape_all = True
-    converter.reference_links = False
+    # escape_snob escapes all markdown-special chars (html2text renamed the old
+    # `escape_all`); links stay inline by default, so no reference_links toggle.
+    converter.escape_snob = True
     converter.mark_code = False
 
     urls = [line.strip() for line in _fetch(_URL_LIST).decode("utf-8").splitlines()]

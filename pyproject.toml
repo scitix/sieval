@@ -65,7 +65,9 @@ ruler = [
 # (scripts/gen_paul_graham_essays.py). Not needed to run the benchmark, so kept
 # out of `ruler`; install with `pdm install -G ruler-gen` before regenerating.
 ruler-gen = [
-  "html2text>=2020.1.16",
+  # Upper-bounded: html2text renamed/removed converter attrs across majors
+  # (e.g. escape_all → escape_snob), so cap to avoid silent API drift.
+  "html2text>=2020.1.16,<2026",
   "beautifulsoup4>=4.12.0",
   "certifi>=2024.7.4",
 ]
