@@ -142,13 +142,8 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         enable_thinking: bool = False,
         think_budget: int = 0,
         model_name: str = "qwen3",
-        # NIAH-specific (ignored for non-NIAH subtasks)
-        num_needle_k: int = 1,
-        num_needle_v: int = 1,
-        num_needle_q: int = 1,
-        type_haystack: str = "essay",
-        type_needle_k: str = "words",
-        type_needle_v: str = "numbers",
+        # NIAH needle/haystack config is fixed per subtask by _NIAH_SUBTASK_KWARGS,
+        # so it is not exposed as a load() knob (a stray value would do nothing).
         # CWE-specific
         freq_cw: int = 30,
         freq_ucw: int = 3,
@@ -168,16 +163,27 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         if subtask is None:
             raise ValueError("RulerDataset.load requires `subtask`")
 
-        # Aggregate entry points — an explicit list or "all" — load each single
-        # subtask and concatenate. Recurse with the *base* ``name_or_path``; the
-        # per-subtask ``/ruler`` staging path is resolved once, below, so every
-        # entry point (including a direct single-subtask load) maps it the same way.
-        if isinstance(subtask, list) or subtask == "all":
-            targets = subtask if isinstance(subtask, list) else _ALL_SUBTASKS
-            splits = [
-                self.load(
-                    name_or_path,
-                    subtask=st,
+        # A single subtask, an explicit list, and "all" all funnel through one
+        # dispatch loop — a single subtask is just a one-element target list. This
+        # keeps the ``/ruler`` staging-path rule (``_subtask_data_path``) and the
+        # budget stamping identical across every entry point: no recursion, no
+        # re-listed kwargs, and no way for the aggregate and single-subtask paths
+        # to drift apart.
+        if subtask == "all":
+            targets = list(_ALL_SUBTASKS)
+        elif isinstance(subtask, list):
+            targets = subtask
+        else:
+            targets = [subtask]
+
+        splits = []
+        for st in targets:
+            data_path = _subtask_data_path(name_or_path, st)
+
+            if st in _NIAH_SUBTASK_KWARGS:
+                niah_kwargs = _NIAH_SUBTASK_KWARGS[st]
+                rows = load_niah(
+                    data_path,
                     max_seq_length=max_seq_length,
                     tokenizer_type=tokenizer_type,
                     tokenizer_path=tokenizer_path,
@@ -187,137 +193,102 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                     enable_thinking=enable_thinking,
                     think_budget=think_budget,
                     model_name=model_name,
-                    num_needle_k=num_needle_k,
-                    num_needle_v=num_needle_v,
-                    num_needle_q=num_needle_q,
-                    type_haystack=type_haystack,
-                    type_needle_k=type_needle_k,
-                    type_needle_v=type_needle_v,
+                    num_needle_k=niah_kwargs["num_needle_k"],
+                    num_needle_v=niah_kwargs["num_needle_v"],
+                    num_needle_q=niah_kwargs["num_needle_q"],
+                    type_haystack=niah_kwargs["type_haystack"],
+                    type_needle_k=niah_kwargs["type_needle_k"],
+                    type_needle_v=niah_kwargs["type_needle_v"],
+                )
+            elif st == "vt":
+                rows = load_vt(
+                    data_path,
+                    max_seq_length=max_seq_length,
+                    tokenizer_type=tokenizer_type,
+                    tokenizer_path=tokenizer_path,
+                    num_samples=num_samples,
+                    random_seed=random_seed,
+                    remove_newline_tab=remove_newline_tab,
+                    enable_thinking=enable_thinking,
+                    think_budget=think_budget,
+                    model_name=model_name,
+                    num_chains=num_chains,
+                    num_hops=num_hops,
+                    type_haystack="noise",
+                )
+            elif st == "cwe":
+                rows = load_cwe(
+                    data_path,
+                    max_seq_length=max_seq_length,
+                    tokenizer_type=tokenizer_type,
+                    tokenizer_path=tokenizer_path,
+                    num_samples=num_samples,
+                    random_seed=random_seed,
+                    remove_newline_tab=remove_newline_tab,
+                    enable_thinking=enable_thinking,
+                    think_budget=think_budget,
+                    model_name=model_name,
                     freq_cw=freq_cw,
                     freq_ucw=freq_ucw,
                     num_cw=num_cw,
                     num_fewshot=num_fewshot,
-                    num_chains=num_chains,
-                    num_hops=num_hops,
+                )
+            elif st == "fwe":
+                rows = load_fwe(
+                    data_path,
+                    max_seq_length=max_seq_length,
+                    tokenizer_type=tokenizer_type,
+                    tokenizer_path=tokenizer_path,
+                    num_samples=num_samples,
+                    random_seed=random_seed,
+                    remove_newline_tab=remove_newline_tab,
+                    enable_thinking=enable_thinking,
+                    think_budget=think_budget,
+                    model_name=model_name,
                     alpha=alpha,
                     coded_wordlen=coded_wordlen,
                     vocab_size=vocab_size,
+                )
+            elif st in ("qa_squad", "qa_hotpotqa"):
+                qa_dataset = "squad" if st == "qa_squad" else "hotpotqa"
+                rows = load_qa(
+                    data_path,
+                    dataset=qa_dataset,
+                    max_seq_length=max_seq_length,
+                    tokenizer_type=tokenizer_type,
+                    tokenizer_path=tokenizer_path,
+                    num_samples=num_samples,
+                    random_seed=random_seed,
+                    remove_newline_tab=remove_newline_tab,
+                    enable_thinking=enable_thinking,
+                    think_budget=think_budget,
+                    model_name=model_name,
                     pre_samples=pre_samples,
-                )["test"]
-                for st in targets
-            ]
-            return HFDatasetDict({"test": concatenate_datasets(list(splits))})
+                )
+            else:
+                raise ValueError(
+                    f"Unknown subtask {st!r}. Valid subtasks: {_ALL_SUBTASKS} or 'all'."
+                )
 
-        data_path = _subtask_data_path(name_or_path, subtask)
+            gen_budget = tokens_to_generate(
+                _ruler_task_name(st),
+                enable_thinking=enable_thinking,
+                think_budget=think_budget,
+                model_name=model_name,
+                context_length=max_seq_length,
+                for_dataset=True,
+            )
+            rows = _stamp(
+                rows,
+                subtask=st,
+                context_length=max_seq_length,
+                gen_budget=gen_budget,
+                think_budget=think_budget,
+                enable_thinking=enable_thinking,
+            )
+            splits.append(HFDataset.from_list(rows))
 
-        if subtask in _NIAH_SUBTASK_KWARGS:
-            niah_kwargs = _NIAH_SUBTASK_KWARGS[subtask]
-            rows = load_niah(
-                data_path,
-                max_seq_length=max_seq_length,
-                tokenizer_type=tokenizer_type,
-                tokenizer_path=tokenizer_path,
-                num_samples=num_samples,
-                random_seed=random_seed,
-                remove_newline_tab=remove_newline_tab,
-                enable_thinking=enable_thinking,
-                think_budget=think_budget,
-                model_name=model_name,
-                num_needle_k=niah_kwargs["num_needle_k"],
-                num_needle_v=niah_kwargs["num_needle_v"],
-                num_needle_q=niah_kwargs["num_needle_q"],
-                type_haystack=niah_kwargs["type_haystack"],
-                type_needle_k=niah_kwargs["type_needle_k"],
-                type_needle_v=niah_kwargs["type_needle_v"],
-            )
-        elif subtask == "vt":
-            rows = load_vt(
-                data_path,
-                max_seq_length=max_seq_length,
-                tokenizer_type=tokenizer_type,
-                tokenizer_path=tokenizer_path,
-                num_samples=num_samples,
-                random_seed=random_seed,
-                remove_newline_tab=remove_newline_tab,
-                enable_thinking=enable_thinking,
-                think_budget=think_budget,
-                model_name=model_name,
-                num_chains=num_chains,
-                num_hops=num_hops,
-                type_haystack="noise",
-            )
-        elif subtask == "cwe":
-            rows = load_cwe(
-                data_path,
-                max_seq_length=max_seq_length,
-                tokenizer_type=tokenizer_type,
-                tokenizer_path=tokenizer_path,
-                num_samples=num_samples,
-                random_seed=random_seed,
-                remove_newline_tab=remove_newline_tab,
-                enable_thinking=enable_thinking,
-                think_budget=think_budget,
-                model_name=model_name,
-                freq_cw=freq_cw,
-                freq_ucw=freq_ucw,
-                num_cw=num_cw,
-                num_fewshot=num_fewshot,
-            )
-        elif subtask == "fwe":
-            rows = load_fwe(
-                data_path,
-                max_seq_length=max_seq_length,
-                tokenizer_type=tokenizer_type,
-                tokenizer_path=tokenizer_path,
-                num_samples=num_samples,
-                random_seed=random_seed,
-                remove_newline_tab=remove_newline_tab,
-                enable_thinking=enable_thinking,
-                think_budget=think_budget,
-                model_name=model_name,
-                alpha=alpha,
-                coded_wordlen=coded_wordlen,
-                vocab_size=vocab_size,
-            )
-        elif subtask in ("qa_squad", "qa_hotpotqa"):
-            qa_dataset = "squad" if subtask == "qa_squad" else "hotpotqa"
-            rows = load_qa(
-                data_path,
-                dataset=qa_dataset,
-                max_seq_length=max_seq_length,
-                tokenizer_type=tokenizer_type,
-                tokenizer_path=tokenizer_path,
-                num_samples=num_samples,
-                random_seed=random_seed,
-                remove_newline_tab=remove_newline_tab,
-                enable_thinking=enable_thinking,
-                think_budget=think_budget,
-                model_name=model_name,
-                pre_samples=pre_samples,
-            )
-        else:
-            raise ValueError(
-                f"Unknown subtask {subtask!r}. "
-                f"Valid subtasks: {_ALL_SUBTASKS} or 'all'."
-            )
-
-        gen_budget = tokens_to_generate(
-            _ruler_task_name(subtask),
-            enable_thinking=enable_thinking,
-            think_budget=think_budget,
-            model_name=model_name,
-            context_length=max_seq_length,
-            for_dataset=True,
-        )
-        rows = _stamp(
-            rows,
-            subtask=subtask,
-            context_length=max_seq_length,
-            gen_budget=gen_budget,
-            think_budget=think_budget,
-            enable_thinking=enable_thinking,
-        )
-        return HFDatasetDict({"test": HFDataset.from_list(rows)})
+        return HFDatasetDict({"test": concatenate_datasets(splits)})
 
 
 def _stamp(
