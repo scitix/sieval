@@ -51,8 +51,7 @@ math = [
   "math-verify[antlr4-11-0]==0.8.0",
   "regex>=2024.0.0",
 ]
-# ruler: benchmark + BYO corpus generation script (gen_paul_graham_essays.py)
-# Generator adds: html2text>=2020.1.16, beautifulsoup4>=4.12.0, certifi>=2024.7.4
+# ruler: benchmark eval + loader deps (what `sieval` needs to run RULER).
 ruler = [
   "tiktoken>=0.8.0",
   "wonderwords>=2.2.0,<3",
@@ -61,6 +60,14 @@ ruler = [
   "nltk>=3.9.2",
   # tokenizer_type: hf (both example configs) → transformers.AutoTokenizer in community/ruler/scripts/tokenizer.py
   "transformers>=4.44.0",
+]
+# ruler-gen: deps for the BYO corpus regeneration script only
+# (scripts/gen_paul_graham_essays.py). Not needed to run the benchmark, so kept
+# out of `ruler`; install with `pdm install -G ruler-gen` before regenerating.
+ruler-gen = [
+  "html2text>=2020.1.16",
+  "beautifulsoup4>=4.12.0",
+  "certifi>=2024.7.4",
 ]
 t-eval = ["numpy<=2.2", "sentence-transformers>=5.1.2"]
 
@@ -174,8 +181,9 @@ include = [
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 
-# gen_paul_graham_essays.py: html2text, beautifulsoup4, certifi are not runtime deps.
-# Script is run manually via `pdm run python scripts/gen_paul_graham_essays.py`.
+# gen_paul_graham_essays.py: html2text, beautifulsoup4, certifi live in the
+# optional `ruler-gen` group (not installed by default / in CI), so ty can't
+# resolve them here. Install with `pdm install -G ruler-gen` to run the script.
 [[tool.ty.overrides]]
 include = ["scripts/gen_paul_graham_essays.py"]
 
