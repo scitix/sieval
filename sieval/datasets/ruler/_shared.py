@@ -119,9 +119,7 @@ def tokens_to_generate(
     # Thinking mode: Qwen3-adapted budget allocation based on context_length
     # (Diverges from upstream RULER which always includes think_budget)
     should_skip_think_budget = (
-        for_dataset
-        and context_length is not None
-        and context_length != 131072  # 128k
+        for_dataset and context_length is not None and context_length != 131072  # 128k
     )
 
     if should_skip_think_budget:
