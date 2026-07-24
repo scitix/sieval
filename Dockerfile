@@ -18,4 +18,4 @@ WORKDIR /app
 COPY ./dist/sieval-0.6.0-py3-none-any.whl /tmp/
 RUN pip install /tmp/sieval-0.6.0-py3-none-any.whl && rm /tmp/sieval-0.6.0-py3-none-any.whl
 
-COPY submodules /app/submodules
+COPY vendor /app/vendor

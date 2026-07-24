@@ -1,6 +1,5 @@
 .git
 .gitignore
-.gitmodules
 
 __pycache__
 *.pyc

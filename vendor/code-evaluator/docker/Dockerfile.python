@@ -1,0 +1,10 @@
+FROM python:3.10-slim
+
+WORKDIR /opt/code-evaluator
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app/ ./app/
+
+CMD ["fastapi", "run", "app/server.py", "--port", "11451"]

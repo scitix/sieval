@@ -1,0 +1,16 @@
+# SciCode execution image.
+# Python 3.11 (not 3.10 like the other images): requirements/scicode.txt pins
+# scipy 1.16.x, which requires Python >= 3.11 (and numpy 1.26.x requires < 3.13).
+# numpy/scipy/matplotlib ship self-contained manylinux wheels, so no apt build
+# deps are needed on slim.
+FROM python:3.11-slim
+
+WORKDIR /opt/code-evaluator
+
+COPY requirements.txt ./
+COPY requirements/ ./requirements/
+RUN pip install --no-cache-dir -r requirements.txt -r requirements/scicode.txt
+
+COPY app/ ./app/
+
+CMD ["fastapi", "run", "app/server.py", "--port", "11451"]

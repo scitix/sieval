@@ -53,7 +53,7 @@ _SIEVAL_OUTER_SIBLINGS: frozenset[str] = frozenset(
         "leaderboards",
         "mutants",
         "outputs",
-        "submodules",
+        "vendor",
     }
 )
 

@@ -3,7 +3,9 @@
 default_install_hook_types:
   - pre-commit
   - commit-msg
-exclude: ^sieval/community/
+# sieval/community/ and vendor/ hold vendored third-party code kept
+# byte-identical to upstream — do not let hooks reformat them.
+exclude: ^(sieval/community/|vendor/)
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

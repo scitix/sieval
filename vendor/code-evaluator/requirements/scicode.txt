@@ -1,0 +1,9 @@
+# SciCode execution dependencies — the scientific stack the problems import
+# (numpy / scipy / sympy / matplotlib; verified across all 80 problems).
+# Pinned to the environment used to validate SciCode on Kimi-K2.6.
+# NOTE: scipy 1.16.x requires Python >= 3.11 and numpy 1.26.x requires < 3.13,
+# so this set targets Python 3.11 / 3.12 (not the 3.10 base of the other images).
+matplotlib==3.10.8
+numpy==1.26.4
+scipy==1.16.3
+sympy==1.14.0
