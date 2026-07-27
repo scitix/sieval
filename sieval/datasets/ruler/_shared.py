@@ -161,7 +161,7 @@ def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
 
     Other models: Always returns empty string (no special handling needed)
     """
-    if "qwen3" in model_name.lower() and not enable_thinking:
+    if model_name.lower().startswith("qwen3") and not enable_thinking:
         return "<think>\n\n</think>\n\n"  # Empty block; skip to answer
     return ""
 
@@ -243,8 +243,8 @@ def model_template_token(
 
     where ``model_template`` is the RAW template string — the literal
     ``{task_template}`` placeholder is NOT replaced. Upstream then does
-    ``max_seq_length -= model_template_token`` before fitting; callers here add
-    this reserve to the content token count, which is algebraically identical.
+    ``max_seq_length -= model_template_token`` once before fitting, and callers
+    here do the same.
 
     Counting the unformatted template reserves the placeholder's own tokens,
     which are replaced by real content at inference and never emitted — that is

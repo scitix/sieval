@@ -157,7 +157,6 @@ def _synthesize(
         tokens_to_generate=tokens_to_generate,
         example_tokens=example_tokens,
         incremental=incremental,
-        apply_template=apply_template,
         template_token=template_token,
     )
 
@@ -230,19 +229,13 @@ def _binary_search_noises(
     tokens_to_generate: int,
     example_tokens: int,
     incremental: int,
-    apply_template: bool = False,
     template_token: int = 0,
 ) -> int:
-    # ``example_tokens`` is a raw fragment count added on top; the sized ``text``
-    # carries the template reserve once via _count_prompt_tokens. The generation
-    # budget (answer + any think_budget) is added separately as tokens_to_generate.
+    # Upstream's bounding formula: reduce max_seq_length by the template reserve
+    # once upfront, then compare raw token counts against it for every probe.
+    max_seq_length -= template_token
     sample_text, _ = gen(incremental)
-    sample_tokens = _count_prompt_tokens(
-        tokenizer,
-        sample_text,
-        apply_template=apply_template,
-        template_token=template_token,
-    )
+    sample_tokens = len(tokenizer.text_to_tokens(sample_text))
     tokens_per_haystack = sample_tokens / incremental
     estimated_max = int((max_seq_length / tokens_per_haystack) * 3)
     lower_bound, upper_bound = incremental, max(estimated_max, incremental * 2)
@@ -251,14 +244,7 @@ def _binary_search_noises(
         mid = (lower_bound + upper_bound) // 2
         text, _ = gen(mid)
         total = (
-            _count_prompt_tokens(
-                tokenizer,
-                text,
-                apply_template=apply_template,
-                template_token=template_token,
-            )
-            + example_tokens
-            + tokens_to_generate
+            len(tokenizer.text_to_tokens(text)) + example_tokens + tokens_to_generate
         )
         if total <= max_seq_length:
             optimal = mid

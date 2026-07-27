@@ -206,8 +206,9 @@ def _fit_haystack_size(
     template_token: int = 0,
 ) -> int:
     incremental = _incremental(type_haystack, max_seq_length)
+    max_seq_length -= template_token
     sample_prompt, _ = gen(incremental)
-    sample_tokens = len(tokenizer.text_to_tokens(sample_prompt)) + template_token
+    sample_tokens = len(tokenizer.text_to_tokens(sample_prompt))
     tokens_per_haystack = sample_tokens / incremental
     estimated_max = int((max_seq_length / tokens_per_haystack) * 3)
     lower_bound = incremental
@@ -216,9 +217,7 @@ def _fit_haystack_size(
     while lower_bound <= upper_bound:
         mid = (lower_bound + upper_bound) // 2
         prompt, _ = gen(mid)
-        total = (
-            len(tokenizer.text_to_tokens(prompt)) + template_token + tokens_to_generate
-        )
+        total = len(tokenizer.text_to_tokens(prompt)) + tokens_to_generate
         if total <= max_seq_length:
             optimal = mid
             lower_bound = mid + 1

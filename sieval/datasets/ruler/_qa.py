@@ -129,8 +129,9 @@ def _fit_num_docs(
     template_token: int = 0,
     incremental: int = 10,
 ) -> int:
+    max_seq_length -= template_token
     sample_input_text, _ = gen(0, incremental)
-    sample_tokens = len(tokenizer.text_to_tokens(sample_input_text)) + template_token
+    sample_tokens = len(tokenizer.text_to_tokens(sample_input_text))
     tokens_per_doc = sample_tokens / incremental
     estimated_max_docs = int((max_seq_length / tokens_per_doc) * 3)
     lower_bound = incremental
@@ -139,11 +140,7 @@ def _fit_num_docs(
     while lower_bound <= upper_bound:
         mid = (lower_bound + upper_bound) // 2
         input_text, _ = gen(0, mid)
-        total_tokens = (
-            len(tokenizer.text_to_tokens(input_text))
-            + template_token
-            + tokens_to_generate
-        )
+        total_tokens = len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
         if total_tokens <= max_seq_length:
             optimal = mid
             lower_bound = mid + 1

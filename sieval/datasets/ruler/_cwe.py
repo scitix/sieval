@@ -119,8 +119,9 @@ def _binary_search_words(
 ) -> int:
     from loguru import logger
 
+    max_seq_length -= template_token
     sample_text, _ = gen(min(4096, vocab_size))
-    sample_tokens = len(tokenizer.text_to_tokens(sample_text)) + template_token
+    sample_tokens = len(tokenizer.text_to_tokens(sample_text))
     tokens_per_word = sample_tokens / min(4096, vocab_size)
     estimated_max_words = int(max_seq_length // tokens_per_word) * 2
     lower_bound = incremental
@@ -141,11 +142,7 @@ def _binary_search_words(
     while lower_bound <= upper_bound:
         mid = (lower_bound + upper_bound) // 2
         input_text, _ = gen(mid)
-        total_tokens = (
-            len(tokenizer.text_to_tokens(input_text))
-            + template_token
-            + tokens_to_generate
-        )
+        total_tokens = len(tokenizer.text_to_tokens(input_text)) + tokens_to_generate
         if total_tokens <= max_seq_length:
             optimal = mid
             lower_bound = mid + 1
