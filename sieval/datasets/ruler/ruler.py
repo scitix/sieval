@@ -111,9 +111,8 @@ class RulerDatasetSample(TypedDict):
     ),
     source=(
         "local:paul_graham_essays/PaulGrahamEssays.json.gz",
-        # Staged for upstream parity but NOT load-bearing in the <=32k stable scope:
-        # CWE caps num_words at the wonderwords vocab, so the english_words.json
-        # fallback pool is never sampled (see _cwe.py `_word_pool` cap comment).
+        # CWE falls back to this pool once num_words exceeds the wonderwords vocab
+        # (~8k words), matching upstream (see _cwe.py `_get_example`).
         f"url:https://media.githubusercontent.com/media/NVIDIA/RULER/{_RULER_DATA_SHA}/scripts/data/synthetic/json/english_words.json",
         "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
         f"hf:{_HOTPOTQA_REPO_ID}@{_HOTPOTQA_REVISION}",

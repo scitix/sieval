@@ -67,7 +67,6 @@ def load_cwe(
     num_words = _binary_search_words(
         gen=gen,
         tokenizer=tokenizer,
-        vocab_size=len(words),
         max_seq_length=max_seq_length,
         tokens_to_generate=gen_budget,
         template_token=mtt,
@@ -111,33 +110,18 @@ def _binary_search_words(
     *,
     gen,
     tokenizer,
-    vocab_size: int,
     max_seq_length: int,
     tokens_to_generate: int,
     template_token: int = 0,
     incremental: int,
 ) -> int:
-    from loguru import logger
-
     max_seq_length -= template_token
-    sample_text, _ = gen(min(4096, vocab_size))
+    sample_text, _ = gen(4096)
     sample_tokens = len(tokenizer.text_to_tokens(sample_text))
-    tokens_per_word = sample_tokens / min(4096, vocab_size)
+    tokens_per_word = sample_tokens / 4096
     estimated_max_words = int(max_seq_length // tokens_per_word) * 2
     lower_bound = incremental
     upper_bound = max(estimated_max_words, incremental * 2)
-    # The wonderwords pool (~8k words) fills prompts to >=98% at <=32k but
-    # underfills at 64k/128k. We keep the cap and scope the `stable` contract to
-    # <=32k (see RulerZeroShotGenTask.reference_impl.notes); 64k/128k are
-    # experimental. Dropping the cap would route long contexts through the
-    # english_words.json fallback, which is not yet validated.
-    if upper_bound > vocab_size:
-        logger.warning(
-            f"RULER CWE: estimated word count {upper_bound} exceeds wonderwords "
-            f"vocab {vocab_size}; capping. Prompts at "
-            f"max_seq_length={max_seq_length} may underfill (expected at >32k)."
-        )
-        upper_bound = vocab_size
     optimal: int | None = None
     while lower_bound <= upper_bound:
         mid = (lower_bound + upper_bound) // 2
