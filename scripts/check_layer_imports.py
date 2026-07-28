@@ -1,7 +1,7 @@
 """
 Pre-commit hook: enforce sieval import policy.
 
-Two categories of check:
+Three categories of check:
 
 1. **Layer boundary imports** — each layer has a hard-coded set of sibling
    layers it must not import from. Current map:
@@ -30,9 +30,16 @@ Two categories of check:
      therefore a cross-package import written relatively. Flagged; use the
      absolute ``from sieval.a.b import X`` form.
 
-   This also closes a hole in check 2: its carve-out was written for
-   same-package relative imports but implemented as ``level > 0``, so a
-   ``from ..peer import _foo`` slipped past the private-name rule.
+   Checks 1 and 2 resolve relative imports to absolute (``_absolute_module``)
+   before their own rules run, so a violation written relatively is diagnosed
+   as what it is rather than only as a style error. Two holes this closed:
+
+   * Check 2's carve-out was written for same-package relative imports but
+     implemented as ``level > 0``, so ``from ..peer import _foo`` slipped past
+     the private-name rule.
+   * Check 1 matched on ``node.module`` alone, so ``from ...tasks import x`` in
+     ``core/`` went unreported — as did the absolute ``from sieval import
+     tasks``, which names the layer as an alias rather than in the module path.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
@@ -149,6 +156,20 @@ def _resolve_relative(file_pkg: str, level: int, module: str) -> str | None:
     return ".".join([*base, module]) if module else ".".join(base)
 
 
+def _absolute_module(node: ast.ImportFrom, file_pkg: str) -> str:
+    """Return the absolute dotted module *node* imports from, or ``""``.
+
+    Absolute imports (level 0) are returned as written; relative ones are
+    resolved against *file_pkg* so every rule sees the same absolute form.
+    Without this, ``node.module`` is only the bare tail (``"tasks"`` for
+    ``from ...tasks import x``) and each rule short-circuits on its ``sieval.``
+    prefix test. Empty when the level walks above the package root.
+    """
+    if node.level == 0:
+        return node.module or ""
+    return _resolve_relative(file_pkg, node.level, node.module or "") or ""
+
+
 def _is_within_subtree(file_pkg: str, root: str) -> bool:
     """Return True if *file_pkg* equals *root* or descends from it."""
     if not root:
@@ -190,12 +211,19 @@ def _subtree_violation(
 
 
 def _check_layer_imports(path: Path, tree: ast.AST) -> list[str]:
-    """Layer-boundary check (existing behavior)."""
-    forbidden = FORBIDDEN.get(_get_layer(path) or "")
+    """Layer-boundary check: flag imports of a layer this file must not reach.
+
+    Matches all three shapes a forbidden layer can be named in: the module path
+    (``import sieval.tasks`` / ``from sieval.tasks import X``, relative form
+    included via ``_absolute_module``) and the imported alias
+    (``from sieval import tasks``).
+    """
+    layer = _get_layer(path)
+    forbidden = FORBIDDEN.get(layer or "")
     if not forbidden:
         return []
+    file_pkg = _file_package(path)
     errors: list[str] = []
-    layer = _get_layer(path)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -206,14 +234,27 @@ def _check_layer_imports(path: Path, tree: ast.AST) -> list[str]:
                         f"{layer}/ must not import {parts[1]}/ "
                         f"({alias.name})"
                     )
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            parts = node.module.split(".")
+        elif isinstance(node, ast.ImportFrom):
+            module = _absolute_module(node, file_pkg)
+            parts = module.split(".")
             if len(parts) >= 2 and parts[0] == "sieval" and parts[1] in forbidden:
                 errors.append(
                     f"{path}:{node.lineno}: "
                     f"{layer}/ must not import {parts[1]}/ "
-                    f"({node.module})"
+                    f"({module})"
                 )
+            elif module == "sieval":
+                # `from sieval import tasks` names the layer as an imported
+                # alias, not in the module path — same violation, different
+                # shape. Reachable relatively too (`from ... import tasks`),
+                # which is what `_check_relative_scope` suggests as the fix.
+                for alias in node.names:
+                    if alias.name in forbidden:
+                        errors.append(
+                            f"{path}:{node.lineno}: "
+                            f"{layer}/ must not import {alias.name}/ "
+                            f"(sieval.{alias.name})"
+                        )
     return errors
 
 
@@ -248,15 +289,7 @@ def _check_private_access(path: Path, tree: ast.AST) -> list[str]:
             # relaxed.
             if node.level == 1:
                 continue
-            if node.level >= 2:
-                # Resolve to absolute so the rules below actually apply. Without
-                # this, `node.module` is the bare tail ("ir") and every rule
-                # short-circuits on the `sieval.` prefix test.
-                module = (
-                    _resolve_relative(file_pkg, node.level, node.module or "") or ""
-                )
-            else:
-                module = node.module or ""
+            module = _absolute_module(node, file_pkg)
             # Cover both `from sieval import _x` and `from sieval.pkg import …`.
             if module != "sieval" and not module.startswith("sieval."):
                 continue
