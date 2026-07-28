@@ -22,6 +22,18 @@ Two categories of check:
      subtree may reach into them. Peer-subpackage access or out-of-subtree
      access is flagged.
 
+3. **Relative-import scope** (the other half of CLAUDE.md `## Import Policy`:
+   "Same package: relative imports. Cross-package: absolute imports."):
+
+   * ``from .sibling import X`` (level 1) is same-package — always fine.
+   * ``from ..parent import X`` (level >= 2) escapes the package and is
+     therefore a cross-package import written relatively. Flagged; use the
+     absolute ``from sieval.a.b import X`` form.
+
+   This also closes a hole in check 2: its carve-out was written for
+   same-package relative imports but implemented as ``level > 0``, so a
+   ``from ..peer import _foo`` slipped past the private-name rule.
+
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
@@ -120,6 +132,23 @@ def _file_package(path: Path) -> str:
     return ".".join(parts[idx:-1])
 
 
+def _resolve_relative(file_pkg: str, level: int, module: str) -> str | None:
+    """Resolve a relative import to its absolute dotted module.
+
+    ``level`` follows :class:`ast.ImportFrom` semantics: 1 is the current
+    package, each extra level strips one trailing component. Returns ``None``
+    when *file_pkg* is unknown or the level walks above the package root.
+    """
+    if not file_pkg:
+        return None
+    parts = file_pkg.split(".")
+    strip = level - 1
+    if strip >= len(parts):
+        return None
+    base = parts[: len(parts) - strip] if strip else parts
+    return ".".join([*base, module]) if module else ".".join(base)
+
+
 def _is_within_subtree(file_pkg: str, root: str) -> bool:
     """Return True if *file_pkg* equals *root* or descends from it."""
     if not root:
@@ -211,11 +240,23 @@ def _check_private_access(path: Path, tree: ast.AST) -> list[str]:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            # Relative imports are same-package by construction; they are the
-            # carve-out that makes the `_base.py` sibling pattern legal.
-            if node.level > 0:
+            # Level-1 relative imports are same-package by construction; they
+            # are the carve-out that makes the `_base.py` sibling pattern legal.
+            # Level >= 2 escapes the package, so it is NOT covered by the
+            # carve-out — `_check_relative_scope` rejects it outright, and the
+            # private-name rule below must still see it if that check is ever
+            # relaxed.
+            if node.level == 1:
                 continue
-            module = node.module or ""
+            if node.level >= 2:
+                # Resolve to absolute so the rules below actually apply. Without
+                # this, `node.module` is the bare tail ("ir") and every rule
+                # short-circuits on the `sieval.` prefix test.
+                module = (
+                    _resolve_relative(file_pkg, node.level, node.module or "") or ""
+                )
+            else:
+                module = node.module or ""
             # Cover both `from sieval import _x` and `from sieval.pkg import …`.
             if module != "sieval" and not module.startswith("sieval."):
                 continue
@@ -251,6 +292,39 @@ def _check_private_access(path: Path, tree: ast.AST) -> list[str]:
     return errors
 
 
+def _check_relative_scope(path: Path, tree: ast.AST) -> list[str]:
+    """Reject relative imports that escape their own package (level >= 2).
+
+    CLAUDE.md `## Import Policy`: "Same package: relative imports. Cross-package:
+    absolute imports." A ``from ..parent import X`` is a cross-package import
+    written relatively, so it violates the second half of that rule.
+
+    Scoped to the sieval package only: ``scripts/`` files are standalone modules,
+    not a package, so a relative import there fails at runtime and needs no
+    lint. (The pre-commit hook feeds both trees; this check narrows on purpose.)
+    """
+    if _get_layer(path) is None:
+        return []
+    if "tests" in path.parts:
+        return []
+
+    file_pkg = _file_package(path)
+    errors: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level >= 2:
+            written = "." * node.level + (node.module or "")
+            absolute = _resolve_relative(file_pkg, node.level, node.module or "")
+            fix = f"; use `from {absolute} import ...`" if absolute else ""
+            errors.append(
+                f"{path}:{node.lineno}: "
+                f"cross-package relative import {written!r} — relative imports "
+                f"are for the same package only, use absolute across packages"
+                f"{fix}"
+            )
+    return errors
+
+
 def _check_file(path: Path) -> list[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -258,6 +332,7 @@ def _check_file(path: Path) -> list[str]:
         return []
     errors = _check_layer_imports(path, tree)
     errors.extend(_check_private_access(path, tree))
+    errors.extend(_check_relative_scope(path, tree))
     return errors
 
 

@@ -51,7 +51,7 @@ repos:
   - repo: local
     hooks:
       - id: layer-imports
-        name: check layer boundary + private-access imports
+        name: check layer boundary + private-access + relative-import scope
         entry: python scripts/check_layer_imports.py
         language: python
         types: [python]
