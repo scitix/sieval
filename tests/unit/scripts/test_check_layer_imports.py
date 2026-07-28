@@ -721,6 +721,17 @@ class TestCheckRelativeScope:
         )
         assert _check_relative_scope(f, ast.parse(f.read_text())) == []
 
+    def test_level_1_dotted_descent_is_allowed(self, tmp_path: Path):
+        # Rule 3 is the style half only: `from .sub.mod import X` crosses into a
+        # child package but reads as a local descent and is not flagged here.
+        # Checks 1 and 2 still see through it (see the integration tests).
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/foo.py",
+            "from .sub.mod import helper\n",
+        )
+        assert _check_relative_scope(f, ast.parse(f.read_text())) == []
+
     def test_level_2_parent_import_is_error(self, tmp_path: Path):
         f = self._write(
             tmp_path,
@@ -860,3 +871,68 @@ class TestCheckFileRelativeScopeIntegration:
         errors = _check_file(f)
         assert any("cross-package relative import" in e for e in errors)
         assert all("use `from" not in e for e in errors)
+
+    def test_level_1_dotted_into_child_private_module_is_caught(self, tmp_path: Path):
+        # Regression: narrowing the private-access carve-out to `level == 1` was
+        # still too wide. A DOTTED level-1 module walks down into a child
+        # subpackage, so `.sub._hidden` resolves to `sieval.tasks.sub._hidden`
+        # — owned by subtree `sieval.tasks.sub`, which the importer at
+        # `sieval.tasks` is an ancestor of, not a descendant. Out-of-subtree.
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/foo.py",
+            "from .sub._hidden import X\n",
+        )
+        errors = _check_file(f)
+        assert any(
+            "import from private module 'sieval.tasks.sub._hidden'" in e for e in errors
+        )
+        # Rule 3 is the style half and deliberately stays quiet on level-1.
+        assert not any("cross-package relative import" in e for e in errors)
+
+    def test_dotted_level_1_matches_its_absolute_spelling(self, tmp_path: Path):
+        # The point of resolving before the rules run: the same semantic import
+        # must get the same verdict whichever way it is spelled. This equivalence
+        # is what the carve-out bug broke.
+        rel = self._write(
+            tmp_path / "rel",
+            "sieval/tasks/foo.py",
+            "from .sub._hidden import X\n",
+        )
+        absolute = self._write(
+            tmp_path / "abs",
+            "sieval/tasks/foo.py",
+            "from sieval.tasks.sub._hidden import X\n",
+        )
+
+        def _strip(errors: list[str], base: Path) -> list[str]:
+            return sorted(e.replace(str(base), "") for e in errors)
+
+        assert _strip(_check_file(rel), tmp_path / "rel") == _strip(
+            _check_file(absolute), tmp_path / "abs"
+        )
+
+    def test_level_1_dotted_public_path_stays_clean(self, tmp_path: Path):
+        # No private segment, no private name — the tightened carve-out must not
+        # start flagging ordinary descents into a subpackage.
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/foo.py",
+            "from .sub.mod import helper\n",
+        )
+        assert _check_file(f) == []
+
+    def test_level_1_undotted_subpackage_private_name_stays_exempt(
+        self, tmp_path: Path
+    ):
+        # Documents the residual limit: `from .sub import _priv` is cross-package
+        # when `sub` is a package, but is syntactically identical to a sibling
+        # module (`from .mod import _priv`). Distinguishing them needs a
+        # filesystem lookup, which would make the verdict depend on checkout
+        # completeness — left exempt on purpose.
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/foo.py",
+            "from .sub import _priv\n",
+        )
+        assert _check_file(f) == []

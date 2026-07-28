@@ -30,16 +30,19 @@ Three categories of check:
      therefore a cross-package import written relatively. Flagged; use the
      absolute ``from sieval.a.b import X`` form.
 
-   Checks 1 and 2 resolve relative imports to absolute (``_absolute_module``)
-   before their own rules run, so a violation written relatively is diagnosed
-   as what it is rather than only as a style error. Two holes this closed:
+**Relative imports are resolved to absolute (``_absolute_module``) before any
+rule runs**, so a violation written relatively is diagnosed as what it is
+rather than only as an import-style error. Holes this closed:
 
-   * Check 2's carve-out was written for same-package relative imports but
-     implemented as ``level > 0``, so ``from ..peer import _foo`` slipped past
-     the private-name rule.
-   * Check 1 matched on ``node.module`` alone, so ``from ...tasks import x`` in
-     ``core/`` went unreported — as did the absolute ``from sieval import
-     tasks``, which names the layer as an alias rather than in the module path.
+* Check 2's carve-out was written for same-package relative imports but
+  implemented as ``level > 0``, so ``from ..peer import _foo`` slipped past the
+  private-name rule. Narrowing it to ``level == 1`` alone was still too wide —
+  a *dotted* level-1 module walks DOWN into a child subpackage, so
+  ``from .sub._hidden import X`` escaped as well. ``_check_private_access``
+  documents the residual limit.
+* Check 1 matched on ``node.module`` alone, so ``from ...tasks import x`` in
+  ``core/`` went unreported — as did the absolute ``from sieval import
+  tasks``, which names the layer as an alias rather than in the module path.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
@@ -281,13 +284,26 @@ def _check_private_access(path: Path, tree: ast.AST) -> list[str]:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            # Level-1 relative imports are same-package by construction; they
-            # are the carve-out that makes the `_base.py` sibling pattern legal.
-            # Level >= 2 escapes the package, so it is NOT covered by the
-            # carve-out — `_check_relative_scope` rejects it outright, and the
-            # private-name rule below must still see it if that check is ever
-            # relaxed.
-            if node.level == 1:
+            # Carve-out: a level-1 relative import with an UNDOTTED module is
+            # same-package, which is what makes the `_base.py` sibling pattern
+            # legal. Both other shapes escape the package and must still reach
+            # the rules below:
+            #   * level >= 2 walks UP out of the package (`from .._x import _y`);
+            #     `_check_relative_scope` also rejects it outright, but the
+            #     private rules must see it if that check is ever relaxed.
+            #   * a dotted level-1 module walks DOWN into a child subpackage —
+            #     `from .sub._hidden import X` resolves to
+            #     `sieval.pkg.sub._hidden`, whose owning subtree is
+            #     `sieval.pkg.sub`. The importer at `sieval.pkg` is an ancestor,
+            #     not a descendant, so that access is out-of-subtree.
+            # Residual limit: an undotted level-1 module naming a *subpackage*
+            # (`from .sub import _priv`) is cross-package too, but is
+            # syntactically identical to a sibling *module* (`from .mod import
+            # _priv`) — telling them apart needs a filesystem lookup, which
+            # would make the verdict depend on checkout completeness. Left
+            # exempt on purpose; the dotted form above is where a private
+            # module segment can actually appear mid-path.
+            if node.level == 1 and "." not in (node.module or ""):
                 continue
             module = _absolute_module(node, file_pkg)
             # Cover both `from sieval import _x` and `from sieval.pkg import …`.
@@ -331,6 +347,13 @@ def _check_relative_scope(path: Path, tree: ast.AST) -> list[str]:
     CLAUDE.md `## Import Policy`: "Same package: relative imports. Cross-package:
     absolute imports." A ``from ..parent import X`` is a cross-package import
     written relatively, so it violates the second half of that rule.
+
+    Deliberately *not* flagged: a dotted level-1 module (``from .sub.mod import
+    X``) also crosses into a child package, but reads as a local descent and is
+    idiomatic enough that banning it outright buys little. It is still resolved
+    to absolute for checks 1 and 2, so the rules that matter — layer boundaries
+    and private-module protection — see through it either way. This check is the
+    style half only.
 
     Scoped to the sieval package only: ``scripts/`` files are standalone modules,
     not a package, so a relative import there fails at runtime and needs no

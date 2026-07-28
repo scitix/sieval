@@ -1048,11 +1048,21 @@ class PreflightRunner:
         if not script.exists():
             return [CheckResult("FAIL", "check_imports", f"script not found: {script}")]
 
-        # Must match the pre-commit hook's `files:` filter in
+        # Matches the pre-commit hook's `files:` filter in
         # `.pre-commit-config.yaml` (^(sieval|scripts)/). Narrowing here to
         # `sieval/` only would leave the script's `in_scripts` branch untested
         # by preflight while still running in pre-commit — two enforcement
         # surfaces silently diverging.
+        #
+        # KNOWN divergence, not parity: pre-commit additionally applies the
+        # global `exclude: ^(sieval/community/|vendor/)`, so it skips
+        # `sieval/community/` while this wrapper checks it. Inert today (every
+        # relative import under `community/` is a bare level-1 `from . import
+        # x`), but a future vendored drop using `from ..x import y` would pass
+        # pre-commit and fail preflight, and the only offered fix would be to
+        # edit code kept byte-identical to upstream. Fixing it is a design call
+        # — hoisting the exemption into `_check_file` would also drop the
+        # private-access check's coverage of `community/`.
         enforced_py = [
             f
             for f in self._git_tracked_files(".py")
