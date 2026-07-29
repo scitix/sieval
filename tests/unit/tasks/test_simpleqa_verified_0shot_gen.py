@@ -113,7 +113,8 @@ async def test_infer_forwards_n():
 
 @pytest.mark.anyio
 async def test_feedback_grades_and_records_provenance():
-    task, _ = _task(grader_reply="A")
+    reply = "The predicted answer matches the gold target.\nA"
+    task, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
     finalize, feedbacks = await task.feedback(["William Shakespeare"], ctx)
 
@@ -124,6 +125,11 @@ async def test_feedback_grades_and_records_provenance():
     assert fb["gold"] == "William Shakespeare"
     assert fb["predicted"] == "William Shakespeare"
     assert fb["grader_model"] == "grader-4.1"
+    # Kept verbatim and in full even when the grade parsed cleanly — a
+    # wrong-but-parsed verdict is unauditable without it. Multi-line, with
+    # prose the A/B/C parse discards, so storing only the matched letter (or
+    # only on parse failure) fails here.
+    assert fb["grader_reply"] == reply
 
 
 @pytest.mark.anyio
@@ -132,6 +138,21 @@ async def test_feedback_empty_grader_reply_is_not_attempted():
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
     _, feedbacks = await task.feedback(["some answer"], ctx)
     assert feedbacks[0]["grade"] == "NOT_ATTEMPTED"
+    assert feedbacks[0]["grader_reply"] == ""
+
+
+@pytest.mark.anyio
+async def test_feedback_persists_reply_behind_not_attempted_default():
+    # `parse_grade` defaults any non-matching reply to NOT_ATTEMPTED, which the
+    # F1 treats very differently from INCORRECT. The grade alone cannot say
+    # whether the candidate really abstained or the grader drifted off format;
+    # the persisted reply can.
+    reply = "I cannot classify this response into the given options."
+    task, _ = _task(grader_reply=reply)
+    ctx = TaskContext(sample_id=0, raw_sample=_sample())
+    _, feedbacks = await task.feedback(["some answer"], ctx)
+    assert feedbacks[0]["grade"] == "NOT_ATTEMPTED"
+    assert feedbacks[0]["grader_reply"] == reply
 
 
 # --- report: F1 aggregation matches simple-evals ---

@@ -21,6 +21,8 @@ Deviations from upstream (``hle_eval`` @ 26dca2e; see ``sieval.community.hle``):
 * The judge is reached through ``ChatModel`` (text), not upstream's
   ``beta.chat.completions.parse`` structured output; its ``correct``/``confidence``
   fields are parsed from the reply (see ``sieval.community.hle.parse_judge``).
+  Upstream's server-enforced schema makes a malformed reply near-impossible; the
+  text path widens that failure surface, so the reply itself is persisted.
 * Calibration error is guarded below the bin size for slices/tests (docs there).
 
 Subset selection is a sieval addition too, but it lives on ``HLEDataset``, so
@@ -35,10 +37,14 @@ override these (e.g. a technical report may evaluate at ``temperature=1.0``,
 Grader is a REAL LLM supplied via the ``grader`` task arg on its own
 ``api_base``/``api_key``. Correctness depends on the judge endpoint's model
 version (not pinnable like a Hub revision) — pin the grader model for
-reproducibility; each sample's ``correct``, ``confidence``, ``judge_parsed`` and
-grader model id are persisted in the feedback record. The judge's decoding is
-likewise model-layer (set via the ``grader`` config); upstream runs it at
-``max_completion_tokens=4096``.
+reproducibility; each sample's ``correct``, ``confidence``, ``judge_parsed``,
+grader model id and the judge's verbatim reply (``grader_reply``) are persisted
+in the feedback record. Since re-running an unpinnable judge is not guaranteed
+to reproduce a past verdict, that reply is the only durable evidence of what the
+judge actually said, and the only way to tell a truncated or format-drifted
+reply from a genuine matcher gap behind the ``judge_unparsed`` count. The
+judge's decoding is likewise model-layer (set via the ``grader`` config);
+upstream runs it at ``max_completion_tokens=4096``.
 
 Target: report against technical-report HLE numbers (e.g. the GLM series
 evaluates the text-only subset with a strong LLM judge, such as GPT-5.2); the
@@ -76,6 +82,14 @@ class JudgeFeedback(TypedDict):
     gold: str
     predicted: str
     grader_model: str
+    # The judge's reply verbatim — the text every field above is derived from,
+    # stored in full on every attempt. When `judge_parsed` is False it is the
+    # only evidence of *why* (truncation, format drift, API error, a genuine
+    # matcher gap all look identical in the `judge_unparsed` count alone). Kept
+    # for parsed replies too: a wrong-but-parsed verdict moves the score and is
+    # unauditable without it, and the grader model version is not pinnable like
+    # a Hub revision, so re-running the judge need not reproduce a past verdict.
+    grader_reply: str
 
 
 @sieval_task(
@@ -108,7 +122,11 @@ class JudgeFeedback(TypedDict):
             "supplied via the `grader` task arg on its own api_base/api_key. "
             "REPRODUCIBILITY: scores depend on the judge endpoint's model version "
             "(not pinnable like a Hub revision) — pin the grader model; the "
-            "per-sample correct/confidence and grader model id are persisted. "
+            "per-sample correct/confidence, grader model id, and the judge's "
+            "verbatim reply (grader_reply) are persisted. The reply is the only "
+            "durable evidence of a verdict an unpinnable judge need not "
+            "reproduce, and what distinguishes a truncated/format-drifted reply "
+            "from a matcher gap behind the judge_unparsed count. "
             "VALIDATION: gpt-oss-20b scored 12.14 / 3.61 (reasoning=high / low, "
             "judge GPT-5.2, text-only, no tools) vs the gpt-oss model card "
             "(arXiv:2508.10925) 10.9 / 4.2 — within <3pp."
@@ -202,6 +220,7 @@ class HLEZeroShotGenTask(
                     "gold": gold,
                     "predicted": predicted,
                     "grader_model": grader_model,
+                    "grader_reply": reply,
                 }
             )
         return True, feedbacks

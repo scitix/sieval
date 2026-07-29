@@ -13,16 +13,21 @@ pre-built Model, on its own ``api_base``/``api_key``); the official checker is
 Qwen3 235B A22B 2507 Non-reasoning. Unlike sieval's deterministic-grader tasks,
 correctness depends on a real grader model whose version sieval cannot pin the
 way it pins a Hub revision, so for reproducibility pin the grader model and set
-``temperature: 0``; each sample's grade and the grader model id are persisted in
-the feedback record.
+``temperature: 0``; each sample's grade, the grader model id, and the checker's
+verbatim reply (``grader_reply``) are persisted in the feedback record. Since
+re-grading an unpinnable checker is not guaranteed to reproduce a past verdict,
+that reply is the only durable evidence of what it actually said — and since
+``parse_grade`` resolves anything it cannot read to INCORRECT, the only way to
+tell a format-drifted or errored reply from a real negative verdict.
 
 Deviations / by-design behavior worth knowing:
 
 * An empty/whitespace candidate answer (e.g. the model exhausted its token
   budget mid-reasoning) is graded INCORRECT **without** invoking the grader —
   the checker returns CORRECT for an empty candidate, which would otherwise
-  inflate accuracy. Pipeline failures are likewise counted INCORRECT (full-set
-  metric).
+  inflate accuracy. ``grader_reply`` is empty on this path because no checker
+  call was made; the empty ``predicted`` in the same record identifies it.
+  Pipeline failures are likewise counted INCORRECT (full-set metric).
 
 Serving requirement — inputs run 71k–114k tokens, so ``max_tokens`` must leave
 input + output inside the context window (e.g. 16384 against gpt-oss's 131072).
@@ -73,6 +78,14 @@ class GradeFeedback(TypedDict):
     gold: str
     predicted: str
     grader_model: str
+    # The checker's reply verbatim — the text `grade` is derived from, stored in
+    # full on every attempt. `parse_grade` resolves anything it cannot read to
+    # INCORRECT, so without this a format-drifted or errored reply is
+    # indistinguishable from a real negative verdict; and the grader model
+    # version is not pinnable like a Hub revision, so re-grading need not
+    # reproduce a past verdict. Empty on the empty-candidate short-circuit
+    # below, where the checker is never called.
+    grader_reply: str
     question_id: int
 
 
@@ -102,13 +115,19 @@ class GradeFeedback(TypedDict):
             "api_base/api_key. REPRODUCIBILITY: unlike deterministic-grader "
             "tasks, scores depend on the grader endpoint's model version (not "
             "pinnable like a Hub revision) — pin the grader model + "
-            "temperature=0; the per-sample grade and grader model id are "
-            "persisted in the feedback record. Documents are prompted in "
+            "temperature=0; the per-sample grade, grader model id, and the "
+            "checker's verbatim reply (grader_reply) are persisted in the "
+            "feedback record — the reply is the only durable evidence of a "
+            "verdict an unpinnable checker need not reproduce, and (since "
+            "parse_grade resolves anything unreadable to INCORRECT) the only "
+            "way to tell a format-drifted reply from a real negative. Documents "
+            "are prompted in "
             "data_source_filenames order (loader-guaranteed), per the card. "
             "DEVIATION (the port's only score-affecting one): empty/whitespace "
             "candidates are graded INCORRECT without invoking the checker — the "
             "checker returns CORRECT on an empty candidate, which would inflate "
-            "accuracy. REPEATS: AA-LCR uses n=3 (pass@1 aggregated across "
+            "accuracy (grader_reply is empty there, no call made). "
+            "REPEATS: AA-LCR uses n=3 (pass@1 aggregated across "
             "attempts); `n` is a task arg (tasks.<name>.args.n), NOT a model "
             "arg — infer forwards it call-time and call-time wins, so setting "
             "`n` on the model is overridden by the task default n=1. "
@@ -190,6 +209,11 @@ class AALCRZeroShotGenTask(
             # ~100k-token prompts can yield empty answers.
             if not predicted.strip():
                 grade = "INCORRECT"
+                # No checker call, so no reply to record. Empty here is not
+                # confusable with "the checker returned nothing": this branch is
+                # exactly `not predicted.strip()`, so an empty `predicted` in
+                # the record identifies it.
+                reply = ""
             else:
                 prompt = GRADER_TEMPLATE.format(
                     question=question,
@@ -205,6 +229,7 @@ class AALCRZeroShotGenTask(
                     "gold": gold,
                     "predicted": predicted,
                     "grader_model": grader_model,
+                    "grader_reply": reply,
                     "question_id": question_id,
                 }
             )
