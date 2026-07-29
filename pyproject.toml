@@ -180,6 +180,7 @@ include = [
   "sieval/datasets/ruler/_niah.py",
   "sieval/datasets/ruler/_cwe.py",
   "tests/unit/datasets/test_ruler.py",
+  "tests/unit/datasets/test_ruler_cwe.py",
   "tests/unit/datasets/test_ruler_shared.py",
 ]
 
