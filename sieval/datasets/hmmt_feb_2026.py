@@ -40,11 +40,10 @@ class HMMTFeb2026Dataset(Dataset[HMMTFeb2026DatasetSample]):
     def _strip_sample(
         self, sample: HMMTFeb2026DatasetSample
     ) -> HMMTFeb2026DatasetSample:
-        # Normalize the gold answer only; the problem text stays verbatim.
-        # strip_string is an answer normalizer (rewrites \frac/\sqrt, drops
-        # \left/\right) and mangles full problem LaTeX — e.g. "1, 2, ..., n" becomes
-        # "1, 2, 0..., n". DEVIATION: matharena does not normalize golds at all;
-        # sieval does so math-verify compares canonical forms.
+        # Gold answer only; problem text stays verbatim — strip_string normalizes
+        # answers (rewrites \frac/\sqrt, drops \left/\right) and mangles problem
+        # LaTeX ("1, 2, ..., n" -> "1, 2, 0..., n"). DEVIATION: matharena does
+        # not normalize golds; sieval does, so math-verify compares canonical forms.
         sample["answer"] = strip_string(sample["answer"])
         return sample
 
@@ -53,10 +52,9 @@ class HMMTFeb2026Dataset(Dataset[HMMTFeb2026DatasetSample]):
         # MathArena exposes a single `default` config under the `train` split with
         # columns problem / answer / problem_idx, kept under their upstream names.
         dataset = ensure_dataset(load_dataset(name_or_path, split="train", **kwargs))
-        # No dtype cast: `answer` is `string` in the pinned snapshot, so the
-        # `answer: str` contract holds from upstream and `.map` preserves it across
-        # _strip_sample. MathArena's answer dtype varies per competition, so a
-        # sibling loader casting is a fact about its own pin, not a family rule.
+        # No dtype cast: `answer` is already `string` in the pinned snapshot and
+        # `.map` preserves it. MathArena's answer dtype varies per competition, so a
+        # sibling loader's cast is a fact about its own pin, not a family rule.
         dataset = dataset.map(self._strip_sample, num_proc=os.cpu_count())
         # the test split is the same as the train split
         return HFDatasetDict(

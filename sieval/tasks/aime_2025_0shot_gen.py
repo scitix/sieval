@@ -53,9 +53,8 @@ class AIME2025ZeroShotGenTask(
         if k > n:
             raise ValueError(
                 f"pass@{k} needs at least {k} sample(s) per problem, got n={n}. "
-                "Raise the task arg `n` (tasks.<name>.args.n) to at least k — `n` "
-                "is a task arg, not a model arg: the task forwards it call-time "
-                "and call-time wins over the model's configured args."
+                "Raise the task arg `n` (tasks.<name>.args.n) to at least k — "
+                "setting `n` on the model is silently overridden call-time."
             )
         self._k = k
         self._n = n
@@ -105,8 +104,7 @@ class AIME2025ZeroShotGenTask(
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
         if total == 0:
-            # Emit the same key set as the populated path below, so a consumer
-            # reading `pass@1` does not KeyError on an empty run.
+            # Same key set as the populated path, so `pass@1` never KeyErrors.
             return self._metrics(0.0, 0.0, len(fails))
 
         pass_at_1_total = 0.0
@@ -124,14 +122,13 @@ class AIME2025ZeroShotGenTask(
 
         if short:
             logger.warning(
-                "{}/{} sample(s) returned fewer than k={} choices, contributing 0 "
-                "to pass@{}: the model produced fewer choices than the requested "
-                "n={}.",
+                "{}/{} sample(s) returned fewer than k={} choices (model produced "
+                "fewer than the requested n={}) and contribute 0 to pass@{}.",
                 short,
                 len(finals),
                 self._k,
-                self._k,
                 self._n,
+                self._k,
             )
 
         return self._metrics(
@@ -143,8 +140,7 @@ class AIME2025ZeroShotGenTask(
     def _metrics(
         self, pass_at_1: float, pass_at_k: float, fails: int
     ) -> dict[str, float]:
-        # Single source of truth for the report key set — the empty-run branch and
-        # the populated branch must not drift apart.
+        # Single source of truth for the report key set — both branches route here.
         metrics = {"score": pass_at_1, "fails": fails, "pass@1": pass_at_1}
         if self._k > 1:
             metrics[f"pass@{self._k}"] = pass_at_k
@@ -152,9 +148,8 @@ class AIME2025ZeroShotGenTask(
 
     def _pass_at_k(self, n: int, c: int, k: int) -> float:
         if n < k:
-            # Unreachable by configuration: __init__ rejects k > n. Only a model
-            # that returned fewer choices than requested reaches this, and report()
-            # warns about it so the 0 contribution is visible rather than silent.
+            # Unreachable by config (__init__ rejects k > n); only a model that
+            # returned fewer choices than requested lands here, and report() warns.
             return 0.0
         if c == 0:
             return 0.0

@@ -8,10 +8,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Import sieval from THIS checkout, which is also where the index is written.
-# `python scripts/sync_meta_index.py` puts scripts/ on sys.path[0] and never adds
-# the repo root, so `import sieval` otherwise resolves through the editable
-# install — in a git worktree that is a different checkout, and the script would
-# happily write the other branch's registry here.
+# `python scripts/x.py` puts scripts/ on sys.path[0] but never the repo root, so
+# `import sieval` otherwise resolves through the editable install — from a
+# worktree that is a different checkout, whose registry would be written here.
 sys.path.insert(0, str(ROOT))
 
 from sieval.core.datasets.meta import (  # noqa: E402

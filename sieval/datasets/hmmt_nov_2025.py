@@ -40,13 +40,12 @@ class HMMTNov2025Dataset(Dataset[HMMTNov2025DatasetSample]):
     def _strip_sample(
         self, sample: HMMTNov2025DatasetSample
     ) -> HMMTNov2025DatasetSample:
-        # Normalize the gold answer only; the problem text stays verbatim.
-        # strip_string is an answer normalizer (rewrites \frac/\sqrt, drops
-        # \left/\right) and mangles full problem LaTeX — e.g. \sqrt[20]{x} becomes
-        # \sqrt{[}20]{x}. DEVIATION: matharena does not normalize golds at all;
-        # sieval does so math-verify compares canonical forms. Score-neutral on this
-        # snapshot — it rewrites 3 of 30 golds (1/91 -> \frac{1}{91}, 91/6, 199/8),
-        # all of which math-verify already treats as equivalent.
+        # Gold answer only; problem text stays verbatim — strip_string normalizes
+        # answers (rewrites \frac/\sqrt, drops \left/\right) and mangles problem
+        # LaTeX (\sqrt[20]{x} -> \sqrt{[}20]{x}). DEVIATION: matharena does not
+        # normalize golds; sieval does, so math-verify compares canonical forms.
+        # Score-neutral here: 3 of 30 golds change (1/91 -> \frac{1}{91}, 91/6,
+        # 199/8), all already equivalent under math-verify.
         sample["answer"] = strip_string(sample["answer"])
         return sample
 
@@ -55,10 +54,9 @@ class HMMTNov2025Dataset(Dataset[HMMTNov2025DatasetSample]):
         # MathArena exposes a single `default` config under the `train` split with
         # columns problem_idx / problem / answer, kept under their upstream names.
         dataset = ensure_dataset(load_dataset(name_or_path, split="train", **kwargs))
-        # No dtype cast: `answer` is `string` in the pinned snapshot, so the
-        # `answer: str` contract holds from upstream and `.map` preserves it across
-        # _strip_sample. MathArena's answer dtype varies per competition, so a
-        # sibling loader casting is a fact about its own pin, not a family rule.
+        # No dtype cast: `answer` is already `string` in the pinned snapshot and
+        # `.map` preserves it. MathArena's answer dtype varies per competition, so a
+        # sibling loader's cast is a fact about its own pin, not a family rule.
         dataset = dataset.map(self._strip_sample, num_proc=os.cpu_count())
         # the test split is the same as the train split
         return HFDatasetDict(

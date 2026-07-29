@@ -24,10 +24,9 @@ if TYPE_CHECKING:
     from sieval.core.datasets.meta import DatasetMeta
 
 # Check THIS checkout, which is also the tree the path-based checks walk.
-# `python scripts/check_preflight.py` puts scripts/ on sys.path[0] and never adds
-# the repo root, so the registry imports below otherwise resolve through the
-# editable install — in a git worktree that is a different checkout, and the run
-# would validate the other branch's code while reporting on this one.
+# `python scripts/x.py` puts scripts/ on sys.path[0] but never the repo root, so
+# the registry imports below otherwise resolve through the editable install —
+# from a worktree, that validates another branch while reporting on this one.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Known import-name → package-name mismatches

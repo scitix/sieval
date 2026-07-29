@@ -38,12 +38,10 @@ class AIME2026DatasetSample(TypedDict):
 )
 class AIME2026Dataset(Dataset[AIME2026DatasetSample]):
     def _strip_sample(self, sample: AIME2026DatasetSample) -> AIME2026DatasetSample:
-        # Normalize the gold answer only; the problem text stays verbatim.
-        # strip_string is an answer normalizer (it rewrites \frac/\sqrt, drops
-        # \left/\right) and mangles full problem LaTeX — e.g. \sqrt[20]{x} becomes
-        # \sqrt{[}20]{x} and \tfrac pq becomes \frac{ }{p}q. DEVIATION: matharena
-        # does not normalize golds at all; sieval does so math-verify compares
-        # canonical forms.
+        # Gold answer only; problem text stays verbatim — strip_string normalizes
+        # answers (rewrites \frac/\sqrt, drops \left/\right) and mangles problem
+        # LaTeX (\sqrt[20]{x} -> \sqrt{[}20]{x}). DEVIATION: matharena does not
+        # normalize golds; sieval does, so math-verify compares canonical forms.
         sample["answer"] = strip_string(sample["answer"])
         return sample
 

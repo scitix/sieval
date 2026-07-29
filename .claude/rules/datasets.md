@@ -13,21 +13,15 @@ paths:
 ## Upstream Sample Shape
 
 There is no shared cross-benchmark sample schema — every Task binds 1:1 to its own sample
-`TypedDict`, so nothing downstream benefits from two loaders agreeing on a field name or a
-dtype. Both rules below therefore start from "what does the pinned revision actually ship",
-not "what does the sibling loader do".
+`TypedDict`, so nothing downstream gains from two loaders agreeing on a field name or dtype.
 
 - **Keep upstream field names.** Rename only when the upstream name is unusable as-is (not a
-  valid identifier, e.g. `Short Answer`; or it collides). Never rename for uniformity with a
-  sibling loader — a rename is a permanent divergence from the upstream card that every future
-  reader has to reconcile.
-- **Cast a column's dtype only when the pinned revision requires it.** Measure the pinned
-  snapshot (HF datasets-server, or just load it) instead of copying a sibling: a cast that
-  matches the dtype upstream already ships is a no-op that reads as a guarantee. Content-inferred
-  dtypes (CSV/JSON parsing) and mismatched dtypes are the load-bearing cases.
-- Either way, say **which case it is** in a comment — including when the answer is "no cast
-  needed, upstream already ships this dtype". Otherwise the next edit that restores uniformity
-  looks like a cleanup.
+  valid identifier, e.g. `Short Answer`, or it collides) — never for uniformity with a sibling.
+- **Cast a column's dtype only when the pinned revision requires it.** Measure the snapshot
+  instead of copying a sibling; a cast matching the dtype upstream already ships is a no-op that
+  reads as a guarantee. CSV/JSON content-inferred dtypes are the load-bearing case.
+- Say **which case it is** in a comment, including "no cast needed, upstream ships this dtype" —
+  otherwise restoring uniformity looks like a cleanup.
 
 ## Dataset Metadata: `@sieval_dataset`
 

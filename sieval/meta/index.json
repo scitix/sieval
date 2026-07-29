@@ -790,7 +790,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/aime/aime_2026.yaml",
-        "notes": "MathArena-aligned: boxed prompt + 0-999 integer hint, last-boxed extraction; equivalence via math-verify. REPEATS: matharena's runner defaults to `--n 4` and its published leaderboard averages 4 runs per problem, while this task defaults to n=1 — set n=4 to compare against matharena.ai. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string before comparison; matharena does not normalize golds."
+        "notes": "MathArena-aligned: boxed prompt + 0-999 integer hint, last-boxed extraction; equivalence via math-verify. REPEATS: matharena averages 4 runs per problem (runner default `--n 4`) while this task defaults to n=1 — set n=4 to compare against matharena.ai, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
       },
       "status": "stable"
     },
@@ -1108,7 +1108,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2025.yaml",
-        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena's runner defaults to `--n 4` and its published leaderboard averages 4 runs per problem, while this task defaults to n=1 — set n=4 to compare against matharena.ai. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string before comparison; matharena does not normalize golds."
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena averages 4 runs per problem (runner default `--n 4`) while this task defaults to n=1 — set n=4 to compare against matharena.ai, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
       },
       "status": "stable"
     },
@@ -1128,7 +1128,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2026.yaml",
-        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena's runner defaults to `--n 4` and its published leaderboard averages 4 runs per problem, while this task defaults to n=1 — set n=4 to compare against matharena.ai. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string before comparison; matharena does not normalize golds."
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena averages 4 runs per problem (runner default `--n 4`) while this task defaults to n=1 — set n=4 to compare against matharena.ai, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
       },
       "status": "stable"
     },
@@ -1148,7 +1148,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
-        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena's runner defaults to `--n 4` and its published leaderboard averages 4 runs per problem, while this task defaults to n=1 — set n=4 to compare against matharena.ai. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string before comparison; matharena does not normalize golds."
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena averages 4 runs per problem (runner default `--n 4`) while this task defaults to n=1 — set n=4 to compare against matharena.ai, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
       },
       "status": "stable"
     },
@@ -1314,7 +1314,7 @@
       "reference_impl": {
         "source": "simple-evals",
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
-        "notes": "Math postprocess aligned with simple-evals. REPEATS: simple-evals' MathEval defaults to n_repeats=16 and its CLI `math` entry passes 10, while this task defaults to n=1 — set n=10 (or 16) to match. pass@1 over n samples equals simple-evals' mean over n repeated examples, so the two are directly comparable. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. Scope: those upstream defaults belong to the full math_test split; MATH-500 is simple-evals' math_500_test."
+        "notes": "Math postprocess aligned with simple-evals. REPEATS: simple-evals' MathEval defaults to n_repeats=16, its CLI `math` entry passes 10, while this task defaults to n=1 — set n=10 (or 16) to match, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. pass@1 over n samples equals its mean over n repeats. k>n is rejected at construction. Scope: those upstream defaults are for the full math_test split; MATH-500 is simple-evals' math_500_test."
       },
       "status": "stable"
     },
