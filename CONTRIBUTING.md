@@ -75,11 +75,19 @@ See [tests/README.md](tests/README.md) for mock infrastructure and full command 
 
 ## Adding a New Benchmark
 
-1. Create dataset in `sieval/datasets/`
+1. Create dataset in `sieval/datasets/` — keep the upstream field names and only cast a column's
+   dtype if the pinned revision actually requires it; renaming or casting for uniformity with a
+   sibling loader is divergence, not consistency (each Task binds 1:1 to its own sample `TypedDict`,
+   so no consumer needs a shared shape)
 2. Create task in `sieval/tasks/` — file naming: `<task>_<N>shot_<mode>.py` (see `sieval/tasks/CLAUDE.md`)
-3. Add unit tests under `tests/unit/datasets/` and `tests/unit/tasks/` mirroring the source layout
-4. Run `python scripts/sync_package_stubs.py` and `python scripts/sync_meta_index.py` to regenerate type stubs and the registry
-5. Third-party evaluation code goes in `sieval/community/` with proper attribution
+3. If the reference implementation repeats sampling (e.g. `n_repeats`, `--n 4`) and your task's
+   default `n` differs, record that in `reference_impl.notes` along with how to match it — otherwise
+   scores look comparable to the reference when they are not
+4. Add unit tests under `tests/unit/datasets/` and `tests/unit/tasks/` mirroring the source layout
+5. Run `python scripts/sync_package_stubs.py` and `python scripts/sync_meta_index.py` to regenerate
+   type stubs and the registry, then `--check` both to confirm nothing is left dirty — CI fails on a
+   stale `meta/index.json`
+6. Third-party evaluation code goes in `sieval/community/` with proper attribution
 
 ## Submitting Changes
 
