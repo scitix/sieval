@@ -21,6 +21,7 @@ def load_cwe(
     enable_thinking: bool,
     think_budget: int = 0,
     model_name: str = "qwen3",
+    reserve_think_budget: bool | None = None,
     freq_cw: int,
     freq_ucw: int,
     num_cw: int,
@@ -33,6 +34,7 @@ def load_cwe(
         model_name=model_name,
         context_length=max_seq_length,
         for_dataset=True,
+        reserve_think_budget=reserve_think_budget,
     )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
     # Upstream template reserve, computed once (sample-invariant).
@@ -162,6 +164,12 @@ def _get_example(
     if num_words <= len(words):
         word_list_full = random.sample(words, num_words)
     else:
+        if not randle_words:
+            raise FileNotFoundError(
+                "CWE at this context length needs the english_words.json fallback "
+                "word pool (missing or empty). Run `sieval dataset download ruler` "
+                "to fetch it."
+            )
         word_list_full = random.sample(randle_words, num_words)
     common, uncommon = word_list_full[:common_nums], word_list_full[common_nums:]
     word_list = common * int(common_repeats) + uncommon * int(uncommon_repeats)

@@ -50,6 +50,7 @@ def load_vt(
     enable_thinking: bool,
     think_budget: int = 0,
     model_name: str = "qwen3",
+    reserve_think_budget: bool | None = None,
     num_chains: int,
     num_hops: int,
     type_haystack: str,
@@ -61,6 +62,7 @@ def load_vt(
         model_name=model_name,
         context_length=max_seq_length,
         for_dataset=True,
+        reserve_think_budget=reserve_think_budget,
     )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
     # Upstream template reserve, computed once (sample-invariant).

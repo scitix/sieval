@@ -142,6 +142,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
         enable_thinking: bool = False,
         think_budget: int = 0,
         model_name: str = "qwen3",
+        reserve_think_budget: bool | None = None,
         # NIAH needle/haystack config is fixed per subtask by _NIAH_SUBTASK_KWARGS,
         # so it is not exposed as a load() knob (a stray value would do nothing).
         # CWE-specific
@@ -193,6 +194,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                     enable_thinking=enable_thinking,
                     think_budget=think_budget,
                     model_name=model_name,
+                    reserve_think_budget=reserve_think_budget,
                     num_needle_k=niah_kwargs["num_needle_k"],
                     num_needle_v=niah_kwargs["num_needle_v"],
                     num_needle_q=niah_kwargs["num_needle_q"],
@@ -212,6 +214,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                     enable_thinking=enable_thinking,
                     think_budget=think_budget,
                     model_name=model_name,
+                    reserve_think_budget=reserve_think_budget,
                     num_chains=num_chains,
                     num_hops=num_hops,
                     type_haystack="noise",
@@ -228,6 +231,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                     enable_thinking=enable_thinking,
                     think_budget=think_budget,
                     model_name=model_name,
+                    reserve_think_budget=reserve_think_budget,
                     freq_cw=freq_cw,
                     freq_ucw=freq_ucw,
                     num_cw=num_cw,
@@ -245,6 +249,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                     enable_thinking=enable_thinking,
                     think_budget=think_budget,
                     model_name=model_name,
+                    reserve_think_budget=reserve_think_budget,
                     alpha=alpha,
                     coded_wordlen=coded_wordlen,
                     vocab_size=vocab_size,
@@ -263,6 +268,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                     enable_thinking=enable_thinking,
                     think_budget=think_budget,
                     model_name=model_name,
+                    reserve_think_budget=reserve_think_budget,
                     pre_samples=pre_samples,
                 )
             else:
@@ -277,6 +283,7 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                 model_name=model_name,
                 context_length=max_seq_length,
                 for_dataset=True,
+                reserve_think_budget=reserve_think_budget,
             )
             rows = _stamp(
                 rows,

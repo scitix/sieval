@@ -22,6 +22,7 @@ def load_fwe(
     enable_thinking: bool,
     think_budget: int = 0,
     model_name: str = "qwen3",
+    reserve_think_budget: bool | None = None,
     alpha: float,
     coded_wordlen: int,
     vocab_size: int,
@@ -35,6 +36,7 @@ def load_fwe(
         model_name=model_name,
         context_length=max_seq_length,
         for_dataset=True,
+        reserve_think_budget=reserve_think_budget,
     )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
 

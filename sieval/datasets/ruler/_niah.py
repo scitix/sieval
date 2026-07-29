@@ -97,6 +97,7 @@ def load_niah(
     enable_thinking: bool,
     think_budget: int = 0,
     model_name: str = "qwen3",
+    reserve_think_budget: bool | None = None,
     num_needle_k: int,
     num_needle_v: int,
     num_needle_q: int,
@@ -111,6 +112,7 @@ def load_niah(
         model_name=model_name,
         context_length=max_seq_length,
         for_dataset=True,
+        reserve_think_budget=reserve_think_budget,
     )
     tokenizer = select_tokenizer(tokenizer_type, tokenizer_path)
     # Upstream template reserve, computed once (sample-invariant).

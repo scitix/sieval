@@ -126,9 +126,10 @@ def main() -> None:
     converter = html2text.HTML2Text()
     converter.ignore_images = True
     converter.ignore_tables = True
-    # escape_snob escapes all markdown-special chars (html2text renamed the old
-    # `escape_all`); links stay inline by default, so no reference_links toggle.
-    converter.escape_snob = True
+    # Upstream sets escape_all, but on html2text >= 2025.4.15 that attribute is a
+    # silent no-op (renamed/removed), so upstream's corpus is unescaped markdown.
+    # Deliberately not setting escape_snob (the current equivalent) here either,
+    # to match upstream's actual (unescaped) output rather than its intent.
     converter.mark_code = False
 
     urls = [line.strip() for line in _fetch(_URL_LIST).decode("utf-8").splitlines()]

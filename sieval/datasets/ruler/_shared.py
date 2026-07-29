@@ -4,6 +4,7 @@ import gzip
 import json
 import os
 import re
+from pathlib import Path
 from typing import TypedDict, cast
 
 import numpy as np
@@ -52,6 +53,19 @@ def ruler_task(name: str) -> RulerTaskSpec:
     return cast(RulerTaskSpec, TASKS[name])
 
 
+def _is_qwen3(model_name: str) -> bool:
+    """True if *model_name* identifies a Qwen3-family model, by basename.
+
+    Matches by the final path segment rather than a plain prefix check, so
+    served-model-id shapes like ``Qwen/Qwen3-8B`` or ``/models/Qwen3-8B`` (both
+    common ``--served-model-name`` values; ``preprocess`` feeds the served id
+    here, not the YAML's ``model_name: qwen3``) resolve the same as ``qwen3``.
+    Mirrors the basename convention in
+    ``sieval.cli.infer.commands._derive_model_name``.
+    """
+    return Path(model_name).name.lower().startswith("qwen3")
+
+
 def tokens_to_generate(
     task_name: str,
     *,
@@ -60,6 +74,7 @@ def tokens_to_generate(
     model_name: str = "",
     context_length: int | None = None,
     for_dataset: bool = False,
+    reserve_think_budget: bool | None = None,
 ) -> int:
     """Compute the generation budget (``max_tokens``) for a RULER task.
 
@@ -83,16 +98,27 @@ def tokens_to_generate(
         for the model's generation capacity without distinguishing between dataset
         fitting (context window calculation) and inference (max_tokens constraint).
 
-        Qwen3 Adaptation: Splits the budget calculation based on context_length:
-        - Small contexts (!128k): During dataset generation, assume thinking
-          content uses the native context window space (don't reserve think_budget
-          for fitting). During inference, max_tokens = gen_budget + think_budget.
-        - Large contexts (128k): During dataset generation, reserve think_budget
-          space (model can't reuse thinking tokens). During inference, max_tokens
-          already includes think_budget.
+        Qwen3 Adaptation: Splits the budget calculation for dataset generation
+        based on whether the *served* context window leaves headroom beyond
+        ``context_length`` (the dataset's target ``max_seq_length``):
+        - Headroom (e.g. a small ``max_seq_length`` served under a larger native
+          window, or served via YaRN at a larger window): assume thinking content
+          reuses that headroom, don't reserve think_budget while packing. At
+          inference, max_tokens = gen_budget + think_budget.
+        - No headroom (the model is served at exactly ``max_seq_length``, e.g.
+          128k served natively at 131072, or any length served natively at that
+          same window): reserve think_budget while packing (the model can't
+          reuse thinking tokens beyond the served window). At inference,
+          max_tokens already includes think_budget.
 
         This ensures generated samples fit within their target context window
         while allocating sufficient max_tokens for thinking during inference.
+
+        Which case applies is not derivable from ``context_length`` alone — it
+        depends on serving topology (native window vs YaRN-scaled, and to what
+        size), which this function doesn't have visibility into. Callers must
+        say so explicitly via ``reserve_think_budget`` when it isn't the common
+        case (see below).
 
     Args:
         task_name: Name of the RULER task (e.g., "niah", "qa")
@@ -100,27 +126,39 @@ def tokens_to_generate(
         think_budget: Token budget for thinking (Qwen3: typically 8192)
         model_name: Model identifier. Only Qwen3-family models generate
             ``<think>`` tags that add the tag overhead.
-        context_length: Context length in tokens (4096, 8192, 32768, 131072, etc.).
-            Determines think_budget allocation strategy during dataset generation.
+        context_length: The dataset's target max_seq_length in tokens (4096,
+            8192, 32768, 131072, etc.). Used only as the legacy fallback for
+            ``reserve_think_budget`` (see below) — it is NOT the model's real
+            serving context length, so it cannot by itself tell "no headroom"
+            (native serving at this exact length) apart from "headroom" (a
+            larger native window, or YaRN to a larger window).
         for_dataset: Whether this is called during dataset generation (True) or
-            inference (False). Affects think_budget inclusion based on context_length.
+            inference (False). Affects think_budget inclusion; irrelevant at
+            inference, where think_budget is always included.
+        reserve_think_budget: Explicit override for the dataset-generation
+            decision above. ``None`` (default) falls back to the legacy
+            heuristic ``context_length == 131072`` — correct for the shipped
+            example configs (4k-64k served via a native window or YaRN larger
+            than max_seq_length; 128k served at exactly its own window), but
+            wrong for e.g. a length served *natively* at that exact size
+            (no YaRN, no larger native window) — pass ``True`` there instead.
 
     Returns:
         Total tokens the model may generate (thinking + tags + answer).
     """
     base = ruler_task(task_name)["tokens_to_generate"]
-    is_qwen3 = model_name.lower().startswith("qwen3")
+    is_qwen3 = _is_qwen3(model_name)
 
     if not enable_thinking:
         # Non-thinking: the empty <think></think> block (Qwen3) is prefilled in
         # the prompt template, so only the answer is generated.
         return base
 
-    # Thinking mode: Qwen3-adapted budget allocation based on context_length
+    # Thinking mode: Qwen3-adapted budget allocation for dataset generation.
     # (Diverges from upstream RULER which always includes think_budget)
-    should_skip_think_budget = (
-        for_dataset and context_length is not None and context_length != 131072  # 128k
-    )
+    if reserve_think_budget is None:
+        reserve_think_budget = context_length == 131072  # legacy 128k-only rule
+    should_skip_think_budget = for_dataset and not reserve_think_budget
 
     if should_skip_think_budget:
         # SMALL CONTEXT (4k, 8k, etc.) DATASET GENERATION:
@@ -161,7 +199,7 @@ def thinking_prefill(model_name: str, enable_thinking: bool) -> str:
 
     Other models: Always returns empty string (no special handling needed)
     """
-    if model_name.lower().startswith("qwen3") and not enable_thinking:
+    if _is_qwen3(model_name) and not enable_thinking:
         return "<think>\n\n</think>\n\n"  # Empty block; skip to answer
     return ""
 
@@ -221,7 +259,7 @@ def get_template(model_name: str, enable_thinking: bool) -> str:
     Returns:
         Template string with a ``{task_template}`` placeholder.
     """
-    if model_name.lower().startswith("qwen3"):
+    if _is_qwen3(model_name):
         return _QWEN3_TEMPLATES[enable_thinking]
 
     # Other models: vendored template by name (case-insensitive), else base.

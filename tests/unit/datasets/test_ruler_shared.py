@@ -27,8 +27,10 @@ _needs_ruler_deps = pytest.mark.skipif(
 if _ruler_deps:
     from sieval.community.ruler.scripts.tokenizer import select_tokenizer
     from sieval.datasets.ruler._shared import (
+        _is_qwen3,
         get_template,
         model_template_token,
+        thinking_prefill,
         tokens_to_generate,
     )
 
@@ -126,6 +128,49 @@ def test_template_has_task_template_placeholder():
             assert "{task_template}" in template, (
                 f"Template for {model} (thinking={thinking}) missing placeholder"
             )
+
+
+# ---------------------------------------------------------------------------
+# _is_qwen3() — basename-normalized qwen3 detection (case table)
+# ---------------------------------------------------------------------------
+
+
+@_needs_ruler_deps
+@pytest.mark.parametrize(
+    ("model_name", "expected"),
+    [
+        ("qwen3", True),
+        ("Qwen3-8b", True),
+        ("QWEN3-8B", True),
+        ("Qwen/Qwen3-8B", True),  # HF repo id (served-model-name shape)
+        ("/models/Qwen3-8B", True),  # local checkpoint path (served-model-name shape)
+        ("gpt-4", False),
+        ("meta-llama3", False),
+        ("", False),
+    ],
+)
+def test_is_qwen3_case_table(model_name, expected):
+    assert _is_qwen3(model_name) is expected
+
+
+@_needs_ruler_deps
+@pytest.mark.parametrize("model_name", ["Qwen/Qwen3-8B", "/models/Qwen3-8B"])
+def test_thinking_prefill_recognizes_served_model_ids(model_name):
+    """Served ids (not just the YAML's bare 'qwen3') must still get the empty
+
+    <think></think> prefill in non-thinking mode — preprocess feeds the served
+    id here, not model_name: qwen3 from the dataset config.
+    """
+    prefill = thinking_prefill(model_name, enable_thinking=False)
+    assert prefill == "<think>\n\n</think>\n\n"
+    assert thinking_prefill(model_name, enable_thinking=True) == ""
+
+
+@_needs_ruler_deps
+@pytest.mark.parametrize("model_name", ["Qwen/Qwen3-8B", "/models/Qwen3-8B"])
+def test_get_template_recognizes_served_model_ids(model_name):
+    for thinking in (False, True):
+        assert get_template(model_name, thinking) == get_template("qwen3", thinking)
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +311,38 @@ def test_tokens_to_generate_gpt_small_context_dataset():
     )
     # Only base, no tags, no think_budget
     assert budget == 128
+
+
+@_needs_ruler_deps
+def test_tokens_to_generate_reserve_think_budget_true_overrides_legacy_rule():
+    """Explicit reserve_think_budget=True reserves think_budget even at a length
+    the legacy (context_length == 131072) heuristic would treat as having
+    headroom — the native-serving-without-headroom case from the review."""
+    budget = tokens_to_generate(
+        "niah",
+        enable_thinking=True,
+        think_budget=8192,
+        model_name="qwen3",
+        context_length=32768,
+        for_dataset=True,
+        reserve_think_budget=True,
+    )
+    assert budget == 4 + 8192 + 128
+
+
+@_needs_ruler_deps
+def test_tokens_to_generate_reserve_think_budget_false_overrides_legacy_rule():
+    """Explicit reserve_think_budget=False skips the reserve even at 128k."""
+    budget = tokens_to_generate(
+        "niah",
+        enable_thinking=True,
+        think_budget=8192,
+        model_name="qwen3",
+        context_length=131072,
+        for_dataset=True,
+        reserve_think_budget=False,
+    )
+    assert budget == 4 + 128
 
 
 @_needs_ruler_deps
