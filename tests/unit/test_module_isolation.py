@@ -106,7 +106,12 @@ def test_evict_lets_from_package_import_re_execute_the_module():
     isolation.snapshot()
     isolation.evict()
 
-    from module_isolation_probe import alpha as reimported
+    # The statement form is the assertion: `import_module` looks the name up in
+    # `sys.modules` and would never touch the parent attribute under test. `ty`
+    # cannot resolve a package this module writes to disk at runtime.
+    from module_isolation_probe import (  # ty: ignore[unresolved-import]
+        alpha as reimported,
+    )
 
     assert reimported is not alpha, "stale parent attribute served a dropped module"
     assert sys.modules[f"{_PKG}.alpha"] is reimported
