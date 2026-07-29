@@ -40,7 +40,14 @@ class Feedback(TypedDict):
         url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
         notes=(
             "MathArena-aligned: boxed prompt, last-boxed extraction; "
-            "equivalence via math-verify."
+            "equivalence via math-verify. REPEATS: matharena's runner defaults to "
+            "`--n 4` and its published leaderboard averages 4 runs per problem, "
+            "while this task defaults to n=1 — set n=4 to compare against "
+            "matharena.ai. `n` is a task arg (tasks.<name>.args.n), NOT a model "
+            "arg: the task forwards it call-time and call-time wins, so setting `n` "
+            "on the model is silently overridden. k>n is rejected at construction. "
+            "DEVIATION: golds are normalized by sieval.community.math.strip_string "
+            "before comparison; matharena does not normalize golds."
         ),
     ),
 )
@@ -56,6 +63,13 @@ class HMMTNov2025ZeroShotGenTask(
 ):
     def __init__(self, dataset, model, name: str | None = None, k: int = 1, n: int = 1):
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}. "
+                "Raise the task arg `n` (tasks.<name>.args.n) to at least k — `n` "
+                "is a task arg, not a model arg: the task forwards it call-time "
+                "and call-time wins over the model's configured args."
+            )
         self._k = k
         self._n = n
 
@@ -64,7 +78,7 @@ class HMMTNov2025ZeroShotGenTask(
         return [
             {
                 "role": "user",
-                "content": build_prompt(HMMT_INSTRUCTION, raw["question"]),
+                "content": build_prompt(HMMT_INSTRUCTION, raw["problem"]),
             },
         ]
 
@@ -104,26 +118,56 @@ class HMMTNov2025ZeroShotGenTask(
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
         if total == 0:
-            return {"score": 0.0, "fails": len(fails)}
+            # Emit the same key set as the populated path below, so a consumer
+            # reading `pass@1` does not KeyError on an empty run.
+            return self._metrics(0.0, 0.0, len(fails))
 
         pass_at_1_total = 0.0
         pass_at_k_total = 0.0
+        short = 0
         for f in finals:
             feedbacks = f.feedback_result
             n_samples = len(feedbacks)
-            correct_num = sum(1 for f in feedbacks if f["correct"])
+            if n_samples < self._k:
+                short += 1
+            correct_num = sum(1 for fb in feedbacks if fb["correct"])
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
                 pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
 
-        pass_at_1 = pass_at_1_total * 100 / total
-        metrics = {"score": pass_at_1, "fails": len(fails), "pass@1": pass_at_1}
+        if short:
+            logger.warning(
+                "{}/{} sample(s) returned fewer than k={} choices, contributing 0 "
+                "to pass@{}: the model produced fewer choices than the requested "
+                "n={}.",
+                short,
+                len(finals),
+                self._k,
+                self._k,
+                self._n,
+            )
+
+        return self._metrics(
+            pass_at_1_total * 100 / total,
+            pass_at_k_total * 100 / total,
+            len(fails),
+        )
+
+    def _metrics(
+        self, pass_at_1: float, pass_at_k: float, fails: int
+    ) -> dict[str, float]:
+        # Single source of truth for the report key set — the empty-run branch and
+        # the populated branch must not drift apart.
+        metrics = {"score": pass_at_1, "fails": fails, "pass@1": pass_at_1}
         if self._k > 1:
-            metrics[f"pass@{self._k}"] = pass_at_k_total * 100 / total
+            metrics[f"pass@{self._k}"] = pass_at_k
         return metrics
 
     def _pass_at_k(self, n: int, c: int, k: int) -> float:
         if n < k:
+            # Unreachable by configuration: __init__ rejects k > n. Only a model
+            # that returned fewer choices than requested reaches this, and report()
+            # warns about it so the 0 contribution is visible rather than silent.
             return 0.0
         if c == 0:
             return 0.0

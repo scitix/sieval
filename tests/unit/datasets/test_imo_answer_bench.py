@@ -53,10 +53,11 @@ def test_load_reads_v2_csv_and_renames_columns():
     assert data_files["train"].endswith("/imo_answer_bench/answerbench_v2.csv")
     assert data_files["test"].endswith("/imo_answer_bench/answerbench_v2.csv")
 
-    # renamed to the shared math schema; both splits present, no leftover columns
+    # upstream `Problem` / `Short Answer` lower-cased into addressable keys; both
+    # splits present, no leftover originals
     for split in ("train", "test"):
         cols = loaded[split].column_names
-        assert "question" in cols and "answer" in cols
+        assert "problem" in cols and "answer" in cols
         assert "Problem" not in cols and "Short Answer" not in cols
     assert loaded["test"][0]["answer"] == "1431655764"
 

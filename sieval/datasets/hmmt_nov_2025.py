@@ -23,7 +23,7 @@ HMMT_NOV_2025_REVISION = "118dbfb45c4c9467c672268ed55166642897aa46"
 
 
 class HMMTNov2025DatasetSample(TypedDict):
-    question: str
+    problem: str
     answer: str
 
 
@@ -40,22 +40,25 @@ class HMMTNov2025Dataset(Dataset[HMMTNov2025DatasetSample]):
     def _strip_sample(
         self, sample: HMMTNov2025DatasetSample
     ) -> HMMTNov2025DatasetSample:
-        # Normalize the answer only; leave the problem text verbatim. strip_string
-        # is an answer normalizer and mangles full problem LaTeX if applied to the
-        # question. Matches the aime_2026 / hmmt_feb_2025 loaders.
+        # Normalize the gold answer only; the problem text stays verbatim.
+        # strip_string is an answer normalizer (rewrites \frac/\sqrt, drops
+        # \left/\right) and mangles full problem LaTeX — e.g. \sqrt[20]{x} becomes
+        # \sqrt{[}20]{x}. DEVIATION: matharena does not normalize golds at all;
+        # sieval does so math-verify compares canonical forms. Score-neutral on this
+        # snapshot — it rewrites 3 of 30 golds (1/91 -> \frac{1}{91}, 91/6, 199/8),
+        # all of which math-verify already treats as equivalent.
         sample["answer"] = strip_string(sample["answer"])
         return sample
 
     @override
     def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
         # MathArena exposes a single `default` config under the `train` split with
-        # columns problem_idx / problem / answer. Rename `problem` -> `question` to
-        # match the shared math sample schema.
+        # columns problem_idx / problem / answer, kept under their upstream names.
         dataset = ensure_dataset(load_dataset(name_or_path, split="train", **kwargs))
-        dataset = dataset.rename_column("problem", "question")
-        # HMMT answers are already strings (symbolic + some plain integers); the
-        # cast is a harmless no-op that keeps both math loaders uniform and the
-        # `answer: str` contract explicit.
+        # MathArena varies the answer dtype across competitions (aime_2026 ships
+        # int64, the HMMT sets ship string), so cast up front: it makes the
+        # `answer: str` contract hold by construction and stops `.map` re-inferring
+        # against an int64 feature and casting the stripped string straight back.
         dataset = dataset.cast_column("answer", Value("string"))
         dataset = dataset.map(self._strip_sample, num_proc=os.cpu_count())
         # the test split is the same as the train split

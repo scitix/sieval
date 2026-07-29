@@ -790,7 +790,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/aime/aime_2026.yaml",
-        "notes": "MathArena-aligned: boxed prompt + 0-999 integer hint, last-boxed extraction; equivalence via math-verify."
+        "notes": "MathArena-aligned: boxed prompt + 0-999 integer hint, last-boxed extraction; equivalence via math-verify. REPEATS: matharena's runner defaults to `--n 4` and its published leaderboard averages 4 runs per problem, while this task defaults to n=1 — set n=4 to compare against matharena.ai. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string before comparison; matharena does not normalize golds."
       },
       "status": "stable"
     },
@@ -1108,7 +1108,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2025.yaml",
-        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify."
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena's runner defaults to `--n 4` and its published leaderboard averages 4 runs per problem, while this task defaults to n=1 — set n=4 to compare against matharena.ai. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string before comparison; matharena does not normalize golds."
       },
       "status": "stable"
     },
@@ -1128,7 +1128,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2026.yaml",
-        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify."
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena's runner defaults to `--n 4` and its published leaderboard averages 4 runs per problem, while this task defaults to n=1 — set n=4 to compare against matharena.ai. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string before comparison; matharena does not normalize golds."
       },
       "status": "stable"
     },
@@ -1148,7 +1148,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
-        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify."
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena's runner defaults to `--n 4` and its published leaderboard averages 4 runs per problem, while this task defaults to n=1 — set n=4 to compare against matharena.ai. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string before comparison; matharena does not normalize golds."
       },
       "status": "stable"
     },
