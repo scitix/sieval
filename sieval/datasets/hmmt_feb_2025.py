@@ -7,7 +7,7 @@ import os
 from typing import TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
-from datasets import Value, load_dataset
+from datasets import load_dataset
 
 from sieval.community.math import strip_string
 from sieval.core.datasets import (
@@ -54,11 +54,10 @@ class HMMTFeb2025Dataset(Dataset[HMMTFeb2025DatasetSample]):
         # columns problem_idx / problem / answer / problem_type, kept under their
         # upstream names.
         dataset = ensure_dataset(load_dataset(name_or_path, split="train", **kwargs))
-        # MathArena varies the answer dtype across competitions (aime_2026 ships
-        # int64, the HMMT sets ship string), so cast up front: it makes the
-        # `answer: str` contract hold by construction and stops `.map` re-inferring
-        # against an int64 feature and casting the stripped string straight back.
-        dataset = dataset.cast_column("answer", Value("string"))
+        # No dtype cast: `answer` is `string` in the pinned snapshot, so the
+        # `answer: str` contract holds from upstream and `.map` preserves it across
+        # _strip_sample. MathArena's answer dtype varies per competition, so a
+        # sibling loader casting is a fact about its own pin, not a family rule.
         dataset = dataset.map(self._strip_sample, num_proc=os.cpu_count())
         # the test split is the same as the train split
         return HFDatasetDict(

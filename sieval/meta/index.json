@@ -1314,7 +1314,7 @@
       "reference_impl": {
         "source": "simple-evals",
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
-        "notes": "Math postprocess aligned with simple-evals."
+        "notes": "Math postprocess aligned with simple-evals. REPEATS: simple-evals' MathEval defaults to n_repeats=16 and its CLI `math` entry passes 10, while this task defaults to n=1 — set n=10 (or 16) to match. pass@1 over n samples equals simple-evals' mean over n repeated examples, so the two are directly comparable. `n` is a task arg (tasks.<name>.args.n), NOT a model arg: the task forwards it call-time and call-time wins, so setting `n` on the model is silently overridden. k>n is rejected at construction. Scope: those upstream defaults belong to the full math_test split; MATH-500 is simple-evals' math_500_test."
       },
       "status": "stable"
     },
