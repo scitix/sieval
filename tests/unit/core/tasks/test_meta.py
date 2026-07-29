@@ -27,6 +27,7 @@ from sieval.core.tasks.meta import (
     sieval_task,
     task_meta_to_dict,
 )
+from tests.conftest import ModuleIsolation
 
 # ── Stub sample type + dataset class for reverse-lookup tests ──
 
@@ -149,55 +150,31 @@ def test_task_meta_constructs():
 @pytest.fixture(autouse=True)
 def _clean_registry():
     """Give every test an empty task registry *and* an empty ``sieval.tasks``
-    module cache, then put both back exactly as found.
+    module cache — see ``ModuleIsolation`` for why the two must move together.
 
-    The two must move as a unit. ``import_all_tasks()`` / ``get_task_class()``
-    only re-run a module's ``@sieval_task`` decorator when
-    ``sieval.tasks.{name}`` is absent from ``sys.modules``, so clearing one
-    half without the other breaks a test in one direction or the other:
-
-    * cleared registry + cached modules — registration silently no-ops, so
-      ``import_all_tasks()`` leaves the name unregistered and
-      ``get_task_class()`` raises ``KeyError``. Another test file
-      top-level-importing a task module is enough to trigger this.
-    * restored registry + purged modules — the next ``import_all_tasks()``
-      (e.g. ``test_meta_pilot.py``) re-runs the decorators against an
-      already-populated registry and trips the duplicate-name guard.
-
-    Only submodules are evicted; ``sieval.tasks`` itself stays cached so its
-    ``__path__`` keeps the identity that path-injecting tests rely on.
+    Only submodules are in scope; ``sieval.tasks`` itself stays cached so its
+    ``__path__`` keeps the identity that path-injecting tests rely on. The
+    dataset registries are deliberately untouched — ``_stub_sample_mapping``
+    above seeds ``SAMPLE_TO_DATASET`` for every test in this file.
     """
-    import sys
-
     from sieval.core.tasks.meta import _TASK_CLASSES
 
     reg_snapshot = dict(TASK_REGISTRY)
     cls_snapshot = dict(_TASK_CLASSES)
-    module_snapshot = {
-        name: module
-        for name, module in sys.modules.items()
-        if name.startswith("sieval.tasks.")
-    }
+    modules = ModuleIsolation(("sieval.tasks.",))
+    modules.snapshot()
+
     TASK_REGISTRY.clear()
     _TASK_CLASSES.clear()
-    for name in module_snapshot:
-        del sys.modules[name]
-    yield
-    TASK_REGISTRY.clear()
-    TASK_REGISTRY.update(reg_snapshot)
-    _TASK_CLASSES.clear()
-    _TASK_CLASSES.update(cls_snapshot)
-    for name in [n for n in sys.modules if n.startswith("sieval.tasks.")]:
-        del sys.modules[name]
-    sys.modules.update(module_snapshot)
-    # Re-point the parent packages at the restored modules too. ``sys.modules``
-    # is not the only view: ``monkeypatch.setattr("sieval.tasks.x.y", ...)``
-    # resolves ``x`` by attribute traversal from ``sieval``, so a child
-    # attribute still bound to the re-imported copy would patch a module
-    # nobody uses.
-    for name, module in module_snapshot.items():
-        parent_name, _, attr = name.rpartition(".")
-        setattr(sys.modules[parent_name], attr, module)
+    modules.evict()
+    try:
+        yield
+    finally:
+        TASK_REGISTRY.clear()
+        TASK_REGISTRY.update(reg_snapshot)
+        _TASK_CLASSES.clear()
+        _TASK_CLASSES.update(cls_snapshot)
+        modules.restore()
 
 
 def test_clean_registry_fixture_leaves_task_modules_reimportable():
@@ -207,6 +184,10 @@ def test_clean_registry_fixture_leaves_task_modules_reimportable():
     `import_all_tasks()` genuinely re-runs every `@sieval_task` decorator. When
     the cache was left populated, tasks another test file had already imported
     at module level came back unregistered — silently, and only for those tasks.
+
+    Also pins the eponymous-module convention `get_task_class()` depends on
+    (`sieval/core/tasks/meta.py`): every registered name must be reachable as
+    `sieval.tasks.{name}`, or `sieval task list` cannot resolve its class.
     """
     import sys
 
@@ -222,6 +203,12 @@ def test_clean_registry_fixture_leaves_task_modules_reimportable():
     assert tasks, "shipped index is non-empty"
     missing = {t.name for t in tasks} - set(TASK_REGISTRY)
     assert not missing, f"indexed tasks left unregistered: {sorted(missing)}"
+    off_convention = [
+        name for name in TASK_REGISTRY if f"sieval.tasks.{name}" not in sys.modules
+    ]
+    assert not off_convention, (
+        f"tasks not defined in an eponymous module: {sorted(off_convention)}"
+    )
 
 
 def test_sieval_task_attaches_meta_and_registers():

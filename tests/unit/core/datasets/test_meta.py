@@ -21,6 +21,7 @@ from sieval.core.datasets.meta import (
     iter_dataset_metas,
     sieval_dataset,
 )
+from tests.conftest import ModuleIsolation
 
 
 class FooSample(TypedDict):
@@ -33,54 +34,28 @@ class BarSample(TypedDict):
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
-    """Give every test empty registries *and* an empty `sieval.datasets` module
-    cache, then put all three back exactly as found.
+    """Give every test empty dataset registries *and* an empty `sieval.datasets`
+    module cache — see `ModuleIsolation` for why the two must move together.
 
-    They have to move as a unit: `import_all_datasets()` only re-runs a
-    module's `@sieval_dataset` decorator when `sieval.datasets.{name}` is
-    absent from `sys.modules`, so clearing one side without the other breaks a
-    test in one direction or the other:
-
-    - cleared registries + cached modules — the decorators never re-fire, so
-      `import_all_datasets()` leaves `DATASET_REGISTRY` / `SAMPLE_TO_DATASET`
-      empty. Any earlier file that imported dataset modules (directly, or via a
-      task module, or via its own `import_all_datasets()`) is enough.
-    - restored registries + purged modules — the next `import_all_datasets()`
-      re-runs the decorators against populated registries and trips the
-      duplicate-name guard.
-
-    Mirrors `_clean_registry` in `tests/unit/core/tasks/test_meta.py`, and
-    `_preserve_registries` in `tests/unit/tasks/test_theoremqa_kshot_base_gen.py`
-    narrows the same coupling to a single pair of modules.
+    Only submodules are in scope; the `sieval.datasets` package itself stays
+    cached.
     """
-    import sys
-
     saved_ds = DATASET_REGISTRY.copy()
     saved_map = SAMPLE_TO_DATASET.copy()
-    saved_modules = {
-        name: module
-        for name, module in sys.modules.items()
-        if name.startswith("sieval.datasets.")
-    }
+    modules = ModuleIsolation(("sieval.datasets.",))
+    modules.snapshot()
+
     DATASET_REGISTRY.clear()
     SAMPLE_TO_DATASET.clear()
-    for name in saved_modules:
-        del sys.modules[name]
-    yield
-    DATASET_REGISTRY.clear()
-    DATASET_REGISTRY.update(saved_ds)
-    SAMPLE_TO_DATASET.clear()
-    SAMPLE_TO_DATASET.update(saved_map)
-    for name in [n for n in sys.modules if n.startswith("sieval.datasets.")]:
-        del sys.modules[name]
-    sys.modules.update(saved_modules)
-    # Re-point the parent packages at the restored modules too. `sys.modules` is
-    # not the only view: `monkeypatch.setattr("sieval.datasets.x.y", ...)`
-    # resolves `x` by attribute traversal from `sieval`, so a child attribute
-    # still bound to the re-imported copy would patch a module nobody uses.
-    for name, module in saved_modules.items():
-        parent_name, _, attr = name.rpartition(".")
-        setattr(sys.modules[parent_name], attr, module)
+    modules.evict()
+    try:
+        yield
+    finally:
+        DATASET_REGISTRY.clear()
+        DATASET_REGISTRY.update(saved_ds)
+        SAMPLE_TO_DATASET.clear()
+        SAMPLE_TO_DATASET.update(saved_map)
+        modules.restore()
 
 
 def test_sieval_dataset_happy_path():

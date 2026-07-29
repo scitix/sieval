@@ -7,7 +7,6 @@ AI-Generated Code - GPT-5.5 (OpenAI)
 import importlib
 import subprocess
 import sys
-from types import ModuleType
 
 import pytest
 from datasets import Dataset as HFDataset
@@ -16,91 +15,23 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks.context import TaskContext
+from tests.conftest import ModuleIsolation
 
 _TASK_MODULE = "sieval.tasks.theoremqa_kshot_base_gen"
 _DATASET_MODULE = "sieval.datasets.theoremqa"
-_TASK_EXPORTS = ("TheoremQAKShotBaseGenTask",)
-_DATASET_EXPORTS = ("TheoremQADataset", "TheoremQADatasetSample")
-
-
-_PACKAGE_EXPORTS = (
-    ("sieval.tasks", _TASK_EXPORTS),
-    ("sieval.datasets", _DATASET_EXPORTS),
-)
-
-
-def _drop_theoremqa_modules() -> None:
-    """Evict both theoremqa modules and the packages' cached lazy exports.
-
-    This file imports the task/dataset on demand (`_task_module()`,
-    `_dataset()`) rather than at top level, so dropping them is what makes each
-    test's import re-execute the module bodies and re-run the `@sieval_task` /
-    `@sieval_dataset` decorators into the registries the fixture just cleared.
-    """
-    sys.modules.pop(_TASK_MODULE, None)
-    sys.modules.pop(_DATASET_MODULE, None)
-    for package_name, exports in _PACKAGE_EXPORTS:
-        package = sys.modules.get(package_name)
-        if package is None:
-            continue
-        for export in exports:
-            package.__dict__.pop(export, None)
-
-
-def _snapshot_theoremqa_modules() -> tuple[
-    dict[str, ModuleType], dict[tuple[str, str], object]
-]:
-    """Capture exactly what `_drop_theoremqa_modules` evicts.
-
-    Lets teardown put the originals back instead of handing the next caller
-    restored registries that name modules no longer in `sys.modules` — that
-    pairing makes the following `import_all_tasks()` / `import_all_datasets()`
-    re-run the decorators and trip the duplicate-name guard.
-    """
-    modules = {
-        name: sys.modules[name]
-        for name in (_TASK_MODULE, _DATASET_MODULE)
-        if name in sys.modules
-    }
-    exports: dict[tuple[str, str], object] = {}
-    for package_name, export_names in _PACKAGE_EXPORTS:
-        package = sys.modules.get(package_name)
-        if package is None:
-            continue
-        for export in export_names:
-            if export in package.__dict__:
-                exports[package_name, export] = package.__dict__[export]
-    return modules, exports
-
-
-def _restore_theoremqa_modules(
-    modules: dict[str, ModuleType], exports: dict[tuple[str, str], object]
-) -> None:
-    """Inverse of `_drop_theoremqa_modules`, from a `_snapshot_...` pair."""
-    for name, module in modules.items():
-        sys.modules[name] = module
-        # Re-point the parent package at the original too: `sys.modules` is not
-        # the only view, and `monkeypatch.setattr("sieval.datasets.theoremqa.x")`
-        # resolves by attribute traversal from `sieval`.
-        parent_name, _, attr = name.rpartition(".")
-        setattr(sys.modules[parent_name], attr, module)
-    for (package_name, export), value in exports.items():
-        sys.modules[package_name].__dict__[export] = value
+_LAZY_PACKAGES = ("sieval.tasks", "sieval.datasets")
 
 
 @pytest.fixture(autouse=True)
 def _preserve_registries():
     """Clear the four registries and evict both theoremqa modules, then restore
-    the whole set — registries *and* module cache — as it was found.
+    the whole set — see `ModuleIsolation` for why the two must move together.
 
-    The two halves have to move together. Registries cleared alongside dropped
-    modules is what lets each test's on-demand import re-register; but the
-    restore has to put the modules back as well, or the next
-    `import_all_tasks()` / `import_all_datasets()` re-executes them against
-    already-populated registries and raises on the duplicate name.
-
-    Same coupling as `_clean_registry` in `tests/unit/core/tasks/test_meta.py`,
-    narrowed from whole packages to these two modules.
+    This file imports the task/dataset on demand (`_task_module()`,
+    `_dataset()`) rather than at top level, so evicting them is what makes each
+    test's import re-execute the module bodies and re-run the `@sieval_task` /
+    `@sieval_dataset` decorators into the registries just cleared. Scope is the
+    two exact modules rather than the whole packages.
     """
     from sieval.core.datasets.meta import DATASET_REGISTRY, SAMPLE_TO_DATASET
     from sieval.core.tasks.meta import _TASK_CLASSES, TASK_REGISTRY
@@ -109,19 +40,17 @@ def _preserve_registries():
     task_classes_snapshot = dict(_TASK_CLASSES)
     dataset_snapshot = dict(DATASET_REGISTRY)
     sample_map_snapshot = dict(SAMPLE_TO_DATASET)
-    module_snapshot, export_snapshot = _snapshot_theoremqa_modules()
+    modules = ModuleIsolation((_TASK_MODULE, _DATASET_MODULE), _LAZY_PACKAGES)
+    modules.snapshot()
 
     TASK_REGISTRY.clear()
     _TASK_CLASSES.clear()
     DATASET_REGISTRY.clear()
     SAMPLE_TO_DATASET.clear()
-    _drop_theoremqa_modules()
+    modules.evict()
     try:
         yield
     finally:
-        # Drop the copies this test imported, then reinstate the originals the
-        # restored registry snapshots refer to.
-        _drop_theoremqa_modules()
         TASK_REGISTRY.clear()
         TASK_REGISTRY.update(task_snapshot)
         _TASK_CLASSES.clear()
@@ -130,7 +59,7 @@ def _preserve_registries():
         DATASET_REGISTRY.update(dataset_snapshot)
         SAMPLE_TO_DATASET.clear()
         SAMPLE_TO_DATASET.update(sample_map_snapshot)
-        _restore_theoremqa_modules(module_snapshot, export_snapshot)
+        modules.restore()
 
 
 class _MockGenModel(GenModel):

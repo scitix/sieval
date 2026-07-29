@@ -14,6 +14,8 @@ from types import ModuleType
 
 import pytest
 
+from tests.conftest import ModuleIsolation
+
 
 def _drop_package_modules(package_name: str) -> None:
     for module_name in list(sys.modules):
@@ -21,43 +23,19 @@ def _drop_package_modules(package_name: str) -> None:
             sys.modules.pop(module_name, None)
 
 
-def _snapshot_package_modules(package_name: str) -> dict[str, ModuleType]:
-    """Capture every `sys.modules` entry `_drop_package_modules` would remove."""
-    return {
-        module_name: module
-        for module_name, module in sys.modules.items()
-        if module_name == package_name or module_name.startswith(f"{package_name}.")
-    }
-
-
-def _restore_package_modules(saved: dict[str, ModuleType]) -> None:
-    """Inverse of `_drop_package_modules`, from a `_snapshot_...` result.
-
-    Rebinding the parent attributes matters as much as `sys.modules`: these
-    tests replace the package object itself, and attribute-based resolution
-    (`pkg.submodule`, and `monkeypatch.setattr("pkg.submodule.attr", ...)`,
-    which traverses from the root) reads those, not the cache.
-    """
-    sys.modules.update(saved)
-    for module_name, module in saved.items():
-        parent_name, _, attr = module_name.rpartition(".")
-        setattr(sys.modules[parent_name], attr, module)
-
-
 @pytest.fixture(autouse=True)
 def _preserve_registries():
     """Snapshot/restore the task + dataset registries *and* both packages'
-    module caches around every test.
+    module caches around every test — see `ModuleIsolation` for why the two
+    must move together.
 
     Tests here re-import sieval.tasks / sieval.datasets submodules, which
     re-invokes @sieval_task / @sieval_dataset and trips the duplicate-name
-    guards. Clearing the registries before each test lets the re-import
-    proceed — but the two have to be restored as a unit too. Handing the next
-    caller populated registries whose modules are no longer cached makes its
-    `import_all_tasks()` / `import_all_datasets()` re-run those same decorators
-    and hit the very guard this fixture works around.
-
-    Same coupling as `_clean_registry` in `tests/unit/core/tasks/test_meta.py`.
+    guards; clearing the registries first lets the re-import proceed. The
+    packages themselves are in scope (not just their submodules) because these
+    tests replace the package objects to exercise the lazy `__getattr__`.
+    Tasks pull datasets via `from sieval.datasets import ...`, so a task-side
+    re-import only works if the dataset side is purged too.
     """
     try:
         from sieval.core.datasets.meta import (
@@ -72,21 +50,16 @@ def _preserve_registries():
     task_classes_snapshot = dict(_TASK_CLASSES)
     dataset_snapshot = dict(DATASET_REGISTRY)
     sample_map_snapshot = dict(SAMPLE_TO_DATASET)
-    # Snapshot before dropping: these tests replace the package objects
-    # themselves, so the originals are only recoverable from here.
-    module_snapshots = [
-        _snapshot_package_modules(name) for name in ("sieval.tasks", "sieval.datasets")
-    ]
+    modules = ModuleIsolation(
+        ("sieval.tasks", "sieval.tasks.", "sieval.datasets", "sieval.datasets.")
+    )
+    modules.snapshot()
+
     TASK_REGISTRY.clear()
     _TASK_CLASSES.clear()
     DATASET_REGISTRY.clear()
     SAMPLE_TO_DATASET.clear()
-    # Also drop both packages' submodules from sys.modules so lazy re-imports
-    # re-run @sieval_task / @sieval_dataset against the cleared registries.
-    # Tasks pull datasets via `from sieval.datasets import ...`, so a task-side
-    # re-import only works if the dataset side is purged too.
-    _drop_package_modules("sieval.tasks")
-    _drop_package_modules("sieval.datasets")
+    modules.evict()
     try:
         yield
     finally:
@@ -98,12 +71,7 @@ def _preserve_registries():
         DATASET_REGISTRY.update(dataset_snapshot)
         SAMPLE_TO_DATASET.clear()
         SAMPLE_TO_DATASET.update(sample_map_snapshot)
-        # Discard whatever the test imported, then reinstate the originals the
-        # restored registries refer to.
-        _drop_package_modules("sieval.tasks")
-        _drop_package_modules("sieval.datasets")
-        for saved in module_snapshots:
-            _restore_package_modules(saved)
+        modules.restore()
 
 
 def _read_stub_all(stub_path: Path) -> list[str]:
