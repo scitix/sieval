@@ -1,4 +1,4 @@
-from typing import Any, TypedDict, override
+from typing import TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
 from datasets import load_dataset
@@ -18,7 +18,7 @@ class IFEvalDatasetSample(TypedDict):
     key: str
     prompt: str
     instruction_id_list: list[str]
-    kwargs: list[dict[str, Any]]
+    kwargs: list[dict]
 
 
 @sieval_dataset(

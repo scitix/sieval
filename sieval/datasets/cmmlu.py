@@ -15,7 +15,7 @@ import io
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any, TypedDict, override
+from typing import TypedDict, override
 
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -127,7 +127,7 @@ class CMMLUDataset(Dataset[CMMLUDatasetSample]):
         self,
         name_or_path: str,
         subjects: list[str] | None = None,
-        **kwargs: Any,
+        **kwargs,
     ) -> HFDatasetDict:
         _ = kwargs
         subjects_to_load = subjects or self.SUBJECTS

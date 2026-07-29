@@ -29,6 +29,9 @@ Changelog = "https://github.com/scitix/sieval/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 drop = ["numpy<=2.2", "scipy>=1.16.3"]
+# numpy backs the vendored HLE `calib_err` (calibration error). No grader/judge
+# extras: the judge is reached through the base `openai` client like any model.
+hle = ["numpy<=2.2"]
 ifbench = [
   "emoji>=2.15.0",
   "nltk>=3.9.2",

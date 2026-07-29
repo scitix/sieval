@@ -14,7 +14,7 @@ AI-Generated Code - GPT-5-Codex (OpenAI)
 """
 
 import os
-from typing import Any, TypedDict, override
+from typing import TypedDict, override
 
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -283,7 +283,7 @@ def _load_locale_dataset(
     locale: str,
     *,
     eval_split: str | None,
-    load_kwargs: dict[str, Any],
+    load_kwargs: dict,
 ) -> HFDatasetDict:
     csv_path = _find_local_locale_csv(name_or_path, locale)
     if csv_path is not None:
@@ -321,7 +321,7 @@ class MMMLUDataset(Dataset[MMMLUDatasetSample]):
         subjects: list[str] | None = None,
         categories: list[str] | None = None,
         eval_split: str | None = None,
-        **kwargs: Any,
+        **kwargs,
     ) -> HFDatasetDict:
         selected_locales = _normalize_locales(locales, config)
         normalized_subjects = (

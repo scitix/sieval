@@ -8,7 +8,7 @@ the two dataset modules differ only in metadata and the config they pass.
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
 
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from datasets import DatasetDict as HFDatasetDict
 from datasets import load_dataset
@@ -27,7 +27,7 @@ class ARCSample(TypedDict):
     answer: int
 
 
-def process_arc_sample(sample: dict[str, Any]) -> ARCSample:
+def process_arc_sample(sample: dict) -> ARCSample:
     """Normalize one ``allenai/ai2_arc`` row to ``{question, choices, answer}``.
 
     The upstream schema is fixed: ``question`` is a string, ``choices`` is a
@@ -59,7 +59,7 @@ def load_arc(
     name_or_path: str,
     config: str,
     eval_split: str | None = None,
-    **kwargs: Any,
+    **kwargs,
 ) -> HFDatasetDict:
     """Load an ARC config (``"ARC-Easy"`` / ``"ARC-Challenge"``) as a DatasetDict."""
     dataset = load_dataset(name_or_path, config, **kwargs)

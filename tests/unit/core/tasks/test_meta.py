@@ -628,6 +628,17 @@ def test_get_task_class_returns_registered_class():
     _, tasks = load_index()
     assert tasks, "pilot index is non-empty"
     name = tasks[0].name
+    # `get_task_class` resolves a cleared-registry miss by importing
+    # `sieval.tasks.{name}`, but that only re-runs the `@sieval_task` decorator
+    # if the module isn't already cached. Another test file (e.g. one that calls
+    # `import_all_tasks()` or imports a task at module top level) may have leaked
+    # it into `sys.modules`, in which case this test's own `import_all_tasks()`
+    # short-circuits and leaves `name` unregistered — surfacing only when it is
+    # `tasks[0]` under randomized collection order. Evict it so resolution is
+    # genuinely exercised (the autouse fixture restores module state on teardown).
+    import sys
+
+    sys.modules.pop(f"sieval.tasks.{name}", None)
     # A registered name must resolve — we don't assert a specific class to
     # stay resilient to pilot changes; just that the lookup works.
     from sieval.core.tasks.task import Task

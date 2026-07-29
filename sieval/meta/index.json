@@ -2,6 +2,29 @@
   "schema_version": 1,
   "datasets": [
     {
+      "name": "aa_lcr",
+      "display_name": "AA-LCR",
+      "description": "AA-LCR — 100-question long-context multi-document reasoning.",
+      "source": [
+        "hf:ArtificialAnalysis/AA-LCR@bdae010bbce259820c0e34c1d7cce210d966fb75"
+      ],
+      "categories": [
+        {
+          "level1": "Logic",
+          "level2": "TextualReasoning"
+        }
+      ],
+      "tags": [
+        "english",
+        "long-context",
+        "reasoning",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "apache-2.0",
+      "checksums": {}
+    },
+    {
       "name": "aime_2024",
       "display_name": "AIME 2024",
       "description": "American Invitational Mathematics Examination 2024, 30 problems.",
@@ -290,6 +313,28 @@
       "tags": [
         "english",
         "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
+      "name": "hle",
+      "display_name": "Humanity's Last Exam",
+      "description": "HLE — multi-domain, closed-ended frontier academic benchmark.",
+      "source": [
+        "hf:cais/hle@5a81a4c7271a2a2a312b9a690f0c2fde837e4c29"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "english",
+        "reasoning",
+        "academic"
       ],
       "deps_group": null,
       "license": "MIT",
@@ -675,6 +720,28 @@
   ],
   "tasks": [
     {
+      "name": "aa_lcr_0shot_gen",
+      "display_name": "AA-LCR (0-shot, generative)",
+      "description": "Long-context multi-document reasoning; LLM-graded free-form answers.",
+      "dataset": "aa_lcr",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "long-context",
+        "reasoning",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "aa-lcr",
+        "url": "https://huggingface.co/datasets/ArtificialAnalysis/AA-LCR/blob/bdae010bbce259820c0e34c1d7cce210d966fb75/README.md",
+        "notes": "Generative port of Artificial Analysis Long Context Reasoning (AA-LCR): 100 hard reasoning questions over 234 documents across 30 document sets (avg ~99k input tokens/set). No upstream eval code — the input prompt and the binary CORRECT/INCORRECT equality-checker prompt are the dataset card's own snippets (reproduced verbatim in sieval.community.aa_lcr, HF revision bdae010bbce259820c0e34c1d7cce210d966fb75). Headline metric = accuracy over the full set (pipeline failures counted INCORRECT). Grader is a REAL LLM (official checker: Qwen3 235B A22B 2507 Non-reasoning) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: unlike deterministic-grader tasks, scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample grade and grader model id are persisted in the feedback record. Documents are prompted in data_source_filenames order (loader-guaranteed), per the card. DEVIATION (the port's only score-affecting one): empty/whitespace candidates are graded INCORRECT without invoking the checker — the checker returns CORRECT on an empty candidate, which would inflate accuracy. REPEATS: AA-LCR uses n=3 (pass@1 aggregated across attempts); `n` is a task arg (tasks.<name>.args.n), NOT a model arg — infer forwards it call-time and call-time wins, so setting `n` on the model is overridden by the task default n=1. VALIDATION: reproduced gpt-oss-120b / gpt-oss-20b (reasoning=high) within ~2-3 pts of the AA public leaderboard (official 50.7 / 30.7), grader Qwen3-235B-A22B-Instruct-2507 at temperature 0, n=3."
+      },
+      "status": "experimental"
+    },
+    {
       "name": "aime_2024_0shot_gen",
       "display_name": "AIME 2024 (0-shot, generative)",
       "description": "AIME 2024 — American Invitational Mathematics Examination, 30 problems.",
@@ -1008,6 +1075,27 @@
         "source": "DeepSeek-Math",
         "url": "https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
         "notes": "math-cot-test path: MinervaMathPrompt 4-shot, extract_math_few_shot_cot_answer (list-valued) + eval_math/math_equal."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "hle_0shot_gen",
+      "display_name": "Humanity's Last Exam (0-shot, generative)",
+      "description": "Multi-domain frontier academic QA graded by an LLM judge.",
+      "dataset": "hle",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "reasoning",
+        "academic"
+      ],
+      "deps_group": "hle",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "hle",
+        "url": "https://github.com/centerforaisafety/hle/tree/26dca2e253b405105b4c3d8c2f5af06f86f90c66/hle_eval",
+        "notes": "Generative port of Humanity's Last Exam (Center for AI Safety). SYSTEM_PROMPT and JUDGE_PROMPT are vendored byte-for-byte; the judge runs through sieval's ChatModel (text) rather than upstream's beta.chat.completions.parse structured output, and its correct/confidence fields are parsed from the reply. Metrics mirror upstream dump_metrics: accuracy, a 95% Wald confidence interval, and calibration error (calib_err, p=2, beta=100). Subset selection is a sieval addition living on HLEDataset (datasets.hle.args.text_only, default true — the full text+image set needs a vision-capable candidate + judge); text-only numbers are the asterisked variant in reports, the full set the unmarked headline, and report() echoes which subset was graded. Grader is a REAL LLM (upstream default o3-mini-2025-01-31) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: scores depend on the judge endpoint's model version (not pinnable like a Hub revision) — pin the grader model; the per-sample correct/confidence and grader model id are persisted. VALIDATION: gpt-oss-20b scored 12.14 / 3.61 (reasoning=high / low, judge GPT-5.2, text-only, no tools) vs the gpt-oss model card (arXiv:2508.10925) 10.9 / 4.2 — within <3pp."
       },
       "status": "stable"
     },

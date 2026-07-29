@@ -4,7 +4,7 @@ ARC-Challenge dataset loader.
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
 
-from typing import Any, TypedDict, override
+from typing import TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
 
@@ -41,6 +41,6 @@ class ARCChallengeDataset(Dataset[ARCChallengeDatasetSample]):
         self,
         name_or_path: str,
         eval_split: str | None = None,
-        **kwargs: Any,
+        **kwargs,
     ) -> HFDatasetDict:
         return load_arc(name_or_path, "ARC-Challenge", eval_split, **kwargs)

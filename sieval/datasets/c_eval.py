@@ -15,7 +15,7 @@ The evaluation split is selected via :func:`apply_eval_split`; with the default
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-from typing import Any, TypedDict, override
+from typing import TypedDict, override
 
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -117,7 +117,7 @@ class CEvalDataset(Dataset[CEvalDatasetSample]):
         name_or_path: str,
         subjects: list[str] | None = None,
         eval_split: str | None = None,
-        **kwargs: Any,
+        **kwargs,
     ) -> HFDatasetDict:
         subjects_to_load = subjects or self.SUBJECTS
 
