@@ -185,14 +185,18 @@ other — a cleared registry with cached modules leaves names unregistered (`Key
 restored registry with purged modules trips the duplicate-name guard on the next import.
 
 `ModuleIsolation` owns the part that is easy to get wrong: `sys.modules` is not the only view, so
-`restore()` also rebinds parent-package attributes and unbinds copies the test imported on top —
-otherwise `monkeypatch.setattr("sieval.datasets.x.load_dataset", ...)`, which resolves by attribute
-traversal from the root, silently patches a module nobody uses. Registry `clear()`/`update()` stays
-in each fixture, since the relevant registry subset differs per site.
+both directions keep parent-package attributes in step — `evict()` unbinds the modules it drops and
+`restore()` rebinds the snapshot then unbinds copies the test imported on top. Skip either side and
+`monkeypatch.setattr("sieval.datasets.x.load_dataset", ...)`, which resolves by attribute traversal
+from the root, silently patches a module nobody uses; `from sieval.tasks import x` hands back the
+dropped copy for the same reason. Pass `lazy_packages` whenever a package's lazy `__getattr__` cache
+can outlive the module copy it resolved from. Registry `clear()`/`update()` stays in each fixture,
+since the relevant registry subset differs per site.
 
 Used by the autouse fixtures in `tests/unit/core/tasks/test_meta.py`,
 `tests/unit/core/datasets/test_meta.py`, `tests/unit/test_lazy_exports.py`,
 `tests/unit/tasks/test_theoremqa_kshot_base_gen.py`, and `tests/unit/cli/conftest.py`.
+Its own contract is pinned by `tests/unit/test_module_isolation.py`.
 
 ---
 

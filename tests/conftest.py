@@ -66,9 +66,16 @@ class ModuleIsolation:
     bindings, and a dotted-string target (``monkeypatch.setattr("pkg.mod.attr")``,
     ``mock.patch("pkg.mod.attr")``) is resolved by attribute traversal from the
     root package, never through the cache — so a child attribute left pointing at
-    a discarded copy patches a module nobody uses. ``restore()`` therefore rebinds
-    parents for the snapshotted modules *and* unbinds whatever the test imported
-    on top of them.
+    a discarded copy patches a module nobody uses. Both directions therefore keep
+    the parent bindings in step: ``evict()`` unbinds the modules it drops, and
+    ``restore()`` rebinds parents for the snapshotted modules *and* unbinds
+    whatever the test imported on top of them.
+
+    A dropped module left bound on its parent is not a cosmetic leak — it is the
+    same failure this class exists to prevent, one scope earlier. ``from pkg
+    import submodule`` resolves through ``hasattr`` before it considers an import,
+    so the stale attribute wins, the module body never re-executes, and the
+    decorator never re-runs against the registry the fixture just cleared.
 
     ``scope`` and ``exclude`` entries ending in ``"."`` match by prefix; the rest
     match exactly. ``exclude`` wins::
@@ -134,13 +141,26 @@ class ModuleIsolation:
             if export in pkg.__dict__
         }
 
+    @staticmethod
+    def _unbind_from_parent(name: str, module: ModuleType) -> None:
+        """Drop *name*'s attribute on its parent package, if it still points here.
+
+        Identity is checked so this can never clobber an unrelated same-named
+        attribute; a parent that is itself gone needs no repair and is skipped.
+        """
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and parent.__dict__.get(attr) is module:
+            del parent.__dict__[attr]
+
     def evict(self) -> None:
-        """Drop the snapshotted modules and lazy exports from the live caches."""
+        """Drop the snapshotted modules, their parent bindings, and lazy exports."""
         # Caches first: a package that is itself in scope takes its ``__dict__``
         # with it, and then there is nothing left to pop from.
         self._drop_lazy_caches()
-        for name in self._modules:
+        for name, module in self._modules.items():
             del sys.modules[name]
+            self._unbind_from_parent(name, module)
 
     def _drop_lazy_caches(self) -> None:
         for pkg, export in list(self._iter_lazy_caches()):
@@ -158,15 +178,10 @@ class ModuleIsolation:
             parent_name, _, attr = name.rpartition(".")
             if (parent := sys.modules.get(parent_name)) is not None:
                 setattr(parent, attr, module)
-        # Unbind the copies the test imported on top of the snapshot. Identity
-        # is checked so this can never clobber an unrelated same-named attribute.
+        # Unbind the copies the test imported on top of the snapshot.
         for name, module in live.items():
-            if name in self._modules:
-                continue
-            parent_name, _, attr = name.rpartition(".")
-            parent = sys.modules.get(parent_name)
-            if parent is not None and parent.__dict__.get(attr) is module:
-                del parent.__dict__[attr]
+            if name not in self._modules:
+                self._unbind_from_parent(name, module)
         # Same purge-then-reinstate as the modules: an export the test resolved
         # on its own would otherwise outlive the copy it came from.
         self._drop_lazy_caches()

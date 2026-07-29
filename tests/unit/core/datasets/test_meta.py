@@ -38,11 +38,14 @@ def _clean_registries():
     module cache — see `ModuleIsolation` for why the two must move together.
 
     Only submodules are in scope; the `sieval.datasets` package itself stays
-    cached.
+    cached. Its lazy export cache is still declared, because staying cached is
+    exactly what lets it hold a class resolved from a copy that `restore()`
+    later discards — a class that then stops matching its own
+    `SAMPLE_TO_DATASET` key.
     """
     saved_ds = DATASET_REGISTRY.copy()
     saved_map = SAMPLE_TO_DATASET.copy()
-    modules = ModuleIsolation(("sieval.datasets.",))
+    modules = ModuleIsolation(("sieval.datasets.",), lazy_packages=("sieval.datasets",))
     modules.snapshot()
 
     DATASET_REGISTRY.clear()

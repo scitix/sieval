@@ -153,7 +153,9 @@ def _clean_registry():
     module cache — see ``ModuleIsolation`` for why the two must move together.
 
     Only submodules are in scope; ``sieval.tasks`` itself stays cached so its
-    ``__path__`` keeps the identity that path-injecting tests rely on. The
+    ``__path__`` keeps the identity that path-injecting tests rely on. Its lazy
+    export cache is still declared, because staying cached is exactly what lets
+    it hold a class resolved from a copy that ``restore()`` later discards. The
     dataset registries are deliberately untouched — ``_stub_sample_mapping``
     above seeds ``SAMPLE_TO_DATASET`` for every test in this file.
     """
@@ -161,7 +163,7 @@ def _clean_registry():
 
     reg_snapshot = dict(TASK_REGISTRY)
     cls_snapshot = dict(_TASK_CLASSES)
-    modules = ModuleIsolation(("sieval.tasks.",))
+    modules = ModuleIsolation(("sieval.tasks.",), lazy_packages=("sieval.tasks",))
     modules.snapshot()
 
     TASK_REGISTRY.clear()
@@ -185,9 +187,19 @@ def test_clean_registry_fixture_leaves_task_modules_reimportable():
     the cache was left populated, tasks another test file had already imported
     at module level came back unregistered — silently, and only for those tasks.
 
+    The cache half of that only has teeth once something has populated it, so
+    running this file alone leaves the second assertion trivially true. It earns
+    its keep in a full-suite or multi-file run, where an earlier file has already
+    imported a task module.
+
     Also pins the eponymous-module convention `get_task_class()` depends on
     (`sieval/core/tasks/meta.py`): every registered name must be reachable as
-    `sieval.tasks.{name}`, or `sieval task list` cannot resolve its class.
+    `sieval.tasks.{name}`, or `sieval task list` cannot resolve its class. Note
+    this is deliberately stricter than the lazy export map, which also accepts
+    subpackage-hosted tasks as `"subpkg.module_stem"` (`sieval/tasks/__init__.py`
+    "Subpackage .py modules"). Such a task would import and export fine but be
+    unreachable through `get_task_class()`, so the flat layout is the binding
+    constraint until that lookup learns to walk subpackages.
     """
     import sys
 
