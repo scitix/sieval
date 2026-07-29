@@ -383,6 +383,27 @@
       "checksums": {}
     },
     {
+      "name": "hmmt_nov_2025",
+      "display_name": "HMMT Nov 2025",
+      "description": "Harvard-MIT Mathematics Tournament, November 2025, 30 problems.",
+      "source": [
+        "hf:MathArena/hmmt_nov_2025@118dbfb45c4c9467c672268ed55166642897aa46"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
+    },
+    {
       "name": "human_eval",
       "display_name": "HumanEval",
       "description": "OpenAI HumanEval — 164 Python function-synthesis problems.",
@@ -1107,6 +1128,26 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2026.yaml",
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "hmmt_nov_2025_0shot_gen",
+      "display_name": "HMMT Nov 2025 (0-shot, generative)",
+      "description": "HMMT November 2025 — Harvard-MIT Mathematics Tournament, 30 problems.",
+      "dataset": "hmmt_nov_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "matharena",
+        "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify."
       },
       "status": "stable"

@@ -69,6 +69,10 @@ from .hmmt_feb_2026 import (
     HMMTFeb2026Dataset,
     HMMTFeb2026DatasetSample,
 )
+from .hmmt_nov_2025 import (
+    HMMTNov2025Dataset,
+    HMMTNov2025DatasetSample,
+)
 from .human_eval import (
     HumanEvalDataset,
     HumanEvalDatasetSample,
@@ -157,6 +161,8 @@ __all__ = [
     "HMMTFeb2025DatasetSample",
     "HMMTFeb2026Dataset",
     "HMMTFeb2026DatasetSample",
+    "HMMTNov2025Dataset",
+    "HMMTNov2025DatasetSample",
     "HellaSwagDataset",
     "HellaSwagDatasetSample",
     "HendrycksMathDataset",

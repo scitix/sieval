@@ -61,6 +61,9 @@ from .hmmt_feb_2025_0shot_gen import (
 from .hmmt_feb_2026_0shot_gen import (
     HMMTFeb2026ZeroShotGenTask,
 )
+from .hmmt_nov_2025_0shot_gen import (
+    HMMTNov2025ZeroShotGenTask,
+)
 from .human_eval_0shot_base_gen import (
     HumanEvalZeroShotBaseGenTask,
 )
@@ -132,6 +135,7 @@ __all__ = [
     "HLEZeroShotGenTask",
     "HMMTFeb2025ZeroShotGenTask",
     "HMMTFeb2026ZeroShotGenTask",
+    "HMMTNov2025ZeroShotGenTask",
     "HellaSwagFewShotPPLTask",
     "HendrycksMathFewShotBaseGenTask",
     "HumanEvalZeroShotBaseGenTask",
