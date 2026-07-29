@@ -1,9 +1,11 @@
 """
-Tests for scripts/check_layer_imports.py — layer boundary enforcement.
+Tests for scripts/check_layer_imports.py — layer boundary, private-access and
+relative-import-scope enforcement.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import ast
 import sys
 from pathlib import Path
 
@@ -13,11 +15,14 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from check_layer_imports import (  # noqa: E402  # type: ignore[unresolved-import]  # scripts/ added to sys.path at runtime
+    _absolute_module,
     _check_file,
     _check_private_access,
+    _check_relative_scope,
     _file_package,
     _get_layer,
     _is_within_subtree,
+    _resolve_relative,
     main,
 )
 
@@ -120,6 +125,55 @@ class TestCheckFile:
         errors = _check_file(f)
         assert len(errors) == 1
         assert "core/ must not import tasks/" in errors[0]
+
+    def test_relative_cross_layer_import_reports_the_layer_violation(
+        self, tmp_path: Path
+    ):
+        # Regression: the layer check matched on `node.module`, which for a
+        # relative import is the bare tail ("tasks") and short-circuits on the
+        # `sieval.` prefix test. The violation was reported only as an import-
+        # style error, whose suggested fix is itself a layer violation.
+        f = tmp_path / "sieval" / "core" / "models" / "bad.py"
+        f.parent.mkdir(parents=True)
+        f.write_text("from ...tasks import registry\n")
+        errors = _check_file(f)
+        assert any("core/ must not import tasks/ (sieval.tasks)" in e for e in errors)
+        assert any("cross-package relative import" in e for e in errors)
+
+    def test_from_sieval_import_layer_is_error(self, tmp_path: Path):
+        # `from sieval import tasks` names the layer as an alias, not in the
+        # module path — previously unreported entirely.
+        f = tmp_path / "sieval" / "core" / "bad.py"
+        f.parent.mkdir(parents=True)
+        f.write_text("from sieval import tasks\n")
+        errors = _check_file(f)
+        assert len(errors) == 1
+        assert "core/ must not import tasks/ (sieval.tasks)" in errors[0]
+
+    def test_bare_relative_import_of_layer_is_error(self, tmp_path: Path):
+        # `from ... import tasks` resolves to module "sieval" + alias "tasks" —
+        # exactly the shape `_check_relative_scope` suggests as the fix.
+        f = tmp_path / "sieval" / "core" / "models" / "bad.py"
+        f.parent.mkdir(parents=True)
+        f.write_text("from ... import tasks\n")
+        errors = _check_file(f)
+        assert any("core/ must not import tasks/ (sieval.tasks)" in e for e in errors)
+
+    def test_from_sieval_import_public_name_is_allowed(self, tmp_path: Path):
+        # `from sieval import __version__` is a real pattern in core/ — the
+        # alias branch must not fire on names that are not layers.
+        f = tmp_path / "sieval" / "core" / "ok.py"
+        f.parent.mkdir(parents=True)
+        f.write_text("from sieval import __version__\n")
+        assert _check_file(f) == []
+
+    def test_same_package_relative_import_is_allowed(self, tmp_path: Path):
+        # Level 1 is same-package, therefore same-layer: it can never cross a
+        # layer boundary and must stay clean.
+        f = tmp_path / "sieval" / "core" / "ok.py"
+        f.parent.mkdir(parents=True)
+        f.write_text("from .sibling import helper\n")
+        assert _check_file(f) == []
 
     def test_syntax_error_returns_empty(self, tmp_path: Path):
         f = tmp_path / "sieval" / "core" / "broken.py"
@@ -438,11 +492,9 @@ class TestCheckPrivateAccess:
             "from sieval.core.datasets.meta import _INTERNAL_STATE\n"
             "from sieval.tasks._parse_utils import extract_boxed\n",
         )
-        import ast as _ast
-
         assert _get_layer(f) is None
         assert "tests" in f.parts
-        assert _check_private_access(f, _ast.parse(f.read_text())) == []
+        assert _check_private_access(f, ast.parse(f.read_text())) == []
 
     def test_nested_sieval_layer_tests_still_exempt(self, tmp_path: Path):
         # Edge case: a test file nested inside a sieval subpackage
@@ -454,11 +506,9 @@ class TestCheckPrivateAccess:
             "sieval/tasks/tests/test_x.py",
             "from sieval.core.datasets.meta import _INTERNAL_STATE\n",
         )
-        import ast as _ast
-
         assert _get_layer(f) == "tasks"
         assert "tests" in f.parts
-        assert _check_private_access(f, _ast.parse(f.read_text())) == []
+        assert _check_private_access(f, ast.parse(f.read_text())) == []
 
     # ── scripts/ enforcement ──
 
@@ -579,3 +629,310 @@ class TestCheckPrivateAccess:
         assert any(
             "import from private module 'sieval.tasks._hidden'" in e for e in errors
         )
+
+
+class TestResolveRelative:
+    """Relative -> absolute module resolution (ast.ImportFrom level semantics)."""
+
+    def test_level_1_is_current_package(self):
+        assert (
+            _resolve_relative("sieval.core.models", 1, "ir") == "sieval.core.models.ir"
+        )
+
+    def test_level_2_strips_one_component(self):
+        assert (
+            _resolve_relative("sieval.core.models.transports", 2, "ir")
+            == "sieval.core.models.ir"
+        )
+
+    def test_level_3_strips_two_components(self):
+        assert (
+            _resolve_relative("sieval.core.models.transports", 3, "utils")
+            == "sieval.core.utils"
+        )
+
+    def test_bare_relative_without_module(self):
+        # `from .. import x` -> the parent package itself
+        assert _resolve_relative("sieval.core.models.transports", 2, "") == (
+            "sieval.core.models"
+        )
+
+    def test_walking_above_root_returns_none(self):
+        assert _resolve_relative("sieval.core", 3, "x") is None
+
+    def test_unknown_package_returns_none(self):
+        assert _resolve_relative("", 2, "x") is None
+
+
+class TestAbsoluteModule:
+    """The shared relative->absolute normalization every rule reads through."""
+
+    def _node(self, src: str) -> ast.ImportFrom:
+        node = ast.parse(src).body[0]
+        assert isinstance(node, ast.ImportFrom)
+        return node
+
+    def test_absolute_import_passes_through(self):
+        node = self._node("from sieval.core.models import ir\n")
+        assert _absolute_module(node, "sieval.tasks") == "sieval.core.models"
+
+    def test_absolute_import_without_module_is_empty(self):
+        # `from . import x` at level 0 is not expressible; guard the None branch.
+        node = self._node("from sieval import x\n")
+        node.module = None
+        assert _absolute_module(node, "sieval.tasks") == ""
+
+    def test_level_1_resolves_to_own_package(self):
+        node = self._node("from .ir import Request\n")
+        assert _absolute_module(node, "sieval.core.models") == "sieval.core.models.ir"
+
+    def test_level_2_resolves_to_parent(self):
+        node = self._node("from ..ir import Request\n")
+        assert (
+            _absolute_module(node, "sieval.core.models.transports")
+            == "sieval.core.models.ir"
+        )
+
+    def test_bare_relative_resolves_to_the_package_itself(self):
+        node = self._node("from ... import tasks\n")
+        assert _absolute_module(node, "sieval.core.models") == "sieval"
+
+    def test_above_root_is_empty_not_none(self):
+        # Callers do prefix tests on the result, so it must be a str.
+        node = self._node("from ... import y\n")
+        assert _absolute_module(node, "sieval.core") == ""
+
+
+class TestCheckRelativeScope:
+    """Rule 3: relative imports are same-package only (level >= 2 is a violation)."""
+
+    def _write(self, tmp_path: Path, rel: str, src: str) -> Path:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(src)
+        return f
+
+    def test_level_1_sibling_is_allowed(self, tmp_path: Path):
+        # `from ._base import X` is the legal same-package pattern.
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/arc_easy_kshot_ppl.py",
+            "from ._arc import echoed_logprob\n",
+        )
+        assert _check_relative_scope(f, ast.parse(f.read_text())) == []
+
+    def test_level_1_dotted_descent_is_allowed(self, tmp_path: Path):
+        # Rule 3 is the style half only: `from .sub.mod import X` crosses into a
+        # child package but reads as a local descent and is not flagged here.
+        # Checks 1 and 2 still see through it (see the integration tests).
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/foo.py",
+            "from .sub.mod import helper\n",
+        )
+        assert _check_relative_scope(f, ast.parse(f.read_text())) == []
+
+    def test_level_2_parent_import_is_error(self, tmp_path: Path):
+        f = self._write(
+            tmp_path,
+            "sieval/core/models/transports/openai_chat.py",
+            "from ..ir import Request\n",
+        )
+        errors = _check_relative_scope(f, ast.parse(f.read_text()))
+        assert len(errors) == 1
+        assert "cross-package relative import '..ir'" in errors[0]
+        # The fix suggestion must name the resolved absolute module.
+        assert "from sieval.core.models.ir import" in errors[0]
+
+    def test_level_3_is_error(self, tmp_path: Path):
+        f = self._write(
+            tmp_path,
+            "sieval/core/models/transports/sglang.py",
+            "from ...utils.concurrency import CompositeLimiter\n",
+        )
+        errors = _check_relative_scope(f, ast.parse(f.read_text()))
+        assert len(errors) == 1
+        assert "from sieval.core.utils.concurrency import" in errors[0]
+
+    def test_bare_parent_import_is_error(self, tmp_path: Path):
+        f = self._write(
+            tmp_path,
+            "sieval/core/models/transports/x.py",
+            "from .. import ir\n",
+        )
+        errors = _check_relative_scope(f, ast.parse(f.read_text()))
+        assert len(errors) == 1
+        assert "'..'" in errors[0]
+
+    def test_error_includes_lineno(self, tmp_path: Path):
+        f = self._write(
+            tmp_path,
+            "sieval/core/models/transports/x.py",
+            "import os\n\n\nfrom ..ir import Request\n",
+        )
+        errors = _check_relative_scope(f, ast.parse(f.read_text()))
+        assert ":4:" in errors[0]
+
+    def test_multiple_violations_reported_separately(self, tmp_path: Path):
+        f = self._write(
+            tmp_path,
+            "sieval/core/models/transports/x.py",
+            "from ..ir import Request\nfrom ..capabilities import Capability\n",
+        )
+        errors = _check_relative_scope(f, ast.parse(f.read_text()))
+        assert len(errors) == 2
+
+    def test_tests_tree_is_exempt(self, tmp_path: Path):
+        f = self._write(
+            tmp_path,
+            "tests/unit/core/models/x.py",
+            "from ..conftest import helper\n",
+        )
+        assert _check_relative_scope(f, ast.parse(f.read_text())) == []
+
+    def test_scripts_tree_is_out_of_scope(self, tmp_path: Path):
+        # scripts/ files are standalone modules, not a package.
+        f = self._write(tmp_path, "scripts/x.py", "from ..y import z\n")
+        assert _check_relative_scope(f, ast.parse(f.read_text())) == []
+
+
+class TestCheckFileRelativeScopeIntegration:
+    """Rule 3 wired into _check_file, and its interaction with rule 2."""
+
+    def _write(self, tmp_path: Path, rel: str, src: str) -> Path:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(src)
+        return f
+
+    def test_level_1_relative_import_stays_clean(self, tmp_path: Path):
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/arc_easy_kshot_ppl.py",
+            "from ._arc import echoed_logprob\n",
+        )
+        assert _check_file(f) == []
+
+    def test_level_1_private_name_stays_clean(self, tmp_path: Path):
+        # CLAUDE.md: same-package siblings may reach into `._x`.
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/foo.py",
+            "from ._arc import _helper\n",
+        )
+        assert _check_file(f) == []
+
+    def test_parent_relative_import_is_reported(self, tmp_path: Path):
+        f = self._write(
+            tmp_path,
+            "sieval/core/models/transports/openai_chat.py",
+            "from ..capabilities import Capability\n",
+        )
+        errors = _check_file(f)
+        assert any("cross-package relative import" in e for e in errors)
+
+    def test_parent_relative_private_name_now_caught(self, tmp_path: Path):
+        # Regression: the private-access carve-out used to skip ALL relative
+        # imports (`level > 0`), so a cross-package `from .._x import _foo`
+        # slipped past both the private-name and protected-module rules.
+        f = self._write(
+            tmp_path,
+            "sieval/core/models/transports/openai_chat.py",
+            "from .._secret import _foo\n",
+        )
+        errors = _check_file(f)
+        assert any("import of private name '_foo'" in e for e in errors)
+        assert any("cross-package relative import" in e for e in errors)
+        # The protected-MODULE rule correctly stays quiet here: `transports` is
+        # a descendant of `sieval.core.models`, and CLAUDE.md lets descendants
+        # reach into an ancestor's private module.
+        assert not any("import from private module" in e for e in errors)
+
+    def test_parent_relative_out_of_subtree_module_now_caught(self, tmp_path: Path):
+        # Same carve-out regression, protected-MODULE half: a relative hop into
+        # a PEER subpackage's private module is out-of-subtree and must be
+        # flagged once the relative path is resolved to absolute.
+        f = self._write(
+            tmp_path,
+            "sieval/core/models/transports/openai_chat.py",
+            "from ...runners._internal import Helper\n",
+        )
+        errors = _check_file(f)
+        assert any(
+            "import from private module 'sieval.core.runners._internal'" in e
+            for e in errors
+        )
+        assert any("cross-package relative import" in e for e in errors)
+
+    def test_parent_relative_above_root_does_not_crash(self, tmp_path: Path):
+        # `_resolve_relative` returns None; the check must still report the
+        # violation, just without a fix suggestion.
+        f = self._write(tmp_path, "sieval/core/x.py", "from ... import y\n")
+        errors = _check_file(f)
+        assert any("cross-package relative import" in e for e in errors)
+        assert all("use `from" not in e for e in errors)
+
+    def test_level_1_dotted_into_child_private_module_is_caught(self, tmp_path: Path):
+        # Regression: narrowing the private-access carve-out to `level == 1` was
+        # still too wide. A DOTTED level-1 module walks down into a child
+        # subpackage, so `.sub._hidden` resolves to `sieval.tasks.sub._hidden`
+        # — owned by subtree `sieval.tasks.sub`, which the importer at
+        # `sieval.tasks` is an ancestor of, not a descendant. Out-of-subtree.
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/foo.py",
+            "from .sub._hidden import X\n",
+        )
+        errors = _check_file(f)
+        assert any(
+            "import from private module 'sieval.tasks.sub._hidden'" in e for e in errors
+        )
+        # Rule 3 is the style half and deliberately stays quiet on level-1.
+        assert not any("cross-package relative import" in e for e in errors)
+
+    def test_dotted_level_1_matches_its_absolute_spelling(self, tmp_path: Path):
+        # The point of resolving before the rules run: the same semantic import
+        # must get the same verdict whichever way it is spelled. This equivalence
+        # is what the carve-out bug broke.
+        rel = self._write(
+            tmp_path / "rel",
+            "sieval/tasks/foo.py",
+            "from .sub._hidden import X\n",
+        )
+        absolute = self._write(
+            tmp_path / "abs",
+            "sieval/tasks/foo.py",
+            "from sieval.tasks.sub._hidden import X\n",
+        )
+
+        def _strip(errors: list[str], base: Path) -> list[str]:
+            return sorted(e.replace(str(base), "") for e in errors)
+
+        assert _strip(_check_file(rel), tmp_path / "rel") == _strip(
+            _check_file(absolute), tmp_path / "abs"
+        )
+
+    def test_level_1_dotted_public_path_stays_clean(self, tmp_path: Path):
+        # No private segment, no private name — the tightened carve-out must not
+        # start flagging ordinary descents into a subpackage.
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/foo.py",
+            "from .sub.mod import helper\n",
+        )
+        assert _check_file(f) == []
+
+    def test_level_1_undotted_subpackage_private_name_stays_exempt(
+        self, tmp_path: Path
+    ):
+        # Documents the residual limit: `from .sub import _priv` is cross-package
+        # when `sub` is a package, but is syntactically identical to a sibling
+        # module (`from .mod import _priv`). Distinguishing them needs a
+        # filesystem lookup, which would make the verdict depend on checkout
+        # completeness — left exempt on purpose.
+        f = self._write(
+            tmp_path,
+            "sieval/tasks/foo.py",
+            "from .sub import _priv\n",
+        )
+        assert _check_file(f) == []

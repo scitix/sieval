@@ -1,7 +1,7 @@
 """
 Pre-commit hook: enforce sieval import policy.
 
-Two categories of check:
+Three categories of check:
 
 1. **Layer boundary imports** — each layer has a hard-coded set of sibling
    layers it must not import from. Current map:
@@ -21,6 +21,28 @@ Two categories of check:
    * Private modules (``_*.py``) are **protected** — only their own package
      subtree may reach into them. Peer-subpackage access or out-of-subtree
      access is flagged.
+
+3. **Relative-import scope** (the other half of CLAUDE.md `## Import Policy`:
+   "Same package: relative imports. Cross-package: absolute imports."):
+
+   * ``from .sibling import X`` (level 1) is same-package — always fine.
+   * ``from ..parent import X`` (level >= 2) escapes the package and is
+     therefore a cross-package import written relatively. Flagged; use the
+     absolute ``from sieval.a.b import X`` form.
+
+**Relative imports are resolved to absolute (``_absolute_module``) before any
+rule runs**, so a violation written relatively is diagnosed as what it is
+rather than only as an import-style error. Holes this closed:
+
+* Check 2's carve-out was written for same-package relative imports but
+  implemented as ``level > 0``, so ``from ..peer import _foo`` slipped past the
+  private-name rule. Narrowing it to ``level == 1`` alone was still too wide —
+  a *dotted* level-1 module walks DOWN into a child subpackage, so
+  ``from .sub._hidden import X`` escaped as well. ``_check_private_access``
+  documents the residual limit.
+* Check 1 matched on ``node.module`` alone, so ``from ...tasks import x`` in
+  ``core/`` went unreported — as did the absolute ``from sieval import
+  tasks``, which names the layer as an alias rather than in the module path.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
@@ -120,6 +142,37 @@ def _file_package(path: Path) -> str:
     return ".".join(parts[idx:-1])
 
 
+def _resolve_relative(file_pkg: str, level: int, module: str) -> str | None:
+    """Resolve a relative import to its absolute dotted module.
+
+    ``level`` follows :class:`ast.ImportFrom` semantics: 1 is the current
+    package, each extra level strips one trailing component. Returns ``None``
+    when *file_pkg* is unknown or the level walks above the package root.
+    """
+    if not file_pkg:
+        return None
+    parts = file_pkg.split(".")
+    strip = level - 1
+    if strip >= len(parts):
+        return None
+    base = parts[: len(parts) - strip] if strip else parts
+    return ".".join([*base, module]) if module else ".".join(base)
+
+
+def _absolute_module(node: ast.ImportFrom, file_pkg: str) -> str:
+    """Return the absolute dotted module *node* imports from, or ``""``.
+
+    Absolute imports (level 0) are returned as written; relative ones are
+    resolved against *file_pkg* so every rule sees the same absolute form.
+    Without this, ``node.module`` is only the bare tail (``"tasks"`` for
+    ``from ...tasks import x``) and each rule short-circuits on its ``sieval.``
+    prefix test. Empty when the level walks above the package root.
+    """
+    if node.level == 0:
+        return node.module or ""
+    return _resolve_relative(file_pkg, node.level, node.module or "") or ""
+
+
 def _is_within_subtree(file_pkg: str, root: str) -> bool:
     """Return True if *file_pkg* equals *root* or descends from it."""
     if not root:
@@ -161,12 +214,19 @@ def _subtree_violation(
 
 
 def _check_layer_imports(path: Path, tree: ast.AST) -> list[str]:
-    """Layer-boundary check (existing behavior)."""
-    forbidden = FORBIDDEN.get(_get_layer(path) or "")
+    """Layer-boundary check: flag imports of a layer this file must not reach.
+
+    Matches all three shapes a forbidden layer can be named in: the module path
+    (``import sieval.tasks`` / ``from sieval.tasks import X``, relative form
+    included via ``_absolute_module``) and the imported alias
+    (``from sieval import tasks``).
+    """
+    layer = _get_layer(path)
+    forbidden = FORBIDDEN.get(layer or "")
     if not forbidden:
         return []
+    file_pkg = _file_package(path)
     errors: list[str] = []
-    layer = _get_layer(path)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -177,14 +237,27 @@ def _check_layer_imports(path: Path, tree: ast.AST) -> list[str]:
                         f"{layer}/ must not import {parts[1]}/ "
                         f"({alias.name})"
                     )
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            parts = node.module.split(".")
+        elif isinstance(node, ast.ImportFrom):
+            module = _absolute_module(node, file_pkg)
+            parts = module.split(".")
             if len(parts) >= 2 and parts[0] == "sieval" and parts[1] in forbidden:
                 errors.append(
                     f"{path}:{node.lineno}: "
                     f"{layer}/ must not import {parts[1]}/ "
-                    f"({node.module})"
+                    f"({module})"
                 )
+            elif module == "sieval":
+                # `from sieval import tasks` names the layer as an imported
+                # alias, not in the module path — same violation, different
+                # shape. Reachable relatively too (`from ... import tasks`),
+                # which is what `_check_relative_scope` suggests as the fix.
+                for alias in node.names:
+                    if alias.name in forbidden:
+                        errors.append(
+                            f"{path}:{node.lineno}: "
+                            f"{layer}/ must not import {alias.name}/ "
+                            f"(sieval.{alias.name})"
+                        )
     return errors
 
 
@@ -211,11 +284,28 @@ def _check_private_access(path: Path, tree: ast.AST) -> list[str]:
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            # Relative imports are same-package by construction; they are the
-            # carve-out that makes the `_base.py` sibling pattern legal.
-            if node.level > 0:
+            # Carve-out: a level-1 relative import with an UNDOTTED module is
+            # same-package, which is what makes the `_base.py` sibling pattern
+            # legal. Both other shapes escape the package and must still reach
+            # the rules below:
+            #   * level >= 2 walks UP out of the package (`from .._x import _y`);
+            #     `_check_relative_scope` also rejects it outright, but the
+            #     private rules must see it if that check is ever relaxed.
+            #   * a dotted level-1 module walks DOWN into a child subpackage —
+            #     `from .sub._hidden import X` resolves to
+            #     `sieval.pkg.sub._hidden`, whose owning subtree is
+            #     `sieval.pkg.sub`. The importer at `sieval.pkg` is an ancestor,
+            #     not a descendant, so that access is out-of-subtree.
+            # Residual limit: an undotted level-1 module naming a *subpackage*
+            # (`from .sub import _priv`) is cross-package too, but is
+            # syntactically identical to a sibling *module* (`from .mod import
+            # _priv`) — telling them apart needs a filesystem lookup, which
+            # would make the verdict depend on checkout completeness. Left
+            # exempt on purpose; the dotted form above is where a private
+            # module segment can actually appear mid-path.
+            if node.level == 1 and "." not in (node.module or ""):
                 continue
-            module = node.module or ""
+            module = _absolute_module(node, file_pkg)
             # Cover both `from sieval import _x` and `from sieval.pkg import …`.
             if module != "sieval" and not module.startswith("sieval."):
                 continue
@@ -251,6 +341,46 @@ def _check_private_access(path: Path, tree: ast.AST) -> list[str]:
     return errors
 
 
+def _check_relative_scope(path: Path, tree: ast.AST) -> list[str]:
+    """Reject relative imports that escape their own package (level >= 2).
+
+    CLAUDE.md `## Import Policy`: "Same package: relative imports. Cross-package:
+    absolute imports." A ``from ..parent import X`` is a cross-package import
+    written relatively, so it violates the second half of that rule.
+
+    Deliberately *not* flagged: a dotted level-1 module (``from .sub.mod import
+    X``) also crosses into a child package, but reads as a local descent and is
+    idiomatic enough that banning it outright buys little. It is still resolved
+    to absolute for checks 1 and 2, so the rules that matter — layer boundaries
+    and private-module protection — see through it either way. This check is the
+    style half only.
+
+    Scoped to the sieval package only: ``scripts/`` files are standalone modules,
+    not a package, so a relative import there fails at runtime and needs no
+    lint. (The pre-commit hook feeds both trees; this check narrows on purpose.)
+    """
+    if _get_layer(path) is None:
+        return []
+    if "tests" in path.parts:
+        return []
+
+    file_pkg = _file_package(path)
+    errors: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level >= 2:
+            written = "." * node.level + (node.module or "")
+            absolute = _resolve_relative(file_pkg, node.level, node.module or "")
+            fix = f"; use `from {absolute} import ...`" if absolute else ""
+            errors.append(
+                f"{path}:{node.lineno}: "
+                f"cross-package relative import {written!r} — relative imports "
+                f"are for the same package only, use absolute across packages"
+                f"{fix}"
+            )
+    return errors
+
+
 def _check_file(path: Path) -> list[str]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -258,6 +388,7 @@ def _check_file(path: Path) -> list[str]:
         return []
     errors = _check_layer_imports(path, tree)
     errors.extend(_check_private_access(path, tree))
+    errors.extend(_check_relative_scope(path, tree))
     return errors
 
 
