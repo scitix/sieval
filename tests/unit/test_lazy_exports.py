@@ -146,6 +146,22 @@ def test_access_export_triggers_lazy_import(
     assert package.__dict__[sample_export] is dummy_value
 
 
+def _read_stub_import_map(stub_path: Path) -> dict[str, str]:
+    """Map each name the stub exports to the relative module it imports it from."""
+    module_ast = ast.parse(
+        stub_path.read_text(encoding="utf-8"),
+        filename=str(stub_path),
+    )
+    import_map: dict[str, str] = {}
+    for node in module_ast.body:
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+            for alias in node.names:
+                import_map[alias.asname or alias.name] = node.module
+    if not import_map:
+        raise AssertionError(f"{stub_path} declares no relative imports")
+    return import_map
+
+
 @pytest.mark.parametrize("package_name", ["sieval.tasks", "sieval.datasets"])
 def test_stub_exports_match_runtime_exports(package_name: str) -> None:
     package = importlib.import_module(package_name)
@@ -153,3 +169,33 @@ def test_stub_exports_match_runtime_exports(package_name: str) -> None:
     assert package_file is not None
     stub_exports = _read_stub_all(Path(package_file).with_suffix(".pyi"))
     assert stub_exports == package.__all__
+
+
+@pytest.mark.parametrize("package_name", ["sieval.tasks", "sieval.datasets"])
+def test_stub_import_targets_match_runtime_module_map(package_name: str) -> None:
+    """The stub's per-name import target must match the runtime map's values.
+
+    Two mechanisms already guard neighbouring halves of this contract, and both
+    miss module *attribution*:
+
+    - ``test_stub_exports_match_runtime_exports`` compares only the export
+      *names* (both sides render them from their own scan's keys).
+    - ``check_preflight``'s ``check_tasks`` / ``check_datasets`` build their fqn
+      from the runtime map alone, so they never see the stub's opinion.
+
+    So a stub attributing an export to the wrong module ships silently: ty then
+    resolves ``from sieval.datasets import X`` through a module that does not
+    define ``X``, while runtime resolution is fine. The stub generator
+    reimplements the discovery scan on purpose (it must not import the package it
+    generates stubs for), which is exactly what makes the two able to drift.
+    """
+    package = importlib.import_module(package_name)
+    package_file = package.__file__
+    assert package_file is not None
+
+    stub_map = _read_stub_import_map(Path(package_file).with_suffix(".pyi"))
+    # Read through __dict__: it is a module-level global, and the .pyi deliberately
+    # does not declare it, so plain attribute access would not type-check.
+    runtime_map = dict(package.__dict__["_EXPORT_TO_MODULE"])
+
+    assert stub_map == runtime_map
