@@ -166,10 +166,10 @@ class TestLargePayloadSamples:
 
 
 class TestDatasetOperations:
-    """Benchmark select/shuffle operations."""
+    """Benchmark slice/shuffle operations."""
 
-    def test_dataset_select_and_shuffle(self) -> None:
-        """select() and shuffle() on 50k-sample dataset."""
+    def test_dataset_slice_and_shuffle(self) -> None:
+        """slice() and shuffle() on 50k-sample dataset."""
         n = 50000
         samples = [{"question": f"Q{i}", "answer": f"A{i}"} for i in range(n)]
         hf_ds = HFDataset.from_list(samples)
@@ -177,19 +177,19 @@ class TestDatasetOperations:
         dataset = PerfMockDataset.__new__(PerfMockDataset)
         dataset._dataset_dict = ds_dict
 
-        timer_select = PerfTimer()
-        with timer_select:
-            dataset.select(1000)
+        timer_slice = PerfTimer()
+        with timer_slice:
+            dataset.slice(1000)
 
         timer_shuffle = PerfTimer()
         with timer_shuffle:
             dataset.shuffle(seed=42)
 
         print(
-            f"PERF: select={timer_select.elapsed:.4f}s, "
+            f"PERF: slice={timer_slice.elapsed:.4f}s, "
             f"shuffle={timer_shuffle.elapsed:.4f}s"
         )
-        total = timer_select.elapsed + timer_shuffle.elapsed
+        total = timer_slice.elapsed + timer_shuffle.elapsed
         assert total < 3.0, f"Dataset operations too slow: {total:.3f}s"
 
 

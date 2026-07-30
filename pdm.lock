@@ -2,7 +2,7 @@
 # It is not intended for manual editing.
 
 [metadata]
-groups = ["default", "dev", "drop", "ifbench", "ifeval", "math", "ruler", "ruler-gen", "t-eval", "test"]
+groups = ["default", "dev", "drop", "hle", "ifbench", "ifeval", "math", "ruler", "ruler-gen", "t-eval", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
 content_hash = "sha256:899bce963a336ff3a384964c4b3ea00e426acb8e06249892f7adfa918f4de64e"
@@ -1674,7 +1674,7 @@ name = "numpy"
 version = "2.2.0"
 requires_python = ">=3.10"
 summary = "Fundamental package for array computing in Python"
-groups = ["default", "drop", "ruler", "t-eval"]
+groups = ["default", "drop", "hle", "ruler", "t-eval"]
 files = [
     {file = "numpy-2.2.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:cff210198bb4cae3f3c100444c5eaa573a823f05c253e7188e1362a5555235b3"},
     {file = "numpy-2.2.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:58b92a5828bd4d9aa0952492b7de803135038de47343b2aa3cc23f3b71a3dc4e"},

@@ -894,7 +894,11 @@ def require_available_memory_gb(min_gb: float) -> None:
 async def write_completed_samples(
     root: Path, n_completed: int, shard_samples: int = 256
 ) -> None:
-    """Write n_completed FINAL contexts to disk via TaskSaver."""
+    """Write n_completed FINAL contexts to disk via TaskSaver.
+
+    Stamps ``meta.json`` first, as a real run does at start, so the partial
+    run this fabricates is resumable under the resume version gate.
+    """
     saver = TaskSaver(
         root_dir=root,
         shard_samples=shard_samples,
@@ -902,6 +906,7 @@ async def write_completed_samples(
         write_buffer_size=max(n_completed + 1, 64),
         write_buffer_flush_interval=9999.0,
     )
+    await saver.write_run_meta()
     for i in range(n_completed):
         ctx = _make_bench_ctx(i, TaskStage.FINAL)
         saver._update_manifest_entry(ctx)
