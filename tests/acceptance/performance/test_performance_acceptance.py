@@ -445,6 +445,7 @@ def _check_regressions(
 class TestBenchmarkSummary:
     """Acceptance tests: realistic scenarios with structured reporting."""
 
+    @pytest.mark.benchmark
     @pytest.mark.anyio
     async def test_benchmark_scenarios(self, tmp_path: Path) -> None:
         """Run all benchmark scenarios and produce summary report."""

@@ -102,9 +102,13 @@ jobs:
         run: pdm install --check --frozen-lockfile ${{ env.INSTALL_GROUPS }}
       - name: Preflight (registration, version, deps, links, meta-drift)
         run: pdm run python scripts/check_preflight.py
-      - name: Unit tests + coverage
+      # `benchmark` is deselected because those gates assert wall-clock
+      # throughput calibrated on a dedicated box; a shared runner cannot hold
+      # them. Everything else here is deterministic.
+      - name: Unit + integration + acceptance tests + coverage
         run: >-
-          pdm run python -m pytest tests/unit -m "not stress"
+          pdm run python -m pytest tests/unit tests/integration tests/acceptance
+          -m "not stress and not benchmark"
           --cov --cov-report=xml -q
       - name: Upload coverage (advisory)
         if: always()

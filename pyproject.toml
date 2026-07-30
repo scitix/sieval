@@ -226,7 +226,13 @@ also_copy = [
 ]
 
 [tool.pytest]
-markers = ["stress: resource-intensive tests (run with: pytest -m stress)"]
+markers = [
+  "stress: resource-intensive tests (run with: pytest -m stress)",
+  # Wall-clock throughput gates. Their thresholds are calibrated on a dedicated
+  # box, so shared CI runners cannot hold them; CI deselects this marker while
+  # a plain local `pytest` still runs them.
+  "benchmark: wall-clock throughput benchmarks, excluded from CI",
+]
 testpaths = [
   "tests/unit",
   "tests/integration",

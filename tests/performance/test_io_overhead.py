@@ -24,10 +24,16 @@ from tests.conftest import (
     samples_per_second,
 )
 
-
 # ===================================================================
 # Helpers
 # ===================================================================
+# How many times a timed hydration is repeated before its minimum is taken.
+# Relevant only where the metric is a ratio of two sub-100ms measurements,
+# which single-shot timing cannot measure stably. See
+# TestLoaderHydrationPerformance.test_dependency_loading_overhead.
+_TIMING_REPEATS = 5
+
+
 async def _write_contexts_batch(
     root: Path,
     contexts: list[TaskContext],
@@ -232,6 +238,13 @@ class TestLoaderHydrationPerformance:
 
         Writes snapshots at each stage, then hydrates with all dependencies.
         Compares against single-stage-only hydration.
+
+        Each arm is hydrated ``_TIMING_REPEATS`` times and compared on its
+        minimum. One hydration takes ~20ms, so timing each arm once put any
+        transient scheduler stall straight into the ratio — a loaded machine
+        measured 876% against this 300% bound while an idle one measured 27%.
+        Contention can only ever add time, never remove it, so the per-arm
+        minimum is the stable estimator of hydration cost.
         """
         n_samples = 500
         stages = [
@@ -261,42 +274,39 @@ class TestLoaderHydrationPerformance:
                 saver._stage_queue.append(ctx)
             await saver.flush()
 
-        # Hydrate with dependencies
-        task_dep = _make_mock_task(n_samples)
-        loader_dep = TaskLoader(
-            task=task_dep,
-            root_dir=root_dep,
-            shard_read_concurrency=8,
-        )
-
-        timer_dep = PerfTimer()
-        with timer_dep:
-            _loaded_dep = await loader_dep.load_initial_state()
-
-        # Compare: hydrate without dependency stages (final only)
+        # Compare against hydration without dependency stages (final only)
         root_nodep = tmp_path / "nodep_bench"
         final_contexts = [_make_bench_ctx(i, TaskStage.FINAL) for i in range(n_samples)]
         await _write_contexts_batch(root_nodep, final_contexts, shard_samples=256)
 
-        task_nodep = _make_mock_task(n_samples)
-        loader_nodep = TaskLoader(
-            task=task_nodep,
-            root_dir=root_nodep,
-            shard_read_concurrency=8,
-        )
+        async def _fastest_hydration(root: Path) -> float:
+            """Seconds taken by the fastest of _TIMING_REPEATS hydrations."""
+            elapsed: list[float] = []
+            for _ in range(_TIMING_REPEATS):
+                # Fresh loader each time: load_initial_state() populates the
+                # loader, so reusing one would not re-read the shards.
+                loader = TaskLoader(
+                    task=_make_mock_task(n_samples),
+                    root_dir=root,
+                    shard_read_concurrency=8,
+                )
+                timer = PerfTimer()
+                with timer:
+                    loaded = await loader.load_initial_state()
+                # Both arms must hydrate the same sample count, or the ratio
+                # below would be comparing two different amounts of work.
+                assert len(loaded) == n_samples
+                elapsed.append(timer.elapsed)
+            return min(elapsed)
 
-        timer_nodep = PerfTimer()
-        with timer_nodep:
-            _loaded_nodep = await loader_nodep.load_initial_state()
+        dep_s = await _fastest_hydration(root_dep)
+        nodep_s = await _fastest_hydration(root_nodep)
 
-        overhead_pct = (
-            (timer_dep.elapsed - timer_nodep.elapsed) / timer_nodep.elapsed * 100
-            if timer_nodep.elapsed > 0
-            else 0
-        )
+        overhead_pct = (dep_s - nodep_s) / nodep_s * 100 if nodep_s > 0 else 0
         print(
             f"PERF: dep_loading overhead={overhead_pct:.1f}% "
-            f"(dep={timer_dep.elapsed:.4f}s, nodep={timer_nodep.elapsed:.4f}s)"
+            f"(dep={dep_s:.4f}s, nodep={nodep_s:.4f}s, "
+            f"best of {_TIMING_REPEATS})"
         )
         # Dependency loading adds cross-stage reads; overhead should be bounded
         # (4 stages means ~4x more reads, expect <300% overhead)
