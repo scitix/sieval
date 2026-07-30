@@ -255,10 +255,11 @@ def main() -> int:
     # ruler/'s helpers re-exported from _shared.py, and all of downloaders/ (which is
     # infrastructure, not a benchmark). Don't add the symmetric loop.
     #
-    # Not a model to copy either: sieval/tasks/CLAUDE.md mandates an empty subpackage
-    # __init__.py, so the stub below promises names that __init__ never binds —
-    # sieval.tasks.<sub>.XTask type-checks but raises AttributeError. Import task
-    # classes from the top-level package, which is the form the runtime map matches.
+    # Not a model to copy either: per sieval/tasks/CLAUDE.md a task subpackage's
+    # __init__.py is empty, and an empty __init__ binds none of the names this stub
+    # promises — sieval.tasks.<sub>.XTask type-checks but raises AttributeError. The
+    # convention is unenforced, so the stub is right only if the subpackage re-exports.
+    # Import from the top-level package, which is what the runtime map matches.
     for subpkg_dir in _iter_subpackage_dirs(TASKS_DIR):
         ok &= sync_stub(
             subpkg_dir / "__init__.pyi",
