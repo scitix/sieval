@@ -7,7 +7,7 @@ group (tiktoken / wonderwords / scipy) — they are skipped when unavailable.
 
 import pytest
 
-from sieval.datasets.ruler import tokens_to_generate
+from sieval.datasets.ruler._shared import tokens_to_generate
 
 try:
     import tiktoken as _tiktoken  # noqa: F401
@@ -21,8 +21,12 @@ _needs_ruler_deps = pytest.mark.skipif(
 )
 
 if _ruler_deps:
-    from sieval.datasets.ruler import RulerDataset, RulerDatasetSample
-    from sieval.datasets.ruler.ruler import _stamp, _subtask_data_path
+    from sieval.datasets.ruler.ruler import (
+        RulerDataset,
+        RulerDatasetSample,
+        _stamp,
+        _subtask_data_path,
+    )
 
 
 # ---------------------------------------------------------------------------
