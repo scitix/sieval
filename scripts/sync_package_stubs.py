@@ -90,11 +90,8 @@ def discover_tasks(package_dir: Path) -> dict[str, str]:
     for name, mod in _discover_task_classes(_iter_module_paths(package_dir)).items():
         _register_export(export_to_module, name, mod, "task")
 
-    # 2) Subpackage task modules — attributed as "subpkg.module_stem" to match the
-    # runtime registry (sieval/tasks/__init__.py). Registering the bare subpackage
-    # name here disagreed with it, which would have emitted `from .subpkg import X`
-    # into the top-level stub while runtime imports `sieval.tasks.subpkg.<module>`.
-    # Latent only because no task subpackage is currently registered.
+    # 2) Subpackage task modules — "subpkg.module_stem", matching the runtime
+    # registry in sieval/tasks/__init__.py. Must stay in sync with it.
     for subpkg_dir in _iter_subpackage_dirs(package_dir):
         subpkg_name = subpkg_dir.name
         for name, mod in _discover_task_classes(_iter_module_paths(subpkg_dir)).items():
@@ -246,22 +243,10 @@ def main() -> int:
         check=args.check,
     )
 
-    # Task subpackages get their own stub; dataset subpackages deliberately do not.
-    # Generating one per dataset subpackage breaks two ways, because a generated stub
-    # *shadows* the real __init__.py rather than supplementing it:
-    #   - datasets/ruler/__init__.py re-exports helpers from a private module
-    #     (_shared.py), which suffix-based discovery cannot see, so the stub would
-    #     list 2 of its 7 names and hide len_tag/thinking_prefill from type checkers.
-    #   - datasets/downloaders/ is infrastructure, not a benchmark; its API carries no
-    #     dataset suffix at all, so the stub would come out empty and hide resolve().
-    # _iter_subpackage_dirs cannot tell those apart from a benchmark subpackage.
-    #
-    # The loop below is currently inert (no task subpackage is registered) and is kept
-    # for the benchmark subpackages that land here. Note it is not a model to copy:
-    # under the empty-__init__.py rule in sieval/tasks/CLAUDE.md the stub it writes
-    # promises names the empty __init__ never binds, so `sieval.tasks.<sub>.XTask`
-    # type-checks but raises AttributeError. The top-level stub is the one that
-    # matches runtime, and package-level import is the documented entrypoint.
+    # Task subpackages only. A generated stub shadows the real __init__.py, so doing
+    # this for dataset subpackages hides whatever suffix-based discovery can't see:
+    # ruler/'s helpers re-exported from _shared.py, and all of downloaders/ (which is
+    # infrastructure, not a benchmark). Don't add the symmetric loop.
     for subpkg_dir in _iter_subpackage_dirs(TASKS_DIR):
         ok &= sync_stub(
             subpkg_dir / "__init__.pyi",

@@ -175,27 +175,17 @@ def test_stub_exports_match_runtime_exports(package_name: str) -> None:
 def test_stub_import_targets_match_runtime_module_map(package_name: str) -> None:
     """The stub's per-name import target must match the runtime map's values.
 
-    Two mechanisms already guard neighbouring halves of this contract, and both
-    miss module *attribution*:
-
-    - ``test_stub_exports_match_runtime_exports`` compares only the export
-      *names* (both sides render them from their own scan's keys).
-    - ``check_preflight``'s ``check_tasks`` / ``check_datasets`` build their fqn
-      from the runtime map alone, so they never see the stub's opinion.
-
-    So a stub attributing an export to the wrong module ships silently: ty then
-    resolves ``from sieval.datasets import X`` through a module that does not
-    define ``X``, while runtime resolution is fine. The stub generator
-    reimplements the discovery scan on purpose (it must not import the package it
-    generates stubs for), which is exactly what makes the two able to drift.
+    Nothing else compares them: the test above checks only export *names*, and
+    preflight builds its fqn from the runtime map alone. So a stub pointing an
+    export at the wrong module ships silently, and ty resolves
+    ``from sieval.datasets import X`` through a module that never defines it.
     """
     package = importlib.import_module(package_name)
     package_file = package.__file__
     assert package_file is not None
 
     stub_map = _read_stub_import_map(Path(package_file).with_suffix(".pyi"))
-    # Read through __dict__: it is a module-level global, and the .pyi deliberately
-    # does not declare it, so plain attribute access would not type-check.
+    # Via __dict__ because the .pyi deliberately does not declare this global.
     runtime_map = dict(package.__dict__["_EXPORT_TO_MODULE"])
 
     assert stub_map == runtime_map
