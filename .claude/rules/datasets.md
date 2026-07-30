@@ -10,6 +10,19 @@ paths:
 - New datasets must be downloadable via `sieval dataset download <name>`; the `source` field is the authoritative origin.
 - Verify with `python scripts/check_preflight.py --check check_datasets` after adding new datasets
 
+## Upstream Sample Shape
+
+There is no shared cross-benchmark sample schema — every Task binds 1:1 to its own sample
+`TypedDict`, so nothing downstream gains from two loaders agreeing on a field name or dtype.
+
+- **Keep upstream field names.** Rename only when the upstream name is unusable as-is (not a
+  valid identifier, e.g. `Short Answer`, or it collides) — never for uniformity with a sibling.
+- **Cast a column's dtype only when the pinned revision requires it.** Measure the snapshot
+  instead of copying a sibling; a cast matching the dtype upstream already ships is a no-op that
+  reads as a guarantee. CSV/JSON content-inferred dtypes are the load-bearing case.
+- Say **which case it is** in a comment, including "no cast needed, upstream ships this dtype" —
+  otherwise restoring uniformity looks like a cleanup.
+
 ## Dataset Metadata: `@sieval_dataset`
 
 - Every concrete `Dataset[TSample]` subclass must be decorated with `@sieval_dataset(...)` from `sieval.core.datasets`.

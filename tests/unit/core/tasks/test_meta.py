@@ -27,6 +27,7 @@ from sieval.core.tasks.meta import (
     sieval_task,
     task_meta_to_dict,
 )
+from tests.conftest import ModuleIsolation
 
 # ── Stub sample type + dataset class for reverse-lookup tests ──
 
@@ -148,35 +149,78 @@ def test_task_meta_constructs():
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
-    """Snapshot + clear TASK_REGISTRY / _TASK_CLASSES for every test; restore after.
+    """Give every test an empty task registry *and* an empty ``sieval.tasks``
+    module cache — see ``ModuleIsolation`` for why the two must move together.
 
-    Also isolates ``sys.modules`` — tests that call ``import_all_tasks()``
-    would otherwise leave ``sieval.tasks.*`` entries cached; a subsequent
-    ``import_all_tasks()`` from another test file would then short-circuit on
-    those cache hits, skip module-body execution, and never re-run the
-    ``@sieval_task`` decorators, leaving downstream tests with an empty
-    registry. Drop any ``sieval.tasks.*`` module newly imported during the
-    test so the next caller starts from a clean slate.
+    Only submodules are in scope; ``sieval.tasks`` itself stays cached so its
+    ``__path__`` keeps the identity that path-injecting tests rely on. Its lazy
+    export cache is still declared, because staying cached is exactly what lets
+    it hold a class resolved from a copy that ``restore()`` later discards. The
+    dataset registries are deliberately untouched — ``_stub_sample_mapping``
+    above seeds ``SAMPLE_TO_DATASET`` for every test in this file.
     """
-    import sys
-
     from sieval.core.tasks.meta import _TASK_CLASSES
 
     reg_snapshot = dict(TASK_REGISTRY)
     cls_snapshot = dict(_TASK_CLASSES)
-    task_modules_before = {
-        name for name in sys.modules if name.startswith("sieval.tasks")
-    }
+    modules = ModuleIsolation(("sieval.tasks.",), lazy_packages=("sieval.tasks",))
+    modules.snapshot()
+
     TASK_REGISTRY.clear()
     _TASK_CLASSES.clear()
-    yield
-    TASK_REGISTRY.clear()
-    TASK_REGISTRY.update(reg_snapshot)
-    _TASK_CLASSES.clear()
-    _TASK_CLASSES.update(cls_snapshot)
-    for name in list(sys.modules):
-        if name.startswith("sieval.tasks") and name not in task_modules_before:
-            del sys.modules[name]
+    modules.evict()
+    try:
+        yield
+    finally:
+        TASK_REGISTRY.clear()
+        TASK_REGISTRY.update(reg_snapshot)
+        _TASK_CLASSES.clear()
+        _TASK_CLASSES.update(cls_snapshot)
+        modules.restore()
+
+
+def test_clean_registry_fixture_leaves_task_modules_reimportable():
+    """Lock the `_clean_registry` contract that the rest of this file rests on.
+
+    Registry and `sieval.tasks` module cache must both start empty, so
+    `import_all_tasks()` genuinely re-runs every `@sieval_task` decorator. When
+    the cache was left populated, tasks another test file had already imported
+    at module level came back unregistered — silently, and only for those tasks.
+
+    The cache half of that only has teeth once something has populated it, so
+    running this file alone leaves the second assertion trivially true. It earns
+    its keep in a full-suite or multi-file run, where an earlier file has already
+    imported a task module.
+
+    Also pins the eponymous-module convention `get_task_class()` depends on
+    (`sieval/core/tasks/meta.py`): every registered name must be reachable as
+    `sieval.tasks.{name}`, or `sieval task list` cannot resolve its class. Note
+    this is deliberately stricter than the lazy export map, which also accepts
+    subpackage-hosted tasks as `"subpkg.module_stem"` (`sieval/tasks/__init__.py`
+    "Subpackage .py modules"). Such a task would import and export fine but be
+    unreachable through `get_task_class()`, so the flat layout is the binding
+    constraint until that lookup learns to walk subpackages.
+    """
+    import sys
+
+    from sieval.core.tasks.meta import import_all_tasks
+    from sieval.meta import load_index
+
+    assert not TASK_REGISTRY
+    assert not [name for name in sys.modules if name.startswith("sieval.tasks.")]
+
+    import_all_tasks()
+
+    _, tasks = load_index()
+    assert tasks, "shipped index is non-empty"
+    missing = {t.name for t in tasks} - set(TASK_REGISTRY)
+    assert not missing, f"indexed tasks left unregistered: {sorted(missing)}"
+    off_convention = [
+        name for name in TASK_REGISTRY if f"sieval.tasks.{name}" not in sys.modules
+    ]
+    assert not off_convention, (
+        f"tasks not defined in an eponymous module: {sorted(off_convention)}"
+    )
 
 
 def test_sieval_task_attaches_meta_and_registers():
@@ -620,33 +664,65 @@ def test_tasks_for_dataset_empty_for_unknown():
 
 
 def test_get_task_class_returns_registered_class():
-    """Verify `get_task_class` returns the Task subclass registered under *name*."""
-    from sieval.core.tasks.meta import TASK_REGISTRY, get_task_class, import_all_tasks
-    from sieval.meta import load_index
+    """An already-registered name resolves straight out of `_TASK_CLASSES`.
 
-    import_all_tasks()
-    _, tasks = load_index()
-    assert tasks, "pilot index is non-empty"
-    name = tasks[0].name
-    # `get_task_class` resolves a cleared-registry miss by importing
-    # `sieval.tasks.{name}`, but that only re-runs the `@sieval_task` decorator
-    # if the module isn't already cached. Another test file (e.g. one that calls
-    # `import_all_tasks()` or imports a task at module top level) may have leaked
-    # it into `sys.modules`, in which case this test's own `import_all_tasks()`
-    # short-circuits and leaves `name` unregistered — surfacing only when it is
-    # `tasks[0]` under randomized collection order. Evict it so resolution is
-    # genuinely exercised (the autouse fixture restores module state on teardown).
+    The target is registered by this test rather than read off the shipped
+    index, so the assertion is exact (identity, not `issubclass`) and does not
+    shift with whichever task happens to sort first.
+    """
+    from sieval.core.tasks.meta import get_task_class
+
+    @sieval_task(
+        name="lookup_pilot",
+        display_name="Lookup Pilot",
+        description="registered target for get_task_class",
+        eval_mode=EvalMode.GEN,
+    )
+    class _LookupPilotTask(_StubTask):
+        pass
+
+    assert get_task_class("lookup_pilot") is _LookupPilotTask
+
+
+def test_get_task_class_lazy_imports_unregistered_module(tmp_path):
+    """A name missing from `_TASK_CLASSES` resolves by importing
+    `sieval.tasks.{name}` — the one-task-per-eponymous-module convention that
+    lets point lookups skip a full `import_all_tasks()`.
+    """
     import sys
 
-    sys.modules.pop(f"sieval.tasks.{name}", None)
-    # A registered name must resolve — we don't assert a specific class to
-    # stay resilient to pilot changes; just that the lookup works.
-    from sieval.core.tasks.task import Task
+    import sieval.tasks
+    from sieval.core.tasks.meta import TASK_REGISTRY, get_task_class
 
-    cls = get_task_class(name)
-    assert issubclass(cls, Task)
-    assert cls.__name__  # non-empty class name
-    assert name in TASK_REGISTRY  # sanity: name really is registered
+    name = "lazy_task_for_test"
+    # Decorating in a real module file (rather than in this test body) is what
+    # makes the import the only path to registration.
+    (tmp_path / f"{name}.py").write_text(
+        "from sieval.core.tasks.meta import EvalMode, sieval_task\n"
+        f"from {__name__} import _StubTask\n"
+        "\n"
+        "\n"
+        "@sieval_task(\n"
+        f'    name="{name}",\n'
+        '    display_name="Lazy",\n'
+        '    description="lazy-import target",\n'
+        "    eval_mode=EvalMode.GEN,\n"
+        ")\n"
+        "class LazyForTestTask(_StubTask):\n"
+        "    pass\n"
+    )
+    sieval.tasks.__path__.insert(0, str(tmp_path))
+    try:
+        assert name not in TASK_REGISTRY  # only the import can register it
+        cls = get_task_class(name)
+        assert cls.__name__ == "LazyForTestTask"
+        assert TASK_REGISTRY[name].display_name == "Lazy"
+    finally:
+        sieval.tasks.__path__.remove(str(tmp_path))
+        sys.modules.pop(f"sieval.tasks.{name}", None)
+        # The successful import also bound the submodule on the package; drop it
+        # so nothing outside this test can reach a module whose file is gone.
+        sieval.tasks.__dict__.pop(name, None)
 
 
 def test_get_task_class_raises_key_error_on_unknown_name():

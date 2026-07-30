@@ -1,4 +1,4 @@
-"""HMMT February 2025 dataset loader (MathArena source).
+"""HMMT November 2025 dataset loader (MathArena source).
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
@@ -19,39 +19,40 @@ from sieval.core.datasets import (
 from sieval.core.utils.hf import ensure_dataset
 
 # Pin the MathArena HF snapshot for reproducibility (see check_datasets / #8).
-HMMT_FEB_2025_REVISION = "6fdc4277120810ff75aa22d2d5489b91f7a262a1"
+HMMT_NOV_2025_REVISION = "118dbfb45c4c9467c672268ed55166642897aa46"
 
 
-class HMMTFeb2025DatasetSample(TypedDict):
+class HMMTNov2025DatasetSample(TypedDict):
     problem: str
     answer: str
 
 
 @sieval_dataset(
-    name="hmmt_feb_2025",
-    display_name="HMMT Feb 2025",
-    description="Harvard-MIT Mathematics Tournament, February 2025, 30 problems.",
-    source=f"hf:MathArena/hmmt_feb_2025@{HMMT_FEB_2025_REVISION}",
+    name="hmmt_nov_2025",
+    display_name="HMMT Nov 2025",
+    description="Harvard-MIT Mathematics Tournament, November 2025, 30 problems.",
+    source=f"hf:MathArena/hmmt_nov_2025@{HMMT_NOV_2025_REVISION}",
     categories=(Category(Level1Category.MATHEMATICS, "CompetitionMath"),),
     tags=("english", "open-ended"),
     license="CC-BY-NC-SA-4.0",
 )
-class HMMTFeb2025Dataset(Dataset[HMMTFeb2025DatasetSample]):
+class HMMTNov2025Dataset(Dataset[HMMTNov2025DatasetSample]):
     def _strip_sample(
-        self, sample: HMMTFeb2025DatasetSample
-    ) -> HMMTFeb2025DatasetSample:
+        self, sample: HMMTNov2025DatasetSample
+    ) -> HMMTNov2025DatasetSample:
         # Gold answer only; problem text stays verbatim — strip_string normalizes
         # answers (rewrites \frac/\sqrt, drops \left/\right) and mangles problem
         # LaTeX (\sqrt[20]{x} -> \sqrt{[}20]{x}). DEVIATION: matharena does not
         # normalize golds; sieval does, so math-verify compares canonical forms.
+        # Score-neutral here: 3 of 30 golds change (1/91 -> \frac{1}{91}, 91/6,
+        # 199/8), all already equivalent under math-verify.
         sample["answer"] = strip_string(sample["answer"])
         return sample
 
     @override
     def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
         # MathArena exposes a single `default` config under the `train` split with
-        # columns problem_idx / problem / answer / problem_type, kept under their
-        # upstream names.
+        # columns problem_idx / problem / answer, kept under their upstream names.
         dataset = ensure_dataset(load_dataset(name_or_path, split="train", **kwargs))
         # No dtype cast: `answer` is already `string` in the pinned snapshot and
         # `.map` preserves it. MathArena's answer dtype varies per competition, so a

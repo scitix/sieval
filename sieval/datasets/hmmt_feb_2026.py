@@ -7,7 +7,7 @@ import os
 from typing import TypedDict, override
 
 from datasets import DatasetDict as HFDatasetDict
-from datasets import Value, load_dataset
+from datasets import load_dataset
 
 from sieval.community.math import strip_string
 from sieval.core.datasets import (
@@ -23,7 +23,7 @@ HMMT_FEB_2026_REVISION = "02fba4f74d8e68e73e66a02d540fd979c05c274c"
 
 
 class HMMTFeb2026DatasetSample(TypedDict):
-    question: str
+    problem: str
     answer: str
 
 
@@ -40,24 +40,21 @@ class HMMTFeb2026Dataset(Dataset[HMMTFeb2026DatasetSample]):
     def _strip_sample(
         self, sample: HMMTFeb2026DatasetSample
     ) -> HMMTFeb2026DatasetSample:
-        # Normalize the answer only; leave the problem text verbatim. strip_string
-        # is an answer normalizer and mangles full problem LaTeX if applied to the
-        # question — e.g. "1, 2, ..., n" becomes "1, 2, 0..., n". Matches the
-        # aime_2024 / math_500 loaders.
+        # Gold answer only; problem text stays verbatim — strip_string normalizes
+        # answers (rewrites \frac/\sqrt, drops \left/\right) and mangles problem
+        # LaTeX ("1, 2, ..., n" -> "1, 2, 0..., n"). DEVIATION: matharena does
+        # not normalize golds; sieval does, so math-verify compares canonical forms.
         sample["answer"] = strip_string(sample["answer"])
         return sample
 
     @override
     def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
         # MathArena exposes a single `default` config under the `train` split with
-        # columns problem / answer / problem_idx. Rename `problem` -> `question` to
-        # match the shared math sample schema.
+        # columns problem / answer / problem_idx, kept under their upstream names.
         dataset = ensure_dataset(load_dataset(name_or_path, split="train", **kwargs))
-        dataset = dataset.rename_column("problem", "question")
-        # HMMT answers are already strings (symbolic + some plain integers); the
-        # cast is a harmless no-op that keeps both math loaders uniform and the
-        # `answer: str` contract explicit.
-        dataset = dataset.cast_column("answer", Value("string"))
+        # No dtype cast: `answer` is already `string` in the pinned snapshot and
+        # `.map` preserves it. MathArena's answer dtype varies per competition, so a
+        # sibling loader's cast is a fact about its own pin, not a family rule.
         dataset = dataset.map(self._strip_sample, num_proc=os.cpu_count())
         # the test split is the same as the train split
         return HFDatasetDict(

@@ -71,7 +71,9 @@ jobs:
 
   typecheck:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # `[tool.ty.environment] root = ["./"]` — ty checks tests/ too, so a
+    # test-only change can break it. Keep the trigger as wide as the tool.
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.tests == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

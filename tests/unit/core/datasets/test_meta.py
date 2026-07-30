@@ -21,6 +21,7 @@ from sieval.core.datasets.meta import (
     iter_dataset_metas,
     sieval_dataset,
 )
+from tests.conftest import ModuleIsolation
 
 
 class FooSample(TypedDict):
@@ -33,30 +34,31 @@ class BarSample(TypedDict):
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
-    """Each test starts with empty registries; restore afterwards.
+    """Give every test empty dataset registries *and* an empty `sieval.datasets`
+    module cache — see `ModuleIsolation` for why the two must move together.
 
-    Also tracks `sieval.datasets.*` entries in `sys.modules` so that a test
-    that triggers `import_all_datasets()` does not leave modules cached —
-    otherwise later tests that rely on the real dataset decorators running
-    (e.g. Task-side reverse-lookup) will see an empty `SAMPLE_TO_DATASET`.
+    Only submodules are in scope; the `sieval.datasets` package itself stays
+    cached. Its lazy export cache is still declared, because staying cached is
+    exactly what lets it hold a class resolved from a copy that `restore()`
+    later discards — a class that then stops matching its own
+    `SAMPLE_TO_DATASET` key.
     """
-    import sys
-
     saved_ds = DATASET_REGISTRY.copy()
     saved_map = SAMPLE_TO_DATASET.copy()
-    preloaded_modules = {
-        name for name in sys.modules if name.startswith("sieval.datasets.")
-    }
+    modules = ModuleIsolation(("sieval.datasets.",), lazy_packages=("sieval.datasets",))
+    modules.snapshot()
+
     DATASET_REGISTRY.clear()
     SAMPLE_TO_DATASET.clear()
-    yield
-    DATASET_REGISTRY.clear()
-    DATASET_REGISTRY.update(saved_ds)
-    SAMPLE_TO_DATASET.clear()
-    SAMPLE_TO_DATASET.update(saved_map)
-    for name in list(sys.modules):
-        if name.startswith("sieval.datasets.") and name not in preloaded_modules:
-            del sys.modules[name]
+    modules.evict()
+    try:
+        yield
+    finally:
+        DATASET_REGISTRY.clear()
+        DATASET_REGISTRY.update(saved_ds)
+        SAMPLE_TO_DATASET.clear()
+        SAMPLE_TO_DATASET.update(saved_map)
+        modules.restore()
 
 
 def test_sieval_dataset_happy_path():

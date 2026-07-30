@@ -19,7 +19,9 @@ paths:
 
 - Add benchmark-specific dependencies to `pyproject.toml` optional dependency groups (e.g., `[project.optional-dependencies.benchmark_name]`)
 - New datasets must be downloadable via `sieval dataset download <name>` — verify the `source` field (`hf:` / `url:` / `local:`) resolves.
-- Stub sync (`scripts/sync_package_stubs.py`), meta index (`scripts/sync_meta_index.py`), ruff check, and ty check are now automated via PostToolUse hooks — no need to run manually
+- Record the upstream **repeat/sampling protocol** in `reference_impl.notes` when it differs from this task's default `n` (matharena's runner default `--n 4`; simple-evals' `n_repeats`), and say how to match it. Nothing enforces this — it needs upstream knowledge.
+- The PostToolUse hooks in `.claude/settings.json` regenerate stubs + `meta/index.json` on a Write/Edit under `sieval/tasks/` or `sieval/datasets/`, in the checkout that owns the file. They do not fire for `sed -i`, `git apply`, or a rebase, so `--check` both sync scripts before committing: CI fails on a stale `meta/index.json`, and stub drift has no enforcer at all.
+- ruff and ty run from the same hooks but only report — run the full `ruff check` / `ty check` before committing.
 - Run `python scripts/check_preflight.py --check check_tasks` to verify naming, tags, and imports
 
 ## Code Quality

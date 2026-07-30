@@ -15,29 +15,24 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks.context import TaskContext
+from tests.conftest import ModuleIsolation
 
 _TASK_MODULE = "sieval.tasks.theoremqa_kshot_base_gen"
 _DATASET_MODULE = "sieval.datasets.theoremqa"
-_TASK_EXPORTS = ("TheoremQAKShotBaseGenTask",)
-_DATASET_EXPORTS = ("TheoremQADataset", "TheoremQADatasetSample")
-
-
-def _drop_theoremqa_modules() -> None:
-    sys.modules.pop(_TASK_MODULE, None)
-    sys.modules.pop(_DATASET_MODULE, None)
-    for package_name, exports in (
-        ("sieval.tasks", _TASK_EXPORTS),
-        ("sieval.datasets", _DATASET_EXPORTS),
-    ):
-        package = sys.modules.get(package_name)
-        if package is None:
-            continue
-        for export in exports:
-            package.__dict__.pop(export, None)
+_LAZY_PACKAGES = ("sieval.tasks", "sieval.datasets")
 
 
 @pytest.fixture(autouse=True)
 def _preserve_registries():
+    """Clear the four registries and evict both theoremqa modules, then restore
+    the whole set — see `ModuleIsolation` for why the two must move together.
+
+    This file imports the task/dataset on demand (`_task_module()`,
+    `_dataset()`) rather than at top level, so evicting them is what makes each
+    test's import re-execute the module bodies and re-run the `@sieval_task` /
+    `@sieval_dataset` decorators into the registries just cleared. Scope is the
+    two exact modules rather than the whole packages.
+    """
     from sieval.core.datasets.meta import DATASET_REGISTRY, SAMPLE_TO_DATASET
     from sieval.core.tasks.meta import _TASK_CLASSES, TASK_REGISTRY
 
@@ -45,16 +40,17 @@ def _preserve_registries():
     task_classes_snapshot = dict(_TASK_CLASSES)
     dataset_snapshot = dict(DATASET_REGISTRY)
     sample_map_snapshot = dict(SAMPLE_TO_DATASET)
+    modules = ModuleIsolation((_TASK_MODULE, _DATASET_MODULE), _LAZY_PACKAGES)
+    modules.snapshot()
 
     TASK_REGISTRY.clear()
     _TASK_CLASSES.clear()
     DATASET_REGISTRY.clear()
     SAMPLE_TO_DATASET.clear()
-    _drop_theoremqa_modules()
+    modules.evict()
     try:
         yield
     finally:
-        _drop_theoremqa_modules()
         TASK_REGISTRY.clear()
         TASK_REGISTRY.update(task_snapshot)
         _TASK_CLASSES.clear()
@@ -63,6 +59,7 @@ def _preserve_registries():
         DATASET_REGISTRY.update(dataset_snapshot)
         SAMPLE_TO_DATASET.clear()
         SAMPLE_TO_DATASET.update(sample_map_snapshot)
+        modules.restore()
 
 
 class _MockGenModel(GenModel):

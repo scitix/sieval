@@ -172,6 +172,32 @@ All shared test infrastructure lives here — available to every test layer with
 | `make_perf_config(tmp_path, **overrides)` | `TaskRunnerConfig` for performance tests |
 | `write_completed_samples(root, n_completed)` | Write FINAL contexts to disk for resume tests |
 
+### Registry isolation
+
+| Class | Description |
+| --- | --- |
+| `ModuleIsolation(scope, lazy_packages=(), exclude=())` | Snapshot/restore a `sys.modules` subtree — pair it with any fixture that clears a task/dataset registry |
+
+`import_all_tasks()` and `get_task_class()` only re-run a module's `@sieval_task` decorator while
+`sieval.tasks.{name}` is absent from `sys.modules`, so **a registry and its module cache must be
+cleared and restored as a unit**. Clearing one half alone breaks a test in one direction or the
+other — a cleared registry with cached modules leaves names unregistered (`KeyError`), while a
+restored registry with purged modules trips the duplicate-name guard on the next import.
+
+`ModuleIsolation` owns the part that is easy to get wrong: `sys.modules` is not the only view, so
+both directions keep parent-package attributes in step — `evict()` unbinds the modules it drops and
+`restore()` rebinds the snapshot then unbinds copies the test imported on top. Skip either side and
+`monkeypatch.setattr("sieval.datasets.x.load_dataset", ...)`, which resolves by attribute traversal
+from the root, silently patches a module nobody uses; `from sieval.tasks import x` hands back the
+dropped copy for the same reason. Pass `lazy_packages` whenever a package's lazy `__getattr__` cache
+can outlive the module copy it resolved from. Registry `clear()`/`update()` stays in each fixture,
+since the relevant registry subset differs per site.
+
+Used by the autouse fixtures in `tests/unit/core/tasks/test_meta.py`,
+`tests/unit/core/datasets/test_meta.py`, `tests/unit/test_lazy_exports.py`,
+`tests/unit/tasks/test_theoremqa_kshot_base_gen.py`, and `tests/unit/cli/conftest.py`.
+Its own contract is pinned by `tests/unit/test_module_isolation.py`.
+
 ---
 
 ## Writing Tests

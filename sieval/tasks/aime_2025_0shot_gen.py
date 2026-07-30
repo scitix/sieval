@@ -50,6 +50,12 @@ class AIME2025ZeroShotGenTask(
 ):
     def __init__(self, dataset, model, name: str | None = None, k: int = 1, n: int = 1):
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}. "
+                "Raise the task arg `n` (tasks.<name>.args.n) to at least k — "
+                "setting `n` on the model is silently overridden call-time."
+            )
         self._k = k
         self._n = n
 
@@ -98,26 +104,52 @@ class AIME2025ZeroShotGenTask(
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
         if total == 0:
-            return {"score": 0.0, "fails": len(fails)}
+            # Same key set as the populated path, so `pass@1` never KeyErrors.
+            return self._metrics(0.0, 0.0, len(fails))
 
         pass_at_1_total = 0.0
         pass_at_k_total = 0.0
+        short = 0
         for f in finals:
             feedbacks = f.feedback_result
             n_samples = len(feedbacks)
-            correct_num = sum(1 for f in feedbacks if f["correct"])
+            if n_samples < self._k:
+                short += 1
+            correct_num = sum(1 for fb in feedbacks if fb["correct"])
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
                 pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
 
-        pass_at_1 = pass_at_1_total * 100 / total
-        metrics = {"score": pass_at_1, "fails": len(fails), "pass@1": pass_at_1}
+        if short:
+            logger.warning(
+                "{}/{} sample(s) returned fewer than k={} choices (model produced "
+                "fewer than the requested n={}) and contribute 0 to pass@{}.",
+                short,
+                len(finals),
+                self._k,
+                self._n,
+                self._k,
+            )
+
+        return self._metrics(
+            pass_at_1_total * 100 / total,
+            pass_at_k_total * 100 / total,
+            len(fails),
+        )
+
+    def _metrics(
+        self, pass_at_1: float, pass_at_k: float, fails: int
+    ) -> dict[str, float]:
+        # Single source of truth for the report key set — both branches route here.
+        metrics = {"score": pass_at_1, "fails": fails, "pass@1": pass_at_1}
         if self._k > 1:
-            metrics[f"pass@{self._k}"] = pass_at_k_total * 100 / total
+            metrics[f"pass@{self._k}"] = pass_at_k
         return metrics
 
     def _pass_at_k(self, n: int, c: int, k: int) -> float:
         if n < k:
+            # Unreachable by config (__init__ rejects k > n); only a model that
+            # returned fewer choices than requested lands here, and report() warns.
             return 0.0
         if c == 0:
             return 0.0

@@ -23,6 +23,12 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from sieval.core.datasets.meta import DatasetMeta
 
+# Check THIS checkout, which is also the tree the path-based checks walk.
+# `python scripts/x.py` puts scripts/ on sys.path[0] but never the repo root, so
+# the registry imports below otherwise resolve through the editable install —
+# from a worktree, that validates another branch while reporting on this one.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 # Known import-name → package-name mismatches
 _IMPORT_TO_PACKAGE: dict[str, str] = {
     "sklearn": "scikit-learn",

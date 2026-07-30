@@ -19,9 +19,11 @@ import random
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import anyio
@@ -39,6 +41,153 @@ from sieval.core.runners.runner import TaskRunnerConfig
 from sieval.core.tasks.context import TaskContext, TaskStage
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
+
+
+# ===================================================================
+# Registry / module-cache isolation
+# ===================================================================
+class ModuleIsolation:
+    """Snapshot a ``sys.modules`` subtree and put it back exactly as found.
+
+    Pair this with any fixture that clears ``TASK_REGISTRY`` / ``_TASK_CLASSES`` /
+    ``DATASET_REGISTRY`` / ``SAMPLE_TO_DATASET``. ``import_all_tasks()`` and
+    ``get_task_class()`` only re-run a module's ``@sieval_task`` decorator while
+    ``sieval.tasks.{name}`` is absent from ``sys.modules``, so a registry and its
+    module cache have to move as a unit — clearing one half alone breaks a test in
+    one direction or the other:
+
+    * cleared registry + cached modules — registration silently no-ops, so the
+      name stays unregistered and ``get_task_class()`` raises ``KeyError``.
+    * restored registry + purged modules — the next ``import_all_tasks()`` re-runs
+      the decorators against an already-populated registry and trips the
+      duplicate-name guard.
+
+    ``sys.modules`` is not the only view. Parent packages keep their own attribute
+    bindings, and a dotted-string target (``monkeypatch.setattr("pkg.mod.attr")``,
+    ``mock.patch("pkg.mod.attr")``) is resolved by attribute traversal from the
+    root package, never through the cache — so a child attribute left pointing at
+    a discarded copy patches a module nobody uses. Both directions therefore keep
+    the parent bindings in step: ``evict()`` unbinds the modules it drops, and
+    ``restore()`` rebinds parents for the snapshotted modules *and* unbinds
+    whatever the test imported on top of them.
+
+    A dropped module left bound on its parent is not a cosmetic leak — it is the
+    same failure this class exists to prevent, one scope earlier. ``from pkg
+    import submodule`` resolves through ``hasattr`` before it considers an import,
+    so the stale attribute wins, the module body never re-executes, and the
+    decorator never re-runs against the registry the fixture just cleared.
+
+    ``scope`` and ``exclude`` entries ending in ``"."`` match by prefix; the rest
+    match exactly. ``exclude`` wins::
+
+        ModuleIsolation(("sieval.tasks.",))  # submodules only
+        ModuleIsolation(("sieval.tasks", "sieval.tasks."))  # package included
+        ModuleIsolation(("sieval.datasets.theoremqa",))  # that one module
+
+    Exclude a subtree when something *outside* the scope holds a reference into
+    it that a restore cannot repair — see the downloader note in
+    ``tests/unit/cli/conftest.py``.
+
+    ``lazy_packages`` names packages whose lazy ``__getattr__`` resolves an export
+    once and then caches it in the package's own ``__dict__`` (``sieval.tasks``,
+    ``sieval.datasets``). Those caches move with the modules for the same reason
+    the parent attributes do: a class cached from a copy this fixture later
+    discards no longer matches its own ``SAMPLE_TO_DATASET`` key, and the next
+    ``@sieval_task`` FK lookup fails with "No @sieval_dataset found for sample
+    type". The package's ``__all__`` is the authoritative name list.
+    """
+
+    def __init__(
+        self,
+        scope: tuple[str, ...],
+        lazy_packages: tuple[str, ...] = (),
+        exclude: tuple[str, ...] = (),
+    ) -> None:
+        self._scope = scope
+        self._lazy_packages = lazy_packages
+        self._exclude = exclude
+        self._modules: dict[str, ModuleType] = {}
+        self._exports: dict[tuple[str, str], object] = {}
+
+    @staticmethod
+    def _matches(name: str, patterns: tuple[str, ...]) -> bool:
+        return any(
+            name.startswith(pattern) if pattern.endswith(".") else name == pattern
+            for pattern in patterns
+        )
+
+    def _in_scope(self, name: str) -> bool:
+        return self._matches(name, self._scope) and not self._matches(
+            name, self._exclude
+        )
+
+    def _iter_lazy_caches(self) -> Iterator[tuple[ModuleType, str]]:
+        """Yield ``(package, export_name)`` for every declared lazy export in play."""
+        for pkg_name in self._lazy_packages:
+            pkg = sys.modules.get(pkg_name)
+            if pkg is None:
+                continue
+            for export in getattr(pkg, "__all__", ()):
+                yield pkg, export
+
+    def snapshot(self) -> None:
+        """Record the module objects and cached lazy exports currently in scope."""
+        self._modules = {
+            name: module for name, module in sys.modules.items() if self._in_scope(name)
+        }
+        self._exports = {
+            (pkg.__name__, export): pkg.__dict__[export]
+            for pkg, export in self._iter_lazy_caches()
+            if export in pkg.__dict__
+        }
+
+    @staticmethod
+    def _unbind_from_parent(name: str, module: ModuleType) -> None:
+        """Drop *name*'s attribute on its parent package, if it still points here.
+
+        Identity is checked so this can never clobber an unrelated same-named
+        attribute; a parent that is itself gone needs no repair and is skipped.
+        """
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and parent.__dict__.get(attr) is module:
+            del parent.__dict__[attr]
+
+    def evict(self) -> None:
+        """Drop the snapshotted modules, their parent bindings, and lazy exports."""
+        # Caches first: a package that is itself in scope takes its ``__dict__``
+        # with it, and then there is nothing left to pop from.
+        self._drop_lazy_caches()
+        for name, module in self._modules.items():
+            del sys.modules[name]
+            self._unbind_from_parent(name, module)
+
+    def _drop_lazy_caches(self) -> None:
+        for pkg, export in list(self._iter_lazy_caches()):
+            pkg.__dict__.pop(export, None)
+
+    def restore(self) -> None:
+        """Purge whatever is live in scope, then reinstate the snapshot."""
+        live = {
+            name: module for name, module in sys.modules.items() if self._in_scope(name)
+        }
+        for name in live:
+            del sys.modules[name]
+        sys.modules.update(self._modules)
+        for name, module in self._modules.items():
+            parent_name, _, attr = name.rpartition(".")
+            if (parent := sys.modules.get(parent_name)) is not None:
+                setattr(parent, attr, module)
+        # Unbind the copies the test imported on top of the snapshot.
+        for name, module in live.items():
+            if name not in self._modules:
+                self._unbind_from_parent(name, module)
+        # Same purge-then-reinstate as the modules: an export the test resolved
+        # on its own would otherwise outlive the copy it came from.
+        self._drop_lazy_caches()
+        for (pkg_name, export), value in self._exports.items():
+            if (pkg := sys.modules.get(pkg_name)) is not None:
+                pkg.__dict__[export] = value
 
 
 # ===================================================================

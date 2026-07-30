@@ -1,7 +1,7 @@
 """MathArena-aligned prompting and answer extraction.
 
 Mirrors the eth-sri/matharena (MIT) reference implementation so sieval's
-AIME/HMMT 2026 tasks elicit and parse answers the same way matharena.ai does:
+AIME/HMMT tasks elicit and parse answers the same way matharena.ai does:
 
 * the per-competition ``instruction`` strings from
   ``configs/competitions/{aime,hmmt}/*.yaml`` (final answer in ``\\boxed{}``;
@@ -183,8 +183,8 @@ def extract_answer(text: str, strict_parsing: bool = False) -> str | None:
     """matharena-aligned extraction.
 
     Take the last ``\\boxed{}``; if absent and ``strict_parsing`` is false,
-    fall back to the last integer (both AIME 2026 and HMMT Feb 2026 set
-    ``strict_parsing: false``).
+    fall back to the last integer (every AIME/HMMT competition config sieval
+    ports sets ``strict_parsing: false``).
     """
     boxed = extract_boxed_answer(text)
     if boxed is not None:

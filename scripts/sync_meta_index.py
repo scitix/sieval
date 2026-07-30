@@ -3,20 +3,27 @@
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
-from sieval.core.datasets.meta import (
+ROOT = Path(__file__).resolve().parents[1]
+# Import sieval from THIS checkout, which is also where the index is written.
+# `python scripts/x.py` puts scripts/ on sys.path[0] but never the repo root, so
+# `import sieval` otherwise resolves through the editable install — from a
+# worktree that is a different checkout, whose registry would be written here.
+sys.path.insert(0, str(ROOT))
+
+from sieval.core.datasets.meta import (  # noqa: E402
     dataset_meta_to_dict,
     import_all_datasets,
     iter_dataset_metas,
 )
-from sieval.core.tasks.meta import (
+from sieval.core.tasks.meta import (  # noqa: E402
     import_all_tasks,
     iter_task_metas,
     task_meta_to_dict,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
 INDEX_PATH = ROOT / "sieval" / "meta" / "index.json"
 
 

@@ -14,6 +14,8 @@ from types import ModuleType
 
 import pytest
 
+from tests.conftest import ModuleIsolation
+
 
 def _drop_package_modules(package_name: str) -> None:
     for module_name in list(sys.modules):
@@ -23,43 +25,53 @@ def _drop_package_modules(package_name: str) -> None:
 
 @pytest.fixture(autouse=True)
 def _preserve_registries():
-    """Snapshot/restore task + dataset registries around every test.
+    """Snapshot/restore the task + dataset registries *and* both packages'
+    module caches around every test — see `ModuleIsolation` for why the two
+    must move together.
 
     Tests here re-import sieval.tasks / sieval.datasets submodules, which
     re-invokes @sieval_task / @sieval_dataset and trips the duplicate-name
-    guards. Clearing the registries before each test lets the re-import
-    proceed; restoring afterwards keeps subsequent tests' expectations intact.
+    guards; clearing the registries first lets the re-import proceed. The
+    packages themselves are in scope (not just their submodules) because these
+    tests replace the package objects to exercise the lazy `__getattr__`.
+    Tasks pull datasets via `from sieval.datasets import ...`, so a task-side
+    re-import only works if the dataset side is purged too.
     """
     try:
         from sieval.core.datasets.meta import (
             DATASET_REGISTRY,
             SAMPLE_TO_DATASET,
         )
-        from sieval.core.tasks.meta import TASK_REGISTRY
+        from sieval.core.tasks.meta import _TASK_CLASSES, TASK_REGISTRY
     except ImportError:
         yield
         return
     task_snapshot = dict(TASK_REGISTRY)
+    task_classes_snapshot = dict(_TASK_CLASSES)
     dataset_snapshot = dict(DATASET_REGISTRY)
     sample_map_snapshot = dict(SAMPLE_TO_DATASET)
+    modules = ModuleIsolation(
+        ("sieval.tasks", "sieval.tasks.", "sieval.datasets", "sieval.datasets.")
+    )
+    modules.snapshot()
+
     TASK_REGISTRY.clear()
+    _TASK_CLASSES.clear()
     DATASET_REGISTRY.clear()
     SAMPLE_TO_DATASET.clear()
-    # Also drop both packages' submodules from sys.modules so lazy re-imports
-    # re-run @sieval_task / @sieval_dataset against the cleared registries.
-    # Tasks pull datasets via `from sieval.datasets import ...`, so a task-side
-    # re-import only works if the dataset side is purged too.
-    _drop_package_modules("sieval.tasks")
-    _drop_package_modules("sieval.datasets")
+    modules.evict()
     try:
         yield
     finally:
         TASK_REGISTRY.clear()
         TASK_REGISTRY.update(task_snapshot)
+        _TASK_CLASSES.clear()
+        _TASK_CLASSES.update(task_classes_snapshot)
         DATASET_REGISTRY.clear()
         DATASET_REGISTRY.update(dataset_snapshot)
         SAMPLE_TO_DATASET.clear()
         SAMPLE_TO_DATASET.update(sample_map_snapshot)
+        modules.restore()
 
 
 def _read_stub_all(stub_path: Path) -> list[str]:

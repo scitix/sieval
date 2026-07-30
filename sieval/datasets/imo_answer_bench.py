@@ -35,7 +35,7 @@ IMO_ANSWER_BENCH_URL = (
 
 
 class IMOAnswerBenchDatasetSample(TypedDict):
-    question: str
+    problem: str
     answer: str
 
 
@@ -74,10 +74,14 @@ class IMOAnswerBenchDataset(Dataset[IMOAnswerBenchDatasetSample]):
             "csv", data_files={"train": csv_path, "test": csv_path}, **kwargs
         )
         dataset = ensure_dataset_dict(dataset)
-        dataset = dataset.rename_column("Problem", "question")
+        # Upstream ships `Problem` / `Short Answer`; lower-cased and de-spaced only
+        # because those names are not usable as keys as-is.
+        dataset = dataset.rename_column("Problem", "problem")
         dataset = dataset.rename_column("Short Answer", "answer")
-        # Golds are short answers (integers, LaTeX expressions, small answer sets);
-        # kept verbatim — IMO-Bench grades via math-verify, not string normalization.
+        # Golds are short answers (integers, LaTeX, small answer sets), kept
+        # verbatim — IMO-Bench grades via math-verify, not string normalization.
+        # The cast IS load-bearing: CSV dtypes are content-inferred at parse time,
+        # so an all-integer column would arrive as int64.
         dataset = dataset.cast_column("answer", Value("string"))
         # the test split is the same as the train split (mirrored above)
         return dataset

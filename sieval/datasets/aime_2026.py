@@ -23,7 +23,7 @@ AIME_2026_REVISION = "d2de22f3c656b4f56cf8981212186377d1e23bc3"
 
 
 class AIME2026DatasetSample(TypedDict):
-    question: str
+    problem: str
     answer: str
 
 
@@ -38,21 +38,18 @@ class AIME2026DatasetSample(TypedDict):
 )
 class AIME2026Dataset(Dataset[AIME2026DatasetSample]):
     def _strip_sample(self, sample: AIME2026DatasetSample) -> AIME2026DatasetSample:
-        # Normalize the answer only; leave the problem text verbatim. strip_string
-        # is an answer normalizer (it rewrites \frac/\sqrt, drops \left/\right) and
-        # mangles full problem LaTeX if applied to the question — e.g. \sqrt[20]{x}
-        # becomes \sqrt{[}20]{x} and \tfrac pq becomes \frac{ }{p}q. Matches the
-        # aime_2024 / math_500 loaders.
+        # Gold answer only; problem text stays verbatim — strip_string normalizes
+        # answers (rewrites \frac/\sqrt, drops \left/\right) and mangles problem
+        # LaTeX (\sqrt[20]{x} -> \sqrt{[}20]{x}). DEVIATION: matharena does not
+        # normalize golds; sieval does, so math-verify compares canonical forms.
         sample["answer"] = strip_string(sample["answer"])
         return sample
 
     @override
     def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
         # MathArena exposes a single `default` config under the `train` split with
-        # columns problem / answer / problem_idx. Rename `problem` -> `question` to
-        # match the shared AIME sample schema.
+        # columns problem / answer / problem_idx, kept under their upstream names.
         dataset = ensure_dataset(load_dataset(name_or_path, split="train", **kwargs))
-        dataset = dataset.rename_column("problem", "question")
         # MathArena ships AIME answers as int64; cast to string up front so the
         # `answer: str` contract holds (otherwise `.map` re-infers against the
         # existing int64 feature and silently casts the stripped string back).
