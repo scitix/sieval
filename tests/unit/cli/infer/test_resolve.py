@@ -684,7 +684,7 @@ class TestResolveRecipeParamsKeyNormalization:
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "sieval.cli.infer.recipe.resolve_profile",
+                "sieval.cli.infer.recipe.resolve_hardware_profile",
                 return_value={"foo_bar": 0},
             ),
         ):
@@ -693,6 +693,7 @@ class TestResolveRecipeParamsKeyNormalization:
                 recipe,
                 backend_name="vllm",
                 overrides={"foo-bar": 42},
+                model_type="instruct",
             )
 
         assert result == {"foo_bar": 42}
@@ -716,7 +717,7 @@ class TestResolveRecipeParamsKeyNormalization:
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "sieval.cli.infer.recipe.resolve_profile",
+                "sieval.cli.infer.recipe.resolve_hardware_profile",
                 return_value=None,  # profile-less → dtype fallback engaged
             ),
         ):
@@ -725,7 +726,120 @@ class TestResolveRecipeParamsKeyNormalization:
                 recipe,
                 backend_name="vllm",
                 overrides={"max-model-len": 4096},
+                model_type="instruct",
             )
 
         # Fallback injects identity.dtype; dash-form override normalizes to underscore.
         assert result == {"dtype": "bfloat16", "max_model_len": 4096}
+
+
+# ---------------------------------------------------------------------------
+# Capability layer: which params a model type resolves to
+# ---------------------------------------------------------------------------
+
+
+class TestCapabilityLayerResolution:
+    """`resolve_infer_config` must pick the capability layer from the model type
+    the eval session will use — which is normally inferred from the tasks, not
+    declared as `type:` in the config."""
+
+    _CAPABILITY_KEYS = ("reasoning_parser", "tool_call_parser")
+
+    def _write_cfg(
+        self,
+        tmp_path: Path,
+        model_dir: Path,
+        model_cfg_extra: dict,
+        tasks_cfg: dict | None = None,
+    ) -> Path:
+        cfg = {
+            "models": {
+                "mymodel": {
+                    "infer": {
+                        "backend": "sglang",
+                        "recipe": "qwen3-4b",
+                        "checkpoint": str(model_dir),
+                    },
+                    **model_cfg_extra,
+                },
+            },
+        }
+        if tasks_cfg is not None:
+            cfg["tasks"] = tasks_cfg
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(yaml.dump(cfg))
+        return yaml_path
+
+    @pytest.mark.anyio
+    async def test_instruct_model_gets_parsers(self, tmp_path: Path) -> None:
+        model_dir = tmp_path / "Qwen3-4B"
+        _write_qwen3_4b_checkpoint(model_dir)
+        yaml_path = self._write_cfg(tmp_path, model_dir, {"type": "chat"})
+
+        with patch(_GPU_PATCH, new_callable=AsyncMock, return_value=_MOCK_GPU):
+            _, plan, _env = await resolve_infer_config(yaml_path)
+
+        params = _get_all_params(plan)
+        assert params["reasoning_parser"] == "qwen3"
+        assert params["tool_call_parser"] == "qwen"
+
+    @pytest.mark.anyio
+    async def test_explicit_gen_type_omits_parsers(self, tmp_path: Path) -> None:
+        model_dir = tmp_path / "Qwen3-4B"
+        _write_qwen3_4b_checkpoint(model_dir)
+        yaml_path = self._write_cfg(tmp_path, model_dir, {"type": "gen"})
+
+        with patch(_GPU_PATCH, new_callable=AsyncMock, return_value=_MOCK_GPU):
+            _, plan, _env = await resolve_infer_config(yaml_path)
+
+        params = _get_all_params(plan)
+        for key in self._CAPABILITY_KEYS:
+            assert key not in params
+        # The hardware half must survive.
+        assert params["context_length"] == 32768
+
+    @pytest.mark.anyio
+    async def test_gen_inferred_from_task_omits_parsers(self, tmp_path: Path) -> None:
+        """No `type:` in the config — the base path must still be chosen.
+
+        This is the realistic shape: no config in the repo declares `type:`, so
+        reading the explicit field alone would resolve every base checkpoint to
+        instruct capabilities.
+        """
+        model_dir = tmp_path / "Qwen3-4B"
+        _write_qwen3_4b_checkpoint(model_dir)
+        yaml_path = self._write_cfg(
+            tmp_path,
+            model_dir,
+            {},
+            tasks_cfg={
+                "arc_ppl": {"model": "mymodel", "class": "ARCEasyFewShotPplTask"},
+            },
+        )
+
+        with patch(_GPU_PATCH, new_callable=AsyncMock, return_value=_MOCK_GPU):
+            _, plan, _env = await resolve_infer_config(yaml_path)
+
+        params = _get_all_params(plan)
+        for key in self._CAPABILITY_KEYS:
+            assert key not in params, f"{key} leaked into an inferred-gen model"
+
+    @pytest.mark.anyio
+    async def test_chat_task_still_gets_parsers(self, tmp_path: Path) -> None:
+        """The inference must not flip instruct models to base."""
+        model_dir = tmp_path / "Qwen3-4B"
+        _write_qwen3_4b_checkpoint(model_dir)
+        yaml_path = self._write_cfg(
+            tmp_path,
+            model_dir,
+            {},
+            tasks_cfg={
+                "aime": {"model": "mymodel", "class": "AIME2024ZeroShotGenTask"},
+            },
+        )
+
+        with patch(_GPU_PATCH, new_callable=AsyncMock, return_value=_MOCK_GPU):
+            _, plan, _env = await resolve_infer_config(yaml_path)
+
+        params = _get_all_params(plan)
+        assert params["tool_call_parser"] == "qwen"

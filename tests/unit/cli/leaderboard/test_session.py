@@ -34,6 +34,7 @@ from sieval.cli.leaderboard.session import (
     _strip_header,
     _strip_noncomparable_fields,
     arun_session,
+    derive_model_type,
     load_class_from_name,
     load_class_from_path,
     resolve_class,
@@ -610,6 +611,51 @@ class TestInferModelType:
             pytest.raises(ValueError, match="different types"),
         ):
             runner._infer_model_type("m", None)
+
+
+class TestDeriveModelType:
+    """`derive_model_type` is shared by the eval session and recipe resolution,
+    so both reach the same answer for one model. Tested directly because
+    `sieval run` calls the function, not the session method."""
+
+    def test_explicit_type_wins(self):
+        assert derive_model_type("m", "gen", {}) == "gen"
+
+    def test_defaults_to_chat_with_no_tasks(self):
+        assert derive_model_type("m", None, {}) == "chat"
+
+    def test_infers_gen_from_task_without_explicit_type(self):
+        """The case explicit-only reading would miss: no `type:` in config."""
+
+        class FakeTask:
+            model_type = "gen"
+
+        tasks_cfg = {"t1": {"model": "m", "class": "fake.FakeTask"}}
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=FakeTask,
+        ):
+            assert derive_model_type("m", None, tasks_cfg) == "gen"
+
+    def test_ignores_tasks_pointing_at_other_models(self):
+        class FakeTask:
+            model_type = "gen"
+
+        tasks_cfg = {"t1": {"model": "other", "class": "fake.FakeTask"}}
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=FakeTask,
+        ):
+            assert derive_model_type("m", None, tasks_cfg) == "chat"
+
+    def test_unresolvable_task_class_is_skipped(self):
+        """Validation reports import errors; derivation must not raise here."""
+        tasks_cfg = {"t1": {"model": "m", "class": "missing.Task"}}
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            side_effect=ImportError("nope"),
+        ):
+            assert derive_model_type("m", None, tasks_cfg) == "chat"
 
 
 class TestSetupModelsEngine:

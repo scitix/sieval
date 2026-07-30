@@ -20,7 +20,11 @@ from sieval.infer.introspect import (
     introspect_checkpoint_with_config,
 )
 from sieval.infer.params import merge_params
-from sieval.infer.recipes import match_recipe, resolve_profile
+from sieval.infer.recipes import (
+    match_recipe,
+    resolve_capability_profile,
+    resolve_hardware_profile,
+)
 from sieval.infer.topology.models import (
     TOPO_KEYS,
     DeploymentPlan,
@@ -371,11 +375,17 @@ async def auto_resolve_plan(
     *,
     backend: str = "sglang",
     overrides: dict[str, ParamValue] | None = None,
+    model_type: str = "instruct",
 ) -> ResolveResult:
     """Auto-resolve a DeploymentPlan from a checkpoint path.
 
     Replaces resolve.auto_resolve(). Same 5-step flow but returns
     ResolveResult instead of InferConfig.
+
+    Args:
+        model_type: Recipe capability key (``"instruct"`` / ``"base"``). Base
+            checkpoints resolve without parser or tool-choice params. Defaults
+            to ``"instruct"`` for standalone callers with no task context.
     """
     # Normalize keys at the entry: the TOPO_KEYS filter (step 4) and
     # _overrides_to_hints both look up specific underscore-form keys, so a
@@ -407,14 +417,16 @@ async def auto_resolve_plan(
         gpu_memory_mib=gpu.memory_mib,
     )
 
-    # 3. Match recipe → resolve profile → recipe_params
+    # 3. Match recipe → resolve hardware + capability layers → recipe_params
     recipe = match_recipe(identity.family, identity.param_billions)
     recipe_params: dict[str, ParamValue] | None = None
     if recipe is not None:
         prec_key = precision_key(identity)
-        profile = resolve_profile(recipe, gpu.model, prec_key, backend)
-        if profile is not None:
-            recipe_params = profile
+        profile = resolve_hardware_profile(recipe, gpu.model, prec_key, backend)
+        capabilities = resolve_capability_profile(recipe, model_type, backend)
+        merged = {**(profile or {}), **capabilities}
+        if merged:
+            recipe_params = merged
 
     # 4. Build user hints from overrides; non-topology keys become engine params
     hints: UserHints | None = None
