@@ -45,7 +45,15 @@ class Feedback(TypedDict):
             "compare against matharena.ai, as a task arg (tasks.<name>.args.n); the "
             "model's `n` is silently overridden call-time. k>n is rejected at "
             "construction. DEVIATION: golds are normalized by "
-            "sieval.community.math.strip_string; matharena does not."
+            "sieval.community.math.strip_string; matharena does not. VALIDATED "
+            "against official MathArena: replaying its published 2640 outputs "
+            "(22 models x 30 problems x 4 runs) through this task's grading path "
+            "agrees with the upstream grader on 99.51% of outputs and reproduces "
+            "16/22 model scores exactly; Gemini 3 Flash is 93.33% three ways "
+            "(published, upstream grader, sieval grader). A live sieval run of "
+            "gemini-3-flash-preview scored 95.00% vs the published 93.33% — "
+            "sampling variance, not a grading difference: both graders agree on "
+            "120/120 of sieval's own outputs."
         ),
     ),
 )
