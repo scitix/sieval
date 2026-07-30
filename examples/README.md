@@ -11,7 +11,8 @@ matches what you're trying to do, copy it, edit the marked fields, and run
 | [quickstart.yaml](quickstart.yaml) | Single task + single model + 5 samples — smoke test your install |
 | [leaderboard-math-sft.yaml](leaderboard-math-sft.yaml) | Math SFT leaderboard — multiple math tasks against one or more models |
 | [infer-recipe-override.yaml](infer-recipe-override.yaml) | Pin a specific inference recipe or override engine args |
-| [ruler-qwen3-8b-nonthinking.yaml](ruler-qwen3-8b-nonthinking.yaml) | RULER long-context sweep — 13 subtasks × multiple lengths (4k/8k/16k/32k); see the `-withyarn-64k`/`-128k` and `-thinking` variants alongside it |
+| [ruler-qwen3-8b-nonthinking.yaml](ruler-qwen3-8b-nonthinking.yaml) | RULER long-context sweep — 13 subtasks × 6 lengths (4k–128k), YaRN for 64k/128k |
+| [ruler-qwen3-8b-thinking.yaml](ruler-qwen3-8b-thinking.yaml) | Same RULER sweep with Qwen3 thinking enabled (adds `think_budget` + reasoning parser) |
 
 ## Hardware-indexed (reference configs)
 

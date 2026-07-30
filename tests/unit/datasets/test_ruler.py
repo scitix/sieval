@@ -21,8 +21,8 @@ _needs_ruler_deps = pytest.mark.skipif(
 )
 
 if _ruler_deps:
-    from sieval.datasets.ruler import RulerDataset, RulerDatasetSample, _stamp
-    from sieval.datasets.ruler.ruler import _subtask_data_path
+    from sieval.datasets.ruler import RulerDataset, RulerDatasetSample
+    from sieval.datasets.ruler.ruler import _stamp, _subtask_data_path
 
 
 # ---------------------------------------------------------------------------

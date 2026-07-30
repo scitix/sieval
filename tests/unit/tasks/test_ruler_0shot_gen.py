@@ -4,7 +4,14 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from sieval.datasets.ruler._shared import thinking_prefill, tokens_to_generate
+import pytest
+
+from sieval.datasets.ruler._shared import (
+    resolve_reserve_think_budget,
+    thinking_prefill,
+    tokens_to_generate,
+)
+from sieval.datasets.ruler.ruler import _stamp
 from sieval.tasks.ruler_0shot_gen import RulerZeroShotGenTask
 
 
@@ -225,6 +232,104 @@ class TestInferCap:
 
         assert result == "out"
         task.model.agenerate.assert_awaited_once_with(["msg"], max_tokens=32)
+
+
+class TestThinkBudgetReserveContract:
+    """The loader's packing decision and infer()'s max_tokens must agree.
+
+    Only the loader knows whether ``gen_budget`` already covers ``think_budget``.
+    If infer() re-derives that decision the two can disagree, and the model gets
+    the thinking budget either twice (prompt + max_tokens overflows the very
+    window the reserve existed to fit) or not at all (thinking truncates
+    immediately). So whatever the loader decided, the *total* generation budget
+    must come out identical.
+    """
+
+    @pytest.mark.parametrize(
+        ("context_length", "reserve_think_budget"),
+        [
+            (32768, None),  # default: headroom assumed, reserve skipped
+            (32768, True),  # served natively at 32k → reserve while packing
+            (131072, None),  # default at 128k → reserve while packing
+            (131072, False),  # YaRN past 128k → headroom, skip the reserve
+        ],
+    )
+    def test_max_tokens_is_invariant_across_reserve_decisions(
+        self, context_length, reserve_think_budget
+    ):
+        from unittest.mock import AsyncMock
+
+        think_budget = 8192
+        # What the model must be allowed to generate: tags + thinking + answer.
+        # 4 (Qwen3 tags) + 8192 (thinking) + 120 (CWE answer base).
+        expected_max_tokens = 8316
+        assert expected_max_tokens == tokens_to_generate(
+            "common_words_extraction",
+            enable_thinking=True,
+            think_budget=think_budget,
+            model_name="qwen3",
+            context_length=context_length,
+            for_dataset=False,
+        )
+
+        # Mirrors RulerDataset.load(): size the prompt, then stamp the resolved
+        # reserve decision onto the row so inference reads it back.
+        gen_budget = tokens_to_generate(
+            "common_words_extraction",
+            enable_thinking=True,
+            think_budget=think_budget,
+            model_name="qwen3",
+            context_length=context_length,
+            for_dataset=True,
+            reserve_think_budget=reserve_think_budget,
+        )
+        (row,) = _stamp(
+            [{}],
+            subtask="cwe",
+            context_length=context_length,
+            gen_budget=gen_budget,
+            think_budget=think_budget,
+            enable_thinking=True,
+            think_budget_reserved=resolve_reserve_think_budget(
+                context_length, reserve_think_budget
+            ),
+        )
+
+        task = Mock(spec=RulerZeroShotGenTask)
+        task.model = Mock()
+        task.model.agenerate = AsyncMock(return_value="out")
+        asyncio.run(
+            RulerZeroShotGenTask.infer(task, ["msg"], SimpleNamespace(raw_sample=row))
+        )
+
+        task.model.agenerate.assert_awaited_once_with(
+            ["msg"], max_tokens=expected_max_tokens
+        )
+
+    def test_reserving_dataset_does_not_double_count(self):
+        """A reserved sample must not have think_budget added again at inference.
+
+        Guards the concrete regression: gen_budget already includes the 8192, so
+        re-adding it yields 16508 and blows past the served window.
+        """
+        from unittest.mock import AsyncMock
+
+        row = {
+            "gen_budget": 8316,
+            "think_budget": 8192,
+            "enable_thinking": True,
+            "think_budget_reserved": True,
+            "context_length": 32768,
+        }
+        task = Mock(spec=RulerZeroShotGenTask)
+        task.model = Mock()
+        task.model.agenerate = AsyncMock(return_value="out")
+
+        asyncio.run(
+            RulerZeroShotGenTask.infer(task, ["msg"], SimpleNamespace(raw_sample=row))
+        )
+
+        task.model.agenerate.assert_awaited_once_with(["msg"], max_tokens=8316)
 
 
 class TestReport:

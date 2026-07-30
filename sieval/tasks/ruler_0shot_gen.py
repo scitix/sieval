@@ -132,9 +132,11 @@ class RulerZeroShotGenTask(
         # - If both flags in extra_body → assistant pattern
         # - Otherwise → user message pattern (default)
         model_meta = self.model.meta()
-        extra_body: dict = model_meta.get("default_params", {}).get(  # type: ignore[assignment]
-            "extra_body", {}
-        )
+        # default_params values are JSONValue, so a misconfigured YAML can put a
+        # non-mapping under extra_body; narrow instead of suppressing the type
+        # error, otherwise the bad config surfaces as an AttributeError in here.
+        raw_extra_body = model_meta.get("default_params", {}).get("extra_body")
+        extra_body: dict = raw_extra_body if isinstance(raw_extra_body, dict) else {}
         # Detect prefill mode: both flags must be set explicitly to enable prefill
         # - continue_final_message=True: continue from assistant's last message
         # - add_generation_prompt=False: suppress default generation prompt
@@ -169,25 +171,27 @@ class RulerZeroShotGenTask(
         # without a per-subtask YAML infer_args.
         max_tokens = ctx.raw_sample["gen_budget"]
 
-        # Qwen3 extended thinking adaptation: allocate max_tokens based on
-        # context_length. (Diverges from upstream RULER's single-budget approach)
-        #
-        # During dataset generation, gen_budget was computed differently based on
-        # context_length (see _shared.py:tokens_to_generate for rationale):
-        # - Small contexts (!=128k): gen_budget excludes think_budget
-        # - Large contexts (128k): gen_budget includes think_budget
-        #
-        # Now at inference, restore think_budget for small contexts where it was
-        # omitted.
+        # Qwen3 extended thinking adaptation (diverges from upstream RULER's
+        # single-budget approach): whether gen_budget already covers think_budget
+        # is a packing-time decision the loader owns, so read the flag it stamped
+        # rather than re-deriving it here. Re-deriving is what let the two sides
+        # disagree once `reserve_think_budget` became configurable — a reserving
+        # dataset would get think_budget added a second time, overflowing the very
+        # window the reserve was meant to fit.
+        # `_stamp` writes think_budget and think_budget_reserved together, so
+        # indexing the flag directly is safe here and turns a future loader that
+        # forgets to stamp it into a loud KeyError rather than a silently wrong
+        # budget.
         if (
             ctx.raw_sample.get("enable_thinking", False)
             and "think_budget" in ctx.raw_sample
-            and ctx.raw_sample.get("context_length") != 131072
+            and not ctx.raw_sample["think_budget_reserved"]
         ):
-            # Small context: gen_budget didn't account for thinking tokens,
-            # so add think_budget to ensure sufficient generation capacity.
+            # Not reserved while packing: the prompt fills max_seq_length leaving
+            # room only for the answer, so thinking tokens come out of the serving
+            # window's headroom and must be added to max_tokens here.
             max_tokens += ctx.raw_sample["think_budget"]
-        # Large context: gen_budget already includes think_budget, no adjustment needed.
+        # Reserved while packing: gen_budget already includes think_budget.
 
         return await self.model.agenerate(pre, max_tokens=max_tokens)
 

@@ -67,9 +67,12 @@ _RETRIES = 6
 # regardless of which python runs it.
 _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 
-# Pinned RULER commit that owns the URL list (2024-04-29) — keeps the essay set
-# fixed across regenerations.
-_RULER_SHA = "041a952ca058bc90f75f25bb92f32aa4144202ba"
+# Pinned RULER commit that owns the URL list — keeps the essay set fixed across
+# regenerations. Same commit the rest of the port pins (``_RULER_DATA_SHA`` in
+# sieval/datasets/ruler/_shared.py), so the whole benchmark references one
+# upstream revision; the URL list is byte-identical to the earlier 041a952 pin
+# this replaced (218 URLs, sha256 9862c06b…).
+_RULER_SHA = "ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13"
 _URL_LIST = (
     f"https://raw.githubusercontent.com/NVIDIA/RULER/{_RULER_SHA}/"
     "scripts/data/synthetic/json/PaulGrahamEssays_URLs.txt"

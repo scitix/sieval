@@ -209,13 +209,16 @@ def _download_one(m: DatasetMeta, dest_root: Path, force: bool) -> None:
             f"`sieval dataset download {m.name}` to refetch"
         )
 
-    # BYO corpus: exit non-zero if any local: sources were unavailable.
+    # BYO corpus: exit non-zero if any local: sources were unavailable. The
+    # per-source instructions (including each file's exact target path) were
+    # printed above by the handler, so keep this summary dataset-agnostic — it
+    # runs for every `local:` source, not just one benchmark's.
     if missing_local_sources:
         raise RuntimeError(
             f"{m.name!r} requires {len(missing_local_sources)} bring-your-own "
-            f"corpus file(s). Run `pdm run python "
-            f"scripts/gen_paul_graham_essays.py --data-dir $SIEVAL_DATA_DIR` "
-            f"to produce it, then re-run this download."
+            f"corpus file(s) that cannot be fetched automatically: "
+            f"{', '.join(missing_local_sources)}. Produce them as instructed "
+            f"above, then re-run `sieval dataset download {m.name}`."
         )
 
     # Post-download hint; print-only, never installs.

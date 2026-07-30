@@ -66,6 +66,23 @@ def _is_qwen3(model_name: str) -> bool:
     return Path(model_name).name.lower().startswith("qwen3")
 
 
+def resolve_reserve_think_budget(
+    context_length: int | None, reserve_think_budget: bool | None
+) -> bool:
+    """Resolve whether think_budget is reserved while packing the prompt.
+
+    Single owner of the fallback rule, so :func:`tokens_to_generate` (which sizes
+    the prompt) and the ``think_budget_reserved`` field stamped onto each sample
+    (which ``infer()`` reads to size ``max_tokens``) can never disagree. An
+    explicit *reserve_think_budget* always wins; ``None`` falls back to the
+    legacy ``context_length == 131072`` heuristic described in
+    :func:`tokens_to_generate`.
+    """
+    if reserve_think_budget is not None:
+        return reserve_think_budget
+    return context_length == 131072
+
+
 def tokens_to_generate(
     task_name: str,
     *,
@@ -142,6 +159,9 @@ def tokens_to_generate(
             than max_seq_length; 128k served at exactly its own window), but
             wrong for e.g. a length served *natively* at that exact size
             (no YaRN, no larger native window) — pass ``True`` there instead.
+            The resolved decision is stamped onto every sample as
+            ``think_budget_reserved`` so ``infer()`` sizes ``max_tokens`` from the
+            same answer instead of re-deriving it from ``context_length``.
 
     Returns:
         Total tokens the model may generate (thinking + tags + answer).
@@ -156,9 +176,9 @@ def tokens_to_generate(
 
     # Thinking mode: Qwen3-adapted budget allocation for dataset generation.
     # (Diverges from upstream RULER which always includes think_budget)
-    if reserve_think_budget is None:
-        reserve_think_budget = context_length == 131072  # legacy 128k-only rule
-    should_skip_think_budget = for_dataset and not reserve_think_budget
+    should_skip_think_budget = for_dataset and not resolve_reserve_think_budget(
+        context_length, reserve_think_budget
+    )
 
     if should_skip_think_budget:
         # SMALL CONTEXT (4k, 8k, etc.) DATASET GENERATION:

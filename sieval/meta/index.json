@@ -624,7 +624,7 @@
       "display_name": "RULER",
       "description": "RULER long-context benchmark: 13 subtasks (NIAH ×8, VT, CWE, FWE, QA ×2).",
       "source": [
-        "local:paul_graham_essays/PaulGrahamEssays.json.gz",
+        "local:PaulGrahamEssays.json.gz",
         "url:https://media.githubusercontent.com/media/NVIDIA/RULER/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/data/synthetic/json/english_words.json",
         "url:https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json",
         "hf:hotpotqa/hotpot_qa@1908d6afbbead072334abe2965f91bd2709910ab"

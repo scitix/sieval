@@ -36,6 +36,7 @@ from ._shared import (
     _HOTPOTQA_REPO_ID,
     _HOTPOTQA_REVISION,
     _RULER_DATA_SHA,
+    resolve_reserve_think_budget,
     tokens_to_generate,
 )
 from ._vt import load_vt
@@ -100,6 +101,10 @@ class RulerDatasetSample(TypedDict):
     gen_budget: int  # per-subtask generation cap (tokens_to_generate)
     think_budget: NotRequired[int]  # thinking budget, added if enable_thinking=True
     enable_thinking: NotRequired[bool]  # whether thinking mode is enabled
+    # Whether gen_budget already includes think_budget (see tokens_to_generate).
+    # infer() reads this instead of re-deriving the decision from context_length,
+    # so the loader stays the single owner of the reserve rule.
+    think_budget_reserved: NotRequired[bool]
     token_position_answer: NotRequired[int]  # NIAH only
 
 
@@ -110,7 +115,9 @@ class RulerDatasetSample(TypedDict):
         "RULER long-context benchmark: 13 subtasks (NIAH ×8, VT, CWE, FWE, QA ×2)."
     ),
     source=(
-        "local:paul_graham_essays/PaulGrahamEssays.json.gz",
+        # Staged flat as <data_dir>/ruler/<basename> like url: sources, so the
+        # scheme carries the filename only — no directory component to mislead.
+        "local:PaulGrahamEssays.json.gz",
         # CWE falls back to this pool once num_words exceeds the wonderwords vocab
         # (~8k words), matching upstream (see _cwe.py `_get_example`).
         f"url:https://media.githubusercontent.com/media/NVIDIA/RULER/{_RULER_DATA_SHA}/scripts/data/synthetic/json/english_words.json",
@@ -292,6 +299,9 @@ class RulerDataset(Dataset[RulerDatasetSample]):
                 gen_budget=gen_budget,
                 think_budget=think_budget,
                 enable_thinking=enable_thinking,
+                think_budget_reserved=resolve_reserve_think_budget(
+                    max_seq_length, reserve_think_budget
+                ),
             )
             splits.append(HFDataset.from_list(rows))
 
@@ -306,6 +316,7 @@ def _stamp(
     gen_budget: int,
     think_budget: int = 0,
     enable_thinking: bool = False,
+    think_budget_reserved: bool = False,
 ) -> list[dict]:
     for row in rows:
         row["subtask"] = subtask
@@ -314,4 +325,5 @@ def _stamp(
         if enable_thinking:
             row["think_budget"] = think_budget
             row["enable_thinking"] = True
+            row["think_budget_reserved"] = think_budget_reserved
     return rows

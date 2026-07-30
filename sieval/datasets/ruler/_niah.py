@@ -179,6 +179,10 @@ def load_niah(
         )
         rows.append(
             {
+                # Faithful to upstream: niah.py:281-284 (@ab17b78) shadows its own
+                # loop variable, so NIAH's `index` is the answer's character offset
+                # rather than the sample ordinal the four sibling generators store.
+                # The token-space equivalent is `token_position_answer` below.
                 "index": index_in_text,
                 "input": input_text,
                 "outputs": answer,
