@@ -27,4 +27,9 @@ a subdirectory, and the top-level `datasets/__init__.py` handles lazy loading.
   duplicate-export guard fires *within* a subpackage too. Two modules in one
   subpackage exporting the same name is an error, not last-one-wins.
 - Private modules (`_*.py`) are skipped by discovery, so per-family internals stay
-  invisible to the registry.
+  invisible to the registry. A subpackage may still re-export from them for other
+  packages to import (`datasets/ruler/__init__.py` does, for helpers a Task needs).
+- A dataset subpackage gets **no** generated `__init__.pyi`, unlike a task
+  subpackage — its hand-written `__init__.py` is its own type surface, and a
+  generated stub would shadow it and hide anything sourced from a private module.
+  `sync_package_stubs.py` has the details; do not add the symmetric loop.
