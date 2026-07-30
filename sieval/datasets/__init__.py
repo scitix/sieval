@@ -103,13 +103,17 @@ def _discover_dataset_exports() -> dict[str, str]:
         for name in _scan_dataset_exports(module_path):
             _register(name, module_path.stem)
 
-    # 2) Subpackage .py modules — mapped to the subpackage, which re-exports them
-    # from its __init__. (The task registry instead maps to "subpkg.module_stem";
-    # the two conventions differ, see sieval/tasks/__init__.py.)
+    # 2) Subpackage .py modules — mapped as "subpkg.module_stem", matching
+    # sieval/tasks/__init__.py. Resolving straight to the defining module means the
+    # registry does not depend on the subpackage's __init__ re-exporting anything
+    # (sieval/tasks/CLAUDE.md requires that __init__ be empty), and it keeps the
+    # duplicate guard below effective *within* a subpackage — attributing every
+    # module to the bare subpackage name made two same-named exports collide
+    # silently, since the guard only fires when the recorded module differs.
     for subpkg_dir in _iter_subpackage_dirs():
         for module_path in _iter_module_paths_in(subpkg_dir):
             for name in _scan_dataset_exports(module_path):
-                _register(name, subpkg_dir.name)
+                _register(name, f"{subpkg_dir.name}.{module_path.stem}")
 
     return export_to_module
 

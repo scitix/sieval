@@ -90,13 +90,15 @@ def discover_tasks(package_dir: Path) -> dict[str, str]:
     for name, mod in _discover_task_classes(_iter_module_paths(package_dir)).items():
         _register_export(export_to_module, name, mod, "task")
 
-    # 2) Subpackage task modules — scan .py files inside each subpackage
+    # 2) Subpackage task modules — attributed as "subpkg.module_stem" to match the
+    # runtime registry (sieval/tasks/__init__.py). Registering the bare subpackage
+    # name here disagreed with it, which would have emitted `from .subpkg import X`
+    # into the top-level stub while runtime imports `sieval.tasks.subpkg.<module>`.
+    # Latent only because no task subpackage is currently registered.
     for subpkg_dir in _iter_subpackage_dirs(package_dir):
         subpkg_name = subpkg_dir.name
-        for name, _mod in _discover_task_classes(
-            _iter_module_paths(subpkg_dir)
-        ).items():
-            _register_export(export_to_module, name, subpkg_name, "task")
+        for name, mod in _discover_task_classes(_iter_module_paths(subpkg_dir)).items():
+            _register_export(export_to_module, name, f"{subpkg_name}.{mod}", "task")
 
     return export_to_module
 
@@ -160,13 +162,13 @@ def discover_datasets(package_dir: Path) -> dict[str, str]:
     for name, mod in _discover_dataset_classes(_iter_module_paths(package_dir)).items():
         _register_export(export_to_module, name, mod, "dataset")
 
-    # 2) Subpackage dataset modules — scan .py files inside each subpackage
+    # 2) Subpackage dataset modules — "subpkg.module_stem", as for tasks above.
     for subpkg_dir in _iter_subpackage_dirs(package_dir):
         subpkg_name = subpkg_dir.name
-        for name, _mod in _discover_dataset_classes(
+        for name, mod in _discover_dataset_classes(
             _iter_module_paths(subpkg_dir)
         ).items():
-            _register_export(export_to_module, name, subpkg_name, "dataset")
+            _register_export(export_to_module, name, f"{subpkg_name}.{mod}", "dataset")
 
     return export_to_module
 

@@ -117,7 +117,7 @@ from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
 )
-from .ruler import (
+from .ruler.ruler import (
     RulerDataset,
     RulerDatasetSample,
 )
