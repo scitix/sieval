@@ -14,14 +14,18 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 _DATASET_EXPORT_SUFFIXES = ("Dataset", "DatasetSample", "CSVSample")
 
 
-def _iter_module_paths() -> list[Path]:
+def _iter_module_paths_in(directory: Path) -> list[Path]:
     return sorted(
         path
-        for path in _PACKAGE_DIR.iterdir()
+        for path in directory.iterdir()
         if path.suffix == ".py"
         and path.name != "__init__.py"
         and not path.name.startswith("_")
     )
+
+
+def _iter_module_paths() -> list[Path]:
+    return _iter_module_paths_in(_PACKAGE_DIR)
 
 
 def _iter_subpackage_dirs() -> list[Path]:
@@ -51,81 +55,61 @@ def _is_typeddict_call(node: ast.AST) -> bool:
     return False
 
 
+def _scan_dataset_exports(module_path: Path) -> list[str]:
+    """Return public dataset export names defined in *module_path* (AST only).
+
+    Classes whose name ends in one of ``_DATASET_EXPORT_SUFFIXES``, plus
+    module-level ``X = TypedDict(...)`` assignments with such a name.
+    """
+    tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+
+    names: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and _is_export_name(node.name):
+            names.append(node.name)
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and _is_export_name(node.targets[0].id)
+            and _is_typeddict_call(node.value)
+        ):
+            names.append(node.targets[0].id)
+    return names
+
+
 def _discover_dataset_exports() -> dict[str, str]:
+    """Map each export name to the module ``__getattr__`` should import it from.
+
+    Both passes share one scanner, so they cannot drift apart on what counts as an
+    export. ``scripts/sync_package_stubs.py`` reimplements this scan deliberately —
+    the stub generator must not import the package it generates stubs for — so the
+    two implementations have to agree for the generated ``.pyi`` to match runtime
+    resolution.
+    """
     export_to_module: dict[str, str] = {}
 
-    # 1) Scan flat modules
-    for module_path in _iter_module_paths():
-        module_name = module_path.stem
-        module_ast = ast.parse(
-            module_path.read_text(encoding="utf-8"),
-            filename=str(module_path),
-        )
-
-        for node in module_ast.body:
-            export_name: str | None = None
-
-            if isinstance(node, ast.ClassDef) and _is_export_name(node.name):
-                export_name = node.name
-            elif (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and _is_export_name(node.targets[0].id)
-                and _is_typeddict_call(node.value)
-            ):
-                export_name = node.targets[0].id
-
-            if export_name is None:
-                continue
-
-            previous_module = export_to_module.get(export_name)
-            if previous_module and previous_module != module_name:
-                raise RuntimeError(
-                    f"Duplicate dataset export '{export_name}' found in "
-                    f"'{previous_module}' and '{module_name}'."
-                )
-            export_to_module[export_name] = module_name
-
-    # 2) Scan subpackage modules
-    for subpkg_dir in _iter_subpackage_dirs():
-        subpkg_name = subpkg_dir.name
-        for module_path in sorted(
-            p
-            for p in subpkg_dir.iterdir()
-            if p.suffix == ".py"
-            and p.name != "__init__.py"
-            and not p.name.startswith("_")
-        ):
-            module_ast = ast.parse(
-                module_path.read_text(encoding="utf-8"),
-                filename=str(module_path),
+    def _register(export_name: str, module_name: str) -> None:
+        previous_module = export_to_module.get(export_name)
+        if previous_module and previous_module != module_name:
+            raise RuntimeError(
+                f"Duplicate dataset export '{export_name}' found in "
+                f"'{previous_module}' and '{module_name}'."
             )
+        export_to_module[export_name] = module_name
 
-            for node in module_ast.body:
-                export_name: str | None = None
+    # 1) Flat .py modules
+    for module_path in _iter_module_paths():
+        for name in _scan_dataset_exports(module_path):
+            _register(name, module_path.stem)
 
-                if isinstance(node, ast.ClassDef) and _is_export_name(node.name):
-                    export_name = node.name
-                elif (
-                    isinstance(node, ast.Assign)
-                    and len(node.targets) == 1
-                    and isinstance(node.targets[0], ast.Name)
-                    and _is_export_name(node.targets[0].id)
-                    and _is_typeddict_call(node.value)
-                ):
-                    export_name = node.targets[0].id
-
-                if export_name is None:
-                    continue
-
-                previous_module = export_to_module.get(export_name)
-                if previous_module and previous_module != subpkg_name:
-                    raise RuntimeError(
-                        f"Duplicate dataset export '{export_name}' found in "
-                        f"'{previous_module}' and '{subpkg_name}'."
-                    )
-                export_to_module[export_name] = subpkg_name
+    # 2) Subpackage .py modules — mapped to the subpackage, which re-exports them
+    # from its __init__. (The task registry instead maps to "subpkg.module_stem";
+    # the two conventions differ, see sieval/tasks/__init__.py.)
+    for subpkg_dir in _iter_subpackage_dirs():
+        for module_path in _iter_module_paths_in(subpkg_dir):
+            for name in _scan_dataset_exports(module_path):
+                _register(name, subpkg_dir.name)
 
     return export_to_module
 
