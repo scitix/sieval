@@ -60,14 +60,17 @@ def _register_export(
 
 def _discover_task_classes(
     module_paths: list[Path],
+    prefix: str = "",
 ) -> dict[str, str]:
     """Scan *module_paths* for public ``*Task`` class definitions.
 
-    Returns ``{ClassName: module_stem}`` mapping.
+    Returns ``{ClassName: module_stem}``, or ``{ClassName: "prefix.module_stem"}`` when
+    *prefix* is given, so the duplicate-export error names the module the caller
+    registers rather than a bare stem.
     """
     export_to_module: dict[str, str] = {}
     for module_path in module_paths:
-        module_name = module_path.stem
+        module_name = f"{prefix}.{module_path.stem}" if prefix else module_path.stem
         module_ast = ast.parse(
             module_path.read_text(encoding="utf-8"),
             filename=str(module_path),
@@ -93,9 +96,10 @@ def discover_tasks(package_dir: Path) -> dict[str, str]:
     # 2) Subpackage task modules — "subpkg.module_stem", matching the runtime
     # registry in sieval/tasks/__init__.py. Must stay in sync with it.
     for subpkg_dir in _iter_subpackage_dirs(package_dir):
-        subpkg_name = subpkg_dir.name
-        for name, mod in _discover_task_classes(_iter_module_paths(subpkg_dir)).items():
-            _register_export(export_to_module, name, f"{subpkg_name}.{mod}", "task")
+        for name, mod in _discover_task_classes(
+            _iter_module_paths(subpkg_dir), prefix=subpkg_dir.name
+        ).items():
+            _register_export(export_to_module, name, mod, "task")
 
     return export_to_module
 
@@ -109,16 +113,20 @@ def discover_subpackage_tasks(subpkg_dir: Path) -> dict[str, str]:
     return _discover_task_classes(_iter_module_paths(subpkg_dir))
 
 
-def _discover_dataset_classes(module_paths: list[Path]) -> dict[str, str]:
+def _discover_dataset_classes(
+    module_paths: list[Path],
+    prefix: str = "",
+) -> dict[str, str]:
     """Scan *module_paths* for public Dataset/DatasetSample/CSVSample class definitions.
 
-    Returns ``{ClassName: module_stem}`` mapping.
+    Returns ``{ClassName: module_stem}``, or ``{ClassName: "prefix.module_stem"}`` when
+    *prefix* is given, as for ``_discover_task_classes``.
     """
     export_to_module: dict[str, str] = {}
     suffixes = ("Dataset", "DatasetSample", "CSVSample")
 
     for module_path in module_paths:
-        module_name = module_path.stem
+        module_name = f"{prefix}.{module_path.stem}" if prefix else module_path.stem
         module_ast = ast.parse(
             module_path.read_text(encoding="utf-8"),
             filename=str(module_path),
@@ -161,11 +169,10 @@ def discover_datasets(package_dir: Path) -> dict[str, str]:
 
     # 2) Subpackage dataset modules — "subpkg.module_stem", as for tasks above.
     for subpkg_dir in _iter_subpackage_dirs(package_dir):
-        subpkg_name = subpkg_dir.name
         for name, mod in _discover_dataset_classes(
-            _iter_module_paths(subpkg_dir)
+            _iter_module_paths(subpkg_dir), prefix=subpkg_dir.name
         ).items():
-            _register_export(export_to_module, name, f"{subpkg_name}.{mod}", "dataset")
+            _register_export(export_to_module, name, mod, "dataset")
 
     return export_to_module
 
@@ -247,6 +254,11 @@ def main() -> int:
     # this for dataset subpackages hides whatever suffix-based discovery can't see:
     # ruler/'s helpers re-exported from _shared.py, and all of downloaders/ (which is
     # infrastructure, not a benchmark). Don't add the symmetric loop.
+    #
+    # Not a model to copy either: sieval/tasks/CLAUDE.md mandates an empty subpackage
+    # __init__.py, so the stub below promises names that __init__ never binds —
+    # sieval.tasks.<sub>.XTask type-checks but raises AttributeError. Import task
+    # classes from the top-level package, which is the form the runtime map matches.
     for subpkg_dir in _iter_subpackage_dirs(TASKS_DIR):
         ok &= sync_stub(
             subpkg_dir / "__init__.pyi",
