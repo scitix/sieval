@@ -9,8 +9,20 @@ import orjson
 import pytest
 
 from sieval.core.tasks.consts import TaskAction, TaskStage
-from sieval.core.tasks.context import TaskContext
+from sieval.core.tasks.context import TaskContext, TaskRunIdentity
 from sieval.core.tasks.saver import TaskSaver
+
+# What `get_task_run_identity` hands the saver for a decorated task; the saver
+# itself only passes it through, so a literal keeps these tests off the registry.
+_IDENTITY: TaskRunIdentity = {
+    "name": "aime_2026_0shot_gen",
+    "display_name": "AIME 2026 (0-shot, generative)",
+    "dataset": "aime_2026",
+    "eval_mode": "gen",
+    "n_shot": 0,
+    "tags": ["english", "open-ended"],
+    "status": "stable",
+}
 
 
 # ===================================================================
@@ -419,6 +431,53 @@ class TestWriteRunMeta:
         monkeypatch.setattr(anyio.Path, "exists", _boom)
         saver = TaskSaver(root_dir=tmp_path / "x", deterministic=False)
         await saver.write_run_meta()  # must NOT raise
+
+    @pytest.mark.anyio
+    async def test_persists_task_identity_block(self, tmp_path):
+        root = tmp_path / "identified"
+        saver = TaskSaver(root_dir=root, task_meta=_IDENTITY)
+
+        await saver.write_run_meta()
+
+        meta = orjson.loads((root / "meta.json").read_bytes())
+        assert meta["task"] == _IDENTITY
+        # The identity block is additive — the version handshake is untouched.
+        assert "version" in meta
+        assert meta["deterministic"] is False
+
+    @pytest.mark.anyio
+    async def test_task_key_absent_for_undecorated_class(self, tmp_path):
+        """`task_meta=None` (a Task subclass with no `@sieval_task`) writes no
+        `task` key at all, rather than a null placeholder."""
+        root = tmp_path / "anonymous"
+        saver = TaskSaver(root_dir=root)
+
+        await saver.write_run_meta()
+
+        meta = orjson.loads((root / "meta.json").read_bytes())
+        assert "task" not in meta
+
+    @pytest.mark.anyio
+    async def test_does_not_backfill_identity_into_existing_meta(self, tmp_path):
+        """A pre-feature `meta.json` never gains a `task` block on resume.
+
+        Create-if-absent stays absolute: on a resume the block would describe
+        the *resuming* process, and the resume gate matches on version alone —
+        never on task identity — so a mismatched resume would stamp a wrong
+        identity onto samples another task produced.
+        """
+        root = tmp_path / "legacy"
+        root.mkdir()
+        (root / "meta.json").write_bytes(
+            orjson.dumps({"version": "0.6.0", "deterministic": False})
+        )
+        saver = TaskSaver(root_dir=root, task_meta=_IDENTITY)
+
+        await saver.write_run_meta()
+
+        meta = orjson.loads((root / "meta.json").read_bytes())
+        assert "task" not in meta
+        assert meta["version"] == "0.6.0"
 
 
 # ===================================================================

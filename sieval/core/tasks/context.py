@@ -10,15 +10,40 @@ from sieval.core.utils.serialization import obj_to_dict, sieval_record
 from .consts import STAGE_TO_RESULT_FIELD, TaskAction, TaskStage
 
 
+class TaskRunIdentity(TypedDict):
+    """Registry identity of the task that produced a run.
+
+    A deliberate subset of ``TaskMeta`` — see
+    :func:`sieval.core.tasks.meta.get_task_run_identity` for what is left out
+    and why. Fields are JSON-shaped (``eval_mode`` and ``status`` are plain
+    ``str``, not the ``meta`` enums) so this module stays free of a ``meta``
+    import: ``meta`` imports ``task``, which imports this module.
+    """
+
+    name: str
+    display_name: str
+    dataset: str
+    eval_mode: str
+    n_shot: int
+    tags: list[str]
+    status: str
+
+
 class TaskRunMeta(TypedDict):
     """Metadata written alongside task results for reproducibility.
 
-    Required at write time; readers should tolerate older ``meta.json``
-    files missing fields. ``deterministic`` absent = pre-feature run.
+    ``version`` and ``deterministic`` are required at write time; readers
+    should tolerate older ``meta.json`` files missing fields.
+    ``deterministic`` absent = pre-feature run.
+
+    ``task`` is absent when the run predates the field or the ``Task``
+    subclass carries no ``@sieval_task`` metadata; it is never backfilled
+    into an existing ``meta.json``.
     """
 
     version: str
     deterministic: bool
+    task: NotRequired[TaskRunIdentity]
 
 
 class TaskStageMeta(TypedDict, total=False):

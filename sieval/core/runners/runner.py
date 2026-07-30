@@ -33,6 +33,7 @@ from sieval.core.tasks.context import (
     TaskStageOutput,
 )
 from sieval.core.tasks.loader import TaskLoader
+from sieval.core.tasks.meta import get_task_run_identity
 from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
 from sieval.core.tasks.records import iter_grader_outputs
@@ -271,6 +272,9 @@ class TaskRunner:
             record_meta=self._config.record_meta,
             profiler=self._profiler,
             deterministic=self._config.deterministic,
+            # Read off the class, not looked up by name: `task.name` is a
+            # user-chosen YAML key, not the registered `@sieval_task(name=...)`.
+            task_meta=get_task_run_identity(type(task)),
         )
 
         # Progress Tracking (Initialized in arun)

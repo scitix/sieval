@@ -23,6 +23,7 @@ from sieval.core.tasks.meta import (
     ReferenceImpl,
     TaskMeta,
     get_task_meta,
+    get_task_run_identity,
     iter_task_metas,
     sieval_task,
     task_meta_to_dict,
@@ -282,6 +283,140 @@ def test_get_task_meta_raises_for_unregistered():
 
     with pytest.raises(AttributeError):
         get_task_meta(Plain)
+
+
+# ===================================================================
+# get_task_run_identity — the subset persisted into run meta.json
+# ===================================================================
+class TestGetTaskRunIdentity:
+    def test_projects_the_declared_subset(self):
+        @sieval_task(
+            name="ident",
+            display_name="Ident",
+            description="identity task",
+            eval_mode=EvalMode.CLP,
+            n_shot=5,
+            tags=("chinese", "multiple-choice"),
+            deps_group="extra",
+            model_type="gen",
+            reference_impl=ReferenceImpl(source="upstream", url="https://x.invalid"),
+            status="experimental",
+        )
+        class IdentTask(_StubTask):
+            pass
+
+        assert get_task_run_identity(IdentTask) == {
+            "name": "ident",
+            "display_name": "Ident",
+            "dataset": "stub_dataset",
+            "eval_mode": "clp",
+            "n_shot": 5,
+            "tags": ["chinese", "multiple-choice"],
+            "status": "experimental",
+        }
+
+    def test_omits_fields_excluded_on_purpose(self):
+        """`description` / `deps_group` / `model_type` / `reference_impl` are
+        deliberately not persisted — assert their absence so a well-meaning
+        "complete the subset" change has to delete a test to land."""
+
+        @sieval_task(
+            name="excluded",
+            display_name="Excluded",
+            description="has every optional field set",
+            eval_mode=EvalMode.GEN,
+            deps_group="extra",
+            model_type="chat",
+            reference_impl=ReferenceImpl(source="upstream", url="https://x.invalid"),
+        )
+        class ExcludedTask(_StubTask):
+            pass
+
+        identity = get_task_run_identity(ExcludedTask)
+        assert identity is not None
+        assert set(identity) == {
+            "name",
+            "display_name",
+            "dataset",
+            "eval_mode",
+            "n_shot",
+            "tags",
+            "status",
+        }
+
+    def test_is_json_shaped(self):
+        """`eval_mode` serializes as its enum *value* and `tags` as a list, so
+        the projection can go straight through `orjson.dumps`."""
+
+        @sieval_task(
+            name="jsonshape",
+            display_name="JSON",
+            description="x",
+            eval_mode=EvalMode.PPL,
+            tags=("english",),
+        )
+        class JsonTask(_StubTask):
+            pass
+
+        identity = get_task_run_identity(JsonTask)
+        assert identity is not None
+        assert identity["eval_mode"] == "ppl"
+        assert type(identity["eval_mode"]) is str
+        assert identity["tags"] == ["english"]
+        assert json.loads(json.dumps(identity)) == identity
+
+    def test_descriptive_tags_not_the_synthesized_protocol_set(self):
+        """`tags` is the author-declared `TaskMeta.tags`, not the `cls.tags`
+        protocol set the decorator synthesizes from `eval_mode` + `n_shot`."""
+
+        @sieval_task(
+            name="tagsplit",
+            display_name="Tags",
+            description="x",
+            eval_mode=EvalMode.GEN,
+            n_shot=3,
+            tags=("english",),
+        )
+        class TagTask(_StubTask):
+            pass
+
+        identity = get_task_run_identity(TagTask)
+        assert identity is not None
+        assert identity["tags"] == ["english"]
+        assert TagTask.tags == frozenset({"gen", "few_shot"})
+
+    def test_returns_none_for_undecorated_class(self):
+        """Fail-soft: `Task` subclasses are not required to be decorated, and
+        `write_run_meta` is documented as never raising."""
+
+        class Undecorated(_StubTask):
+            pass
+
+        assert get_task_run_identity(Undecorated) is None
+
+    def test_does_not_inherit_identity_from_a_decorated_parent(self):
+        """An undecorated subclass is a *different* task. `get_task_meta` reads
+        through the MRO and so still resolves the parent's meta; run identity
+        deliberately does not, or the subclass's results would be persisted
+        under its parent's name."""
+
+        @sieval_task(
+            name="parent",
+            display_name="Parent",
+            description="x",
+            eval_mode=EvalMode.GEN,
+        )
+        class Parent(_StubTask):
+            pass
+
+        class Child(Parent):
+            pass
+
+        assert get_task_run_identity(Parent) is not None
+        assert get_task_run_identity(Child) is None
+        # The MRO-reading accessor is unchanged — this is a divergence, not a
+        # migration.
+        assert get_task_meta(Child).name == "parent"
 
 
 def _valid_kwargs(**overrides):

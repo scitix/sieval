@@ -13,7 +13,7 @@ from loguru import logger
 from sieval.core.types import JSONValue
 
 from .consts import TaskStage
-from .context import TaskContext, TaskManifest, TaskRunMeta
+from .context import TaskContext, TaskManifest, TaskRunIdentity, TaskRunMeta
 from .profiler import TaskProfiler, TaskProfilerContext
 
 
@@ -36,11 +36,14 @@ class TaskSaver:
         record_meta: bool = True,
         profiler: TaskProfiler | None = None,
         deterministic: bool = False,
+        task_meta: TaskRunIdentity | None = None,
     ):
         """Initialise the saver.
 
         *record_type_metadata* includes ``__type__`` markers for polymorphic
-        deserialization.
+        deserialization. *task_meta* is the registry identity of the task
+        being run, persisted into ``meta.json``; ``None`` for a ``Task``
+        subclass that carries no ``@sieval_task`` metadata.
         """
         self._manifest: dict[str | int, TaskManifest] = {}
         self._stage_queue: list[TaskContext] = []
@@ -59,6 +62,7 @@ class TaskSaver:
 
         self._profiler = profiler or TaskProfiler()
         self._deterministic = deterministic
+        self._task_meta = task_meta
 
     async def consume_stream(self, stream: MemoryObjectReceiveStream[TaskContext]):
         """Read contexts from a ``MemoryObjectReceiveStream``, buffer them,
@@ -147,6 +151,11 @@ class TaskSaver:
         originating version and stays stable across compatible resumes.
         Self-creates ``_root_dir`` since at run start no shard exists yet.
         All failures are non-fatal: logged, never raised.
+
+        The ``task`` identity block is omitted when the class carries no
+        ``@sieval_task`` metadata, and is never backfilled into an existing
+        ``meta.json``: on a resume it would describe the *resuming* process,
+        and the resume gate matches on version alone, never task identity.
         """
         meta_path = self._root_dir / "meta.json"
         tmp_path = meta_path.with_suffix(".tmp")
@@ -161,6 +170,8 @@ class TaskSaver:
                 "version": __version__,
                 "deterministic": self._deterministic,
             }
+            if self._task_meta is not None:
+                meta["task"] = self._task_meta
             await anyio.Path(self._root_dir).mkdir(parents=True, exist_ok=True)
             async with await anyio.open_file(tmp_path, "wb") as f:
                 await f.write(orjson.dumps(meta))

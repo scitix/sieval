@@ -232,6 +232,28 @@ class TestTaskRunMeta:
         meta_true: TaskRunMeta = {"version": "0.1.0", "deterministic": True}
         assert meta_true["deterministic"] is True
 
+    def test_task_identity_is_optional(self):
+        from sieval.core.tasks.context import TaskRunIdentity, TaskRunMeta
+
+        bare: TaskRunMeta = {"version": "0.1.0", "deterministic": False}
+        assert "task" not in bare
+
+        identity: TaskRunIdentity = {
+            "name": "aime_2026_0shot_gen",
+            "display_name": "AIME 2026 (0-shot, generative)",
+            "dataset": "aime_2026",
+            "eval_mode": "gen",
+            "n_shot": 0,
+            "tags": ["english", "open-ended"],
+            "status": "stable",
+        }
+        with_task: TaskRunMeta = {
+            "version": "0.1.0",
+            "deterministic": False,
+            "task": identity,
+        }
+        assert with_task["task"]["eval_mode"] == "gen"
+
 
 class TestTaskStageOutputUnwrap:
     """TaskStageOutput wrapping behavior."""

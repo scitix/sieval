@@ -14,11 +14,25 @@ import orjson
 import pytest
 
 from sieval import __version__
+from sieval.core.datasets.meta import (
+    DATASET_REGISTRY,
+    SAMPLE_TO_DATASET,
+    Category,
+    DatasetMeta,
+    Level1Category,
+)
+from sieval.core.models import ModelOutput
 from sieval.core.runners.resume_gate import ResumeVersionError
 from sieval.core.runners.runner import ResultDirExistsError, TaskRunner
 from sieval.core.tasks.concurrency import compute_stream_buffer_capacity
 from sieval.core.tasks.consts import TaskAction, TaskStage
 from sieval.core.tasks.context import TaskContext, TaskStageOutput
+from sieval.core.tasks.meta import (
+    _TASK_CLASSES,
+    TASK_REGISTRY,
+    EvalMode,
+    sieval_task,
+)
 from sieval.core.tasks.task import Task
 from tests.conftest import MockAlwaysFailModel, MockChatModel, MockDataset, make_config
 
@@ -109,6 +123,69 @@ class ProgressUpdateCall(TypedDict):
 
 
 # ===================================================================
+# A @sieval_task-decorated task, for the meta.json identity block
+# ===================================================================
+class _IdentitySample(TypedDict):
+    question: str
+    answer: str
+
+
+class _IdentityStubDataset:
+    """Registry stand-in for `MockDataset`.
+
+    `@sieval_task` resolves the dataset FK from the task's *sample type*, not
+    from the `Dataset` instance passed at construction, so the run can keep
+    using the plain `MockDataset` while the FK resolves against this.
+    """
+
+    _sieval_dataset_meta = DatasetMeta(
+        name="stub_identity_dataset",
+        display_name="Stub Identity",
+        description="stub",
+        source=("hf:stub/stub",),
+        categories=(Category(Level1Category.MATHEMATICS),),
+    )
+
+
+@pytest.fixture
+def decorated_mock_task_cls():
+    """A `MockTask` carrying real `@sieval_task` metadata.
+
+    `MockTask` itself is declared as bare `class MockTask(Task)`, so
+    `extract_sample_type` cannot resolve its dataset FK — the decoration
+    target has to restate the generic. The class is built inside the fixture
+    so the attached meta cannot leak into other tests.
+    """
+    SAMPLE_TO_DATASET[_IdentitySample] = _IdentityStubDataset
+    DATASET_REGISTRY["stub_identity_dataset"] = (
+        _IdentityStubDataset._sieval_dataset_meta
+    )
+    try:
+
+        @sieval_task(
+            name="e2e_identity_task",
+            display_name="E2E Identity",
+            description="decorated mock task",
+            eval_mode=EvalMode.CLP,
+            n_shot=2,
+            tags=("english", "multiple-choice"),
+            status="experimental",
+        )
+        class DecoratedMockTask(
+            MockTask,
+            Task[_IdentitySample, str, ModelOutput, str, tuple, dict],
+        ):
+            pass
+
+        yield DecoratedMockTask
+    finally:
+        TASK_REGISTRY.pop("e2e_identity_task", None)
+        _TASK_CLASSES.pop("e2e_identity_task", None)
+        SAMPLE_TO_DATASET.pop(_IdentitySample, None)
+        DATASET_REGISTRY.pop("stub_identity_dataset", None)
+
+
+# ===================================================================
 # Tests
 # ===================================================================
 class TestE2EHappyPath:
@@ -143,6 +220,52 @@ class TestE2EHappyPath:
         idx_files = list(root.rglob("*.idx"))
         assert len(jsonl_files) > 0
         assert len(idx_files) > 0
+
+
+class TestE2ERunMetaTaskIdentity:
+    """`meta.json` records which registered task produced the run (#49)."""
+
+    @pytest.mark.anyio
+    async def test_decorated_task_persists_its_registry_identity(
+        self, tmp_path, decorated_mock_task_cls
+    ):
+        task = decorated_mock_task_cls(
+            dataset=MockDataset(),
+            model=MockChatModel(answers=DEFAULT_ANSWERS),
+            # Deliberately unlike the registered name. `Task.name` is a
+            # user-chosen YAML key — under MultiTaskRunner it names the
+            # result directory, and it is exactly what the persisted
+            # identity must not be recovered from.
+            name="whatever_the_yaml_called_it",
+        )
+        runner = TaskRunner(task, make_config(tmp_path))
+        await runner.arun()
+
+        meta = orjson.loads((runner.root_dir / "meta.json").read_bytes())
+        assert meta["task"] == {
+            "name": "e2e_identity_task",
+            "display_name": "E2E Identity",
+            "dataset": "stub_identity_dataset",
+            "eval_mode": "clp",
+            "n_shot": 2,
+            "tags": ["english", "multiple-choice"],
+            "status": "experimental",
+        }
+        assert task.name != meta["task"]["name"]
+        assert meta["version"] == __version__
+
+    @pytest.mark.anyio
+    async def test_undecorated_task_omits_the_block(self, tmp_path):
+        task = MockTask(
+            dataset=MockDataset(),
+            model=MockChatModel(answers=DEFAULT_ANSWERS),
+            name="e2e_no_identity",
+        )
+        runner = TaskRunner(task, make_config(tmp_path))
+        await runner.arun()
+
+        meta = orjson.loads((runner.root_dir / "meta.json").read_bytes())
+        assert "task" not in meta
 
 
 class TestE2EFailureRecovery:

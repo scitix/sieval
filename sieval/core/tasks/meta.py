@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 from sieval.core.datasets.meta import extract_sample_type
 
+from .context import TaskRunIdentity
 from .task import Task
 
 
@@ -226,6 +227,52 @@ def sieval_task[T: type[Task]](
 def get_task_meta(cls: type) -> TaskMeta:
     """Return the `TaskMeta` attached to `cls` (AttributeError if not registered)."""
     return getattr(cls, _TASK_META_ATTR)
+
+
+def get_task_run_identity(cls: type) -> TaskRunIdentity | None:
+    """Project the run-identity subset of *cls*'s TaskMeta, for ``meta.json``.
+
+    Returns ``None`` when *cls* itself was not decorated with
+    :func:`sieval_task`, which is the fail-soft path `write_run_meta` needs:
+    `Task` subclasses are not required to be decorated.
+
+    Read off ``cls.__dict__``, not through the MRO like :func:`get_task_meta`.
+    An undecorated subclass of a decorated task is a *different* task, and
+    `name` / `dataset` / `eval_mode` are an identity claim about the run —
+    inheriting them would label the subclass's results with its parent's name.
+    (`cls.tags` and `cls.model_type`, set by the same decorator, do stay
+    inherited: those are behavioral defaults, not identity.)
+
+    The fields are a chosen subset, not `task_meta_to_dict`. Left out on
+    purpose, so the gap does not read as an oversight:
+
+    * `model_type` — scheduled for replacement by a task-side capability
+      requirement, so persisting it now writes a field that is already on its
+      way out.
+    * `reference_impl` — `notes` is explicitly not frozen within
+      `schema_version=1` and changes often; a per-run copy is noise.
+    * `description`, `deps_group` — a human-facing blurb and an environment
+      hint; neither is a property of the run.
+
+    `tags` is the descriptive `TaskMeta.tags` declared by the task author,
+    *not* the `cls.tags` protocol set the decorator synthesizes from
+    `eval_mode` + `n_shot` for anomaly routing. It is also the one persisted
+    field whose *values* are not frozen within `schema_version=1` (see the
+    module docstring), so consumers should read it as advisory and key
+    decisions off `eval_mode` / `n_shot`.
+    """
+    meta: TaskMeta | None = cls.__dict__.get(_TASK_META_ATTR)
+    if meta is None:
+        return None
+    return {
+        "name": meta.name,
+        "display_name": meta.display_name,
+        "dataset": meta.dataset,
+        "eval_mode": meta.eval_mode.value,
+        "n_shot": meta.n_shot,
+        "tags": list(meta.tags),
+        "status": meta.status,
+    }
 
 
 def iter_task_metas() -> Iterator[TaskMeta]:
