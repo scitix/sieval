@@ -23,7 +23,7 @@ Class: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `
 
 ## Key Rules
 
-- ≥ 5 task files per benchmark → subdirectory with an empty `__init__.py` (lazy loading is handled by the top-level `tasks/__init__.py`).
+- ≥ 5 task files per benchmark → subdirectory with an empty `__init__.py` (lazy loading is handled by the top-level `tasks/__init__.py`). Empty on purpose: nothing imports a task class by name — the registry resolves it through the top-level package — so the subpackage needs no type surface of its own, and leaving it empty keeps exactly one import path per task. Contrast `sieval/datasets/`, whose subpackages do re-export, because tasks import them directly.
 - Subpackage shared base module: file named `_base.py` (private module), classes inside without underscore prefix (package-internal public API, e.g. `from ._base import XxxTask`).
 - General code-quality + layer rules live in `.claude/rules/tasks.md`.
 

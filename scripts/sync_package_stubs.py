@@ -104,15 +104,6 @@ def discover_tasks(package_dir: Path) -> dict[str, str]:
     return export_to_module
 
 
-def discover_subpackage_tasks(subpkg_dir: Path) -> dict[str, str]:
-    """Discover task exports within a single subpackage directory.
-
-    Returns ``{ClassName: module_stem}`` mapping (module-level, not
-    prefixed with the subpackage name).
-    """
-    return _discover_task_classes(_iter_module_paths(subpkg_dir))
-
-
 def _discover_dataset_classes(
     module_paths: list[Path],
     prefix: str = "",
@@ -250,23 +241,13 @@ def main() -> int:
         check=args.check,
     )
 
-    # Task subpackages only. A generated stub shadows the real __init__.py, so doing
-    # this for dataset subpackages hides whatever suffix-based discovery can't see:
-    # ruler/'s helpers re-exported from _shared.py, and all of downloaders/ (which is
-    # infrastructure, not a benchmark). Don't add the symmetric loop.
-    #
-    # Not a model to copy either: per sieval/tasks/CLAUDE.md a task subpackage's
-    # __init__.py is empty, and an empty __init__ binds none of the names this stub
-    # promises — sieval.tasks.<sub>.XTask type-checks but raises AttributeError. The
-    # convention is unenforced, so the stub is right only if the subpackage re-exports.
-    # Import from the top-level package, which is what the runtime map matches.
-    for subpkg_dir in _iter_subpackage_dirs(TASKS_DIR):
-        ok &= sync_stub(
-            subpkg_dir / "__init__.pyi",
-            render_stub(discover_subpackage_tasks(subpkg_dir)),
-            check=args.check,
-        )
-
+    # Only the two lazy packages get a stub, because only they have a runtime export
+    # map for one to mirror. Subpackages are ordinary packages: their own __init__.py
+    # is their type surface, and a generated .pyi would *shadow* it rather than
+    # supplement it — hiding whatever suffix-based discovery cannot see (ruler/'s
+    # helpers re-exported from _shared.py) or emptying it outright (downloaders/,
+    # which is infrastructure and carries no dataset suffix at all). Don't add a
+    # per-subpackage loop for either package.
     if ok:
         return 0
 
