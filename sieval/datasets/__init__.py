@@ -76,7 +76,12 @@ def _scan_dataset_exports(module_path: Path) -> list[str]:
 
 
 def _discover_dataset_exports() -> dict[str, str]:
-    """Map each export name to the module ``__getattr__`` should import it from."""
+    """Map each export name to the module ``__getattr__`` should import it from.
+
+    ``scripts/sync_package_stubs.py`` reimplements this scan deliberately — the stub
+    generator must not import the package it generates stubs for — so the two have to
+    agree for the generated ``.pyi`` to match runtime resolution.
+    """
     export_to_module: dict[str, str] = {}
 
     def _register(export_name: str, module_name: str) -> None:
@@ -97,7 +102,7 @@ def _discover_dataset_exports() -> dict[str, str]:
     # __init__.py. Resolving to the defining module keeps the registry independent of
     # what the subpackage's __init__ re-exports, and keeps _register's guard effective
     # within a subpackage (the bare subpackage name made same-named exports collide
-    # silently). scripts/sync_package_stubs.py must agree.
+    # silently).
     for subpkg_dir in _iter_subpackage_dirs():
         for module_path in _iter_module_paths_in(subpkg_dir):
             for name in _scan_dataset_exports(module_path):

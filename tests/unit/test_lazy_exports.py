@@ -147,7 +147,7 @@ def test_access_export_triggers_lazy_import(
 
 
 def _read_stub_import_map(stub_path: Path) -> dict[str, str]:
-    """Map each name the stub exports to the relative module it imports it from."""
+    """Map each name the stub imports to the relative module it comes from."""
     module_ast = ast.parse(
         stub_path.read_text(encoding="utf-8"),
         filename=str(stub_path),
