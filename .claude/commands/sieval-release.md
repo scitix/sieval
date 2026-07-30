@@ -53,10 +53,6 @@ lines) as the release's performance baseline; the same numbers land in
 gitignored `outputs/benchmarks/benchmark_summary.json`. A breach can just mean a
 busy box — re-run idle before calling it a regression.
 
-On failure, re-run on an idle machine before concluding regression: a breach can
-mean the box was busy rather than that the code got slower. See `tests/README.md`
-for the marker's contract.
-
 Also collect changes since last tag:
 
 ```bash
