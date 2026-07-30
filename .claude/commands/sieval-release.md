@@ -39,28 +39,19 @@ ty check
 gh pr list --state open --limit 20     # list for user review
 ```
 
-`-m "not benchmark"` holds the wall-clock gates back for the next step. They
-assert on elapsed time, so running them beside `ruff` / `ty` / another pytest
-process would measure this batch's load rather than the code.
-
-Then run the benchmark gate on its own — serially, nothing else in flight:
+Then the wall-clock gates, alone — CI deselects `benchmark`, so this is the only
+place they run. Serially and without `--cov`: both other load and the coverage
+tracer distort what they measure.
 
 ```bash
 SIEVAL_BENCHMARK_ARTIFACT_DIR=./outputs/benchmarks \
 python -m pytest -m benchmark -q -s
 ```
 
-This is where the throughput gate is enforced: CI deselects `benchmark`, because
-its thresholds are calibrated on a dedicated box and a shared runner cannot hold
-them. The release is therefore the only place they get checked — do not skip it,
-and do not add `--cov` (the tracer skews the latency being measured).
-`outputs/` is gitignored, so the artifact does not dirty the release tree.
-
-Report the `SiEval Benchmark Summary` table, which prints at the very end of the
-run (engine `INFO`/`WARNING` lines come first — read the tail, or filter with
-`grep -vE 'INFO|WARNING'`). `outputs/benchmarks/benchmark_summary.json` holds the
-same numbers machine-readably; quote its per-scenario SPS/efficiency in the
-release report so the release has a recorded performance baseline.
+Report the `SiEval Benchmark Summary` table (printed last, after the engine's log
+lines) as the release's performance baseline; the same numbers land in
+gitignored `outputs/benchmarks/benchmark_summary.json`. A breach can just mean a
+busy box — re-run idle before calling it a regression.
 
 On failure, re-run on an idle machine before concluding regression: a breach can
 mean the box was busy rather than that the code got slower. See `tests/README.md`

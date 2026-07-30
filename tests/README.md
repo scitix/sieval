@@ -148,9 +148,9 @@ python -m pytest -m benchmark -v -s
 | Marker | Meaning |
 | --- | --- |
 | `stress` | Resource-intensive profiling runs. Excluded by default via `addopts`; opt in with `-m stress`. |
-| `benchmark` | Wall-clock throughput gates whose thresholds are calibrated on a dedicated box. A plain local `pytest` runs them; **CI deselects them**, because a shared runner cannot hold those thresholds and the coverage tracer skews the latency they measure. |
+| `benchmark` | Wall-clock throughput gates, calibrated on a dedicated box. A plain local `pytest` runs them; **CI deselects them** (a shared runner cannot hold the thresholds, and `--cov` skews the latency they measure), so `/sieval-release` is where they are enforced. |
 
-A `benchmark`-marked test asserts on *time*, so treat a failure as "investigate on an idle machine" rather than an automatic regression. `tests/acceptance/` holds exactly one such test (`test_benchmark_scenarios`); its other nine are deterministic checks of the regression-detection helper and do run in CI.
+Because these assert on *time*, treat a failure as "re-run idle" before calling it a regression. `tests/acceptance/` holds one (`test_benchmark_scenarios`); its other nine are deterministic and do run in CI.
 
 ```bash
 # Single file

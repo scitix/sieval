@@ -27,10 +27,7 @@ from tests.conftest import (
 # ===================================================================
 # Helpers
 # ===================================================================
-# How many times a timed hydration is repeated before its minimum is taken.
-# Relevant only where the metric is a ratio of two sub-100ms measurements,
-# which single-shot timing cannot measure stably. See
-# TestLoaderHydrationPerformance.test_dependency_loading_overhead.
+# Samples taken per timed arm, for metrics too short to measure single-shot.
 _TIMING_REPEATS = 5
 
 
@@ -239,12 +236,10 @@ class TestLoaderHydrationPerformance:
         Writes snapshots at each stage, then hydrates with all dependencies.
         Compares against single-stage-only hydration.
 
-        Each arm is hydrated ``_TIMING_REPEATS`` times and compared on its
-        minimum. One hydration takes ~20ms, so timing each arm once put any
-        transient scheduler stall straight into the ratio — a loaded machine
-        measured 876% against this 300% bound while an idle one measured 27%.
-        Contention can only ever add time, never remove it, so the per-arm
-        minimum is the stable estimator of hydration cost.
+        Arms are compared on their fastest of ``_TIMING_REPEATS`` hydrations.
+        One takes ~20ms, so a single sample each put any transient stall
+        straight into the ratio (idle 27% vs 876% under load); contention only
+        ever adds time, so the minimum is the stable estimator.
         """
         n_samples = 500
         stages = [
@@ -283,8 +278,8 @@ class TestLoaderHydrationPerformance:
             """Seconds taken by the fastest of _TIMING_REPEATS hydrations."""
             elapsed: list[float] = []
             for _ in range(_TIMING_REPEATS):
-                # Fresh loader each time: load_initial_state() populates the
-                # loader, so reusing one would not re-read the shards.
+                # Fresh loader: load_initial_state() populates it, so reusing
+                # one would not re-read the shards.
                 loader = TaskLoader(
                     task=_make_mock_task(n_samples),
                     root_dir=root,
@@ -293,8 +288,7 @@ class TestLoaderHydrationPerformance:
                 timer = PerfTimer()
                 with timer:
                     loaded = await loader.load_initial_state()
-                # Both arms must hydrate the same sample count, or the ratio
-                # below would be comparing two different amounts of work.
+                # Equal counts, or the ratio compares unequal work.
                 assert len(loaded) == n_samples
                 elapsed.append(timer.elapsed)
             return min(elapsed)
