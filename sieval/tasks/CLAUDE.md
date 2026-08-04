@@ -29,33 +29,30 @@ Class: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `
 
 ## Stage-Output Protocol (opt-in)
 
-Per-stage record types so a sample's answer / ground truth / verdict is readable without knowing which task produced it. **Authoritative type + builder definitions:** [`sieval/core/tasks/records.py`](../core/tasks/records.py) — this section is the vocabulary and conventions, not the schema. Opt-in per task; legacy return shapes keep working, so migrate deliberately, not en masse.
+Per-stage record types so a sample's answer / ground truth / verdict is readable without knowing which task produced it. **Schema, serialization rules and builder contracts live in [`sieval/core/tasks/records.py`](../core/tasks/records.py)** — authoritative, and deliberately not repeated here. This section is the vocabulary. Opt-in per task; legacy shapes keep working, so migrate deliberately.
 
 Records are named by **content**, not by the stage that emits them — a shard line reads `prediction` / `judgement`, not `postprocess` / `feedback`:
 
-| stage (`*_result` field) | record | holds |
-| --- | --- | --- |
-| `preprocess` | `PromptRecord` | `prompt` + `reference` (GT known at build time) |
-| `infer` | `ModelOutput` | already uniform — deliberately **not** wrapped |
-| `postprocess` | `PredictionRecord` | `rollouts[]` of extracted answers |
-| `feedback` | `JudgementRecord` | `rollouts[]` of verdicts + `n_rollouts` / `n_correct` |
+| stage | record |
+| --- | --- |
+| `preprocess` | `PromptRecord` |
+| `infer` | `ModelOutput` — already uniform, deliberately **not** wrapped |
+| `postprocess` | `PredictionRecord` |
+| `feedback` | `JudgementRecord` |
 
 Vocabulary — these denote **different layers**, keep them distinct:
 
-- **judgement** — the verdict record (feedback output), mechanism-agnostic: a string-compare, math-verify, test-suite, *or* LLM verdict all produce one.
-- **prediction** — the model's extracted answer (postprocess output). Use `None` for "could not extract" (never `""` / `-1`); read `extracted`, since a `None` prediction is absent on disk.
-- **reference** — ground truth. `None` when it is a *procedure* (test suite, rubric), described in `extra`.
-- **correct** (bool) — the headline binary verdict, and the only axis comparable across tasks (`n_correct` derives from it). **score** (float, optional) — genuine partial credit only; never mirror `n_correct / n_rollouts`.
-- **metrics** (`dict[str, bool | float]`, optional) — every metric measured, named, **including the ones the headline points at**. A task with *co-equal* metrics (IFEval strict + loose, HellaSwag `acc` + `acc_norm`) records them all here so a generic consumer can enumerate them; a metric parked in `extra` is persisted but hidden from any reader that doesn't already know the task. Derive `correct`/`score` **from** this mapping so the headline cannot drift. Values must be bool/number, never `None` — the builders reject both, since a `None` metric is dropped on serialization and would read as "never measured".
-- **grade** — an LLM autorater's categorical output (e.g. CORRECT / INCORRECT / NOT_ATTEMPTED). A judgement *contains* a grade for LLM tasks — grade sits **below** judgement, not beside it.
-- **grader** — the LLM actor (the `grader` task arg / model). Not every judgement has one.
-- **judge** — HLE only, upstream's synonym for grader/grade with its own `parse_judge` contract; do not introduce it in new tasks.
-- **extra** — mechanism-specific detail, **not metrics** (a grader's full `ModelOutput`, a code runner's failure message, per-constraint results), plus the raw material an aggregation needs: a per-sample rate in `metrics` cannot reconstruct a *pooled* rate, so the counts behind it live here (IFEval's `follow_instruction_list`). Named for the mechanism, not for a "grader". Store what the mechanism reported; don't derive a taxonomy from another service's free text at write time — a stored classification looks authoritative and decays silently when the upstream wording drifts.
+- **judgement** — the verdict record, mechanism-agnostic: string-compare, math-verify, test-suite *or* LLM verdicts all produce one.
+- **prediction** — the model's extracted answer. `None` means "could not extract" — never `""` or `-1`.
+- **reference** — ground truth; `None` when it is a *procedure* (test suite, rubric).
+- **correct** / **score** — the headline verdict. `correct` is the only axis comparable across tasks.
+- **metrics** — every metric measured, by name. A task with *co-equal* metrics (IFEval strict + loose, HellaSwag `acc` + `acc_norm`) records them all here and derives the headline from them; a metric parked in `extra` is hidden from any reader that doesn't already know the task.
+- **grade** — an LLM autorater's categorical output (CORRECT / INCORRECT / NOT_ATTEMPTED). A judgement *contains* a grade — grade sits **below** judgement, not beside it.
+- **grader** — the LLM actor (the `grader` task arg / model). Not every judgement has one; persist its whole `ModelOutput` in `extra` rather than hand-picked fields.
+- **judge** — HLE only, upstream's synonym with its own `parse_judge` contract; do not introduce it in new tasks.
+- **extra** — mechanism detail, *not* metrics: a grader's `ModelOutput`, a code runner's failure message, per-constraint results.
 
-Conventions:
-
-- Constructors are `build_*` (`build_prompt_record`, `build_prediction_record`, `build_rollout_judgement`, `build_judgement_record`) — matching `build_model_call_meta` / `build_stage_meta`. Structural sniffs are `is_*` (`is_prediction_record`, `is_judgement_record`).
-- Return records **bare** — never wrapped in `TaskStageOutput` (the runner keeps the box, breaking the flat-dict shape). A grader is a model, so persist its whole `ModelOutput` in `extra` as a plain dict via `obj_to_dict(out, add_type=False)` rather than hand-picking fields.
+Constructors are `build_*` (matching `build_model_call_meta` / `build_stage_meta`); structural sniffs are `is_*`. Records are returned **bare**, never wrapped in `TaskStageOutput`.
 
 ## `infer_args` — Per-Task Inference Override
 
