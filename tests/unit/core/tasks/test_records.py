@@ -145,18 +145,20 @@ class TestCoEqualMetrics:
         # obj_to_dict drops None-valued keys, so a None metric would be *absent*
         # on disk -- "we measured nothing" would read as "this metric never
         # existed". Fail loud at the call site instead.
+        # Deliberately ill-typed, so it is held in a bare dict: the guard exists
+        # for values that reach a task at runtime, past the type checker.
+        none_valued: dict = {"acc_norm": None}
         with pytest.raises(ValueError, match="unmeasured|None"):
-            build_rollout_judgement(0, True, metrics={"acc_norm": None})
+            build_rollout_judgement(0, True, metrics=none_valued)
         with pytest.raises(ValueError, match="unmeasured|None"):
             build_judgement_record(
-                "x", [build_rollout_judgement(0, True)], metrics={"acc_norm": None}
+                "x", [build_rollout_judgement(0, True)], metrics=none_valued
             )
 
     def test_a_structured_metric_is_rejected_and_belongs_in_extra(self):
+        structured: dict = {"follow_instruction_list": [True, False]}
         with pytest.raises(ValueError, match="bool/number"):
-            build_rollout_judgement(
-                0, True, metrics={"follow_instruction_list": [True, False]}
-            )
+            build_rollout_judgement(0, True, metrics=structured)
 
     def test_false_and_zero_metrics_survive_the_wire(self):
         # The values most at risk: `False` and `0.0` are falsy but not None, so
