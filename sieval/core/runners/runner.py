@@ -28,6 +28,7 @@ from sieval.core.tasks.context import (
     TaskAction,
     TaskContext,
     TaskManifest,
+    TaskRunIdentity,
     TaskStage,
     TaskStageMeta,
     TaskStageOutput,
@@ -49,7 +50,9 @@ from sieval.core.utils.meta import (
 
 from .resume_gate import (
     ResumeAction,
+    ResumeIdentityError,
     ResumeVersionError,
+    format_identity_reject_message,
     format_reject_message,
     resume_version_verdict,
 )
@@ -172,6 +175,46 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
         )
 
 
+def gate_resume_identity(root_dir: Path, identity: TaskRunIdentity | None) -> None:
+    """Refuse to resume into a directory a *different* task produced.
+
+    A finished run directory is matched by path alone, and under
+    ``auto_resume`` a valid ``report.json`` short-circuits :meth:`arun` before
+    any stage runs — so a task pointed at another task's directory would hand
+    back that task's report as its own result, having evaluated nothing. The
+    version gate cannot catch it: the two runs are typically the same version.
+
+    Compares the registered ``name`` only. That is the registry key the rest
+    of the block is derived from, and a wider comparison would refuse a task
+    that was merely redefined between runs, which is the version gate's
+    business.
+
+    Passes when either side has no name to compare — an absent persisted block
+    is a pre-feature run or an undecorated producer, and an absent current one
+    is an undecorated task. Neither is distinguishable from a match, so
+    neither is grounds to refuse; identity therefore only bites once both
+    sides carry a block. Runs after :func:`gate_resume_version`, which has
+    already fail-closed on a missing or unreadable ``meta.json``.
+    """
+    if identity is None:
+        return
+    try:
+        meta = orjson.loads((root_dir / "meta.json").read_bytes())
+    except (OSError, orjson.JSONDecodeError):
+        return
+    if not isinstance(meta, dict):
+        return
+    persisted = meta.get("task")
+    if not isinstance(persisted, dict):
+        return
+    persisted_name = persisted.get("name")
+    if not isinstance(persisted_name, str) or persisted_name == identity["name"]:
+        return
+    raise ResumeIdentityError(
+        format_identity_reject_message(persisted_name, identity["name"])
+    )
+
+
 class TaskRunner:
     """Core execution engine for a single evaluation task.
 
@@ -225,8 +268,13 @@ class TaskRunner:
         self._resumed_from_existing, self._root_dir = self._resolve_result_dir(
             self._config.result_dir, task, self._auto_resume
         )
+        # Read off the task, not looked up by name: `task.name` is a
+        # user-chosen YAML key, not the registered `@sieval_task(name=...)`.
+        # The instance is what carries the shot count this run will use.
+        self._task_identity = get_task_run_identity(task)
         if self._resumed_from_existing:
             gate_resume_version(self._root_dir, __version__)
+            gate_resume_identity(self._root_dir, self._task_identity)
             logger.info("Auto resumed from: {}", self._root_dir)
 
         # Profiling
@@ -272,10 +320,7 @@ class TaskRunner:
             record_meta=self._config.record_meta,
             profiler=self._profiler,
             deterministic=self._config.deterministic,
-            # Read off the task, not looked up by name: `task.name` is a
-            # user-chosen YAML key, not the registered `@sieval_task(name=...)`.
-            # The instance is what carries the shot count this run will use.
-            task_identity=get_task_run_identity(task),
+            task_identity=self._task_identity,
         )
 
         # Progress Tracking (Initialized in arun)

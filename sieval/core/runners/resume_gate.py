@@ -37,6 +37,10 @@ class ResumeVersionError(RuntimeError):
     """Raised when a resume crosses an incompatible sieval version boundary."""
 
 
+class ResumeIdentityError(RuntimeError):
+    """Raised when a resume targets a directory a different task produced."""
+
+
 def _compat_key(v: Version) -> tuple[int, ...]:
     """Return the break-axis key: major post-1.0, (major, minor) under 1.0."""
     if v.major >= 1:
@@ -84,6 +88,21 @@ def resume_version_verdict(v_run: str, v_cur: str) -> ResumeVerdict:
         return ResumeVerdict(ResumeAction.REJECT, "incompatible version series")
 
     return ResumeVerdict(ResumeAction.COMPATIBLE)
+
+
+def format_identity_reject_message(persisted: str, current: str) -> str:
+    """Build the operator-facing 'Resume aborted' message for a task mismatch."""
+    return (
+        "Resume aborted: this result directory was produced by a different task.\n"
+        f"  persisted (meta.json): {persisted}\n"
+        f"  current:               {current}\n"
+        "  reason: a finished run is matched by path alone, so resuming here\n"
+        "          would hand back the persisted task's report as this task's\n"
+        "          own result, without running a single sample\n"
+        "Either:\n"
+        "  1. Remove the result_dir and start fresh\n"
+        "  2. Give this task its own result_dir"
+    )
 
 
 def format_reject_message(v_run: str, v_cur: str, reason: str) -> str:

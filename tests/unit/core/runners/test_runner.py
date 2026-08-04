@@ -22,11 +22,15 @@ from sieval.core.datasets.meta import (
     Level1Category,
 )
 from sieval.core.models import ModelOutput
-from sieval.core.runners.resume_gate import ResumeVersionError
-from sieval.core.runners.runner import ResultDirExistsError, TaskRunner
+from sieval.core.runners.resume_gate import ResumeIdentityError, ResumeVersionError
+from sieval.core.runners.runner import (
+    ResultDirExistsError,
+    TaskRunner,
+    gate_resume_identity,
+)
 from sieval.core.tasks.concurrency import compute_stream_buffer_capacity
 from sieval.core.tasks.consts import TaskAction, TaskStage
-from sieval.core.tasks.context import TaskContext, TaskStageOutput
+from sieval.core.tasks.context import TaskContext, TaskRunIdentity, TaskStageOutput
 from sieval.core.tasks.meta import (
     _TASK_CLASSES,
     TASK_REGISTRY,
@@ -287,6 +291,127 @@ class TestE2ERunMetaTaskIdentity:
 
         meta = orjson.loads((runner.root_dir / "meta.json").read_bytes())
         assert "task" not in meta
+
+
+_IDENT: TaskRunIdentity = {
+    "name": "task_a",
+    "display_name": "A",
+    "dataset": "d",
+    "eval_mode": "gen",
+    "n_shot": 0,
+    "tags": [],
+    "status": "stable",
+}
+# Same block, different registered name — the only field the gate compares.
+_OTHER: TaskRunIdentity = {
+    "name": "task_b",
+    "display_name": "A",
+    "dataset": "d",
+    "eval_mode": "gen",
+    "n_shot": 0,
+    "tags": [],
+    "status": "stable",
+}
+
+
+def _write_meta(root: Path, task_block: object) -> Path:
+    """Persist a `meta.json` whose `task` block is *whatever was passed* —
+    malformed shapes included, since the gate has to survive them."""
+    root.mkdir(parents=True, exist_ok=True)
+    meta: dict[str, object] = {"version": __version__, "deterministic": False}
+    if task_block is not None:
+        meta["task"] = task_block
+    (root / "meta.json").write_bytes(orjson.dumps(meta))
+    return root
+
+
+class TestResumeIdentityGate:
+    """`gate_resume_identity` — a result dir is matched by path alone, so the
+    task that produced it has to be part of the key."""
+
+    def test_refuses_a_directory_another_task_produced(self, tmp_path):
+        root = _write_meta(tmp_path / "d", _IDENT)
+        with pytest.raises(ResumeIdentityError, match="different task"):
+            gate_resume_identity(root, _OTHER)
+
+    def test_allows_the_same_task(self, tmp_path):
+        root = _write_meta(tmp_path / "d", _IDENT)
+        gate_resume_identity(root, _IDENT)  # must not raise
+
+    @pytest.mark.parametrize(
+        ("task_block", "identity"),
+        [
+            # Pre-feature run, or one produced by an undecorated class: absent
+            # is indistinguishable from a match, so it cannot justify refusing.
+            (None, _IDENT),
+            # Undecorated task resuming: no name on this side to compare.
+            (_IDENT, None),
+            # Block present but malformed — shape alone decides.
+            ("not-a-dict", _IDENT),
+            ({"display_name": "A"}, _IDENT),
+        ],
+        ids=["pre-feature", "undecorated-current", "block-not-a-dict", "block-unnamed"],
+    )
+    def test_passes_when_there_is_nothing_to_compare(
+        self, tmp_path, task_block, identity
+    ):
+        root = _write_meta(tmp_path / "d", task_block)
+        gate_resume_identity(root, identity)  # must not raise
+
+    def test_non_object_meta_is_ignored(self, tmp_path):
+        """Valid JSON that is not an object. The drifting name *is* in the
+        bytes, just not at a path this reads, so shape alone decides — a
+        looser parse would refuse a resume it has no grounds to refuse."""
+        root = tmp_path / "d"
+        root.mkdir()
+        (root / "meta.json").write_bytes(orjson.dumps([{"task": {"name": "task_a"}}]))
+        gate_resume_identity(root, _OTHER)  # must not raise
+
+    def test_unreadable_meta_is_the_version_gate_s_problem(self, tmp_path):
+        """This gate stays silent on a corrupt file rather than raising its own
+        error: `gate_resume_version` runs first and already fail-closes on it."""
+        root = tmp_path / "d"
+        root.mkdir()
+        (root / "meta.json").write_bytes(b"{ truncated")
+        gate_resume_identity(root, _IDENT)  # must not raise
+
+    @pytest.mark.anyio
+    async def test_finished_dir_is_not_handed_to_another_task(
+        self, tmp_path, decorated_mock_task_cls
+    ):
+        """The failure this gate exists for.
+
+        `auto_resume` short-circuits `arun()` on a valid `report.json` before
+        any stage runs, so without the gate a second task pointed at a
+        finished directory got the first task's report back as its own result,
+        having evaluated nothing — and `meta.json` still named the first task.
+        """
+        first = decorated_mock_task_cls(
+            dataset=MockDataset(),
+            model=MockChatModel(answers=DEFAULT_ANSWERS),
+            name="shared",
+        )
+        runner = TaskRunner(first, make_config(tmp_path))
+        assert await runner.arun() is not None
+        assert (runner.root_dir / "report.json").exists()
+
+        # Same directory, a different registered task.
+        meta_path = runner.root_dir / "meta.json"
+        meta = orjson.loads(meta_path.read_bytes())
+        meta["task"]["name"] = "a_completely_different_task"
+        meta_path.write_bytes(orjson.dumps(meta))
+
+        with pytest.raises(ResumeIdentityError, match="different task"):
+            TaskRunner(
+                decorated_mock_task_cls(
+                    dataset=MockDataset(),
+                    model=MockChatModel(answers=DEFAULT_ANSWERS),
+                    name="shared",
+                ),
+                make_config(
+                    tmp_path, result_dir=str(runner.root_dir), auto_resume=True
+                ),
+            )
 
 
 class TestE2EFailureRecovery:

@@ -154,8 +154,10 @@ class TaskSaver:
 
         The ``task`` identity block is omitted when the class carries no
         ``@sieval_task`` metadata, and is never backfilled into an existing
-        ``meta.json``: on a resume it would describe the *resuming* process,
-        and the resume gate matches on version alone, never task identity.
+        ``meta.json``: on a resume it would describe the *resuming* process
+        rather than the run that produced the samples. A resume by a
+        genuinely different task never reaches here — ``gate_resume_identity``
+        refuses it at construction, before any stage runs.
         """
         meta_path = self._root_dir / "meta.json"
         tmp_path = meta_path.with_suffix(".tmp")
