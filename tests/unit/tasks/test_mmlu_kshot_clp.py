@@ -9,7 +9,7 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import TaskContext, build_prediction_record
 from sieval.datasets.mmlu import MMLUDataset, MMLUDatasetSample
 from sieval.tasks.mmlu_kshot_clp import (
     CHOICES,
@@ -111,7 +111,7 @@ async def test_header_and_prompt_are_byte_exact():
     await task.setup()
 
     pre = await task.preprocess(test, TaskContext(sample_id=0, raw_sample=test))
-    assert pre == (
+    assert pre["prompt"] == (
         "The following are multiple choice questions (with answers) about"
         " anatomy.\n\n"
         "S?\nA. c0\nB. c1\nC. c2\nD. c3\nAnswer: A\n\n"
@@ -150,9 +150,9 @@ async def test_preprocess_uses_only_matching_subject_shots():
     await task.setup()
 
     pre = await task.preprocess(test, TaskContext(sample_id=0, raw_sample=test))
-    assert " astronomy." in pre and "anatomy" not in pre
-    assert pre.count("\nAnswer:") == 6  # 5 shots + test
-    assert pre.rstrip().endswith("Answer:")
+    assert " astronomy." in pre["prompt"] and "anatomy" not in pre["prompt"]
+    assert pre["prompt"].count("\nAnswer:") == 6  # 5 shots + test
+    assert pre["prompt"].rstrip().endswith("Answer:")
 
 
 # --- Scoring: single echo=False call, argmax over top_logprobs ---
@@ -182,7 +182,7 @@ async def test_postprocess_argmax_and_missing_choice_raises():
     await task.setup()
     pre = await task.preprocess(test, ctx)
     inf = await task.infer(pre, ctx)
-    assert await task.postprocess(inf, ctx) == "C"
+    assert await task.postprocess(inf, ctx) == build_prediction_record(["C"])
 
     dropped = MMLUFewShotCLPTask(ds, _ScriptedGenModel(winner="A", drop="D"), k=1)
     await dropped.setup()
@@ -209,9 +209,10 @@ async def test_feedback_and_report_micro_with_categories():
     post = await task.postprocess(inf, ctx)
     finalize, fb = await task.feedback(post, ctx)
     assert finalize is True
-    assert fb["correct"] is True
-    assert fb["answer"] == "C" and fb["prediction"] == "C"
-    assert fb["subject"] == "abstract_algebra" and fb["category"] == "stem"
+    assert fb["rollouts"][0]["correct"] is True
+    assert fb["reference"] == "C" and post["rollouts"][0]["prediction"] == "C"
+    assert fb["extra"]["subject"] == "abstract_algebra"
+    assert fb["extra"]["category"] == "stem"
 
     report = await task.report(
         [TaskContext(sample_id=0, raw_sample=test, feedback_result=fb)], []
@@ -232,8 +233,10 @@ async def test_feedback_marks_wrong_prediction():
     await task.setup()
     ctx = TaskContext(sample_id=0, raw_sample=test)
     inf = await task.infer(await task.preprocess(test, ctx), ctx)
-    _, fb = await task.feedback(await task.postprocess(inf, ctx), ctx)
-    assert fb["correct"] is False and fb["prediction"] == "D"
+    post = await task.postprocess(inf, ctx)
+    _, fb = await task.feedback(post, ctx)
+    assert fb["rollouts"][0]["correct"] is False
+    assert post["rollouts"][0]["prediction"] == "D"
 
 
 @pytest.mark.anyio
@@ -252,7 +255,7 @@ async def test_report_excludes_fails_from_denominator():
     ctx = TaskContext(sample_id=0, raw_sample=good)
     inf = await task.infer(await task.preprocess(good, ctx), ctx)
     _, fb = await task.feedback(await task.postprocess(inf, ctx), ctx)
-    assert fb["correct"] is True
+    assert fb["rollouts"][0]["correct"] is True
 
     report = await task.report(
         [TaskContext(sample_id=0, raw_sample=good, feedback_result=fb)],

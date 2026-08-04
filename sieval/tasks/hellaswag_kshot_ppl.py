@@ -56,14 +56,21 @@ Repro decoding: deterministic log-prob scoring — ``alogprobs`` uses
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-from typing import TypedDict, override
+from typing import override
 
 from sieval.community.hellaswag import process_doc
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.core.utils.ppl import total_logprob
@@ -73,27 +80,6 @@ N_SHOT = 10
 DEFAULT_FEWSHOT_SEED = 1234
 FEWSHOT_SPLIT = "train"
 FEWSHOT_DELIMITER = "\n\n"
-
-
-class Preprocessed(TypedDict):
-    context: str  # few-shot prefix + target query
-    choices: list[str]
-    gold: int
-
-
-class Prediction(TypedDict):
-    pred_acc: int
-    pred_acc_norm: int
-    logprobs: list[float]
-    norm_logprobs: list[float]
-
-
-class Feedback(TypedDict):
-    acc: bool
-    acc_norm: bool
-    gold: int
-    pred_acc: int
-    pred_acc_norm: int
 
 
 def _continuation_logprob(
@@ -179,10 +165,10 @@ def _argmax(values: list[float]) -> int:
 class HellaSwagFewShotPPLTask(
     Task[
         HellaSwagDatasetSample,
-        Preprocessed,
+        PromptRecord,
         list[ModelOutput],
-        Prediction,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -214,11 +200,16 @@ class HellaSwagFewShotPPLTask(
     async def preprocess(self, raw, ctx):
         doc = process_doc(raw)
         context = self._fewshot_prefix + doc["query"]
-        return {"context": context, "choices": doc["choices"], "gold": doc["gold"]}
+        # `choices` is prompt-side detail, not a second prompt: the endings are
+        # what infer scores, and a row on disk needs them to read at all -- the
+        # prediction is an index into this list.
+        return build_prompt_record(
+            context, reference=doc["gold"], extra={"choices": doc["choices"]}
+        )
 
     @override
     async def infer(self, pre, ctx):
-        context = pre["context"]
+        context = pre["prompt"]
         # echo=True is structural to PPL scoring: it returns the conditional
         # log-prob of every echoed continuation token (one call per ending).
         # logprobs=0: we only read each token's own log-prob, never the top-k
@@ -226,17 +217,17 @@ class HellaSwagFewShotPPLTask(
         # (sglang: top_logprobs_num=0; input_token_logprobs are still returned).
         return [
             await self.model.alogprobs(f"{context} {choice}", echo=True, logprobs=0)
-            for choice in pre["choices"]
+            for choice in pre["extra"]["choices"]
         ]
 
     @override
     async def postprocess(self, inf, ctx):
         pre = ctx.preprocess_result
-        context = pre["context"]
+        context = pre["prompt"]
 
         logprobs: list[float] = []
         norm_logprobs: list[float] = []
-        for choice, out in zip(pre["choices"], inf, strict=True):
+        for choice, out in zip(pre["extra"]["choices"], inf, strict=True):
             ll = _continuation_logprob(
                 out.logprobs_tokens,
                 out.logprobs,
@@ -247,23 +238,34 @@ class HellaSwagFewShotPPLTask(
             # lm-eval acc_norm divides by the choice character length (no delimiter)
             norm_logprobs.append(ll / len(choice) if choice else ll)
 
-        return {
-            "pred_acc": _argmax(logprobs),
-            "pred_acc_norm": _argmax(norm_logprobs),
-            "logprobs": logprobs,
-            "norm_logprobs": norm_logprobs,
-        }
+        # One inference set, two argmax rules. `prediction` is the acc_norm
+        # argmax because acc_norm is the headline (it is what `score` reports);
+        # the raw-logprob argmax is the other rule's answer, not a second
+        # rollout, so it rides in `extra` next to the scores both were read from.
+        return build_prediction_record(
+            [_argmax(norm_logprobs)],
+            extra={
+                "prediction_acc": _argmax(logprobs),
+                "logprobs": logprobs,
+                "norm_logprobs": norm_logprobs,
+            },
+        )
 
     @override
     async def feedback(self, post, ctx):
-        gold = ctx.preprocess_result["gold"]
-        return True, {
-            "acc": post["pred_acc"] == gold,
-            "acc_norm": post["pred_acc_norm"] == gold,
-            "gold": gold,
-            "pred_acc": post["pred_acc"],
-            "pred_acc_norm": post["pred_acc_norm"],
+        gold = ctx.preprocess_result["reference"]
+        # acc and acc_norm are co-equal published metrics over one inference set,
+        # so both are named in `metrics` and the headline is derived from that
+        # mapping rather than recomputed -- the two cannot drift.
+        metrics: dict[str, bool | float] = {
+            "acc": post["extra"]["prediction_acc"] == gold,
+            "acc_norm": post["rollouts"][0]["prediction"] == gold,
         }
+        return True, build_judgement_record(
+            gold,
+            [build_rollout_judgement(0, bool(metrics["acc_norm"]), metrics=metrics)],
+            metrics=metrics,
+        )
 
     @override
     async def report(self, finals, fails):
@@ -274,8 +276,10 @@ class HellaSwagFewShotPPLTask(
         total = len(finals) + len(fails)
         if total == 0:
             return {"score": 0.0, "acc": 0.0, "acc_norm": 0.0, "fails": 0}
-        acc_num = sum(1 for ctx in finals if ctx.feedback_result["acc"])
-        acc_norm_num = sum(1 for ctx in finals if ctx.feedback_result["acc_norm"])
+        acc_num = sum(1 for ctx in finals if ctx.feedback_result["metrics"]["acc"])
+        acc_norm_num = sum(
+            1 for ctx in finals if ctx.feedback_result["metrics"]["acc_norm"]
+        )
         acc = 100 * acc_num / total
         acc_norm = 100 * acc_norm_num / total
         return {

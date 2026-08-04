@@ -42,13 +42,20 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
 from collections import defaultdict
-from typing import TypedDict, override
+from typing import override
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.core.utils.ppl import choice_scores_from_top_logprobs
@@ -127,13 +134,6 @@ CEVAL_CATEGORY_SUBJECTS = {
 }
 
 
-class Feedback(TypedDict):
-    correct: bool
-    pred: str
-    answer: str
-    subject: str
-
-
 @sieval_task(
     name="c_eval_kshot_clp",
     display_name="C-Eval (few-shot, next-token logprob)",
@@ -165,10 +165,10 @@ class Feedback(TypedDict):
 class CEvalFewShotCLPTask(
     Task[
         CEvalDatasetSample,
-        str,
+        PromptRecord,
         ModelOutput,
-        str,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -260,14 +260,18 @@ class CEvalFewShotCLPTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return self._build_prompt(raw)
+        return build_prompt_record(
+            self._build_prompt(raw),
+            reference=raw["answer"],
+            extra={"subject": raw["subject"]},
+        )
 
     @override
     async def infer(self, pre, ctx):
         # One next-token top_logprobs call (max_tokens=1, echo=False); these are
         # structural to CLP scoring, not user decode prefs.
         return await self.model.alogprobs(
-            pre, max_tokens=1, logprobs=self._logprobs, echo=False
+            pre["prompt"], max_tokens=1, logprobs=self._logprobs, echo=False
         )
 
     @override
@@ -282,18 +286,20 @@ class CEvalFewShotCLPTask(
                 "or raise the server's max-logprobs so all of A/B/C/D are "
                 "returned."
             )
-        return max(scores.items(), key=lambda item: item[1])[0]
+        return build_prediction_record(
+            [max(scores.items(), key=lambda item: item[1])[0]]
+        )
 
     @override
     async def feedback(self, post, ctx):
         raw = ctx.raw_sample
         answer = raw["answer"]
-        return True, {
-            "correct": post == answer,
-            "pred": post,
-            "answer": answer,
-            "subject": raw["subject"],
-        }
+        prediction = post["rollouts"][0]["prediction"]
+        return True, build_judgement_record(
+            answer,
+            [build_rollout_judgement(0, prediction == answer)],
+            extra={"subject": raw["subject"]},
+        )
 
     @override
     async def report(self, finals, fails):
@@ -304,7 +310,7 @@ class CEvalFewShotCLPTask(
         by_subject: dict[str, list[bool]] = defaultdict(list)
         for ctx in finals:
             fb = ctx.feedback_result
-            by_subject[fb["subject"]].append(fb["correct"])
+            by_subject[fb["extra"]["subject"]].append(fb["rollouts"][0]["correct"])
 
         subject_acc = {
             subject: 100 * sum(correct) / len(correct)

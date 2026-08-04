@@ -28,6 +28,9 @@ from typing import override
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
     sieval_task,
@@ -38,11 +41,12 @@ from sieval.datasets import ARCEasyDatasetSample
 from ._arc import (
     DEFAULT_CLP_LOGPROBS,
     DEFAULT_FEWSHOT_SEED,
-    ARCFeedback,
+    arc_judgement_record,
+    arc_prediction_record,
+    arc_prompt_record,
     arc_report,
     build_arc_clp_fewshot_prefix,
     choice_label,
-    choice_text,
     format_arc_clp_item,
     sample_arc_fewshot,
 )
@@ -82,10 +86,10 @@ N_SHOT = 25
 class ARCEasyFewShotClpTask(
     Task[
         ARCEasyDatasetSample,
-        str,
+        PromptRecord,
         ModelOutput,
-        int,
-        ARCFeedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -124,13 +128,15 @@ class ARCEasyFewShotClpTask(
             if self._fewshot_prefix is not None
             else self._build_fewshot_prefix()
         )
-        return prefix + format_arc_clp_item(raw["question"], raw["choices"])
+        return arc_prompt_record(
+            prefix + format_arc_clp_item(raw["question"], raw["choices"]), raw
+        )
 
     @override
     async def infer(self, pre, ctx):
         # One inference: the next-token distribution over the option letters.
         return await self.model.alogprobs(
-            pre, max_tokens=1, logprobs=self._logprobs, echo=False
+            pre["prompt"], max_tokens=1, logprobs=self._logprobs, echo=False
         )
 
     @override
@@ -147,19 +153,13 @@ class ARCEasyFewShotClpTask(
                 "server's max-logprobs so all option letters are returned."
             )
         best_label = max(scores.items(), key=lambda item: item[1])[0]
-        return ord(best_label) - ord("A")
+        return arc_prediction_record(ord(best_label) - ord("A"))
 
     @override
     async def feedback(self, post, ctx):
-        answer = ctx.raw_sample["answer"]
-        choices = ctx.raw_sample["choices"]
-        return True, {
-            "correct": post == answer,
-            "answer": answer,
-            "prediction": post,
-            "answer_choice": choice_text(choices, answer),
-            "prediction_choice": choice_text(choices, post),
-        }
+        return True, arc_judgement_record(
+            post["rollouts"][0]["prediction"], ctx.raw_sample
+        )
 
     @override
     async def report(self, finals, fails):

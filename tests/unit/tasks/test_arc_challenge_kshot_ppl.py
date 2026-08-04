@@ -98,14 +98,14 @@ async def test_preprocess_full_text_no_letters_no_choices_header():
 
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
 
-    assert pre == (
+    assert pre["prompt"] == (
         "Question: Sky color?\n"
         "Answer: blue\n\n"  # exemplar answer is the correct option TEXT, not a letter
         "Question: Which material is a conductor?\n"
         "Answer:"
     )
-    assert "Choices:" not in pre
-    assert "A." not in pre  # no letter labels
+    assert "Choices:" not in pre["prompt"]
+    assert "A." not in pre["prompt"]  # no letter labels
 
 
 @pytest.mark.anyio
@@ -121,7 +121,7 @@ async def test_infer_two_calls_per_option_conditional_and_unconditional():
     assert len(model.prompts) == 6  # 3 options x (conditional + unconditional)
     for i, choice in enumerate(_sample()["choices"]):
         cond, uncond = model.prompts[2 * i], model.prompts[2 * i + 1]
-        assert cond == f"{pre} {choice}"
+        assert cond == f"{pre['prompt']} {choice}"
         assert uncond == f"{ARC_UNCOND_CONTEXT} {choice}"
 
 
@@ -146,9 +146,13 @@ async def test_unconditional_normalization_flips_argmax():
         [TaskContext(sample_id=0, raw_sample=raw, feedback_result=feedback)], []
     )
 
-    assert post == 0  # copper, not rubber
-    assert feedback["correct"] is True
-    assert feedback["prediction_choice"] == "copper"
+    assert post["rollouts"][0]["prediction"] == 0  # copper, not rubber
+    assert feedback["rollouts"][0]["correct"] is True
+    assert feedback["rollouts"][0]["extra"]["prediction_choice"] == "copper"
+    # The gold now reaches disk from both preprocess and feedback; before
+    # the migration neither stage recorded it in a uniform place.
+    assert feedback["reference"] == 0
+    assert feedback["extra"]["answer_choice"] == "copper"
     assert report == {"score": 100.0, "acc": 100.0, "fails": 0}
 
 

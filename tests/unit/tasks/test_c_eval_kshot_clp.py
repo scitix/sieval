@@ -9,7 +9,12 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.c_eval import CEvalDataset, CEvalDatasetSample
 from sieval.tasks.c_eval_kshot_clp import CEvalFewShotCLPTask
 
@@ -56,7 +61,9 @@ def _sample(subject: str, answer: str, q: str = "q") -> CEvalDatasetSample:
 
 
 def _fb(correct: bool, subject: str) -> dict:
-    return {"correct": correct, "pred": "A", "answer": "A", "subject": subject}
+    return build_judgement_record(
+        "A", [build_rollout_judgement(0, correct)], extra={"subject": subject}
+    )
 
 
 def _task(model: GenModel, k: int = 0) -> CEvalFewShotCLPTask:
@@ -83,11 +90,12 @@ async def test_argmax_picks_highest_logprob_letter():
     assert isinstance(inferred, ModelOutput)
     pred = await task.postprocess(inferred, ctx)
 
-    assert pred == "B"
+    assert pred["rollouts"][0]["prediction"] == "B"
     assert model.calls == 1  # single top_logprobs call per sample
     _, fb = await task.feedback(pred, ctx)
-    assert fb["correct"] is True
-    assert fb["subject"] == "law"
+    assert fb["rollouts"][0]["correct"] is True
+    assert fb["extra"]["subject"] == "law"
+    assert fb["reference"] == "B"
 
 
 @pytest.mark.anyio
@@ -100,7 +108,7 @@ async def test_non_option_tokens_are_ignored():
     task = _task(model)
     ctx = TaskContext(sample_id=0, raw_sample=_sample("law", "B"))
     inferred = await task.infer(await task.preprocess(_sample("law", "B"), ctx), ctx)
-    assert await task.postprocess(inferred, ctx) == "B"
+    assert await task.postprocess(inferred, ctx) == build_prediction_record(["B"])
 
 
 @pytest.mark.anyio
@@ -156,7 +164,8 @@ async def test_prompt_format_matches_upstream_byte_for_byte():
     model = _ScriptedGenModel({"A": -0.1, "B": -1.0, "C": -1.0, "D": -1.0})
     task = _task(model, k=1)  # dev exemplar: q="q", answer "A"
     raw = _sample("law", "A", q="题干")
-    prompt = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
+    pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
+    prompt = pre["prompt"]
 
     expected = (
         "以下是中国关于law考试的单项选择题，请选出其中的正确答案。\n\n"

@@ -40,15 +40,22 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
 from collections import defaultdict
-from typing import Any, TypedDict, override
+from typing import Any, override
 
 from sieval.community.simple_evals.mmlu_eval import subject2category
 from sieval.core.datasets import Dataset
 from sieval.core.models import Model, ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.core.utils.ppl import choice_scores_from_top_logprobs
@@ -59,14 +66,6 @@ DEFAULT_N_SHOT = 5
 # Must be large enough that all of A/B/C/D land in the returned top-k. SGLang
 # serves 100 by default; vLLM needs `--max-logprobs 100` (its default is 20).
 DEFAULT_LOGPROBS = 100
-
-
-class Feedback(TypedDict):
-    correct: bool
-    subject: str
-    category: str
-    answer: str
-    prediction: str
 
 
 def _format_subject(subject: str) -> str:
@@ -118,10 +117,10 @@ def _format_example(sample: MMLUDatasetSample, *, include_answer: bool) -> str:
 class MMLUFewShotCLPTask(
     Task[
         MMLUDatasetSample,
-        str,
+        PromptRecord,
         ModelOutput,
-        str,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -185,14 +184,20 @@ class MMLUFewShotCLPTask(
     @override
     async def preprocess(self, raw, ctx):
         subject = raw.get("subject") or "unknown"
-        return self._build_few_shot_prompt(subject) + _format_example(
+        prompt = self._build_few_shot_prompt(subject) + _format_example(
             raw, include_answer=False
+        )
+        return build_prompt_record(
+            prompt,
+            # The gold is the option LETTER, matching what postprocess predicts.
+            reference=CHOICES[raw["answer"]],
+            extra={"subject": subject},
         )
 
     @override
     async def infer(self, pre, ctx):
         return await self.model.alogprobs(
-            pre,
+            pre["prompt"],
             max_tokens=1,
             logprobs=self._logprobs,
             echo=False,
@@ -209,28 +214,29 @@ class MMLUFewShotCLPTask(
                 "or raise the server's max-logprobs so all of A/B/C/D are "
                 "returned."
             )
-        return max(scores.items(), key=lambda item: item[1])[0]
+        return build_prediction_record(
+            [max(scores.items(), key=lambda item: item[1])[0]]
+        )
 
     @override
     async def feedback(self, post, ctx):
         answer = CHOICES[ctx.raw_sample["answer"]]
         subject = ctx.raw_sample.get("subject", "unknown")
         category = subject2category.get(subject, "other")
-        return True, {
-            "correct": post == answer,
-            "subject": subject,
-            "category": category,
-            "answer": answer,
-            "prediction": post,
-        }
+        prediction = post["rollouts"][0]["prediction"]
+        return True, build_judgement_record(
+            answer,
+            [build_rollout_judgement(0, prediction == answer)],
+            extra={"subject": subject, "category": category},
+        )
 
     @override
     async def report(self, finals, fails):
         correct_num = 0
         category_metrics = defaultdict(lambda: {"correct": 0, "total": 0})
         for ctx in finals:
-            correct = ctx.feedback_result["correct"]
-            category = ctx.feedback_result["category"]
+            correct = ctx.feedback_result["rollouts"][0]["correct"]
+            category = ctx.feedback_result["extra"]["category"]
             if correct:
                 correct_num += 1
                 category_metrics[category]["correct"] += 1

@@ -45,14 +45,21 @@ the official truncation never fires and the assembled prompts are identical.
 AI-Generated Code - GPT-5.5 (OpenAI)
 """
 
-from typing import Any, TypedDict, override
+from typing import Any, override
 
 from sieval.core.datasets import Dataset
 from sieval.core.models import Model, ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.core.utils.ppl import choice_scores_from_top_logprobs
@@ -240,12 +247,6 @@ CMMLU_CATEGORY_SUBJECTS = {
 }
 
 
-class Feedback(TypedDict):
-    correct: bool
-    pred: str
-    answer: str
-
-
 @sieval_task(
     name="cmmlu_kshot_clp",
     display_name="CMMLU (few-shot, base CLP)",
@@ -282,10 +283,10 @@ class Feedback(TypedDict):
 class CMMLUFewShotClpTask(
     Task[
         CMMLUDatasetSample,
-        str,
+        PromptRecord,
         ModelOutput,
-        str,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -368,12 +369,16 @@ class CMMLUFewShotClpTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return self._build_prompt(raw)
+        return build_prompt_record(
+            self._build_prompt(raw),
+            reference=raw["answer"],
+            extra={"subject": raw.get("subject") or "miscellaneous"},
+        )
 
     @override
     async def infer(self, pre, ctx):
         return await self.model.alogprobs(
-            pre,
+            pre["prompt"],
             max_tokens=1,
             logprobs=self._logprobs,
             echo=False,
@@ -390,15 +395,27 @@ class CMMLUFewShotClpTask(
                 "or raise the server's max-logprobs so all of A/B/C/D are "
                 "returned."
             )
-        return max(scores.items(), key=lambda item: item[1])[0]
+        return build_prediction_record(
+            [max(scores.items(), key=lambda item: item[1])[0]]
+        )
 
     @override
     async def feedback(self, post, ctx):
+        prediction = post["rollouts"][0]["prediction"]
         raw = ctx.raw_sample
         if raw is None:
-            return True, {"correct": False, "pred": post, "answer": ""}
+            # No sample to compare against: the verdict is wrong-by-default, and
+            # the reference is genuinely unknown rather than a procedure. Kept as
+            # the pre-migration behaviour (which recorded answer="").
+            return True, build_judgement_record("", [build_rollout_judgement(0, False)])
         answer = raw["answer"]
-        return True, {"correct": post == answer, "pred": post, "answer": answer}
+        # `subject` rides along so a judgement row on disk is self-describing;
+        # report() still groups by raw_sample (see there).
+        return True, build_judgement_record(
+            answer,
+            [build_rollout_judgement(0, prediction == answer)],
+            extra={"subject": raw.get("subject") or "miscellaneous"},
+        )
 
     @override
     async def report(self, finals, fails):
@@ -406,13 +423,17 @@ class CMMLUFewShotClpTask(
         subject_totals: dict[str, int] = {}
 
         for ctx in finals:
+            # Grouping still reads raw_sample, not the record's `extra.subject`:
+            # the two agree whenever both exist, but a final whose raw_sample is
+            # absent has always been dropped from the macro-average entirely, and
+            # switching the source would silently move the denominator.
             raw = ctx.raw_sample
             if raw is None:
                 continue
             subject = raw.get("subject") or "miscellaneous"
             subject_totals[subject] = subject_totals.get(subject, 0) + 1
             subject_corrects.setdefault(subject, 0)
-            if ctx.feedback_result and ctx.feedback_result["correct"]:
+            if ctx.feedback_result and ctx.feedback_result["rollouts"][0]["correct"]:
                 subject_corrects[subject] += 1
 
         subject_acc = {

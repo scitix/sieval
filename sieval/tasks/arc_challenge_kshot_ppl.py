@@ -37,6 +37,9 @@ from typing import override
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
     sieval_task,
@@ -46,10 +49,11 @@ from sieval.datasets import ARCChallengeDatasetSample
 from ._arc import (
     ARC_UNCOND_CONTEXT,
     DEFAULT_FEWSHOT_SEED,
-    ARCFeedback,
+    arc_judgement_record,
+    arc_prediction_record,
+    arc_prompt_record,
     arc_report,
     build_arc_ppl_fewshot_prefix,
-    choice_text,
     echoed_logprob,
     format_arc_ppl_context,
     sample_arc_fewshot,
@@ -93,10 +97,10 @@ N_SHOT = 25
 class ARCChallengeFewShotPplTask(
     Task[
         ARCChallengeDatasetSample,
-        str,
+        PromptRecord,
         list[ModelOutput],
-        int,
-        ARCFeedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -131,7 +135,7 @@ class ARCChallengeFewShotPplTask(
             if self._fewshot_prefix is not None
             else self._build_fewshot_prefix()
         )
-        return prefix + format_arc_ppl_context(raw["question"])
+        return arc_prompt_record(prefix + format_arc_ppl_context(raw["question"]), raw)
 
     @override
     async def infer(self, pre, ctx):
@@ -141,9 +145,10 @@ class ARCChallengeFewShotPplTask(
         # logprobs=0: ppl reads only token_logprobs, not top_logprobs (matches
         # the hellaswag sibling and avoids requesting an unused top-k).
         outputs: list[ModelOutput] = []
+        context = pre["prompt"]
         for choice in ctx.raw_sample["choices"]:
             outputs.append(
-                await self.model.alogprobs(f"{pre} {choice}", echo=True, logprobs=0)
+                await self.model.alogprobs(f"{context} {choice}", echo=True, logprobs=0)
             )
             outputs.append(
                 await self.model.alogprobs(
@@ -154,26 +159,24 @@ class ARCChallengeFewShotPplTask(
 
     @override
     async def postprocess(self, inf, ctx):
-        best_index = -1
+        best_index: int | None = None
         best_score: float | None = None
         for index in range(len(ctx.raw_sample["choices"])):
             score = echoed_logprob(inf[2 * index]) - echoed_logprob(inf[2 * index + 1])
             if best_score is None or score > best_score:
                 best_score = score
                 best_index = index
-        return best_index
+        # A sample with no options leaves this None. The protocol spells "could
+        # not pick one" as None, never a sentinel index; the pre-protocol -1 and
+        # None are equivalent downstream (both mismatch the gold, and
+        # `choice_text` maps both to "").
+        return arc_prediction_record(best_index)
 
     @override
     async def feedback(self, post, ctx):
-        answer = ctx.raw_sample["answer"]
-        choices = ctx.raw_sample["choices"]
-        return True, {
-            "correct": post == answer,
-            "answer": answer,
-            "prediction": post,
-            "answer_choice": choice_text(choices, answer),
-            "prediction_choice": choice_text(choices, post),
-        }
+        return True, arc_judgement_record(
+            post["rollouts"][0]["prediction"], ctx.raw_sample
+        )
 
     @override
     async def report(self, finals, fails):

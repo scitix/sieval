@@ -11,16 +11,28 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext, TaskStageOutput
+from sieval.core.tasks import (
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
+    TaskContext,
+    TaskStageOutput,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.mmmlu import MMMLUDataset, MMMLUDatasetSample
 from sieval.tasks.mmmlu_kshot_clp import (
-    Feedback,
     MMMLUKShotClpTask,
     OfficialScores,
 )
 
 _FinalCtx = TaskContext[
-    MMMLUDatasetSample, str, TaskStageOutput[OfficialScores], str, Feedback
+    MMMLUDatasetSample,
+    PromptRecord,
+    TaskStageOutput[OfficialScores],
+    PredictionRecord,
+    JudgementRecord,
 ]
 
 
@@ -138,10 +150,11 @@ async def test_preprocess_uses_same_locale_subject_fewshot_examples():
     task = _task(samples, k=2)
     await task.setup()
 
-    prompt = await task.preprocess(
+    pre = await task.preprocess(
         _sample(2, locale="zh_cn", subject="abstract_algebra"),
         TaskContext(sample_id=0, raw_sample=_sample(2)),
     )
+    prompt = pre["prompt"]
 
     assert prompt.startswith(
         "The following are multiple choice questions (with answers) about "
@@ -158,7 +171,7 @@ async def test_infer_postprocess_and_feedback_use_top_logprobs():
     task = _task([_sample(0), _sample(1), raw], k=2)
     ctx = TaskContext(sample_id=2, raw_sample=raw)
 
-    inferred = await task.infer("prompt", ctx)
+    inferred = await task.infer({"prompt": "prompt"}, ctx)
     post = await task.postprocess(inferred, ctx)
     finalize, feedback = await task.feedback(
         post,
@@ -166,11 +179,18 @@ async def test_infer_postprocess_and_feedback_use_top_logprobs():
     )
 
     assert isinstance(inferred, TaskStageOutput)
-    assert post == "C"
+    assert post == build_prediction_record(["C"])
     assert finalize is True
-    assert feedback["correct"] is True
-    assert feedback["locale"] == "zh_cn"
-    assert feedback["category"] == "stem"
+    assert feedback["rollouts"][0]["correct"] is True
+    assert feedback["reference"] == "C"
+    assert feedback["extra"]["locale"] == "zh_cn"
+    assert feedback["extra"]["category"] == "stem"
+    # The per-option probabilities are mechanism detail, kept as one mapping.
+    # They are softmaxed, not one-hot, so the discriminating check is that the
+    # argmaxed option is the one carrying the largest probability mass.
+    probs = feedback["rollouts"][0]["extra"]["probs"]
+    assert set(probs) == {"A", "B", "C", "D"}
+    assert max(probs, key=probs.__getitem__) == "C"
 
 
 @pytest.mark.anyio
@@ -180,34 +200,40 @@ async def test_report_returns_weighted_overall_locale_category_and_subject_score
         TaskContext(
             sample_id=0,
             raw_sample=_sample(0, locale="zh_cn", subject="abstract_algebra"),
-            feedback_result={
-                "correct": True,
-                "pred": "C",
-                "answer": "C",
-                "subject": "abstract_algebra",
-                "category": "stem",
-                "locale": "zh_cn",
-                "prob_A": 0.0,
-                "prob_B": 0.0,
-                "prob_C": 1.0,
-                "prob_D": 0.0,
-            },
+            feedback_result=build_judgement_record(
+                "C",
+                [
+                    build_rollout_judgement(
+                        0,
+                        True,
+                        extra={"probs": {"A": 0.0, "B": 0.0, "C": 1.0, "D": 0.0}},
+                    )
+                ],
+                extra={
+                    "subject": "abstract_algebra",
+                    "category": "stem",
+                    "locale": "zh_cn",
+                },
+            ),
         ),
         TaskContext(
             sample_id=1,
             raw_sample=_sample(1, locale="zh_cn", subject="abstract_algebra"),
-            feedback_result={
-                "correct": False,
-                "pred": "A",
-                "answer": "C",
-                "subject": "abstract_algebra",
-                "category": "stem",
-                "locale": "zh_cn",
-                "prob_A": 1.0,
-                "prob_B": 0.0,
-                "prob_C": 0.0,
-                "prob_D": 0.0,
-            },
+            feedback_result=build_judgement_record(
+                "C",
+                [
+                    build_rollout_judgement(
+                        0,
+                        False,
+                        extra={"probs": {"A": 1.0, "B": 0.0, "C": 0.0, "D": 0.0}},
+                    )
+                ],
+                extra={
+                    "subject": "abstract_algebra",
+                    "category": "stem",
+                    "locale": "zh_cn",
+                },
+            ),
         ),
         TaskContext(
             sample_id=2,
@@ -218,18 +244,21 @@ async def test_report_returns_weighted_overall_locale_category_and_subject_score
                 subject="business_ethics",
                 category="other",
             ),
-            feedback_result={
-                "correct": True,
-                "pred": "C",
-                "answer": "C",
-                "subject": "business_ethics",
-                "category": "other",
-                "locale": "de_de",
-                "prob_A": 0.0,
-                "prob_B": 0.0,
-                "prob_C": 1.0,
-                "prob_D": 0.0,
-            },
+            feedback_result=build_judgement_record(
+                "C",
+                [
+                    build_rollout_judgement(
+                        0,
+                        True,
+                        extra={"probs": {"A": 0.0, "B": 0.0, "C": 1.0, "D": 0.0}},
+                    )
+                ],
+                extra={
+                    "subject": "business_ethics",
+                    "category": "other",
+                    "locale": "de_de",
+                },
+            ),
         ),
     ]
     fails: list[_FinalCtx] = [

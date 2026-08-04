@@ -10,7 +10,12 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.cmmlu import CMMLUDataset, CMMLUDatasetSample
 from sieval.tasks.cmmlu_kshot_clp import (
     CMMLU_CATEGORIES,
@@ -167,8 +172,8 @@ async def test_infer_postprocess_feedback_and_report():
     )
 
     assert finalize is True
-    assert post == "B"
-    assert feedback["correct"] is True
+    assert post == build_prediction_record(["B"])
+    assert feedback["rollouts"][0]["correct"] is True
     assert report["score"] == 100.0
     assert len(model.logprob_prompts) == 1
 
@@ -199,20 +204,16 @@ async def test_report_excludes_failures_from_subject_denominator():
             TaskContext(
                 sample_id=0,
                 raw_sample=correct_anatomy,
-                feedback_result={
-                    "correct": True,
-                    "pred": "B",
-                    "answer": "B",
-                },
+                feedback_result=build_judgement_record(
+                    "B", [build_rollout_judgement(0, True)]
+                ),
             ),
             TaskContext(
                 sample_id=1,
                 raw_sample=wrong_logical,
-                feedback_result={
-                    "correct": False,
-                    "pred": "B",
-                    "answer": "A",
-                },
+                feedback_result=build_judgement_record(
+                    "A", [build_rollout_judgement(0, False)]
+                ),
             ),
         ],
         [

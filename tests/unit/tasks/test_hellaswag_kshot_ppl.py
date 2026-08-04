@@ -9,7 +9,12 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prompt_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.hellaswag import HellaSwagDataset
 from sieval.tasks.hellaswag_kshot_ppl import (
     HellaSwagFewShotPPLTask,
@@ -118,7 +123,7 @@ def _make_task(
 
 
 def _pre(context: str = QUERY) -> dict:
-    return {"context": context, "choices": CHOICES, "gold": GOLD}
+    return build_prompt_record(context, reference=GOLD, extra={"choices": CHOICES})
 
 
 # ---------------------------------------------------------------- helper units
@@ -184,8 +189,9 @@ async def test_k0_context_is_just_the_query():
     await task.setup()
     raw = _doc("X", "A.", "he", ["one", "two", "three", "four"], "2")
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
-    assert pre["context"] == "X: A. He"  # no prefix
-    assert pre["gold"] == 2
+    assert pre["prompt"] == "X: A. He"  # no prefix
+    assert pre["reference"] == 2
+    assert pre["extra"]["choices"] == ["one", "two", "three", "four"]
 
 
 @pytest.mark.anyio
@@ -198,7 +204,7 @@ async def test_k1_fewshot_prefix_rendered_query_space_gold_ending():
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
     # byte-identical to lm-eval's few-shot assembly: `query + " " + gold_ending`,
     # "\n\n"-joined with trailing "\n\n", then the target query (no description).
-    assert pre["context"] == f"{RENDERED_A}\n\nX: A. He"
+    assert pre["prompt"] == f"{RENDERED_A}\n\nX: A. He"
 
 
 @pytest.mark.anyio
@@ -244,13 +250,17 @@ async def test_acc_and_acc_norm_diverge_and_score_is_acc_norm():
     ctx = TaskContext(sample_id=0, preprocess_result=pre, infer_result=inf)
 
     post = await task.postprocess(inf, ctx)
-    assert post["pred_acc"] == 0  # argmax raw log-likelihood
-    assert post["pred_acc_norm"] == 2  # argmax length-normalized log-likelihood
+    # The headline prediction is the acc_norm argmax; the raw-logprob argmax is
+    # the other decision rule's answer, recorded alongside it.
+    assert post["rollouts"][0]["prediction"] == 2  # argmax length-normalized
+    assert post["extra"]["prediction_acc"] == 0  # argmax raw log-likelihood
 
     finalize, fb = await task.feedback(post, ctx)
     assert finalize is True
-    assert fb["acc"] is False  # 0 != gold(2)
-    assert fb["acc_norm"] is True  # 2 == gold(2)
+    # Co-equal metrics: both readings are named, and `correct` is the acc_norm one.
+    assert fb["metrics"] == {"acc": False, "acc_norm": True}
+    assert fb["rollouts"][0]["correct"] is True
+    assert fb["reference"] == 2
 
     report = await task.report(
         [TaskContext(sample_id=0, preprocess_result=pre, feedback_result=fb)], []
@@ -273,8 +283,8 @@ async def test_fewshot_scoring_unaffected_by_prefix():
     post = await task.postprocess(
         inf, TaskContext(sample_id=0, preprocess_result=pre, infer_result=inf)
     )
-    assert post["pred_acc"] == 0
-    assert post["pred_acc_norm"] == 2
+    assert post["extra"]["prediction_acc"] == 0
+    assert post["rollouts"][0]["prediction"] == 2
 
 
 @pytest.mark.anyio
@@ -289,7 +299,10 @@ async def test_report_counts_fails_in_denominator():
     # 1 correct final + 1 pipeline fail → 50% (fails in denominator), not 100%.
     # Locks against reverting to the old len(finals)-only denominator.
     task, _ = _make_task(k=0)
-    fb = {"acc": True, "acc_norm": True, "gold": 0, "pred_acc": 0, "pred_acc_norm": 0}
+    metrics: dict[str, bool | float] = {"acc": True, "acc_norm": True}
+    fb = build_judgement_record(
+        0, [build_rollout_judgement(0, True, metrics=metrics)], metrics=metrics
+    )
     finals = [TaskContext(sample_id=0, feedback_result=fb)]
     fails = [TaskContext(sample_id=1)]
     report = await task.report(finals, fails)

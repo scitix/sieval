@@ -11,10 +11,19 @@ AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Any, TypedDict
+from typing import Any
 
 from sieval.core.datasets import Dataset
 from sieval.core.models import ModelOutput
+from sieval.core.tasks import (
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
+)
 from sieval.core.utils.ppl import total_logprob
 
 DEFAULT_FEWSHOT_SEED = 1234
@@ -28,19 +37,18 @@ ARC_UNCOND_CONTEXT = "Answer:"
 DEFAULT_CLP_LOGPROBS = 100
 
 
-class ARCFeedback(TypedDict):
-    correct: bool
-    answer: int
-    prediction: int
-    answer_choice: str
-    prediction_choice: str
-
-
 def choice_label(index: int) -> str:
     return chr(ord("A") + index)
 
 
-def choice_text(choices: list[str], index: int) -> str:
+def choice_text(choices: list[str], index: int | None) -> str:
+    """The option text at *index*, or ``""`` when there is no such option.
+
+    Accepts ``None`` because a protocol prediction is ``None`` when scoring could
+    not pick an option; that reads the same as an out-of-range index here.
+    """
+    if index is None:
+        return ""
     return choices[index] if 0 <= index < len(choices) else ""
 
 
@@ -164,10 +172,58 @@ def echoed_logprob(output: ModelOutput) -> float:
     return total
 
 
+# --------------------------------------------------------------------------- #
+# shared: stage-output protocol records
+# --------------------------------------------------------------------------- #
+# All four ARC tasks (challenge/easy x ppl/clp) build the same three records from
+# the same fields, so they are built here rather than four times over. `arc_report`
+# reads the judgement, so a task that built its own shape would silently disagree
+# with it -- the coupling that makes this module, not the task file, the migration
+# unit.
+def arc_prompt_record(prompt: str, raw: Mapping[str, Any]) -> PromptRecord:
+    """The assembled prompt plus the gold option index.
+
+    The gold is recorded here because ``raw_sample`` is never serialized: without
+    it a prompt row on disk has no ground truth at all.
+    """
+    return build_prompt_record(prompt, reference=int(raw["answer"]))
+
+
+def arc_prediction_record(index: int | None) -> PredictionRecord:
+    """The single scored option index. ``None`` means no option could be picked."""
+    return build_prediction_record([index])
+
+
+def arc_judgement_record(
+    prediction: int | None, raw: Mapping[str, Any]
+) -> JudgementRecord:
+    """The verdict, carrying both option texts so a row reads without the dataset.
+
+    The prediction and reference are option *indices*; the matching texts are the
+    only thing on disk that says what an index means, so they ride along as
+    mechanism detail.
+    """
+    answer = int(raw["answer"])
+    choices = list(raw["choices"])
+    return build_judgement_record(
+        answer,
+        [
+            build_rollout_judgement(
+                0,
+                prediction == answer,
+                extra={"prediction_choice": choice_text(choices, prediction)},
+            )
+        ],
+        extra={"answer_choice": choice_text(choices, answer)},
+    )
+
+
 def arc_report(
     finals,
     fails,
 ) -> dict[str, float]:
-    correct_num = sum(1 for ctx in finals if ctx.feedback_result["correct"])
+    correct_num = sum(
+        1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
+    )
     acc = 100 * correct_num / len(finals) if finals else 0.0
     return {"score": acc, "acc": acc, "fails": len(fails)}

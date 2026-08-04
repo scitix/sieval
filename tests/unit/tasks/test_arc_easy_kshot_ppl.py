@@ -71,8 +71,8 @@ async def test_preprocess_full_text_no_letters():
 
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
 
-    assert pre == "Question: Which object is hottest?\nAnswer:"
-    assert "Choices:" not in pre
+    assert pre["prompt"] == "Question: Which object is hottest?\nAnswer:"
+    assert "Choices:" not in pre["prompt"]
 
 
 @pytest.mark.anyio
@@ -91,8 +91,8 @@ async def test_unconditional_normalization_argmax():
     post = await task.postprocess(inf, ctx)
     _finalize, feedback = await task.feedback(post, ctx)
 
-    assert post == 1
-    assert feedback["correct"] is True
+    assert post["rollouts"][0]["prediction"] == 1
+    assert feedback["rollouts"][0]["correct"] is True
 
 
 def test_task_meta_points_to_arc_easy_dataset():

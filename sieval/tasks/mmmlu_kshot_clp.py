@@ -44,10 +44,17 @@ from sieval.core.datasets import Dataset
 from sieval.core.models import Model
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
     TaskContext,
     TaskStageOutput,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.core.utils.meta import build_stage_meta
@@ -62,19 +69,6 @@ MMMLU_SAMPLE_BY = ("locale", "locale_subject")
 class OfficialScores(TypedDict):
     logprobs: dict[str, float]
     probs: dict[str, float]
-
-
-class Feedback(TypedDict):
-    correct: bool
-    pred: str
-    answer: str
-    subject: str
-    category: str
-    locale: str
-    prob_A: float
-    prob_B: float
-    prob_C: float
-    prob_D: float
 
 
 class _MetricCounts(TypedDict):
@@ -203,10 +197,10 @@ def _normalize_sample_by(sample_by: str) -> str:
 class MMMLUKShotClpTask(
     Task[
         MMMLUDatasetSample,
-        str,
+        PromptRecord,
         TaskStageOutput[OfficialScores],
-        str,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -255,15 +249,23 @@ class MMMLUKShotClpTask(
         raw: MMMLUDatasetSample,
         ctx: TaskContext[
             MMMLUDatasetSample,
-            str,
+            PromptRecord,
             TaskStageOutput[OfficialScores],
-            str,
-            Feedback,
+            PredictionRecord,
+            JudgementRecord,
         ],
-    ) -> str:
+    ) -> PromptRecord:
         train_prompt = self._build_train_prompt(raw)
         prompt_end = _format_example(raw, include_answer=False)
-        return train_prompt + prompt_end
+        return build_prompt_record(
+            train_prompt + prompt_end,
+            reference=raw["Answer"],
+            extra={
+                "locale": self._locale(raw),
+                "category": self._category(raw),
+                "subject": self._subject(raw),
+            },
+        )
 
     @override
     async def infer(
@@ -271,17 +273,17 @@ class MMMLUKShotClpTask(
         pre: str,
         ctx: TaskContext[
             MMMLUDatasetSample,
-            str,
+            PromptRecord,
             TaskStageOutput[OfficialScores],
-            str,
-            Feedback,
+            PredictionRecord,
+            JudgementRecord,
         ],
     ) -> TaskStageOutput[OfficialScores]:
         # CLP reads only the generated next token's top-logprobs, never the
         # echoed prompt (echo is for scoring a supplied continuation, i.e. true
         # PPL). echo=False is bit-identical here, faster, and prefix-cache-safe.
         output = await self.model.alogprobs(
-            pre,
+            pre["prompt"],
             max_tokens=1,
             logprobs=self._logprobs,
             echo=False,
@@ -296,14 +298,16 @@ class MMMLUKShotClpTask(
         inf: TaskStageOutput[OfficialScores],
         ctx: TaskContext[
             MMMLUDatasetSample,
-            str,
+            PromptRecord,
             TaskStageOutput[OfficialScores],
-            str,
-            Feedback,
+            PredictionRecord,
+            JudgementRecord,
         ],
-    ) -> str:
+    ) -> PredictionRecord:
         logprobs = inf.value["logprobs"]
-        return max(CHOICES, key=lambda choice: logprobs[choice])
+        return build_prediction_record(
+            [max(CHOICES, key=lambda choice: logprobs[choice])]
+        )
 
     @override
     async def feedback(
@@ -311,40 +315,42 @@ class MMMLUKShotClpTask(
         post: str,
         ctx: TaskContext[
             MMMLUDatasetSample,
-            str,
+            PromptRecord,
             TaskStageOutput[OfficialScores],
-            str,
-            Feedback,
+            PredictionRecord,
+            JudgementRecord,
         ],
-    ) -> tuple[bool, Feedback]:
+    ) -> tuple[bool, JudgementRecord]:
         raw = ctx.raw_sample
+        prediction = post["rollouts"][0]["prediction"]
         if raw is None:
-            return True, {
-                "correct": False,
-                "pred": post,
-                "answer": "",
-                "subject": "",
-                "category": "",
-                "locale": "",
-                "prob_A": 0.0,
-                "prob_B": 0.0,
-                "prob_C": 0.0,
-                "prob_D": 0.0,
-            }
+            # No sample to grade against. The empty grouping keys are what the
+            # pre-migration shape recorded, and report() maps them to "unknown".
+            return True, build_judgement_record(
+                "",
+                [build_rollout_judgement(0, False)],
+                extra={"subject": "", "category": "", "locale": ""},
+            )
         probs = ctx.infer_result.value["probs"] if ctx.infer_result else {}
         answer = raw["Answer"]
-        return True, {
-            "correct": post == answer,
-            "pred": post,
-            "answer": answer,
-            "subject": self._subject(raw),
-            "category": self._category(raw),
-            "locale": self._locale(raw),
-            "prob_A": probs.get("A", 0.0),
-            "prob_B": probs.get("B", 0.0),
-            "prob_C": probs.get("C", 0.0),
-            "prob_D": probs.get("D", 0.0),
-        }
+        # The per-option probabilities are the mechanism behind the argmax, not
+        # metrics measuring the answer, so they stay in `extra` (and as one
+        # mapping rather than four flat prob_A..prob_D keys).
+        return True, build_judgement_record(
+            answer,
+            [
+                build_rollout_judgement(
+                    0,
+                    prediction == answer,
+                    extra={"probs": {c: probs.get(c, 0.0) for c in CHOICES}},
+                )
+            ],
+            extra={
+                "subject": self._subject(raw),
+                "category": self._category(raw),
+                "locale": self._locale(raw),
+            },
+        )
 
     @override
     async def report(
@@ -352,19 +358,19 @@ class MMMLUKShotClpTask(
         finals: list[
             TaskContext[
                 MMMLUDatasetSample,
-                str,
+                PromptRecord,
                 TaskStageOutput[OfficialScores],
-                str,
-                Feedback,
+                PredictionRecord,
+                JudgementRecord,
             ]
         ],
         fails: list[
             TaskContext[
                 MMMLUDatasetSample,
-                str,
+                PromptRecord,
                 TaskStageOutput[OfficialScores],
-                str,
-                Feedback,
+                PredictionRecord,
+                JudgementRecord,
             ]
         ],
     ) -> dict[str, float]:
@@ -386,10 +392,10 @@ class MMMLUKShotClpTask(
                 category = "unknown"
                 subject = "unknown"
             else:
-                correct = ctx.feedback_result["correct"]
-                locale = ctx.feedback_result["locale"]
-                category = ctx.feedback_result["category"]
-                subject = ctx.feedback_result["subject"]
+                correct = ctx.feedback_result["rollouts"][0]["correct"]
+                locale = ctx.feedback_result["extra"]["locale"]
+                category = ctx.feedback_result["extra"]["category"]
+                subject = ctx.feedback_result["extra"]["subject"]
             if correct:
                 correct_total += 1
             self._add_group_metrics(

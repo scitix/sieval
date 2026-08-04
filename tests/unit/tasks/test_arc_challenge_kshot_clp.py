@@ -89,7 +89,7 @@ async def test_preprocess_lists_options_with_letters():
 
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
 
-    assert pre == (
+    assert pre["prompt"] == (
         "Question: 1+1?\n"
         "A. 1\n"
         "B. 2\n"
@@ -131,8 +131,8 @@ async def test_argmax_over_option_letters():
         [TaskContext(sample_id=0, raw_sample=raw, feedback_result=feedback)], []
     )
 
-    assert post == 0
-    assert feedback["correct"] is True
+    assert post["rollouts"][0]["prediction"] == 0
+    assert feedback["rollouts"][0]["correct"] is True
     assert report == {"score": 100.0, "acc": 100.0, "fails": 0}
 
 

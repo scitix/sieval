@@ -63,7 +63,7 @@ async def test_preprocess_lists_options_with_letters():
 
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
 
-    assert pre == (
+    assert pre["prompt"] == (
         "Question: Which object is hottest?\nA. ice\nB. fire\nC. snow\nAnswer:"
     )
 
@@ -78,8 +78,8 @@ async def test_argmax_over_option_letters():
     post = await task.postprocess(inf, ctx)
     _finalize, feedback = await task.feedback(post, ctx)
 
-    assert post == 1
-    assert feedback["correct"] is True
+    assert post["rollouts"][0]["prediction"] == 1
+    assert feedback["rollouts"][0]["correct"] is True
 
 
 def test_task_meta_points_to_arc_easy_dataset():
