@@ -255,6 +255,27 @@ class TestE2ERunMetaTaskIdentity:
         assert meta["version"] == __version__
 
     @pytest.mark.anyio
+    async def test_persisted_n_shot_is_the_run_not_the_declaration(
+        self, tmp_path, decorated_mock_task_cls
+    ):
+        """The class declares `n_shot=2`; this run renders 7. A result
+        directory is read to find out what the run did, so 7 is what lands —
+        otherwise a `k` override is invisible after the fact."""
+        task = decorated_mock_task_cls(
+            dataset=MockDataset(),
+            model=MockChatModel(answers=DEFAULT_ANSWERS),
+            name="shot_override",
+        )
+        task.n_shot_used = 7  # a real task sets this in __init__ from its knob
+        runner = TaskRunner(task, make_config(tmp_path))
+        await runner.arun()
+
+        meta = orjson.loads((runner.root_dir / "meta.json").read_bytes())
+        assert meta["task"]["n_shot"] == 7
+        # The declaration itself is untouched — only the run's view moved.
+        assert TASK_REGISTRY["e2e_identity_task"].n_shot == 2
+
+    @pytest.mark.anyio
     async def test_undecorated_task_omits_the_block(self, tmp_path):
         task = MockTask(
             dataset=MockDataset(),

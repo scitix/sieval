@@ -132,6 +132,7 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
         self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._k = k
         self._n = n
         self._stop = stop

@@ -118,6 +118,7 @@ class ARCChallengeFewShotPplTask(
             raise ValueError(f"k must be >= 0, got {k}")
         super().__init__(dataset=dataset, model=model, name=name)
         self._k = k
+        self.n_shot_used = self._k
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
         self._fewshot_prefix: str | None = None

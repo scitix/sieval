@@ -272,9 +272,10 @@ class TaskRunner:
             record_meta=self._config.record_meta,
             profiler=self._profiler,
             deterministic=self._config.deterministic,
-            # Read off the class, not looked up by name: `task.name` is a
+            # Read off the task, not looked up by name: `task.name` is a
             # user-chosen YAML key, not the registered `@sieval_task(name=...)`.
-            task_meta=get_task_run_identity(type(task)),
+            # The instance is what carries the shot count this run will use.
+            task_identity=get_task_run_identity(task),
         )
 
         # Progress Tracking (Initialized in arun)

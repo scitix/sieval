@@ -453,6 +453,7 @@ class TheoremQAKShotBaseGenTask(
     ):
         super().__init__(dataset=dataset, model=model, name=name)
         self._k = _normalize_k(k)
+        self.n_shot_used = self._k
         self._prompt_no_input: str | None = None
         self._prompt_prefix: str | None = None
 

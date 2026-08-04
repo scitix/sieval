@@ -18,6 +18,12 @@ class TaskRunIdentity(TypedDict):
     and why. Fields are JSON-shaped (``eval_mode`` and ``status`` are plain
     ``str``, not the ``meta`` enums) so this module stays free of a ``meta``
     import: ``meta`` imports ``task``, which imports this module.
+
+    Every field but ``n_shot`` is the task's own declaration, identical to
+    that task's row in ``sieval/meta/index.json``. ``n_shot`` is the run's:
+    a task whose ``__init__`` takes a shot-count knob reports what it was
+    constructed with, so the same key can disagree with the catalog row —
+    the catalog says what the task advertises, this says what the run did.
     """
 
     name: str

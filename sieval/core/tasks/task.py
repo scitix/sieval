@@ -98,6 +98,25 @@ class Task[
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", task_name).strip("._-") or "task"
         return safe_name
 
+    n_shot_used: int | None = None
+    """Few-shot examples this *instance* renders, set in ``__init__`` by tasks
+    whose constructor takes a shot-count knob.
+
+    ``None`` — the default every task starts with — means the declared
+    ``@sieval_task(n_shot=...)`` stands, which is the right answer for a task
+    with no knob and keeps such a task correct with no code of its own. Set it
+    only where the run can disagree with the declaration, so the count
+    persisted into ``meta.json`` is what the run did rather than what the
+    class advertises.
+
+    Do not default this to ``0`` and do not infer it from attribute names.
+    ``0`` would turn a forgotten assignment from a still-correct value into a
+    wrong one; and ``self._k`` is a few-shot count in the ``*_kshot_*`` tasks
+    but the ``pass@k`` rollout count in several ``*_0shot_*`` ones, so reading
+    it by convention records rollouts as shots on exactly the tasks that
+    declare ``n_shot=0``.
+    """
+
     def make_context(
         self, sample_id: str | int, raw: TRawSample | None = None
     ) -> TaskContext[TRawSample, TPreprocessed, TInferred, TPostprocessed, TFeedback]:

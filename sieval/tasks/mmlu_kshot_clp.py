@@ -140,6 +140,7 @@ class MMLUFewShotCLPTask(
             raise ValueError(f"logprobs must be >= 1, got {logprobs}")
         super().__init__(dataset=dataset, model=model, name=name)
         self._k = k
+        self.n_shot_used = self._k
         self._logprobs = max(logprobs, len(CHOICES))
         self._fewshot_split = fewshot_split
         self._few_shot_by_subject: dict[str, list[MMLUDatasetSample]] = {}

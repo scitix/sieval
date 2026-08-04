@@ -435,7 +435,7 @@ class TestWriteRunMeta:
     @pytest.mark.anyio
     async def test_persists_task_identity_block(self, tmp_path):
         root = tmp_path / "identified"
-        saver = TaskSaver(root_dir=root, task_meta=_IDENTITY)
+        saver = TaskSaver(root_dir=root, task_identity=_IDENTITY)
 
         await saver.write_run_meta()
 
@@ -447,7 +447,7 @@ class TestWriteRunMeta:
 
     @pytest.mark.anyio
     async def test_task_key_absent_for_undecorated_class(self, tmp_path):
-        """`task_meta=None` (a Task subclass with no `@sieval_task`) writes no
+        """`task_identity=None` (a Task subclass with no `@sieval_task`) writes no
         `task` key at all, rather than a null placeholder."""
         root = tmp_path / "anonymous"
         saver = TaskSaver(root_dir=root)
@@ -471,7 +471,7 @@ class TestWriteRunMeta:
         (root / "meta.json").write_bytes(
             orjson.dumps({"version": "0.6.0", "deterministic": False})
         )
-        saver = TaskSaver(root_dir=root, task_meta=_IDENTITY)
+        saver = TaskSaver(root_dir=root, task_identity=_IDENTITY)
 
         await saver.write_run_meta()
 

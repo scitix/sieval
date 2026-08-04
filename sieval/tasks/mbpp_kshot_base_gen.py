@@ -114,6 +114,7 @@ class MBPPFewShotBaseGenTask(
 
         super().__init__(dataset=dataset, model=model, name=name)
         self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._k = k
         self._n = n
         self._max_concurrency = max_concurrency

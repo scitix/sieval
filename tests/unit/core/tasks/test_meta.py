@@ -53,13 +53,31 @@ class _StubDataset:
 
 
 class _StubTask(Task[_StubSample, None, None, None, None, dict[str, float]]):
-    """Bare Task subclass used only as a @sieval_task decoration target.
+    """Bare Task subclass used as a @sieval_task decoration target.
 
-    Tests never instantiate these stubs, so the abstract methods are left
-    unimplemented; inheriting from Task satisfies the decorator's `type[Task]`
-    bound and supplies the `tags` / `model_type` ClassVar declarations ty needs
-    to resolve attribute accesses after decoration.
+    Inheriting from Task satisfies the decorator's `type[Task]` bound and
+    supplies the `tags` / `model_type` ClassVar declarations ty needs to
+    resolve attribute accesses after decoration. The stage methods are inert
+    stand-ins rather than left abstract: run identity is projected off an
+    *instance*, so `_identity_of` needs a class `object.__new__` will accept.
     """
+
+    async def preprocess(self, *args, **kwargs): ...
+    async def infer(self, *args, **kwargs): ...
+    async def postprocess(self, *args, **kwargs): ...
+    async def feedback(self, *args, **kwargs): ...
+    async def report(self, *args, **kwargs): ...
+
+
+def _identity_of(cls: type[Task]):
+    """Project run identity for a decoration-target stub.
+
+    `get_task_run_identity` takes an instance, because `n_shot` is read off
+    the task rather than the class. These stubs hold no `__init__` state it
+    touches, so `object.__new__` stands in for a constructed task and keeps a
+    pure projection test free of a dataset/model pair.
+    """
+    return get_task_run_identity(object.__new__(cls))
 
 
 @pytest.fixture(autouse=True)
@@ -305,7 +323,7 @@ class TestGetTaskRunIdentity:
         class IdentTask(_StubTask):
             pass
 
-        assert get_task_run_identity(IdentTask) == {
+        assert _identity_of(IdentTask) == {
             "name": "ident",
             "display_name": "Ident",
             "dataset": "stub_dataset",
@@ -332,7 +350,7 @@ class TestGetTaskRunIdentity:
         class ExcludedTask(_StubTask):
             pass
 
-        identity = get_task_run_identity(ExcludedTask)
+        identity = _identity_of(ExcludedTask)
         assert identity is not None
         assert set(identity) == {
             "name",
@@ -358,7 +376,7 @@ class TestGetTaskRunIdentity:
         class JsonTask(_StubTask):
             pass
 
-        identity = get_task_run_identity(JsonTask)
+        identity = _identity_of(JsonTask)
         assert identity is not None
         assert identity["eval_mode"] == "ppl"
         assert type(identity["eval_mode"]) is str
@@ -380,7 +398,7 @@ class TestGetTaskRunIdentity:
         class TagTask(_StubTask):
             pass
 
-        identity = get_task_run_identity(TagTask)
+        identity = _identity_of(TagTask)
         assert identity is not None
         assert identity["tags"] == ["english"]
         assert TagTask.tags == frozenset({"gen", "few_shot"})
@@ -392,7 +410,7 @@ class TestGetTaskRunIdentity:
         class Undecorated(_StubTask):
             pass
 
-        assert get_task_run_identity(Undecorated) is None
+        assert _identity_of(Undecorated) is None
 
     def test_does_not_inherit_identity_from_a_decorated_parent(self):
         """An undecorated subclass is a *different* task. `get_task_meta` reads
@@ -412,11 +430,70 @@ class TestGetTaskRunIdentity:
         class Child(Parent):
             pass
 
-        assert get_task_run_identity(Parent) is not None
-        assert get_task_run_identity(Child) is None
+        assert _identity_of(Parent) is not None
+        assert _identity_of(Child) is None
         # The MRO-reading accessor is unchanged — this is a divergence, not a
         # migration.
         assert get_task_meta(Child).name == "parent"
+
+    def test_n_shot_is_the_run_not_the_declaration(self):
+        """A run directory answers "what did this run do", so the shot count
+        persisted there is the instance's, not the class's advertisement."""
+
+        @sieval_task(
+            name="knob",
+            display_name="Knob",
+            description="x",
+            eval_mode=EvalMode.CLP,
+            n_shot=5,
+        )
+        class KnobTask(_StubTask):
+            # A real task assigns this in `__init__` from its shot-count knob;
+            # these stubs are built with `object.__new__`, so the class-level
+            # default stands in for that assignment.
+            n_shot_used = 3
+
+        identity = _identity_of(KnobTask)
+        assert identity is not None
+        assert identity["n_shot"] == 3
+        # Only the projection moves: the declaration and the catalog row it
+        # feeds still say 5.
+        assert get_task_meta(KnobTask).n_shot == 5
+
+    def test_declared_n_shot_stands_without_a_knob(self):
+        """`Task.n_shot_used` defaults to `None`, so a task with no shot-count
+        knob keeps projecting what it declared — the common case."""
+
+        @sieval_task(
+            name="noknob",
+            display_name="NoKnob",
+            description="x",
+            eval_mode=EvalMode.CLP,
+            n_shot=4,
+        )
+        class NoKnobTask(_StubTask):
+            pass
+
+        identity = _identity_of(NoKnobTask)
+        assert identity is not None
+        assert identity["n_shot"] == 4
+
+    def test_rejects_a_class(self):
+        """Passing a class resolves to no metadata, which the fail-soft `None`
+        path would report as "undecorated" and silently drop the block. The
+        previous signature took a class, so this is a reachable mistake."""
+
+        @sieval_task(
+            name="classarg",
+            display_name="ClassArg",
+            description="x",
+            eval_mode=EvalMode.GEN,
+        )
+        class ClassArgTask(_StubTask):
+            pass
+
+        with pytest.raises(TypeError, match="instance, not a class"):
+            get_task_run_identity(ClassArgTask)  # ty: ignore[invalid-argument-type]
 
 
 def _valid_kwargs(**overrides):

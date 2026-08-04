@@ -36,12 +36,12 @@ class TaskSaver:
         record_meta: bool = True,
         profiler: TaskProfiler | None = None,
         deterministic: bool = False,
-        task_meta: TaskRunIdentity | None = None,
+        task_identity: TaskRunIdentity | None = None,
     ):
         """Initialise the saver.
 
         *record_type_metadata* includes ``__type__`` markers for polymorphic
-        deserialization. *task_meta* is the registry identity of the task
+        deserialization. *task_identity* is the registry identity of the task
         being run, persisted into ``meta.json``; ``None`` for a ``Task``
         subclass that carries no ``@sieval_task`` metadata.
         """
@@ -62,7 +62,7 @@ class TaskSaver:
 
         self._profiler = profiler or TaskProfiler()
         self._deterministic = deterministic
-        self._task_meta = task_meta
+        self._task_identity = task_identity
 
     async def consume_stream(self, stream: MemoryObjectReceiveStream[TaskContext]):
         """Read contexts from a ``MemoryObjectReceiveStream``, buffer them,
@@ -170,8 +170,8 @@ class TaskSaver:
                 "version": __version__,
                 "deterministic": self._deterministic,
             }
-            if self._task_meta is not None:
-                meta["task"] = self._task_meta
+            if self._task_identity is not None:
+                meta["task"] = self._task_identity
             await anyio.Path(self._root_dir).mkdir(parents=True, exist_ok=True)
             async with await anyio.open_file(tmp_path, "wb") as f:
                 await f.write(orjson.dumps(meta))

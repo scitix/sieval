@@ -49,6 +49,7 @@ class DROPFewShotGenTask(
     ):
         super().__init__(dataset=dataset, model=model, name=name)
         self._k = k
+        self.n_shot_used = self._k
         self._sep = sep
 
     @override

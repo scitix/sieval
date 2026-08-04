@@ -5,6 +5,13 @@ v0.1 schema contract — partial freeze. Fields and values listed as frozen are
 a consumer contract: renames, removals, or type changes require a
 `meta/index.json` schema_version bump.
 
+Run `meta.json` is a second consumer of that freeze: `get_task_run_identity`
+projects a subset of these fields into every run directory, and those files
+are written once and never rewritten. Bumping `meta/index.json`'s
+schema_version does nothing for runs already on disk — their only
+compatibility marker is the sieval `version` recorded alongside. Changing a
+frozen field has to account for both.
+
 Frozen fields on TaskMeta:
     name, display_name, description, dataset (FK str), eval_mode, n_shot,
     deps_group, status.
@@ -229,10 +236,10 @@ def get_task_meta(cls: type) -> TaskMeta:
     return getattr(cls, _TASK_META_ATTR)
 
 
-def get_task_run_identity(cls: type) -> TaskRunIdentity | None:
-    """Project the run-identity subset of *cls*'s TaskMeta, for ``meta.json``.
+def get_task_run_identity(task: Task) -> TaskRunIdentity | None:
+    """Project the run-identity subset of *task*'s TaskMeta, for ``meta.json``.
 
-    Returns ``None`` when *cls* itself was not decorated with
+    Returns ``None`` when ``type(task)`` itself was not decorated with
     :func:`sieval_task`, which is the fail-soft path `write_run_meta` needs:
     `Task` subclasses are not required to be decorated.
 
@@ -258,18 +265,32 @@ def get_task_run_identity(cls: type) -> TaskRunIdentity | None:
     *not* the `cls.tags` protocol set the decorator synthesizes from
     `eval_mode` + `n_shot` for anomaly routing. It is also the one persisted
     field whose *values* are not frozen within `schema_version=1` (see the
-    module docstring), so consumers should read it as advisory and key
-    decisions off `eval_mode` / `n_shot`.
+    module docstring), so consumers should read it as advisory.
+
+    Identity is read off the class, but `n_shot` is read off the *instance*
+    via :attr:`Task.n_shot_used`, falling back to the declared value when the
+    task has no shot-count knob. That is the one field a run can change, and a
+    run directory is read to find out what the run did — a declared default
+    there is not a smaller answer, it is a wrong one. Everything else is a
+    claim about the task, which no instance may restate.
     """
+    if isinstance(task, type):
+        raise TypeError(
+            "get_task_run_identity takes a Task instance, not a class "
+            f"({task.__qualname__}); `n_shot` is read off the instance, and a "
+            "class would resolve to no metadata and silently omit the block."
+        )
+    cls = type(task)
     meta: TaskMeta | None = cls.__dict__.get(_TASK_META_ATTR)
     if meta is None:
         return None
+    n_shot_used = task.n_shot_used
     return {
         "name": meta.name,
         "display_name": meta.display_name,
         "dataset": meta.dataset,
         "eval_mode": meta.eval_mode.value,
-        "n_shot": meta.n_shot,
+        "n_shot": meta.n_shot if n_shot_used is None else n_shot_used,
         "tags": list(meta.tags),
         "status": meta.status,
     }
