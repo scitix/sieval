@@ -492,15 +492,20 @@ def detect_empty_postprocess(ctx: TaskContext) -> set[int]:
 
 
 @sieval_detection_rule(
-    description="No answer could be extracted from the model output for a rollout",
+    description=(
+        "A rollout yielded no usable answer -- extraction found none, or, for an "
+        "open-ended task, the generation itself was blank"
+    ),
     category="correctness",
     rationale=(
-        "An unextractable answer scores as wrong without the model necessarily "
-        "being wrong, so it points at the prompt or the extraction rule rather "
-        "than at capability. Reported per rollout, not as a single sentinel, so "
-        "an occasional miss under n>1 is distinguishable from a total failure."
+        "Either way the rollout scores as wrong without the model necessarily "
+        "being wrong, but the two point at different things: for a task that "
+        "extracts, at the prompt or the extraction rule rather than at "
+        "capability; for an open-ended task, where the response *is* the answer, "
+        "at an empty generation. Reported per rollout, not as a single sentinel, "
+        "so an occasional miss under n>1 is distinguishable from a total failure."
     ),
-    tags=["parsing", "extraction", "correctness"],
+    tags=["parsing", "extraction", "empty_output", "correctness"],
 )
 def detect_extraction_failure(ctx: TaskContext) -> set[int]:
     if ctx.postprocess_result is None:
@@ -510,8 +515,8 @@ def detect_extraction_failure(ctx: TaskContext) -> set[int]:
         return set()
     rollouts = post_result.get("rollouts") or []
     if not rollouts:
-        # A record that judged nothing is itself the anomaly; index 0 is a
-        # sentinel here, since there is no rollout to point at.
+        # A prediction record covering no rollouts is itself the anomaly; index 0
+        # is a sentinel here, since there is no rollout to point at.
         return {0}
     return {
         rollout.get("index", position)

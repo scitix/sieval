@@ -120,6 +120,12 @@ class GPQADiamondZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
-        count = sum(1 for ctx in finals if ctx.feedback_result["n_correct"])
+        # Read the single rollout's verdict, matching mmlu_pro. Deliberately not
+        # `n_correct`: for an n=1 accuracy task that would be an int read as a
+        # bool, and it would silently become pass@n rather than accuracy if the
+        # task ever gained n>1.
+        count = sum(
+            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
+        )
         score = 100 * count / len(finals) if finals else 0.0
         return {"score": score, "fails": len(fails)}

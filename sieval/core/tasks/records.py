@@ -46,10 +46,13 @@ class PromptRecord(TypedDict):
         prompt: The model input, in whatever shape the model kind takes --
             a chat ``messages`` list, or a plain string for base models.
             ``infer`` reads this key rather than the record.
-        reference: Ground truth, when it is only knowable at prompt-build time
-            (e.g. the correct letter after a per-sample choice permutation).
-            Tasks whose ground truth is a plain dataset field may omit it and
-            let ``feedback`` record it instead.
+        reference: Ground truth as known at prompt-build time -- including one
+            knowable *only* here, such as the correct letter after a per-sample
+            choice permutation. Recorded even when it is a plain dataset field,
+            so a prompt row is readable without joining to the feedback row;
+            :attr:`JudgementRecord.reference` separately records the ground truth
+            *as compared*, and the two are expected to coexist. Omit it when the
+            ground truth is not a value at all (a test suite, a rubric).
         extra: Task-specific prompt-side detail worth keeping (the permutation
             actually used, the constraint spec, a category label).
     """
@@ -73,7 +76,7 @@ class RolloutPrediction(TypedDict):
     """
 
     index: int
-    prediction: JSONValue | None
+    prediction: NotRequired[JSONValue | None]
     extracted: bool
     extra: NotRequired[dict]
 
@@ -136,7 +139,7 @@ class JudgementRecord(TypedDict):
             description for a procedural reference).
     """
 
-    reference: JSONValue | None
+    reference: NotRequired[JSONValue | None]
     rollouts: list[RolloutJudgement]
     n_rollouts: int
     n_correct: int

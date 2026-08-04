@@ -194,7 +194,10 @@ class SimpleQAVerifiedZeroShotGenTask(
                     # Three-way grade collapses to the headline bool; `grade` below
                     # keeps the full verdict, and report() aggregates from that.
                     grade == "CORRECT",
-                    extra={"grade": grade, "grader_output": obj_to_dict(out, False)},
+                    extra={
+                        "grade": grade,
+                        "grader_output": obj_to_dict(out, add_type=False),
+                    },
                 )
             )
         return True, build_judgement_record(gold, rollouts)
