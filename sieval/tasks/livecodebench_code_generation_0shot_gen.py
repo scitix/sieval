@@ -4,11 +4,10 @@ import os
 import pickle
 import time
 import zlib
-from typing import TypedDict, override
+from typing import override
 
 import httpx
 from loguru import logger
-from openai.types.chat import ChatCompletionUserMessageParam
 
 from sieval.community.livecodebench.prompts.code_generation import (
     PromptConstants,
@@ -18,24 +17,44 @@ from sieval.community.livecodebench.utils.extraction_utils import extract_code
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
+    RolloutJudgement,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import LiveCodeBenchDatasetSample
 
+# Failure taxonomy for the evaluator's free-text `msg`, so per-rollout outcomes can
+# be grouped without substring-matching at every analysis site. Order matters: the
+# first matching probe wins, and the compile/definition probes must precede the
+# generic runtime one because their messages also contain bracketed exception names.
+_FAILURE_PROBES: tuple[tuple[str, str], ...] = (
+    ("compile error", "compile_error"),
+    ("no function defined", "no_function"),
+    ("number of inputs and outputs mismatch", "harness_error"),
+    ("no result from subprocess", "harness_error"),
+    ("timeout", "timeout"),
+    ("!= expect", "wrong_answer"),
+    ("[", "runtime_error"),
+)
 
-class ResourceMetrics(TypedDict):
-    avg_cpu_percent: float
-    peak_cpu_percent: float
-    avg_memory_mb: float
-    peak_memory_mb: float
 
-
-class Feedback(TypedDict):
-    correct: bool
-    msg: str
-    metrics: ResourceMetrics | None
+def _classify_failure(msg: str) -> str | None:
+    """Bucket an evaluator failure message, or ``None`` when the run passed."""
+    if not msg:
+        return None
+    lowered = msg.lower()
+    for probe, category in _FAILURE_PROBES:
+        if probe in lowered:
+            return category
+    return "unknown"
 
 
 @sieval_task(
@@ -58,10 +77,10 @@ class Feedback(TypedDict):
 class LiveCodeBenchCodeGenerationZeroShotGenTask(
     Task[
         LiveCodeBenchDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        list[str],
-        list[Feedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -95,22 +114,25 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
             "starter_code": raw["starter_code"],
         }
         prompt = get_generic_question_template_answer(question, self._cot)
-        return [
-            {"role": "system", "content": PromptConstants.SYSTEM_MESSAGE_GENERIC},
-            {"role": "user", "content": prompt},
-        ]
+        return build_prompt_record(
+            [
+                {"role": "system", "content": PromptConstants.SYSTEM_MESSAGE_GENERIC},
+                {"role": "user", "content": prompt},
+            ],
+            # No `reference`: the ground truth is a test suite, not a value. It is
+            # described at judgement time instead (see feedback's sample-level extra).
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre, n=self._n)
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        res: list[str] = []
-        for choice in inf.texts:
-            code = extract_code(choice)
-            res.append(code)
-        return res
+        # Empty extraction normalizes to None so `extracted` reports it as a miss.
+        return build_prediction_record(
+            [extract_code(choice) or None for choice in inf.texts]
+        )
 
     @override
     async def feedback(self, post, ctx):
@@ -128,24 +150,25 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
             )
         metadata = json.loads(ctx.raw_sample["metadata"])
 
-        feedbacks = [
-            {"correct": False, "msg": "Not evaluated", "metrics": None}
-            for _ in range(len(post))
-        ]
-
         cases = public_test_cases + private_test_cases
         inputs = [t["input"] for t in cases]
         outputs = [t["output"] for t in cases]
         fn_name = metadata.get("func_name", None)
 
-        for idx, pred in enumerate(post):
+        rollouts: list[RolloutJudgement] = []
+        for rollout in post["rollouts"]:
+            idx = rollout["index"]
             try:
                 resp = await self._http_client.post(
                     self._code_eval_api,
                     json={
                         "uuid": f"{idx}-{time.perf_counter_ns()}",
                         "source": "livecodebench",
-                        "code": pred,
+                        # An unextractable answer is None here but "" on the wire,
+                        # so the evaluator still runs it and reports a compile
+                        # error -- the pre-protocol behaviour, and a real verdict
+                        # rather than a skipped rollout.
+                        "code": rollout["prediction"] or "",
                         "test": {
                             "inputs": inputs,
                             "outputs": outputs,
@@ -162,11 +185,8 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
                 resp.raise_for_status()
                 res = resp.json()
                 # should raise error if no `status` & `msg` field
-                feedbacks[idx] = {
-                    "correct": res["status"],
-                    "msg": res["msg"],
-                    "metrics": res["data"],
-                }
+                correct, msg = res["status"], res["msg"]
+                data = res["data"] or {}
             except Exception as e:
                 logger.warning(
                     "Evaluation error for sample {}: [{}] {}",
@@ -176,7 +196,38 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
                 )
                 raise e
 
-        return True, feedbacks
+            # n_cases / n_passed need an evaluator that reports test-case progress
+            # (vendor/code-evaluator/VENDORED.md); against an older one they are
+            # simply absent, which reads as unknown rather than as zero.
+            rollouts.append(
+                build_rollout_judgement(
+                    idx,
+                    correct,
+                    extra={
+                        "msg": msg,
+                        "failure": _classify_failure(msg),
+                        "n_cases": data.get("n_cases"),
+                        "n_passed": data.get("n_passed"),
+                        "resources": {
+                            key: value
+                            for key, value in data.items()
+                            if key not in ("n_cases", "n_passed")
+                        },
+                    },
+                )
+            )
+
+        return True, build_judgement_record(
+            None,  # the reference is the test suite below, not a value
+            rollouts,
+            extra={
+                "n_test_cases": len(cases),
+                "n_public_cases": len(public_test_cases),
+                "n_private_cases": len(private_test_cases),
+                "io_mode": "fn_call" if fn_name else "stdio",
+                "func_name": fn_name,
+            },
+        )
 
     @override
     async def report(self, finals, fails):
@@ -188,13 +239,20 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         pass_at_k_total = 0.0
         timeouts = 0
         for f in finals:
-            feedbacks = f.feedback_result
-            n_samples = len(feedbacks)
-            correct_num = sum(1 for f in feedbacks if f["correct"])
+            judgement = f.feedback_result
+            n_samples = judgement["n_rollouts"]
+            correct_num = judgement["n_correct"]
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
                 pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
-            timeouts += sum(1 for fb in feedbacks if "timeout" in fb["msg"].lower())
+            # Kept as the original substring check rather than switching to the
+            # `failure` category, so the counter stays byte-identical across the
+            # protocol migration.
+            timeouts += sum(
+                1
+                for r in judgement["rollouts"]
+                if "timeout" in r["extra"]["msg"].lower()
+            )
 
         pass_at_1 = pass_at_1_total * 100 / total
         metrics = {

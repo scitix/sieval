@@ -11,17 +11,16 @@ pre-built Model, on its own ``api_base``/``api_key``); the official autorater is
 gpt-4.1-2025-04-14. Unlike sieval's deterministic-grader tasks, correctness
 depends on a real grader model whose version sieval cannot pin the way it pins a
 Hub revision, so for reproducibility pin the grader model and set
-``temperature: 0``; each sample's grade, the grader model id, and the autorater's
-verbatim reply (``grader_reply``) are persisted in the feedback record — see
-``GradeFeedback.grader_reply`` for why the reply is kept.
+``temperature: 0``; each sample's parsed grade and the grader's full model
+output (reply, reasoning, usage, finish reason, model id) are persisted under
+the judgement record's ``extra`` — see :meth:`feedback` for why the raw output
+is kept whole.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
 from collections.abc import Mapping
-from typing import TypedDict, override
-
-from openai.types.chat import ChatCompletionUserMessageParam
+from typing import override
 
 from sieval.community.simpleqa_verified import (
     GRADER_TEMPLATE,
@@ -31,23 +30,20 @@ from sieval.community.simpleqa_verified import (
 from sieval.core.models import ChatModel, Model, ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
+    RolloutJudgement,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import SimpleQAVerifiedDatasetSample
-
-
-class GradeFeedback(TypedDict):
-    grade: str  # "CORRECT" | "INCORRECT" | "NOT_ATTEMPTED"
-    gold: str
-    predicted: str
-    grader_model: str
-    # The autorater's reply verbatim, on every attempt — the text `grade` comes
-    # from. `parse_grade` defaults a non-matching reply to NOT_ATTEMPTED, so the
-    # grade alone cannot separate format drift from a real abstention — which the
-    # F1 weights very differently from an incorrect answer.
-    grader_reply: str
 
 
 @sieval_task(
@@ -75,11 +71,14 @@ class GradeFeedback(TypedDict):
             "REPRODUCIBILITY: unlike deterministic-grader tasks, scores depend "
             "on the grader endpoint's model version (not pinnable like a Hub "
             "revision) — pin the grader model + temperature=0; the per-sample "
-            "grade, grader model id, and the autorater's verbatim reply "
-            "(grader_reply) are persisted — the reply being the only evidence of "
-            "a verdict a re-grade need not reproduce, and (parse_grade defaults "
-            "to NOT_ATTEMPTED) the only way to tell format drift from a real "
-            "abstention. "
+            "parsed grade and the grader's full ModelOutput (grader_output: "
+            "reply, reasoning, usage, finish_reasons, model id) are persisted "
+            "under the judgement record's `extra` — the reply being the only "
+            "evidence of a verdict a re-grade need not reproduce, and "
+            "(parse_grade defaults to NOT_ATTEMPTED) the only way to tell format "
+            "drift from a real abstention; finish_reasons separates a reasoning "
+            "autorater that spent its budget thinking from an empty API "
+            "response. "
             "VALIDATION: google/gemma-4-31B-it scored F1 9.95 (n=1000, grader "
             "openai/gpt-4.1 via OpenRouter), within the official 10.7±2.1 band. "
             "Official numbers (Gemini 2.5 Pro 55.6; the band above) are from the "
@@ -91,10 +90,10 @@ class GradeFeedback(TypedDict):
 class SimpleQAVerifiedZeroShotGenTask(
     Task[
         SimpleQAVerifiedDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        list[str],
-        list[GradeFeedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -131,25 +130,56 @@ class SimpleQAVerifiedZeroShotGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return [{"role": "user", "content": raw["problem"]}]
+        return build_prompt_record(
+            [{"role": "user", "content": raw["problem"]}],
+            reference=raw["answer"],
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre, n=self._n)
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        return list(inf.texts)
+        # Free-form factuality answer: the response is the answer, no extraction.
+        # A blank answer normalizes to None so `extracted` stays a real signal;
+        # the grader still sees "" and will rate it NOT_ATTEMPTED.
+        return build_prediction_record(
+            [text if text.strip() else None for text in inf.texts]
+        )
 
     @override
     async def feedback(self, post, ctx):
+        """Grade every rollout with the autorater, recording its full output.
+
+        The grader is a model, so its output is persisted the way any model
+        output is: ``extra["grader_output"]`` is the grader's ``ModelOutput``
+        flattened to a plain dict — reply text, reasoning, usage, finish reason,
+        request params, model id, all of it. Nothing is hand-picked, so no field
+        is silently dropped and a future ``ModelOutput`` field is captured for
+        free. ``extra["grade"]`` is the parsed verdict on top of that raw output
+        — task logic, not model output, which is why it is a separate key.
+
+        Keeping the reply matters because grading is not artifact-reproducible: a
+        grader model version is not pinnable like a Hub revision, so the reply is
+        the only durable evidence of a verdict a re-grade need not reproduce. And
+        ``parse_grade`` defaults a non-matching reply to NOT_ATTEMPTED, which the
+        F1 weights very differently from an incorrect answer — the reply is what
+        separates format drift from a real abstention. A reasoning autorater can
+        spend its whole budget thinking and return empty text; ``finish_reasons``
+        (in the same output) is what separates that from an empty API response.
+
+        The flattening uses ``add_type=False`` on purpose: it keeps the grader
+        output a plain dict, so the judgement record stays uniformly plain-dict
+        rather than nesting a typed ``@sieval_record`` object.
+        """
         raw = ctx.raw_sample
         question = raw["problem"]
         gold = raw["answer"]
-        grader_model = self._grader.meta()["model"]
 
-        feedbacks: list[GradeFeedback] = []
-        for predicted in post:
+        rollouts: list[RolloutJudgement] = []
+        for rollout in post["rollouts"]:
+            predicted = rollout["prediction"] or ""
             prompt = GRADER_TEMPLATE.format(
                 question=question,
                 target=gold,
@@ -157,20 +187,25 @@ class SimpleQAVerifiedZeroShotGenTask(
             )
             out = await self._grader.agenerate(prompt)
             reply = out.texts[0] if out.texts else ""
-            feedbacks.append(
-                {
-                    "grade": parse_grade(reply),
-                    "gold": gold,
-                    "predicted": predicted,
-                    "grader_model": grader_model,
-                    "grader_reply": reply,
-                }
+            grade = parse_grade(reply)
+            rollouts.append(
+                build_rollout_judgement(
+                    rollout["index"],
+                    # Three-way grade collapses to the headline bool; `grade` below
+                    # keeps the full verdict, and report() aggregates from that.
+                    grade == "CORRECT",
+                    extra={"grade": grade, "grader_output": obj_to_dict(out, False)},
+                )
             )
-        return True, feedbacks
+        return True, build_judgement_record(gold, rollouts)
 
     @override
     async def report(self, finals, fails):
-        graded = [fb["grade"] for f in finals for fb in (f.feedback_result or [])]
+        graded = [
+            r["extra"]["grade"]
+            for f in finals
+            for r in (f.feedback_result or {}).get("rollouts", [])
+        ]
         # Pipeline failures (exhausted retries) never produced a gradeable
         # answer; count each failed sample's requested attempts as
         # NOT_ATTEMPTED so the F1 spans the full requested set — matching the

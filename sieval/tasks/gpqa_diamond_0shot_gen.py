@@ -1,8 +1,6 @@
 import random
 import re
-from typing import TypedDict, override
-
-from openai.types.chat import ChatCompletionUserMessageParam
+from typing import override
 
 from sieval.community.simple_evals.common import (
     ANSWER_PATTERN_MULTICHOICE,
@@ -11,21 +9,18 @@ from sieval.community.simple_evals.common import (
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import GPQADiamondDatasetSample
-
-
-class Preprocessed(TypedDict):
-    msg: list[ChatCompletionUserMessageParam]
-    answer: str  # correct answer letter after permutation
-
-
-class Feedback(TypedDict):
-    correct: bool
-    chars: int
 
 
 @sieval_task(
@@ -45,10 +40,10 @@ class Feedback(TypedDict):
 class GPQADiamondZeroShotGenTask(
     Task[
         GPQADiamondDatasetSample,
-        Preprocessed,
+        PromptRecord,
         ModelOutput,
-        str,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -91,33 +86,40 @@ class GPQADiamondZeroShotGenTask(
             "D": shuffled_choices[3],
             "Answer": correct_answer_letter,
         }
-        return {
-            "msg": [
+        return build_prompt_record(
+            [
                 {"role": "user", "content": QUERY_TEMPLATE_MULTICHOICE.format(**data)},
             ],
-            "answer": correct_answer_letter,
-        }
+            reference=correct_answer_letter,
+            extra={"permutation": permutation},
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre["msg"])
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
         match = re.search(
             ANSWER_PATTERN_MULTICHOICE, inf.texts[0]
         )  # n=1, only one choice
-        return match.group(1) if match else ""
+        return build_prediction_record([match.group(1) if match else None])
 
     @override
     async def feedback(self, post, ctx):
-        return True, {
-            "correct": post == ctx.preprocess_result["answer"],
-            "chars": len(post),
-        }
+        reference = ctx.preprocess_result["reference"]
+        prediction = post["rollouts"][0]["prediction"]
+        return True, build_judgement_record(
+            reference,
+            [build_rollout_judgement(0, prediction == reference)],
+            # `chars` measures the extracted letter, not the model's answer, so
+            # it is always 0 or 1 and nothing reads it. Kept to keep this a pure
+            # refactor; drop it once someone confirms no external consumer.
+            extra={"chars": len(prediction or "")},
+        )
 
     @override
     async def report(self, finals, fails):
-        count = sum(1 for ctx in finals if ctx.feedback_result["correct"])
+        count = sum(1 for ctx in finals if ctx.feedback_result["n_correct"])
         score = 100 * count / len(finals) if finals else 0.0
         return {"score": score, "fails": len(fails)}

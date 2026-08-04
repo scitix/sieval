@@ -13,7 +13,11 @@ from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ChatModel, ModelOutput
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.aime_2024 import AIME2024Dataset
 from sieval.datasets.aime_2025 import AIME2025Dataset
 from sieval.datasets.aime_2026 import AIME2026Dataset
@@ -48,6 +52,20 @@ FAMILY = [
     (IMOAnswerBenchZeroShotGenTask, IMOAnswerBenchDataset, "problem"),
 ]
 IDS = [t.__name__ for t, _, _ in FAMILY]
+
+# Members already migrated to the stage-output protocol; the rest still return the
+# legacy list-of-dicts feedback. Delete this set (and `_feedback`'s branch) once the
+# whole family has migrated.
+PROTOCOL_TASKS = {AIME2026ZeroShotGenTask, HMMTFeb2026ZeroShotGenTask}
+
+
+def _feedback(task_cls, k: int):
+    """A `k`-rollout all-correct feedback value in whichever shape *task_cls* reads."""
+    if task_cls in PROTOCOL_TASKS:
+        return build_judgement_record(
+            ANSWER, [build_rollout_judgement(i, True) for i in range(k)]
+        )
+    return [{"correct": True, "answer": ANSWER} for _ in range(k)]
 
 
 class _StubChatModel(ChatModel):
@@ -93,7 +111,7 @@ def test_k_equal_to_n_is_accepted(task_cls, dataset_cls, field):
 async def test_report_key_set_is_identical_when_empty(task_cls, dataset_cls, field, k):
     task = _build(task_cls, dataset_cls, field, k=k, n=k)
     raw = _sample(field)
-    feedback = [{"correct": True, "answer": ANSWER} for _ in range(k)]
+    feedback = _feedback(task_cls, k)
     populated = await task.report(
         [TaskContext(sample_id=0, raw_sample=raw, feedback_result=feedback)], []
     )

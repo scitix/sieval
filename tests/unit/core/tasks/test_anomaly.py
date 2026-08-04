@@ -18,6 +18,7 @@ from sieval.core.tasks.anomaly import (
     detect_empty_infer_gen,
     detect_empty_infer_ppl,
     detect_empty_postprocess,
+    detect_extraction_failure,
     detect_truncated_output,
     get_applied_rules,
     get_rules_by_category,
@@ -26,6 +27,8 @@ from sieval.core.tasks.anomaly import (
     sieval_detection_rule,
 )
 from sieval.core.tasks.context import TaskContext, TaskStageOutput
+from sieval.core.tasks.records import build_prediction_record
+from sieval.core.utils.serialization import dict_to_obj, obj_to_dict
 
 
 @pytest.fixture(autouse=True)
@@ -155,6 +158,73 @@ class TestDetectEmptyPostprocess:
             ctx = _make_final_ctx(postprocess_result=postprocess_result)
             assert detect_empty_postprocess(ctx) == expected, case_name
 
+    def test_defers_on_protocol_records(self):
+        # A PredictionRecord is a non-empty dict whatever it holds, so this rule
+        # must stay silent and let detect_extraction_failure read it properly --
+        # otherwise every protocol task double-reports or reports nothing useful.
+        for values in ([None], ["C"], []):
+            ctx = _make_final_ctx(postprocess_result=build_prediction_record(values))
+            assert detect_empty_postprocess(ctx) == set(), values
+
+    def test_defers_on_a_boxed_protocol_record(self):
+        ctx = _make_final_ctx(
+            postprocess_result=TaskStageOutput(value=build_prediction_record([None]))
+        )
+        assert detect_empty_postprocess(ctx) == set()
+
+
+class TestDetectExtractionFailure:
+    def test_reports_only_the_rollouts_that_failed(self):
+        ctx = _make_final_ctx(
+            postprocess_result=build_prediction_record(["a", None, "c", None])
+        )
+        assert detect_extraction_failure(ctx) == {1, 3}
+
+    def test_silent_when_every_rollout_extracted(self):
+        ctx = _make_final_ctx(postprocess_result=build_prediction_record(["a", "b"]))
+        assert detect_extraction_failure(ctx) == set()
+
+    def test_reports_all_rollouts_when_all_failed(self):
+        ctx = _make_final_ctx(postprocess_result=build_prediction_record([None, None]))
+        assert detect_extraction_failure(ctx) == {0, 1}
+
+    def test_a_record_with_no_rollouts_is_itself_an_anomaly(self):
+        ctx = _make_final_ctx(postprocess_result=build_prediction_record([]))
+        assert detect_extraction_failure(ctx) == {0}
+
+    def test_reads_through_a_stage_output_box(self):
+        ctx = _make_final_ctx(
+            postprocess_result=TaskStageOutput(
+                value=build_prediction_record(["a", None])
+            )
+        )
+        assert detect_extraction_failure(ctx) == {1}
+
+    def test_honours_explicit_rollout_indices_over_position(self):
+        # Indices are materialized in the record, so a filtered or reordered
+        # rollout list must still report the rollout's own index.
+        record = {
+            "rollouts": [
+                {"index": 5, "prediction": None, "extracted": False},
+                {"index": 9, "prediction": "x", "extracted": True},
+            ]
+        }
+        ctx = _make_final_ctx(postprocess_result=record)
+        assert detect_extraction_failure(ctx) == {5}
+
+    @pytest.mark.parametrize("legacy", ["", "C", [], ["C"], None])
+    def test_ignores_legacy_stage_values(self, legacy):
+        # Non-migrated tasks stay the exclusive business of detect_empty_postprocess.
+        ctx = _make_final_ctx(postprocess_result=legacy)
+        assert detect_extraction_failure(ctx) == set()
+
+    def test_survives_a_round_trip_through_disk(self):
+        restored = dict_to_obj(
+            obj_to_dict(build_prediction_record([None, "b"]), True), {}
+        )
+        ctx = _make_final_ctx(postprocess_result=restored)
+        assert detect_extraction_failure(ctx) == {0}
+
 
 class TestDetectionRuleRegistry:
     def test_builtin_registry_and_schema_contents(self):
@@ -163,6 +233,7 @@ class TestDetectionRuleRegistry:
         assert "empty_infer_ppl" in rules
         assert "truncated_output" in rules
         assert "empty_postprocess" in rules
+        assert "extraction_failure" in rules
 
         schema = get_rules_schema()
         assert schema["version"] == "1.0"
@@ -171,6 +242,7 @@ class TestDetectionRuleRegistry:
         assert "empty_infer_ppl" in rule_names
         assert "truncated_output" in rule_names
         assert "empty_postprocess" in rule_names
+        assert "extraction_failure" in rule_names
 
         cats = get_rules_by_category()
         assert "output_quality" in cats
