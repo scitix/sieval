@@ -13,37 +13,31 @@ AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 import os
 import time
 from collections.abc import Mapping
-from typing import Any, NotRequired, TypedDict, override
+from typing import Any, override
 
 import httpx
 from loguru import logger
 
 from sieval.community.mbpp import list_fewshot_samples
 from sieval.core.models import ModelOutput
-from sieval.core.tasks import EvalMode, ReferenceImpl, Task, sieval_task
+from sieval.core.tasks import (
+    EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
+    ReferenceImpl,
+    RolloutJudgement,
+    Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
+    sieval_task,
+)
 from sieval.datasets import MBPPDatasetSample
 
 DEFAULT_NUM_SHOTS = 3
 STOP_SEQUENCES = ("[DONE]",)
-
-
-class ResourceMetrics(TypedDict):
-    avg_cpu_percent: float
-    peak_cpu_percent: float
-    avg_memory_mb: float
-    peak_memory_mb: float
-    # Test-case progress, absent when the evaluator predates reporting it. A
-    # direct run is one all-or-nothing case, so these are 1/1 or 1/0 and carry
-    # no more than `correct` does; they exist so the field reads the same across
-    # every source.
-    n_cases: NotRequired[int | None]
-    n_passed: NotRequired[int | None]
-
-
-class Feedback(TypedDict):
-    correct: bool
-    msg: str
-    metrics: ResourceMetrics | None
 
 
 @sieval_task(
@@ -73,10 +67,10 @@ class Feedback(TypedDict):
 class MBPPFewShotBaseGenTask(
     Task[
         MBPPDatasetSample,
-        str,
+        PromptRecord,
         ModelOutput,
-        list[str],
-        list[Feedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -168,31 +162,42 @@ class MBPPFewShotBaseGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return f"{self._get_few_shot_prefix()}{self._doc_to_text(raw)}"
+        return build_prompt_record(
+            f"{self._get_few_shot_prefix()}{self._doc_to_text(raw)}",
+            # No `reference`: the ground truth is the assert-statement suite, not
+            # a value -- described at judgement time instead.
+        )
 
     @override
     async def infer(self, pre, ctx):
         # Forward the sample count and the [DONE] stop token; decoding params
         # come from the model config.
-        return await self.model.agenerate(pre, n=self._n, stop=list(self._stop))
+        return await self.model.agenerate(
+            pre["prompt"], n=self._n, stop=list(self._stop)
+        )
 
     @override
     async def postprocess(self, inf, ctx):
-        return [text.split("[DONE]", maxsplit=1)[0] for text in inf.texts]
+        # A blank completion normalizes to None so `extracted` stays a real signal.
+        return build_prediction_record(
+            [text.split("[DONE]", maxsplit=1)[0] or None for text in inf.texts]
+        )
 
     @override
     async def feedback(self, post, ctx):
-        feedbacks = [
-            {"correct": False, "msg": "Not evaluated", "metrics": None}
-            for _ in range(len(post))
-        ]
+        rollouts: list[RolloutJudgement] = []
 
         # Score against the same three tests shown in the prompt, as lm-eval
         # does (candidate + test_list[0..2]).
         tests = self._format_tests(ctx.raw_sample)
 
-        for idx, pred in enumerate(post):
+        for rollout in post["rollouts"]:
+            idx = rollout["index"]
             try:
+                # An unextractable completion is None here but "" on the wire, so
+                # the evaluator still runs the tests alone and reports a real
+                # verdict -- the pre-protocol behaviour, not a skipped rollout.
+                pred = rollout["prediction"] or ""
                 check_program = "\n".join(p for p in (pred, tests) if p).strip()
                 resp = await self._http_client.post(
                     self._code_eval_api,
@@ -206,11 +211,25 @@ class MBPPFewShotBaseGenTask(
                 )
                 resp.raise_for_status()
                 res = resp.json()
-                feedbacks[idx] = {
-                    "correct": res["status"],
-                    "msg": res["msg"],
-                    "metrics": res["data"],
-                }
+                data = res["data"] or {}
+                rollouts.append(
+                    build_rollout_judgement(
+                        rollout["index"],
+                        res["status"],
+                        extra={
+                            "msg": res["msg"],
+                            # Absent against an evaluator that predates test-case
+                            # progress reporting -- unknown, not zero.
+                            "n_cases": data.get("n_cases"),
+                            "n_passed": data.get("n_passed"),
+                            "resources": {
+                                key: value
+                                for key, value in data.items()
+                                if key not in ("n_cases", "n_passed")
+                            },
+                        },
+                    )
+                )
             except Exception as e:
                 logger.warning(
                     "Evaluation error for sample {}: [{}] {}",
@@ -220,7 +239,13 @@ class MBPPFewShotBaseGenTask(
                 )
                 raise e
 
-        return True, feedbacks
+        return True, build_judgement_record(
+            None,  # the reference is the test suite, not a value
+            rollouts,
+            # The reference is a procedure, so `extra` describes it: these are the
+            # same three asserts the prompt showed, which is what was run.
+            extra={"tests": tests},
+        )
 
     @override
     async def report(self, finals, fails) -> dict[str, float]:
@@ -232,13 +257,17 @@ class MBPPFewShotBaseGenTask(
         pass_at_k_total = 0.0
         timeouts = 0
         for f in finals:
-            feedbacks = f.feedback_result
-            n_samples = len(feedbacks)
-            correct_num = sum(1 for fb in feedbacks if fb["correct"])
+            judgement = f.feedback_result
+            n_samples = judgement["n_rollouts"]
+            correct_num = judgement["n_correct"]
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
                 pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
-            timeouts += sum(1 for fb in feedbacks if "timeout" in fb["msg"].lower())
+            timeouts += sum(
+                1
+                for r in judgement["rollouts"]
+                if "timeout" in r["extra"]["msg"].lower()
+            )
 
         pass_at_1 = pass_at_1_total * 100 / total
         metrics = {

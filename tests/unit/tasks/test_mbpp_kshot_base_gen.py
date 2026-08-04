@@ -4,9 +4,24 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.mbpp import MBPPDataset, MBPPDatasetSample
 from sieval.tasks.mbpp_kshot_base_gen import MBPPFewShotBaseGenTask
+
+
+def _judgement(*rollouts: tuple[bool, str]):
+    """A JudgementRecord from (correct, msg) pairs -- the shape report() reads."""
+    return build_judgement_record(
+        None,
+        [
+            build_rollout_judgement(i, correct, extra={"msg": msg})
+            for i, (correct, msg) in enumerate(rollouts)
+        ],
+    )
 
 
 class _CapturingGenModel(GenModel):
@@ -60,7 +75,7 @@ def _dataset() -> MBPPDataset:
 async def test_preprocess_uses_yaml_configured_n_shot():
     task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), n_shot=2)
 
-    prompt = await task.preprocess(_sample(), TaskContext(0, _sample()))
+    prompt = (await task.preprocess(_sample(), TaskContext(0, _sample())))["prompt"]
     await task.shutdown()
 
     assert prompt.count("[DONE]") == 2
@@ -73,7 +88,7 @@ async def test_preprocess_uses_yaml_configured_n_shot():
 async def test_n_shot_zero_is_allowed():
     task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), n_shot=0)
 
-    prompt = await task.preprocess(_sample(), TaskContext(0, _sample()))
+    prompt = (await task.preprocess(_sample(), TaskContext(0, _sample())))["prompt"]
     await task.shutdown()
 
     assert "[DONE]" not in prompt
@@ -95,7 +110,7 @@ async def test_infer_forwards_n_and_stop_but_not_decoding_params():
         n=3,
     )
 
-    result = await task.infer("prompt", TaskContext(0, _sample()))
+    result = await task.infer({"prompt": "prompt"}, TaskContext(0, _sample()))
     await task.shutdown()
 
     assert result.texts == ["def f():\n    pass\n[DONE]"]
@@ -118,8 +133,8 @@ def _final(feedbacks: list[dict]) -> TaskContext:
 async def test_report_pass_at_1_counts_fails_in_denominator():
     task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), n_shot=0)
     finals = [
-        _final([{"correct": True, "msg": "ok", "metrics": None}]),
-        _final([{"correct": False, "msg": "assertion failed", "metrics": None}]),
+        _final(_judgement((True, "ok"))),
+        _final(_judgement((False, "assertion failed"))),
     ]
     # One failed sample (e.g. eval-server error) must lower the score, not be
     # dropped from the denominator.
@@ -140,12 +155,7 @@ async def test_report_pass_at_k_and_timeouts():
     task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), n_shot=0, k=2, n=2)
     finals = [
         # 1 of 2 samples correct → pass@1 = 0.5, pass@2 = 1.0
-        _final(
-            [
-                {"correct": True, "msg": "ok", "metrics": None},
-                {"correct": False, "msg": "Timeout exceeded", "metrics": None},
-            ]
-        ),
+        _final(_judgement((True, "ok"), (False, "Timeout exceeded"))),
     ]
 
     report = await task.report(finals, [])
@@ -179,4 +189,4 @@ async def test_postprocess_strips_done_token():
     post = await task.postprocess(output, TaskContext(0, _sample()))
     await task.shutdown()
 
-    assert post == ["def one():\n    return 1\n"]
+    assert post["rollouts"][0]["prediction"] == "def one():\n    return 1\n"

@@ -21,7 +21,7 @@ AI-Generated Code - GPT-5.5-Codex (OpenAI)
 
 import os
 import time
-from typing import NotRequired, TypedDict, override
+from typing import override
 
 import httpx
 from loguru import logger
@@ -29,31 +29,19 @@ from loguru import logger
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
+    RolloutJudgement,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import HumanEvalDatasetSample
-
-
-class ResourceMetrics(TypedDict):
-    avg_cpu_percent: float
-    peak_cpu_percent: float
-    avg_memory_mb: float
-    peak_memory_mb: float
-    # Test-case progress, absent when the evaluator predates reporting it. A
-    # direct run is one all-or-nothing case, so these are 1/1 or 1/0 and carry
-    # no more than `correct` does; they exist so the field reads the same across
-    # every source.
-    n_cases: NotRequired[int | None]
-    n_passed: NotRequired[int | None]
-
-
-class Feedback(TypedDict):
-    correct: bool
-    msg: str
-    metrics: ResourceMetrics | None
-
 
 STOP_SEQUENCES = ("\nclass", "\ndef", "\n#", "\nif", "\nprint")
 
@@ -87,10 +75,10 @@ STOP_SEQUENCES = ("\nclass", "\ndef", "\n#", "\nif", "\nprint")
 class HumanEvalZeroShotBaseGenTask(
     Task[
         HumanEvalDatasetSample,
-        str,
+        PromptRecord,
         ModelOutput,
-        list[str],
-        list[Feedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -119,7 +107,11 @@ class HumanEvalZeroShotBaseGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return raw["prompt"]
+        return build_prompt_record(
+            raw["prompt"],
+            # No `reference`: the ground truth is a test suite, not a value --
+            # described at judgement time instead.
+        )
 
     @override
     async def infer(self, pre, ctx):
@@ -128,26 +120,30 @@ class HumanEvalZeroShotBaseGenTask(
         # the prompt-coupled stop sequences and the pass@k sample count live
         # here.
         return await self.model.agenerate(
-            pre,
+            pre["prompt"],
             n=self._n,
             stop=list(self._stop),
         )
 
     @override
     async def postprocess(self, inf, ctx):
-        return list(inf.texts)
+        # A blank completion normalizes to None so `extracted` stays a real signal.
+        return build_prediction_record(
+            [text if text.strip() else None for text in inf.texts]
+        )
 
     @override
     async def feedback(self, post, ctx):
-        feedbacks = [
-            {"correct": False, "msg": "Not evaluated", "metrics": None}
-            for _ in range(len(post))
-        ]
+        rollouts: list[RolloutJudgement] = []
 
-        for idx, pred in enumerate(post):
+        for rollout in post["rollouts"]:
+            idx = rollout["index"]
+            # An unextractable completion is None here but "" on the wire, so the
+            # evaluator still runs it and reports a compile error -- the
+            # pre-protocol behaviour, and a real verdict rather than a skip.
             check_program = (
                 ctx.raw_sample["prompt"]
-                + pred
+                + (rollout["prediction"] or "")
                 + "\n"
                 + ctx.raw_sample["test"]
                 + "\n"
@@ -166,11 +162,25 @@ class HumanEvalZeroShotBaseGenTask(
                 )
                 resp.raise_for_status()
                 res = resp.json()
-                feedbacks[idx] = {
-                    "correct": res["status"],
-                    "msg": res["msg"],
-                    "metrics": res["data"],
-                }
+                data = res["data"] or {}
+                rollouts.append(
+                    build_rollout_judgement(
+                        rollout["index"],
+                        res["status"],
+                        extra={
+                            "msg": res["msg"],
+                            # Absent against an evaluator that predates test-case
+                            # progress reporting -- unknown, not zero.
+                            "n_cases": data.get("n_cases"),
+                            "n_passed": data.get("n_passed"),
+                            "resources": {
+                                key: value
+                                for key, value in data.items()
+                                if key not in ("n_cases", "n_passed")
+                            },
+                        },
+                    )
+                )
             except Exception as e:
                 logger.warning(
                     "Evaluation error for sample {}: [{}] {}",
@@ -180,7 +190,11 @@ class HumanEvalZeroShotBaseGenTask(
                 )
                 raise e
 
-        return True, feedbacks
+        return True, build_judgement_record(
+            None,  # the reference is the test suite, not a value
+            rollouts,
+            extra={"entry_point": ctx.raw_sample["entry_point"]},
+        )
 
     @override
     async def report(self, finals, fails):
@@ -192,13 +206,17 @@ class HumanEvalZeroShotBaseGenTask(
         pass_at_k_total = 0.0
         timeouts = 0
         for f in finals:
-            feedbacks = f.feedback_result
-            n_samples = len(feedbacks)
-            correct_num = sum(1 for f in feedbacks if f["correct"])
+            judgement = f.feedback_result
+            n_samples = judgement["n_rollouts"]
+            correct_num = judgement["n_correct"]
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
                 pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
-            timeouts += sum(1 for fb in feedbacks if "timeout" in fb["msg"].lower())
+            timeouts += sum(
+                1
+                for r in judgement["rollouts"]
+                if "timeout" in r["extra"]["msg"].lower()
+            )
 
         pass_at_1 = pass_at_1_total * 100 / total
         metrics = {

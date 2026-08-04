@@ -14,7 +14,11 @@ from sieval.community.livecodebench.prompts.code_generation import (
 )
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.livecodebench_code_generation import LiveCodeBenchDataset
 from sieval.tasks.livecodebench_code_generation_kshot_base_gen import (
     N_SHOT,
@@ -23,6 +27,17 @@ from sieval.tasks.livecodebench_code_generation_kshot_base_gen import (
 )
 
 _STARTER = "class Solution:\n    def solve(self) -> int:\n        "
+
+
+def _judgement(*rollouts: tuple[bool, str]):
+    """A JudgementRecord from (correct, msg) pairs -- the shape report() reads."""
+    return build_judgement_record(
+        None,
+        [
+            build_rollout_judgement(i, correct, extra={"msg": msg})
+            for i, (correct, msg) in enumerate(rollouts)
+        ],
+    )
 
 
 class _CapturingGenModel(GenModel):
@@ -127,11 +142,14 @@ async def test_preprocess_returns_base_prompt_string():
     task, _ = _task(n_shot=2)
     try:
         await task.setup()  # framework contract: setup() runs before preprocess()
-        prompt = await task.preprocess(
+        pre = await task.preprocess(
             _raw(starter_code=_STARTER),
             TaskContext(sample_id=0, raw_sample=_raw(starter_code=_STARTER)),
         )
+        prompt = pre["prompt"]
         assert isinstance(prompt, str)
+        # The ground truth is a test suite, so there is no `reference` value.
+        assert "reference" not in pre
         assert prompt.count("### Question") == 3  # 2 shots + target
         assert "### Starter Code" in prompt
     finally:
@@ -148,7 +166,8 @@ async def test_setup_caches_fewshot_prefix_and_preprocess_reuses_it():
         cached_true = task._fewshot_prefix[True]
 
         raw = _raw(starter_code=_STARTER)
-        out = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
+        pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
+        out = pre["prompt"]
         # preprocess output is the cached prefix + the per-sample target block
         assert out.startswith(cached_true)
         assert out == get_base_model_question_template_answer(raw, 2)
@@ -164,7 +183,9 @@ async def test_infer_forwards_only_stop_and_n_not_decoding_params():
     # infer_args, never from the task layer (would silently override model args).
     task, model = _task(n=4)
     try:
-        await task.infer("prompt", TaskContext(sample_id=0, raw_sample=_raw()))
+        await task.infer(
+            {"prompt": "prompt"}, TaskContext(sample_id=0, raw_sample=_raw())
+        )
     finally:
         await task.shutdown()
 
@@ -188,7 +209,10 @@ async def test_postprocess_strips_each_choice_generic_base():
     finally:
         await task.shutdown()
 
-    assert post == ["print(1)", "class Solution:\n    pass"]
+    assert [r["prediction"] for r in post["rollouts"]] == [
+        "print(1)",
+        "class Solution:\n    pass",
+    ]
 
 
 @pytest.mark.anyio
@@ -202,10 +226,7 @@ async def test_report_pass_at_1_and_pass_at_k():
     task, _ = _task(k=2)
     try:
         # one sample, two generations, one correct -> pass@1 = 0.5, pass@2 = 1.0
-        feedback = [
-            {"correct": True, "msg": "ok", "metrics": None},
-            {"correct": False, "msg": "wrong answer", "metrics": None},
-        ]
+        feedback = _judgement((True, "ok"), (False, "wrong answer"))
         report = await task.report(
             [TaskContext(sample_id=0, raw_sample=_raw(), feedback_result=feedback)],
             [],

@@ -9,12 +9,27 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.human_eval import HumanEvalDataset, HumanEvalDatasetSample
 from sieval.tasks.human_eval_0shot_base_gen import (
     STOP_SEQUENCES,
     HumanEvalZeroShotBaseGenTask,
 )
+
+
+def _judgement(*rollouts: tuple[bool, str]):
+    """A JudgementRecord from (correct, msg) pairs -- the shape report() reads."""
+    return build_judgement_record(
+        None,
+        [
+            build_rollout_judgement(i, correct, extra={"msg": msg})
+            for i, (correct, msg) in enumerate(rollouts)
+        ],
+    )
 
 
 class _CapturingGenModel(GenModel):
@@ -74,7 +89,7 @@ async def test_preprocess_and_infer_use_base_completion_prompt():
 
         await task.infer(pre, TaskContext(sample_id=0, raw_sample=raw))
 
-        assert pre == raw["prompt"]
+        assert pre["prompt"] == raw["prompt"]
         assert model.last_prompt == raw["prompt"]
         assert model.last_kwargs["n"] == 2
         assert model.last_kwargs["stop"] == ["\nclass"]
@@ -103,7 +118,7 @@ async def test_postprocess_keeps_raw_completions_like_lm_eval_harness():
             TaskContext(sample_id=0, raw_sample=_sample(), infer_result=inferred),
         )
 
-        assert post == inferred.texts
+        assert [r["prediction"] for r in post["rollouts"]] == list(inferred.texts)
     finally:
         await task.shutdown()
 
@@ -117,18 +132,12 @@ async def test_report_counts_finals_and_fails_like_chat_human_eval_task():
                 TaskContext(
                     sample_id=0,
                     raw_sample=_sample(),
-                    feedback_result=[
-                        {"correct": True, "msg": "passed", "metrics": None},
-                        {"correct": False, "msg": "timeout", "metrics": None},
-                    ],
+                    feedback_result=_judgement((True, "passed"), (False, "timeout")),
                 ),
                 TaskContext(
                     sample_id=1,
                     raw_sample=_sample(),
-                    feedback_result=[
-                        {"correct": False, "msg": "failed", "metrics": None},
-                        {"correct": False, "msg": "failed", "metrics": None},
-                    ],
+                    feedback_result=_judgement((False, "failed"), (False, "failed")),
                 ),
             ],
             [TaskContext(sample_id=2, raw_sample=_sample())],

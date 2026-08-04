@@ -48,7 +48,7 @@ import os
 import pickle
 import time
 import zlib
-from typing import NotRequired, TypedDict, override
+from typing import override
 
 import httpx
 from loguru import logger
@@ -61,33 +61,22 @@ from sieval.community.livecodebench.utils.extraction_utils import extract_code
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
+    RolloutJudgement,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import LiveCodeBenchDatasetSample
 
 N_SHOT = 3
 STOP_SEQUENCES = ("###",)
-
-
-class ResourceMetrics(TypedDict):
-    avg_cpu_percent: float
-    peak_cpu_percent: float
-    avg_memory_mb: float
-    peak_memory_mb: float
-    # Test-case progress, absent when the evaluator predates reporting it. A
-    # direct run is one all-or-nothing case, so these are 1/1 or 1/0 and carry
-    # no more than `correct` does; they exist so the field reads the same across
-    # every source.
-    n_cases: NotRequired[int | None]
-    n_passed: NotRequired[int | None]
-
-
-class Feedback(TypedDict):
-    correct: bool
-    msg: str
-    metrics: ResourceMetrics | None
 
 
 @sieval_task(
@@ -119,10 +108,10 @@ class Feedback(TypedDict):
 class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
     Task[
         LiveCodeBenchDatasetSample,
-        str,
+        PromptRecord,
         ModelOutput,
-        list[str],
-        list[Feedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -169,8 +158,10 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         # Prefixes are pre-filled by setup() (both keys), so index directly —
         # no per-sample rebuild and no mutation of shared state under concurrency.
         prefix = self._fewshot_prefix[bool(raw["starter_code"])]
-        return prefix + get_base_model_target_block(
-            raw["question_content"], raw["starter_code"]
+        return build_prompt_record(
+            prefix
+            + get_base_model_target_block(raw["question_content"], raw["starter_code"]),
+            # No `reference`: the ground truth is a test suite, not a value.
         )
 
     @override
@@ -181,12 +172,17 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         # prompt-coupled `stop`. The branch keeps `stop` out of the kwargs when
         # unset so it can't clobber the model's configured stop via the merge.
         if self._stop:
-            return await self.model.agenerate(pre, n=self._n, stop=list(self._stop))
-        return await self.model.agenerate(pre, n=self._n)
+            return await self.model.agenerate(
+                pre["prompt"], n=self._n, stop=list(self._stop)
+            )
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        return [extract_code(choice, "GenericBase") for choice in inf.texts]
+        # Empty extraction normalizes to None so `extracted` reports the miss.
+        return build_prediction_record(
+            [extract_code(choice, "GenericBase") or None for choice in inf.texts]
+        )
 
     @override
     async def feedback(self, post, ctx):
@@ -204,24 +200,25 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
             )
         metadata = json.loads(ctx.raw_sample["metadata"])
 
-        feedbacks = [
-            {"correct": False, "msg": "Not evaluated", "metrics": None}
-            for _ in range(len(post))
-        ]
+        rollouts: list[RolloutJudgement] = []
 
         cases = public_test_cases + private_test_cases
         inputs = [t["input"] for t in cases]
         outputs = [t["output"] for t in cases]
         fn_name = metadata.get("func_name", None)
 
-        for idx, pred in enumerate(post):
+        for rollout in post["rollouts"]:
+            idx = rollout["index"]
             try:
                 resp = await self._http_client.post(
                     self._code_eval_api,
                     json={
                         "uuid": f"{idx}-{time.perf_counter_ns()}",
                         "source": "livecodebench",
-                        "code": pred,
+                        # An unextractable answer is None here but "" on the wire,
+                        # so the evaluator still runs it and reports a compile
+                        # error -- a real verdict rather than a skipped rollout.
+                        "code": rollout["prediction"] or "",
                         "test": {
                             "inputs": inputs,
                             "outputs": outputs,
@@ -237,12 +234,25 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
                 )
                 resp.raise_for_status()
                 res = resp.json()
-                # should raise error if no `status` & `msg` field
-                feedbacks[idx] = {
-                    "correct": res["status"],
-                    "msg": res["msg"],
-                    "metrics": res["data"],
-                }
+                data = res["data"] or {}
+                rollouts.append(
+                    build_rollout_judgement(
+                        rollout["index"],
+                        res["status"],
+                        extra={
+                            "msg": res["msg"],
+                            # Absent against an evaluator that predates test-case
+                            # progress reporting -- unknown, not zero.
+                            "n_cases": data.get("n_cases"),
+                            "n_passed": data.get("n_passed"),
+                            "resources": {
+                                key: value
+                                for key, value in data.items()
+                                if key not in ("n_cases", "n_passed")
+                            },
+                        },
+                    )
+                )
             except Exception as e:
                 logger.warning(
                     "Evaluation error for sample {}: [{}] {}",
@@ -252,7 +262,17 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
                 )
                 raise e
 
-        return True, feedbacks
+        return True, build_judgement_record(
+            None,  # the reference is the test suite, not a value
+            rollouts,
+            extra={
+                "n_test_cases": len(cases),
+                "n_public_cases": len(public_test_cases),
+                "n_private_cases": len(private_test_cases),
+                "io_mode": "fn_call" if fn_name else "stdio",
+                "func_name": fn_name,
+            },
+        )
 
     @override
     async def report(self, finals, fails):
@@ -264,13 +284,17 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         pass_at_k_total = 0.0
         timeouts = 0
         for f in finals:
-            feedbacks = f.feedback_result
-            n_samples = len(feedbacks)
-            correct_num = sum(1 for f in feedbacks if f["correct"])
+            judgement = f.feedback_result
+            n_samples = judgement["n_rollouts"]
+            correct_num = judgement["n_correct"]
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
                 pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
-            timeouts += sum(1 for fb in feedbacks if "timeout" in fb["msg"].lower())
+            timeouts += sum(
+                1
+                for r in judgement["rollouts"]
+                if "timeout" in r["extra"]["msg"].lower()
+            )
 
         pass_at_1 = pass_at_1_total * 100 / total
         metrics = {
