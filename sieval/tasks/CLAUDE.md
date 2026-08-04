@@ -49,7 +49,7 @@ Vocabulary — these denote **different layers**, keep them distinct:
 - **grade** — an LLM autorater's categorical output (e.g. CORRECT / INCORRECT / NOT_ATTEMPTED). A judgement *contains* a grade for LLM tasks — grade sits **below** judgement, not beside it.
 - **grader** — the LLM actor (the `grader` task arg / model). Not every judgement has one.
 - **judge** — HLE only, upstream's synonym for grader/grade with its own `parse_judge` contract; do not introduce it in new tasks.
-- **extra** — mechanism-specific detail (a grader's full `ModelOutput`, a code runner's failure category, per-constraint results). Named for the mechanism, not for a "grader".
+- **extra** — mechanism-specific detail (a grader's full `ModelOutput`, a code runner's failure message, per-constraint results). Named for the mechanism, not for a "grader". Store what the mechanism actually reported; do not derive a taxonomy from another service's free text at write time — a stored classification looks authoritative and decays silently when the upstream wording drifts.
 
 Conventions:
 

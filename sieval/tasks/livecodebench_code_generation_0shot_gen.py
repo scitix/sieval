@@ -31,31 +31,6 @@ from sieval.core.tasks import (
 )
 from sieval.datasets import LiveCodeBenchDatasetSample
 
-# Failure taxonomy for the evaluator's free-text `msg`, so per-rollout outcomes can
-# be grouped without substring-matching at every analysis site. Order matters: the
-# first matching probe wins, and the compile/definition probes must precede the
-# generic runtime one because their messages also contain bracketed exception names.
-_FAILURE_PROBES: tuple[tuple[str, str], ...] = (
-    ("compile error", "compile_error"),
-    ("no function defined", "no_function"),
-    ("number of inputs and outputs mismatch", "harness_error"),
-    ("no result from subprocess", "harness_error"),
-    ("timeout", "timeout"),
-    ("!= expect", "wrong_answer"),
-    ("[", "runtime_error"),
-)
-
-
-def _classify_failure(msg: str) -> str | None:
-    """Bucket an evaluator failure message, or ``None`` when the run passed."""
-    if not msg:
-        return None
-    lowered = msg.lower()
-    for probe, category in _FAILURE_PROBES:
-        if probe in lowered:
-            return category
-    return "unknown"
-
 
 @sieval_task(
     name="livecodebench_code_generation_0shot_gen",
@@ -199,13 +174,21 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
             # n_cases / n_passed need an evaluator that reports test-case progress
             # (vendor/code-evaluator/VENDORED.md); against an older one they are
             # simply absent, which reads as unknown rather than as zero.
+            #
+            # `msg` is stored raw and deliberately not bucketed into a failure
+            # taxonomy here: it is free text from a separately deployed service
+            # whose wording has already drifted once, so any client-side
+            # classifier decays silently -- and an unparseable message and a
+            # genuinely novel failure would be indistinguishable. The evaluator
+            # knows structurally why it failed; if a category is wanted, it
+            # belongs on the response next to n_cases/n_passed, not in a
+            # substring parser here.
             rollouts.append(
                 build_rollout_judgement(
                     idx,
                     correct,
                     extra={
                         "msg": msg,
-                        "failure": _classify_failure(msg),
                         "n_cases": data.get("n_cases"),
                         "n_passed": data.get("n_passed"),
                         "resources": {

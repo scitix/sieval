@@ -106,7 +106,7 @@ class RolloutJudgement(TypedDict):
         score: Partial credit in ``[0, 1]``, when the verdict has a notion of
             one. Omitted by pass/fail verdicts -- absent is not zero.
         extra: Verdict-mechanism-specific detail -- an LLM grader's reply, a
-            code runner's failure category and resource metrics, a constraint
+            code runner's failure message and resource metrics, a constraint
             checker's per-constraint results. Named for the mechanism, not for a
             grader, since a string-compare or math-verify verdict has no grader.
     """

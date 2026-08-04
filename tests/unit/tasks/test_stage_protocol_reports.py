@@ -189,7 +189,7 @@ class TestLiveCodeBenchReport:
         return build_rollout_judgement(
             index,
             correct,
-            extra={"msg": msg, "failure": None, "n_cases": 3, "n_passed": 3},
+            extra={"msg": msg, "n_cases": 3, "n_passed": 3},
         )
 
     async def test_pass_at_1_and_timeout_counting(self):
