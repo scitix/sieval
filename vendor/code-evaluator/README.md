@@ -1,21 +1,25 @@
 # Code Evaluator
 
-## 项目简介
+## Overview
 
-多语言代码执行与测试服务。支持对模型生成代码进行直接运行或依据测试用例评估。
+A multi-language code execution and testing service. It evaluates model-generated
+code either by running it directly or by checking it against test cases.
 
-## 支持数据集
+## Supported datasets
 
-- HumanEval（多语言：python / javascript / typescript）
-- LiveCodeBench（仅 python）
-- SciCode（仅 python）
-说明：HumanEval / SciCode 直接运行提交代码；LiveCodeBench 需函数名与输入输出用例比对。SciCode 的程序自带内联测试用例，运行无异常即判通过。
+- HumanEval (multi-language: python / javascript / typescript)
+- LiveCodeBench (python only)
+- SciCode (python only)
 
-## 环境准备
+HumanEval and SciCode run the submitted code directly; LiveCodeBench needs a
+function name and compares inputs against expected outputs. A SciCode program
+carries its own inlined test cases, so a run that raises nothing counts as a pass.
 
-### Python 环境
+## Setup
 
-仅需 HumanEval：
+### Python environment
+
+HumanEval only:
 
 ```sh
 python3.10 -m venv venv
@@ -23,7 +27,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-需要同时支持 LiveCodeBench：
+With LiveCodeBench support:
 
 ```sh
 python3.10 -m venv venv
@@ -32,7 +36,7 @@ pip install -r requirements.txt
 pip install -r requirements/livecodebench.txt
 ```
 
-需要支持 SciCode（科学计算栈，要求 Python ≥ 3.11）：
+With SciCode support (scientific stack, requires Python >= 3.11):
 
 ```sh
 python3.11 -m venv venv
@@ -43,7 +47,7 @@ pip install -r requirements/scicode.txt
 
 ### Node.js (JS / TS)
 
-需要 Node.js (推荐版本 >= 20)：
+Requires Node.js (>= 20 recommended):
 
 ```sh
 npm install -g ts-node
@@ -58,7 +62,7 @@ docker build -f docker/Dockerfile.typescript -t code-evaluator-ts .
 docker build -f docker/Dockerfile.scicode -t code-evaluator-scicode .   # Python 3.11
 ```
 
-## 启动服务
+## Running the service
 
 ```sh
 fastapi run app/server.py --port 11451
@@ -66,27 +70,28 @@ fastapi run app/server.py --port 11451
 
 ## API
 
-### 健康检查
+### Health check
 
-GET /health → `{"status": true, "msg": "healthy"}`
+GET /health -> `{"status": true, "msg": "healthy"}`
 
-### 评估接口
+### Evaluation endpoint
 
 POST /evaluations
-字段：
 
-- uuid
-- source: "human-eval" | "mbpp" | "livecodebench" | "scicode"
-- lang: python | javascript | typescript
-- code: 代码字符串
-- test: LiveCodeBench 专用测试描述（含 fn_name / inputs / outputs）
-- timeout: float (可选，单位秒，默认值见下文)
-- memory_limit: int (可选，单位 MB，默认 1024)
+Fields:
 
-示例 HumanEval (Python) - 自定义超时与内存：
+- `uuid`
+- `source`: `"human-eval"` | `"mbpp"` | `"livecodebench"` | `"scicode"`
+- `lang`: `python` | `javascript` | `typescript`
+- `code`: the code, as a string
+- `test`: LiveCodeBench-specific test description (`fn_name` / `inputs` / `outputs`)
+- `timeout`: float (optional, seconds; defaults below)
+- `memory_limit`: int (optional, MB; default 1024)
+
+HumanEval (Python) example, with a custom timeout and memory limit:
 
 ```json
-{ 
+{
   "uuid":"h1",
   "source":"human-eval",
   "lang":"python",
@@ -96,7 +101,7 @@ POST /evaluations
 }
 ```
 
-示例 LiveCodeBench：
+LiveCodeBench example:
 
 ```json
 {
@@ -108,7 +113,7 @@ POST /evaluations
 }
 ```
 
-返回：
+Response:
 
 ```json
 {
@@ -125,15 +130,29 @@ POST /evaluations
 }
 ```
 
-失败时 msg 包含错误原因。
+On failure, `msg` carries the reason.
 
-`n_cases` / `n_passed` 只对带测试用例的评估有意义，直接运行（human-eval / mbpp /
-scicode，或 livecodebench 不带 `test`）时为 `null`。用例按顺序执行且首个失败即停，
-所以失败提交的 `n_passed` 就是失败用例的下标——真实计数，不额外付执行成本。注意它
-**不是**全量通过率：首个用例失败、其余本可通过的提交同样记 0。`n_passed` 为 `null`
-表示计数未知（子进程超时被杀），不表示 0。
+### Case counts
 
-## 调用示例
+Every evaluation reports `n_cases` / `n_passed`, so a caller can compute a pass
+rate without branching on `source`. What counts as a "case" depends on the mode:
+
+- **Test-case-driven** (`livecodebench` with `test`): one case per input. Cases run
+  in order and stop at the first failure, so a failing submission's `n_passed` is
+  the failing case's index — a real count, at no extra execution cost. It is
+  **not** a full pass rate: a submission that fails case 0 and would pass all the
+  rest still reports 0.
+- **Direct run** (`human-eval` / `mbpp` / `scicode`, or `livecodebench` without
+  `test`): the submitted program is a single all-or-nothing case, so `n_cases` is
+  1 and `n_passed` is 1 or 0. That is redundant with `status` by construction; it
+  is reported anyway so the field is always readable.
+
+`n_passed: null` means the count is genuinely unknown — the subprocess was killed
+on timeout, so it never reported one — and never means zero. Both fields are
+`null` only when nothing ran at all (unsupported language or source), where `data`
+itself is `null`.
+
+## Example call
 
 ```sh
 curl -X POST http://localhost:11451/evaluations \
@@ -141,30 +160,30 @@ curl -X POST http://localhost:11451/evaluations \
   -d '{"uuid":"demo","source":"human-eval","lang":"python","code":"print(42)","memory_limit":1024}'
 ```
 
-## 资源限制与默认值
+## Resource limits and defaults
 
-### 超时 (Timeout)
+### Timeout
 
-若请求中未指定 `timeout`，将使用以下默认值：
+When a request omits `timeout`, these defaults apply:
 
-- python/js: 3s
+- python / js: 3s
 - typescript: 5s
-- livecodebench: 6s + 2s * 用例数
+- livecodebench: 6s + 2s * number of cases
 
-### 内存 (Memory Limit)
+### Memory limit
 
-若请求中未指定 memory_limit，默认值为 1024 MB。
+When a request omits `memory_limit`, the default is 1024 MB.
 
-Python: 使用 `resource.setrlimit` 限制进程地址空间。
-Node.js (JS/TS): 使用 `--max-old-space-size` 限制 V8 堆内存。
+- Python: limits the process address space via `resource.setrlimit`.
+- Node.js (JS/TS): limits the V8 heap via `--max-old-space-size`.
 
-## 目录
+## Layout
 
-- app/: 服务与执行逻辑
-- docker/: 各语言镜像文件
-- requirements/: 附加依赖（`livecodebench.txt` / `scicode.txt`）
-- README.md: 文档
+- `app/`: service and execution logic
+- `docker/`: per-language image files
+- `requirements/`: extra dependencies (`livecodebench.txt` / `scicode.txt`)
+- `README.md`: this document
 
-## 备注
+## Note
 
-未加强隔离，勿运行不可信高风险代码。
+Isolation is not hardened. Do not run untrusted or high-risk code.

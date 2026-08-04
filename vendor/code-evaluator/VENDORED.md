@@ -13,12 +13,18 @@
   `docker/Dockerfile.scicode` — SciCode support: `source="scicode"` direct-run
   alias, scientific-stack pins, and a Python 3.11 image.
 - `app/exec_py_test.py`, `app/server.py`, `README.md` — test-case progress
-  counts. `execute_test` additionally returns how many cases passed, and the
-  response `data` gains `n_cases` / `n_passed`. Execution behaviour is
+  counts on **every** source. `execute_test` additionally returns how many cases
+  passed, and the response `data` gains `n_cases` / `n_passed` for both modes:
+  one case per input for test-case-driven evaluation, and a single
+  all-or-nothing case for a direct run (`human-eval` / `mbpp` / `scicode`, or
+  `livecodebench` without `test`), where the pair is 1/1 or 1/0. Reporting it for
+  direct runs is redundant with `status` by construction; it is done so a caller
+  can compute a pass rate without branching on `source`. Execution behaviour is
   unchanged: the case loop still stops at the first failure, and because cases
   run in order the failing index *is* the passed count, so the count costs
-  nothing. `None` means unknown (subprocess killed on timeout), not zero. Needed
-  by sieval's LiveCodeBench task, which records per-rollout grading detail rather
-  than a bare pass/fail; the task tolerates both fields being absent, so an
-  unpatched evaluator still works. Not yet upstream — land in
-  `scitix/code-evaluator` and re-vendor.
+  nothing. `None` means unknown (subprocess killed on timeout), not zero.
+  Consumers tolerate both fields being absent, so an unpatched evaluator still
+  works. Not yet upstream — land in `scitix/code-evaluator` and re-vendor.
+- `README.md` — translated from Chinese to English, so the vendored docs match
+  the rest of the repo. Content is otherwise unchanged apart from the case-count
+  section above.

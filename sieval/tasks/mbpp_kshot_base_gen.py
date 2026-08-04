@@ -13,7 +13,7 @@ AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 import os
 import time
 from collections.abc import Mapping
-from typing import Any, TypedDict, override
+from typing import Any, NotRequired, TypedDict, override
 
 import httpx
 from loguru import logger
@@ -32,6 +32,12 @@ class ResourceMetrics(TypedDict):
     peak_cpu_percent: float
     avg_memory_mb: float
     peak_memory_mb: float
+    # Test-case progress, absent when the evaluator predates reporting it. A
+    # direct run is one all-or-nothing case, so these are 1/1 or 1/0 and carry
+    # no more than `correct` does; they exist so the field reads the same across
+    # every source.
+    n_cases: NotRequired[int | None]
+    n_passed: NotRequired[int | None]
 
 
 class Feedback(TypedDict):

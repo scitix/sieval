@@ -21,7 +21,7 @@ AI-Generated Code - GPT-5.5-Codex (OpenAI)
 
 import os
 import time
-from typing import TypedDict, override
+from typing import NotRequired, TypedDict, override
 
 import httpx
 from loguru import logger
@@ -41,6 +41,12 @@ class ResourceMetrics(TypedDict):
     peak_cpu_percent: float
     avg_memory_mb: float
     peak_memory_mb: float
+    # Test-case progress, absent when the evaluator predates reporting it. A
+    # direct run is one all-or-nothing case, so these are 1/1 or 1/0 and carry
+    # no more than `correct` does; they exist so the field reads the same across
+    # every source.
+    n_cases: NotRequired[int | None]
+    n_passed: NotRequired[int | None]
 
 
 class Feedback(TypedDict):

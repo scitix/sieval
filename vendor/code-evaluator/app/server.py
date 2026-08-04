@@ -46,16 +46,25 @@ class BasicResponse(BaseModel, Generic[T]):
 class ResourceMetrics(BaseModel):
     """The response ``data`` payload: what the run cost, and how far it got.
 
-    The four resource fields are always populated. The two case counts only apply
-    to test-case-driven evaluation and are ``None`` for a direct run:
+    Every evaluation reports case counts, so a caller can compute a pass rate
+    without branching on ``source``. What a "case" is depends on the mode:
 
-    * ``n_passed`` is how many cases passed before the run stopped. Cases run in
-      order and stop at the first failure, so for a failing submission this is
-      the failing case's index -- a real count, at no extra execution cost. It is
+    * **Test-case-driven** (``livecodebench`` with ``test``): one case per input.
+      ``n_passed`` is how many passed before the run stopped. Cases run in order
+      and stop at the first failure, so for a failing submission this is the
+      failing case's index -- a real count, at no extra execution cost. It is
       *not* a full pass rate: a submission that fails case 0 and would pass the
       rest still reports 0.
-    * ``None`` means the count is unknown (the subprocess was killed on timeout,
-      so it never reported one), never zero.
+    * **Direct run** (``human-eval`` / ``mbpp`` / ``scicode``, or
+      ``livecodebench`` without ``test``): the submitted program is one
+      all-or-nothing case, so ``n_cases`` is 1 and ``n_passed`` is 1 or 0. That
+      is redundant with ``status`` by construction -- it is reported anyway so
+      the field is always readable.
+
+    ``n_passed = None`` means the count is genuinely unknown (the subprocess was
+    killed on timeout, so it never reported one) -- never zero. Both fields stay
+    ``None`` only when nothing ran at all, i.e. an unsupported language or
+    source, where ``data`` itself is ``None``.
 
     Kept as one flat model rather than a per-source subclass: FastAPI filters the
     response against this route's declared model, so a subclass returned from one
@@ -119,6 +128,7 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
             f"evaluate sample '{sample.uuid}' from '{sample.source}', "
             f"language: {sample.lang}, timeout: {timeout}, memory_limit: {sample.memory_limit}, "
             f"kwargs: {sample.kwargs}, status: {ok}, msg: {msg}, "
+            f"cases: {int(ok)}/1, "
             f"avg_cpu: {stats.cpu_percent if stats else 0:.2f}%, "
             f"peak_cpu: {stats.peak_cpu_percent if stats else 0:.2f}%, "
             f"avg_memory: {stats.memory_mb if stats else 0:.2f}MB, "
@@ -133,6 +143,10 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
                     peak_cpu_percent=stats.peak_cpu_percent,
                     avg_memory_mb=stats.memory_mb,
                     peak_memory_mb=stats.peak_memory_mb,
+                    # A direct run is one all-or-nothing case: the program either
+                    # completed cleanly or it did not.
+                    n_cases=1,
+                    n_passed=int(ok),
                 )
                 if stats
                 else None
@@ -152,7 +166,8 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
             ok, msg, stats = await exec_py_code(
                 code=sample.code, timeout=timeout, memory_limit=sample.memory_limit
             )
-            n_cases = n_passed = None
+            # No test cases: the program itself is the single all-or-nothing case.
+            n_cases, n_passed = 1, int(ok)
         else:
             default_timeout = 6.0 + len(sample.test.inputs) * 2.0
             timeout = sample.timeout if sample.timeout is not None else default_timeout
