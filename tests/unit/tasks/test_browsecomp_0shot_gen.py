@@ -130,10 +130,8 @@ async def test_feedback_grades_yes_and_records_provenance():
     assert fb["gold"] == "William Shakespeare"
     assert fb["predicted"] == "Exact Answer: William Shakespeare"
     assert fb["grader_model"] == "grader-4.1"
-    # Kept verbatim and in full even when the grade parsed cleanly — a
-    # wrong-but-parsed verdict is unauditable without it. Multi-line, with
-    # reasoning the parse discards, so storing only the matched fields (or only
-    # on parse failure) fails here.
+    # Multi-line on purpose, with reasoning the parse discards: storing only the
+    # matched fields, or only on parse failure, fails this assertion.
     assert fb["grader_reply"] == reply
 
 
@@ -145,9 +143,8 @@ async def test_feedback_defaults_to_incorrect_without_verdict():
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
     _, feedbacks = await task.feedback(["some answer"], ctx)
     assert feedbacks[0]["grade"] == "INCORRECT"
-    # The INCORRECT default is indistinguishable from a real negative verdict in
-    # the grade alone; the persisted reply is what separates format drift from a
-    # genuinely wrong answer.
+    # The INCORRECT default is indistinguishable from a real negative in the
+    # grade alone; the reply separates format drift from a wrong answer.
     assert feedbacks[0]["grader_reply"] == reply
 
 

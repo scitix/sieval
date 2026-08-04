@@ -14,11 +14,8 @@ Qwen3 235B A22B 2507 Non-reasoning. Unlike sieval's deterministic-grader tasks,
 correctness depends on a real grader model whose version sieval cannot pin the
 way it pins a Hub revision, so for reproducibility pin the grader model and set
 ``temperature: 0``; each sample's grade, the grader model id, and the checker's
-verbatim reply (``grader_reply``) are persisted in the feedback record. Since
-re-grading an unpinnable checker is not guaranteed to reproduce a past verdict,
-that reply is the only durable evidence of what it actually said — and since
-``parse_grade`` resolves anything it cannot read to INCORRECT, the only way to
-tell a format-drifted or errored reply from a real negative verdict.
+verbatim reply (``grader_reply``) are persisted in the feedback record — see
+``GradeFeedback.grader_reply`` for why the reply is kept.
 
 Deviations / by-design behavior worth knowing:
 
@@ -78,13 +75,10 @@ class GradeFeedback(TypedDict):
     gold: str
     predicted: str
     grader_model: str
-    # The checker's reply verbatim — the text `grade` is derived from, stored in
-    # full on every attempt. `parse_grade` resolves anything it cannot read to
-    # INCORRECT, so without this a format-drifted or errored reply is
-    # indistinguishable from a real negative verdict; and the grader model
-    # version is not pinnable like a Hub revision, so re-grading need not
-    # reproduce a past verdict. Empty on the empty-candidate short-circuit
-    # below, where the checker is never called.
+    # The checker's reply verbatim, on every attempt — the text `grade` comes
+    # from. `parse_grade` resolves anything it cannot read to INCORRECT, so the
+    # grade alone cannot separate format drift from a real negative verdict.
+    # Empty on the empty-candidate short-circuit below (checker never called).
     grader_reply: str
     question_id: int
 
@@ -116,18 +110,16 @@ class GradeFeedback(TypedDict):
             "tasks, scores depend on the grader endpoint's model version (not "
             "pinnable like a Hub revision) — pin the grader model + "
             "temperature=0; the per-sample grade, grader model id, and the "
-            "checker's verbatim reply (grader_reply) are persisted in the "
-            "feedback record — the reply is the only durable evidence of a "
-            "verdict an unpinnable checker need not reproduce, and (since "
-            "parse_grade resolves anything unreadable to INCORRECT) the only "
-            "way to tell a format-drifted reply from a real negative. Documents "
-            "are prompted in "
-            "data_source_filenames order (loader-guaranteed), per the card. "
-            "DEVIATION (the port's only score-affecting one): empty/whitespace "
-            "candidates are graded INCORRECT without invoking the checker — the "
-            "checker returns CORRECT on an empty candidate, which would inflate "
-            "accuracy (grader_reply is empty there, no call made). "
-            "REPEATS: AA-LCR uses n=3 (pass@1 aggregated across "
+            "checker's verbatim reply (grader_reply) are persisted — the reply "
+            "being the only evidence of a verdict a re-grade need not reproduce, "
+            "and (parse_grade sends anything unreadable to INCORRECT) the only "
+            "way to tell format drift from a real negative. Documents are "
+            "prompted in data_source_filenames order (loader-guaranteed), per "
+            "the card. DEVIATION (the port's only score-affecting one): "
+            "empty/whitespace candidates are graded INCORRECT without invoking "
+            "the checker — the checker returns CORRECT on an empty candidate, "
+            "which would inflate accuracy (grader_reply empty there, no call "
+            "made). REPEATS: AA-LCR uses n=3 (pass@1 aggregated across "
             "attempts); `n` is a task arg (tasks.<name>.args.n), NOT a model "
             "arg — infer forwards it call-time and call-time wins, so setting "
             "`n` on the model is overridden by the task default n=1. "

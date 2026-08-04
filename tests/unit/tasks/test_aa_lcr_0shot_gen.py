@@ -129,15 +129,13 @@ async def test_feedback_grades_and_records_provenance():
     assert fb["predicted"] == "Rising"
     assert fb["grader_model"] == "qwen3-235b"
     assert fb["question_id"] == 7
-    # Kept verbatim and in full even when the grade parsed cleanly — a
-    # wrong-but-parsed verdict is unauditable without it. Multi-line, with
-    # reasoning the parse discards, so storing only the matched verdict (or only
-    # on parse failure) fails here.
+    # Multi-line on purpose, with reasoning the parse discards: storing only the
+    # matched verdict, or only on parse failure, fails this assertion.
     assert fb["grader_reply"] == reply
 
 
 @pytest.mark.anyio
-async def test_feedback_unrecognized_grader_reply_is_incorrect():
+async def test_feedback_empty_grader_reply_is_incorrect():
     task, _ = _task(grader_reply="")
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
     _, feedbacks = await task.feedback(["some answer"], ctx)
@@ -147,10 +145,8 @@ async def test_feedback_unrecognized_grader_reply_is_incorrect():
 
 @pytest.mark.anyio
 async def test_feedback_persists_reply_behind_incorrect_default():
-    # `parse_grade` resolves any reply it cannot read to INCORRECT, which the
-    # grade alone cannot separate from a real negative verdict; the persisted
-    # reply is what distinguishes format drift / an API error from a genuinely
-    # wrong answer.
+    # `parse_grade` sends anything unreadable to INCORRECT, so the grade alone
+    # cannot tell format drift from a genuinely wrong answer. The reply can.
     reply = "I am unable to compare these two answers."
     task, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
@@ -172,17 +168,16 @@ async def test_feedback_empty_answer_is_incorrect_without_grading(empty: str):
     assert feedbacks[0]["predicted"] == empty
     # Grader was bypassed: its last_kwargs stays empty (never called).
     assert grader.last_kwargs == {}
-    # No call means no reply to persist. Empty here is not confusable with "the
-    # checker returned nothing": the empty `predicted` above identifies the
-    # branch.
+    # No call, so no reply. Not confusable with "the checker returned nothing" —
+    # the empty `predicted` above identifies the branch.
     assert feedbacks[0]["grader_reply"] == ""
 
 
 @pytest.mark.anyio
 async def test_feedback_short_circuit_does_not_inherit_prior_reply():
     # With n>1 the attempts share one loop, so the short-circuit must rebind
-    # `grader_reply` rather than leave the graded attempt's reply in scope — a
-    # leak that would attribute a real checker verdict to an ungraded answer.
+    # `reply`; leaving the graded attempt's in scope would attribute a real
+    # checker verdict to an ungraded answer.
     reply = "The candidate matches the official answer.\nCORRECT"
     task, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_sample())

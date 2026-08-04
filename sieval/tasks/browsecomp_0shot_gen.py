@@ -18,11 +18,8 @@ other autorater-graded tasks, correctness depends on a real grader model whose
 version sieval cannot pin the way it pins a Hub revision, so for reproducibility
 pin the grader model and set ``temperature: 0``; each sample's grade, echoed
 confidence, grader model id, and the autorater's verbatim reply
-(``grader_reply``) are persisted in the feedback record. Since re-grading an
-unpinnable autorater is not guaranteed to reproduce a past verdict, that reply is
-the only durable evidence of what it actually said — and since ``parse_grade``
-defaults a non-matching reply to INCORRECT, the only way to tell a format-drifted
-or errored reply from a real negative verdict.
+(``grader_reply``) are persisted in the feedback record — see
+``GradeFeedback.grader_reply`` for why the reply is kept.
 
 NOTE: BrowseComp is designed to require web browsing; a plain (closed-book)
 model scores near-zero — this task grades whatever answer the model returns, so
@@ -59,12 +56,10 @@ class GradeFeedback(TypedDict):
     gold: str
     predicted: str
     grader_model: str
-    # The autorater's reply verbatim — the text `grade` and `confidence` are
-    # derived from, stored in full on every attempt. `parse_grade` defaults a
-    # non-matching reply to INCORRECT, so without this a format-drifted or
-    # errored reply is indistinguishable from a real negative verdict; and the
-    # grader model version is not pinnable like a Hub revision, so re-grading
-    # need not reproduce a past verdict.
+    # The autorater's reply verbatim, on every attempt — the text `grade` and
+    # `confidence` come from. `parse_grade` defaults a non-matching reply to
+    # INCORRECT, so the grade alone cannot separate format drift from a real
+    # negative verdict.
     grader_reply: str
 
 
@@ -94,10 +89,10 @@ class GradeFeedback(TypedDict):
             "depend on the grader endpoint's model version (not pinnable like a Hub "
             "revision) — pin the grader model + temperature=0; the per-sample grade/"
             "confidence, grader model id, and the autorater's verbatim reply "
-            "(grader_reply) are persisted — the reply is the only durable evidence "
-            "of a verdict an unpinnable grader need not reproduce, and (since "
-            "parse_grade defaults to INCORRECT) the only way to tell a "
-            "format-drifted reply from a real negative. BrowseComp requires "
+            "(grader_reply) are persisted — the reply being the only evidence of a "
+            "verdict a re-grade need not reproduce, and (parse_grade defaults to "
+            "INCORRECT) the only way to tell format drift from a real negative. "
+            "BrowseComp requires "
             "browsing: closed-book models score near-zero — validated at 0.316% "
             "(4/1266) for gemma-3-27b-it with the gpt-4.1 autorater — so a "
             "meaningful score needs a browsing-capable model/scaffold."

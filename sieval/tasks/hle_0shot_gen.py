@@ -9,9 +9,11 @@ calibration error is computed (alongside a 95% Wald confidence interval).
 
 Subset: a dataset-level choice — ``HLEDataset`` drops image questions unless
 ``datasets.hle.args.text_only: false`` (a sieval addition; upstream always
-grades the full set), and ``report()`` echoes it as ``subset``. This task grades
-whatever it is handed, attaching an ``image_url`` content block for image
-questions exactly as upstream ``format_message`` does.
+grades the full set), and ``report()`` echoes it as ``subset``. Because it lives
+on the dataset, this task stays isomorphic to upstream
+``run_model_predictions.py``: it grades whatever it is handed, attaching an
+``image_url`` content block for image questions exactly as upstream
+``format_message`` does.
 
 Deviations from upstream (``hle_eval`` @ 26dca2e; see ``sieval.community.hle``):
 
@@ -25,9 +27,6 @@ Deviations from upstream (``hle_eval`` @ 26dca2e; see ``sieval.community.hle``):
   text path widens that failure surface, so the reply itself is persisted.
 * Calibration error is guarded below the bin size for slices/tests (docs there).
 
-Subset selection is a sieval addition too, but it lives on ``HLEDataset``, so
-this task stays isomorphic to upstream ``run_model_predictions.py``.
-
 Decoding params are model-layer, set via ``models:`` / ``infer_args`` — never by
 this task. Upstream HLE defaults to ``temperature=0`` and advises
 ``max_completion_tokens>=8192`` for reasoning models; specific reproductions
@@ -38,13 +37,10 @@ Grader is a REAL LLM supplied via the ``grader`` task arg on its own
 ``api_base``/``api_key``. Correctness depends on the judge endpoint's model
 version (not pinnable like a Hub revision) — pin the grader model for
 reproducibility; each sample's ``correct``, ``confidence``, ``judge_parsed``,
-grader model id and the judge's verbatim reply (``grader_reply``) are persisted
-in the feedback record. Since re-running an unpinnable judge is not guaranteed
-to reproduce a past verdict, that reply is the only durable evidence of what the
-judge actually said, and the only way to tell a truncated or format-drifted
-reply from a genuine matcher gap behind the ``judge_unparsed`` count. The
-judge's decoding is likewise model-layer (set via the ``grader`` config);
-upstream runs it at ``max_completion_tokens=4096``.
+grader model id and the judge's reply (``grader_reply``) are persisted in the
+feedback record — see ``JudgeFeedback.grader_reply`` for what that reply does and
+does not let you diagnose. The judge's decoding is likewise model-layer (set via
+the ``grader`` config); upstream runs it at ``max_completion_tokens=4096``.
 
 Target: report against technical-report HLE numbers (e.g. the GLM series
 evaluates the text-only subset with a strong LLM judge, such as GPT-5.2); the
@@ -82,13 +78,17 @@ class JudgeFeedback(TypedDict):
     gold: str
     predicted: str
     grader_model: str
-    # The judge's reply verbatim — the text every field above is derived from,
-    # stored in full on every attempt. When `judge_parsed` is False it is the
-    # only evidence of *why* (truncation, format drift, API error, a genuine
-    # matcher gap all look identical in the `judge_unparsed` count alone). Kept
-    # for parsed replies too: a wrong-but-parsed verdict moves the score and is
-    # unauditable without it, and the grader model version is not pinnable like
-    # a Hub revision, so re-running the judge need not reproduce a past verdict.
+    # The judge's reply verbatim, on every attempt — the text every field above
+    # comes from. When `judge_parsed` is False it is the only evidence of *why*
+    # (format drift, an error body and a matcher gap are identical in the
+    # `judge_unparsed` count alone); on the parsed path it is what makes a
+    # wrong-but-parsed verdict — the kind that moves the score — auditable.
+    #
+    # Scope: `ModelOutput.texts`, response content only. A judge that spends its
+    # whole budget on reasoning returns empty content, so an empty reply is
+    # indistinguishable from an empty API response; the `finish_reasons` and
+    # `reasoning_texts` that would separate them are not captured. Reachable
+    # here — HLE is normally run with a reasoning judge.
     grader_reply: str
 
 
@@ -123,10 +123,11 @@ class JudgeFeedback(TypedDict):
             "REPRODUCIBILITY: scores depend on the judge endpoint's model version "
             "(not pinnable like a Hub revision) — pin the grader model; the "
             "per-sample correct/confidence, grader model id, and the judge's "
-            "verbatim reply (grader_reply) are persisted. The reply is the only "
-            "durable evidence of a verdict an unpinnable judge need not "
-            "reproduce, and what distinguishes a truncated/format-drifted reply "
-            "from a matcher gap behind the judge_unparsed count. "
+            "reply (grader_reply) are persisted — the reply being the only "
+            "evidence of a verdict a re-run need not reproduce, and what "
+            "separates format drift from a matcher gap behind the judge_unparsed "
+            "count. It is response content only, so a judge that spends its whole "
+            "budget on reasoning still records an empty reply. "
             "VALIDATION: gpt-oss-20b scored 12.14 / 3.61 (reasoning=high / low, "
             "judge GPT-5.2, text-only, no tools) vs the gpt-oss model card "
             "(arXiv:2508.10925) 10.9 / 4.2 — within <3pp."
