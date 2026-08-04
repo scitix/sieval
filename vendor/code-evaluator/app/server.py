@@ -44,10 +44,30 @@ class BasicResponse(BaseModel, Generic[T]):
 
 
 class ResourceMetrics(BaseModel):
+    """The response ``data`` payload: what the run cost, and how far it got.
+
+    The four resource fields are always populated. The two case counts only apply
+    to test-case-driven evaluation and are ``None`` for a direct run:
+
+    * ``n_passed`` is how many cases passed before the run stopped. Cases run in
+      order and stop at the first failure, so for a failing submission this is
+      the failing case's index -- a real count, at no extra execution cost. It is
+      *not* a full pass rate: a submission that fails case 0 and would pass the
+      rest still reports 0.
+    * ``None`` means the count is unknown (the subprocess was killed on timeout,
+      so it never reported one), never zero.
+
+    Kept as one flat model rather than a per-source subclass: FastAPI filters the
+    response against this route's declared model, so a subclass returned from one
+    branch would have its extra fields silently stripped.
+    """
+
     avg_cpu_percent: float
     peak_cpu_percent: float
     avg_memory_mb: float
     peak_memory_mb: float
+    n_cases: int | None = None
+    n_passed: int | None = None
 
 
 @app.get("/health")
@@ -132,10 +152,11 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
             ok, msg, stats = await exec_py_code(
                 code=sample.code, timeout=timeout, memory_limit=sample.memory_limit
             )
+            n_cases = n_passed = None
         else:
             default_timeout = 6.0 + len(sample.test.inputs) * 2.0
             timeout = sample.timeout if sample.timeout is not None else default_timeout
-            ok, msg, stats = await exec_py_test(
+            ok, msg, stats, n_passed = await exec_py_test(
                 code=sample.code,
                 inputs=sample.test.inputs,
                 expect_outputs=sample.test.outputs,
@@ -143,11 +164,13 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
                 timeout=timeout,
                 memory_limit=sample.memory_limit,
             )
+            n_cases = len(sample.test.inputs)
 
         logger.info(
             f"evaluate sample '{sample.uuid}' from '{sample.source}', "
             f"language: {sample.lang}, timeout: {timeout}, memory_limit: {sample.memory_limit}, "
             f"kwargs: {sample.kwargs}, status: {ok}, msg: {msg}, "
+            f"cases: {n_passed}/{n_cases}, "
             f"avg_cpu: {stats.cpu_percent:.2f}%, "
             f"peak_cpu: {stats.peak_cpu_percent:.2f}%, "
             f"avg_memory: {stats.memory_mb:.2f}MB, "
@@ -161,6 +184,8 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
                 peak_cpu_percent=stats.peak_cpu_percent,
                 avg_memory_mb=stats.memory_mb,
                 peak_memory_mb=stats.peak_memory_mb,
+                n_cases=n_cases,
+                n_passed=n_passed,
             ),
         )
     else:

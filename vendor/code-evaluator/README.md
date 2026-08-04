@@ -111,10 +111,27 @@ POST /evaluations
 返回：
 
 ```json
-{ "status": true, "msg": "" }
+{
+  "status": true,
+  "msg": "",
+  "data": {
+    "avg_cpu_percent": 0.0,
+    "peak_cpu_percent": 0.0,
+    "avg_memory_mb": 0.0,
+    "peak_memory_mb": 0.0,
+    "n_cases": 2,
+    "n_passed": 2
+  }
+}
 ```
 
 失败时 msg 包含错误原因。
+
+`n_cases` / `n_passed` 只对带测试用例的评估有意义，直接运行（human-eval / mbpp /
+scicode，或 livecodebench 不带 `test`）时为 `null`。用例按顺序执行且首个失败即停，
+所以失败提交的 `n_passed` 就是失败用例的下标——真实计数，不额外付执行成本。注意它
+**不是**全量通过率：首个用例失败、其余本可通过的提交同样记 0。`n_passed` 为 `null`
+表示计数未知（子进程超时被杀），不表示 0。
 
 ## 调用示例
 

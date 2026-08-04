@@ -72,7 +72,14 @@ async def execute_test(
     fn_name: str | None = None,
     timeout: float = 3.0,
     memory_limit: int | None = None,
-) -> tuple[bool, str, ResourceStats]:
+) -> tuple[bool, str, ResourceStats, int | None]:
+    """Run the submitted code against the test cases in a spawned subprocess.
+
+    The fourth element is how many test cases passed, or ``None`` when the count
+    is genuinely unknown -- the subprocess was killed on timeout, or died without
+    putting a result on the queue, so no count was ever produced. ``None`` is
+    "unknown", never "zero".
+    """
     ctx = multiprocessing.get_context("spawn")
     q = ctx.SimpleQueue()
     p = ctx.Process(
@@ -91,8 +98,10 @@ async def execute_test(
         stop_event.set()  # Already "stopped" since we never started
 
     try:
-        ok, msg = await asyncio.wait_for(asyncio.to_thread(q.get), timeout=timeout)
-        return ok, msg, stats
+        ok, msg, n_passed = await asyncio.wait_for(
+            asyncio.to_thread(q.get), timeout=timeout
+        )
+        return ok, msg, stats, n_passed
     except asyncio.TimeoutError:
         if p.is_alive():
             reason = f"subprocess timeout: {timeout}s"
@@ -110,7 +119,7 @@ async def execute_test(
             q.close()
         except Exception:
             pass
-    return False, f"failed: {reason}", stats
+    return False, f"failed: {reason}", stats, None
 
 
 def _subprocess_target(
@@ -122,10 +131,12 @@ def _subprocess_target(
     memory_limit: int | None,
 ):
     try:
-        ok, msg = _unsafe_execute(code, inputs, expect_outputs, fn_name, memory_limit)
-        q.put((ok, msg))
+        ok, msg, n_passed = _unsafe_execute(
+            code, inputs, expect_outputs, fn_name, memory_limit
+        )
+        q.put((ok, msg, n_passed))
     except Exception as e:
-        q.put((False, f"failed: [{type(e).__name__}] {e}"))
+        q.put((False, f"failed: [{type(e).__name__}] {e}", 0))
 
 
 def _unsafe_execute(
@@ -134,9 +145,17 @@ def _unsafe_execute(
     expect_outputs: list[str],
     fn_name: str | None,
     memory_limit: int | None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, int]:
+    """Run the submitted code against every test case, stopping at the first failure.
+
+    The third element is how many cases passed. Because cases run in order and
+    the loop short-circuits, that is the failing case's index -- so callers get a
+    real count without the cost of running the remaining cases. Anything that
+    fails before the loop (arity mismatch, compile error, missing function)
+    passed zero cases.
+    """
     if len(inputs) != len(expect_outputs):
-        return False, "failed: number of inputs and outputs mismatch"
+        return False, "failed: number of inputs and outputs mismatch", 0
 
     # Disable functionalities that can make destructive changes to the test.
     # memory_limit is in MB, convert to bytes
@@ -147,28 +166,30 @@ def _unsafe_execute(
         code_to_compile = import_string + "\n\n" + code
         compiled_sol = compile_code(code_to_compile)
         if compiled_sol is None:
-            return False, "failed: compile error"
+            return False, "failed: compile error", 0
         fn = get_function(compiled_sol, fn_name)
         if fn is None:
-            return False, "failed: no function defined"
+            return False, "failed: no function defined", 0
     else:
         code_to_compile = clean_if_name(code)
         code_to_compile = make_function(code_to_compile)
         compiled_sol = compile_code(code_to_compile)
         if compiled_sol is None:
-            return False, "failed: compile error"
+            return False, "failed: compile error", 0
         fn = get_function(compiled_sol, "wrapped_function")
         if fn is None:
-            return False, "failed: no function defined"
+            return False, "failed: no function defined", 0
 
+    n_passed = 0
     for single_input, single_output in zip(inputs, expect_outputs):
         if fn_name is not None:
             ok, msg = _unsafe_execute_fn_call(fn, single_input, single_output)
         else:
             ok, msg = _unsafe_execute_stdio(fn, single_input, single_output)
         if not ok:
-            return False, f"failed: {msg}"
-    return True, ""
+            return False, f"failed: {msg}", n_passed
+        n_passed += 1
+    return True, "", n_passed
 
 
 def _unsafe_execute_fn_call(
