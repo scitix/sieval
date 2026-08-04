@@ -53,19 +53,16 @@ FAMILY = [
 ]
 IDS = [t.__name__ for t, _, _ in FAMILY]
 
-# Members already migrated to the stage-output protocol; the rest still return the
-# legacy list-of-dicts feedback. Delete this set (and `_feedback`'s branch) once the
-# whole family has migrated.
-PROTOCOL_TASKS = {AIME2026ZeroShotGenTask, HMMTFeb2026ZeroShotGenTask}
 
+def _feedback(k: int):
+    """A `k`-rollout all-correct `JudgementRecord`.
 
-def _feedback(task_cls, k: int):
-    """A `k`-rollout all-correct feedback value in whichever shape *task_cls* reads."""
-    if task_cls in PROTOCOL_TASKS:
-        return build_judgement_record(
-            ANSWER, [build_rollout_judgement(i, True) for i in range(k)]
-        )
-    return [{"correct": True, "answer": ANSWER} for _ in range(k)]
+    The whole family now reads one shape, so this takes no task class: the fork
+    that built a legacy list-of-dicts for unmigrated members is gone.
+    """
+    return build_judgement_record(
+        ANSWER, [build_rollout_judgement(i, True) for i in range(k)]
+    )
 
 
 class _StubChatModel(ChatModel):
@@ -111,7 +108,7 @@ def test_k_equal_to_n_is_accepted(task_cls, dataset_cls, field):
 async def test_report_key_set_is_identical_when_empty(task_cls, dataset_cls, field, k):
     task = _build(task_cls, dataset_cls, field, k=k, n=k)
     raw = _sample(field)
-    feedback = _feedback(task_cls, k)
+    feedback = _feedback(k)
     populated = await task.report(
         [TaskContext(sample_id=0, raw_sample=raw, feedback_result=feedback)], []
     )
@@ -137,4 +134,7 @@ async def test_preprocess_reads_the_field_its_loader_exposes(
 
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
 
-    assert PROBLEM in str(pre)
+    assert PROBLEM in str(pre["prompt"])
+    # The whole family is on the protocol now, so the gold reaching disk from
+    # preprocess is a family-wide contract rather than a per-task detail.
+    assert pre["reference"] == ANSWER

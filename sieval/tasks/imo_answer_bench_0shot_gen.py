@@ -22,18 +22,24 @@ budget (``max_tokens`` ≈ 131072) and a generous client read-timeout (300s+). A
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-from typing import TypedDict, override
+from typing import override
 
 from loguru import logger
-from openai.types.chat import ChatCompletionUserMessageParam
 
 from sieval.community.imo_bench import normalize_answer, verify_math_answer
 from sieval.community.matharena import build_prompt, extract_answer
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import IMOAnswerBenchDatasetSample
@@ -45,11 +51,6 @@ from sieval.datasets import IMOAnswerBenchDatasetSample
 IMO_ANSWER_BENCH_INSTRUCTION = (
     "Please reason step by step. Put your final answer within \\boxed{}."
 )
-
-
-class Feedback(TypedDict):
-    correct: bool
-    answer: str
 
 
 @sieval_task(
@@ -121,10 +122,10 @@ class Feedback(TypedDict):
 class IMOAnswerBenchZeroShotGenTask(
     Task[
         IMOAnswerBenchDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        list[str | None],
-        list[Feedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ],
 ):
@@ -141,35 +142,43 @@ class IMOAnswerBenchZeroShotGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return [
-            {
-                "role": "user",
-                "content": build_prompt(IMO_ANSWER_BENCH_INSTRUCTION, raw["problem"]),
-            },
-        ]
+        return build_prompt_record(
+            [
+                {
+                    "role": "user",
+                    "content": build_prompt(
+                        IMO_ANSWER_BENCH_INSTRUCTION, raw["problem"]
+                    ),
+                },
+            ],
+            reference=raw["answer"],
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre, n=self._n)
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
         # Extract the last \boxed{} (matharena extractor), then reconstruct the
         # clean answer an agent would submit (parsing layer) so math_verify can
         # judge equivalence. None => no boxed answer found.
-        return [
-            normalize_answer(extract_answer(choice, strict_parsing=False))
-            for choice in inf.texts
-        ]
+        return build_prediction_record(
+            [
+                normalize_answer(extract_answer(choice, strict_parsing=False))
+                for choice in inf.texts
+            ]
+        )
 
     @override
     async def feedback(self, post, ctx):
-        feedbacks: list[Feedback] = []
+        rollouts = []
         ground_truth = ctx.raw_sample["answer"]
         gold = normalize_answer(ground_truth)
-        for pred in post:
+        for rollout in post["rollouts"]:
+            pred = rollout["prediction"]
             if pred is None or gold is None:
-                feedbacks.append({"correct": False, "answer": ground_truth})
+                rollouts.append(build_rollout_judgement(rollout["index"], False))
                 continue
             try:
                 # Verbatim upstream grader (math_verify); symmetric $-wrapping like
@@ -179,8 +188,15 @@ class IMOAnswerBenchZeroShotGenTask(
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
                 correct = False
-            feedbacks.append({"correct": correct, "answer": ground_truth})
-        return True, feedbacks
+            rollouts.append(build_rollout_judgement(rollout["index"], correct))
+        # `reference` is the raw dataset gold, not the normalized one: normalization
+        # can return None (nothing left after stripping), and a None reference is
+        # reserved for "the ground truth is a procedure". The normalized form is a
+        # parsing-layer detail of *how* the comparison ran, so it goes in `extra` --
+        # where a None also reads correctly, as "the gold did not normalize".
+        return True, build_judgement_record(
+            ground_truth, rollouts, extra={"normalized_reference": gold}
+        )
 
     @override
     async def report(self, finals, fails):
@@ -193,11 +209,11 @@ class IMOAnswerBenchZeroShotGenTask(
         pass_at_k_total = 0.0
         short = 0
         for f in finals:
-            feedbacks = f.feedback_result
-            n_samples = len(feedbacks)
+            judgement = f.feedback_result
+            n_samples = judgement["n_rollouts"]
             if n_samples < self._k:
                 short += 1
-            correct_num = sum(1 for fb in feedbacks if fb["correct"])
+            correct_num = judgement["n_correct"]
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
                 pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)

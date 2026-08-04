@@ -3,25 +3,26 @@
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-from typing import TypedDict, override
+from typing import override
 
 from loguru import logger
-from openai.types.chat import ChatCompletionUserMessageParam
 
 from sieval.community.matharena import HMMT_INSTRUCTION, build_prompt, extract_answer
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import HMMTNov2025DatasetSample
-
-
-class Feedback(TypedDict):
-    correct: bool
-    answer: str
 
 
 @sieval_task(
@@ -60,10 +61,10 @@ class Feedback(TypedDict):
 class HMMTNov2025ZeroShotGenTask(
     Task[
         HMMTNov2025DatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        list[str | None],
-        list[Feedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ],
 ):
@@ -80,31 +81,37 @@ class HMMTNov2025ZeroShotGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return [
-            {
-                "role": "user",
-                "content": build_prompt(HMMT_INSTRUCTION, raw["problem"]),
-            },
-        ]
+        return build_prompt_record(
+            [
+                {
+                    "role": "user",
+                    "content": build_prompt(HMMT_INSTRUCTION, raw["problem"]),
+                },
+            ],
+            reference=raw["answer"],
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre, n=self._n)
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
         # MathArena-aligned: last \boxed{}; non-strict -> fall back to last integer.
-        return [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+        return build_prediction_record(
+            [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+        )
 
     @override
     async def feedback(self, post, ctx):
         from math_verify import parse, verify
 
-        feedbacks: list[Feedback] = []
+        rollouts = []
         ground_truth = ctx.raw_sample["answer"]
-        for pred in post:
+        for rollout in post["rollouts"]:
+            pred = rollout["prediction"]
             if pred is None:
-                feedbacks.append({"correct": False, "answer": ground_truth})
+                rollouts.append(build_rollout_judgement(rollout["index"], False))
                 continue
             pred_with_env = f"${pred}$"
             ref_with_env = f"${ground_truth}$"
@@ -116,8 +123,8 @@ class HMMTNov2025ZeroShotGenTask(
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
                 correct = False
-            feedbacks.append({"correct": correct, "answer": ground_truth})
-        return True, feedbacks
+            rollouts.append(build_rollout_judgement(rollout["index"], correct))
+        return True, build_judgement_record(ground_truth, rollouts)
 
     @override
     async def report(self, finals, fails):
@@ -130,11 +137,11 @@ class HMMTNov2025ZeroShotGenTask(
         pass_at_k_total = 0.0
         short = 0
         for f in finals:
-            feedbacks = f.feedback_result
-            n_samples = len(feedbacks)
+            judgement = f.feedback_result
+            n_samples = judgement["n_rollouts"]
             if n_samples < self._k:
                 short += 1
-            correct_num = sum(1 for fb in feedbacks if fb["correct"])
+            correct_num = judgement["n_correct"]
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
                 pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)

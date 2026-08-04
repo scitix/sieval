@@ -1,24 +1,25 @@
 import re
-from typing import TypedDict, override
+from typing import override
 
 from loguru import logger
-from openai.types.chat import ChatCompletionUserMessageParam
 
 from sieval.community.simple_evals.common import ANSWER_PATTERN
 from sieval.community.simple_evals.math_eval import QUERY_TEMPLATE
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import AIME2025DatasetSample
-
-
-class Feedback(TypedDict):
-    correct: bool
-    answer: str
 
 
 @sieval_task(
@@ -41,10 +42,10 @@ class Feedback(TypedDict):
 class AIME2025ZeroShotGenTask(
     Task[
         AIME2025DatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        list[str | None],
-        list[Feedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ],
 ):
@@ -61,31 +62,38 @@ class AIME2025ZeroShotGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return [
-            {"role": "user", "content": QUERY_TEMPLATE.format(problem=raw["question"])},
-        ]
+        return build_prompt_record(
+            [
+                {
+                    "role": "user",
+                    "content": QUERY_TEMPLATE.format(problem=raw["question"]),
+                },
+            ],
+            reference=raw["answer"],
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre, n=self._n)
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        res = []
+        predictions = []
         for choice in inf.texts:
             match = re.search(ANSWER_PATTERN, choice)
-            res.append(match.group(1).strip() if match else None)
-        return res
+            predictions.append(match.group(1).strip() if match else None)
+        return build_prediction_record(predictions)
 
     @override
     async def feedback(self, post, ctx):
         from math_verify import parse, verify
 
-        feedbacks: list[Feedback] = []
+        rollouts = []
         ground_truth = ctx.raw_sample["answer"]
-        for pred in post:
+        for rollout in post["rollouts"]:
+            pred = rollout["prediction"]
             if pred is None:
-                feedbacks.append({"correct": False, "answer": ground_truth})
+                rollouts.append(build_rollout_judgement(rollout["index"], False))
                 continue
             pred_with_env = f"${pred}$"
             ref_with_env = f"${ground_truth}$"
@@ -97,8 +105,8 @@ class AIME2025ZeroShotGenTask(
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
                 correct = False
-            feedbacks.append({"correct": correct, "answer": ground_truth})
-        return True, feedbacks
+            rollouts.append(build_rollout_judgement(rollout["index"], correct))
+        return True, build_judgement_record(ground_truth, rollouts)
 
     @override
     async def report(self, finals, fails):
@@ -111,11 +119,11 @@ class AIME2025ZeroShotGenTask(
         pass_at_k_total = 0.0
         short = 0
         for f in finals:
-            feedbacks = f.feedback_result
-            n_samples = len(feedbacks)
+            judgement = f.feedback_result
+            n_samples = judgement["n_rollouts"]
             if n_samples < self._k:
                 short += 1
-            correct_num = sum(1 for fb in feedbacks if fb["correct"])
+            correct_num = judgement["n_correct"]
             pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
                 pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)

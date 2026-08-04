@@ -106,12 +106,18 @@ class TestGPQADiamondReport:
 @pytest.mark.parametrize(
     "module_name, class_name",
     [
+        ("sieval.tasks.aime_2024_0shot_gen", "AIME2024ZeroShotGenTask"),
+        ("sieval.tasks.aime_2025_0shot_gen", "AIME2025ZeroShotGenTask"),
         ("sieval.tasks.aime_2026_0shot_gen", "AIME2026ZeroShotGenTask"),
+        ("sieval.tasks.hmmt_feb_2025_0shot_gen", "HMMTFeb2025ZeroShotGenTask"),
         ("sieval.tasks.hmmt_feb_2026_0shot_gen", "HMMTFeb2026ZeroShotGenTask"),
+        ("sieval.tasks.hmmt_nov_2025_0shot_gen", "HMMTNov2025ZeroShotGenTask"),
+        ("sieval.tasks.math_500_0shot_gen", "MATH500ZeroShotGenTask"),
+        ("sieval.tasks.imo_answer_bench_0shot_gen", "IMOAnswerBenchZeroShotGenTask"),
     ],
 )
 class TestMathPassAtKReports:
-    """AIME 2026 and HMMT Feb 2026 share one implementation shape."""
+    """All eight pass@k math tasks share one implementation shape."""
 
     @staticmethod
     def _load(module_name, class_name):
