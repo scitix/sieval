@@ -12,7 +12,16 @@ Stage coverage:
     postprocess -> :class:`PredictionRecord`
     feedback    -> :class:`JudgementRecord`
 
-Two properties are load-bearing and easy to break:
+A verdict has three tiers, and putting a value in the wrong one is the easiest
+way to lose it: ``correct``/``score`` are the **headline** (one binary axis, one
+continuous one -- ``correct`` is the only thing comparable across tasks),
+``metrics`` is **every measured value, named** (so a task with co-equal metrics
+records all of them and stays enumerable by a generic consumer), and ``extra``
+is **mechanism detail plus the raw material aggregation needs**. A metric parked
+in ``extra`` is persisted but invisible to anything that does not already know
+the task -- which defeats the point of the protocol.
+
+Two further properties are load-bearing and easy to break:
 
 **Records are returned bare, never wrapped in ``TaskStageOutput``.** The runner
 preserves that box as the stage value, so a single boxed task would persist its
@@ -99,21 +108,33 @@ class RolloutJudgement(TypedDict):
     Attributes:
         index: Position of this rollout within the sample, matching the
             corresponding :class:`RolloutPrediction`.
-        correct: The headline binary verdict. Multi-valued grades (a three-way
-            CORRECT/INCORRECT/NOT_ATTEMPTED, a strict-vs-loose pair) collapse to
-            this for cross-task comparability and keep their full form in
-            ``extra``.
-        score: Partial credit in ``[0, 1]``, when the verdict has a notion of
-            one. Omitted by pass/fail verdicts -- absent is not zero.
-        extra: Verdict-mechanism-specific detail -- an LLM grader's reply, a
-            code runner's failure message and resource metrics, a constraint
-            checker's per-constraint results. Named for the mechanism, not for a
+        correct: The headline binary verdict, and the *only* axis that is
+            comparable across tasks -- ``n_correct`` is derived from it. A
+            multi-valued grade (three-way CORRECT/INCORRECT/NOT_ATTEMPTED)
+            collapses to this and keeps its full form in ``extra``.
+        score: Headline partial credit in ``[0, 1]``, when the verdict has a
+            notion of one. Omitted by pass/fail verdicts -- absent is not zero.
+        metrics: Every metric this rollout measured, named, including the two
+            the headline fields point at. A task with **co-equal** metrics --
+            IFEval's strict *and* loose, HellaSwag's ``acc`` *and* ``acc_norm``,
+            an exact-match *and* a flexible-match -- records them all here, so a
+            consumer can enumerate what was measured without knowing the task,
+            while ``correct``/``score`` still designate the one headline.
+            Derive the headline fields *from* this mapping rather than computing
+            them twice, so the two cannot drift.
+        extra: Verdict-mechanism-specific detail, **not** metrics -- an LLM
+            grader's reply, a code runner's failure message and resource
+            metrics, a constraint checker's per-constraint results. Also the
+            home for raw material an aggregation needs: a per-sample rate in
+            ``metrics`` does not let ``report()`` reconstruct a pooled rate, so
+            the counts behind it belong here. Named for the mechanism, not for a
             grader, since a string-compare or math-verify verdict has no grader.
     """
 
     index: int
     correct: bool
     score: NotRequired[float]
+    metrics: NotRequired[dict[str, bool | float]]
     extra: NotRequired[dict]
 
 
@@ -135,8 +156,13 @@ class JudgementRecord(TypedDict):
         score: Sample-level partial credit in ``[0, 1]``, when the verdict has
             one. Reserved for genuine partial credit -- do not mirror
             ``n_correct / n_rollouts`` here.
+        metrics: Sample-level counterpart of :attr:`RolloutJudgement.metrics` --
+            every metric measured for the sample as a whole, named. Same rule:
+            record all co-equal metrics, and derive ``correct``/``score`` from
+            this mapping rather than alongside it.
         extra: Sample-level verdict detail (a category breakdown, a test-suite
-            description for a procedural reference).
+            description for a procedural reference), and the raw counts an
+            aggregation needs -- not metrics.
     """
 
     reference: NotRequired[JSONValue | None]
@@ -144,6 +170,7 @@ class JudgementRecord(TypedDict):
     n_rollouts: int
     n_correct: int
     score: NotRequired[float]
+    metrics: NotRequired[dict[str, bool | float]]
     extra: NotRequired[dict]
 
 
@@ -182,17 +209,52 @@ def build_prediction_record(
     return record
 
 
+def _checked_metrics(metrics: Mapping[str, bool | float]) -> dict[str, bool | float]:
+    """Reject metric values that would not survive serialization.
+
+    ``obj_to_dict`` drops ``None``-valued keys, so a ``None`` metric would be
+    *absent* on disk rather than recorded as unknown -- silently turning "we
+    measured nothing" into "we never had this metric". A metric that cannot be
+    recorded is a bug at the call site, not something to paper over, so this
+    fails loud. Non-numeric values are rejected for the same reason: they are
+    detail, and detail belongs in ``extra``.
+    """
+    unrecordable = sorted(k for k, v in metrics.items() if v is None)
+    if unrecordable:
+        raise ValueError(
+            f"metric(s) {unrecordable} are None; None-valued keys are dropped on "
+            "serialization, so the metric would be absent on disk rather than "
+            "recorded. Omit it, or record a real value."
+        )
+    mistyped = sorted(
+        k for k, v in metrics.items() if not isinstance(v, (bool, int, float))
+    )
+    if mistyped:
+        raise ValueError(
+            f"metric(s) {mistyped} are not bool/number; `metrics` holds measured "
+            "values only. Put structured detail in `extra` instead."
+        )
+    return dict(metrics)
+
+
 def build_rollout_judgement(
     index: int,
     correct: bool,
     *,
     score: float | None = None,
+    metrics: Mapping[str, bool | float] | None = None,
     extra: dict | None = None,
 ) -> RolloutJudgement:
-    """Build a :class:`RolloutJudgement`. Omits absent optional keys."""
+    """Build a :class:`RolloutJudgement`. Omits absent optional keys.
+
+    Pass every metric the rollout measured as *metrics*, and derive *correct* /
+    *score* from that same mapping so the headline cannot drift from the set.
+    """
     judgement: RolloutJudgement = {"index": index, "correct": correct}
     if score is not None:
         judgement["score"] = score
+    if metrics:
+        judgement["metrics"] = _checked_metrics(metrics)
     if extra:
         judgement["extra"] = extra
     return judgement
@@ -203,6 +265,7 @@ def build_judgement_record(
     rollouts: Sequence[RolloutJudgement],
     *,
     score: float | None = None,
+    metrics: Mapping[str, bool | float] | None = None,
     extra: dict | None = None,
 ) -> JudgementRecord:
     """Build a :class:`JudgementRecord`, deriving ``n_rollouts`` / ``n_correct``."""
@@ -215,6 +278,8 @@ def build_judgement_record(
     }
     if score is not None:
         record["score"] = score
+    if metrics:
+        record["metrics"] = _checked_metrics(metrics)
     if extra:
         record["extra"] = extra
     return record

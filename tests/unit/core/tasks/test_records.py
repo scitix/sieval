@@ -101,6 +101,88 @@ class TestJudgementRecord:
         assert record["n_rollouts"] == 1
 
 
+class TestCoEqualMetrics:
+    """`metrics` is what keeps a non-headline metric readable without task knowledge."""
+
+    # IFEval's real shape: strict and loose are both published, strict is merely
+    # the reading the headline points at.
+    _METRICS: dict[str, bool | float] = {
+        "strict_follow_all": False,
+        "strict_instruction_level": 0.5,
+        "loose_follow_all": True,
+        "loose_instruction_level": 1.0,
+    }
+
+    def test_records_every_metric_not_only_the_one_the_headline_points_at(self):
+        record = build_judgement_record(
+            ["a", "b"],
+            [build_rollout_judgement(0, False, score=0.5, metrics=self._METRICS)],
+            score=0.5,
+            metrics=self._METRICS,
+        )
+        # The whole point: a consumer can enumerate what was measured without
+        # knowing the task, and the loose reading is not lost behind `correct`.
+        assert set(record["metrics"]) == set(self._METRICS)
+        assert set(record["rollouts"][0]["metrics"]) == set(self._METRICS)
+        assert record["metrics"]["loose_follow_all"] is True
+        # ...while `correct`/`n_correct` stay the single cross-task axis.
+        assert record["rollouts"][0]["correct"] is False
+        assert record["n_correct"] == 0
+
+    def test_metrics_are_omitted_when_absent(self):
+        record = build_judgement_record("x", [build_rollout_judgement(0, True)])
+        assert "metrics" not in record
+        assert "metrics" not in record["rollouts"][0]
+
+    def test_empty_metrics_are_omitted_like_every_other_optional_field(self):
+        record = build_judgement_record(
+            "x", [build_rollout_judgement(0, True, metrics={})], metrics={}
+        )
+        assert "metrics" not in record
+        assert "metrics" not in record["rollouts"][0]
+
+    def test_a_none_metric_is_rejected_rather_than_silently_dropped(self):
+        # obj_to_dict drops None-valued keys, so a None metric would be *absent*
+        # on disk -- "we measured nothing" would read as "this metric never
+        # existed". Fail loud at the call site instead.
+        with pytest.raises(ValueError, match="unmeasured|None"):
+            build_rollout_judgement(0, True, metrics={"acc_norm": None})
+        with pytest.raises(ValueError, match="unmeasured|None"):
+            build_judgement_record(
+                "x", [build_rollout_judgement(0, True)], metrics={"acc_norm": None}
+            )
+
+    def test_a_structured_metric_is_rejected_and_belongs_in_extra(self):
+        with pytest.raises(ValueError, match="bool/number"):
+            build_rollout_judgement(
+                0, True, metrics={"follow_instruction_list": [True, False]}
+            )
+
+    def test_false_and_zero_metrics_survive_the_wire(self):
+        # The values most at risk: `False` and `0.0` are falsy but not None, so
+        # they must reach disk. If they were dropped, a failed metric would be
+        # indistinguishable from an unrecorded one -- exactly what `metrics` is
+        # meant to prevent.
+        record = build_judgement_record(
+            "x",
+            [
+                build_rollout_judgement(
+                    0, False, metrics={"acc": False, "acc_norm": 0.0}
+                )
+            ],
+            metrics={"acc": False, "acc_norm": 0.0},
+        )
+        restored = dict_to_obj(obj_to_dict(record, False), {})
+        assert restored["metrics"] == {"acc": False, "acc_norm": 0.0}
+        assert restored["rollouts"][0]["metrics"] == {"acc": False, "acc_norm": 0.0}
+
+    def test_metrics_is_a_copy_so_a_shared_dict_cannot_be_mutated_through(self):
+        source: dict[str, bool | float] = {"acc": True}
+        judgement = build_rollout_judgement(0, True, metrics=source)
+        source["acc"] = False
+        assert judgement["metrics"] == {"acc": True}
+
+
 class TestRecordSniffing:
     def test_recognizes_protocol_records(self):
         assert is_prediction_record(build_prediction_record(["a"]))

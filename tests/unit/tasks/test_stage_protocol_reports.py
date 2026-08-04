@@ -248,20 +248,30 @@ class TestLiveCodeBenchReport:
 class TestIFEvalReport:
     @staticmethod
     def _final(strict_followed, loose_followed):
-        detail = {
-            "strict": {
-                "follow_all": all(strict_followed),
-                "follow_instruction_list": strict_followed,
-            },
-            "loose": {
-                "follow_all": all(loose_followed),
-                "follow_instruction_list": loose_followed,
-            },
+        # Mirrors the task: both readings are co-equal metrics in `metrics`, the
+        # per-instruction lists are mechanism detail in `extra`, and the headline
+        # is derived from `metrics` rather than recomputed.
+        def rate(followed):
+            return sum(followed) / len(followed) if followed else 0.0
+
+        metrics: dict[str, bool | float] = {
+            "strict_follow_all": all(strict_followed),
+            "strict_instruction_level": rate(strict_followed),
+            "loose_follow_all": all(loose_followed),
+            "loose_instruction_level": rate(loose_followed),
         }
+        detail = {
+            "strict": {"follow_instruction_list": strict_followed},
+            "loose": {"follow_instruction_list": loose_followed},
+        }
+        correct = bool(metrics["strict_follow_all"])
+        score = float(metrics["strict_instruction_level"])
         return _final(
             build_judgement_record(
                 ["a", "b"],
-                [build_rollout_judgement(0, all(strict_followed))],
+                [build_rollout_judgement(0, correct, score=score, metrics=metrics)],
+                score=score,
+                metrics=metrics,
                 extra={"key": 1, **detail},
             )
         )

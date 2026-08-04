@@ -106,37 +106,52 @@ class IFEvalZeroShotGenTask(
             kwargs=self._clean_kwargs(raw["kwargs"]),
         )
 
+        # Both readings are co-equal published metrics, so both are recorded in
+        # `metrics`; `strict` is merely the one the headline points at. The
+        # per-instruction bool lists stay in `extra`: they are which constraints
+        # passed (mechanism detail), and report()'s instruction-level accuracy
+        # pools those raw counts -- averaging the per-sample rates below would
+        # give a different, wrong number.
+        metrics: dict[str, bool | float] = {}
         detail = {}
         for grade in _GRADES:
             out = graders[grade](inp, {prompt: response})
-            detail[grade] = {
-                "follow_all": out.follow_all_instructions,
-                "follow_instruction_list": list(out.follow_instruction_list),
-            }
+            followed = list(out.follow_instruction_list)
+            metrics[f"{grade}_follow_all"] = out.follow_all_instructions
+            metrics[f"{grade}_instruction_level"] = (
+                sum(followed) / len(followed) if followed else 0.0
+            )
+            detail[grade] = {"follow_instruction_list": followed}
 
-        strict = detail["strict"]
-        followed = strict["follow_instruction_list"]
-        # Instruction-level score for this sample; the report's instruction-level
-        # accuracy pools raw counts instead, so it is not an average of these.
-        score = sum(followed) / len(followed) if followed else 0.0
+        # Derived from `metrics`, not computed a second time, so the headline can
+        # never disagree with the set it is drawn from.
+        correct = bool(metrics["strict_follow_all"])
+        score = float(metrics["strict_instruction_level"])
         return True, build_judgement_record(
             instruction_ids,
-            [build_rollout_judgement(0, strict["follow_all"], score=score)],
+            [build_rollout_judgement(0, correct, score=score, metrics=metrics)],
             score=score,
+            metrics=metrics,
             extra={"key": raw["key"], **detail},
         )
 
     @override
     async def report(self, finals, fails):
         results: dict[str, float] = {"fails": len(fails)}
+        judgements = [f.feedback_result for f in finals]
         for grade in _GRADES:
-            details = [f.feedback_result["extra"][grade] for f in finals]
-            prompt_total = len(details)
-            prompt_correct = sum(1 for d in details if d["follow_all"])
-            instruction_total = sum(len(d["follow_instruction_list"]) for d in details)
-            instruction_correct = sum(
-                sum(d["follow_instruction_list"]) for d in details
+            prompt_total = len(judgements)
+            prompt_correct = sum(
+                1 for j in judgements if j["metrics"][f"{grade}_follow_all"]
             )
+            # Pooled from the raw per-instruction counts in `extra`, NOT averaged
+            # from the per-sample rates in `metrics`: the two differ whenever
+            # samples carry different numbers of constraints.
+            followed = [
+                j["extra"][grade]["follow_instruction_list"] for j in judgements
+            ]
+            instruction_total = sum(len(f) for f in followed)
+            instruction_correct = sum(sum(f) for f in followed)
 
             prompt_level = prompt_correct / prompt_total if prompt_total else 0.0
             # `accuracy` and `prompt_level_accuracy` measure the same thing (upstream
