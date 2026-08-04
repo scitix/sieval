@@ -41,6 +41,10 @@ from sieval.core.tasks import (
     EvalMode,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import HendrycksMathDatasetSample
@@ -95,30 +99,40 @@ class HendrycksMathFewShotBaseGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return format_prompt(raw["problem"], "")
+        return build_prompt_record(
+            format_prompt(raw["problem"], ""),
+            # The gold is derived from the solution at judgement time (the same
+            # extractor upstream uses), so it is recorded there, not here.
+        )
 
     @override
     async def infer(self, pre, ctx):
         if self._stop:
-            return await self.model.agenerate(pre, stop=list(self._stop))
-        return await self.model.agenerate(pre)
+            return await self.model.agenerate(pre["prompt"], stop=list(self._stop))
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
         text = inf.texts[0] if inf.texts else ""
-        return extract_math_few_shot_cot_answer(ctx.raw_sample["problem"], text, "cot")
+        # Empty extraction -> None so `extracted` reports the miss; feedback
+        # restores "" so the grader sees exactly what it saw pre-migration.
+        return build_prediction_record(
+            [
+                extract_math_few_shot_cot_answer(ctx.raw_sample["problem"], text, "cot")
+                or None
+            ]
+        )
 
     @override
     async def feedback(self, post, ctx):
         reference = extract_math_answer(
             ctx.raw_sample["problem"], ctx.raw_sample["solution"], "cot"
         )
-        correct = bool(eval_math({"prediction": post, "answer": reference}))
-        return True, {
-            "correct": correct,
-            "answer": reference,
-            "prediction": post,
-        }
+        prediction = post["rollouts"][0]["prediction"] or ""
+        correct = bool(eval_math({"prediction": prediction, "answer": reference}))
+        return True, build_judgement_record(
+            reference, [build_rollout_judgement(0, correct)]
+        )
 
     @override
     async def report(self, finals, fails):
@@ -128,7 +142,9 @@ class HendrycksMathFewShotBaseGenTask(
         total = len(finals) + len(fails)
         if total == 0:
             return {"score": 0.0, "fails": len(fails), "accuracy": 0.0}
-        correct_num = sum(1 for ctx in finals if ctx.feedback_result["correct"])
+        correct_num = sum(
+            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
+        )
         accuracy = 100 * correct_num / total
         return {
             "score": accuracy,

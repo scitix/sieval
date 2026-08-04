@@ -6,6 +6,11 @@ from unittest.mock import Mock
 
 import pytest
 
+from sieval.core.tasks import (
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.ruler._shared import (
     resolve_reserve_think_budget,
     thinking_prefill,
@@ -16,14 +21,18 @@ from sieval.tasks.ruler_0shot_gen import RulerZeroShotGenTask
 
 
 def _final(context_length, subtask, prediction, references):
-    """Build a minimal `finals` entry carrying only what report() reads."""
+    """Build a minimal `finals` entry carrying only what report() reads.
+
+    Post-migration that is two records: the prediction (which holds the model's
+    text) and the judgement (references + the grouping keys).
+    """
     return SimpleNamespace(
-        feedback_result={
-            "prediction": prediction,
-            "references": references,
-            "subtask": subtask,
-            "context_length": context_length,
-        }
+        postprocess_result=build_prediction_record([prediction]),
+        feedback_result=build_judgement_record(
+            references,
+            [build_rollout_judgement(0, False)],
+            extra={"subtask": subtask, "context_length": context_length},
+        ),
     )
 
 
@@ -134,9 +143,19 @@ class TestMessageModes:
             },
         }
 
-        raw = {"input": "Context here.", "answer_prefix": "Answer: "}
+        raw = {
+            "input": "Context here.",
+            "answer_prefix": "Answer: ",
+            # preprocess now records the gold + grouping keys on the prompt
+            # record, so a minimal sample has to carry them.
+            "outputs": ["cat"],
+            "subtask": "niah_single_1",
+            "context_length": 4096,
+        }
 
-        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))
+        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))[
+            "prompt"
+        ]
 
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
@@ -159,9 +178,19 @@ class TestMessageModes:
             },
         }
 
-        raw = {"input": "Context here.", "answer_prefix": "Answer: "}
+        raw = {
+            "input": "Context here.",
+            "answer_prefix": "Answer: ",
+            # preprocess now records the gold + grouping keys on the prompt
+            # record, so a minimal sample has to carry them.
+            "outputs": ["cat"],
+            "subtask": "niah_single_1",
+            "context_length": 4096,
+        }
 
-        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))
+        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))[
+            "prompt"
+        ]
 
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
@@ -187,9 +216,19 @@ class TestMessageModes:
             },
         }
 
-        raw = {"input": "Context here.", "answer_prefix": "Answer: "}
+        raw = {
+            "input": "Context here.",
+            "answer_prefix": "Answer: ",
+            # preprocess now records the gold + grouping keys on the prompt
+            # record, so a minimal sample has to carry them.
+            "outputs": ["cat"],
+            "subtask": "niah_single_1",
+            "context_length": 4096,
+        }
 
-        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))
+        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))[
+            "prompt"
+        ]
 
         assert len(messages) == 2
         assert messages[1]["role"] == "assistant"
@@ -207,9 +246,17 @@ class TestMessageModes:
             "default_params": {},  # No extra_body
         }
 
-        raw = {"input": "Context.", "answer_prefix": "Q: "}
+        raw = {
+            "input": "Context.",
+            "answer_prefix": "Q: ",
+            "outputs": ["cat"],
+            "subtask": "niah_single_1",
+            "context_length": 4096,
+        }
 
-        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))
+        messages = asyncio.run(RulerZeroShotGenTask.preprocess(task, raw, None))[
+            "prompt"
+        ]
 
         # Should default to user-message mode
         assert len(messages) == 1

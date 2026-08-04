@@ -9,7 +9,12 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.hendrycks_math import (
     HendrycksMathDataset,
     HendrycksMathDatasetSample,
@@ -83,16 +88,18 @@ async def test_preprocess_is_deepseek_minerva_prompt():
     raw = _sample(problem="Find $x$.")
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
     # 4 baked exemplars + the query block.
-    assert pre.count("Problem:\n") == 5
+    assert pre["prompt"].count("Problem:\n") == 5
     # DeepSeek formatting: "Solution:\n" and rstrip => ends exactly at "Solution:".
-    assert pre.endswith("Problem:\nFind $x$.\n\nSolution:")
-    assert "Final Answer: The final answer is" in pre
+    assert pre["prompt"].endswith("Problem:\nFind $x$.\n\nSolution:")
+    assert "Final Answer: The final answer is" in pre["prompt"]
 
 
 @pytest.mark.anyio
 async def test_infer_forwards_deepseek_stop_only():
     task, model = _task()
-    await task.infer("prompt", TaskContext(sample_id=0, raw_sample=_sample()))
+    await task.infer(
+        {"prompt": "prompt"}, TaskContext(sample_id=0, raw_sample=_sample())
+    )
     assert model.last_kwargs == {"stop": ["\nProblem:"]}
     assert "temperature" not in model.last_kwargs
     assert "max_tokens" not in model.last_kwargs
@@ -103,7 +110,7 @@ async def test_postprocess_returns_list_via_final_answer():
     task, _ = _task()
     inf = ModelOutput(model=task.model.meta(), texts=[f"reasoning{_FA.format('16')}"])
     post = await task.postprocess(inf, TaskContext(sample_id=0, raw_sample=_sample()))
-    assert post == ["16"]
+    assert post["rollouts"][0]["prediction"] == ["16"]
 
 
 @pytest.mark.anyio
@@ -113,7 +120,7 @@ async def test_postprocess_stops_at_next_problem_block():
     text = f"reasoning{_FA.format('16')}\n\nProblem:\nNext q\n\nSolution: $99$"
     inf = ModelOutput(model=task.model.meta(), texts=[text])
     post = await task.postprocess(inf, TaskContext(sample_id=0, raw_sample=_sample()))
-    assert post == ["16"]
+    assert post["rollouts"][0]["prediction"] == ["16"]
 
 
 @pytest.mark.anyio
@@ -121,15 +128,16 @@ async def test_feedback_scores_against_solution_via_eval_math():
     task, _ = _task()
     raw = _sample(solution="Therefore $\\boxed{16}$.")
     finalize, correct_fb = await task.feedback(
-        ["16"], TaskContext(sample_id=0, raw_sample=raw)
+        build_prediction_record([["16"]]), TaskContext(sample_id=0, raw_sample=raw)
     )
-    _, wrong_fb = await task.feedback(["17"], TaskContext(sample_id=1, raw_sample=raw))
+    _, wrong_fb = await task.feedback(
+        build_prediction_record([["17"]]), TaskContext(sample_id=1, raw_sample=raw)
+    )
 
     assert finalize is True
-    assert correct_fb["correct"] is True
-    assert correct_fb["answer"] == ["16"]
-    assert correct_fb["prediction"] == ["16"]
-    assert wrong_fb["correct"] is False
+    assert correct_fb["rollouts"][0]["correct"] is True
+    assert correct_fb["reference"] == ["16"]
+    assert wrong_fb["rollouts"][0]["correct"] is False
 
 
 @pytest.mark.anyio
@@ -138,8 +146,10 @@ async def test_feedback_percentage_equivalence():
     # independent of the (env-degraded) parse_latex symbolic layer.
     task, _ = _task()
     raw = _sample(solution="So $\\boxed{0.5}$.")
-    _, fb = await task.feedback(["50\\%"], TaskContext(sample_id=0, raw_sample=raw))
-    assert fb["correct"] is True
+    _, fb = await task.feedback(
+        build_prediction_record([["50\\%"]]), TaskContext(sample_id=0, raw_sample=raw)
+    )
+    assert fb["rollouts"][0]["correct"] is True
 
 
 @pytest.mark.anyio
@@ -152,12 +162,16 @@ async def test_report_counts_fails_as_wrong():
     correct = TaskContext(
         sample_id=0,
         raw_sample=raw,
-        feedback_result={"correct": True, "answer": ["16"], "prediction": ["16"]},
+        feedback_result=build_judgement_record(
+            ["16"], [build_rollout_judgement(0, True)]
+        ),
     )
     wrong = TaskContext(
         sample_id=1,
         raw_sample=raw,
-        feedback_result={"correct": False, "answer": ["16"], "prediction": ["17"]},
+        feedback_result=build_judgement_record(
+            ["16"], [build_rollout_judgement(0, False)]
+        ),
     )
     failed = TaskContext(sample_id=2, raw_sample=raw)  # pipeline failure, no feedback
     report = await task.report([correct, wrong], [failed])

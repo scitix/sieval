@@ -53,6 +53,10 @@ from sieval.core.tasks import (
     EvalMode,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import GSM8KDatasetSample
@@ -115,28 +119,35 @@ class GSM8KZeroShotGenTask(
 ):
     @override
     async def preprocess(self, raw, ctx):
-        return [
-            {"role": "user", "content": raw["question"] + COT_INSTRUCTION},
-        ]
+        return build_prompt_record(
+            [
+                {"role": "user", "content": raw["question"] + COT_INSTRUCTION},
+            ],
+            reference=_gold_answer(raw["answer"]),
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre)
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
         from sieval.community.deepseek_math import extract_answer
 
         text = inf.texts[0] if inf.texts else ""
-        return extract_answer(text, exhaust=False)
+        # extract_answer returns "" when nothing was found; None is the protocol's
+        # spelling of that, and feedback restores "" for the grader.
+        return build_prediction_record([extract_answer(text, exhaust=False) or None])
 
     @override
     async def feedback(self, post, ctx):
         from sieval.community.deepseek_math import is_correct
 
         gold = _gold_answer(ctx.raw_sample["answer"])
-        correct = is_correct({"prediction": post, "answer": gold})
-        return True, {"correct": correct, "answer": gold, "prediction": post}
+        # `or ""` restores exactly what the grader saw pre-migration.
+        prediction = post["rollouts"][0]["prediction"] or ""
+        correct = is_correct({"prediction": prediction, "answer": gold})
+        return True, build_judgement_record(gold, [build_rollout_judgement(0, correct)])
 
     @override
     async def report(self, finals, fails):
@@ -146,6 +157,8 @@ class GSM8KZeroShotGenTask(
         total = len(finals) + len(fails)
         if total == 0:
             return {"score": 0.0, "fails": len(fails), "accuracy": 0.0}
-        correct_num = sum(1 for ctx in finals if ctx.feedback_result["correct"])
+        correct_num = sum(
+            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
+        )
         accuracy = 100 * correct_num / total
         return {"score": accuracy, "fails": len(fails), "accuracy": accuracy}

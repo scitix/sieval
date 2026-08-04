@@ -1,8 +1,6 @@
 import re
 from collections import defaultdict
-from typing import TypedDict, override
-
-from openai.types.chat import ChatCompletionUserMessageParam
+from typing import override
 
 from sieval.community.simple_evals.common import (
     MULTILINGUAL_ANSWER_PATTERN_TEMPLATE,
@@ -15,18 +13,18 @@ from sieval.community.simple_evals.mmlu_eval import subject2category
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import MMLUDatasetSample
-
-
-class Feedback(TypedDict):
-    correct: bool
-    subject: str
-    category: str
-    answer: str
 
 
 @sieval_task(
@@ -52,10 +50,10 @@ class Feedback(TypedDict):
 class MMLUZeroShotGenTask(
     Task[
         MMLUDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        str,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -69,13 +67,21 @@ class MMLUZeroShotGenTask(
             "C": choices[2],
             "D": choices[3],
         }
-        return [
-            {"role": "user", "content": QUERY_TEMPLATE_MULTICHOICE.format(**data)},
-        ]
+        subject = raw.get("subject", "unknown")
+        return build_prompt_record(
+            [
+                {"role": "user", "content": QUERY_TEMPLATE_MULTICHOICE.format(**data)},
+            ],
+            reference="ABCD"[raw["answer"]],
+            extra={
+                "subject": subject,
+                "category": subject2category.get(subject, "other"),
+            },
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre)
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
@@ -87,27 +93,29 @@ class MMLUZeroShotGenTask(
             if match:
                 extracted_answer = normalize_extracted_answer(match.group(1))
                 break
-        return extracted_answer
+        # No regex matched -> None, so `extracted` reports the miss. The letter
+        # comparison below is unaffected: neither "" nor None equals a gold letter.
+        return build_prediction_record([extracted_answer or None])
 
     @override
     async def feedback(self, post, ctx):
         answer = "ABCD"[ctx.raw_sample["answer"]]
         subject = ctx.raw_sample.get("subject", "unknown")
         category = subject2category.get(subject, "other")
-        return True, {
-            "correct": post == answer,
-            "subject": subject,
-            "category": category,
-            "answer": answer,
-        }
+        prediction = post["rollouts"][0]["prediction"]
+        return True, build_judgement_record(
+            answer,
+            [build_rollout_judgement(0, prediction == answer)],
+            extra={"subject": subject, "category": category},
+        )
 
     @override
     async def report(self, finals, fails):
         correct_num = 0
         category_metrics = defaultdict(lambda: {"correct": 0, "total": 0})
         for ctx in finals:
-            correct = ctx.feedback_result["correct"]
-            category = ctx.feedback_result["category"]
+            correct = ctx.feedback_result["rollouts"][0]["correct"]
+            category = ctx.feedback_result["extra"]["category"]
             if correct:
                 correct_num += 1
                 category_metrics[category]["correct"] += 1

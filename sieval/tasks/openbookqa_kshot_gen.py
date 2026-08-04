@@ -30,7 +30,7 @@ a task-pinned value.
 AI-Generated Code - Opus 4.8 (Anthropic)
 """
 
-from typing import TypedDict, override
+from typing import override
 
 from openai.types.chat import ChatCompletionMessageParam
 
@@ -42,8 +42,15 @@ from sieval.community.openbookqa import (
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import OpenBookQADatasetSample
@@ -53,12 +60,6 @@ FEWSHOT_SEP = "\n\n"
 # Coupled to the few-shot block: each packed example begins with "Question:".
 # Applied only at k>0 to bound verbose run-on (see infer); k=0 stays unbounded.
 STOP_SEQUENCES = ("\nQuestion:",)
-
-
-class Feedback(TypedDict):
-    correct: bool
-    pred: str
-    answer: str
 
 
 def _format_question(sample: OpenBookQADatasetSample) -> str:
@@ -94,10 +95,10 @@ def _format_question(sample: OpenBookQADatasetSample) -> str:
 class OpenBookQAFewShotGenTask(
     Task[
         OpenBookQADatasetSample,
-        list[ChatCompletionMessageParam],
+        PromptRecord,
         ModelOutput,
-        str,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -141,8 +142,10 @@ class OpenBookQAFewShotGenTask(
     async def preprocess(self, raw, ctx):
         query = _format_question(raw)
         if self._fewshot_as_multiturn:
-            return [*self._fewshot_turns, {"role": "user", "content": query}]
-        return [{"role": "user", "content": self._fewshot_prefix + query}]
+            prompt = [*self._fewshot_turns, {"role": "user", "content": query}]
+        else:
+            prompt = [{"role": "user", "content": self._fewshot_prefix + query}]
+        return build_prompt_record(prompt, reference=raw["answerKey"])
 
     @override
     async def infer(self, pre, ctx):
@@ -152,22 +155,30 @@ class OpenBookQAFewShotGenTask(
         # override the real leading answer. Bound generation at the next example
         # boundary. k=0 stays unbounded to match the upstream 0-shot config.
         if self._k > 0 and self._stop:
-            return await self.model.agenerate(pre, stop=list(self._stop))
-        return await self.model.agenerate(pre)
+            return await self.model.agenerate(pre["prompt"], stop=list(self._stop))
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
-        # n=1, only one choice
-        return first_option_postprocess(inf.texts[0], OBQA_OPTIONS)
+        # n=1, only one choice. No option found -> None, so `extracted` reports
+        # the miss; "" and None both fail the letter comparison below.
+        return build_prediction_record(
+            [first_option_postprocess(inf.texts[0], OBQA_OPTIONS) or None]
+        )
 
     @override
     async def feedback(self, post, ctx):
         answer = ctx.raw_sample["answerKey"]
-        return True, {"correct": post == answer, "pred": post, "answer": answer}
+        prediction = post["rollouts"][0]["prediction"]
+        return True, build_judgement_record(
+            answer, [build_rollout_judgement(0, prediction == answer)]
+        )
 
     @override
     async def report(self, finals, fails):
-        correct = sum(1 for ctx in finals if ctx.feedback_result["correct"])
+        correct = sum(
+            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
+        )
         accuracy = 100 * correct / len(finals) if finals else 0.0
         # `score` is the headline; `accuracy` names the metric behind it
         # (% of finalized samples whose extracted letter equals answerKey),

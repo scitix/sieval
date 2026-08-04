@@ -21,9 +21,6 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
 from collections import defaultdict
-from typing import TypedDict
-
-from openai.types.chat import ChatCompletionMessageParam
 
 from sieval.community.ruler.eval.constants import (
     string_match_all,
@@ -32,20 +29,20 @@ from sieval.community.ruler.eval.constants import (
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets.ruler import RulerDatasetSample, len_tag, thinking_prefill
 
 _QA_SUBTASKS: frozenset[str] = frozenset({"qa_squad", "qa_hotpotqa"})
-
-
-class RulerFeedback(TypedDict):
-    prediction: str
-    references: list[str]
-    subtask: str
-    context_length: int
 
 
 @sieval_task(
@@ -116,10 +113,10 @@ class RulerFeedback(TypedDict):
 class RulerZeroShotGenTask(
     Task[
         RulerDatasetSample,
-        list[ChatCompletionMessageParam],
+        PromptRecord,
         ModelOutput,
-        str,
-        RulerFeedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -150,18 +147,26 @@ class RulerZeroShotGenTask(
             enable_thinking = extra_body.get("enable_thinking", False)
             prefill = thinking_prefill(model_meta["model"], enable_thinking)
             assistant_content = f"{prefill}{raw['answer_prefix']}"
-            return [
+            prompt = [
                 {"role": "user", "content": raw["input"]},
                 {"role": "assistant", "content": assistant_content},
             ]
         else:
             # User-message pattern: answer_prefix appended to user message (default)
-            return [
+            prompt = [
                 {
                     "role": "user",
                     "content": raw["input"] + raw["answer_prefix"],
                 },
             ]
+        return build_prompt_record(
+            prompt,
+            reference=list(raw["outputs"]),
+            extra={
+                "subtask": raw["subtask"],
+                "context_length": raw["context_length"],
+            },
+        )
 
     async def infer(self, pre, ctx):
         # Cap generation per subtask, matching NVIDIA/RULER's tokens_to_generate
@@ -196,22 +201,66 @@ class RulerZeroShotGenTask(
         return await self.model.agenerate(pre, max_tokens=max_tokens)
 
     async def postprocess(self, inf, ctx):  # noqa: ARG002
-        return inf.texts[0]
+        # Open-ended retrieval: the response *is* the answer. A blank response
+        # normalizes to None so `extracted` stays a real signal; the matcher below
+        # still sees "" and scores it 0.
+        text = inf.texts[0]
+        return build_prediction_record([text if text.strip() else None])
 
-    async def feedback(self, post: str, ctx) -> tuple[bool, RulerFeedback]:  # noqa: ARG002
-        return True, {
-            "prediction": post,
-            "references": ctx.raw_sample["outputs"],
-            "subtask": ctx.raw_sample["subtask"],
-            "context_length": ctx.raw_sample["context_length"],
-        }
+    async def feedback(self, post, ctx) -> tuple[bool, JudgementRecord]:
+        """Score this sample against its references.
+
+        RULER upstream only ever produced a per-CELL number: `string_match_*`
+        take whole lists and average internally, so before this migration no
+        sample carried a verdict of its own. Both metrics decompose exactly --
+        `string_match_all` is the mean of per-sample `matched / len(refs)` and
+        `string_match_part` the mean of per-sample `any(matched)` -- so the
+        per-sample term is computed here and report() averages the stored values.
+        Same arithmetic, same floats, and now every row is inspectable.
+        """
+        prediction = post["rollouts"][0]["prediction"] or ""
+        references = list(ctx.raw_sample["outputs"])
+        subtask = ctx.raw_sample["subtask"]
+        lowered = prediction.lower()
+        hits = [1.0 if r.lower() in lowered else 0.0 for r in references]
+        if subtask in _QA_SUBTASKS:
+            # string_match_part: credit for finding ANY reference.
+            score = max(hits) if hits else 0.0
+        else:
+            # string_match_all: the fraction of references found.
+            score = sum(hits) / len(hits) if hits else 0.0
+        return True, build_judgement_record(
+            references,
+            [
+                build_rollout_judgement(
+                    0,
+                    # The strict binary reading: every reference the metric asks
+                    # for was found. `score` carries the partial credit.
+                    score == 1.0,
+                    score=score,
+                )
+            ],
+            score=score,
+            extra={
+                "subtask": subtask,
+                "context_length": ctx.raw_sample["context_length"],
+                "n_references": len(references),
+            },
+        )
 
     async def report(self, finals: list, fails: list) -> dict[str, float | int]:
+        # Cell scores still go through the VENDORED string_match_* functions on the
+        # whole cell, unchanged. The per-sample `score` on each judgement is the
+        # decomposed term of the same formula, recorded for inspectability, but it
+        # is deliberately NOT what is aggregated here: re-deriving the cell mean in
+        # this file would fork upstream's scoring, and a vendored metric that no
+        # longer runs is a reproduction that drifts silently.
         cells: dict[tuple[int, str], list[tuple[str, list[str]]]] = defaultdict(list)
         for ctx in finals:
-            fb: RulerFeedback = ctx.feedback_result
-            cells[(fb["context_length"], fb["subtask"])].append(
-                (fb["prediction"], fb["references"])
+            fb = ctx.feedback_result
+            prediction = ctx.postprocess_result["rollouts"][0]["prediction"] or ""
+            cells[(fb["extra"]["context_length"], fb["extra"]["subtask"])].append(
+                (prediction, list(fb["reference"]))
             )
 
         cell_scores: dict[tuple[int, str], float] = {}

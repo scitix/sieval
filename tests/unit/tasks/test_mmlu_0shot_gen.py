@@ -9,7 +9,12 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.mmlu import MMLUDataset, MMLUDatasetSample
 from sieval.tasks.mmlu_0shot_gen import MMLUZeroShotGenTask
 
@@ -53,17 +58,21 @@ def _task() -> MMLUZeroShotGenTask:
 
 
 def _fb(correct: bool, subject: str = "anatomy", category: str = "other"):
-    return {"correct": correct, "subject": subject, "category": category, "answer": "A"}
+    return build_judgement_record(
+        "A",
+        [build_rollout_judgement(0, correct)],
+        extra={"subject": subject, "category": category},
+    )
 
 
 @pytest.mark.anyio
 async def test_feedback_derives_letter_from_answer_index():
     task = _task()
     ctx = TaskContext(sample_id=0, raw_sample=_sample(subject="astronomy", answer=2))
-    finalize, fb = await task.feedback("C", ctx)
+    finalize, fb = await task.feedback(build_prediction_record(["C"]), ctx)
     assert finalize is True
-    assert fb["answer"] == "C" and fb["correct"] is True
-    assert fb["subject"] == "astronomy"
+    assert fb["reference"] == "C" and fb["rollouts"][0]["correct"] is True
+    assert fb["extra"]["subject"] == "astronomy"
 
 
 @pytest.mark.anyio

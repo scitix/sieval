@@ -1,23 +1,22 @@
 import re
-from typing import TypedDict, override
-
-from openai.types.chat import ChatCompletionUserMessageParam
+from typing import override
 
 from sieval.community.simple_evals.common import ANSWER_PATTERN
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import DROPDatasetSample
-
-
-class Feedback(TypedDict):
-    em: float
-    f1: float
-    ref_text: str
 
 
 @sieval_task(
@@ -38,10 +37,10 @@ class Feedback(TypedDict):
 class DROPFewShotGenTask(
     Task[
         DROPDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        str,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -73,23 +72,31 @@ class DROPFewShotGenTask(
                 for ex in few_shot_examples
             ]
         )
-        return [
-            {
-                "role": "user",
-                "content": QUERY_TEMPLATE.format(
-                    few_shot_str=few_shot_str, context=raw["context"]
-                ),
-            }
-        ]
+        return build_prompt_record(
+            [
+                {
+                    "role": "user",
+                    "content": QUERY_TEMPLATE.format(
+                        few_shot_str=few_shot_str, context=raw["context"]
+                    ),
+                }
+            ],
+            # DROP golds are a `|`-separated set of acceptable answers.
+            reference=raw["ref_text"],
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre)
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
         match = re.search(ANSWER_PATTERN, inf.texts[0])  # n=1, only one choice
-        return match.group(1) if match else inf.texts[0]
+        # No pattern match falls back to the whole response, exactly as before;
+        # only a wholly empty response has no answer at all.
+        return build_prediction_record(
+            [(match.group(1) if match else inf.texts[0]) or None]
+        )
 
     @override
     async def feedback(self, post, ctx):
@@ -97,14 +104,26 @@ class DROPFewShotGenTask(
 
         ref = ctx.raw_sample["ref_text"]
         answers = ref.split("|")
-        em, f1 = drop_metric(post, answers)
-        return True, {"em": em, "f1": f1, "ref_text": ref}
+        prediction = post["rollouts"][0]["prediction"] or ""
+        em, f1 = drop_metric(prediction, answers)
+        # DROP's two published metrics fit the headline natively -- exact match is
+        # the binary verdict, F1 the partial credit -- but both are also named in
+        # `metrics`, so a generic reader can enumerate them without knowing that
+        # this task's `score` happens to be F1. report() pools from `metrics`, so
+        # the aggregate cannot drift from the values recorded here.
+        metrics: dict[str, bool | float] = {"em": em, "f1": f1}
+        return True, build_judgement_record(
+            ref,
+            [build_rollout_judgement(0, bool(em), score=f1, metrics=metrics)],
+            score=f1,
+            metrics=metrics,
+        )
 
     @override
     async def report(self, finals, fails):
         count = len(finals)
-        total_em = sum(ctx.feedback_result["em"] for ctx in finals)
-        total_f1 = sum(ctx.feedback_result["f1"] for ctx in finals)
+        total_em = sum(ctx.feedback_result["metrics"]["em"] for ctx in finals)
+        total_f1 = sum(ctx.feedback_result["metrics"]["f1"] for ctx in finals)
         avg_em = total_em / count * 100 if count > 0 else 0
         avg_f1 = total_f1 / count if count > 0 else 0
         return {"score": avg_f1, "fails": len(fails), "em": avg_em, "f1": avg_f1}

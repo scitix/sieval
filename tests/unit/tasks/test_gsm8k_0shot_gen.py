@@ -9,7 +9,11 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.gsm8k import GSM8KDataset, GSM8KDatasetSample
 from sieval.tasks.gsm8k_0shot_gen import (
     COT_INSTRUCTION,
@@ -67,9 +71,12 @@ def test_cot_instruction_pinned():
 @pytest.mark.anyio
 async def test_preprocess_appends_instruction_single_user_turn():
     task, _ = _task("x")
-    messages = await task.preprocess(
+    pre = await task.preprocess(
         _sample(), TaskContext(sample_id=0, raw_sample=_sample())
     )
+    messages = pre["prompt"]
+    # The gold reaches disk from preprocess; raw_sample is never serialized.
+    assert pre["reference"] == "42"
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == "What is 40 + 2?" + COT_INSTRUCTION
@@ -93,7 +100,7 @@ async def test_postprocess_prefers_boxed():
         model=model.meta(), texts=["Work.\nSo the answer is $\\boxed{42}$."]
     )
     post = await task.postprocess(inf, TaskContext(sample_id=0, raw_sample=_sample()))
-    assert post == "42"
+    assert post["rollouts"][0]["prediction"] == "42"
 
 
 @pytest.mark.anyio
@@ -101,7 +108,7 @@ async def test_postprocess_last_number_fallback():
     task, model = _task("x")
     inf = ModelOutput(model=model.meta(), texts=["first 12 then finally 30"])
     post = await task.postprocess(inf, TaskContext(sample_id=0, raw_sample=_sample()))
-    assert post == "30"
+    assert post["rollouts"][0]["prediction"] == "30"
 
 
 # --- scoring via vendored is_correct/math_equal (numeric isclose) ---
@@ -118,8 +125,8 @@ async def test_feedback_numeric_equal_via_math_equal():
     post = await task.postprocess(inf, ctx)
     finalize, fb = await task.feedback(post, ctx)
     assert finalize is True
-    assert fb["answer"] == "1000"
-    assert fb["correct"] is True
+    assert fb["reference"] == "1000"
+    assert fb["rollouts"][0]["correct"] is True
 
 
 @pytest.mark.anyio
@@ -130,7 +137,7 @@ async def test_feedback_wrong_answer():
     ctx = TaskContext(sample_id=0, raw_sample=raw, infer_result=inf)
     post = await task.postprocess(inf, ctx)
     _, fb = await task.feedback(post, ctx)
-    assert fb["correct"] is False
+    assert fb["rollouts"][0]["correct"] is False
 
 
 # --- report accuracy + infer injects no decode params ---
@@ -141,8 +148,20 @@ async def test_report_accuracy():
     task, _ = _task("x")
     raw = _sample()
     finals = [
-        TaskContext(sample_id=0, raw_sample=raw, feedback_result={"correct": True}),
-        TaskContext(sample_id=1, raw_sample=raw, feedback_result={"correct": False}),
+        TaskContext(
+            sample_id=0,
+            raw_sample=raw,
+            feedback_result=build_judgement_record(
+                "1000", [build_rollout_judgement(0, True)]
+            ),
+        ),
+        TaskContext(
+            sample_id=1,
+            raw_sample=raw,
+            feedback_result=build_judgement_record(
+                "1000", [build_rollout_judgement(0, False)]
+            ),
+        ),
     ]
     report = await task.report(finals, [])
     assert report == {"score": 50.0, "fails": 0, "accuracy": 50.0}
@@ -162,7 +181,13 @@ async def test_report_counts_fails_in_denominator():
     task, _ = _task("x")
     raw = _sample()
     finals = [
-        TaskContext(sample_id=0, raw_sample=raw, feedback_result={"correct": True}),
+        TaskContext(
+            sample_id=0,
+            raw_sample=raw,
+            feedback_result=build_judgement_record(
+                "1000", [build_rollout_judgement(0, True)]
+            ),
+        ),
     ]
     fails = [TaskContext(sample_id=1, raw_sample=raw)]
     report = await task.report(finals, fails)

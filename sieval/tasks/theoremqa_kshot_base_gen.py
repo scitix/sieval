@@ -38,7 +38,16 @@ from math import cos, e, exp, factorial, log, pi, sin, sqrt
 from typing import TypedDict, override
 
 from sieval.core.models import ModelOutput
-from sieval.core.tasks import EvalMode, ReferenceImpl, Task, sieval_task
+from sieval.core.tasks import (
+    EvalMode,
+    ReferenceImpl,
+    Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
+    sieval_task,
+)
 from sieval.datasets import TheoremQADatasetSample
 
 
@@ -450,29 +459,43 @@ class TheoremQAKShotBaseGenTask(
     @override
     async def preprocess(self, raw, ctx):
         prompt_no_input, prefix = self._get_prompt_parts()
-        return prompt_no_input + prefix.format(query=raw["Question"])
+        return build_prompt_record(
+            prompt_no_input + prefix.format(query=raw["Question"]),
+            reference=_groundtruth_args(raw)[0],
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre, stop=_STOP_TOKENS)
+        return await self.model.agenerate(pre["prompt"], stop=_STOP_TOKENS)
 
     @override
     async def postprocess(self, inf, ctx):
         text = inf.texts[0] if inf.texts else ""
-        return answer_clean(_DIRECT_ANSWER_TRIGGERS, text)
+        # answer_clean returns "" when nothing was extracted; None is the
+        # protocol's spelling, and report()'s `empty` counter now reads
+        # `extracted` instead of comparing against "".
+        return build_prediction_record(
+            [answer_clean(_DIRECT_ANSWER_TRIGGERS, text) or None]
+        )
 
     @override
     async def feedback(self, post, ctx):
         answer, groundtruth_num = _groundtruth_args(ctx.raw_sample)
-        return True, {
-            "correct": compare_answer_with_groundtruth(
-                post,
-                answer,
-                groundtruth_num,
-            ),
-            "pred": post,
-            "answer": answer,
-        }
+        # `or ""` restores exactly what the comparator saw pre-migration.
+        prediction = post["rollouts"][0]["prediction"] or ""
+        return True, build_judgement_record(
+            answer,
+            [
+                build_rollout_judgement(
+                    0,
+                    compare_answer_with_groundtruth(
+                        prediction,
+                        answer,
+                        groundtruth_num,
+                    ),
+                )
+            ],
+        )
 
     @override
     async def report(self, finals, fails) -> dict[str, float]:
@@ -485,8 +508,16 @@ class TheoremQAKShotBaseGenTask(
                 "empty": 0,
             }
 
-        correct = sum(1 for ctx in finals if ctx.feedback_result["correct"])
-        empty = sum(1 for ctx in finals if ctx.feedback_result["pred"] == "")
+        correct = sum(
+            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
+        )
+        # Same population as the old `pred == ""` check: postprocess maps exactly
+        # that empty extraction to None, which is what `extracted: false` means.
+        empty = sum(
+            1
+            for ctx in finals
+            if not ctx.postprocess_result["rollouts"][0]["extracted"]
+        )
         accuracy = 100 * correct / count
         return {
             "score": accuracy,

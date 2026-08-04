@@ -13,7 +13,7 @@ from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import TaskContext, build_prediction_record
 from sieval.datasets.ifbench import IFBenchDataset
 from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
 
@@ -112,10 +112,19 @@ def _install_fake_evaluator(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_report_scores_finals_and_counts_fails(monkeypatch: pytest.MonkeyPatch):
     _install_fake_evaluator(monkeypatch)
     task = _task()
+    # Grading moved from report() into feedback() (the relocation #60 made for
+    # IFEval), so the verdict is produced here and report() only aggregates. The
+    # expected numbers below are unchanged from the pre-migration shape -- that
+    # equality IS the parity check.
+    raw = _sample("ifbench-1", "final prompt")
+    grading_ctx = TaskContext(sample_id=0, raw_sample=raw)
+    _, judgement = await task.feedback(
+        build_prediction_record(["final response"]), grading_ctx
+    )
     final_ctx = TaskContext(
         sample_id=0,
-        raw_sample=_sample("ifbench-1", "final prompt"),
-        feedback_result="final response",
+        raw_sample=raw,
+        feedback_result=judgement,
     ).to_final()
     failed_ctx = TaskContext(
         sample_id=1,

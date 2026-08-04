@@ -5,14 +5,20 @@ from typing import Literal, override
 import anyio
 import numpy as np
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionUserMessageParam
 
 from sieval.community.t_eval import EMB_PLACEHOLDER, ResponseDataSample, format_load
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import TEvalBeforeCallingDatasetSample
@@ -36,10 +42,10 @@ from sieval.datasets import TEvalBeforeCallingDatasetSample
 class TEvalBeforeCallingZeroShotGenTask(
     Task[
         TEvalBeforeCallingDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        str,
-        dict[str, float],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -74,32 +80,74 @@ class TEvalBeforeCallingZeroShotGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return raw["origin_prompt"]
+        return build_prompt_record(
+            raw["origin_prompt"],
+            # The gold is the expected tool call, stored as a JSON string on the
+            # sample; parsed at judgement time by the same path that grades it.
+            reference=raw["ground_truth"],
+            extra={"template": raw["template"]},
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre)
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
-        return inf.texts[0]  # n=1, only one choice, and pass directly
+        # n=1. The raw response IS the answer here -- parsing into a tool call is
+        # the evaluator's job, in feedback. A blank response normalizes to None so
+        # `extracted` stays a real signal.
+        text = inf.texts[0]
+        return build_prediction_record([text if text.strip() else None])
 
     @override
     async def feedback(self, post, ctx):
+        """Grade one response on every axis the T-Eval evaluator measures.
+
+        T-Eval scores a tool call on several CO-EQUAL continuous axes (thought
+        similarity, tool-name match, argument precision/recall/F1, parse rate) --
+        there is no single published headline, and report() macro-averages each
+        axis independently. So every axis goes in `metrics`, by name, where a
+        generic reader can enumerate them.
+
+        `correct` still has to be one bool. It is defined as the strict reading --
+        every axis the evaluator scored came out at 1.0, i.e. the model produced
+        exactly the right call -- and it is DERIVED from `metrics` rather than
+        computed separately, so the two cannot disagree. It is deliberately not
+        `parse_rate`: a task whose `correct` meant "the output parsed" would look
+        near-perfect next to every other task on the one axis that is supposed to
+        be comparable across them.
+
+        `parse_error` is a count of unparseable segments, not a measurement of the
+        answer, so it stays in `extra`.
+        """
+        prediction = post["rollouts"][0]["prediction"] or ""
         resp_data_sample, error = self._process_response(
             {
                 "template": ctx.raw_sample["template"],
-                "prediction": post,
+                "prediction": prediction,
                 "ground_truth": json.loads(ctx.raw_sample["ground_truth"]),
                 "meta_data": ctx.raw_sample["meta_data"],
             }
         )
         metrics_result = await self._evaluate(resp_data_sample)
-        return True, {**metrics_result, "parse_error": error}
+        metrics: dict[str, bool | float] = {
+            key: float(value) for key, value in metrics_result.items()
+        }
+        correct = bool(metrics) and all(value == 1.0 for value in metrics.values())
+        return True, build_judgement_record(
+            ctx.raw_sample["ground_truth"],
+            [build_rollout_judgement(0, correct, metrics=metrics)],
+            metrics=metrics,
+            extra={"parse_error": error},
+        )
 
     @override
     async def report(self, finals, fails):
-        results_list = [ctx.feedback_result for ctx in finals]
+        # _post_process macro-averages each named axis, so it is fed the metric
+        # mapping each judgement recorded -- the same numbers, now enumerable on
+        # disk instead of flattened into an untyped per-task feedback dict.
+        results_list = [dict(ctx.feedback_result["metrics"]) for ctx in finals]
         return {**self._post_process(results_list), "fails": len(fails)}
 
     def _format_load(self, data) -> dict:

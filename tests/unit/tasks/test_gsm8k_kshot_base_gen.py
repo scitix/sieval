@@ -9,7 +9,9 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+)
 from sieval.datasets.gsm8k import GSM8KDataset, GSM8KDatasetSample
 from sieval.tasks.gsm8k_kshot_base_gen import (
     STOP_SEQUENCES,
@@ -73,7 +75,9 @@ def test_strict_and_flexible_extractors_are_distinct():
 async def test_infer_only_forwards_prompt_coupled_stop():
     task, model = _task()
 
-    await task.infer("prompt", TaskContext(sample_id=0, raw_sample=_sample()))
+    await task.infer(
+        {"prompt": "prompt"}, TaskContext(sample_id=0, raw_sample=_sample())
+    )
 
     assert model.last_kwargs == {"stop": list(STOP_SEQUENCES)}
 
@@ -101,8 +105,10 @@ async def test_feedback_and_report_include_flexible_secondary_metric():
     )
 
     assert finalize is True
-    assert feedback["correct"] is False
-    assert feedback["flexible_correct"] is True
+    # Co-equal metrics: both readings named, headline derived from the strict one.
+    assert feedback["metrics"]["exact_match"] is False
+    assert feedback["metrics"]["flexible_exact_match"] is True
+    assert feedback["rollouts"][0]["correct"] is False
     assert report["score"] == 0.0
     assert report["exact_match"] == 0.0
     assert report["flexible_exact_match"] == 100.0

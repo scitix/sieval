@@ -10,7 +10,9 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.community.openbookqa import OBQA_PROMPT_TEMPLATE
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+)
 from sieval.datasets.openbookqa import OpenBookQADataset, OpenBookQADatasetSample
 from sieval.tasks.openbookqa_kshot_gen import (
     STOP_SEQUENCES,
@@ -69,7 +71,9 @@ async def test_zero_shot_prompt_has_no_fewshot_prefix():
     raw = _sample("q-test")
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
 
-    assert pre == [{"role": "user", "content": _expected_question(raw)}]
+    assert pre["prompt"] == [{"role": "user", "content": _expected_question(raw)}]
+    # The gold reaches disk from preprocess; raw_sample is never serialized.
+    assert pre["reference"] == raw["answerKey"]
 
 
 @pytest.mark.anyio
@@ -81,7 +85,7 @@ async def test_kshot_prefix_uses_fixed_first_k_train_rows_with_answer():
 
     raw = _sample("q-test")
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
-    content = pre[0]["content"]
+    content = pre["prompt"][0]["content"]
 
     # Fixed first 2 train rows, each with its answerKey appended, then the question.
     expected_prefix = (
@@ -106,7 +110,7 @@ async def test_multiturn_renders_alternating_user_assistant_turns():
 
     # Each shot becomes a user(question) + assistant(answerKey) pair, then the
     # final query as a trailing user turn — no single-turn packing.
-    assert pre == [
+    assert pre["prompt"] == [
         {"role": "user", "content": _expected_question(train[0])},
         {"role": "assistant", "content": "A"},
         {"role": "user", "content": _expected_question(train[1])},
@@ -123,7 +127,7 @@ async def test_infer_does_not_forward_decoding_params():
 
     raw = _sample("q-test")
     await task.infer(
-        [{"role": "user", "content": "x"}],
+        {"prompt": [{"role": "user", "content": "x"}]},
         TaskContext(sample_id=0, raw_sample=raw),
     )
 
@@ -144,7 +148,7 @@ async def test_infer_bounds_generation_at_kshot_but_not_zero_shot():
     model_k = _CapturingChatModel()
     task_k = OpenBookQAFewShotGenTask(dataset, model_k, k=2)
     await task_k.infer(
-        [{"role": "user", "content": "x"}],
+        {"prompt": [{"role": "user", "content": "x"}]},
         TaskContext(sample_id=0, raw_sample=_sample("q-test")),
     )
     assert model_k.last_kwargs.get("stop") == list(STOP_SEQUENCES)
@@ -153,7 +157,7 @@ async def test_infer_bounds_generation_at_kshot_but_not_zero_shot():
     model_0 = _CapturingChatModel()
     task_0 = OpenBookQAFewShotGenTask(dataset, model_0, k=0)
     await task_0.infer(
-        [{"role": "user", "content": "x"}],
+        {"prompt": [{"role": "user", "content": "x"}]},
         TaskContext(sample_id=0, raw_sample=_sample("q-test")),
     )
     assert "stop" not in model_0.last_kwargs
@@ -171,7 +175,7 @@ async def test_feedback_and_report_accuracy_and_field_types():
         ModelOutput(model=task.model.meta(), texts=["The answer is A."]),
         TaskContext(sample_id=0, raw_sample=correct_raw),
     )
-    assert post == "A"
+    assert post["rollouts"][0]["prediction"] == "A"
 
     _, fb_correct = await task.feedback(
         post, TaskContext(sample_id=0, raw_sample=correct_raw)
@@ -179,8 +183,8 @@ async def test_feedback_and_report_accuracy_and_field_types():
     _, fb_wrong = await task.feedback(
         post, TaskContext(sample_id=1, raw_sample=wrong_raw)
     )
-    assert fb_correct["correct"] is True
-    assert fb_wrong["correct"] is False
+    assert fb_correct["rollouts"][0]["correct"] is True
+    assert fb_wrong["rollouts"][0]["correct"] is False
 
     finals = [
         TaskContext(sample_id=0, raw_sample=correct_raw, feedback_result=fb_correct),

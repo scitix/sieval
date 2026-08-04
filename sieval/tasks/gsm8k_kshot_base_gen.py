@@ -30,6 +30,10 @@ from sieval.core.tasks import (
     EvalMode,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import GSM8KDatasetSample
@@ -160,42 +164,58 @@ class GSM8KFewShotBaseGenTask(
     @override
     async def preprocess(self, raw, ctx):
         examples = self._get_fewshot_examples()
-        return "".join(_format_example(ex, include_answer=True) for ex in examples) + (
-            _format_example(raw, include_answer=False)
-        )
+        prompt = "".join(
+            _format_example(ex, include_answer=True) for ex in examples
+        ) + (_format_example(raw, include_answer=False))
+        return build_prompt_record(prompt, reference=_extract_answer(raw["answer"])[0])
 
     @override
     async def infer(self, pre, ctx):
         # Keep `stop` out of the kwargs when unset so it can't clobber the
         # model's configured stop via the `{**self._kwargs, **kwargs}` merge.
         if self._stop:
-            return await self.model.agenerate(pre, stop=list(self._stop))
-        return await self.model.agenerate(pre)
+            return await self.model.agenerate(pre["prompt"], stop=list(self._stop))
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
         text = inf.texts[0] if inf.texts else ""
         answer, extraction_method = _extract_answer(text)
         flexible_answer, flexible_extraction_method = _extract_flexible_match(text)
-        return {
-            "answer": answer,
-            "flexible_answer": flexible_answer,
-            "extraction_method": extraction_method,
-            "flexible_extraction_method": flexible_extraction_method,
-        }
+        # The strict extraction is the headline prediction; the flexible one is a
+        # second extraction RULE over the same response, not a second rollout, so
+        # it rides in `extra` next to how each was obtained.
+        return build_prediction_record(
+            [answer or None],
+            extra={
+                "flexible_prediction": flexible_answer,
+                "extraction_method": extraction_method,
+                "flexible_extraction_method": flexible_extraction_method,
+            },
+        )
 
     @override
     async def feedback(self, post, ctx):
         answer, _ = _extract_answer(ctx.raw_sample["answer"])
-        return True, {
-            "correct": post["answer"] == answer,
-            "flexible_correct": post["flexible_answer"] == answer,
-            "answer": answer,
-            "prediction": post["answer"],
-            "flexible_prediction": post["flexible_answer"],
-            "extraction_method": post["extraction_method"],
-            "flexible_extraction_method": post["flexible_extraction_method"],
+        # Strict and flexible extraction are co-equal published metrics over one
+        # response, so both are named in `metrics`; `correct` is DERIVED from the
+        # strict one (the headline `exact_match`) so the two cannot drift.
+        prediction = post["rollouts"][0]["prediction"] or ""
+        metrics: dict[str, bool | float] = {
+            "exact_match": prediction == answer,
+            "flexible_exact_match": post["extra"]["flexible_prediction"] == answer,
         }
+        return True, build_judgement_record(
+            answer,
+            [build_rollout_judgement(0, bool(metrics["exact_match"]), metrics=metrics)],
+            metrics=metrics,
+            extra={
+                "extraction_method": post["extra"]["extraction_method"],
+                "flexible_extraction_method": post["extra"][
+                    "flexible_extraction_method"
+                ],
+            },
+        )
 
     @override
     async def report(self, finals, fails):
@@ -207,9 +227,13 @@ class GSM8KFewShotBaseGenTask(
                 "exact_match": 0.0,
                 "flexible_exact_match": 0.0,
             }
-        correct_num = sum(1 for ctx in finals if ctx.feedback_result["correct"])
+        correct_num = sum(
+            1 for ctx in finals if ctx.feedback_result["metrics"]["exact_match"]
+        )
         flexible_correct_num = sum(
-            1 for ctx in finals if ctx.feedback_result["flexible_correct"]
+            1
+            for ctx in finals
+            if ctx.feedback_result["metrics"]["flexible_exact_match"]
         )
         exact_match = 100 * correct_num / count
         flexible_exact_match = 100 * flexible_correct_num / count

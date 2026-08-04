@@ -24,21 +24,28 @@ dependency. The Docker image pre-bakes them; offline runs must pre-stage them
 AI-Generated Code - GPT-5 (OpenAI)
 """
 
-from typing import TYPE_CHECKING, Any, override
-
-from openai.types.chat import ChatCompletionUserMessageParam
-
-if TYPE_CHECKING:
-    from sieval.community.ifbench.evaluation_lib import OutputExample
+from typing import Any, override
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
 from sieval.datasets import IFBenchDatasetSample
+
+# Both readings are published IFBench metrics. `loose` is the headline (the task's
+# `score` is loose prompt-level accuracy) -- the opposite of IFEval, where strict
+# is the headline; the shape is otherwise identical.
+_GRADES = ("strict", "loose")
 
 
 @sieval_task(
@@ -76,10 +83,10 @@ from sieval.datasets import IFBenchDatasetSample
 class IFBenchZeroShotGenTask(
     Task[
         IFBenchDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        str,
-        str,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -88,51 +95,108 @@ class IFBenchZeroShotGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return [{"role": "user", "content": raw["prompt"]}]
+        return build_prompt_record(
+            [{"role": "user", "content": raw["prompt"]}],
+            # The "ground truth" is the constraint set the response must satisfy.
+            reference=list(raw["instruction_id_list"]),
+            extra={"key": raw["key"], "kwargs": self._clean_kwargs(raw["kwargs"])},
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre)
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
-        return inf.texts[0]
+        # Open-ended task: the response *is* the answer, so no extraction step.
+        # A blank response normalizes to None so `extracted` stays a real signal.
+        text = inf.texts[0]
+        return build_prediction_record([text if text.strip() else None])
 
     @override
     async def feedback(self, post, ctx):
-        return True, post
+        """Grade this sample's constraints, strict and loose.
 
-    @override
-    async def report(self, finals, fails):
+        Graded here rather than in report() -- the same relocation #60 made for
+        IFEval -- so every sample's verdict is on disk and inspectable instead of
+        existing only inside the aggregate. Both graders are pure per-sample
+        (their only use of the response map is `prompt_to_response[inp.prompt]`),
+        so scoring one sample at a time is equivalent to upstream's whole-set call.
+        """
         from sieval.community.ifbench.evaluation_lib import (
             InputExample,
             test_instruction_following_loose,
             test_instruction_following_strict,
         )
 
-        inputs = [
-            InputExample(
-                key=f.raw_sample["key"],
-                instruction_id_list=f.raw_sample["instruction_id_list"],
-                prompt=f.raw_sample["prompt"],
-                kwargs=self._clean_kwargs(f.raw_sample["kwargs"]),
-            )
-            for f in finals
-        ]
-        prompt_to_response = {f.raw_sample["prompt"]: f.feedback_result for f in finals}
-        results = {"fails": len(fails)}
+        graders = {
+            "strict": test_instruction_following_strict,
+            "loose": test_instruction_following_loose,
+        }
+        raw = ctx.raw_sample
+        prompt = raw["prompt"]
+        instruction_ids = list(raw["instruction_id_list"])
+        response = post["rollouts"][0]["prediction"] or ""
+        inp = InputExample(
+            key=raw["key"],
+            instruction_id_list=instruction_ids,
+            prompt=prompt,
+            kwargs=self._clean_kwargs(raw["kwargs"]),
+        )
 
-        for func, grade in [
-            (test_instruction_following_strict, "strict"),
-            (test_instruction_following_loose, "loose"),
-        ]:
-            outputs = [func(inp, prompt_to_response) for inp in inputs]
-            report = self._get_report(outputs)
+        # Both readings are co-equal published metrics, so both go in `metrics`;
+        # loose is merely the one the headline points at. The per-instruction
+        # lists stay in `extra` -- they are WHICH constraints passed, and report()
+        # pools those raw counts rather than averaging the per-sample rates.
+        metrics: dict[str, bool | float] = {}
+        detail = {}
+        for grade in _GRADES:
+            out = graders[grade](inp, {prompt: response})
+            followed = list(out.follow_instruction_list)
+            metrics[f"{grade}_follow_all"] = out.follow_all_instructions
+            metrics[f"{grade}_instruction_level"] = (
+                sum(followed) / len(followed) if followed else 0.0
+            )
+            detail[grade] = {"follow_instruction_list": followed}
+
+        # Derived, not recomputed, so the headline cannot disagree with the set.
+        correct = bool(metrics["loose_follow_all"])
+        score = float(metrics["loose_instruction_level"])
+        return True, build_judgement_record(
+            instruction_ids,
+            [build_rollout_judgement(0, correct, score=score, metrics=metrics)],
+            score=score,
+            metrics=metrics,
+            extra={"key": raw["key"], **detail},
+        )
+
+    @override
+    async def report(self, finals, fails):
+        # Aggregation only -- grading moved to feedback(). Reading the persisted
+        # verdicts also drops report()'s dependency on raw_sample being present.
+        results: dict[str, float] = {"fails": len(fails)}
+        judgements = [f.feedback_result for f in finals]
+
+        for grade in _GRADES:
+            prompt_total = len(judgements)
+            prompt_correct = sum(
+                1 for j in judgements if j["metrics"][f"{grade}_follow_all"]
+            )
+            # Pooled from raw counts, not averaged from the per-sample rates in
+            # `metrics` -- the two differ when samples carry different counts.
+            followed = [
+                j["extra"][grade]["follow_instruction_list"] for j in judgements
+            ]
+            instruction_total = sum(len(f) for f in followed)
+            instruction_correct = sum(sum(f) for f in followed)
+
             results[f"{grade}_prompt_level_accuracy"] = (
-                report.get("prompt-level", 0.0) * 100
+                prompt_correct / prompt_total * 100 if prompt_total else 0.0
             )
             results[f"{grade}_instruction_level_accuracy"] = (
-                report.get("instruction-level", 0.0) * 100
+                instruction_correct / instruction_total * 100
+                if instruction_total
+                else 0.0
             )
 
         # IFBench reports prompt-level loose accuracy as the headline score.
@@ -142,28 +206,3 @@ class IFBenchZeroShotGenTask(
     def _clean_kwargs(self, kwargs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # Avoid HF Datasets' Arrow sparse-struct representation for None fields.
         return [{k: v for k, v in d.items() if v is not None} for d in kwargs]
-
-    def _get_report(self, outputs: "list[OutputExample]") -> dict[str, float]:
-        prompt_total = 0
-        prompt_correct = 0
-        instruction_total = 0
-        instruction_correct = 0
-
-        for example in outputs:
-            follow_instruction_list = example.follow_instruction_list
-            instruction_id_list = example.instruction_id_list
-
-            prompt_total += 1
-            if all(follow_instruction_list):
-                prompt_correct += 1
-
-            instruction_total += len(instruction_id_list)
-            instruction_correct += sum(follow_instruction_list)
-
-        if prompt_total == 0 or instruction_total == 0:
-            return {"prompt-level": 0.0, "instruction-level": 0.0}
-
-        return {
-            "prompt-level": prompt_correct / prompt_total,
-            "instruction-level": instruction_correct / instruction_total,
-        }
