@@ -36,10 +36,11 @@ override these (e.g. a technical report may evaluate at ``temperature=1.0``,
 Grader is a REAL LLM supplied via the ``grader`` task arg on its own
 ``api_base``/``api_key``. Correctness depends on the judge endpoint's model
 version (not pinnable like a Hub revision) — pin the grader model for
-reproducibility; each sample's ``correct``, ``confidence``, ``judge_parsed``,
-grader model id and the judge's reply (``grader_reply``) are persisted in the
-feedback record — see ``JudgeFeedback.grader_reply`` for what that reply does and
-does not let you diagnose. The judge's decoding is likewise model-layer (set via
+reproducibility; each sample's ``correct``, ``confidence``, ``judge_parsed`` and
+the judge's whole ``ModelOutput`` (``extra.grader_output``: reply, reasoning,
+usage, finish reasons, model id) are persisted on the judgement record — see
+:meth:`feedback` for why the raw output is kept whole rather than hand-picked.
+The judge's decoding is likewise model-layer (set via
 the ``grader`` config); upstream runs it at ``max_completion_tokens=4096``.
 
 Target: report against technical-report HLE numbers (e.g. the GLM series
@@ -51,9 +52,7 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
 from collections.abc import Mapping
-from typing import TypedDict, override
-
-from openai.types.chat import ChatCompletionMessageParam
+from typing import override
 
 from sieval.community.hle import (
     JUDGE_PROMPT,
@@ -64,32 +63,20 @@ from sieval.community.hle import (
 from sieval.core.models import ChatModel, Model, ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
+    RolloutJudgement,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import HLEDataset, HLEDatasetSample
-
-
-class JudgeFeedback(TypedDict):
-    correct: bool
-    confidence: int
-    judge_parsed: bool
-    gold: str
-    predicted: str
-    grader_model: str
-    # The judge's reply verbatim, on every attempt — the text every field above
-    # comes from. When `judge_parsed` is False it is the only evidence of *why*
-    # (format drift, an error body and a matcher gap are identical in the
-    # `judge_unparsed` count alone); on the parsed path it is what makes a
-    # wrong-but-parsed verdict — the kind that moves the score — auditable.
-    #
-    # Scope: `ModelOutput.texts`, response content only. A judge that spends its
-    # whole budget on reasoning returns empty content, so an empty reply is
-    # indistinguishable from an empty API response; the `finish_reasons` and
-    # `reasoning_texts` that would separate them are not captured. Reachable
-    # here — HLE is normally run with a reasoning judge.
-    grader_reply: str
 
 
 @sieval_task(
@@ -122,12 +109,13 @@ class JudgeFeedback(TypedDict):
             "supplied via the `grader` task arg on its own api_base/api_key. "
             "REPRODUCIBILITY: scores depend on the judge endpoint's model version "
             "(not pinnable like a Hub revision) — pin the grader model; the "
-            "per-sample correct/confidence, grader model id, and the judge's "
-            "reply (grader_reply) are persisted — the reply being the only "
-            "evidence of a verdict a re-run need not reproduce, and what "
-            "separates format drift from a matcher gap behind the judge_unparsed "
-            "count. It is response content only, so a judge that spends its whole "
-            "budget on reasoning still records an empty reply. "
+            "per-sample correct/confidence and the judge's full ModelOutput "
+            "(extra.grader_output: reply, reasoning, usage, finish_reasons, model "
+            "id) are persisted — the reply being the only evidence of a verdict a "
+            "re-run need not reproduce, and what separates format drift from a "
+            "matcher gap behind the judge_unparsed count; finish_reasons "
+            "separates a reasoning judge that spent its whole budget thinking "
+            "from an empty API response. "
             "VALIDATION: gpt-oss-20b scored 12.14 / 3.61 (reasoning=high / low, "
             "judge GPT-5.2, text-only, no tools) vs the gpt-oss model card "
             "(arXiv:2508.10925) 10.9 / 4.2 — within <3pp."
@@ -137,10 +125,10 @@ class JudgeFeedback(TypedDict):
 class HLEZeroShotGenTask(
     Task[
         HLEDatasetSample,
-        list[ChatCompletionMessageParam],
+        PromptRecord,
         ModelOutput,
-        list[str],
-        list[JudgeFeedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float | str | None],
     ]
 ):
@@ -183,28 +171,55 @@ class HLEZeroShotGenTask(
         content: list[dict] = [{"type": "text", "text": raw["question"]}]
         if raw["image"]:  # "" when not multi-modal
             content.append({"type": "image_url", "image_url": {"url": raw["image"]}})
-        return [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": content},
-        ]
+        return build_prompt_record(
+            [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            reference=raw["answer"],
+            extra={"has_image": bool(raw["image"])},
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre, n=self._n)
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        return list(inf.texts)
+        # Open-ended answer: the response *is* the answer, so no extraction. A
+        # blank response normalizes to None so `extracted` stays a real signal;
+        # the judge still receives "" and rates it.
+        return build_prediction_record(
+            [text if text.strip() else None for text in inf.texts]
+        )
 
     @override
     async def feedback(self, post, ctx):
+        """Judge every rollout, recording the judge's full output.
+
+        ``extra["grader_output"]`` is the judge's whole ``ModelOutput`` flattened
+        to a plain dict -- reply text, reasoning, usage, finish reasons, model id.
+        This closes the limit #51 documented for this task: the old flat
+        ``grader_reply`` was response content only, so a reasoning judge that
+        spent its entire budget thinking recorded an empty reply indistinguishable
+        from an empty API response. ``finish_reasons``, in the same output, is
+        what separates them -- and HLE is normally run with a reasoning judge, so
+        this was the most reachable case of the three.
+
+        ``confidence`` and ``judge_parsed`` are task logic derived from that raw
+        output, which is why they are separate keys. They live in ``extra`` rather
+        than ``metrics``: neither measures whether the answer was right.
+        ``confidence`` is the judge's self-reported number and is the raw material
+        report() needs to pool a calibration error, which a per-sample metric
+        could not reconstruct.
+        """
         raw = ctx.raw_sample
         question = raw["question"]
         gold = raw["answer"]
-        grader_model = self._grader.meta()["model"]
 
-        feedbacks: list[JudgeFeedback] = []
-        for predicted in post:
+        rollouts: list[RolloutJudgement] = []
+        for rollout in post["rollouts"]:
+            predicted = rollout["prediction"] or ""
             prompt = JUDGE_PROMPT.format(
                 question=question,
                 correct_answer=gold,
@@ -213,18 +228,18 @@ class HLEZeroShotGenTask(
             out = await self._grader.agenerate(prompt)
             reply = out.texts[0] if out.texts else ""
             correct, confidence, parsed = parse_judge(reply)
-            feedbacks.append(
-                {
-                    "correct": correct,
-                    "confidence": confidence,
-                    "judge_parsed": parsed,
-                    "gold": gold,
-                    "predicted": predicted,
-                    "grader_model": grader_model,
-                    "grader_reply": reply,
-                }
+            rollouts.append(
+                build_rollout_judgement(
+                    rollout["index"],
+                    correct,
+                    extra={
+                        "confidence": confidence,
+                        "judge_parsed": parsed,
+                        "grader_output": obj_to_dict(out, add_type=False),
+                    },
+                )
             )
-        return True, feedbacks
+        return True, build_judgement_record(gold, rollouts)
 
     @override
     async def report(self, finals, fails):
@@ -236,10 +251,10 @@ class HLEZeroShotGenTask(
         confidence: list[int] = []
         judge_unparsed = 0
         for f in finals:
-            for fb in f.feedback_result or []:
-                if fb["judge_parsed"]:
+            for fb in (f.feedback_result or {}).get("rollouts", []):
+                if fb["extra"]["judge_parsed"]:
                     correct.append(fb["correct"])
-                    confidence.append(fb["confidence"])
+                    confidence.append(fb["extra"]["confidence"])
                 else:
                     judge_unparsed += 1
         # Denominator spans the full requested set; pipeline failures (candidate

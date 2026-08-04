@@ -13,17 +13,20 @@ pre-built Model, on its own ``api_base``/``api_key``); the official checker is
 Qwen3 235B A22B 2507 Non-reasoning. Unlike sieval's deterministic-grader tasks,
 correctness depends on a real grader model whose version sieval cannot pin the
 way it pins a Hub revision, so for reproducibility pin the grader model and set
-``temperature: 0``; each sample's grade, the grader model id, and the checker's
-verbatim reply (``grader_reply``) are persisted in the feedback record — see
-``GradeFeedback.grader_reply`` for why the reply is kept.
+``temperature: 0``; each sample's grade and the checker's whole ``ModelOutput``
+(``extra.grader_output``: reply, reasoning, usage, finish reasons, model id) are
+persisted on the judgement record — see :meth:`feedback` for why the raw output
+is kept whole.
 
 Deviations / by-design behavior worth knowing:
 
 * An empty/whitespace candidate answer (e.g. the model exhausted its token
   budget mid-reasoning) is graded INCORRECT **without** invoking the grader —
   the checker returns CORRECT for an empty candidate, which would otherwise
-  inflate accuracy. ``grader_reply`` is empty on this path because no checker
-  call was made; the empty ``predicted`` in the same record identifies it.
+  inflate accuracy. ``extra.grader_output`` is ABSENT on this path because no
+  checker call was made — absence being unambiguous where #51's empty
+  ``grader_reply`` string was not; the matching prediction rollout's
+  ``extracted: false`` identifies it independently.
   Pipeline failures are likewise counted INCORRECT (full-set metric).
 
 Serving requirement — inputs run 71k–114k tokens, so ``max_tokens`` must leave
@@ -50,9 +53,7 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
 from collections.abc import Mapping
-from typing import TypedDict, override
-
-from openai.types.chat import ChatCompletionUserMessageParam
+from typing import override
 
 from sieval.community.aa_lcr import (
     GRADER_TEMPLATE,
@@ -63,24 +64,20 @@ from sieval.community.aa_lcr import (
 from sieval.core.models import ChatModel, Model, ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
+    RolloutJudgement,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import AALCRDatasetSample
-
-
-class GradeFeedback(TypedDict):
-    grade: str  # "CORRECT" | "INCORRECT"
-    gold: str
-    predicted: str
-    grader_model: str
-    # The checker's reply verbatim, on every attempt — the text `grade` comes
-    # from. `parse_grade` resolves anything it cannot read to INCORRECT, so the
-    # grade alone cannot separate format drift from a real negative verdict.
-    # Empty on the empty-candidate short-circuit below (checker never called).
-    grader_reply: str
-    question_id: int
 
 
 @sieval_task(
@@ -110,7 +107,8 @@ class GradeFeedback(TypedDict):
             "tasks, scores depend on the grader endpoint's model version (not "
             "pinnable like a Hub revision) — pin the grader model + "
             "temperature=0; the per-sample grade, grader model id, and the "
-            "checker's verbatim reply (grader_reply) are persisted — the reply "
+            "checker's full ModelOutput (extra.grader_output) are persisted — "
+            "the reply "
             "being the only evidence of a verdict a re-grade need not reproduce, "
             "and (parse_grade sends anything unreadable to INCORRECT) the only "
             "way to tell format drift from a real negative. Documents are "
@@ -118,7 +116,7 @@ class GradeFeedback(TypedDict):
             "the card. DEVIATION (the port's only score-affecting one): "
             "empty/whitespace candidates are graded INCORRECT without invoking "
             "the checker — the checker returns CORRECT on an empty candidate, "
-            "which would inflate accuracy (grader_reply empty there, no call "
+            "which would inflate accuracy (grader_output absent there, no call "
             "made). REPEATS: AA-LCR uses n=3 (pass@1 aggregated across "
             "attempts); `n` is a task arg (tasks.<name>.args.n), NOT a model "
             "arg — infer forwards it call-time and call-time wins, so setting "
@@ -132,10 +130,10 @@ class GradeFeedback(TypedDict):
 class AALCRZeroShotGenTask(
     Task[
         AALCRDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        list[str],
-        list[GradeFeedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -174,62 +172,81 @@ class AALCRZeroShotGenTask(
     @override
     async def preprocess(self, raw, ctx):
         content = build_prompt(raw["documents"], raw["question"])
-        return [{"role": "user", "content": content}]
+        return build_prompt_record(
+            [{"role": "user", "content": content}],
+            reference=raw["answer"],
+            extra={"question_id": raw["question_id"]},
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre, n=self._n)
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        return list(inf.texts)
+        # Open-ended answer: the response *is* the answer. Normalizing a blank to
+        # None makes `extracted` a real signal AND is exactly the empty-candidate
+        # condition feedback() short-circuits on -- one notion of "no answer",
+        # spelled once.
+        return build_prediction_record(
+            [text if text.strip() else None for text in inf.texts]
+        )
 
     @override
     async def feedback(self, post, ctx):
         raw = ctx.raw_sample
         question = raw["question"]
         gold = raw["answer"]
-        question_id = raw["question_id"]
-        grader_model = self._grader.meta()["model"]
 
-        feedbacks: list[GradeFeedback] = []
-        for predicted in post:
+        rollouts: list[RolloutJudgement] = []
+        for rollout in post["rollouts"]:
+            predicted = rollout["prediction"]
             # Defensive, aa_lcr-specific by design (simpleqa_verified/browsecomp
             # omit it): the checker returns CORRECT on an empty candidate, which
             # would inflate accuracy. Not observed in the 4x300 validation runs
             # (0 empty, 0 length-truncated), but tight output budgets on these
             # ~100k-token prompts can yield empty answers.
-            if not predicted.strip():
-                grade = "INCORRECT"
-                # No checker call, so no reply to record. Empty here is not
-                # confusable with "the checker returned nothing": this branch is
-                # exactly `not predicted.strip()`, so an empty `predicted` in
-                # the record identifies it.
-                reply = ""
-            else:
-                prompt = GRADER_TEMPLATE.format(
-                    question=question,
-                    official_answer=gold,
-                    candidate_answer=predicted,
+            if predicted is None:
+                # No checker call, so there is no grader output to record -- and
+                # its ABSENCE is now the durable signal, rather than #51's empty
+                # `grader_reply` string, which was confusable with a grader that
+                # returned nothing. `extracted: false` on the matching prediction
+                # rollout identifies this branch independently.
+                rollouts.append(
+                    build_rollout_judgement(
+                        rollout["index"], False, extra={"grade": "INCORRECT"}
+                    )
                 )
-                out = await self._grader.agenerate(prompt)
-                reply = out.texts[0] if out.texts else ""
-                grade = parse_grade(reply)
-            feedbacks.append(
-                {
-                    "grade": grade,
-                    "gold": gold,
-                    "predicted": predicted,
-                    "grader_model": grader_model,
-                    "grader_reply": reply,
-                    "question_id": question_id,
-                }
+                continue
+            prompt = GRADER_TEMPLATE.format(
+                question=question,
+                official_answer=gold,
+                candidate_answer=predicted,
             )
-        return True, feedbacks
+            out = await self._grader.agenerate(prompt)
+            reply = out.texts[0] if out.texts else ""
+            grade = parse_grade(reply)
+            rollouts.append(
+                build_rollout_judgement(
+                    rollout["index"],
+                    grade == "CORRECT",
+                    extra={
+                        "grade": grade,
+                        "grader_output": obj_to_dict(out, add_type=False),
+                    },
+                )
+            )
+        return True, build_judgement_record(
+            gold, rollouts, extra={"question_id": raw["question_id"]}
+        )
 
     @override
     async def report(self, finals, fails):
-        graded = [fb["grade"] for f in finals for fb in (f.feedback_result or [])]
+        graded = [
+            r["extra"]["grade"]
+            for f in finals
+            for r in (f.feedback_result or {}).get("rollouts", [])
+        ]
         # Pipeline failures (exhausted retries) never produced a gradeable
         # answer; count each failed sample's requested attempts as INCORRECT so
         # the accuracy spans the full requested set — matching the official

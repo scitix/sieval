@@ -10,14 +10,18 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.community.browsecomp import aggregate_metrics, parse_grade
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.browsecomp import (
     BrowseCompDataset,
     BrowseCompDatasetSample,
 )
 from sieval.tasks.browsecomp_0shot_gen import (
     BrowseCompZeroShotGenTask,
-    GradeFeedback,
 )
 
 
@@ -32,7 +36,12 @@ class _ScriptedChatModel(ChatModel):
     async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
         _ = prompt
         self.last_kwargs = dict(kwargs)
-        return ModelOutput(model=self.meta(), texts=[self._reply])
+        # `finish_reasons` is set because the judge-family migration exists to
+        # persist the grader's WHOLE ModelOutput -- #51's flat `grader_reply`
+        # dropped everything but the text.
+        return ModelOutput(
+            model=self.meta(), texts=[self._reply], finish_reasons=["stop"]
+        )
 
     async def _alogprobs_impl(
         self, prompt, *, max_tokens=1, logprobs=5, echo=True, temperature=0.0, **kwargs
@@ -86,10 +95,13 @@ def test_build_grader_accepts_mapping_and_model():
 @pytest.mark.anyio
 async def test_preprocess_wraps_query_template():
     task, _ = _task()
-    messages = await task.preprocess(
+    pre = await task.preprocess(
         _sample(), TaskContext(sample_id=0, raw_sample=_sample())
     )
+    messages = pre["prompt"]
     assert len(messages) == 1 and messages[0]["role"] == "user"
+    # The gold reaches disk from preprocess; raw_sample is never serialized.
+    assert pre["reference"] == "William Shakespeare"
     content = messages[0]["content"]
     assert content.startswith("Who wrote Hamlet?")
     assert "Exact Answer:" in content and "Confidence:" in content
@@ -106,7 +118,9 @@ async def test_infer_forwards_n():
     model = _ScriptedChatModel(reply="x", model="candidate")
     grader = _ScriptedChatModel(reply="correct: yes", model="grader")
     task = BrowseCompZeroShotGenTask(dataset, model, grader=grader, n=3)
-    await task.infer([{"role": "user", "content": "q"}], TaskContext(sample_id=0))
+    await task.infer(
+        {"prompt": [{"role": "user", "content": "q"}]}, TaskContext(sample_id=0)
+    )
     assert model.last_kwargs.get("n") == 3
 
 
@@ -118,21 +132,25 @@ async def test_feedback_grades_yes_and_records_provenance():
     reply = "reasoning: matches\ncorrect: yes\nconfidence: 90"
     task, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
-    finalize, feedbacks = await task.feedback(
-        ["Exact Answer: William Shakespeare"], ctx
+    finalize, judgement = await task.feedback(
+        build_prediction_record(["Exact Answer: William Shakespeare"]), ctx
     )
 
     assert finalize is True
-    assert len(feedbacks) == 1
-    fb: GradeFeedback = feedbacks[0]
-    assert fb["grade"] == "CORRECT"
-    assert fb["confidence"] == 90
-    assert fb["gold"] == "William Shakespeare"
-    assert fb["predicted"] == "Exact Answer: William Shakespeare"
-    assert fb["grader_model"] == "grader-4.1"
+    assert judgement["n_rollouts"] == 1
+    fb = judgement["rollouts"][0]
+    assert fb["extra"]["grade"] == "CORRECT"
+    assert fb["correct"] is True
+    assert fb["extra"]["confidence"] == 90
+    assert judgement["reference"] == "William Shakespeare"
+    assert fb["extra"]["grader_output"]["model"]["model"] == "grader-4.1"
     # Multi-line on purpose, with reasoning the parse discards: storing only the
     # matched fields, or only on parse failure, fails this assertion.
-    assert fb["grader_reply"] == reply
+    assert fb["extra"]["grader_output"]["texts"] == [reply]
+    # #51's limit closes: the whole ModelOutput is kept, so finish_reasons -- what
+    # separates a reasoning grader that spent its budget from an empty response --
+    # is on disk rather than discarded with the rest of the output.
+    assert fb["extra"]["grader_output"]["finish_reasons"] == ["stop"]
 
 
 @pytest.mark.anyio
@@ -141,11 +159,12 @@ async def test_feedback_defaults_to_incorrect_without_verdict():
     reply = "the grader rambled without a verdict"
     task, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
-    _, feedbacks = await task.feedback(["some answer"], ctx)
-    assert feedbacks[0]["grade"] == "INCORRECT"
+    _, judgement = await task.feedback(build_prediction_record(["some answer"]), ctx)
+    assert judgement["rollouts"][0]["extra"]["grade"] == "INCORRECT"
+    assert judgement["rollouts"][0]["correct"] is False
     # The INCORRECT default is indistinguishable from a real negative in the
     # grade alone; the reply separates format drift from a wrong answer.
-    assert feedbacks[0]["grader_reply"] == reply
+    assert judgement["rollouts"][0]["extra"]["grader_output"]["texts"] == [reply]
 
 
 # --- report: accuracy over the full requested set ---
@@ -158,15 +177,14 @@ async def test_report_accuracy_matches_hand_computation():
     finals = [
         TaskContext(
             sample_id=i,
-            feedback_result=[
-                {
-                    "grade": g,
-                    "confidence": 100,
-                    "gold": "",
-                    "predicted": "",
-                    "grader_model": "m",
-                }
-            ],
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        0, g == "CORRECT", extra={"grade": g, "confidence": 100}
+                    )
+                ],
+            ),
         )
         for i, g in enumerate(grades)
     ]
@@ -185,15 +203,14 @@ async def test_report_counts_fails_as_incorrect():
     finals = [
         TaskContext(
             sample_id=0,
-            feedback_result=[
-                {
-                    "grade": "CORRECT",
-                    "confidence": 100,
-                    "gold": "",
-                    "predicted": "",
-                    "grader_model": "m",
-                }
-            ],
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        0, True, extra={"grade": "CORRECT", "confidence": 100}
+                    )
+                ],
+            ),
         )
     ]
     fails = [
@@ -220,22 +237,15 @@ async def test_report_fails_weighted_by_n():
     finals = [
         TaskContext(
             sample_id=0,
-            feedback_result=[
-                {
-                    "grade": "CORRECT",
-                    "confidence": 100,
-                    "gold": "",
-                    "predicted": "",
-                    "grader_model": "m",
-                },
-                {
-                    "grade": "CORRECT",
-                    "confidence": 100,
-                    "gold": "",
-                    "predicted": "",
-                    "grader_model": "m",
-                },
-            ],
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        i, True, extra={"grade": "CORRECT", "confidence": 100}
+                    )
+                    for i in range(2)
+                ],
+            ),
         )
     ]
     fails = [TaskContext(sample_id=1)]

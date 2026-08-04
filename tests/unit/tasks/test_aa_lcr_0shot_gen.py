@@ -10,11 +10,15 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.community.aa_lcr import aggregate_metrics, parse_grade
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.aa_lcr import AALCRDataset, AALCRDatasetSample
 from sieval.tasks.aa_lcr_0shot_gen import (
     AALCRZeroShotGenTask,
-    GradeFeedback,
 )
 
 
@@ -29,7 +33,12 @@ class _ScriptedChatModel(ChatModel):
     async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
         _ = prompt
         self.last_kwargs = dict(kwargs)
-        return ModelOutput(model=self.meta(), texts=[self._reply])
+        # `finish_reasons` is set because the judge-family migration exists to
+        # persist the grader's WHOLE ModelOutput -- #51's flat `grader_reply`
+        # dropped everything but the text.
+        return ModelOutput(
+            model=self.meta(), texts=[self._reply], finish_reasons=["stop"]
+        )
 
     async def _alogprobs_impl(
         self, prompt, *, max_tokens=1, logprobs=5, echo=True, temperature=0.0, **kwargs
@@ -84,11 +93,16 @@ def test_build_grader_accepts_mapping_and_model():
 @pytest.mark.anyio
 async def test_preprocess_builds_document_prompt():
     task, _ = _task()
-    messages = await task.preprocess(
+    pre = await task.preprocess(
         _sample(), TaskContext(sample_id=0, raw_sample=_sample())
     )
+    messages = pre["prompt"]
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
+    # The gold + question id reach disk from preprocess; raw_sample is never
+    # serialized, so before the migration neither was recoverable from a row.
+    assert pre["reference"] == "Rising"
+    assert pre["extra"]["question_id"] == 7
     content = messages[0]["content"]
     # Documents wrapped + ordered, and the question inlined.
     assert "BEGIN DOCUMENT 1:\ndoc one\nEND DOCUMENT 1" in content
@@ -107,7 +121,9 @@ async def test_infer_forwards_n():
     model = _ScriptedChatModel(reply="x", model="candidate")
     grader = _ScriptedChatModel(reply="CORRECT", model="grader")
     task = AALCRZeroShotGenTask(dataset, model, grader=grader, n=3)
-    await task.infer([{"role": "user", "content": "q"}], TaskContext(sample_id=0))
+    await task.infer(
+        {"prompt": [{"role": "user", "content": "q"}]}, TaskContext(sample_id=0)
+    )
     assert model.last_kwargs.get("n") == 3
 
 
@@ -119,28 +135,34 @@ async def test_feedback_grades_and_records_provenance():
     reply = "The candidate matches the official answer.\nCORRECT"
     task, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
-    finalize, feedbacks = await task.feedback(["Rising"], ctx)
+    finalize, judgement = await task.feedback(build_prediction_record(["Rising"]), ctx)
 
     assert finalize is True
-    assert len(feedbacks) == 1
-    fb: GradeFeedback = feedbacks[0]
-    assert fb["grade"] == "CORRECT"
-    assert fb["gold"] == "Rising"
-    assert fb["predicted"] == "Rising"
-    assert fb["grader_model"] == "qwen3-235b"
-    assert fb["question_id"] == 7
+    assert judgement["n_rollouts"] == 1
+    fb = judgement["rollouts"][0]
+    assert fb["extra"]["grade"] == "CORRECT"
+    assert fb["correct"] is True
+    assert judgement["reference"] == "Rising"
+    assert judgement["extra"]["question_id"] == 7
+    assert fb["extra"]["grader_output"]["model"]["model"] == "qwen3-235b"
     # Multi-line on purpose, with reasoning the parse discards: storing only the
     # matched verdict, or only on parse failure, fails this assertion.
-    assert fb["grader_reply"] == reply
+    assert fb["extra"]["grader_output"]["texts"] == [reply]
+    # #51's limit closes: the whole ModelOutput is kept, so finish_reasons is on
+    # disk instead of being discarded with the rest of the grader's output.
+    assert fb["extra"]["grader_output"]["finish_reasons"] == ["stop"]
 
 
 @pytest.mark.anyio
 async def test_feedback_empty_grader_reply_is_incorrect():
     task, _ = _task(grader_reply="")
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
-    _, feedbacks = await task.feedback(["some answer"], ctx)
-    assert feedbacks[0]["grade"] == "INCORRECT"
-    assert feedbacks[0]["grader_reply"] == ""
+    _, judgement = await task.feedback(build_prediction_record(["some answer"]), ctx)
+    fb = judgement["rollouts"][0]
+    assert fb["extra"]["grade"] == "INCORRECT"
+    # The checker WAS called and returned nothing; the grader output is present
+    # and empty, which is what distinguishes this from the short-circuit below.
+    assert fb["extra"]["grader_output"]["texts"] == [""]
 
 
 @pytest.mark.anyio
@@ -150,9 +172,10 @@ async def test_feedback_persists_reply_behind_incorrect_default():
     reply = "I am unable to compare these two answers."
     task, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
-    _, feedbacks = await task.feedback(["some answer"], ctx)
-    assert feedbacks[0]["grade"] == "INCORRECT"
-    assert feedbacks[0]["grader_reply"] == reply
+    _, judgement = await task.feedback(build_prediction_record(["some answer"]), ctx)
+    fb = judgement["rollouts"][0]
+    assert fb["extra"]["grade"] == "INCORRECT"
+    assert fb["extra"]["grader_output"]["texts"] == [reply]
 
 
 @pytest.mark.anyio
@@ -163,14 +186,19 @@ async def test_feedback_empty_answer_is_incorrect_without_grading(empty: str):
     # the fix for empty truncated outputs being spuriously graded CORRECT).
     task, grader = _task(grader_reply="CORRECT")  # grader would say CORRECT
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
-    _, feedbacks = await task.feedback([empty], ctx)
-    assert feedbacks[0]["grade"] == "INCORRECT"
-    assert feedbacks[0]["predicted"] == empty
+    post = build_prediction_record([empty if empty.strip() else None])
+    _, judgement = await task.feedback(post, ctx)
+    fb = judgement["rollouts"][0]
+    assert fb["extra"]["grade"] == "INCORRECT"
+    assert fb["correct"] is False
+    # The prediction rollout records the miss independently of the verdict.
+    assert post["rollouts"][0]["extracted"] is False
     # Grader was bypassed: its last_kwargs stays empty (never called).
     assert grader.last_kwargs == {}
-    # No call, so no reply. Not confusable with "the checker returned nothing" —
-    # the empty `predicted` above identifies the branch.
-    assert feedbacks[0]["grader_reply"] == ""
+    # No call, so grader_output is ABSENT -- not an empty string. That is the
+    # improvement over #51's flat grader_reply, which used "" for both "never
+    # called" and "the checker returned nothing" (asserted distinct above).
+    assert "grader_output" not in fb["extra"]
 
 
 @pytest.mark.anyio
@@ -181,11 +209,14 @@ async def test_feedback_short_circuit_does_not_inherit_prior_reply():
     reply = "The candidate matches the official answer.\nCORRECT"
     task, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_sample())
-    _, feedbacks = await task.feedback(["Rising", ""], ctx)
+    _, judgement = await task.feedback(build_prediction_record(["Rising", None]), ctx)
+    rollouts = judgement["rollouts"]
 
-    assert [fb["grade"] for fb in feedbacks] == ["CORRECT", "INCORRECT"]
-    assert feedbacks[0]["grader_reply"] == reply
-    assert feedbacks[1]["grader_reply"] == ""
+    assert [r["extra"]["grade"] for r in rollouts] == ["CORRECT", "INCORRECT"]
+    assert rollouts[0]["extra"]["grader_output"]["texts"] == [reply]
+    # The ungraded attempt carries no grader output at all, so a real verdict
+    # cannot be attributed to it by a stale binding.
+    assert "grader_output" not in rollouts[1]["extra"]
 
 
 # --- report: accuracy over graded + failed samples ---
@@ -198,15 +229,11 @@ async def test_report_accuracy_matches_hand_computation():
     finals = [
         TaskContext(
             sample_id=i,
-            feedback_result=[
-                {
-                    "grade": g,
-                    "gold": "",
-                    "predicted": "",
-                    "grader_model": "m",
-                    "question_id": i,
-                }
-            ],
+            feedback_result=build_judgement_record(
+                "",
+                [build_rollout_judgement(0, g == "CORRECT", extra={"grade": g})],
+                extra={"question_id": i},
+            ),
         )
         for i, g in enumerate(grades)
     ]
@@ -228,15 +255,11 @@ async def test_report_counts_fails_as_incorrect():
     finals = [
         TaskContext(
             sample_id=i,
-            feedback_result=[
-                {
-                    "grade": g,
-                    "gold": "",
-                    "predicted": "",
-                    "grader_model": "m",
-                    "question_id": i,
-                }
-            ],
+            feedback_result=build_judgement_record(
+                "",
+                [build_rollout_judgement(0, g == "CORRECT", extra={"grade": g})],
+                extra={"question_id": i},
+            ),
         )
         for i, g in enumerate(["CORRECT", "CORRECT"])
     ]
@@ -263,22 +286,14 @@ async def test_report_fails_weighted_by_n():
     finals = [
         TaskContext(
             sample_id=0,
-            feedback_result=[
-                {
-                    "grade": "CORRECT",
-                    "gold": "",
-                    "predicted": "",
-                    "grader_model": "m",
-                    "question_id": 0,
-                },
-                {
-                    "grade": "CORRECT",
-                    "gold": "",
-                    "predicted": "",
-                    "grader_model": "m",
-                    "question_id": 0,
-                },
-            ],
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(i, True, extra={"grade": "CORRECT"})
+                    for i in range(2)
+                ],
+                extra={"question_id": 0},
+            ),
         )
     ]
     fails = [TaskContext(sample_id=1)]

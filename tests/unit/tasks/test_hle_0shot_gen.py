@@ -20,9 +20,14 @@ from sieval.community.hle import (
 )
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.hle import HLEDataset
-from sieval.tasks.hle_0shot_gen import HLEZeroShotGenTask, JudgeFeedback
+from sieval.tasks.hle_0shot_gen import HLEZeroShotGenTask
 
 
 class _ScriptedChatModel(ChatModel):
@@ -36,7 +41,13 @@ class _ScriptedChatModel(ChatModel):
     async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
         _ = prompt
         self.last_kwargs = dict(kwargs)
-        return ModelOutput(model=self.meta(), texts=[self._reply])
+        # `finish_reasons` is set because the judge-family migration exists to
+        # persist the grader's WHOLE ModelOutput: it is the field that separates a
+        # reasoning judge which spent its budget thinking from an empty API
+        # response, and #51's flat `grader_reply` never carried it.
+        return ModelOutput(
+            model=self.meta(), texts=[self._reply], finish_reasons=["stop"]
+        )
 
     async def _alogprobs_impl(
         self, prompt, *, max_tokens=1, logprobs=5, echo=True, temperature=0.0, **kwargs
@@ -125,19 +136,23 @@ def test_task_keeps_image_questions_from_a_full_set_dataset():
 @pytest.mark.anyio
 async def test_preprocess_text_only_message():
     task, _, _ = _task()
-    messages = await task.preprocess(_row(), TaskContext(sample_id=0))
-    assert messages == [
+    pre = await task.preprocess(_row(), TaskContext(sample_id=0))
+    assert pre["prompt"] == [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": [{"type": "text", "text": "What is 2 + 2?"}]},
     ]
+    # The gold reaches disk from preprocess; raw_sample is never serialized.
+    assert pre["reference"] == "4"
+    assert pre["extra"]["has_image"] is False
 
 
 @pytest.mark.anyio
 async def test_preprocess_attaches_image_block():
     task, _, _ = _task(text_only=False)
     raw = _row(image="data:image/png;base64,AAAA")
-    messages = await task.preprocess(raw, TaskContext(sample_id=0))
-    user_content = messages[1]["content"]
+    pre = await task.preprocess(raw, TaskContext(sample_id=0))
+    assert pre["extra"]["has_image"] is True
+    user_content = pre["prompt"][1]["content"]
     assert user_content[0] == {"type": "text", "text": "What is 2 + 2?"}
     assert user_content[1] == {
         "type": "image_url",
@@ -151,7 +166,9 @@ async def test_preprocess_attaches_image_block():
 @pytest.mark.anyio
 async def test_infer_forwards_only_n():
     task, model, _ = _task(n=1)
-    await task.infer([{"role": "user", "content": "q"}], TaskContext(sample_id=0))
+    await task.infer(
+        {"prompt": [{"role": "user", "content": "q"}]}, TaskContext(sample_id=0)
+    )
     # Decode params (temperature/top_p/max_tokens) must come from the model
     # layer, never from the task — infer passes n and nothing else.
     assert model.last_kwargs == {"n": 1}
@@ -165,19 +182,26 @@ async def test_feedback_parses_correct_and_confidence():
     reply = "reasoning: matches\ncorrect: yes\nconfidence: 90"
     task, _, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_row())
-    finalize, feedbacks = await task.feedback(["Answer: 4"], ctx)
+    finalize, judgement = await task.feedback(
+        build_prediction_record(["Answer: 4"]), ctx
+    )
 
     assert finalize is True
-    fb: JudgeFeedback = feedbacks[0]
+    fb = judgement["rollouts"][0]
     assert fb["correct"] is True
-    assert fb["confidence"] == 90
-    assert fb["judge_parsed"] is True
-    assert fb["gold"] == "4"
-    assert fb["predicted"] == "Answer: 4"
-    assert fb["grader_model"] == "judge-5.2"
-    # Multi-line on purpose, with reasoning the parse discards: storing only the
-    # matched fields, or only on parse failure, fails this assertion.
-    assert fb["grader_reply"] == reply
+    assert fb["extra"]["confidence"] == 90
+    assert fb["extra"]["judge_parsed"] is True
+    assert judgement["reference"] == "4"
+    # The judge's WHOLE ModelOutput, not a hand-picked reply field. Multi-line on
+    # purpose, with reasoning the parse discards: storing only the matched fields,
+    # or only on parse failure, fails this assertion.
+    grader_output = fb["extra"]["grader_output"]
+    assert grader_output["texts"] == [reply]
+    assert grader_output["model"]["model"] == "judge-5.2"
+    # #51's documented limit closes here: finish_reasons is what separates a
+    # reasoning judge that spent its budget thinking from an empty API response,
+    # and the flat grader_reply never carried it.
+    assert grader_output["finish_reasons"] == ["stop"]
 
 
 @pytest.mark.anyio
@@ -185,14 +209,15 @@ async def test_feedback_unparseable_reply_flagged_not_graded():
     reply = "the judge rambled without the fields"
     task, _, _ = _task(grader_reply=reply)
     ctx = TaskContext(sample_id=0, raw_sample=_row())
-    _, feedbacks = await task.feedback(["whatever"], ctx)
+    _, judgement = await task.feedback(build_prediction_record(["whatever"]), ctx)
+    fb = judgement["rollouts"][0]
     # Unparseable -> flagged so report() drops it from grading (not a verdict).
-    assert feedbacks[0]["judge_parsed"] is False
-    assert feedbacks[0]["correct"] is False
-    assert feedbacks[0]["confidence"] == 100
+    assert fb["extra"]["judge_parsed"] is False
+    assert fb["correct"] is False
+    assert fb["extra"]["confidence"] == 100
     # The motivating case: `judge_unparsed` alone cannot separate format drift
     # from an error body from a matcher gap. The reply is the evidence.
-    assert feedbacks[0]["grader_reply"] == reply
+    assert fb["extra"]["grader_output"]["texts"] == [reply]
 
 
 # --- report: accuracy over the full requested set (fails in denominator) ---
@@ -202,16 +227,14 @@ def _finals(grades: list[tuple[bool, int]]) -> list[TaskContext]:
     return [
         TaskContext(
             sample_id=i,
-            feedback_result=[
-                {
-                    "correct": c,
-                    "confidence": conf,
-                    "judge_parsed": True,
-                    "gold": "",
-                    "predicted": "",
-                    "grader_model": "m",
-                }
-            ],
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        0, c, extra={"confidence": conf, "judge_parsed": True}
+                    )
+                ],
+            ),
         )
         for i, (c, conf) in enumerate(grades)
     ]
@@ -239,15 +262,20 @@ async def test_report_accuracy_and_counts_fails_in_denominator():
 async def test_report_fails_weighted_by_n():
     task, _, _ = _task(n=2)
     # One finalized sample carrying its n=2 judged attempts (both correct).
-    fb = {
-        "correct": True,
-        "confidence": 90,
-        "judge_parsed": True,
-        "gold": "",
-        "predicted": "",
-        "grader_model": "m",
-    }
-    finals = [TaskContext(sample_id=0, feedback_result=[fb, dict(fb)])]
+    finals = [
+        TaskContext(
+            sample_id=0,
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        i, True, extra={"confidence": 90, "judge_parsed": True}
+                    )
+                    for i in range(2)
+                ],
+            ),
+        )
+    ]
     fails = [TaskContext(sample_id=5)]
     report = await task.report(finals, fails)
     # n = (1 final + 1 fail) * 2 = 4; 2 correct => 50.0%.
@@ -262,18 +290,22 @@ async def test_report_drops_unparsed_judge_from_grading():
     # Unparseable judge replies stay in `n` (counted incorrect) but must not
     # enter the grading/calibration arrays or they would inflate metrics.
     task, _, _ = _task()  # n=1
-    parsed = {
-        "correct": True,
-        "confidence": 90,
-        "judge_parsed": True,
-        "gold": "",
-        "predicted": "",
-        "grader_model": "m",
-    }
-    unparsed = {**parsed, "correct": False, "confidence": 100, "judge_parsed": False}
+
+    def judgement(correct, confidence, judge_parsed):
+        return build_judgement_record(
+            "",
+            [
+                build_rollout_judgement(
+                    0,
+                    correct,
+                    extra={"confidence": confidence, "judge_parsed": judge_parsed},
+                )
+            ],
+        )
+
     finals = [
-        TaskContext(sample_id=0, feedback_result=[parsed]),
-        TaskContext(sample_id=1, feedback_result=[unparsed]),
+        TaskContext(sample_id=0, feedback_result=judgement(True, 90, True)),
+        TaskContext(sample_id=1, feedback_result=judgement(False, 100, False)),
     ]
     report = await task.report(finals, [])
     assert report["judge_unparsed"] == 1

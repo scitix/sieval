@@ -17,9 +17,9 @@ pre-built Model); the official autorater is gpt-4.1-2025-04-14. As with the
 other autorater-graded tasks, correctness depends on a real grader model whose
 version sieval cannot pin the way it pins a Hub revision, so for reproducibility
 pin the grader model and set ``temperature: 0``; each sample's grade, echoed
-confidence, grader model id, and the autorater's verbatim reply
-(``grader_reply``) are persisted in the feedback record — see
-``GradeFeedback.grader_reply`` for why the reply is kept.
+confidence and the autorater's whole ``ModelOutput`` (``extra.grader_output``:
+reply, reasoning, usage, finish reasons, model id) are persisted on the
+judgement record — see :meth:`feedback` for why the raw output is kept whole.
 
 NOTE: BrowseComp is designed to require web browsing; a plain (closed-book)
 model scores near-zero — this task grades whatever answer the model returns, so
@@ -29,9 +29,7 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
 from collections.abc import Mapping
-from typing import TypedDict, override
-
-from openai.types.chat import ChatCompletionUserMessageParam
+from typing import override
 
 from sieval.community.browsecomp import (
     GRADER_TEMPLATE,
@@ -43,24 +41,20 @@ from sieval.community.browsecomp import (
 from sieval.core.models import ChatModel, Model, ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
+    RolloutJudgement,
     Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import BrowseCompDatasetSample
-
-
-class GradeFeedback(TypedDict):
-    grade: str  # "CORRECT" | "INCORRECT"
-    confidence: int  # grader-echoed confidence 0-100 (for post-hoc calibration)
-    gold: str
-    predicted: str
-    grader_model: str
-    # The autorater's reply verbatim, on every attempt — the text `grade` and
-    # `confidence` come from. `parse_grade` defaults a non-matching reply to
-    # INCORRECT, so the grade alone cannot separate format drift from a real
-    # negative verdict.
-    grader_reply: str
 
 
 @sieval_task(
@@ -88,10 +82,13 @@ class GradeFeedback(TypedDict):
             "`grader` task arg on its own api_base/api_key. REPRODUCIBILITY: scores "
             "depend on the grader endpoint's model version (not pinnable like a Hub "
             "revision) — pin the grader model + temperature=0; the per-sample grade/"
-            "confidence, grader model id, and the autorater's verbatim reply "
-            "(grader_reply) are persisted — the reply being the only evidence of a "
-            "verdict a re-grade need not reproduce, and (parse_grade defaults to "
-            "INCORRECT) the only way to tell format drift from a real negative. "
+            "confidence and the autorater's full ModelOutput (extra."
+            "grader_output: reply, reasoning, usage, finish_reasons, model id) "
+            "are persisted — the reply being the only evidence of a verdict a "
+            "re-grade need not reproduce, and (parse_grade defaults to "
+            "INCORRECT) the only way to tell format drift from a real negative; "
+            "finish_reasons separates a reasoning grader that spent its budget "
+            "thinking from an empty API response. "
             "BrowseComp requires "
             "browsing: closed-book models score near-zero — validated at 0.316% "
             "(4/1266) for gemma-3-27b-it with the gpt-4.1 autorater — so a "
@@ -102,10 +99,10 @@ class GradeFeedback(TypedDict):
 class BrowseCompZeroShotGenTask(
     Task[
         BrowseCompDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        list[str],
-        list[GradeFeedback],
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
@@ -140,27 +137,51 @@ class BrowseCompZeroShotGenTask(
 
     @override
     async def preprocess(self, raw, ctx):
-        return [
-            {"role": "user", "content": QUERY_TEMPLATE.format(Question=raw["problem"])}
-        ]
+        return build_prompt_record(
+            [
+                {
+                    "role": "user",
+                    "content": QUERY_TEMPLATE.format(Question=raw["problem"]),
+                }
+            ],
+            reference=raw["answer"],
+        )
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre, n=self._n)
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        return list(inf.texts)
+        # Open-ended answer: the response *is* the answer. A blank response
+        # normalizes to None so `extracted` stays a real signal; the grader still
+        # receives "" and rates it.
+        return build_prediction_record(
+            [text if text.strip() else None for text in inf.texts]
+        )
 
     @override
     async def feedback(self, post, ctx):
+        """Grade every rollout, recording the autorater's full output.
+
+        ``extra["grader_output"]`` is the autorater's whole ``ModelOutput``
+        flattened to a plain dict, replacing #51's flat ``grader_reply`` (response
+        content only). Nothing is hand-picked, so ``finish_reasons`` now separates
+        a reasoning grader that spent its budget thinking from an empty API
+        response, and a future ``ModelOutput`` field is captured for free.
+
+        ``grade`` is the parsed verdict on top of that raw output -- task logic,
+        not model output, hence a separate key -- and ``confidence`` is the
+        grader-echoed number kept for post-hoc calibration. Neither measures
+        whether the answer was right, so both stay in ``extra``, not ``metrics``.
+        """
         raw = ctx.raw_sample
         question = raw["problem"]
         gold = raw["answer"]
-        grader_model = self._grader.meta()["model"]
 
-        feedbacks: list[GradeFeedback] = []
-        for predicted in post:
+        rollouts: list[RolloutJudgement] = []
+        for rollout in post["rollouts"]:
+            predicted = rollout["prediction"] or ""
             prompt = GRADER_TEMPLATE.format(
                 question=question,
                 correct_answer=gold,
@@ -168,21 +189,27 @@ class BrowseCompZeroShotGenTask(
             )
             out = await self._grader.agenerate(prompt)
             reply = out.texts[0] if out.texts else ""
-            feedbacks.append(
-                {
-                    "grade": parse_grade(reply),
-                    "confidence": parse_confidence(reply),
-                    "gold": gold,
-                    "predicted": predicted,
-                    "grader_model": grader_model,
-                    "grader_reply": reply,
-                }
+            grade = parse_grade(reply)
+            rollouts.append(
+                build_rollout_judgement(
+                    rollout["index"],
+                    grade == "CORRECT",
+                    extra={
+                        "grade": grade,
+                        "confidence": parse_confidence(reply),
+                        "grader_output": obj_to_dict(out, add_type=False),
+                    },
+                )
             )
-        return True, feedbacks
+        return True, build_judgement_record(gold, rollouts)
 
     @override
     async def report(self, finals, fails):
-        graded = [fb["grade"] for f in finals for fb in (f.feedback_result or [])]
+        graded = [
+            r["extra"]["grade"]
+            for f in finals
+            for r in (f.feedback_result or {}).get("rollouts", [])
+        ]
         # Pipeline failures (exhausted retries) never produced a gradeable
         # answer; BrowseComp has no NOT_ATTEMPTED bucket, so count each failed
         # sample's requested attempts as INCORRECT — accuracy spans the full
