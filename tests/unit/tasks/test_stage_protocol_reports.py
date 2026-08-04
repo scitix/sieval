@@ -248,9 +248,8 @@ class TestLiveCodeBenchReport:
 class TestIFEvalReport:
     @staticmethod
     def _final(strict_followed, loose_followed):
-        # Mirrors the task: both readings are co-equal metrics in `metrics`, the
-        # per-instruction lists are mechanism detail in `extra`, and the headline
-        # is derived from `metrics` rather than recomputed.
+        # Mirrors the task: both readings in `metrics`, per-instruction lists in
+        # `extra`, headline derived from `metrics` rather than recomputed.
         def rate(followed):
             return sum(followed) / len(followed) if followed else 0.0
 

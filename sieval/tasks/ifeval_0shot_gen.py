@@ -106,12 +106,10 @@ class IFEvalZeroShotGenTask(
             kwargs=self._clean_kwargs(raw["kwargs"]),
         )
 
-        # Both readings are co-equal published metrics, so both are recorded in
-        # `metrics`; `strict` is merely the one the headline points at. The
-        # per-instruction bool lists stay in `extra`: they are which constraints
-        # passed (mechanism detail), and report()'s instruction-level accuracy
-        # pools those raw counts -- averaging the per-sample rates below would
-        # give a different, wrong number.
+        # Both readings are co-equal published metrics, so both go in `metrics`;
+        # strict is merely the one the headline points at. The per-instruction
+        # lists stay in `extra` -- they are which constraints passed, and
+        # report() pools those raw counts rather than averaging the rates here.
         metrics: dict[str, bool | float] = {}
         detail = {}
         for grade in _GRADES:
@@ -123,8 +121,7 @@ class IFEvalZeroShotGenTask(
             )
             detail[grade] = {"follow_instruction_list": followed}
 
-        # Derived from `metrics`, not computed a second time, so the headline can
-        # never disagree with the set it is drawn from.
+        # Derived, not recomputed, so the headline cannot disagree with the set.
         correct = bool(metrics["strict_follow_all"])
         score = float(metrics["strict_instruction_level"])
         return True, build_judgement_record(
@@ -144,9 +141,8 @@ class IFEvalZeroShotGenTask(
             prompt_correct = sum(
                 1 for j in judgements if j["metrics"][f"{grade}_follow_all"]
             )
-            # Pooled from the raw per-instruction counts in `extra`, NOT averaged
-            # from the per-sample rates in `metrics`: the two differ whenever
-            # samples carry different numbers of constraints.
+            # Pooled from raw counts, not averaged from the per-sample rates in
+            # `metrics` -- the two differ when samples carry different counts.
             followed = [
                 j["extra"][grade]["follow_instruction_list"] for j in judgements
             ]

@@ -120,8 +120,7 @@ class TestCoEqualMetrics:
             score=0.5,
             metrics=self._METRICS,
         )
-        # The whole point: a consumer can enumerate what was measured without
-        # knowing the task, and the loose reading is not lost behind `correct`.
+        # Enumerable without knowing the task; loose is not lost behind `correct`.
         assert set(record["metrics"]) == set(self._METRICS)
         assert set(record["rollouts"][0]["metrics"]) == set(self._METRICS)
         assert record["metrics"]["loose_follow_all"] is True
@@ -142,11 +141,9 @@ class TestCoEqualMetrics:
         assert "metrics" not in record["rollouts"][0]
 
     def test_a_none_metric_is_rejected_rather_than_silently_dropped(self):
-        # obj_to_dict drops None-valued keys, so a None metric would be *absent*
-        # on disk -- "we measured nothing" would read as "this metric never
-        # existed". Fail loud at the call site instead.
-        # Deliberately ill-typed, so it is held in a bare dict: the guard exists
-        # for values that reach a task at runtime, past the type checker.
+        # A None metric would be absent on disk: "not measured" would read as
+        # "never existed". Held in a bare dict because it is deliberately
+        # ill-typed -- the guard is for values that reach a task past the checker.
         none_valued: dict = {"acc_norm": None}
         with pytest.raises(ValueError, match="unmeasured|None"):
             build_rollout_judgement(0, True, metrics=none_valued)
@@ -161,10 +158,8 @@ class TestCoEqualMetrics:
             build_rollout_judgement(0, True, metrics=structured)
 
     def test_false_and_zero_metrics_survive_the_wire(self):
-        # The values most at risk: `False` and `0.0` are falsy but not None, so
-        # they must reach disk. If they were dropped, a failed metric would be
-        # indistinguishable from an unrecorded one -- exactly what `metrics` is
-        # meant to prevent.
+        # Falsy but not None, so they must reach disk -- otherwise a failed metric
+        # is indistinguishable from an unrecorded one.
         record = build_judgement_record(
             "x",
             [

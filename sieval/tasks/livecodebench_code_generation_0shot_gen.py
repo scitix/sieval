@@ -176,13 +176,10 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
             # simply absent, which reads as unknown rather than as zero.
             #
             # `msg` is stored raw and deliberately not bucketed into a failure
-            # taxonomy here: it is free text from a separately deployed service
-            # whose wording has already drifted once, so any client-side
-            # classifier decays silently -- and an unparseable message and a
-            # genuinely novel failure would be indistinguishable. The evaluator
-            # knows structurally why it failed; if a category is wanted, it
-            # belongs on the response next to n_cases/n_passed, not in a
-            # substring parser here.
+            # taxonomy: it is free text from a separately deployed service whose
+            # wording has already drifted once, so a client-side classifier
+            # decays silently. A category belongs on the response next to
+            # n_cases/n_passed, where the evaluator already knows the answer.
             rollouts.append(
                 build_rollout_judgement(
                     idx,

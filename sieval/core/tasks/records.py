@@ -1,43 +1,36 @@
 """Stage-output protocol: uniform record shapes for prompts, predictions, judgements.
 
-A Task's stage return types are free-form generics, so historically every task
-invented its own shape for "the extracted answer" and "was it right". Nothing
-downstream could read a sample's answer, ground truth, or correctness without
-knowing which task produced it. These record types are the shared contract that
-fixes that, and the builders below are the only supported way to construct them.
+Stage return types are free-form generics, so every task used to invent its own
+shape for "the extracted answer" and "was it right", and nothing downstream could
+read a sample without knowing which task wrote it. These records are the shared
+contract; the builders below are the only supported way to construct them.
 
-Stage coverage:
     preprocess  -> :class:`PromptRecord`
     infer       -> ``ModelOutput`` (already uniform; deliberately not re-boxed)
     postprocess -> :class:`PredictionRecord`
     feedback    -> :class:`JudgementRecord`
 
-A verdict has three tiers, and putting a value in the wrong one is the easiest
-way to lose it: ``correct``/``score`` are the **headline** (one binary axis, one
-continuous one -- ``correct`` is the only thing comparable across tasks),
-``metrics`` is **every measured value, named** (so a task with co-equal metrics
-records all of them and stays enumerable by a generic consumer), and ``extra``
-is **mechanism detail plus the raw material aggregation needs**. A metric parked
-in ``extra`` is persisted but invisible to anything that does not already know
-the task -- which defeats the point of the protocol.
+A verdict has three tiers, and a value in the wrong one is a value lost:
+``correct``/``score`` are the headline (``correct`` being the only axis
+comparable across tasks), ``metrics`` is every measured value by name, and
+``extra`` is mechanism detail plus whatever raw material an aggregation needs. A
+metric parked in ``extra`` is persisted but invisible to any reader that does not
+already know the task.
 
-Two further properties are load-bearing and easy to break:
+Two properties are load-bearing and easy to break:
 
 **Records are returned bare, never wrapped in ``TaskStageOutput``.** The runner
-preserves that box as the stage value, so a single boxed task would persist its
-result nested under ``value`` with a ``__sieval_cls__`` marker while its peers
-persist a flat record -- exactly the divergence this protocol exists to remove.
+preserves that box as the stage value, so one boxed task would persist its result
+under ``value`` with a ``__sieval_cls__`` marker while its peers stay flat.
 
-**``obj_to_dict`` drops ``None``-valued keys**, so ``prediction: None`` and
-``reference: None`` are *absent* on disk rather than present-and-null (``False``
-and ``0`` survive -- the check is ``is not None``). That is why ``extracted`` and
-``n_correct``/``n_rollouts`` are explicit fields instead of things a reader
-derives from ``prediction is None``: the flags and counts are what survive the
-wire. Read optional fields with ``.get()``.
+**``obj_to_dict`` drops ``None``-valued keys**, so a ``None`` field is *absent* on
+disk rather than null (``False`` and ``0`` survive). Hence ``extracted`` and the
+``n_*`` counts are explicit rather than derived, and optional fields are read with
+``.get()``.
 
-Adoption is per-task and incremental: legacy shapes keep working, and
+Adoption is per-task: legacy shapes keep working, and
 :func:`is_prediction_record` / :func:`is_judgement_record` are the single place
-where "is this a protocol record?" is decided.
+that decides which is which.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -55,13 +48,12 @@ class PromptRecord(TypedDict):
         prompt: The model input, in whatever shape the model kind takes --
             a chat ``messages`` list, or a plain string for base models.
             ``infer`` reads this key rather than the record.
-        reference: Ground truth as known at prompt-build time -- including one
-            knowable *only* here, such as the correct letter after a per-sample
-            choice permutation. Recorded even when it is a plain dataset field,
-            so a prompt row is readable without joining to the feedback row;
-            :attr:`JudgementRecord.reference` separately records the ground truth
-            *as compared*, and the two are expected to coexist. Omit it when the
-            ground truth is not a value at all (a test suite, a rubric).
+        reference: Ground truth as known at prompt-build time, including one
+            knowable only here (the correct letter after a per-sample choice
+            permutation). Recorded even for a plain dataset field, so a prompt row
+            reads on its own; coexisting with :attr:`JudgementRecord.reference`
+            (the truth *as compared*) is intended, not redundant. Omit when the
+            ground truth is not a value (a test suite, a rubric).
         extra: Task-specific prompt-side detail worth keeping (the permutation
             actually used, the constraint spec, a category label).
     """
@@ -76,11 +68,9 @@ class RolloutPrediction(TypedDict):
 
     Attributes:
         index: Position of this rollout within the sample (``0`` when ``n=1``).
-        prediction: The extracted answer, or ``None`` when extraction failed.
-            Absent on disk when ``None`` -- read ``extracted`` instead.
-        extracted: Whether an answer was recovered from the model output.
-            The durable signal, since a ``None`` prediction does not survive
-            serialization.
+        prediction: The extracted answer, or ``None`` when extraction failed --
+            absent on disk in that case, so read ``extracted`` instead.
+        extracted: Whether an answer was recovered. The durable signal.
         extra: Per-rollout detail from the extraction step.
     """
 
@@ -108,27 +98,20 @@ class RolloutJudgement(TypedDict):
     Attributes:
         index: Position of this rollout within the sample, matching the
             corresponding :class:`RolloutPrediction`.
-        correct: The headline binary verdict, and the *only* axis that is
-            comparable across tasks -- ``n_correct`` is derived from it. A
-            multi-valued grade (three-way CORRECT/INCORRECT/NOT_ATTEMPTED)
-            collapses to this and keeps its full form in ``extra``.
-        score: Headline partial credit in ``[0, 1]``, when the verdict has a
-            notion of one. Omitted by pass/fail verdicts -- absent is not zero.
-        metrics: Every metric this rollout measured, named, including the two
-            the headline fields point at. A task with **co-equal** metrics --
-            IFEval's strict *and* loose, HellaSwag's ``acc`` *and* ``acc_norm``,
-            an exact-match *and* a flexible-match -- records them all here, so a
-            consumer can enumerate what was measured without knowing the task,
-            while ``correct``/``score`` still designate the one headline.
-            Derive the headline fields *from* this mapping rather than computing
-            them twice, so the two cannot drift.
-        extra: Verdict-mechanism-specific detail, **not** metrics -- an LLM
-            grader's reply, a code runner's failure message and resource
-            metrics, a constraint checker's per-constraint results. Also the
-            home for raw material an aggregation needs: a per-sample rate in
-            ``metrics`` does not let ``report()`` reconstruct a pooled rate, so
-            the counts behind it belong here. Named for the mechanism, not for a
-            grader, since a string-compare or math-verify verdict has no grader.
+        correct: The headline binary verdict, and the only axis comparable across
+            tasks -- ``n_correct`` derives from it. A multi-valued grade collapses
+            to this and keeps its full form in ``extra``.
+        score: Headline partial credit in ``[0, 1]``. Omitted by pass/fail
+            verdicts -- absent is not zero.
+        metrics: Every metric measured, by name, including the ones the headline
+            points at. A task with co-equal metrics (IFEval strict *and* loose,
+            HellaSwag ``acc`` *and* ``acc_norm``) records them all here and stays
+            enumerable. Derive the headline *from* this mapping so the two cannot
+            drift.
+        extra: Mechanism detail, not metrics -- a grader's reply, a code runner's
+            failure message, per-constraint results -- plus the raw counts an
+            aggregation needs, since a per-sample rate cannot reconstruct a pooled
+            one. Named for the mechanism: a string-compare verdict has no grader.
     """
 
     index: int
@@ -156,13 +139,11 @@ class JudgementRecord(TypedDict):
         score: Sample-level partial credit in ``[0, 1]``, when the verdict has
             one. Reserved for genuine partial credit -- do not mirror
             ``n_correct / n_rollouts`` here.
-        metrics: Sample-level counterpart of :attr:`RolloutJudgement.metrics` --
-            every metric measured for the sample as a whole, named. Same rule:
-            record all co-equal metrics, and derive ``correct``/``score`` from
-            this mapping rather than alongside it.
-        extra: Sample-level verdict detail (a category breakdown, a test-suite
-            description for a procedural reference), and the raw counts an
-            aggregation needs -- not metrics.
+        metrics: Sample-level counterpart of :attr:`RolloutJudgement.metrics`,
+            same rule.
+        extra: Sample-level detail (a category breakdown, a test-suite description
+            for a procedural reference) and aggregation raw material -- not
+            metrics.
     """
 
     reference: NotRequired[JSONValue | None]
@@ -212,12 +193,10 @@ def build_prediction_record(
 def _checked_metrics(metrics: Mapping[str, bool | float]) -> dict[str, bool | float]:
     """Reject metric values that would not survive serialization.
 
-    ``obj_to_dict`` drops ``None``-valued keys, so a ``None`` metric would be
-    *absent* on disk rather than recorded as unknown -- silently turning "we
-    measured nothing" into "we never had this metric". A metric that cannot be
-    recorded is a bug at the call site, not something to paper over, so this
-    fails loud. Non-numeric values are rejected for the same reason: they are
-    detail, and detail belongs in ``extra``.
+    A ``None`` metric would be *absent* on disk, turning "not measured" into
+    "never existed" -- a bug at the call site, so it fails loud. Non-numeric
+    values are rejected for the same reason: that is detail, and detail belongs
+    in ``extra``.
     """
     unrecordable = sorted(k for k, v in metrics.items() if v is None)
     if unrecordable:
@@ -247,8 +226,7 @@ def build_rollout_judgement(
 ) -> RolloutJudgement:
     """Build a :class:`RolloutJudgement`. Omits absent optional keys.
 
-    Pass every metric the rollout measured as *metrics*, and derive *correct* /
-    *score* from that same mapping so the headline cannot drift from the set.
+    Pass every metric measured as *metrics*, and derive *correct*/*score* from it.
     """
     judgement: RolloutJudgement = {"index": index, "correct": correct}
     if score is not None:

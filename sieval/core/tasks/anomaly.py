@@ -499,11 +499,10 @@ def detect_empty_postprocess(ctx: TaskContext) -> set[int]:
     category="correctness",
     rationale=(
         "Either way the rollout scores as wrong without the model necessarily "
-        "being wrong, but the two point at different things: for a task that "
-        "extracts, at the prompt or the extraction rule rather than at "
-        "capability; for an open-ended task, where the response *is* the answer, "
-        "at an empty generation. Reported per rollout, not as a single sentinel, "
-        "so an occasional miss under n>1 is distinguishable from a total failure."
+        "being wrong: for a task that extracts, this points at the prompt or the "
+        "extraction rule rather than at capability; for an open-ended task, at an "
+        "empty generation. Reported per rollout, so an occasional miss under n>1 "
+        "is distinguishable from a total failure."
     ),
     tags=["parsing", "extraction", "empty_output", "correctness"],
 )
