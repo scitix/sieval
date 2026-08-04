@@ -13,6 +13,7 @@ from sieval.core.tasks.records import (
     build_rollout_judgement,
     is_judgement_record,
     is_prediction_record,
+    iter_grader_outputs,
 )
 from sieval.core.utils.serialization import dict_to_obj, obj_to_dict
 
@@ -280,3 +281,51 @@ class TestSerializationRoundTrip:
     def test_restored_record_is_still_recognized(self):
         restored = self._round_trip(build_prediction_record([None, "b"]))
         assert is_prediction_record(restored)
+
+
+class TestIterGraderOutputs:
+    """The runner reads grader calls back off a judgement record.
+
+    `feedback` returns a record rather than a ModelOutput, so a grader's spend is
+    invisible to the profiler unless it is recovered from the record itself.
+    """
+
+    @staticmethod
+    def _judged(*outputs):
+        return build_judgement_record(
+            "gold",
+            [
+                build_rollout_judgement(
+                    index, True, extra={"grader_output": output} if output else {}
+                )
+                for index, output in enumerate(outputs)
+            ],
+        )
+
+    def test_returns_one_output_per_judged_rollout_in_order(self):
+        record = self._judged(
+            {"model": {"model": "judge"}, "usage": {"input_tokens": 1}},
+            {"model": {"model": "judge"}, "usage": {"input_tokens": 2}},
+        )
+        assert [o["usage"]["input_tokens"] for o in iter_grader_outputs(record)] == [
+            1,
+            2,
+        ]
+
+    def test_rollout_without_a_grader_contributes_nothing(self):
+        # aa_lcr's empty-candidate short-circuit never calls the checker, so that
+        # rollout has no grader_output at all -- and must not fabricate a call.
+        record = self._judged({"model": {"model": "judge"}}, None)
+        assert len(iter_grader_outputs(record)) == 1
+
+    def test_judgement_with_no_grader_at_all_is_empty(self):
+        # Most tasks: a string compare or a test suite has no grader.
+        record = build_judgement_record("gold", [build_rollout_judgement(0, True)])
+        assert iter_grader_outputs(record) == []
+
+    def test_non_judgement_values_are_empty(self):
+        # Runs for EVERY stage of every task, so a non-record must be cheap+silent.
+        assert iter_grader_outputs(build_prediction_record(["x"])) == []
+        assert iter_grader_outputs("some text") == []
+        assert iter_grader_outputs(None) == []
+        assert iter_grader_outputs({"rollouts": "not a list"}) == []

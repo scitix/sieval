@@ -263,6 +263,36 @@ def build_judgement_record(
     return record
 
 
+#: Key under a rollout's ``extra`` holding the grader's whole ``ModelOutput``,
+#: flattened to a plain dict. Named here rather than in each task because it is
+#: the contract the runner reads to route grader spend into the profiler --
+#: a task that spells it differently is invisible to ``profile.json``.
+GRADER_OUTPUT_KEY = "grader_output"
+
+
+def iter_grader_outputs(value: Any) -> list[Mapping]:
+    """Every grader ``ModelOutput`` recorded on a judgement record, in order.
+
+    A judged rollout carries the grader's flattened output under
+    ``extra[GRADER_OUTPUT_KEY]``. Returns an empty list for any other value,
+    including judgements whose verdict had no grader at all (a string compare,
+    a test suite) -- most tasks, so this must stay cheap and silent.
+    """
+    if not is_judgement_record(value):
+        return []
+    outputs: list[Mapping] = []
+    for rollout in value.get("rollouts") or []:
+        if not isinstance(rollout, Mapping):
+            continue
+        extra = rollout.get("extra")
+        if not isinstance(extra, Mapping):
+            continue
+        output = extra.get(GRADER_OUTPUT_KEY)
+        if isinstance(output, Mapping):
+            outputs.append(output)
+    return outputs
+
+
 def is_prediction_record(value: Any) -> bool:
     """Whether *value* is a postprocess-stage protocol record.
 

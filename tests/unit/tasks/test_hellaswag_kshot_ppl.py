@@ -10,6 +10,7 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import (
+    PromptRecord,
     TaskContext,
     build_judgement_record,
     build_prompt_record,
@@ -122,7 +123,7 @@ def _make_task(
     return HellaSwagFewShotPPLTask(dataset, model, k=k), model
 
 
-def _pre(context: str = QUERY) -> dict:
+def _pre(context: str = QUERY) -> PromptRecord:
     return build_prompt_record(context, reference=GOLD, extra={"choices": CHOICES})
 
 

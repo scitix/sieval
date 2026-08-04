@@ -3,6 +3,7 @@ from .consts import TaskAction, TaskStage
 from .context import TaskContext, TaskStageMeta, TaskStageOutput
 from .meta import EvalMode, ReferenceImpl, TaskMeta, sieval_task
 from .records import (
+    GRADER_OUTPUT_KEY,
     JudgementRecord,
     PredictionRecord,
     PromptRecord,
@@ -14,10 +15,12 @@ from .records import (
     build_rollout_judgement,
     is_judgement_record,
     is_prediction_record,
+    iter_grader_outputs,
 )
 from .task import Task
 
 __all__ = [
+    "GRADER_OUTPUT_KEY",
     "EvalMode",
     "JudgementRecord",
     "PredictionRecord",
@@ -38,6 +41,7 @@ __all__ = [
     "build_rollout_judgement",
     "is_judgement_record",
     "is_prediction_record",
+    "iter_grader_outputs",
     "sieval_detection_rule",
     "sieval_task",
 ]

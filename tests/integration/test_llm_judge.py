@@ -9,11 +9,18 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 import pytest
 
 from sieval.core.runners.runner import TaskRunner
-from sieval.core.tasks import TaskStageOutput
+from sieval.core.tasks import (
+    TaskStageOutput,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
+)
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.loader import TaskLoader
 from sieval.core.tasks.task import Task
 from sieval.core.utils.meta import build_stage_meta
+from sieval.core.utils.serialization import obj_to_dict
 from tests.conftest import MockChatModel, MockDataset, MockJudgeModel, make_config
 
 # ===================================================================
@@ -141,3 +148,93 @@ class TestLLMJudge:
                 last_meta = fb_meta_list[-1]
                 assert "model_calls" in last_meta
                 assert len(last_meta["model_calls"]) > 0
+
+
+class ProtocolJudgeTask(Task):
+    """LLM-judged task returning a BARE JudgementRecord, per the protocol.
+
+    The stage-output protocol forbids wrapping a record in TaskStageOutput, which
+    is how MockLLMJudgeTask above hands the judge's ModelOutput to the runner. A
+    protocol task has no such channel, so the grader's output is persisted inside
+    the record instead -- and the runner has to read it back from there.
+    """
+
+    model_type = "chat"
+
+    def __init__(self, dataset, model, judge_model, name=None):
+        super().__init__(dataset=dataset, model=model, name=name)
+        self._judge_model = judge_model
+
+    async def preprocess(self, raw, ctx):
+        return build_prompt_record(raw["question"], reference=raw["gold"])
+
+    async def infer(self, pre, ctx):
+        return await self.model.agenerate(pre["prompt"])
+
+    async def postprocess(self, inf, ctx):
+        return build_prediction_record([inf.texts[0].strip() or None])
+
+    async def feedback(self, post, ctx):
+        gold = ctx.raw_sample["gold"]
+        rollouts = []
+        for rollout in post["rollouts"]:
+            out = await self._judge_model.agenerate(
+                f"Is this correct?\nAnswer: {rollout['prediction']}\nGold: {gold}"
+            )
+            rollouts.append(
+                build_rollout_judgement(
+                    rollout["index"],
+                    "yes" in out.texts[0].lower(),
+                    extra={"grader_output": obj_to_dict(out, add_type=False)},
+                )
+            )
+        return True, build_judgement_record(gold, rollouts)
+
+    async def report(self, finals, fails):
+        correct = sum(f.feedback_result["n_correct"] for f in finals)
+        return {"accuracy": correct / len(finals) if finals else 0.0}
+
+
+class TestProtocolJudgeProfiling:
+    @pytest.mark.anyio
+    async def test_grader_spend_reaches_the_profiler(self, tmp_path):
+        """Grader tokens land in the FEEDBACK stage's usage, not just on disk.
+
+        Before this was routed, the profiler read only task-supplied
+        `TaskStageMeta["model_calls"]`, which a bare record cannot carry -- so a
+        judge's tokens were persisted in the record and missing from profile.json.
+        """
+        dataset = MockDataset(LLM_JUDGE_SAMPLES)
+        model = MockChatModel(answers={"Capital of France?": "Paris", "3+4?": "7"})
+        judge = MockJudgeModel(verdict="yes")
+        task = ProtocolJudgeTask(
+            dataset=dataset, model=model, judge_model=judge, name="protocol_judge"
+        )
+        runner = TaskRunner(task, make_config(tmp_path, profile_usage=True))
+        report = await runner.arun()
+        assert report["accuracy"] == 1.0
+
+        usage = runner._profiler.to_dict()["token_usage"]
+        feedback = usage[TaskStage.FEEDBACK.value]
+        # MockJudgeModel reports 20 in / 1 out per call, one call per sample.
+        assert feedback["input"]["total"] == 20 * len(LLM_JUDGE_SAMPLES)
+        assert feedback["output"]["total"] == len(LLM_JUDGE_SAMPLES)
+        # The candidate model's own spend still belongs to `infer`, not feedback.
+        assert usage[TaskStage.INFERRED.value]["input"]["total"] > 0
+
+    @pytest.mark.anyio
+    async def test_the_recorded_call_is_the_grader_not_the_candidate(self, tmp_path):
+        """The feedback stage must attribute its call to the judge model."""
+        dataset = MockDataset(LLM_JUDGE_SAMPLES)
+        model = MockChatModel(answers={"Capital of France?": "Paris", "3+4?": "7"})
+        judge = MockJudgeModel(verdict="yes")
+        task = ProtocolJudgeTask(
+            dataset=dataset, model=model, judge_model=judge, name="protocol_judge_meta"
+        )
+        runner = TaskRunner(task, make_config(tmp_path))
+        await runner.arun()
+
+        ctx = next(iter(runner._contexts.values()))
+        calls = ctx.stage_meta[TaskStage.FEEDBACK.value][-1]["model_calls"]
+        assert [c["model"]["model"] for c in calls] == ["mock-judge"]
+        assert calls[0]["usage"]["input_tokens"] == 20

@@ -270,7 +270,7 @@ class MMMLUKShotClpTask(
     @override
     async def infer(
         self,
-        pre: str,
+        pre: PromptRecord,
         ctx: TaskContext[
             MMMLUDatasetSample,
             PromptRecord,
@@ -283,7 +283,10 @@ class MMMLUKShotClpTask(
         # echoed prompt (echo is for scoring a supplied continuation, i.e. true
         # PPL). echo=False is bit-identical here, faster, and prefix-cache-safe.
         output = await self.model.alogprobs(
-            pre["prompt"],
+            # A record's `prompt` is JSONValue (whatever shape the model kind
+            # takes); this is a base-model task, so it is always the assembled
+            # string preprocess built.
+            cast(str, pre["prompt"]),
             max_tokens=1,
             logprobs=self._logprobs,
             echo=False,
@@ -312,7 +315,7 @@ class MMMLUKShotClpTask(
     @override
     async def feedback(
         self,
-        post: str,
+        post: PredictionRecord,
         ctx: TaskContext[
             MMMLUDatasetSample,
             PromptRecord,

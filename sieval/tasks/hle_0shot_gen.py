@@ -171,11 +171,15 @@ class HLEZeroShotGenTask(
         content: list[dict] = [{"type": "text", "text": raw["question"]}]
         if raw["image"]:  # "" when not multi-modal
             content.append({"type": "image_url", "image_url": {"url": raw["image"]}})
+        # Annotated because the user turn nests a content-block list, which makes
+        # the literal infer a union; a record's `prompt` is JSONValue -- whatever
+        # shape the model kind takes.
+        messages: list = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": content},
+        ]
         return build_prompt_record(
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
+            messages,
             reference=raw["answer"],
             extra={"has_image": bool(raw["image"])},
         )

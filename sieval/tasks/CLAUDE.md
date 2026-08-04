@@ -48,7 +48,7 @@ Vocabulary — these denote **different layers**, keep them distinct:
 - **correct** / **score** — the headline verdict. `correct` is the only axis comparable across tasks.
 - **metrics** — every metric measured, by name. A task with *co-equal* metrics (IFEval strict + loose, HellaSwag `acc` + `acc_norm`) records them all here and derives the headline from them; a metric parked in `extra` is hidden from any reader that doesn't already know the task.
 - **grade** — an LLM autorater's categorical output (CORRECT / INCORRECT / NOT_ATTEMPTED). A judgement *contains* a grade — grade sits **below** judgement, not beside it.
-- **grader** — the LLM actor (the `grader` task arg / model). Not every judgement has one; persist its whole `ModelOutput` in `extra` rather than hand-picked fields.
+- **grader** — the LLM actor (the `grader` task arg / model). Not every judgement has one; persist its whole `ModelOutput` in `extra` rather than hand-picked fields, under exactly the key **`grader_output`** (`records.GRADER_OUTPUT_KEY`). The name is load-bearing, not cosmetic: the runner reads it back to route grader spend into `profile.json`, since a `feedback` stage returning a bare record has no `ModelOutput` for the profiler to derive a call from. Spell it differently and the grader's tokens are on disk but missing from the profile.
 - **judge** — HLE only, upstream's synonym with its own `parse_judge` contract; do not introduce it in new tasks.
 - **extra** — mechanism detail, *not* metrics: a grader's `ModelOutput`, a code runner's failure message, per-constraint results.
 

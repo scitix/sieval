@@ -141,6 +141,9 @@ class OpenBookQAFewShotGenTask(
     @override
     async def preprocess(self, raw, ctx):
         query = _format_question(raw)
+        # Annotated because the two branches infer different message-list types,
+        # and a record's `prompt` is JSONValue -- whatever shape the model kind takes.
+        prompt: list
         if self._fewshot_as_multiturn:
             prompt = [*self._fewshot_turns, {"role": "user", "content": query}]
         else:

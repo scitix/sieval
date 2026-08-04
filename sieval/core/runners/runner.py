@@ -35,11 +35,16 @@ from sieval.core.tasks.context import (
 from sieval.core.tasks.loader import TaskLoader
 from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
+from sieval.core.tasks.records import iter_grader_outputs
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 from sieval.core.utils.concurrency import CompositeLimiter
-from sieval.core.utils.meta import build_stage_meta, report_versions
+from sieval.core.utils.meta import (
+    build_model_call_meta_from_mapping,
+    build_stage_meta,
+    report_versions,
+)
 
 from .resume_gate import (
     ResumeAction,
@@ -801,7 +806,20 @@ class TaskRunner:
             ):
                 return build_stage_meta(*inner, timing_s=timing_s)
             else:
-                return build_stage_meta(timing_s=timing_s)
+                # A stage whose value is a judgement record may still have called
+                # a model: an LLM grader runs inside `feedback`, which returns a
+                # record, not a ModelOutput. Its flattened output is recorded on
+                # the record, so read the calls back from there -- otherwise
+                # grader spend is on disk but missing from profile.json.
+                return build_stage_meta(
+                    timing_s=timing_s,
+                    model_calls=[
+                        call
+                        for output in iter_grader_outputs(inner)
+                        if (call := build_model_call_meta_from_mapping(output))
+                        is not None
+                    ],
+                )
 
         def _get_stage_meta_hook(stage: TaskStage) -> TaskStageMetaHook | None:
             hooks = self._config.stage_meta_hooks

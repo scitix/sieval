@@ -134,17 +134,15 @@ def test_import_does_not_pull_latex2sympy():
 async def test_report_divides_metrics_by_completed_finals_only():
     raw = {"Question": "What is 2+2?", "Answer": "4", "Answer_type": "integer"}
     task = _task(k=0)
-    final_ctx = TaskContext(
-        sample_id=0,
-        raw_sample=raw,
-        feedback_result=build_judgement_record("4", [build_rollout_judgement(0, True)]),
-    )
-    # report() reads `extracted` off the prediction record for its `empty` count.
+    judgement = build_judgement_record("4", [build_rollout_judgement(0, True)])
+    # report() reads `extracted` off the prediction record for its `empty` count,
+    # so the context has to carry both records, not just the judgement.
     final_ctx = (
-        final_ctx.to_preprocessed({"prompt": "p"})
+        TaskContext(sample_id=0, raw_sample=raw)
+        .to_preprocessed({"prompt": "p"})
         .to_inferred("i")
         .to_postprocessed(build_prediction_record(["4"]))
-        .to_feedback(final_ctx.feedback_result)
+        .to_feedback(judgement)
     )
     failed_ctx = TaskContext(sample_id=1, raw_sample=raw)
 

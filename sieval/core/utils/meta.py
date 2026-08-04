@@ -26,17 +26,55 @@ def build_model_call_meta(output: ModelOutput) -> ModelCallMeta:
     return model_call
 
 
+def build_model_call_meta_from_mapping(data: Mapping) -> ModelCallMeta | None:
+    """Rebuild a :class:`ModelCallMeta` from an already-flattened ``ModelOutput``.
+
+    The judge-family tasks persist a grader's whole ``ModelOutput`` as a plain
+    dict inside the judgement record (``obj_to_dict``), because a record must not
+    nest a typed object. That dict is the only trace of a *second* model call in
+    a stage whose return value is a record rather than a ``ModelOutput``, so the
+    profiler can only see grader spend by reading it back.
+
+    Returns ``None`` when *data* carries no ``model`` -- the one field a call
+    always has -- so a mapping that merely looks dict-shaped is skipped instead
+    of contributing a usage-less phantom call.
+    """
+    model = data.get("model")
+    if not isinstance(model, Mapping):
+        return None
+    call: ModelCallMeta = {"model": dict(model)}  # type: ignore[typeddict-item]
+    for key in ("usage", "request_params"):
+        value = data.get(key)
+        if isinstance(value, Mapping):
+            call[key] = dict(value)  # type: ignore[literal-required]
+    finish_reasons = data.get("finish_reasons")
+    if finish_reasons:
+        call["finish_reasons"] = list(finish_reasons)
+    for key in ("response_model", "system_fingerprint"):
+        value = data.get(key)
+        if value is not None:
+            call[key] = value
+    return call
+
+
 def build_stage_meta(
     *outputs: ModelOutput,
     timing_s: float | None = None,
     extra: dict | None = None,
+    model_calls: Iterable[ModelCallMeta] = (),
 ) -> TaskStageMeta:
-    """Build a TaskStageMeta dict for one pipeline stage execution."""
+    """Build a TaskStageMeta dict for one pipeline stage execution.
+
+    *model_calls* appends calls that are not represented by an *outputs* entry --
+    a grader invoked inside ``feedback``, whose stage value is a record.
+    """
     meta: TaskStageMeta = {"timestamp": time.time(), "version": __version__}
     if timing_s is not None:
         meta["timing_s"] = timing_s
-    if outputs:
-        meta["model_calls"] = [build_model_call_meta(output) for output in outputs]
+    calls = [build_model_call_meta(output) for output in outputs]
+    calls.extend(model_calls)
+    if calls:
+        meta["model_calls"] = calls
     if extra:
         meta["extra"] = extra
     return meta

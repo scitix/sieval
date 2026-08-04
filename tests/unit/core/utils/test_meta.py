@@ -6,9 +6,10 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 
 import time
 
-from sieval.core.models.model import ModelOutput
+from sieval.core.models.model import ModelMeta, ModelOutput
 from sieval.core.utils.meta import (
     build_model_call_meta,
+    build_model_call_meta_from_mapping,
     build_stage_meta,
     collect_versions,
     report_versions,
@@ -185,3 +186,71 @@ class TestReportVersions:
             {},  # legacy, pre-provenance
         ]
         assert report_versions(finals, []) == ["0.6.0", "0.6.10", "unknown"]
+
+
+def _model_meta(name: str) -> ModelMeta:
+    """A minimally-complete ModelMeta (all three required keys)."""
+    return {"model": name, "api_base": None, "default_params": {}}
+
+
+class TestBuildModelCallMetaFromMapping:
+    """Rebuilding a call from a grader's already-flattened ModelOutput.
+
+    This is the only way grader spend reaches the profiler: `feedback` returns a
+    judgement record, not a ModelOutput, so the runner cannot derive the call
+    from the stage value the way it does for `infer`.
+    """
+
+    def test_round_trips_the_fields_a_profiler_reads(self):
+        flattened = {
+            "model": _model_meta("judge-5.2"),
+            "usage": {"input_tokens": 120, "output_tokens": 7},
+            "request_params": {"temperature": 0},
+            "finish_reasons": ["stop"],
+            "response_model": "judge-5.2-2026",
+            "system_fingerprint": "fp_1",
+            "texts": ["CORRECT"],  # not a call field; must not leak through
+        }
+        call = build_model_call_meta_from_mapping(flattened)
+        assert call == {
+            "model": _model_meta("judge-5.2"),
+            "usage": {"input_tokens": 120, "output_tokens": 7},
+            "request_params": {"temperature": 0},
+            "finish_reasons": ["stop"],
+            "response_model": "judge-5.2-2026",
+            "system_fingerprint": "fp_1",
+        }
+
+    def test_mapping_without_model_is_not_a_call(self):
+        # `model` is the one field every call has. Without it this is some other
+        # dict in `extra`, and admitting it would add a usage-less phantom call.
+        assert (
+            build_model_call_meta_from_mapping({"usage": {"input_tokens": 1}}) is None
+        )
+
+    def test_absent_optional_fields_are_omitted_not_nulled(self):
+        call = build_model_call_meta_from_mapping({"model": _model_meta("m")})
+        assert call == {"model": _model_meta("m")}
+
+
+class TestBuildStageMetaModelCalls:
+    def test_extra_model_calls_append_after_output_derived_ones(self):
+        # A stage can both return a ModelOutput and have called a grader.
+        output = ModelOutput(model=_model_meta("candidate"), texts=["x"])
+        meta = build_stage_meta(
+            output,
+            model_calls=[{"model": _model_meta("judge")}],
+        )
+        assert [c["model"]["model"] for c in meta["model_calls"]] == [
+            "candidate",
+            "judge",
+        ]
+
+    def test_only_extra_model_calls_still_records_them(self):
+        # The judge-family case: the stage value is a record, so there is no
+        # output to derive from -- the grader call must still be recorded.
+        meta = build_stage_meta(model_calls=[{"model": _model_meta("judge")}])
+        assert meta["model_calls"] == [{"model": _model_meta("judge")}]
+
+    def test_no_calls_omits_the_key(self):
+        assert "model_calls" not in build_stage_meta(timing_s=1.0)

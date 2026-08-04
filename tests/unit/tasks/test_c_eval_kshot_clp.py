@@ -10,6 +10,7 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import (
+    JudgementRecord,
     TaskContext,
     build_judgement_record,
     build_prediction_record,
@@ -60,7 +61,7 @@ def _sample(subject: str, answer: str, q: str = "q") -> CEvalDatasetSample:
     }
 
 
-def _fb(correct: bool, subject: str) -> dict:
+def _fb(correct: bool, subject: str) -> JudgementRecord:
     return build_judgement_record(
         "A", [build_rollout_judgement(0, correct)], extra={"subject": subject}
     )

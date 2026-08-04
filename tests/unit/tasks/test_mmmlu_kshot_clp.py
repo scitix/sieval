@@ -4,6 +4,7 @@ AI-Generated Code - GPT-5-Codex (OpenAI)
 """
 
 from collections import Counter
+from typing import cast
 
 import pytest
 from datasets import Dataset as HFDataset
@@ -154,7 +155,8 @@ async def test_preprocess_uses_same_locale_subject_fewshot_examples():
         _sample(2, locale="zh_cn", subject="abstract_algebra"),
         TaskContext(sample_id=0, raw_sample=_sample(2)),
     )
-    prompt = pre["prompt"]
+    # A record's `prompt` is JSONValue; this base-model task always builds a str.
+    prompt = cast(str, pre["prompt"])
 
     assert prompt.startswith(
         "The following are multiple choice questions (with answers) about "
