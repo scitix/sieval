@@ -258,7 +258,10 @@ class RulerZeroShotGenTask(
         cells: dict[tuple[int, str], list[tuple[str, list[str]]]] = defaultdict(list)
         for ctx in finals:
             fb = ctx.feedback_result
-            prediction = ctx.postprocess_result["rollouts"][0]["prediction"] or ""
+            # `.get()`, not `[]`: postprocess normalizes a blank response to None,
+            # and a None field is ABSENT once the record round-trips through disk --
+            # which is exactly what this reads on the resume-report path.
+            prediction = ctx.postprocess_result["rollouts"][0].get("prediction") or ""
             cells[(fb["extra"]["context_length"], fb["extra"]["subtask"])].append(
                 (prediction, list(fb["reference"]))
             )
