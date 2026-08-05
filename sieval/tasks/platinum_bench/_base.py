@@ -23,14 +23,12 @@ Deviations, all deliberate:
 
 * ``prompt_variant`` (task arg, default ``"cot"``) replaces upstream's
   ``ModelEngineFactory.reasoning_models`` name list, which decides CoT vs no-CoT
-  by hardcoded model name. A name list cannot classify an arbitrary served
-  endpoint, and silently switching prompts based on a model string is exactly
-  the kind of implicit behaviour that makes two runs incomparable. Set
-  ``prompt_variant: no_cot`` for a reasoning model.
-* Upstream's o1-only ``platinum_prompt_no_cot.replace('Then, provide',
-  'Provide')`` is not ported. It exists because o1-preview sometimes refused the
-  original wording; it is a workaround for two retired snapshots, and applying
-  it here would silently alter the prompt for every no-CoT model.
+  — and, for the o1 snapshots, an extra prompt rewrite — by hardcoded model
+  name. A name list cannot classify an arbitrary served endpoint, and silently
+  switching prompts on a model string is exactly the kind of implicit behaviour
+  that makes two runs incomparable. All three of upstream's prompts are
+  reachable, explicitly: ``cot``, ``no_cot`` (reasoning models), and
+  ``no_cot_o1`` (the o1-2024-12-17 / o1-preview rewrite).
 * A parse failure becomes ``prediction=None`` and ``correct=False``. Upstream
   reaches the same verdict, but by exception: ``parse_fn_math`` raises
   ``AttributeError`` on digit-free output, ``run_benchmark.py`` catches it with a
@@ -48,11 +46,31 @@ the cross-subset mean is the leaderboard's job, not this task's.
 
 Repro decoding (model-layer assets — set via ``models:`` / ``infer_args``, not
 in this code): ``temperature=0.5``, ``top_p`` unset, one sample per question, no
-seed (``models.py::ModelInferenceEngine``). Notably *not* greedy — upstream
+seed (``models.py::ModelInferenceEngine``); the o1 / o3 snapshots instead run at
+``temperature=1``, which their API required. Notably *not* greedy — upstream
 sampled at 0.5, so a single run is not bit-reproducible upstream either.
 ``max_tokens=6000`` is applied in ``infer()`` rather than left to YAML, because
 a short default budget truncates CoT answers before the ``Answer:`` line and
 converts correct reasoning into parse failures.
+
+Validation — every math cell of the paper's Table 3 (24 models x 5 subsets =
+120 error counts) is reproduced exactly by this task. Sampling at 0.5 with no
+seed makes a fresh run unreproducible by construction, so the check instead
+replays upstream's own published inferences
+(``madrylab/platinum-bench-paper-cache``, one pickle per subset, keyed by
+``(prompt, temperature, 0, model)``) through the real pipeline: this dataset's
+rejected-row filter, these leaves, and ``preprocess`` → ``report``. Every one of
+the 968 prompts per model hits a cache entry, which is also what proves the
+prompt this task sends is upstream's byte for byte. Two things that check pins
+down and a fresh run could not: the counts are exact rather than
+within-noise (a 0-19-error metric over 100-274 questions has a binomial
+sigma near 2), and it runs against
+``madrylab/platinum-bench-paper-version`` — the repo the paper's numbers were
+computed on. The revision pinned for actual use is the current
+``madrylab/platinum-bench``, whose later cleaning pass rejects 15 more math rows
+(968 → 953: multiarith 171→170, svamp 273→265, gsm8k 274→268), so its scores are
+close to but not identical with the paper's, and upstream publishes no table for
+it. Upstream defaults to the current repo too, with ``--paper-version`` opt-in.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -86,17 +104,26 @@ PLATINUM_REFERENCE_NOTES = (
     "vendored byte-faithfully in sieval.community.platinum_bench. Rows with "
     "cleaning_status='rejected' are dropped, matching the published leaderboard. "
     "Deviations: prompt_variant (task arg, default cot) replaces upstream's "
-    "hardcoded reasoning-model name list — pass prompt_variant: no_cot for a "
-    'reasoning model; upstream\'s o1-only "Then, provide" -> "Provide" prompt '
-    "edit is not ported; a parse failure is recorded as prediction=None/"
+    "hardcoded reasoning-model name list, which also decided an o1-only prompt "
+    "rewrite; all three upstream prompts are reachable explicitly as cot / "
+    "no_cot / no_cot_o1. A parse failure is recorded as prediction=None/"
     "correct=False instead of upstream's swallowed AttributeError. "
     "Repro decoding (model-layer assets — set via models: / infer_args, not in "
-    "this code): temperature=0.5, one sample per question, no seed. Not greedy, "
-    "so upstream runs are not bit-reproducible either. max_tokens=6000 is "
-    "applied in infer() (upstream's default) because a smaller budget truncates "
-    "CoT before the 'Answer:' line and turns correct reasoning into parse errors. "
-    "Not yet validated against upstream's published per-dataset error counts, so "
-    'status="experimental".'
+    "this code): temperature=0.5, one sample per question, no seed; the o1/o3 "
+    "snapshots ran at temperature=1. Not greedy, so upstream runs are not "
+    "bit-reproducible either. max_tokens=6000 is applied in infer() (upstream's "
+    "default) because a smaller budget truncates CoT before the 'Answer:' line "
+    "and turns correct reasoning into parse errors. "
+    "Validated: all 120 math error counts of the paper's Table 3 (24 models x 5 "
+    "subsets) reproduce exactly, by replaying upstream's own published "
+    "inferences (madrylab/platinum-bench-paper-cache) through this pipeline "
+    "against madrylab/platinum-bench-paper-version. Reproduce a published row "
+    "with prompt_variant=cot at temperature 0.5, except: no_cot for DeepSeek-R1 "
+    "and Gemini Thinking; no_cot at temperature 1 for o1-mini and o3-mini; "
+    "no_cot_o1 at temperature 1 for o1-2024-12-17 and o1-preview. The pinned "
+    "revision is the current madrylab/platinum-bench, which rejects 15 more math "
+    "rows than the paper version (968 -> 953), so its scores are near but not "
+    "equal to the paper's and upstream publishes no table for it."
 )
 
 # `parsing_strategy` value shared by all five subsets this base serves. Asserted
@@ -107,9 +134,16 @@ MATH_PARSING_STRATEGY = "math"
 # models.py::ModelInferenceEngine's max_completion_tokens/max_tokens default.
 UPSTREAM_MAX_TOKENS = 6000
 
-TPromptVariant = Literal["cot", "no_cot"]
+TPromptVariant = Literal["cot", "no_cot", "no_cot_o1"]
 
-_PROMPT_VARIANTS: tuple[TPromptVariant, ...] = ("cot", "no_cot")
+_PROMPT_VARIANTS: tuple[TPromptVariant, ...] = ("cot", "no_cot", "no_cot_o1")
+
+# Upstream's o1-family edit. The no-CoT column reads "Then, provide the final
+# answer ..." — a leftover conjunction from the CoT wording, since nothing
+# precedes it once the reasoning sentence is gone. Upstream rewrites it for the
+# o1 snapshots only, so reproducing their o1 rows needs the edited string and
+# reproducing o1-mini / o3-mini needs the unedited one.
+_O1_PROMPT_EDIT = ("Then, provide", "Provide")
 
 
 class PlatinumMathGenTask(
@@ -147,9 +181,12 @@ class PlatinumMathGenTask(
 
     def _prompt_text(self, raw: PlatinumBenchDatasetSample) -> str:
         """The prompt column this run reads — upstream's ``get_prompt`` branches."""
-        if self._prompt_variant == "no_cot":
-            return raw["platinum_prompt_no_cot"]
-        return raw["platinum_prompt"]
+        if self._prompt_variant == "cot":
+            return raw["platinum_prompt"]
+        text = raw["platinum_prompt_no_cot"]
+        if self._prompt_variant == "no_cot_o1":
+            return text.replace(*_O1_PROMPT_EDIT)
+        return text
 
     @override
     async def setup(self) -> None:

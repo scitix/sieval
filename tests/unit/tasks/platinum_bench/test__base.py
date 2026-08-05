@@ -40,7 +40,13 @@ from sieval.tasks.platinum_bench.platinum_svamp_0shot_gen import (
     PlatinumSVAMPZeroShotGenTask,
 )
 
-from .conftest import COT_PROMPT, NO_COT_PROMPT, make_sample, make_task
+from .conftest import (
+    COT_PROMPT,
+    NO_COT_PROMPT,
+    O1_PROMPT,
+    make_sample,
+    make_task,
+)
 
 LEAVES = (
     PlatinumGSM8KZeroShotGenTask,
@@ -137,11 +143,23 @@ async def test_preprocess_no_cot_variant_reads_the_other_column():
 
 
 @pytest.mark.anyio
-async def test_no_cot_prompt_is_not_rewritten():
-    # Upstream applies an o1-only `'Then, provide' -> 'Provide'` edit. Not ported:
-    # it is a workaround for two retired snapshots, and porting it would silently
-    # change the prompt for every no-CoT model.
-    task, _ = make_task(PlatinumGSM8KZeroShotGenTask)
+async def test_o1_variant_rewrites_only_the_no_cot_column():
+    # Upstream's o1 snapshots get `'Then, provide' -> 'Provide'` applied to the
+    # no-CoT column. Asserting the whole string, not just the absence of "Then,",
+    # is what catches the edit being applied to the CoT column instead — both
+    # columns contain the substring, so a membership check would pass either way.
+    task, _ = make_task(PlatinumGSM8KZeroShotGenTask, prompt_variant="no_cot_o1")
+    raw = make_sample()
+    pre = await task.preprocess(raw, _ctx(raw_sample=raw))
+    assert pre["prompt"] == [{"role": "user", "content": O1_PROMPT}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("variant", ["cot", "no_cot"])
+async def test_non_o1_variants_keep_the_leftover_conjunction(variant):
+    # Only `no_cot_o1` rewrites. Upstream's other 22 published rows were run
+    # against the unedited wording, so editing it here would silently move them.
+    task, _ = make_task(PlatinumGSM8KZeroShotGenTask, prompt_variant=variant)
     raw = make_sample()
     pre = await task.preprocess(raw, _ctx(raw_sample=raw))
     assert "Then, provide" in pre["prompt"][0]["content"]
@@ -408,3 +426,18 @@ def test_reference_notes_carry_the_repro_decoding_protocol():
     assert "no seed" in PLATINUM_REFERENCE_NOTES
     assert "max_tokens=6000" in PLATINUM_REFERENCE_NOTES
     assert "prompt_variant" in PLATINUM_REFERENCE_NOTES
+
+
+def test_reference_notes_carry_the_validation_record():
+    # `status="stable"` is a claim about reproduction; the evidence for it has to
+    # travel with the task, not live only in a merged PR body.
+    assert "all 120 math error counts" in PLATINUM_REFERENCE_NOTES
+    assert "platinum-bench-paper-cache" in PLATINUM_REFERENCE_NOTES
+    assert "platinum-bench-paper-version" in PLATINUM_REFERENCE_NOTES
+    # Which prompt/temperature reproduces which published row — the recipe is
+    # useless without this, since three of the four combinations are exceptions.
+    for variant in ("cot", "no_cot", "no_cot_o1"):
+        assert variant in PLATINUM_REFERENCE_NOTES
+    # The pinned revision is NOT the one the paper's numbers are computed on, so a
+    # reader comparing against Table 3 has to be told the row counts differ.
+    assert "968 -> 953" in PLATINUM_REFERENCE_NOTES

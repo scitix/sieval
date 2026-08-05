@@ -20,8 +20,19 @@ from sieval.tasks.platinum_bench._base import (
     PlatinumMathGenTask,
 )
 
-COT_PROMPT = "What is 40 + 2?\nThink step by step. Then, provide 'Answer: <n>'."
-NO_COT_PROMPT = "What is 40 + 2?\nRespond with only 'Answer: <n>'."
+# Both columns are shaped like the real ones, because the wording is load-bearing:
+# the no-CoT column really does open its last sentence with "Then, provide" — a
+# leftover from the CoT variant — and that exact substring is what upstream's
+# o1 rewrite targets. A fixture without it would make the `no_cot_o1` tests pass
+# vacuously.
+_PROMPT_HEAD = "Solve the following math word problem.\n\nWhat is 40 + 2?\n\n"
+_PROMPT_TAIL = (
+    'the final answer as a single integer in the format "Answer: XXX" with no '
+    "extra formatting."
+)
+COT_PROMPT = f"{_PROMPT_HEAD}Think step-by-step. Then, provide {_PROMPT_TAIL}"
+NO_COT_PROMPT = f"{_PROMPT_HEAD}Then, provide {_PROMPT_TAIL}"
+O1_PROMPT = f"{_PROMPT_HEAD}Provide {_PROMPT_TAIL}"
 
 
 class CapturingChatModel(ChatModel):
@@ -103,8 +114,8 @@ def assert_leaf_meta(
     assert meta.eval_mode is EvalMode.GEN
     assert meta.n_shot == 0
     assert meta.model_type == "chat"
-    # Not yet validated against upstream's published per-dataset error counts.
-    assert meta.status == "experimental"
+    # All 120 math cells of the paper's Table 3 reproduce exactly (see `_base`).
+    assert meta.status == "stable"
     assert meta.tags == ("english", "math-word-problems", "open-ended")
 
     assert meta.reference_impl is not None

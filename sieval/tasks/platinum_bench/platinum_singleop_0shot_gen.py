@@ -28,7 +28,7 @@ from ._base import (
     n_shot=0,
     tags=("english", "math-word-problems", "open-ended"),
     model_type="chat",
-    status="experimental",
+    status="stable",
     reference_impl=ReferenceImpl(
         source="MadryLab/platinum-benchmarks",
         url=PLATINUM_UPSTREAM_URL,
