@@ -1,0 +1,116 @@
+# ------------------------------------------------------------------------------
+# MathArena final-answer suite — the five competitions added alongside AIME/HMMT
+# ------------------------------------------------------------------------------
+# Tasks: BRUMO 2025, SMT 2025, CMIMC 2025, MathArena Apex 2025, Apex Shortlist
+# 2025 (all 0-shot, generative). 182 problems total.
+#
+# Two-step flow:
+#   1. sieval dataset download brumo_2025 smt_2025 cmimc_2025 apex_2025 \
+#        apex_shortlist_2025
+#   2. sieval eval examples/leaderboard-matharena.yaml --model <your-model>
+#
+# ---- Comparing against matharena.ai -----------------------------------------
+# `n` below is set to the repeat count MathArena PUBLISHES at, which is not
+# uniform across the suite: 4 runs/problem everywhere except Apex 2025, which is
+# 16 (measured over MathArena/apex_2025_outputs: 35 of 46 scored models at 16
+# runs/problem, 10 at 8, one at 4 — a 12-problem set needs the extra samples to
+# produce a usable score). Lower `n` to smoke-test; a number compared against the
+# public leaderboard must use these values.
+#
+# Two more things have to match, and they are per-model, not per-suite:
+#   * `temperature` / `top_p` / `max_tokens` — MathArena stores these per model in
+#     configs/models/<vendor>/<model>.yaml (e.g. 0.6 for some, 1.0 + top_p 0.95
+#     for others, unset for the o-series). Copy them from the model you are
+#     reproducing; the values below are placeholders, NOT a suite default.
+#   * the model must be one MathArena actually scored. 17 models have official
+#     numbers on all five of these; a newer checkpoint produces a new datapoint,
+#     not a reproduction.
+#
+# Expect a residual gap even when all of the above matches: sieval's scoring
+# reproduces MathArena's own recorded verdicts to a mean of -0.8 pp across 85
+# (model, benchmark) cells, because sieval deliberately does not vendor
+# upstream's `normalize_string`. See each task's reference_impl.notes.
+# ------------------------------------------------------------------------------
+result_dir: ./outputs/leaderboard-matharena
+
+runner_config:
+    concurrency_limits:
+        infer: 32
+    max_iterations: 3
+    auto_resume: false
+
+models:
+    # `name` is overridable from the CLI: `sieval eval ... --model <model>`.
+    # Credentials come from the environment (OPENAI_API_KEY, and OPENAI_BASE_URL
+    # or an explicit `api_base` arg here) — nothing is read from a .env file.
+    matharena_model:
+        name: "gpt-4o" # EDIT ME — must be a model MathArena also scored
+        args:
+            max_retries: 3
+            concurrency_limit: 32
+            max_tokens: 32768 # EDIT ME — copy from the model's matharena config
+            temperature: 0.6 # EDIT ME — copy from the model's matharena config
+            timeout: 3600
+
+datasets:
+    brumo_2025:
+        class: BRUMO2025Dataset
+        path: "MathArena/brumo_2025"
+
+    smt_2025:
+        class: SMT2025Dataset
+        path: "MathArena/smt_2025"
+
+    cmimc_2025:
+        class: CMIMC2025Dataset
+        path: "MathArena/cmimc_2025"
+
+    apex_2025:
+        class: Apex2025Dataset
+        path: "MathArena/apex_2025"
+
+    apex_shortlist_2025:
+        class: ApexShortlist2025Dataset
+        path: "MathArena/apex-shortlist"
+
+tasks:
+    brumo_2025_0shot_gen:
+        class: BRUMO2025ZeroShotGenTask
+        dataset: brumo_2025
+        model: matharena_model
+        args:
+            k: 1
+            n: 4
+
+    smt_2025_0shot_gen:
+        class: SMT2025ZeroShotGenTask
+        dataset: smt_2025
+        model: matharena_model
+        args:
+            k: 1
+            n: 4
+
+    cmimc_2025_0shot_gen:
+        class: CMIMC2025ZeroShotGenTask
+        dataset: cmimc_2025
+        model: matharena_model
+        args:
+            k: 1
+            n: 4
+
+    apex_2025_0shot_gen:
+        class: Apex2025ZeroShotGenTask
+        dataset: apex_2025
+        model: matharena_model
+        args:
+            k: 1
+            # 16, not 4 — see the header. This is the published repeat count.
+            n: 16
+
+    apex_shortlist_2025_0shot_gen:
+        class: ApexShortlist2025ZeroShotGenTask
+        dataset: apex_shortlist_2025
+        model: matharena_model
+        args:
+            k: 1
+            n: 4

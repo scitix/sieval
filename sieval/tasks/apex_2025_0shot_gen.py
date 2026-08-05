@@ -42,10 +42,13 @@ from sieval.datasets import Apex2025DatasetSample
         url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/apex/apex_2025.yaml",
         notes=(
             "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence "
-            "via math-verify. REPEATS: matharena averages 4 runs per problem "
-            "(runner default `--n 4`) while this task defaults to n=1 — set n=4 to "
-            "compare against matharena.ai, as a task arg (tasks.<name>.args.n); the "
-            "model's `n` is silently overridden call-time. k>n is rejected at "
+            "via math-verify. REPEATS: set n=16 to compare against matharena.ai — "
+            "NOT the family's usual 4. Apex is published at a higher repeat count "
+            "than the rest of the suite (measured over apex_2025_outputs: 35 of 46 "
+            "scored models at 16 runs/problem, 10 at 8, one at 4), which is how a "
+            "12-problem set gets a usable score. Pass it as a task arg "
+            "(tasks.<name>.args.n); the model's `n` is silently overridden "
+            "call-time, and this task still defaults to n=1. k>n is rejected at "
             "construction. DEVIATION: golds are normalized by "
             "sieval.community.math.strip_string; matharena does not. SMALL N: 12 "
             "problems, so one problem moves the score by 8.3 points — read it "
