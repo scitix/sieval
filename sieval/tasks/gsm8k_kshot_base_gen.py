@@ -14,7 +14,7 @@ official metric.
 The comparison target is DeepSeek-V3 Table 3: Qwen2.5-72B-Base GSM8K 8-shot
 EM = 88.3. DeepSeek-V3 does not specify whether it used strict-match or
 flexible-match extraction, so this task states and reports strict-match EM.
-Default k=8 is chosen for that DeepSeek-V3 comparison.
+Default n_shot=8 is chosen for that DeepSeek-V3 comparison.
 
 Decoding parameters such as max_tokens and temperature are model-owned in
 SiEval; this task only forwards stop sequences coupled to the prompt format.
@@ -106,7 +106,7 @@ def _extract_flexible_match(text: str) -> tuple[str, str]:
             "Uses lm-eval-harness strict-match extraction, aligned with the "
             "original GSM8K dataset.py #### answer delimiter. Also reports "
             "lm-eval-harness flexible-extract as a secondary metric, not as "
-            "the original GSM8K official metric. Default k=8 follows the "
+            "the original GSM8K official metric. Default n_shot=8 follows the "
             "DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K "
             "8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs "
             "flexible extraction."
@@ -129,16 +129,16 @@ class GSM8KFewShotBaseGenTask(
         model,
         name: str | None = None,
         *,
-        k: int = N_SHOT,
+        n_shot: int = N_SHOT,
         fewshot_split: str = "train",
         fewshot_seed: int = DEFAULT_FEWSHOT_SEED,
         stop: tuple[str, ...] = STOP_SEQUENCES,
     ):
-        if k < 0:
-            raise ValueError(f"k must be >= 0, got {k}")
+        if n_shot < 0:
+            raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._k = k
-        self.n_shot_used = self._k
+        self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
         self._stop = stop
@@ -243,16 +243,16 @@ class GSM8KFewShotBaseGenTask(
                 "GSM8K few-shot base generative task requires a "
                 f"{self._fewshot_split!r} split for few-shot examples."
             )
-        if len(split) < self._k:
+        if len(split) < self._n_shot:
             raise ValueError(
                 "GSM8K few-shot base generative task requires at least "
-                f"{self._k} examples in split {self._fewshot_split!r}; "
+                f"{self._n_shot} examples in split {self._fewshot_split!r}; "
                 f"found {len(split)}."
             )
-        if self._k == 0:
+        if self._n_shot == 0:
             return []
         return self.dataset.retrieve_samples(
-            self._k,
+            self._n_shot,
             split=self._fewshot_split,
             mode="random",
             seed=self._fewshot_seed,

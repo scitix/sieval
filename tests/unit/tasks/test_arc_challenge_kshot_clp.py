@@ -65,7 +65,7 @@ def _sample() -> ARCChallengeDatasetSample:
 
 
 def _task(
-    top: dict[str, float], *, k: int = 0, logprobs: int = 100
+    top: dict[str, float], *, n_shot: int = 0, logprobs: int = 100
 ) -> tuple[ARCChallengeFewShotClpTask, _TopLogprobsGenModel]:
     dataset = ARCChallengeDataset(
         _hf_dict=HFDatasetDict(
@@ -77,14 +77,14 @@ def _task(
     )
     model = _TopLogprobsGenModel(top)
     return (
-        ARCChallengeFewShotClpTask(dataset, model, k=k, logprobs=logprobs),
+        ARCChallengeFewShotClpTask(dataset, model, n_shot=n_shot, logprobs=logprobs),
         model,
     )
 
 
 @pytest.mark.anyio
 async def test_preprocess_lists_options_with_letters():
-    task, _model = _task({}, k=1)
+    task, _model = _task({}, n_shot=1)
     raw = _sample()
 
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
@@ -152,8 +152,8 @@ def test_negative_k_rejected():
     dataset = ARCChallengeDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
     )
-    with pytest.raises(ValueError, match="k must be >= 0"):
-        ARCChallengeFewShotClpTask(dataset, _TopLogprobsGenModel({}), k=-1)
+    with pytest.raises(ValueError, match="n_shot must be >= 0"):
+        ARCChallengeFewShotClpTask(dataset, _TopLogprobsGenModel({}), n_shot=-1)
 
 
 def test_task_meta_points_to_arc_challenge_dataset():

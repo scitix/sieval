@@ -7,16 +7,16 @@ in ``sieval.community.openbookqa``. This task targets implementation parity
 with that config (prompt + extraction), not a specific published accuracy.
 
 Deviations from the OpenCompass reference (``obqa_gen_9069e4``):
-  - OpenCompass uses ``ZeroRetriever`` (0-shot). At ``k=0`` the prompt and
-    extraction match upstream; ``k>0`` is a sieval extension with no upstream
-    counterpart — the few-shot block is the first ``k`` ``train`` rows (fixed
+  - OpenCompass uses ``ZeroRetriever`` (0-shot). At ``n_shot=0`` the prompt and
+    extraction match upstream; ``n_shot>0`` is a sieval extension with no upstream
+    counterpart — the few-shot block is the first ``n_shot`` ``train`` rows (fixed
     indices), each with its ``answerKey`` appended. By default they are packed
     into one user turn (the lm-eval/OpenCompass default); when
     ``fewshot_as_multiturn`` is set they are rendered as alternating
     user/assistant turns instead (lm-eval's ``fewshot_as_multiturn``).
-    At ``k>0`` generation is bounded by a stop sequence (the next example's
+    At ``n_shot>0`` generation is bounded by a stop sequence (the next example's
     ``Question:`` header) so a verbose run-on cannot emit a later high-priority
-    extractor match that overrides the real answer; ``k=0`` is left unbounded to
+    extractor match that overrides the real answer; ``n_shot=0`` is left unbounded to
     match the upstream 0-shot config.
   - Only the ``main`` variant is implemented; the ``additional``/``fact1``
     ("Given the fact: ...") prompt variant is not used.
@@ -58,7 +58,8 @@ from sieval.datasets import OpenBookQADatasetSample
 DEFAULT_N_SHOT = 0
 FEWSHOT_SEP = "\n\n"
 # Coupled to the few-shot block: each packed example begins with "Question:".
-# Applied only at k>0 to bound verbose run-on (see infer); k=0 stays unbounded.
+# Applied only at n_shot>0 to bound verbose run-on (see infer); n_shot=0 is
+# left unbounded.
 STOP_SEQUENCES = ("\nQuestion:",)
 
 
@@ -86,9 +87,9 @@ def _format_question(sample: OpenBookQADatasetSample) -> str:
         url="https://github.com/open-compass/opencompass/blob/5767b74899806c0c37efdc5529ffea01e7340e48/opencompass/configs/datasets/obqa/obqa_gen_9069e4.py",
         notes=(
             "Prompt template (main variant) and first_option_postprocess "
-            "vendored from OpenCompass. At k=0 the prompt and extraction match "
-            "the upstream 0-shot config; k>0 is a sieval extension (fixed "
-            "first-k train rows)."
+            "vendored from OpenCompass. At n_shot=0 the prompt and extraction match "
+            "the upstream 0-shot config; n_shot>0 is a sieval extension (fixed "
+            "first n_shot train rows)."
         ),
     ),
 )
@@ -108,16 +109,16 @@ class OpenBookQAFewShotGenTask(
         model,
         name: str | None = None,
         *,
-        k: int = DEFAULT_N_SHOT,
+        n_shot: int = DEFAULT_N_SHOT,
         fewshot_split: str = "train",
         fewshot_as_multiturn: bool = False,
         stop: tuple[str, ...] = STOP_SEQUENCES,
     ):
-        if k < 0:
-            raise ValueError(f"k must be >= 0, got {k}")
+        if n_shot < 0:
+            raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._k = k
-        self.n_shot_used = self._k
+        self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._fewshot_split = fewshot_split
         self._fewshot_as_multiturn = fewshot_as_multiturn
         self._stop = stop
@@ -153,12 +154,12 @@ class OpenBookQAFewShotGenTask(
 
     @override
     async def infer(self, pre, ctx):
-        # At k>0 the packed few-shot block primes verbose models to run on and
+        # At n_shot>0 the packed few-shot block primes verbose models to run on and
         # re-answer bundled examples; because the extractor scans the whole text
         # by pattern priority (not first-by-position), a trailing match can then
         # override the real leading answer. Bound generation at the next example
-        # boundary. k=0 stays unbounded to match the upstream 0-shot config.
-        if self._k > 0 and self._stop:
+        # boundary. n_shot=0 stays unbounded to match the upstream 0-shot config.
+        if self._n_shot > 0 and self._stop:
             return await self.model.agenerate(pre["prompt"], stop=list(self._stop))
         return await self.model.agenerate(pre["prompt"])
 
@@ -190,11 +191,11 @@ class OpenBookQAFewShotGenTask(
         return {"score": accuracy, "fails": len(fails), "accuracy": accuracy}
 
     def _retrieve_fewshot(self) -> list[OpenBookQADatasetSample]:
-        if self._k <= 0:
+        if self._n_shot <= 0:
             return []
         return self.dataset.retrieve_samples(
-            self._k,
+            self._n_shot,
             split=self._fewshot_split,
             mode="fixed",
-            indices=list(range(self._k)),
+            indices=list(range(self._n_shot)),
         )

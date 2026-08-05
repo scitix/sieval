@@ -8,7 +8,7 @@ base-model completion scoring, not the simple-evals chat/instruct protocol.
 
 Deviations from those references:
     - OpenAI MMMLU ships only translated test CSVs, so few-shot examples are
-      drawn from the test split (as in lm-evaluation-harness); the first ``k``
+      drawn from the test split (as in lm-evaluation-harness); the first ``n_shot``
       rows per ``(Locale, Subject)`` are reserved and removed from the scored
       test split so no item appears in its own demonstration pool.
     - Language selection is a dataset concern: configure ``MMMLUDataset`` with
@@ -212,20 +212,20 @@ class MMMLUKShotClpTask(
         model: Model[str],
         name: str | None = None,
         *,
-        k: int = DEFAULT_N_SHOT,
+        n_shot: int = DEFAULT_N_SHOT,
         fewshot_split: str = "test",
         logprobs: int = 100,
         sample_fraction: float | None = None,
         sample_seed: int = 0,
         sample_by: str = "locale_subject",
     ):
-        if k < 0:
-            raise ValueError(f"k must be >= 0, got {k}")
+        if n_shot < 0:
+            raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         if logprobs < 1:
             raise ValueError(f"logprobs must be >= 1, got {logprobs}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._k = k
-        self.n_shot_used = self._k
+        self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._fewshot_split = fewshot_split
         self._logprobs = logprobs
         self._sample_fraction = _normalize_sample_fraction(sample_fraction)
@@ -241,7 +241,7 @@ class MMMLUKShotClpTask(
     @override
     async def setup(self) -> None:
         self._apply_sampling()
-        if self._k > 0:
+        if self._n_shot > 0:
             self._ensure_fewshot_pool()
 
     @override
@@ -474,7 +474,7 @@ class MMMLUKShotClpTask(
         return (locale, str(row.get("Subject", "")).strip())
 
     def _ensure_fewshot_pool(self) -> None:
-        if self._k <= 0:
+        if self._n_shot <= 0:
             self._fewshot_by_group = {}
             return
 
@@ -502,25 +502,25 @@ class MMMLUKShotClpTask(
             group = self._group(sample)
             group_totals[group] = group_totals.get(group, 0) + 1
             examples = fewshot_by_group.setdefault(group, [])
-            if len(examples) < self._k:
+            if len(examples) < self._n_shot:
                 examples.append(sample)
                 if self._fewshot_split == "test":
                     source_indices.add(index)
 
         if self._fewshot_split == "test":
             for group, examples in fewshot_by_group.items():
-                if len(examples) < self._k:
+                if len(examples) < self._n_shot:
                     raise ValueError(
                         "MMMLU official k-shot evaluation requires at least "
-                        f"{self._k} {self._fewshot_split!r} examples for locale "
+                        f"{self._n_shot} {self._fewshot_split!r} examples for locale "
                         f"{group[0]!r}, subject {group[1]!r}; found {len(examples)}."
                     )
 
             for group, total in group_totals.items():
-                if total <= self._k:
+                if total <= self._n_shot:
                     raise ValueError(
                         "MMMLU test-split few-shot evaluation requires at least "
-                        f"{self._k + 1} test examples for locale {group[0]!r}, "
+                        f"{self._n_shot + 1} test examples for locale {group[0]!r}, "
                         f"subject {group[1]!r} so reserved few-shot examples can "
                         f"be excluded from the scored test set; found {total}."
                     )
@@ -552,7 +552,7 @@ class MMMLUKShotClpTask(
         self._eval_split_excludes_fewshot = True
 
     def _fewshot_examples_for(self, group: tuple[str, str]) -> list[MMMLUDatasetSample]:
-        if self._k <= 0:
+        if self._n_shot <= 0:
             return []
         if self._fewshot_by_group is None:
             self._ensure_fewshot_pool()
@@ -562,13 +562,13 @@ class MMMLUKShotClpTask(
             raise RuntimeError("MMMLU few-shot pool was not initialized.")
 
         examples = fewshot_by_group.get(group, [])
-        if len(examples) < self._k:
+        if len(examples) < self._n_shot:
             raise ValueError(
                 "MMMLU official k-shot evaluation requires at least "
-                f"{self._k} {self._fewshot_split!r} examples for locale "
+                f"{self._n_shot} {self._fewshot_split!r} examples for locale "
                 f"{group[0]!r}, subject {group[1]!r}; found {len(examples)}."
             )
-        return examples[: self._k]
+        return examples[: self._n_shot]
 
     def _add_group_metrics(
         self,

@@ -100,18 +100,18 @@ class ARCChallengeFewShotClpTask(
         model,
         name: str | None = None,
         *,
-        k: int = N_SHOT,
+        n_shot: int = N_SHOT,
         logprobs: int = DEFAULT_CLP_LOGPROBS,
         fewshot_split: str = "train",
         fewshot_seed: int = DEFAULT_FEWSHOT_SEED,
     ):
-        if k < 0:
-            raise ValueError(f"k must be >= 0, got {k}")
+        if n_shot < 0:
+            raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         if logprobs < 1:
             raise ValueError(f"logprobs must be >= 1, got {logprobs}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._k = k
-        self.n_shot_used = self._k
+        self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._logprobs = logprobs
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
@@ -119,7 +119,7 @@ class ARCChallengeFewShotClpTask(
 
     @override
     async def setup(self) -> None:
-        # Built once here (setup runs before any preprocess) so the k-exemplar
+        # Built once here (setup runs before any preprocess) so the few-shot
         # prefix is not rejoined per sample.
         self._fewshot_prefix = self._build_fewshot_prefix()
 
@@ -169,6 +169,6 @@ class ARCChallengeFewShotClpTask(
 
     def _build_fewshot_prefix(self) -> str:
         examples = sample_arc_fewshot(
-            self.dataset, self._k, self._fewshot_split, self._fewshot_seed
+            self.dataset, self._n_shot, self._fewshot_split, self._fewshot_seed
         )
         return build_arc_clp_fewshot_prefix(examples)

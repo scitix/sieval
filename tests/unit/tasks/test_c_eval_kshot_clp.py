@@ -67,7 +67,7 @@ def _fb(correct: bool, subject: str) -> JudgementRecord:
     )
 
 
-def _task(model: GenModel, k: int = 0) -> CEvalFewShotCLPTask:
+def _task(model: GenModel, n_shot: int = 0) -> CEvalFewShotCLPTask:
     dataset = CEvalDataset(
         _hf_dict=HFDatasetDict(
             {
@@ -76,7 +76,7 @@ def _task(model: GenModel, k: int = 0) -> CEvalFewShotCLPTask:
             }
         )
     )
-    return CEvalFewShotCLPTask(dataset, model, k=k)
+    return CEvalFewShotCLPTask(dataset, model, n_shot=n_shot)
 
 
 @pytest.mark.anyio
@@ -163,7 +163,7 @@ async def test_prompt_format_matches_upstream_byte_for_byte():
     # Pins the upstream evaluator_series prompt: subject header, "\nX. opt"
     # options, "\n答案：", "\n\n" exemplar separators, English subject key.
     model = _ScriptedGenModel({"A": -0.1, "B": -1.0, "C": -1.0, "D": -1.0})
-    task = _task(model, k=1)  # dev exemplar: q="q", answer "A"
+    task = _task(model, n_shot=1)  # dev exemplar: q="q", answer "A"
     raw = _sample("law", "A", q="题干")
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
     prompt = pre["prompt"]
@@ -178,22 +178,22 @@ async def test_prompt_format_matches_upstream_byte_for_byte():
 
 @pytest.mark.anyio
 async def test_setup_raises_when_dev_split_absent():
-    # No `dev` split + k>0 must fail early at setup, like the CMMLU sibling.
+    # No `dev` split + n_shot>0 must fail early at setup, like the CMMLU sibling.
     dataset = CEvalDataset(
         _hf_dict=HFDatasetDict(
             {"test": HFDataset.from_list([dict(_sample("law", "A"))])}
         )
     )
-    task = CEvalFewShotCLPTask(dataset, _ScriptedGenModel({"A": 0.0}), k=5)
+    task = CEvalFewShotCLPTask(dataset, _ScriptedGenModel({"A": 0.0}), n_shot=5)
     with pytest.raises(ValueError, match=r"requires a 'dev' split"):
         await task.setup()
 
 
 @pytest.mark.anyio
 async def test_setup_raises_when_subject_has_too_few_dev_exemplars():
-    # `dev` has 1 "law" exemplar but k=5 → _select_examples must fail loudly
-    # rather than silently few-shot on fewer than k (matches the GSM8K
+    # `dev` has 1 "law" exemplar but n_shot=5 → _select_examples must fail loudly
+    # rather than silently few-shot on fewer than n_shot (matches the GSM8K
     # sibling's early-fail; near-unreachable since C-Eval dev is 5/subject).
-    task = _task(_ScriptedGenModel({"A": 0.0}), k=5)
-    with pytest.raises(ValueError, match=r"has 1 dev exemplars; need k=5"):
+    task = _task(_ScriptedGenModel({"A": 0.0}), n_shot=5)
+    with pytest.raises(ValueError, match=r"has 1 dev exemplars; need n_shot=5"):
         await task.setup()

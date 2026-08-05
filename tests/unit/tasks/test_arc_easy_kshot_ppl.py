@@ -61,7 +61,7 @@ def _task(scores: dict[str, tuple[float, float]]) -> ARCEasyFewShotPplTask:
     dataset = ARCEasyDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
     )
-    return ARCEasyFewShotPplTask(dataset, _ScriptedGenModel(scores), k=0)
+    return ARCEasyFewShotPplTask(dataset, _ScriptedGenModel(scores), n_shot=0)
 
 
 @pytest.mark.anyio

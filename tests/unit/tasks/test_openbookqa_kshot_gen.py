@@ -65,7 +65,7 @@ def _expected_question(sample: OpenBookQADatasetSample) -> str:
 @pytest.mark.anyio
 async def test_zero_shot_prompt_has_no_fewshot_prefix():
     dataset = _dataset([_sample("q-train", "B")])
-    task = OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), k=0)
+    task = OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), n_shot=0)
     await task.setup()
 
     raw = _sample("q-test")
@@ -80,7 +80,7 @@ async def test_zero_shot_prompt_has_no_fewshot_prefix():
 async def test_kshot_prefix_uses_fixed_first_k_train_rows_with_answer():
     train = [_sample("q0", "A"), _sample("q1", "C"), _sample("q2", "D")]
     dataset = _dataset(train)
-    task = OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), k=2)
+    task = OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), n_shot=2)
     await task.setup()
 
     raw = _sample("q-test")
@@ -92,7 +92,7 @@ async def test_kshot_prefix_uses_fixed_first_k_train_rows_with_answer():
         f"{_expected_question(train[0])} A\n\n{_expected_question(train[1])} C\n\n"
     )
     assert content == expected_prefix + _expected_question(raw)
-    # Third train row must not leak into a k=2 prompt.
+    # Third train row must not leak into a n_shot=2 prompt.
     assert "q2" not in content
 
 
@@ -101,7 +101,7 @@ async def test_multiturn_renders_alternating_user_assistant_turns():
     train = [_sample("q0", "A"), _sample("q1", "C")]
     dataset = _dataset(train)
     task = OpenBookQAFewShotGenTask(
-        dataset, _CapturingChatModel(), k=2, fewshot_as_multiturn=True
+        dataset, _CapturingChatModel(), n_shot=2, fewshot_as_multiturn=True
     )
     await task.setup()
 
@@ -123,7 +123,7 @@ async def test_multiturn_renders_alternating_user_assistant_turns():
 async def test_infer_does_not_forward_decoding_params():
     dataset = _dataset([_sample("q0")])
     model = _CapturingChatModel()
-    task = OpenBookQAFewShotGenTask(dataset, model, k=0)
+    task = OpenBookQAFewShotGenTask(dataset, model, n_shot=0)
 
     raw = _sample("q-test")
     await task.infer(
@@ -144,18 +144,18 @@ def test_stop_sequences_pinned():
 async def test_infer_bounds_generation_at_kshot_but_not_zero_shot():
     dataset = _dataset([_sample("q0", "A"), _sample("q1", "C")])
 
-    # k>0: bound the run-on that would let a trailing match override the answer.
+    # n_shot>0: bound the run-on that would let a trailing match override the answer.
     model_k = _CapturingChatModel()
-    task_k = OpenBookQAFewShotGenTask(dataset, model_k, k=2)
+    task_k = OpenBookQAFewShotGenTask(dataset, model_k, n_shot=2)
     await task_k.infer(
         {"prompt": [{"role": "user", "content": "x"}]},
         TaskContext(sample_id=0, raw_sample=_sample("q-test")),
     )
     assert model_k.last_kwargs.get("stop") == list(STOP_SEQUENCES)
 
-    # k=0: no stop — preserves upstream 0-shot parity.
+    # n_shot=0: no stop — preserves upstream 0-shot parity.
     model_0 = _CapturingChatModel()
-    task_0 = OpenBookQAFewShotGenTask(dataset, model_0, k=0)
+    task_0 = OpenBookQAFewShotGenTask(dataset, model_0, n_shot=0)
     await task_0.infer(
         {"prompt": [{"role": "user", "content": "x"}]},
         TaskContext(sample_id=0, raw_sample=_sample("q-test")),
@@ -166,7 +166,7 @@ async def test_infer_bounds_generation_at_kshot_but_not_zero_shot():
 @pytest.mark.anyio
 async def test_feedback_and_report_accuracy_and_field_types():
     dataset = _dataset([_sample("q0")])
-    task = OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), k=0)
+    task = OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), n_shot=0)
 
     correct_raw = _sample("q-test", "A")
     wrong_raw = _sample("q-test", "B")
@@ -207,5 +207,5 @@ async def test_feedback_and_report_accuracy_and_field_types():
 
 def test_negative_k_rejected():
     dataset = _dataset([_sample("q0")])
-    with pytest.raises(ValueError, match="k must be >= 0"):
-        OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), k=-1)
+    with pytest.raises(ValueError, match="n_shot must be >= 0"):
+        OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), n_shot=-1)

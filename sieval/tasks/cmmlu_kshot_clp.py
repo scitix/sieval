@@ -35,7 +35,7 @@ method this task reproduces. The reproduced method is the official CMMLU
 ``qwen2.py`` ``eval`` path above. Note the official CMMLU leaderboard's
 "Qwen2.5-72B" (85.67) is the *Instruct* model, not this base-model target.
 
-Few-shot selection takes the first ``k`` same-subject dev examples in order and,
+Few-shot selection takes the first ``n_shot`` same-subject dev examples in order and,
 unlike the official ``gen_prompt``, does not drop the longest shots to fit a
 token budget. For CMMLU this is a no-op divergence: the official cap is
 ``max_length=2048``, the dev pool is 5 examples/subject, and the longest full
@@ -261,7 +261,7 @@ CMMLU_CATEGORY_SUBJECTS = {
         notes=(
             "Mirrors the official qwen2.py base path (eval, not eval_instruct): "
             "non-CoT CMMLU prompt, same-subject dev shots, one-call next-token "
-            "A/B/C/D scoring, and subject-level macro report. Runtime k is "
+            "A/B/C/D scoring, and subject-level macro report. Runtime n_shot is "
             "configurable. Uses API top_logprobs as an OpenAI-compatible "
             "substitute for the official raw-logits choice argmax (equivalent "
             "while all four option tokens are in top-k). Scoring requires all "
@@ -296,17 +296,17 @@ class CMMLUFewShotClpTask(
         model: Model[Any],
         name: str | None = None,
         *,
-        k: int = DEFAULT_N_SHOT,
+        n_shot: int = DEFAULT_N_SHOT,
         logprobs: int = DEFAULT_LOGPROBS,
         fewshot_split: str = "dev",
     ):
-        if k < 0:
-            raise ValueError(f"k must be >= 0, got {k}")
+        if n_shot < 0:
+            raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         if logprobs < 1:
             raise ValueError(f"logprobs must be >= 1, got {logprobs}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._k = k
-        self.n_shot_used = self._k
+        self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._logprobs = max(logprobs, len(CHOICES))
         self._fewshot_split = fewshot_split
         self._few_shot_by_subject: dict[str, list[CMMLUDatasetSample]] = {}
@@ -317,7 +317,7 @@ class CMMLUFewShotClpTask(
         self._ensure_few_shot_pool()
 
     def _ensure_few_shot_pool(self) -> None:
-        if self._few_shot_by_subject or self._k == 0:
+        if self._few_shot_by_subject or self._n_shot == 0:
             return
         split = self.dataset.dataset_dict.get(self._fewshot_split)
         if split is None:
@@ -330,10 +330,10 @@ class CMMLUFewShotClpTask(
             self._few_shot_by_subject.setdefault(subject, []).append(sample)
 
     def _select_examples(self, subject: str) -> list[CMMLUDatasetSample]:
-        if self._k == 0:
+        if self._n_shot == 0:
             return []
         self._ensure_few_shot_pool()
-        return list(self._few_shot_by_subject.get(subject, []))[: self._k]
+        return list(self._few_shot_by_subject.get(subject, []))[: self._n_shot]
 
     def _format_example(
         self, sample: CMMLUDatasetSample, *, include_answer: bool = True

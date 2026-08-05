@@ -111,7 +111,7 @@ class _PPLMockModel(GenModel):
 
 
 def _make_task(
-    k: int = 0, train_docs: list[dict] | None = None
+    n_shot: int = 0, train_docs: list[dict] | None = None
 ) -> tuple[HellaSwagFewShotPPLTask, _PPLMockModel]:
     splits = {
         "test": HFDataset.from_list([_doc("T", "A.", "he", ["a", "b", "c", "d"], "0")])
@@ -120,7 +120,7 @@ def _make_task(
         splits["train"] = HFDataset.from_list(train_docs)
     dataset = HellaSwagDataset(_hf_dict=HFDatasetDict(splits))
     model = _PPLMockModel(CHOICES, LLS)
-    return HellaSwagFewShotPPLTask(dataset, model, k=k), model
+    return HellaSwagFewShotPPLTask(dataset, model, n_shot=n_shot), model
 
 
 def _pre(context: str = QUERY) -> PromptRecord:
@@ -180,13 +180,13 @@ def test_k_negative_rejected():
             }
         )
     )
-    with pytest.raises(ValueError, match="k must be >= 0"):
-        HellaSwagFewShotPPLTask(dataset, _PPLMockModel(CHOICES, LLS), k=-1)
+    with pytest.raises(ValueError, match="n_shot must be >= 0"):
+        HellaSwagFewShotPPLTask(dataset, _PPLMockModel(CHOICES, LLS), n_shot=-1)
 
 
 @pytest.mark.anyio
 async def test_k0_context_is_just_the_query():
-    task, _ = _make_task(k=0)
+    task, _ = _make_task(n_shot=0)
     await task.setup()
     raw = _doc("X", "A.", "he", ["one", "two", "three", "four"], "2")
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
@@ -197,7 +197,7 @@ async def test_k0_context_is_just_the_query():
 
 @pytest.mark.anyio
 async def test_k1_fewshot_prefix_rendered_query_space_gold_ending():
-    task, _ = _make_task(k=1, train_docs=[TRAIN_A])
+    task, _ = _make_task(n_shot=1, train_docs=[TRAIN_A])
     await task.setup()
     assert task._fewshot_prefix == f"{RENDERED_A}\n\n"
 
@@ -210,7 +210,7 @@ async def test_k1_fewshot_prefix_rendered_query_space_gold_ending():
 
 @pytest.mark.anyio
 async def test_k2_prefix_joins_two_exemplars_with_blank_lines():
-    task, _ = _make_task(k=2, train_docs=[TRAIN_A, TRAIN_B])
+    task, _ = _make_task(n_shot=2, train_docs=[TRAIN_A, TRAIN_B])
     await task.setup()
     prefix = task._fewshot_prefix
     parts = prefix.split("\n\n")
@@ -220,7 +220,7 @@ async def test_k2_prefix_joins_two_exemplars_with_blank_lines():
 
 
 def test_build_fewshot_prefix_raises_when_train_too_small():
-    task, _ = _make_task(k=3, train_docs=[TRAIN_A])  # only 1 < 3
+    task, _ = _make_task(n_shot=3, train_docs=[TRAIN_A])  # only 1 < 3
     with pytest.raises(ValueError, match="at least 3 examples"):
         task._build_fewshot_prefix()
 
@@ -230,7 +230,7 @@ def test_build_fewshot_prefix_raises_when_train_too_small():
 
 @pytest.mark.anyio
 async def test_infer_prepends_prefix_and_issues_one_echo_call_per_choice():
-    task, model = _make_task(k=1, train_docs=[TRAIN_A])
+    task, model = _make_task(n_shot=1, train_docs=[TRAIN_A])
     await task.setup()
     prefix = task._fewshot_prefix
     pre = _pre(context=f"{prefix}{QUERY}")
@@ -245,7 +245,7 @@ async def test_infer_prepends_prefix_and_issues_one_echo_call_per_choice():
 
 @pytest.mark.anyio
 async def test_acc_and_acc_norm_diverge_and_score_is_acc_norm():
-    task, _ = _make_task(k=0)
+    task, _ = _make_task(n_shot=0)
     pre = _pre()
     inf = await task.infer(pre, TaskContext(sample_id=0, preprocess_result=pre))
     ctx = TaskContext(sample_id=0, preprocess_result=pre, infer_result=inf)
@@ -274,9 +274,9 @@ async def test_acc_and_acc_norm_diverge_and_score_is_acc_norm():
 
 @pytest.mark.anyio
 async def test_fewshot_scoring_unaffected_by_prefix():
-    # With a k=1 prefix, continuation isolation still scores only the ending,
-    # so the acc/acc_norm predictions match the k=0 case.
-    task, _ = _make_task(k=1, train_docs=[TRAIN_A])
+    # With a n_shot=1 prefix, continuation isolation still scores only the ending,
+    # so the acc/acc_norm predictions match the n_shot=0 case.
+    task, _ = _make_task(n_shot=1, train_docs=[TRAIN_A])
     await task.setup()
     prefix = task._fewshot_prefix
     pre = _pre(context=f"{prefix}{QUERY}")
@@ -290,7 +290,7 @@ async def test_fewshot_scoring_unaffected_by_prefix():
 
 @pytest.mark.anyio
 async def test_report_handles_empty_finals():
-    task, _ = _make_task(k=0)
+    task, _ = _make_task(n_shot=0)
     report = await task.report([], [TaskContext(sample_id=0)])
     assert report == {"score": 0.0, "acc": 0.0, "acc_norm": 0.0, "fails": 1}
 
@@ -299,7 +299,7 @@ async def test_report_handles_empty_finals():
 async def test_report_counts_fails_in_denominator():
     # 1 correct final + 1 pipeline fail → 50% (fails in denominator), not 100%.
     # Locks against reverting to the old len(finals)-only denominator.
-    task, _ = _make_task(k=0)
+    task, _ = _make_task(n_shot=0)
     metrics: dict[str, bool | float] = {"acc": True, "acc_norm": True}
     fb = build_judgement_record(
         0, [build_rollout_judgement(0, True, metrics=metrics)], metrics=metrics

@@ -997,7 +997,7 @@
       "reference_impl": {
         "source": "cmmlu",
         "url": "https://github.com/haonan-li/CMMLU/blob/d6e7b716d8ac694f38969a6c0407437d1fded799/src/qwen2.py",
-        "notes": "Mirrors the official qwen2.py base path (eval, not eval_instruct): non-CoT CMMLU prompt, same-subject dev shots, one-call next-token A/B/C/D scoring, and subject-level macro report. Runtime k is configurable. Uses API top_logprobs as an OpenAI-compatible substitute for the official raw-logits choice argmax (equivalent while all four option tokens are in top-k). Scoring requires all of A/B/C/D in the top-k and fails the sample otherwise, so partial coverage is loud; faithful reproduction needs a top-k that always includes them (default logprobs=100; on vLLM start with --max-logprobs 100, default 20; SGLang serves 100 by default). The validated Qwen2.5-72B 5-shot run with logprobs=100 had the full A/B/C/D set across all 11,582 samples. Runner failures are reported separately and excluded from the score denominator. Target: 89.5 (Qwen2.5-72B Base, 5-shot, DeepSeek-V3 base-model table) as a cross-check only — DeepSeek's perplexity method is underspecified (letter vs. text unstated; appendix template lists single-letter OPTIONS) and is not the reproduced method. The official CMMLU leaderboard's 85.67 is the Instruct model, not this base target."
+        "notes": "Mirrors the official qwen2.py base path (eval, not eval_instruct): non-CoT CMMLU prompt, same-subject dev shots, one-call next-token A/B/C/D scoring, and subject-level macro report. Runtime n_shot is configurable. Uses API top_logprobs as an OpenAI-compatible substitute for the official raw-logits choice argmax (equivalent while all four option tokens are in top-k). Scoring requires all of A/B/C/D in the top-k and fails the sample otherwise, so partial coverage is loud; faithful reproduction needs a top-k that always includes them (default logprobs=100; on vLLM start with --max-logprobs 100, default 20; SGLang serves 100 by default). The validated Qwen2.5-72B 5-shot run with logprobs=100 had the full A/B/C/D set across all 11,582 samples. Runner failures are reported separately and excluded from the score denominator. Target: 89.5 (Qwen2.5-72B Base, 5-shot, DeepSeek-V3 base-model table) as a cross-check only — DeepSeek's perplexity method is underspecified (letter vs. text unstated; appendix template lists single-letter OPTIONS) and is not the reproduced method. The official CMMLU leaderboard's 85.67 is the Instruct model, not this base target."
       },
       "status": "stable"
     },
@@ -1081,7 +1081,7 @@
       "reference_impl": {
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/gsm8k/gsm8k.yaml",
-        "notes": "Uses lm-eval-harness strict-match extraction, aligned with the original GSM8K dataset.py #### answer delimiter. Also reports lm-eval-harness flexible-extract as a secondary metric, not as the original GSM8K official metric. Default k=8 follows the DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs flexible extraction."
+        "notes": "Uses lm-eval-harness strict-match extraction, aligned with the original GSM8K dataset.py #### answer delimiter. Also reports lm-eval-harness flexible-extract as a secondary metric, not as the original GSM8K official metric. Default n_shot=8 follows the DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs flexible extraction."
       },
       "status": "stable"
     },
@@ -1102,7 +1102,7 @@
       "reference_impl": {
         "source": "lm-evaluation-harness",
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/hellaswag/hellaswag.yaml",
-        "notes": "multiple_choice log-likelihood; acc + acc_norm (character-length normalized, reported as score). Few-shot exemplars (k, default 10) sampled from train, rendered 'query gold_ending' and joined by blank lines per lm-eval; k=0 is 0-shot. Continuation log-probs read via echoed alogprobs; context/continuation split by char offset (no tokenizer at this layer). Infra requirement: echo scoring reads the prompt's input logprobs, so the serving backend's prefix caching must be disabled (cached positions are not recomputed -> truncated logprobs); the backend layer owns the specific flag."
+        "notes": "multiple_choice log-likelihood; acc + acc_norm (character-length normalized, reported as score). Few-shot exemplars (n_shot, default 10) sampled from train, rendered 'query gold_ending' and joined by blank lines per lm-eval; n_shot=0 is 0-shot. Continuation log-probs read via echoed alogprobs; context/continuation split by char offset (no tokenizer at this layer). Infra requirement: echo scoring reads the prompt's input logprobs, so the serving backend's prefix caching must be disabled (cached positions are not recomputed -> truncated logprobs); the backend layer owns the specific flag."
       },
       "status": "stable"
     },
@@ -1433,7 +1433,7 @@
       "reference_impl": {
         "source": "hendrycks/test",
         "url": "https://github.com/hendrycks/test/blob/4450500f923c49f1fb1dd3d99108a0bd9717b660/evaluate_flan.py",
-        "notes": "Next-token A/B/C/D scoring via one alogprobs(echo=False) call, argmax over the option tokens in top_logprobs; equivalent to the reference softmax over the restricted letter logits (OpenCompass clp). Few-shot = first k dev examples per subject in dataset order. Requires all of A/B/C/D in the top-k and fails the sample otherwise (default logprobs=100; vLLM needs --max-logprobs 100, default 20; SGLang serves 100). Micro-average score over the finalized set (infra failures reported separately, not scored wrong) + per-category via subject2category, matching evaluate_flan weighted_acc and the CLP siblings cmmlu/mmmlu. No client-side 2048-token truncation. Validated: Qwen2.5-72B base, 5-shot, 14042/14042, score 86.11 (target 85.0), 0 fails, deterministic across two runs."
+        "notes": "Next-token A/B/C/D scoring via one alogprobs(echo=False) call, argmax over the option tokens in top_logprobs; equivalent to the reference softmax over the restricted letter logits (OpenCompass clp). Few-shot = first n_shot dev examples per subject in dataset order. Requires all of A/B/C/D in the top-k and fails the sample otherwise (default logprobs=100; vLLM needs --max-logprobs 100, default 20; SGLang serves 100). Micro-average score over the finalized set (infra failures reported separately, not scored wrong) + per-category via subject2category, matching evaluate_flan weighted_acc and the CLP siblings cmmlu/mmmlu. No client-side 2048-token truncation. Validated: Qwen2.5-72B base, 5-shot, 14042/14042, score 86.11 (target 85.0), 0 fails, deterministic across two runs."
       },
       "status": "stable"
     },
@@ -1494,7 +1494,7 @@
       "reference_impl": {
         "source": "opencompass",
         "url": "https://github.com/open-compass/opencompass/blob/5767b74899806c0c37efdc5529ffea01e7340e48/opencompass/configs/datasets/obqa/obqa_gen_9069e4.py",
-        "notes": "Prompt template (main variant) and first_option_postprocess vendored from OpenCompass. At k=0 the prompt and extraction match the upstream 0-shot config; k>0 is a sieval extension (fixed first-k train rows)."
+        "notes": "Prompt template (main variant) and first_option_postprocess vendored from OpenCompass. At n_shot=0 the prompt and extraction match the upstream 0-shot config; n_shot>0 is a sieval extension (fixed first n_shot train rows)."
       },
       "status": "stable"
     },
@@ -1599,7 +1599,7 @@
       "reference_impl": {
         "source": "TIGER-AI-Lab/TheoremQA",
         "url": "https://github.com/TIGER-AI-Lab/TheoremQA/blob/acfc9686aa9b49f3c8f189364a9a9ee9c53da039/run.py",
-        "notes": "Prompt follows official short-form examples by default; k can select any prefix of the built-in examples. answer_clean and numeric matching mirror official utils.py/number_utils.py."
+        "notes": "Prompt follows official short-form examples by default; n_shot can select any prefix of the built-in examples. answer_clean and numeric matching mirror official utils.py/number_utils.py."
       },
       "status": "stable"
     }

@@ -45,11 +45,16 @@ class DROPFewShotGenTask(
     ]
 ):
     def __init__(
-        self, dataset, model, name: str | None = None, k: int = 3, sep: str = "\n\n"
+        self,
+        dataset,
+        model,
+        name: str | None = None,
+        n_shot: int = 3,
+        sep: str = "\n\n",
     ):
         super().__init__(dataset=dataset, model=model, name=name)
-        self._k = k
-        self.n_shot_used = self._k
+        self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._sep = sep
 
     @override
@@ -60,7 +65,7 @@ class DROPFewShotGenTask(
         )
 
         few_shot_examples = self.dataset.retrieve_samples(
-            self._k,
+            self._n_shot,
             split="train",
             mode="random",
             seed=42,

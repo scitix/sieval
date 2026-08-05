@@ -8,18 +8,18 @@ argmax over the raw log-prob sums and ``acc_norm`` is the argmax over the
 character-length-normalized sums (the headline HellaSwag metric, reported as
 ``score``).
 
-Few-shot (``k`` > 0) replicates lm-eval's ``ConfigurableTask`` few-shot assembly
-for multiple-choice: ``k`` labeled examples sampled from the ``train`` split,
+Few-shot (``n_shot`` > 0) replicates lm-eval's ``ConfigurableTask`` few-shot assembly
+for multiple-choice: ``n_shot`` labeled examples sampled from the ``train`` split,
 each rendered as ``query + " " + gold_ending`` (``target_delimiter`` = " "; the
 few-shot target is the gold *choice text*, not the label index), joined by
 ``"\\n\\n"`` (``fewshot_delimiter``) with a trailing ``"\\n\\n"``, then the target
-query, with no leading description. ``k=0`` reproduces the 0-shot form. This
+query, with no leading description. ``n_shot=0`` reproduces the 0-shot form. This
 assembly is byte-verified against the reference-commit source: hellaswag
 overrides neither delimiter (defaults ``" "`` / ``"\n\n"``); ``doc_to_target``
 maps the digit ``label`` to an int (``ast.literal_eval`` when ``isdigit()`` and
 ``doc_to_choice`` is set), so the rendered answer is ``choices[label]`` (the gold
 ending text), not the index; ``labeled_examples`` carries the trailing delimiter.
-The exact assembled context is byte-pinned by the ``k=1``/``k=2`` tests.
+The exact assembled context is byte-pinned by the ``n_shot=1``/``n_shot=2`` tests.
 
 Validated: Qwen2.5-72B-Base, 10-shot, ``acc_norm`` 87.4 over the full
 10042-sample validation split, ``fails=0``, deterministic (two byte-identical
@@ -46,7 +46,7 @@ Deviations from lm-eval-harness:
 - Exemplar *selection* differs: we draw one fixed set via
   ``Dataset.retrieve_samples`` (seed 1234), computed once in ``setup()`` and
   reused for every eval doc (repo convention); lm-eval draws via its own
-  ``ContextSampler`` RNG. Both are ``k`` random train exemplars and the assembly
+  ``ContextSampler`` RNG. Both are ``n_shot`` random train exemplars and the assembly
   *format* is identical (verified above), so the aggregate ``acc_norm`` is robust
   to the draw — only the specific exemplars chosen differ.
 
@@ -151,9 +151,9 @@ def _argmax(values: list[float]) -> int:
         ),
         notes=(
             "multiple_choice log-likelihood; acc + acc_norm (character-length "
-            "normalized, reported as score). Few-shot exemplars (k, default 10) "
+            "normalized, reported as score). Few-shot exemplars (n_shot, default 10) "
             "sampled from train, rendered 'query gold_ending' and joined by "
-            "blank lines per lm-eval; k=0 is 0-shot. Continuation log-probs read "
+            "blank lines per lm-eval; n_shot=0 is 0-shot. Continuation log-probs read "
             "via echoed alogprobs; context/continuation split by char offset "
             "(no tokenizer at this layer). Infra requirement: echo scoring reads "
             "the prompt's input logprobs, so the serving backend's prefix caching "
@@ -178,19 +178,19 @@ class HellaSwagFewShotPPLTask(
         model,
         name: str | None = None,
         *,
-        k: int = N_SHOT,
+        n_shot: int = N_SHOT,
         fewshot_split: str = FEWSHOT_SPLIT,
         fewshot_seed: int = DEFAULT_FEWSHOT_SEED,
     ):
-        if k < 0:
-            raise ValueError(f"k must be >= 0, got {k}")
+        if n_shot < 0:
+            raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._k = k
-        self.n_shot_used = self._k
+        self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
         # Built once in setup() (framework contract: runs before any sample);
-        # "" is the k=0 prefix and a typed placeholder never observed post-setup.
+        # "" is the n_shot=0 prefix and a typed placeholder never observed post-setup.
         self._fewshot_prefix: str = ""
 
     @override
@@ -291,7 +291,7 @@ class HellaSwagFewShotPPLTask(
         }
 
     def _build_fewshot_prefix(self) -> str:
-        if self._k == 0:
+        if self._n_shot == 0:
             return ""
         split = self.dataset.dataset_dict.get(self._fewshot_split)
         if split is None:
@@ -299,14 +299,14 @@ class HellaSwagFewShotPPLTask(
                 "HellaSwag k-shot PPL task requires a "
                 f"{self._fewshot_split!r} split for few-shot exemplars."
             )
-        if len(split) < self._k:
+        if len(split) < self._n_shot:
             raise ValueError(
                 "HellaSwag k-shot PPL task requires at least "
-                f"{self._k} examples in split {self._fewshot_split!r}; "
+                f"{self._n_shot} examples in split {self._fewshot_split!r}; "
                 f"found {len(split)}."
             )
         examples = self.dataset.retrieve_samples(
-            self._k,
+            self._n_shot,
             split=self._fewshot_split,
             mode="random",
             seed=self._fewshot_seed,

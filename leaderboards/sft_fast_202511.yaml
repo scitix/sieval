@@ -153,7 +153,7 @@ tasks:
         dataset: drop
         model: base_model
         args:
-            k: 3
+            n_shot: 3
 
     gpqa_diamond_0shot_gen:
         class: GPQADiamondZeroShotGenTask

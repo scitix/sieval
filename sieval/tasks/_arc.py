@@ -119,14 +119,14 @@ def build_arc_clp_fewshot_prefix(examples: Sequence[Mapping[str, Any]]) -> str:
 # --------------------------------------------------------------------------- #
 def sample_arc_fewshot(
     dataset: Dataset[Any],
-    k: int,
+    n_shot: int,
     fewshot_split: str,
     fewshot_seed: int,
 ) -> list[Any]:
-    """Draw *k* deterministic few-shot exemplars from *fewshot_split*."""
-    if k < 0:
-        raise ValueError(f"k must be >= 0, got {k}")
-    if k == 0:
+    """Draw *n_shot* deterministic few-shot exemplars from *fewshot_split*."""
+    if n_shot < 0:
+        raise ValueError(f"n_shot must be >= 0, got {n_shot}")
+    if n_shot == 0:
         return []
     split = dataset.dataset_dict.get(fewshot_split)
     if split is None:
@@ -134,13 +134,13 @@ def sample_arc_fewshot(
             "ARC few-shot base task requires a "
             f"{fewshot_split!r} split for few-shot examples."
         )
-    if len(split) < k:
+    if len(split) < n_shot:
         raise ValueError(
             "ARC few-shot base task requires at least "
-            f"{k} examples in split {fewshot_split!r}; found {len(split)}."
+            f"{n_shot} examples in split {fewshot_split!r}; found {len(split)}."
         )
     return dataset.retrieve_samples(
-        k,
+        n_shot,
         split=fewshot_split,
         mode="random",
         seed=fewshot_seed,

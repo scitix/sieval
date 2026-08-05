@@ -97,12 +97,12 @@ def _dataset(samples: list[MMMLUDatasetSample]) -> MMMLUDataset:
 
 
 def _task(
-    samples: list[MMMLUDatasetSample], *, k: int = 2, **kwargs
+    samples: list[MMMLUDatasetSample], *, n_shot: int = 2, **kwargs
 ) -> MMMLUKShotClpTask:
     return MMMLUKShotClpTask(
         _dataset(samples),
         _TopLogprobGenModel(model="mock-gen", api_key="fake"),
-        k=k,
+        n_shot=n_shot,
         **kwargs,
     )
 
@@ -122,7 +122,7 @@ async def test_setup_reserves_fewshot_per_locale_subject_and_excludes_from_test(
             for i in range(3)
         ],
     ]
-    task = _task(samples, k=2)
+    task = _task(samples, n_shot=2)
 
     await task.setup()
 
@@ -148,7 +148,7 @@ async def test_preprocess_uses_same_locale_subject_fewshot_examples():
             for i in range(3)
         ],
     ]
-    task = _task(samples, k=2)
+    task = _task(samples, n_shot=2)
     await task.setup()
 
     pre = await task.preprocess(
@@ -170,7 +170,7 @@ async def test_preprocess_uses_same_locale_subject_fewshot_examples():
 @pytest.mark.anyio
 async def test_infer_postprocess_and_feedback_use_top_logprobs():
     raw = _sample(2)
-    task = _task([_sample(0), _sample(1), raw], k=2)
+    task = _task([_sample(0), _sample(1), raw], n_shot=2)
     ctx = TaskContext(sample_id=2, raw_sample=raw)
 
     inferred = await task.infer({"prompt": "prompt"}, ctx)
@@ -197,7 +197,7 @@ async def test_infer_postprocess_and_feedback_use_top_logprobs():
 
 @pytest.mark.anyio
 async def test_report_returns_weighted_overall_locale_category_and_subject_scores():
-    task = _task([_sample(i) for i in range(3)], k=2)
+    task = _task([_sample(i) for i in range(3)], n_shot=2)
     finals: list[_FinalCtx] = [
         TaskContext(
             sample_id=0,
@@ -296,7 +296,7 @@ async def test_report_returns_weighted_overall_locale_category_and_subject_score
 
 @pytest.mark.anyio
 async def test_test_split_fewshot_requires_held_out_examples_per_locale_subject():
-    task = _task([_sample(0), _sample(1)], k=2)
+    task = _task([_sample(0), _sample(1)], n_shot=2)
 
     with pytest.raises(ValueError, match="requires at least 3 test examples"):
         await task.setup()
@@ -328,14 +328,14 @@ async def test_setup_samples_deterministically_by_locale_subject():
     ]
     task = _task(
         samples,
-        k=0,
+        n_shot=0,
         sample_fraction=0.5,
         sample_seed=42,
         sample_by="locale_subject",
     )
     repeat = _task(
         samples,
-        k=0,
+        n_shot=0,
         sample_fraction=0.5,
         sample_seed=42,
         sample_by="locale_subject",
@@ -369,7 +369,7 @@ async def test_setup_sampling_is_idempotent_under_repeated_calls():
     ]
     task = _task(
         samples,
-        k=0,
+        n_shot=0,
         sample_fraction=0.5,
         sample_seed=42,
         sample_by="locale_subject",
@@ -396,7 +396,7 @@ async def test_setup_sampling_is_idempotent_under_repeated_calls():
         ({"sample_fraction": 1.5}, "sample_fraction"),
         ({"sample_seed": "42"}, "sample_seed"),
         ({"sample_by": "subject"}, "sample_by"),
-        ({"k": -1}, "k must be >= 0"),
+        ({"n_shot": -1}, "n_shot must be >= 0"),
         ({"logprobs": 0}, "logprobs must be >= 1"),
     ],
 )

@@ -46,7 +46,7 @@ tasks:
         dataset: gsm8k
         model: math_model
         args:
-            k: 8
+            n_shot: 8
         # infer_args:                  # per-task inference parameter overrides
         #     max_tokens: 512
 ```

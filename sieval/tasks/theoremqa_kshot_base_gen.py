@@ -404,19 +404,21 @@ def _groundtruth_args(sample: TheoremQADatasetSample):
     return answer, groundtruth_num
 
 
-def _normalize_k(k: int | None) -> int:
-    if k is None:
+def _normalize_n_shot(n_shot: int | None) -> int:
+    if n_shot is None:
         return _DEFAULT_FEW_SHOT_COUNT
-    if isinstance(k, bool) or not isinstance(k, int):
-        raise TypeError(f"k must be an int, got {type(k).__name__}: {k!r}")
-    if k < 0:
-        raise ValueError(f"k must be >= 0, got {k}")
-    if k > len(_THEOREMQA_EXAMPLES):
+    if isinstance(n_shot, bool) or not isinstance(n_shot, int):
+        raise TypeError(
+            f"n_shot must be an int, got {type(n_shot).__name__}: {n_shot!r}"
+        )
+    if n_shot < 0:
+        raise ValueError(f"n_shot must be >= 0, got {n_shot}")
+    if n_shot > len(_THEOREMQA_EXAMPLES):
         raise ValueError(
-            f"k must be <= {len(_THEOREMQA_EXAMPLES)} because only "
+            f"n_shot must be <= {len(_THEOREMQA_EXAMPLES)} because only "
             "that many built-in TheoremQA examples are available."
         )
-    return k
+    return n_shot
 
 
 @sieval_task(
@@ -432,7 +434,7 @@ def _normalize_k(k: int | None) -> int:
         source="TIGER-AI-Lab/TheoremQA",
         url=_THEOREMQA_RUN_URL,
         notes=(
-            "Prompt follows official short-form examples by default; k can "
+            "Prompt follows official short-form examples by default; n_shot can "
             "select any prefix of the built-in examples. answer_clean and "
             "numeric matching mirror official utils.py/number_utils.py."
         ),
@@ -449,11 +451,11 @@ class TheoremQAKShotBaseGenTask(
     ]
 ):
     def __init__(
-        self, dataset, model, name: str | None = None, *, k: int | None = None
+        self, dataset, model, name: str | None = None, *, n_shot: int | None = None
     ):
         super().__init__(dataset=dataset, model=model, name=name)
-        self._k = _normalize_k(k)
-        self.n_shot_used = self._k
+        self._n_shot = _normalize_n_shot(n_shot)
+        self.n_shot_used = self._n_shot
         self._prompt_no_input: str | None = None
         self._prompt_prefix: str | None = None
 
@@ -532,7 +534,7 @@ class TheoremQAKShotBaseGenTask(
         }
 
     def _build_prompt_parts(self) -> tuple[str, str]:
-        used_examples = list(_THEOREMQA_EXAMPLES[: self._k])
+        used_examples = list(_THEOREMQA_EXAMPLES[: self._n_shot])
         return _get_short_format(used_examples)
 
     def _get_prompt_parts(self) -> tuple[str, str]:

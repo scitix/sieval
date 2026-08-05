@@ -101,7 +101,7 @@ def _dataset_without_dev() -> CMMLUDataset:
 
 @pytest.mark.anyio
 async def test_k_controls_same_subject_few_shot_prompt():
-    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), k=1)
+    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=1)
     await task.setup()
 
     prompt = task._build_prompt(_sample("测试题"))
@@ -113,7 +113,7 @@ async def test_k_controls_same_subject_few_shot_prompt():
 
 @pytest.mark.anyio
 async def test_zero_shot_omits_few_shot_examples():
-    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), k=0)
+    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=0)
     await task.setup()
 
     prompt = task._build_prompt(_sample("测试题"))
@@ -124,7 +124,7 @@ async def test_zero_shot_omits_few_shot_examples():
 
 @pytest.mark.anyio
 async def test_k_requires_few_shot_split():
-    task = CMMLUFewShotClpTask(_dataset_without_dev(), _DummyGenModel(), k=1)
+    task = CMMLUFewShotClpTask(_dataset_without_dev(), _DummyGenModel(), n_shot=1)
 
     with pytest.raises(ValueError, match="requires a 'dev' split"):
         await task.setup()
@@ -132,7 +132,7 @@ async def test_k_requires_few_shot_split():
 
 @pytest.mark.anyio
 async def test_few_shot_prompt_is_cached_per_subject():
-    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), k=2)
+    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=2)
     await task.setup()
 
     first = task._build_prompt(_sample("测试题"))
@@ -149,7 +149,7 @@ async def test_few_shot_prompt_is_cached_per_subject():
 async def test_infer_postprocess_feedback_and_report():
     raw = _sample("测试题")
     model = _DummyGenModel()
-    task = CMMLUFewShotClpTask(_dataset(), model, k=0)
+    task = CMMLUFewShotClpTask(_dataset(), model, n_shot=0)
     ctx = TaskContext(sample_id=0, raw_sample=raw)
 
     pre = await task.preprocess(raw, ctx)
@@ -181,7 +181,7 @@ async def test_infer_postprocess_feedback_and_report():
 @pytest.mark.anyio
 async def test_postprocess_raises_when_option_token_missing():
     # Only A/B/C present in top-k (D dropped) → must fail loudly, not guess.
-    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), k=0)
+    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=0)
     inf = ModelOutput(
         model=_DummyGenModel().meta(),
         texts=["A"],
@@ -194,7 +194,7 @@ async def test_postprocess_raises_when_option_token_missing():
 
 @pytest.mark.anyio
 async def test_report_excludes_failures_from_subject_denominator():
-    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), k=0)
+    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=0)
     correct_anatomy = _sample("解剖测试", answer="B", subject="anatomy")
     wrong_logical = _sample("逻辑测试", answer="A", subject="logical")
     failed_anatomy = _sample("失败测试", answer="A", subject="anatomy")
@@ -246,7 +246,7 @@ async def test_report_excludes_failures_from_subject_denominator():
 # regression must fail loudly here rather than drift unnoticed.
 # ---------------------------------------------------------------------------
 def test_format_example_template_is_pinned():
-    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), k=0)
+    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=0)
     sample = _sample("壁胸膜的分部不包括", answer="B")
 
     assert task._format_example(sample, include_answer=False) == (
@@ -262,7 +262,7 @@ def test_format_example_template_is_pinned():
 @pytest.mark.anyio
 async def test_few_shot_header_is_pinned():
     # Header template + the subject display-name lookup (anatomy → 解剖学).
-    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), k=1)
+    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=1)
     await task.setup()
 
     prompt = task._build_few_shot_prompt("anatomy")

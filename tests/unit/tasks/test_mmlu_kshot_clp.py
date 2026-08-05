@@ -107,7 +107,7 @@ def test_format_example_with_and_without_answer():
 async def test_header_and_prompt_are_byte_exact():
     dev = [_sample("anatomy", "S?", 0)]
     test = _sample("anatomy", "TESTQ", 1)
-    task = MMLUFewShotCLPTask(_dataset(dev, [test]), _ScriptedGenModel(), k=1)
+    task = MMLUFewShotCLPTask(_dataset(dev, [test]), _ScriptedGenModel(), n_shot=1)
     await task.setup()
 
     pre = await task.preprocess(test, TaskContext(sample_id=0, raw_sample=test))
@@ -119,7 +119,7 @@ async def test_header_and_prompt_are_byte_exact():
     )
 
 
-# --- Few-shot: first k dev examples per subject, in order ---
+# --- Few-shot: first n_shot dev examples per subject, in order ---
 
 
 @pytest.mark.anyio
@@ -130,7 +130,7 @@ async def test_fewshot_is_per_subject_fixed_order():
     task = MMLUFewShotCLPTask(
         _dataset(dev_rows, [_sample("anatomy", "t", 0)]),
         _ScriptedGenModel(),
-        k=5,
+        n_shot=5,
     )
     await task.setup()
 
@@ -146,7 +146,7 @@ async def test_preprocess_uses_only_matching_subject_shots():
         _sample("astronomy", f"s{i}", 1) for i in range(5)
     ]
     test = _sample("astronomy", "TESTQ", 2)
-    task = MMLUFewShotCLPTask(_dataset(dev_rows, [test]), _ScriptedGenModel(), k=5)
+    task = MMLUFewShotCLPTask(_dataset(dev_rows, [test]), _ScriptedGenModel(), n_shot=5)
     await task.setup()
 
     pre = await task.preprocess(test, TaskContext(sample_id=0, raw_sample=test))
@@ -163,7 +163,7 @@ async def test_infer_issues_single_call_echo_false():
     test = _sample("anatomy", "Q", 0)
     model = _ScriptedGenModel(winner="C")
     ds = _dataset([_sample("anatomy", "d", 0)], [test])
-    task = MMLUFewShotCLPTask(ds, model, k=1)
+    task = MMLUFewShotCLPTask(ds, model, n_shot=1)
     await task.setup()
     ctx = TaskContext(sample_id=0, raw_sample=test)
 
@@ -178,13 +178,13 @@ async def test_postprocess_argmax_and_missing_choice_raises():
     ds = _dataset([_sample("anatomy", "d", 0)], [test])
     ctx = TaskContext(sample_id=0, raw_sample=test)
 
-    task = MMLUFewShotCLPTask(ds, _ScriptedGenModel(winner="C"), k=1)
+    task = MMLUFewShotCLPTask(ds, _ScriptedGenModel(winner="C"), n_shot=1)
     await task.setup()
     pre = await task.preprocess(test, ctx)
     inf = await task.infer(pre, ctx)
     assert await task.postprocess(inf, ctx) == build_prediction_record(["C"])
 
-    dropped = MMLUFewShotCLPTask(ds, _ScriptedGenModel(winner="A", drop="D"), k=1)
+    dropped = MMLUFewShotCLPTask(ds, _ScriptedGenModel(winner="A", drop="D"), n_shot=1)
     await dropped.setup()
     inf2 = await dropped.infer(await dropped.preprocess(test, ctx), ctx)
     with pytest.raises(RuntimeError, match="missing option token"):
@@ -200,7 +200,7 @@ async def test_feedback_and_report_micro_with_categories():
     task = MMLUFewShotCLPTask(
         _dataset([_sample("abstract_algebra", "d", 0)], [test]),
         _ScriptedGenModel(winner="C"),
-        k=1,
+        n_shot=1,
     )
     await task.setup()
     ctx = TaskContext(sample_id=0, raw_sample=test)
@@ -228,7 +228,7 @@ async def test_feedback_marks_wrong_prediction():
     task = MMLUFewShotCLPTask(
         _dataset([_sample("anatomy", "d", 0)], [test]),
         _ScriptedGenModel(winner="D"),
-        k=1,
+        n_shot=1,
     )
     await task.setup()
     ctx = TaskContext(sample_id=0, raw_sample=test)
@@ -249,7 +249,7 @@ async def test_report_excludes_fails_from_denominator():
     task = MMLUFewShotCLPTask(
         _dataset([_sample("anatomy", "d", 0)], [good]),
         _ScriptedGenModel(winner="A"),
-        k=1,
+        n_shot=1,
     )
     await task.setup()
     ctx = TaskContext(sample_id=0, raw_sample=good)
@@ -271,8 +271,8 @@ async def test_report_excludes_fails_from_denominator():
 
 def test_invalid_k_and_logprobs_rejected():
     ds = _dataset([_sample()], [_sample()])
-    with pytest.raises(ValueError, match="k must be >= 0"):
-        MMLUFewShotCLPTask(ds, _ScriptedGenModel(), k=-1)
+    with pytest.raises(ValueError, match="n_shot must be >= 0"):
+        MMLUFewShotCLPTask(ds, _ScriptedGenModel(), n_shot=-1)
     with pytest.raises(ValueError, match="logprobs must be >= 1"):
         MMLUFewShotCLPTask(ds, _ScriptedGenModel(), logprobs=0)
 
@@ -282,6 +282,6 @@ async def test_missing_fewshot_split_raises():
     ds = MMLUDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
     )
-    task = MMLUFewShotCLPTask(ds, _ScriptedGenModel(), k=5)
+    task = MMLUFewShotCLPTask(ds, _ScriptedGenModel(), n_shot=5)
     with pytest.raises(ValueError, match="dev"):
         await task.setup()

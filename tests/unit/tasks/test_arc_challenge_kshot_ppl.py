@@ -77,7 +77,7 @@ def _sample() -> ARCChallengeDatasetSample:
 
 
 def _task(
-    scores: dict[str, tuple[float, float]], *, k: int = 0
+    scores: dict[str, tuple[float, float]], *, n_shot: int = 0
 ) -> tuple[ARCChallengeFewShotPplTask, _ScriptedGenModel]:
     dataset = ARCChallengeDataset(
         _hf_dict=HFDatasetDict(
@@ -88,12 +88,14 @@ def _task(
         )
     )
     model = _ScriptedGenModel(scores)
-    return ARCChallengeFewShotPplTask(dataset, model, k=k, fewshot_seed=0), model
+    return ARCChallengeFewShotPplTask(
+        dataset, model, n_shot=n_shot, fewshot_seed=0
+    ), model
 
 
 @pytest.mark.anyio
 async def test_preprocess_full_text_no_letters_no_choices_header():
-    task, _model = _task({}, k=1)
+    task, _model = _task({}, n_shot=1)
     raw = _sample()
 
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
@@ -111,7 +113,7 @@ async def test_preprocess_full_text_no_letters_no_choices_header():
 @pytest.mark.anyio
 async def test_infer_two_calls_per_option_conditional_and_unconditional():
     scores = dict.fromkeys(_sample()["choices"], (-1.0, -1.0))
-    task, model = _task(scores, k=0)
+    task, model = _task(scores, n_shot=0)
     raw = _sample()
     ctx = TaskContext(sample_id=0, raw_sample=raw)
     pre = await task.preprocess(raw, ctx)
@@ -135,7 +137,7 @@ async def test_unconditional_normalization_flips_argmax():
         "rubber": (-4.0, -1.0),  # score -3
         "wood": (-6.0, -2.0),  # score -4
     }
-    task, _model = _task(scores, k=0)
+    task, _model = _task(scores, n_shot=0)
     raw = _sample()
     ctx = TaskContext(sample_id=0, raw_sample=raw)
     pre = await task.preprocess(raw, ctx)
@@ -175,8 +177,8 @@ def test_negative_k_rejected():
     dataset = ARCChallengeDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
     )
-    with pytest.raises(ValueError, match="k must be >= 0"):
-        ARCChallengeFewShotPplTask(dataset, _ScriptedGenModel({}), k=-1)
+    with pytest.raises(ValueError, match="n_shot must be >= 0"):
+        ARCChallengeFewShotPplTask(dataset, _ScriptedGenModel({}), n_shot=-1)
 
 
 def test_task_meta_points_to_arc_challenge_dataset():

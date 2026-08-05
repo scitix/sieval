@@ -107,9 +107,11 @@ def _dataset():
     )
 
 
-def _task(k: int | None = None):
+def _task(n_shot: int | None = None):
     task_module = _task_module()
-    return task_module.TheoremQAKShotBaseGenTask(_dataset(), _MockGenModel(), k=k)
+    return task_module.TheoremQAKShotBaseGenTask(
+        _dataset(), _MockGenModel(), n_shot=n_shot
+    )
 
 
 def test_import_does_not_pull_latex2sympy():
@@ -133,7 +135,7 @@ def test_import_does_not_pull_latex2sympy():
 @pytest.mark.anyio
 async def test_report_divides_metrics_by_completed_finals_only():
     raw = {"Question": "What is 2+2?", "Answer": "4", "Answer_type": "integer"}
-    task = _task(k=0)
+    task = _task(n_shot=0)
     judgement = build_judgement_record("4", [build_rollout_judgement(0, True)])
     # report() reads `extracted` off the prediction record for its `empty` count,
     # so the context has to carry both records, not just the judgement.
@@ -158,7 +160,7 @@ async def test_report_divides_metrics_by_completed_finals_only():
 async def test_infer_only_forwards_prompt_coupled_stop():
     task_module = _task_module()
     model = _MockGenModel()
-    task = task_module.TheoremQAKShotBaseGenTask(_dataset(), model, k=0)
+    task = task_module.TheoremQAKShotBaseGenTask(_dataset(), model, n_shot=0)
 
     await task.infer(
         {"prompt": "prompt"},
@@ -170,12 +172,12 @@ async def test_infer_only_forwards_prompt_coupled_stop():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("k", "expected_examples"),
+    ("n_shot", "expected_examples"),
     [(None, None), (0, 0), (2, 2)],
 )
-async def test_preprocess_uses_configured_k(k, expected_examples):
+async def test_preprocess_uses_configured_k(n_shot, expected_examples):
     raw = {"Question": "What is 2+2?", "Answer": "4", "Answer_type": "integer"}
-    task = _task(k=k)
+    task = _task(n_shot=n_shot)
     examples = _theoremqa_examples()
     if expected_examples is None:
         expected_examples = len(examples)
@@ -196,7 +198,7 @@ async def test_preprocess_uses_configured_k(k, expected_examples):
 @pytest.mark.anyio
 async def test_preprocess_preserves_official_runtime_prompt_artifacts():
     raw = {"Question": "What is 2+2?", "Answer": "4", "Answer_type": "integer"}
-    task = _task(k=3)
+    task = _task(n_shot=3)
 
     prompt = (await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw)))[
         "prompt"
@@ -213,17 +215,17 @@ async def test_preprocess_preserves_official_runtime_prompt_artifacts():
 
 
 def test_constructor_rejects_negative_k():
-    with pytest.raises(ValueError, match="k must"):
-        _task(k=-1)
+    with pytest.raises(ValueError, match="n_shot must"):
+        _task(n_shot=-1)
 
 
 def test_constructor_rejects_too_many_examples():
-    k = len(_theoremqa_examples()) + 1
-    with pytest.raises(ValueError, match="k must"):
-        _task(k=k)
+    n_shot = len(_theoremqa_examples()) + 1
+    with pytest.raises(ValueError, match="n_shot must"):
+        _task(n_shot=n_shot)
 
 
-@pytest.mark.parametrize("k", [True, 1.5, "2"])
-def test_constructor_rejects_non_integer_k(k):
-    with pytest.raises(TypeError, match="k must be an int"):
-        _task(k=k)
+@pytest.mark.parametrize("n_shot", [True, 1.5, "2"])
+def test_constructor_rejects_non_integer_k(n_shot):
+    with pytest.raises(TypeError, match="n_shot must be an int"):
+        _task(n_shot=n_shot)

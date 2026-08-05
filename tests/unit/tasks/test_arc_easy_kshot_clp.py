@@ -53,7 +53,7 @@ def _task(top: dict[str, float]) -> ARCEasyFewShotClpTask:
     dataset = ARCEasyDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
     )
-    return ARCEasyFewShotClpTask(dataset, _TopLogprobsGenModel(top), k=0)
+    return ARCEasyFewShotClpTask(dataset, _TopLogprobsGenModel(top), n_shot=0)
 
 
 @pytest.mark.anyio

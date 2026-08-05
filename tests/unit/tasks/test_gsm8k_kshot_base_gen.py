@@ -59,7 +59,7 @@ def _task() -> tuple[GSM8KFewShotBaseGenTask, _CapturingGenModel]:
         )
     )
     model = _CapturingGenModel()
-    return GSM8KFewShotBaseGenTask(dataset, model, k=0), model
+    return GSM8KFewShotBaseGenTask(dataset, model, n_shot=0), model
 
 
 def test_strict_and_flexible_extractors_are_distinct():

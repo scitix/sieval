@@ -2,7 +2,7 @@
 
 Replicates the non-CoT path of the C-Eval ``evaluator_series`` LLaMA evaluator
 (``code/evaluator_series/evaluators/llama.py``): a per-subject few-shot header,
-``k`` ``dev`` exemplars, then the question with its four options and a trailing
+``n_shot`` ``dev`` exemplars, then the question with its four options and a trailing
 ``"答案："``. The answer is the argmax over the A/B/C/D next-token log-probs from
 a single inference (``EvalMode.CLP``) — equivalent to the reference's
 single-pass ``softmax(logits[A,B,C,D])`` since softmax is monotonic.
@@ -180,16 +180,16 @@ class CEvalFewShotCLPTask(
         model,
         name: str | None = None,
         *,
-        k: int = 5,
+        n_shot: int = 5,
         logprobs: int = DEFAULT_LOGPROBS,
     ):
-        if k < 0:
-            raise ValueError(f"k must be >= 0, got {k}")
+        if n_shot < 0:
+            raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         if logprobs < 1:
             raise ValueError(f"logprobs must be >= 1, got {logprobs}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._k = k
-        self.n_shot_used = self._k
+        self._n_shot = n_shot
+        self.n_shot_used = self._n_shot
         self._logprobs = max(logprobs, len(CHOICES))
         self._few_shot_cache: dict[str, str] = {}
         self._few_shot_by_subject: dict[str, list[CEvalDatasetSample]] = {}
@@ -197,7 +197,7 @@ class CEvalFewShotCLPTask(
     @override
     async def setup(self) -> None:
         # Build every per-subject few-shot prefix once here, not per sample.
-        if self._k <= 0:
+        if self._n_shot <= 0:
             return
         self._ensure_few_shot_pool()
         for subject in self._few_shot_by_subject:
@@ -205,7 +205,7 @@ class CEvalFewShotCLPTask(
 
     def _ensure_few_shot_pool(self) -> None:
         """Group ``dev`` exemplars by subject (idempotent)."""
-        if self._few_shot_by_subject or self._k <= 0:
+        if self._few_shot_by_subject or self._n_shot <= 0:
             return
         dataset_dict = self.dataset.dataset_dict
         if _FEWSHOT_SPLIT not in dataset_dict:
@@ -219,15 +219,15 @@ class CEvalFewShotCLPTask(
             self._few_shot_by_subject.setdefault(sample["subject"], []).append(sample)
 
     def _select_examples(self, subject: str) -> list[CEvalDatasetSample]:
-        """First k same-subject dev exemplars, in dataset order (matches upstream)."""
+        """First n_shot same-subject dev exemplars, in dataset order (upstream)."""
         self._ensure_few_shot_pool()
         examples = self._few_shot_by_subject.get(subject, [])
-        if len(examples) < self._k:
+        if len(examples) < self._n_shot:
             raise ValueError(
                 f"C-Eval subject {subject!r} has {len(examples)} dev exemplars; "
-                f"need k={self._k}."
+                f"need n_shot={self._n_shot}."
             )
-        return list(examples)[: self._k]
+        return list(examples)[: self._n_shot]
 
     def _format_example(
         self, sample: CEvalDatasetSample, *, include_answer: bool = True
@@ -242,7 +242,7 @@ class CEvalFewShotCLPTask(
 
     def _build_few_shot_prompt(self, subject: str) -> str:
         """Build (and cache) the few-shot prefix for a subject."""
-        if self._k <= 0:
+        if self._n_shot <= 0:
             return ""
         cached = self._few_shot_cache.get(subject)
         if cached is not None:
