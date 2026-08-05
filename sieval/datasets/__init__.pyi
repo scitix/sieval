@@ -17,6 +17,14 @@ from .aime_2026 import (
     AIME2026Dataset,
     AIME2026DatasetSample,
 )
+from .apex_2025 import (
+    Apex2025Dataset,
+    Apex2025DatasetSample,
+)
+from .apex_shortlist_2025 import (
+    ApexShortlist2025Dataset,
+    ApexShortlist2025DatasetSample,
+)
 from .arc_challenge import (
     ARCChallengeDataset,
     ARCChallengeDatasetSample,
@@ -29,9 +37,17 @@ from .browsecomp import (
     BrowseCompDataset,
     BrowseCompDatasetSample,
 )
+from .brumo_2025 import (
+    BRUMO2025Dataset,
+    BRUMO2025DatasetSample,
+)
 from .c_eval import (
     CEvalDataset,
     CEvalDatasetSample,
+)
+from .cmimc_2025 import (
+    CMIMC2025Dataset,
+    CMIMC2025DatasetSample,
 )
 from .cmmlu import (
     CMMLUDataset,
@@ -133,6 +149,10 @@ from .simpleqa_verified import (
     SimpleQAVerifiedDataset,
     SimpleQAVerifiedDatasetSample,
 )
+from .smt_2025 import (
+    SMT2025Dataset,
+    SMT2025DatasetSample,
+)
 from .t_eval import (
     TEvalBeforeCallingDataset,
     TEvalBeforeCallingDatasetSample,
@@ -155,10 +175,18 @@ __all__ = [
     "ARCChallengeDatasetSample",
     "ARCEasyDataset",
     "ARCEasyDatasetSample",
+    "Apex2025Dataset",
+    "Apex2025DatasetSample",
+    "ApexShortlist2025Dataset",
+    "ApexShortlist2025DatasetSample",
+    "BRUMO2025Dataset",
+    "BRUMO2025DatasetSample",
     "BrowseCompDataset",
     "BrowseCompDatasetSample",
     "CEvalDataset",
     "CEvalDatasetSample",
+    "CMIMC2025Dataset",
+    "CMIMC2025DatasetSample",
     "CMMLUDataset",
     "CMMLUDatasetSample",
     "DROPDataset",
@@ -205,6 +233,8 @@ __all__ = [
     "PlatinumBenchDatasetSample",
     "RulerDataset",
     "RulerDatasetSample",
+    "SMT2025Dataset",
+    "SMT2025DatasetSample",
     "SciCodeDataset",
     "SciCodeDatasetSample",
     "SimpleQAVerifiedDataset",

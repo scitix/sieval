@@ -7,7 +7,7 @@ from typing import override
 
 from loguru import logger
 
-from sieval.community.matharena import HMMT_INSTRUCTION, build_prompt, extract_answer
+from sieval.community.matharena import BOXED_INSTRUCTION, build_prompt, extract_answer
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
@@ -77,7 +77,7 @@ class HMMTFeb2026ZeroShotGenTask(
             [
                 {
                     "role": "user",
-                    "content": build_prompt(HMMT_INSTRUCTION, raw["problem"]),
+                    "content": build_prompt(BOXED_INSTRUCTION, raw["problem"]),
                 },
             ],
             reference=raw["answer"],

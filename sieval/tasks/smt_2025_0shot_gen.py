@@ -1,6 +1,6 @@
-"""HMMT November 2025 zero-shot generative task.
+"""SMT 2025 zero-shot generative task.
 
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
+AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 from typing import override
@@ -22,15 +22,13 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.datasets import HMMTNov2025DatasetSample
+from sieval.datasets import SMT2025DatasetSample
 
 
 @sieval_task(
-    name="hmmt_nov_2025_0shot_gen",
-    display_name="HMMT Nov 2025 (0-shot, generative)",
-    description=(
-        "HMMT November 2025 — Harvard-MIT Mathematics Tournament, 30 problems."
-    ),
+    name="smt_2025_0shot_gen",
+    display_name="SMT 2025 (0-shot, generative)",
+    description="SMT 2025 — Stanford Math Tournament, 53 problems.",
     eval_mode=EvalMode.GEN,
     n_shot=0,
     tags=("english", "open-ended"),
@@ -38,7 +36,7 @@ from sieval.datasets import HMMTNov2025DatasetSample
     model_type="chat",
     reference_impl=ReferenceImpl(
         source="matharena",
-        url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
+        url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/smt/smt_2025.yaml",
         notes=(
             "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence "
             "via math-verify. REPEATS: matharena averages 4 runs per problem "
@@ -46,21 +44,24 @@ from sieval.datasets import HMMTNov2025DatasetSample
             "compare against matharena.ai, as a task arg (tasks.<name>.args.n); the "
             "model's `n` is silently overridden call-time. k>n is rejected at "
             "construction. DEVIATION: golds are normalized by "
-            "sieval.community.math.strip_string; matharena does not. VALIDATED "
-            "against official MathArena: replaying its published 2640 outputs "
-            "(22 models x 30 problems x 4 runs) through this task's grading path "
-            "agrees with the upstream grader on 99.51% of outputs and reproduces "
-            "16/22 model scores exactly; Gemini 3 Flash is 93.33% three ways "
-            "(published, upstream grader, sieval grader). A live sieval run of "
-            "gemini-3-flash-preview scored 95.00% vs the published 93.33% — "
-            "sampling variance, not a grading difference: both graders agree on "
-            "120/120 of sieval's own outputs."
+            "sieval.community.math.strip_string; matharena does not. LIST GOLDS: "
+            "problem 32's gold is a comma-separated list; upstream turns its "
+            "extractor's `list_answer` on whenever the gold contains a comma, which "
+            "joins every box on the model's final line, whereas sieval's "
+            "extract_answer is family-wide `list_answer=False` and keeps only the "
+            "last box — a model that boxes each value separately scores 0 here and 1 "
+            "upstream. OVERLAP: apex_2025 re-uses problems 8, 42 and 43 verbatim. "
+            "VALIDATED: replaying MathArena/smt_2025_outputs (10,875 rollouts) "
+            "through this task's extraction + grading reproduces upstream's own "
+            "`correct` on 99.1% of them, inside the 96.2-99.7% band the "
+            "already-shipped AIME/HMMT ports sit in; the residual is upstream's "
+            "un-vendored normalize_string plus math-verify-vs-sympy."
         ),
     ),
 )
-class HMMTNov2025ZeroShotGenTask(
+class SMT2025ZeroShotGenTask(
     Task[
-        HMMTNov2025DatasetSample,
+        SMT2025DatasetSample,
         PromptRecord,
         ModelOutput,
         PredictionRecord,
@@ -109,7 +110,7 @@ class HMMTNov2025ZeroShotGenTask(
         rollouts = []
         ground_truth = ctx.raw_sample["answer"]
         for rollout in post["rollouts"]:
-            pred = rollout.get("prediction")
+            pred = rollout["prediction"]
             if pred is None:
                 rollouts.append(build_rollout_judgement(rollout["index"], False))
                 continue

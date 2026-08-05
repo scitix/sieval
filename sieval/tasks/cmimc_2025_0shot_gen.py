@@ -1,13 +1,13 @@
-"""HMMT November 2025 zero-shot generative task.
+"""CMIMC 2025 zero-shot generative task.
 
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
+AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 from typing import override
 
 from loguru import logger
 
-from sieval.community.matharena import BOXED_INSTRUCTION, build_prompt, extract_answer
+from sieval.community.matharena import CMIMC_INSTRUCTION, build_prompt, extract_answer
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
@@ -22,14 +22,15 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.datasets import HMMTNov2025DatasetSample
+from sieval.datasets import CMIMC2025DatasetSample
 
 
 @sieval_task(
-    name="hmmt_nov_2025_0shot_gen",
-    display_name="HMMT Nov 2025 (0-shot, generative)",
+    name="cmimc_2025_0shot_gen",
+    display_name="CMIMC 2025 (0-shot, generative)",
     description=(
-        "HMMT November 2025 — Harvard-MIT Mathematics Tournament, 30 problems."
+        "CMIMC 2025 — Carnegie Mellon Informatics and Mathematics Competition, "
+        "40 problems."
     ),
     eval_mode=EvalMode.GEN,
     n_shot=0,
@@ -38,29 +39,30 @@ from sieval.datasets import HMMTNov2025DatasetSample
     model_type="chat",
     reference_impl=ReferenceImpl(
         source="matharena",
-        url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
+        url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/cmimc/cmimc_2025.yaml",
         notes=(
             "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence "
-            "via math-verify. REPEATS: matharena averages 4 runs per problem "
-            "(runner default `--n 4`) while this task defaults to n=1 — set n=4 to "
-            "compare against matharena.ai, as a task arg (tasks.<name>.args.n); the "
-            "model's `n` is silently overridden call-time. k>n is rejected at "
-            "construction. DEVIATION: golds are normalized by "
-            "sieval.community.math.strip_string; matharena does not. VALIDATED "
-            "against official MathArena: replaying its published 2640 outputs "
-            "(22 models x 30 problems x 4 runs) through this task's grading path "
-            "agrees with the upstream grader on 99.51% of outputs and reproduces "
-            "16/22 model scores exactly; Gemini 3 Flash is 93.33% three ways "
-            "(published, upstream grader, sieval grader). A live sieval run of "
-            "gemini-3-flash-preview scored 95.00% vs the published 93.33% — "
-            "sampling variance, not a grading difference: both graders agree on "
-            "120/120 of sieval's own outputs."
+            "via math-verify. PROMPT: the only ported competition whose upstream "
+            "`instruction` goes beyond the plain boxed line — it also dictates a "
+            "trailing `### Final answer` section, so this task uses "
+            "matharena.CMIMC_INSTRUCTION rather than the shared BOXED_INSTRUCTION. "
+            "REPEATS: matharena averages 4 runs per problem (runner default `--n 4`) "
+            "while this task defaults to n=1 — set n=4 to compare against "
+            "matharena.ai, as a task arg (tasks.<name>.args.n); the model's `n` is "
+            "silently overridden call-time. k>n is rejected at construction. "
+            "DEVIATION: golds are normalized by sieval.community.math.strip_string; "
+            "matharena does not. VALIDATED: replaying "
+            "MathArena/cmimc_2025_outputs (5,600 rollouts) through this task's "
+            "extraction + grading reproduces upstream's own `correct` on 99.1% of "
+            "them, inside the 96.2-99.7% band the already-shipped AIME/HMMT ports "
+            "sit in; 31 of the 51 residual disagreements would close if sieval "
+            "vendored upstream's normalize_string (it deliberately does not)."
         ),
     ),
 )
-class HMMTNov2025ZeroShotGenTask(
+class CMIMC2025ZeroShotGenTask(
     Task[
-        HMMTNov2025DatasetSample,
+        CMIMC2025DatasetSample,
         PromptRecord,
         ModelOutput,
         PredictionRecord,
@@ -85,7 +87,7 @@ class HMMTNov2025ZeroShotGenTask(
             [
                 {
                     "role": "user",
-                    "content": build_prompt(BOXED_INSTRUCTION, raw["problem"]),
+                    "content": build_prompt(CMIMC_INSTRUCTION, raw["problem"]),
                 },
             ],
             reference=raw["answer"],
@@ -109,7 +111,7 @@ class HMMTNov2025ZeroShotGenTask(
         rollouts = []
         ground_truth = ctx.raw_sample["answer"]
         for rollout in post["rollouts"]:
-            pred = rollout.get("prediction")
+            pred = rollout["prediction"]
             if pred is None:
                 rollouts.append(build_rollout_judgement(rollout["index"], False))
                 continue

@@ -1,6 +1,6 @@
-"""HMMT November 2025 zero-shot generative task.
+"""MathArena Apex 2025 zero-shot generative task.
 
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
+AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 from typing import override
@@ -22,14 +22,15 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.datasets import HMMTNov2025DatasetSample
+from sieval.datasets import Apex2025DatasetSample
 
 
 @sieval_task(
-    name="hmmt_nov_2025_0shot_gen",
-    display_name="HMMT Nov 2025 (0-shot, generative)",
+    name="apex_2025_0shot_gen",
+    display_name="MathArena Apex 2025 (0-shot, generative)",
     description=(
-        "HMMT November 2025 — Harvard-MIT Mathematics Tournament, 30 problems."
+        "MathArena Apex 2025 — 12 problems curated from 2025 competitions to be "
+        "very hard for models."
     ),
     eval_mode=EvalMode.GEN,
     n_shot=0,
@@ -38,7 +39,7 @@ from sieval.datasets import HMMTNov2025DatasetSample
     model_type="chat",
     reference_impl=ReferenceImpl(
         source="matharena",
-        url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
+        url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/apex/apex_2025.yaml",
         notes=(
             "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence "
             "via math-verify. REPEATS: matharena averages 4 runs per problem "
@@ -46,21 +47,20 @@ from sieval.datasets import HMMTNov2025DatasetSample
             "compare against matharena.ai, as a task arg (tasks.<name>.args.n); the "
             "model's `n` is silently overridden call-time. k>n is rejected at "
             "construction. DEVIATION: golds are normalized by "
-            "sieval.community.math.strip_string; matharena does not. VALIDATED "
-            "against official MathArena: replaying its published 2640 outputs "
-            "(22 models x 30 problems x 4 runs) through this task's grading path "
-            "agrees with the upstream grader on 99.51% of outputs and reproduces "
-            "16/22 model scores exactly; Gemini 3 Flash is 93.33% three ways "
-            "(published, upstream grader, sieval grader). A live sieval run of "
-            "gemini-3-flash-preview scored 95.00% vs the published 93.33% — "
-            "sampling variance, not a grading difference: both graders agree on "
-            "120/120 of sieval's own outputs."
+            "sieval.community.math.strip_string; matharena does not. SMALL N: 12 "
+            "problems, so one problem moves the score by 8.3 points — read it "
+            "alongside a full-size sibling, not on its own. OVERLAP: 3 of the 12 are "
+            "byte-identical to smt_2025 problems 8, 42 and 43, so a run covering "
+            "both datasets scores those problems twice. VALIDATED: replaying "
+            "MathArena/apex_2025_outputs (7,717 rollouts) through this task's "
+            "extraction + grading reproduces upstream's own `correct` on 99.9% of "
+            "them — the highest of any ported MathArena competition."
         ),
     ),
 )
-class HMMTNov2025ZeroShotGenTask(
+class Apex2025ZeroShotGenTask(
     Task[
-        HMMTNov2025DatasetSample,
+        Apex2025DatasetSample,
         PromptRecord,
         ModelOutput,
         PredictionRecord,
@@ -109,7 +109,7 @@ class HMMTNov2025ZeroShotGenTask(
         rollouts = []
         ground_truth = ctx.raw_sample["answer"]
         for rollout in post["rollouts"]:
-            pred = rollout.get("prediction")
+            pred = rollout["prediction"]
             if pred is None:
                 rollouts.append(build_rollout_judgement(rollout["index"], False))
                 continue

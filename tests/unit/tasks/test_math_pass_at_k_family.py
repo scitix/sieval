@@ -1,8 +1,8 @@
 """Shared contract for the pass@k math tasks.
 
-These eight task modules are clones of one another in ``__init__``, ``report``
+These thirteen task modules are clones of one another in ``__init__``, ``report``
 and ``_pass_at_k``. Asserting the contract once, over all of them, is what stops
-a fix landing in one file and silently drifting in the other seven — the failure
+a fix landing in one file and silently drifting in the other twelve — the failure
 mode that produced the ``k > n`` and report-key-set bugs in the first place.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
@@ -21,19 +21,29 @@ from sieval.core.tasks import (
 from sieval.datasets.aime_2024 import AIME2024Dataset
 from sieval.datasets.aime_2025 import AIME2025Dataset
 from sieval.datasets.aime_2026 import AIME2026Dataset
+from sieval.datasets.apex_2025 import Apex2025Dataset
+from sieval.datasets.apex_shortlist_2025 import ApexShortlist2025Dataset
+from sieval.datasets.brumo_2025 import BRUMO2025Dataset
+from sieval.datasets.cmimc_2025 import CMIMC2025Dataset
 from sieval.datasets.hmmt_feb_2025 import HMMTFeb2025Dataset
 from sieval.datasets.hmmt_feb_2026 import HMMTFeb2026Dataset
 from sieval.datasets.hmmt_nov_2025 import HMMTNov2025Dataset
 from sieval.datasets.imo_answer_bench import IMOAnswerBenchDataset
 from sieval.datasets.math_500 import MATH500Dataset
+from sieval.datasets.smt_2025 import SMT2025Dataset
 from sieval.tasks.aime_2024_0shot_gen import AIME2024ZeroShotGenTask
 from sieval.tasks.aime_2025_0shot_gen import AIME2025ZeroShotGenTask
 from sieval.tasks.aime_2026_0shot_gen import AIME2026ZeroShotGenTask
+from sieval.tasks.apex_2025_0shot_gen import Apex2025ZeroShotGenTask
+from sieval.tasks.apex_shortlist_2025_0shot_gen import ApexShortlist2025ZeroShotGenTask
+from sieval.tasks.brumo_2025_0shot_gen import BRUMO2025ZeroShotGenTask
+from sieval.tasks.cmimc_2025_0shot_gen import CMIMC2025ZeroShotGenTask
 from sieval.tasks.hmmt_feb_2025_0shot_gen import HMMTFeb2025ZeroShotGenTask
 from sieval.tasks.hmmt_feb_2026_0shot_gen import HMMTFeb2026ZeroShotGenTask
 from sieval.tasks.hmmt_nov_2025_0shot_gen import HMMTNov2025ZeroShotGenTask
 from sieval.tasks.imo_answer_bench_0shot_gen import IMOAnswerBenchZeroShotGenTask
 from sieval.tasks.math_500_0shot_gen import MATH500ZeroShotGenTask
+from sieval.tasks.smt_2025_0shot_gen import SMT2025ZeroShotGenTask
 
 PROBLEM = "What is 6 times 7?"
 ANSWER = "42"
@@ -50,6 +60,11 @@ FAMILY = [
     (HMMTNov2025ZeroShotGenTask, HMMTNov2025Dataset, "problem"),
     (MATH500ZeroShotGenTask, MATH500Dataset, "problem"),
     (IMOAnswerBenchZeroShotGenTask, IMOAnswerBenchDataset, "problem"),
+    (BRUMO2025ZeroShotGenTask, BRUMO2025Dataset, "problem"),
+    (SMT2025ZeroShotGenTask, SMT2025Dataset, "problem"),
+    (CMIMC2025ZeroShotGenTask, CMIMC2025Dataset, "problem"),
+    (Apex2025ZeroShotGenTask, Apex2025Dataset, "problem"),
+    (ApexShortlist2025ZeroShotGenTask, ApexShortlist2025Dataset, "problem"),
 ]
 IDS = [t.__name__ for t, _, _ in FAMILY]
 

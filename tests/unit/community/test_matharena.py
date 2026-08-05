@@ -5,7 +5,8 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 
 from sieval.community.matharena import (
     AIME_INSTRUCTION,
-    HMMT_INSTRUCTION,
+    BOXED_INSTRUCTION,
+    CMIMC_INSTRUCTION,
     build_prompt,
     extract_answer,
     extract_boxed_answer,
@@ -15,11 +16,27 @@ from sieval.community.matharena import (
 
 def test_build_prompt_appends_problem():
     assert (
-        build_prompt(HMMT_INSTRUCTION, "P?")
+        build_prompt(BOXED_INSTRUCTION, "P?")
         == "Put your final answer within \\boxed{}.\n\nP?"
     )
     assert AIME_INSTRUCTION.endswith("between 0 and 999 inclusive.")
     assert "\\boxed{}" in AIME_INSTRUCTION
+
+
+def test_instructions_carry_the_post_format_braces():
+    # Upstream's YAML writes ``\\boxed{{}}`` because it ``format_map``s the
+    # template to substitute ``{problem}``; sieval interpolates the problem itself,
+    # so the constants must already hold the collapsed single braces a model sees.
+    for instruction in (BOXED_INSTRUCTION, AIME_INSTRUCTION, CMIMC_INSTRUCTION):
+        assert "{{" not in instruction and "}}" not in instruction
+
+
+def test_cmimc_instruction_demands_a_final_answer_section():
+    # cmimc/cmimc_2025.yaml is the one ported config that goes beyond the plain
+    # boxed line — it starts with it, then dictates the section layout.
+    assert CMIMC_INSTRUCTION.startswith(BOXED_INSTRUCTION)
+    assert "\n\n### Final answer\n\n" in CMIMC_INSTRUCTION
+    assert CMIMC_INSTRUCTION.endswith("The final answer is \\boxed{your final answer}.")
 
 
 def test_extract_boxed_takes_last_box():
