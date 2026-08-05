@@ -146,7 +146,19 @@ PLATINUM_REFERENCE_NOTES = (
     "equal to the paper's and upstream publishes no table for it. The replay stubs "
     "the model layer, so it was also run live end-to-end (all 5 subsets, 953 "
     "questions, Qwen3-32B over an OpenAI-protocol endpoint): 0 pipeline "
-    "failures, 6 errors, 5 of them genuine wrong answers."
+    "failures, 6 errors, 5 of them genuine wrong answers. Qwen3-32B has no "
+    "published row, so a second live run took a model that does: "
+    "Llama-3.3-70B-Instruct, all 5 subsets over the paper version's 968 "
+    "questions at temperature 0.5, one sample, served bf16 (the released "
+    "precision — aggregators route across providers that quantize differently, "
+    "and quantization changes completions). It scored 0/0/0/8/7 = 15 errors "
+    "against Table 3's 0/0/0/7/7 = 14: four of five cells exact, +1 pooled "
+    "against a ~3.7 Poisson sigma, 98.45% vs 98.55% accuracy, 0 pipeline "
+    "failures, and all 15 misses genuine arithmetic errors — every one finished "
+    "on a stop token with a parseable integer, so none is a truncation or parse "
+    "artifact. Exact equality is not achievable here: upstream samples at "
+    "temperature 0.5 with no seed, so the replay is what pins scoring fidelity "
+    "and this run is what pins the live path."
 )
 
 # `parsing_strategy` value shared by all five subsets this base serves. Asserted
