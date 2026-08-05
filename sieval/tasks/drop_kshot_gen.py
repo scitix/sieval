@@ -18,6 +18,9 @@ from sieval.core.tasks import (
 )
 from sieval.datasets import DROPDatasetSample
 
+_FEWSHOT_SPLIT = "train"
+_FEWSHOT_SEED = 42
+
 
 @sieval_task(
     name="drop_kshot_gen",
@@ -52,31 +55,32 @@ class DROPFewShotGenTask(
         n_shot: int = 3,
         sep: str = "\n\n",
     ):
+        if n_shot < 0:
+            raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
         self._n_shot = n_shot
         self.n_shot_used = self._n_shot
         self._sep = sep
+        # "" is a legitimate value (the n_shot=0 prefix), so None is the
+        # not-yet-built sentinel, mirroring the ARC tasks.
+        self._few_shot_str: str | None = None
+
+    @override
+    async def setup(self) -> None:
+        # Drawn once here (setup runs before any sample) rather than per
+        # preprocess: the seed is fixed, so every per-sample call was already
+        # returning this same set. Building it here also aborts a too-short
+        # pool before any inference spend, like the other few-shot tasks.
+        self._few_shot_str = self._build_few_shot_str()
 
     @override
     async def preprocess(self, raw, ctx):
-        from sieval.community.simple_evals.drop_eval import (
-            FEW_SHOT_TEMPLATE,
-            QUERY_TEMPLATE,
-        )
+        from sieval.community.simple_evals.drop_eval import QUERY_TEMPLATE
 
-        few_shot_examples = self.dataset.retrieve_samples(
-            self._n_shot,
-            split="train",
-            mode="random",
-            seed=42,
-        )
-        few_shot_str = self._sep.join(
-            [
-                FEW_SHOT_TEMPLATE.format(
-                    context=ex["context"], completion=ex["completion"]
-                )
-                for ex in few_shot_examples
-            ]
+        few_shot_str = (
+            self._few_shot_str
+            if self._few_shot_str is not None
+            else self._build_few_shot_str()
         )
         return build_prompt_record(
             [
@@ -89,6 +93,39 @@ class DROPFewShotGenTask(
             ],
             # DROP golds are a `|`-separated set of acceptable answers.
             reference=raw["ref_text"],
+        )
+
+    def _build_few_shot_str(self) -> str:
+        if self._n_shot == 0:
+            return ""
+        split = self.dataset.dataset_dict.get(_FEWSHOT_SPLIT)
+        if split is None:
+            raise ValueError(
+                "DROP few-shot generative task requires a "
+                f"{_FEWSHOT_SPLIT!r} split for few-shot examples."
+            )
+        # retrieve_samples truncates to the split length, which would render
+        # fewer shots than n_shot_used reports in meta.json with nothing on
+        # disk saying so. Fail instead, as the other few-shot tasks do.
+        if len(split) < self._n_shot:
+            raise ValueError(
+                "DROP few-shot generative task requires at least "
+                f"{self._n_shot} examples in split {_FEWSHOT_SPLIT!r}; "
+                f"found {len(split)}."
+            )
+        # Lazy, and after the guards: drop_eval pulls scipy, and importing this
+        # module for registration must not (pinned by a test).
+        from sieval.community.simple_evals.drop_eval import FEW_SHOT_TEMPLATE
+
+        examples = self.dataset.retrieve_samples(
+            self._n_shot,
+            split=_FEWSHOT_SPLIT,
+            mode="random",
+            seed=_FEWSHOT_SEED,
+        )
+        return self._sep.join(
+            FEW_SHOT_TEMPLATE.format(context=ex["context"], completion=ex["completion"])
+            for ex in examples
         )
 
     @override

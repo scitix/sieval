@@ -193,6 +193,22 @@ class OpenBookQAFewShotGenTask(
     def _retrieve_fewshot(self) -> list[OpenBookQADatasetSample]:
         if self._n_shot <= 0:
             return []
+        split = self.dataset.dataset_dict.get(self._fewshot_split)
+        if split is None:
+            raise ValueError(
+                "OpenBookQA few-shot generative task requires a "
+                f"{self._fewshot_split!r} split for few-shot examples."
+            )
+        # retrieve_samples clips out-of-range indices, which would render fewer
+        # shots than n_shot_used reports in meta.json with nothing on disk
+        # saying so. Fail instead, as the other few-shot tasks do. Called from
+        # setup(), so this aborts before any inference spend.
+        if len(split) < self._n_shot:
+            raise ValueError(
+                "OpenBookQA few-shot generative task requires at least "
+                f"{self._n_shot} examples in split {self._fewshot_split!r}; "
+                f"found {len(split)}."
+            )
         return self.dataset.retrieve_samples(
             self._n_shot,
             split=self._fewshot_split,

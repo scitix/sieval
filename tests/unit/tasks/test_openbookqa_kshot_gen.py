@@ -209,3 +209,57 @@ def test_negative_k_rejected():
     dataset = _dataset([_sample("q0")])
     with pytest.raises(ValueError, match="n_shot must be >= 0"):
         OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), n_shot=-1)
+
+
+# --- the few-shot pool must supply every shot meta.json records -------------
+
+
+@pytest.mark.anyio
+async def test_setup_aborts_when_train_split_is_shorter_than_n_shot():
+    """A short pool used to truncate silently while meta.json still said n_shot.
+
+    retrieve_samples clips out-of-range indices, so n_shot=5 against two rows
+    rendered two shots and recorded five. setup() now aborts before any spend.
+    """
+    dataset = _dataset([_sample("q0"), _sample("q1")])
+    task = OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), n_shot=5)
+    assert task.n_shot_used == 5
+    with pytest.raises(ValueError, match="requires at least 5 examples"):
+        await task.setup()
+
+
+@pytest.mark.anyio
+async def test_setup_aborts_when_fewshot_split_is_absent():
+    dataset = _dataset([_sample("q0")])
+    task = OpenBookQAFewShotGenTask(
+        dataset, _CapturingChatModel(), n_shot=1, fewshot_split="nope"
+    )
+    with pytest.raises(ValueError, match="requires a 'nope' split"):
+        await task.setup()
+
+
+@pytest.mark.anyio
+async def test_exactly_enough_examples_is_accepted():
+    train = [_sample("q0", "A"), _sample("q1", "C")]
+    task = OpenBookQAFewShotGenTask(_dataset(train), _CapturingChatModel(), n_shot=2)
+    await task.setup()
+
+    raw = _sample("q-test")
+    pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
+    content = pre["prompt"][0]["content"]
+    # Both exemplars reached the prompt — the count is not merely declared.
+    assert "q0" in content
+    assert "q1" in content
+
+
+@pytest.mark.anyio
+async def test_zero_shot_needs_no_fewshot_split():
+    """n_shot=0 renders no block, so a missing pool is not an error."""
+    dataset = _dataset([_sample("q0")])
+    task = OpenBookQAFewShotGenTask(
+        dataset, _CapturingChatModel(), n_shot=0, fewshot_split="nope"
+    )
+    await task.setup()
+    raw = _sample("q-test")
+    pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
+    assert pre["prompt"][0]["content"] == _expected_question(raw)
