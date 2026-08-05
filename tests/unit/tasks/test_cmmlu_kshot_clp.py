@@ -73,6 +73,28 @@ def _sample(
 
 
 def _dataset() -> CMMLUDataset:
+    # Two rows per subject: setup() validates every subject in the dev pool, not
+    # just the ones the test split uses, so a 1-row 'logical' subject would abort
+    # the n_shot=2 cases below. See _dataset_with_short_subject for that path.
+    return CMMLUDataset(
+        _hf_dict=HFDatasetDict(
+            {
+                "dev": HFDataset.from_list(
+                    [
+                        dict(_sample("示例一")),
+                        dict(_sample("示例二")),
+                        dict(_sample("逻辑示例", subject="logical")),
+                        dict(_sample("逻辑示例乙", subject="logical")),
+                    ]
+                ),
+                "test": HFDataset.from_list([dict(_sample("测试题"))]),
+            }
+        )
+    )
+
+
+def _dataset_with_short_subject() -> CMMLUDataset:
+    """Dev pool where 'logical' holds a single exemplar."""
     return CMMLUDataset(
         _hf_dict=HFDatasetDict(
             {
@@ -128,6 +150,34 @@ async def test_k_requires_few_shot_split():
 
     with pytest.raises(ValueError, match="requires a 'dev' split"):
         await task.setup()
+
+
+@pytest.mark.anyio
+async def test_setup_raises_when_subject_has_too_few_dev_exemplars():
+    # 'logical' holds 1 dev row against n_shot=2: a bare slice would render 1 shot
+    # while meta.json's n_shot_used records 2, with nothing on disk saying so.
+    # setup() pre-builds every prefix, so this aborts before any inference spend
+    # rather than failing samples one at a time (matches the C-Eval sibling).
+    # Near-unreachable upstream: CMMLU dev is a uniform 5/subject, so it can only
+    # fire for n_shot > 5, which is already a non-upstream configuration.
+    task = CMMLUFewShotClpTask(
+        _dataset_with_short_subject(), _DummyGenModel(), n_shot=2
+    )
+
+    with pytest.raises(ValueError, match=r"has 1 'dev' exemplars; need n_shot=2"):
+        await task.setup()
+
+
+@pytest.mark.anyio
+async def test_build_prompt_raises_for_subject_absent_from_dev():
+    # A test subject with no dev rows at all is invisible to setup()'s sweep over
+    # the dev pool, so it can only surface per sample. Still loud: 0 rendered
+    # shots would otherwise pass silently against n_shot_used=2.
+    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=2)
+    await task.setup()
+
+    with pytest.raises(ValueError, match=r"has 0 'dev' exemplars; need n_shot=2"):
+        task._build_prompt(_sample("测试题", subject="virology"))
 
 
 @pytest.mark.anyio

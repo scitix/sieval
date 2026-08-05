@@ -314,7 +314,13 @@ class CMMLUFewShotClpTask(
 
     @override
     async def setup(self) -> None:
+        # Build every per-subject prefix once here, not per sample, so a subject
+        # whose dev pool is too short to render n_shot exemplars aborts the run
+        # before any inference spend rather than failing samples one at a time
+        # (matches C-Eval). Empty pool when n_shot == 0, so the loop is a no-op.
         self._ensure_few_shot_pool()
+        for subject in self._few_shot_by_subject:
+            self._build_few_shot_prompt(subject)
 
     def _ensure_few_shot_pool(self) -> None:
         if self._few_shot_by_subject or self._n_shot == 0:
@@ -333,7 +339,16 @@ class CMMLUFewShotClpTask(
         if self._n_shot == 0:
             return []
         self._ensure_few_shot_pool()
-        return list(self._few_shot_by_subject.get(subject, []))[: self._n_shot]
+        examples = self._few_shot_by_subject.get(subject, [])
+        # Slicing a short pool would render fewer shots than n_shot_used reports
+        # in meta.json, with nothing on disk saying so. Fail instead, as C-Eval
+        # and MMMLU already do for the same per-subject pool.
+        if len(examples) < self._n_shot:
+            raise ValueError(
+                f"CMMLU subject {subject!r} has {len(examples)} "
+                f"{self._fewshot_split!r} exemplars; need n_shot={self._n_shot}."
+            )
+        return list(examples)[: self._n_shot]
 
     def _format_example(
         self, sample: CMMLUDatasetSample, *, include_answer: bool = True

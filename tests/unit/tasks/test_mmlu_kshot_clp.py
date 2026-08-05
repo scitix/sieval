@@ -285,3 +285,34 @@ async def test_missing_fewshot_split_raises():
     task = MMLUFewShotCLPTask(ds, _ScriptedGenModel(), n_shot=5)
     with pytest.raises(ValueError, match="dev"):
         await task.setup()
+
+
+@pytest.mark.anyio
+async def test_setup_raises_when_subject_has_too_few_dev_exemplars():
+    # 1 anatomy dev row against n_shot=5: a bare slice would render 1 shot while
+    # meta.json's n_shot_used records 5, with nothing on disk saying so. setup()
+    # pre-builds every prefix, so this aborts before any inference spend rather
+    # than failing samples one at a time (matches the C-Eval sibling).
+    # Near-unreachable upstream: MMLU dev is a uniform 5/subject, so it can only
+    # fire for n_shot > 5, which is already a non-upstream configuration.
+    task = MMLUFewShotCLPTask(
+        _dataset([_sample("anatomy", "a0", 0)], [_sample("anatomy", "t", 0)]),
+        _ScriptedGenModel(),
+        n_shot=5,
+    )
+    with pytest.raises(ValueError, match=r"has 1 'dev' exemplars; need n_shot=5"):
+        await task.setup()
+
+
+@pytest.mark.anyio
+async def test_preprocess_raises_for_subject_absent_from_dev():
+    # A test subject with no dev rows at all is invisible to setup()'s sweep over
+    # the dev pool, so it can only surface per sample. Still loud: 0 rendered
+    # shots would otherwise pass silently against n_shot_used=5.
+    dev = [_sample("anatomy", f"a{i}", 0) for i in range(5)]
+    test = _sample("astronomy", "t", 0)
+    task = MMLUFewShotCLPTask(_dataset(dev, [test]), _ScriptedGenModel(), n_shot=5)
+    await task.setup()
+
+    with pytest.raises(ValueError, match=r"has 0 'dev' exemplars; need n_shot=5"):
+        await task.preprocess(test, TaskContext(sample_id=0, raw_sample=test))
