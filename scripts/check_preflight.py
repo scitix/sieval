@@ -844,27 +844,24 @@ class PreflightRunner:
     def check_task_shot_knobs(self) -> list[CheckResult]:
         """Verify the few-shot knob is spelled ``n_shot`` and reaches meta.json.
 
-        ``meta.json`` records the shot count a run actually used by reading
+        ``meta.json`` records the shot count a run used by reading
         ``Task.n_shot_used``. A task that takes a shot-count argument and never
-        assigns that attribute persists the *declared*
-        ``@sieval_task(n_shot=...)`` default instead, and nothing at runtime can
-        tell the two apart — the run directory simply reports a number the run
-        never used. So the wiring is checked here.
+        assigns it persists the *declared* ``@sieval_task(n_shot=...)`` default
+        instead, and nothing at runtime can tell — the run directory reports a
+        number the run never used. So the wiring is checked here.
 
         Three rules, AST-only so a task whose optional deps are absent is still
         covered:
 
         1. a shot-count parameter is spelled ``n_shot``, nothing else;
         2. a task accepting ``n_shot`` assigns ``self.n_shot_used``;
-        3. ``k`` is a pass@k rollout count — its meaning in every task that
-           takes one — so a task accepting ``k`` must compute a pass@k metric,
-           and ``n_shot_used`` may never be fed from it. This is rule 1 for the
-           one name that denotes a shot count without containing "shot", and it
-           is what stops ``k`` from re-acquiring a second meaning.
+        3. ``k`` is a pass@k rollout count in every task that takes one, so a
+           task accepting ``k`` must compute a pass@k metric, and
+           ``n_shot_used`` may never be fed from it. This is what stops ``k``
+           from re-acquiring a second meaning.
         """
         # Recursive, matching check_tasks' naming sweep: a benchmark with >= 5
-        # task files lives in a subdirectory (sieval/tasks/CLAUDE.md), and those
-        # tasks are subject to these rules like any other. Subpackage
+        # task files lives in a subdirectory (sieval/tasks/CLAUDE.md). Subpackage
         # __init__.py files are empty by convention, so skipping them by name
         # costs no coverage.
         py_files = [

@@ -314,10 +314,9 @@ class CMMLUFewShotClpTask(
 
     @override
     async def setup(self) -> None:
-        # Build every per-subject prefix once here, not per sample, so a subject
-        # whose dev pool is too short to render n_shot exemplars aborts the run
-        # before any inference spend rather than failing samples one at a time
-        # (matches C-Eval). Empty pool when n_shot == 0, so the loop is a no-op.
+        # Build every per-subject prefix up front, so a subject whose dev pool
+        # is too short for n_shot aborts before any inference spend rather than
+        # failing samples one at a time (matches C-Eval). No-op at n_shot == 0.
         self._ensure_few_shot_pool()
         for subject in self._few_shot_by_subject:
             self._build_few_shot_prompt(subject)

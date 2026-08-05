@@ -20,10 +20,10 @@ Two counts that read alike and are not interchangeable. Enforced by
 
 - **`n_shot`** — the few-shot exemplar count. The only accepted spelling (not
   `k`, `shots`, `num_shots`, `fewshot`, …). A task taking it **must** assign
-  `self.n_shot_used` in `__init__`, from the value it stores so constructor-side
-  normalisation is respected — that attribute is what `meta.json` records as the
-  count the run actually used, and a task that skips it silently persists the
-  declared `@sieval_task(n_shot=...)` default instead.
+  `self.n_shot_used` in `__init__`, from the value it stores so any
+  normalisation is respected: that attribute is what `meta.json` records as the
+  count the run used, and skipping it persists the declared
+  `@sieval_task(n_shot=...)` default instead.
 - **`k`** — the `pass@k` rollout count, nothing else. A task taking `k` must
   compute a `pass@k` metric, and `n_shot_used` may never be fed from it.
 
@@ -41,10 +41,10 @@ each and are unaffected. In prose, `k-shot` (the file-naming genre) and `top-k`
 
 ## Key Rules
 
-- ≥ 5 files per benchmark → subdirectory with an empty `__init__.py`. Nesting costs the author nothing because two separate mechanisms already handle it, and both are load-bearing: lazy export by the top-level `tasks/__init__.py`, and name → class resolution by `get_task_class()` (`sieval/core/tasks/meta.py`), which scans subpackages once the flat path misses. With only the export half a nested task imports fine but is unresolvable by name — a bare `KeyError` out of `sieval task show`, and no other symptom.
-- The `__init__.py` is empty on purpose: nothing imports a task class off the subpackage, because both mechanisms above key on the *module* (importing it runs `@sieval_task`, which registers the class), never on a subpackage attribute. So it needs no type surface of its own, and leaving it empty keeps exactly one import path per task. Contrast `sieval/datasets/`, whose subpackages do re-export, because tasks import them directly.
-- **The count includes the extracted shared module**, not just the task files: 4 task modules plus a `_base.py` trips it. That is deliberate — a benchmark only grows a shared module once its variants have logic worth reusing, so the shared module *is* the signal that the group has become a unit, and it is the thing a flat layout has nowhere good to put. `arc/` (4 tasks + `_base.py`) is the reference layout.
-- Keep the full task name as the filename inside the subpackage (`arc/arc_easy_kshot_ppl.py`, not `arc/easy_kshot_ppl.py`), so a grep for a registered task name still finds its file. The mildly repetitive import path costs nothing — no caller spells it.
+- ≥ 5 files per benchmark → subdirectory with an empty `__init__.py`. Two mechanisms make nesting work and both are load-bearing: lazy export by the top-level `tasks/__init__.py`, and name → class resolution by `get_task_class()` (`sieval/core/tasks/meta.py`), which scans subpackages once the flat path misses. With only the export half, a nested task imports fine but is unresolvable by name — a bare `KeyError` from `sieval task show`, no other symptom.
+- The `__init__.py` is empty on purpose: both mechanisms key on the *module* (importing it runs `@sieval_task`, which registers the class), never on a subpackage attribute, so it needs no type surface and there stays exactly one import path per task. Contrast `sieval/datasets/`, whose subpackages do re-export, because tasks import them directly.
+- **The count includes the extracted shared module**: 4 task modules plus a `_base.py` trips it. Deliberate — a benchmark only grows a shared module once its variants have logic worth reusing, so that module *is* the signal the group has become a unit, and it is what a flat layout has nowhere good to put. `arc/` (4 tasks + `_base.py`) is the reference layout.
+- Keep the full task name as the filename inside the subpackage (`arc/arc_easy_kshot_ppl.py`, not `arc/easy_kshot_ppl.py`), so a grep for a registered task name still finds its file.
 - Subpackage shared base module: file named `_base.py` (private module), classes inside without underscore prefix (package-internal public API, e.g. `from ._base import XxxTask`).
 - General code-quality + layer rules live in `.claude/rules/tasks.md`.
 

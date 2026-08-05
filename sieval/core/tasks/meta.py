@@ -6,11 +6,9 @@ a consumer contract: renames, removals, or type changes require a
 `meta/index.json` schema_version bump.
 
 Run `meta.json` is a second consumer of that freeze: `get_task_run_identity`
-projects a subset of these fields into every run directory, and those files
-are written once and never rewritten. Bumping `meta/index.json`'s
-schema_version does nothing for runs already on disk — their only
-compatibility marker is the sieval `version` recorded alongside. Changing a
-frozen field has to account for both.
+projects a subset of these fields into run directories, which are written once
+and never rewritten. A schema_version bump does nothing for runs already on
+disk — their only compatibility marker is the sieval `version` alongside.
 
 Frozen fields on TaskMeta:
     name, display_name, description, dataset (FK str), eval_mode, n_shot,
@@ -239,46 +237,36 @@ def get_task_meta(cls: type) -> TaskMeta:
 def get_task_run_identity(task: Task) -> TaskRunIdentity | None:
     """Project the run-identity subset of *task*'s TaskMeta, for ``meta.json``.
 
-    Returns ``None`` when ``type(task)`` itself was not decorated with
-    :func:`sieval_task`, which is the fail-soft path `write_run_meta` needs:
-    `Task` subclasses are not required to be decorated.
+    Returns ``None`` when ``type(task)`` itself is undecorated — the fail-soft
+    path `write_run_meta` needs, since `Task` subclasses need no decorator.
 
-    Read off ``cls.__dict__``, not through the MRO like :func:`get_task_meta`.
-    An undecorated subclass of a decorated task is a *different* task, and
-    `name` / `dataset` / `eval_mode` are an identity claim about the run —
-    inheriting them would label the subclass's results with its parent's name.
-    (`cls.tags` and `cls.model_type`, set by the same decorator, do stay
-    inherited: those are behavioral defaults, not identity.)
+    Read off ``cls.__dict__``, not the MRO like :func:`get_task_meta`: an
+    undecorated subclass of a decorated task is a *different* task, and
+    inheriting `name` / `dataset` / `eval_mode` would label its results with
+    its parent's name. (`cls.tags` / `cls.model_type` do stay inherited —
+    behavioral defaults, not identity.)
 
-    The fields are a chosen subset, not `task_meta_to_dict`. Left out on
-    purpose, so the gap does not read as an oversight:
+    A chosen subset, not `task_meta_to_dict`. Left out on purpose, so the gap
+    does not read as an oversight: `model_type` (scheduled for replacement by
+    a task-side capability requirement), `reference_impl` (`notes` is not
+    frozen within `schema_version=1` and changes often), `description` and
+    `deps_group` (properties of the task, not the run).
 
-    * `model_type` — scheduled for replacement by a task-side capability
-      requirement, so persisting it now writes a field that is already on its
-      way out.
-    * `reference_impl` — `notes` is explicitly not frozen within
-      `schema_version=1` and changes often; a per-run copy is noise.
-    * `description`, `deps_group` — a human-facing blurb and an environment
-      hint; neither is a property of the run.
+    `tags` is the descriptive `TaskMeta.tags`, *not* the `cls.tags` protocol
+    set the decorator synthesizes for anomaly routing — and it is the one
+    persisted field whose *values* are not frozen within `schema_version=1`
+    (see the module docstring), so consumers should read it as advisory.
 
-    `tags` is the descriptive `TaskMeta.tags` declared by the task author,
-    *not* the `cls.tags` protocol set the decorator synthesizes from
-    `eval_mode` + `n_shot` for anomaly routing. It is also the one persisted
-    field whose *values* are not frozen within `schema_version=1` (see the
-    module docstring), so consumers should read it as advisory.
-
-    Identity is read off the class, but `n_shot` is read off the *instance*
-    via :attr:`Task.n_shot_used`, falling back to the declared value when the
-    task has no shot-count knob. That is the one field a run can change, and a
-    run directory is read to find out what the run did — a declared default
-    there is not a smaller answer, it is a wrong one. Everything else is a
-    claim about the task, which no instance may restate.
+    `n_shot` alone is read off the *instance*, via :attr:`Task.n_shot_used`,
+    falling back to the declared value when the task has no knob: it is the
+    one field a run can change, and a run directory is read to find out what
+    the run did.
     """
     if isinstance(task, type):
         raise TypeError(
             "get_task_run_identity takes a Task instance, not a class "
-            f"({task.__qualname__}); `n_shot` is read off the instance, and a "
-            "class would resolve to no metadata and silently omit the block."
+            f"({task.__qualname__}): `n_shot` is read off the instance, so a "
+            "class would silently omit the block."
         )
     cls = type(task)
     meta: TaskMeta | None = cls.__dict__.get(_TASK_META_ATTR)
@@ -331,13 +319,12 @@ def get_task_class(name: str) -> type[Task]:
     ``import_all_tasks()`` cost. Raises ``KeyError`` if still unregistered after
     the import.
 
-    Resolution follows the decorator convention first — one task per eponymous
-    module, ``sieval.tasks.{name}`` — then scans ``sieval.tasks`` subpackages for
-    ``{subpkg}.{name}``, because a benchmark whose variants outgrew a flat layout
-    keeps the eponymous filename inside its subpackage
-    (``sieval.tasks.arc.arc_easy_kshot_ppl``; see ``sieval/tasks/CLAUDE.md``).
-    The scan is one directory listing, paid only on a cache miss for a
-    subpackage-hosted task; flat tasks still resolve in a single import.
+    Follows the decorator convention first — one task per eponymous module,
+    ``sieval.tasks.{name}`` — then scans subpackages for ``{subpkg}.{name}``,
+    because a benchmark that outgrew a flat layout keeps the eponymous filename
+    inside its subpackage (``sieval.tasks.arc.arc_easy_kshot_ppl``; see
+    ``sieval/tasks/CLAUDE.md``). The scan is one directory listing, paid only on
+    a miss; flat tasks still resolve in a single import.
 
     After ``load_index()`` the ``_TASK_CLASSES`` cache is empty (the index is
     rebuilt from JSON and doesn't execute decorators), so the first call per

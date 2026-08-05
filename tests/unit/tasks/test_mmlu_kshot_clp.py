@@ -290,11 +290,9 @@ async def test_missing_fewshot_split_raises():
 @pytest.mark.anyio
 async def test_setup_raises_when_subject_has_too_few_dev_exemplars():
     # 1 anatomy dev row against n_shot=5: a bare slice would render 1 shot while
-    # meta.json's n_shot_used records 5, with nothing on disk saying so. setup()
-    # pre-builds every prefix, so this aborts before any inference spend rather
-    # than failing samples one at a time (matches the C-Eval sibling).
+    # meta.json's n_shot_used records 5. Aborts at setup(), not per sample.
     # Near-unreachable upstream: MMLU dev is a uniform 5/subject, so it can only
-    # fire for n_shot > 5, which is already a non-upstream configuration.
+    # fire for n_shot > 5.
     task = MMLUFewShotCLPTask(
         _dataset([_sample("anatomy", "a0", 0)], [_sample("anatomy", "t", 0)]),
         _ScriptedGenModel(),

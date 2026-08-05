@@ -74,8 +74,8 @@ def _sample(
 
 def _dataset() -> CMMLUDataset:
     # Two rows per subject: setup() validates every subject in the dev pool, not
-    # just the ones the test split uses, so a 1-row 'logical' subject would abort
-    # the n_shot=2 cases below. See _dataset_with_short_subject for that path.
+    # only those the test split uses, so a 1-row 'logical' would abort the
+    # n_shot=2 cases below. See _dataset_with_short_subject for that path.
     return CMMLUDataset(
         _hf_dict=HFDatasetDict(
             {
@@ -155,11 +155,9 @@ async def test_k_requires_few_shot_split():
 @pytest.mark.anyio
 async def test_setup_raises_when_subject_has_too_few_dev_exemplars():
     # 'logical' holds 1 dev row against n_shot=2: a bare slice would render 1 shot
-    # while meta.json's n_shot_used records 2, with nothing on disk saying so.
-    # setup() pre-builds every prefix, so this aborts before any inference spend
-    # rather than failing samples one at a time (matches the C-Eval sibling).
+    # while meta.json's n_shot_used records 2. Aborts at setup(), not per sample.
     # Near-unreachable upstream: CMMLU dev is a uniform 5/subject, so it can only
-    # fire for n_shot > 5, which is already a non-upstream configuration.
+    # fire for n_shot > 5.
     task = CMMLUFewShotClpTask(
         _dataset_with_short_subject(), _DummyGenModel(), n_shot=2
     )

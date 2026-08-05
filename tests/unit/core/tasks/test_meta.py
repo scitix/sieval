@@ -214,12 +214,9 @@ def test_clean_registry_fixture_leaves_task_modules_reimportable():
     Also pins the eponymous-*filename* convention `get_task_class()` depends on
     (`sieval/core/tasks/meta.py`): every registered name must be the last segment
     of some loaded `sieval.tasks.*` module, or that lookup cannot resolve its
-    class. Depth is deliberately not constrained — both `sieval.tasks.{name}` and
-    a subpackage-hosted `sieval.tasks.{subpkg}.{name}` satisfy it, matching what
-    `get_task_class()` resolves and what the lazy export map already accepted
-    (`sieval/tasks/__init__.py` "Subpackage .py modules"). What stays banned is a
-    task whose defining file is named something other than the task, which no
-    amount of walking can find.
+    class. Depth is deliberately unconstrained — flat and subpackage-hosted both
+    satisfy it. What stays banned is a task whose defining file is named
+    something other than the task, which no amount of walking can find.
     """
     import sys
 

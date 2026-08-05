@@ -184,17 +184,15 @@ def gate_resume_identity(root_dir: Path, identity: TaskRunIdentity | None) -> No
     back that task's report as its own result, having evaluated nothing. The
     version gate cannot catch it: the two runs are typically the same version.
 
-    Compares the registered ``name`` only. That is the registry key the rest
-    of the block is derived from, and a wider comparison would refuse a task
-    that was merely redefined between runs, which is the version gate's
-    business.
+    Compares the registered ``name`` only — the key the rest of the block is
+    derived from. A wider comparison would refuse a task merely redefined
+    between runs, which is the version gate's business.
 
-    Passes when either side has no name to compare — an absent persisted block
-    is a pre-feature run or an undecorated producer, and an absent current one
-    is an undecorated task. Neither is distinguishable from a match, so
-    neither is grounds to refuse; identity therefore only bites once both
-    sides carry a block. Runs after :func:`gate_resume_version`, which has
-    already fail-closed on a missing or unreadable ``meta.json``.
+    Passes when either side has no name to compare: an absent block means a
+    pre-feature run or an undecorated task, neither distinguishable from a
+    match, so this only bites once both sides carry one. Runs after
+    :func:`gate_resume_version`, which has already fail-closed on a missing or
+    unreadable ``meta.json``.
     """
     if identity is None:
         return
@@ -270,7 +268,6 @@ class TaskRunner:
         )
         # Read off the task, not looked up by name: `task.name` is a
         # user-chosen YAML key, not the registered `@sieval_task(name=...)`.
-        # The instance is what carries the shot count this run will use.
         self._task_identity = get_task_run_identity(task)
         if self._resumed_from_existing:
             gate_resume_version(self._root_dir, __version__)
