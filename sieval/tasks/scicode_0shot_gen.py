@@ -15,6 +15,8 @@ gold code is used only as context for later steps.
 
 Metrics: sub-problem accuracy (passing steps / tested steps) and main-problem
 accuracy (problems whose every tested step passes) — the headline resolve rate.
+Both treat a problem that failed the pipeline as unsolved, so neither denominator
+shrinks when a sample errors out.
 
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
@@ -151,7 +153,12 @@ class StepFeedback(TypedDict):
             "in-process subprocess — the service caps sandbox memory (1 GB "
             "default) while upstream subprocesses are uncapped, so memory-heavy "
             "numeric steps could OOM here yet pass upstream; (4) pipeline "
-            "failures count as unsolved problems in main-problem accuracy. "
+            "failures count as unsolved problems in BOTH accuracies -- a failed "
+            "problem's tested steps are recovered from its raw sample and stay in "
+            "the sub-problem denominator scoring zero, so a full test split keeps "
+            "the fixed 288-step denominator the official sub-problem figures are "
+            "computed over rather than shrinking to whichever steps happened to "
+            "run; the unevaluated_steps counter reports how many never executed. "
             "Reproducing official numbers requires greedy decoding "
             "(temperature=0) in the model config; with_background defaults to "
             "False (the official headline mode). The code-eval service image "
@@ -429,8 +436,28 @@ class SciCodeZeroShotGenTask(
             if feedbacks and n_correct == len(feedbacks):
                 correct_problems += 1
 
-        # Pipeline failures (fails) count as unsolved problems; their step counts
-        # are unknown, so sub-problem accuracy is over evaluated steps only.
+        # A pipeline failure is an unsolved problem in BOTH accuracies. Its tested
+        # steps are recoverable from the raw sample, so they stay in the
+        # sub-problem denominator scoring zero instead of vanishing from it.
+        # Dropping them would push the two metrics in opposite directions -- main
+        # diluted by the failure, sub silently inflated by its removal -- and
+        # shrink a full test split below the fixed 288-step denominator the
+        # official sub-problem numbers are computed over.
+        unevaluated_steps = 0
+        for f in fails:
+            raw = f.raw_sample
+            if raw is None:
+                # Failed before the sample was loaded, so there is nothing to
+                # count; such a problem still dilutes main-problem accuracy.
+                continue
+            problem_id = str(raw["problem_id"])
+            unevaluated_steps += sum(
+                1
+                for idx in range(len(raw["sub_steps"]))
+                if not is_special_step(problem_id, idx)
+            )
+        total_steps += unevaluated_steps
+
         main_accuracy = correct_problems * 100 / total_problems
         sub_accuracy = correct_steps * 100 / total_steps if total_steps else 0.0
         return {
@@ -441,6 +468,11 @@ class SciCodeZeroShotGenTask(
             "total_problems": total_problems,
             "correct_steps": correct_steps,
             "total_steps": total_steps,
+            # How much of `total_steps` never ran because its problem failed the
+            # pipeline. Those steps score zero, so a non-zero value here means
+            # sub-problem accuracy is bounded by pipeline health rather than by
+            # model capability alone -- read it alongside `fails`.
+            "unevaluated_steps": unevaluated_steps,
             # Steps where the model produced no extractable code (truncation /
             # unfenced / prose). A non-zero count means some failures are
             # generation-side, not solution-correctness — investigate raw_response.

@@ -435,6 +435,22 @@ def _final(sample_id, correct_flags, empty_flags=None, messages=None):
     )
 
 
+def _fail(sample_id, problem_id, n_steps):
+    """A pipeline-failed context, carrying the raw sample its steps come from."""
+    return TaskContext(
+        sample_id=sample_id,
+        raw_sample={
+            "problem_id": problem_id,
+            "problem_name": "p",
+            "required_dependencies": "",
+            "sub_steps": [
+                _substep(f"{problem_id}.{i + 1}", "def f():", ["assert f() == 1"])
+                for i in range(n_steps)
+            ],
+        },
+    )
+
+
 @pytest.mark.anyio
 async def test_report_sub_and_main_accuracy():
     model = _ScriptedChatModel([])
@@ -510,8 +526,42 @@ async def test_report_counts_pipeline_fails_as_unsolved_problems():
     assert report["fails"] == 1
     assert report["total_problems"] == 2
     assert report["main_problem_accuracy"] == pytest.approx(50.0)
-    # Sub accuracy is over evaluated steps only (fail step-count unknown).
+    # This context failed before its sample was loaded, so there is no step count
+    # to recover and the sub denominator legitimately stays at the evaluated steps.
     assert report["total_steps"] == 2
+    assert report["unevaluated_steps"] == 0
+
+
+@pytest.mark.anyio
+async def test_report_keeps_failed_problem_steps_in_sub_denominator():
+    task = _task(_ScriptedChatModel([]))
+    finals = [_final(0, [True, True])]
+    fails = [_fail(1, "1", 3)]
+    report = await task.report(finals, fails)
+
+    # The failed problem's 3 tested steps stay in the denominator scoring zero,
+    # so removing them cannot inflate sub accuracy: 2/5, not 2/2.
+    assert report["correct_steps"] == 2
+    assert report["total_steps"] == 5
+    assert report["unevaluated_steps"] == 3
+    assert report["sub_problem_accuracy"] == pytest.approx(40.0)
+    # Both accuracies now agree that the failure is unsolved, rather than one
+    # being diluted by it while the other drops it.
+    assert report["main_problem_accuracy"] == pytest.approx(50.0)
+
+
+@pytest.mark.anyio
+async def test_report_excludes_special_steps_from_failed_problem_count():
+    task = _task(_ScriptedChatModel([]))
+    # Problem 13's step 13.6 (zero-based index 5) is scientist-authored: never
+    # generated and never tested, so it must stay out of the denominator on the
+    # fail path too -- 7 sub-steps, 6 tested.
+    report = await task.report([], [_fail(0, "13", 7)])
+
+    assert report["unevaluated_steps"] == 6
+    assert report["total_steps"] == 6
+    assert report["sub_problem_accuracy"] == pytest.approx(0.0)
+    assert report["main_problem_accuracy"] == pytest.approx(0.0)
 
 
 @pytest.mark.anyio
