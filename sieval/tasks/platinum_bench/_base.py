@@ -51,7 +51,13 @@ seed (``models.py::ModelInferenceEngine``); the o1 / o3 snapshots instead run at
 sampled at 0.5, so a single run is not bit-reproducible upstream either.
 ``max_tokens=6000`` is applied in ``infer()`` rather than left to YAML, because
 a short default budget truncates CoT answers before the ``Answer:`` line and
-converts correct reasoning into parse failures.
+converts correct reasoning into parse failures. Upstream sized that budget for
+non-thinking models, and on a thinking model it is not obviously enough: a live
+run of all five subsets against Qwen3-32B spent the whole 6000 inside the
+reasoning channel on one singleop question, leaving an empty answer that scores
+as an error. Raise ``max_tokens`` for a thinking model, and read ``errors``
+together with ``anomalies.json`` — ``truncated_output`` is what separates "ran
+out of budget" from "got it wrong".
 
 Validation — every math cell of the paper's Table 3 (24 models x 5 subsets =
 120 error counts) is reproduced exactly by this task. Sampling at 0.5 with no
@@ -71,6 +77,16 @@ computed on. The revision pinned for actual use is the current
 (968 → 953: multiarith 171→170, svamp 273→265, gsm8k 274→268), so its scores are
 close to but not identical with the paper's, and upstream publishes no table for
 it. Upstream defaults to the current repo too, with ``--paper-version`` opt-in.
+
+What that replay deliberately does not cover is the model layer, which it stubs
+out. So it was also run live, end-to-end: all five subsets, 953 questions,
+Qwen3-32B over an OpenAI-protocol endpoint, ``temperature=0.5``. Zero pipeline
+failures; 6 errors, of which 5 are ordinary wrong answers with a clean
+``Answer:`` line and the sixth is the budget truncation described above. Nothing
+about a live run can confirm a *published* number — no model upstream evaluated
+is still served anywhere — so the two checks answer different questions: the
+replay pins scoring fidelity, the live run pins that ``max_tokens`` and
+``temperature`` reach the wire and that real completions survive the round trip.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -113,7 +129,11 @@ PLATINUM_REFERENCE_NOTES = (
     "snapshots ran at temperature=1. Not greedy, so upstream runs are not "
     "bit-reproducible either. max_tokens=6000 is applied in infer() (upstream's "
     "default) because a smaller budget truncates CoT before the 'Answer:' line "
-    "and turns correct reasoning into parse errors. "
+    "and turns correct reasoning into parse errors. That budget was sized for "
+    "non-thinking models: on a thinking model raise it, since a live Qwen3-32B "
+    "run spent all 6000 in the reasoning channel on one question and scored the "
+    "empty answer as an error. anomalies.json flags exactly that case as "
+    "truncated_output, which is what separates it from a wrong answer. "
     "Validated: all 120 math error counts of the paper's Table 3 (24 models x 5 "
     "subsets) reproduce exactly, by replaying upstream's own published "
     "inferences (madrylab/platinum-bench-paper-cache) through this pipeline "
@@ -123,7 +143,10 @@ PLATINUM_REFERENCE_NOTES = (
     "no_cot_o1 at temperature 1 for o1-2024-12-17 and o1-preview. The pinned "
     "revision is the current madrylab/platinum-bench, which rejects 15 more math "
     "rows than the paper version (968 -> 953), so its scores are near but not "
-    "equal to the paper's and upstream publishes no table for it."
+    "equal to the paper's and upstream publishes no table for it. The replay stubs "
+    "the model layer, so it was also run live end-to-end (all 5 subsets, 953 "
+    "questions, Qwen3-32B over an OpenAI-protocol endpoint): 0 pipeline "
+    "failures, 6 errors, 5 of them genuine wrong answers."
 )
 
 # `parsing_strategy` value shared by all five subsets this base serves. Asserted

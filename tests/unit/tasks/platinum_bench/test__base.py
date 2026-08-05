@@ -441,3 +441,14 @@ def test_reference_notes_carry_the_validation_record():
     # The pinned revision is NOT the one the paper's numbers are computed on, so a
     # reader comparing against Table 3 has to be told the row counts differ.
     assert "968 -> 953" in PLATINUM_REFERENCE_NOTES
+    # The replay stubs the model layer, so the notes must not let it be read as
+    # end-to-end evidence — the live run is a separate claim.
+    assert "run live end-to-end" in PLATINUM_REFERENCE_NOTES
+
+
+def test_reference_notes_warn_that_the_token_budget_suits_non_thinking_models():
+    # A thinking model can spend all 6000 tokens reasoning and return an empty
+    # answer, which scores as an error indistinguishable from a wrong one unless
+    # the reader is told to check `anomalies.json`. Measured, not theorized.
+    assert "sized for non-thinking models" in PLATINUM_REFERENCE_NOTES
+    assert "truncated_output" in PLATINUM_REFERENCE_NOTES
