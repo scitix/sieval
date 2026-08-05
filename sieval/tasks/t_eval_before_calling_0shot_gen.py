@@ -107,13 +107,20 @@ class TEvalBeforeCallingZeroShotGenTask(
         T-Eval scores a tool call on several CO-EQUAL continuous axes (thought
         similarity, tool-name match, argument precision/recall/F1, parse rate) --
         there is no single published headline, and report() macro-averages each
-        axis independently. So every axis goes in `metrics`, by name, where a
-        generic reader can enumerate them.
+        axis independently. So every axis THIS CONFIGURATION SCORES goes in
+        `metrics`, by name, where a generic reader can enumerate them. Which axes
+        those are comes from `_metric_keys()`; the axes it excludes are absent
+        rather than zero, because `_evaluate` pre-seeds every axis to 0 and a 0 on
+        an axis nobody measured is a hole, not a measurement.
 
         `correct` still has to be one bool. It is defined as the strict reading --
         every axis the evaluator scored came out at 1.0, i.e. the model produced
         exactly the right call -- and it is DERIVED from `metrics` rather than
-        computed separately, so the two cannot disagree. It is deliberately not
+        computed separately, so the two cannot disagree. That derivation is why
+        `metrics` has to exclude the unscored axes: with `eval_thought=False` (the
+        default) a retained `thought: 0.0` would pin `correct` to False on every
+        sample of every run, making the one axis that is comparable across tasks
+        structurally unreachable for this one. It is deliberately not
         `parse_rate`: a task whose `correct` meant "the output parsed" would look
         near-perfect next to every other task on the one axis that is supposed to
         be comparable across them.
@@ -132,7 +139,7 @@ class TEvalBeforeCallingZeroShotGenTask(
         )
         metrics_result = await self._evaluate(resp_data_sample)
         metrics: dict[str, bool | float] = {
-            key: float(value) for key, value in metrics_result.items()
+            key: float(metrics_result[key]) for key in self._metric_keys()
         }
         correct = bool(metrics) and all(value == 1.0 for value in metrics.values())
         return True, build_judgement_record(
@@ -303,11 +310,16 @@ class TEvalBeforeCallingZeroShotGenTask(
             metrics_result["parse_rate"] = 1
         return metrics_result
 
-    def _post_process(self, results_list: list[dict]) -> dict[str, float]:
-        # list of dict to dict of list
-        results = {}
+    def _metric_keys(self) -> list[str]:
+        """The axes this configuration actually scores.
+
+        Single source of truth, shared by `feedback` and `_post_process` so the
+        recorded `metrics`, the derived `correct` and the macro-average cannot
+        disagree about which axes are real. `_evaluate` returns all six axes
+        regardless, pre-seeded to 0, to keep its mapping rectangular.
+        """
         if self._default_prompt_type == "json":
-            metric_keys = [
+            keys = [
                 "thought",
                 "name",
                 "args_precision",
@@ -315,34 +327,43 @@ class TEvalBeforeCallingZeroShotGenTask(
                 "args_f1_score",
                 "parse_rate",
             ]
-        if self._default_prompt_type == "str":
-            if self._eval_type == "reason":
-                metric_keys = ["thought", "parse_rate"]
-            if self._eval_type == "retrieve":
-                metric_keys = ["name", "parse_rate"]
-            if self._eval_type == "understand":
-                metric_keys = [
+        elif self._default_prompt_type == "str":
+            # In str mode only the axis matching `eval_type` is populated -- the
+            # response is one bare field, not a parsed call.
+            keys = {
+                "reason": ["thought", "parse_rate"],
+                "retrieve": ["name", "parse_rate"],
+                "understand": [
                     "args_precision",
                     "args_recall",
                     "args_f1_score",
                     "parse_rate",
-                ]
+                ],
+            }[self._eval_type]
+        else:
+            raise NotImplementedError(
+                "Currently, we only support json and str format, but get "
+                f"{self._default_prompt_type}"
+            )
 
-        # Remove 'thought' from metrics if evaluation is disabled
-        if not self._eval_thought and "thought" in metric_keys:
-            metric_keys.remove("thought")
+        # Thought similarity costs an embedding call, so it is opt-in; when it is
+        # off the axis was not measured at all.
+        if not self._eval_thought and "thought" in keys:
+            keys.remove("thought")
+        return keys
 
-        for key in metric_keys:
+    def _post_process(self, results_list: list[dict]) -> dict[str, float]:
+        # list of dict to dict of list
+        results = {}
+        for key in self._metric_keys():
             results[key] = np.mean([result[key] for result in results_list]) * 100
 
+        # The *_parsed variants are reported in every mode, including the str modes
+        # that never score args at all -- so read defensively rather than assuming
+        # these axes are among the ones recorded.
         success_samples = [r for r in results_list if r.get("parse_rate", 0) == 1]
-        results["args_precision_parsed"] = (
-            np.mean([r["args_precision"] for r in success_samples]) * 100
-        )
-        results["args_recall_parsed"] = (
-            np.mean([r["args_recall"] for r in success_samples]) * 100
-        )
-        results["args_f1_score_parsed"] = (
-            np.mean([r["args_f1_score"] for r in success_samples]) * 100
-        )
+        for key in ("args_precision", "args_recall", "args_f1_score"):
+            results[f"{key}_parsed"] = (
+                np.mean([r.get(key, 0.0) for r in success_samples]) * 100
+            )
         return results
