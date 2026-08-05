@@ -38,7 +38,7 @@ from sieval.core.tasks import (
 from sieval.core.utils.ppl import choice_scores_from_top_logprobs
 from sieval.datasets import ARCEasyDatasetSample
 
-from ._arc import (
+from ._base import (
     DEFAULT_CLP_LOGPROBS,
     DEFAULT_FEWSHOT_SEED,
     arc_judgement_record,

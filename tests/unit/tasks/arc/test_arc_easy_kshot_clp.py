@@ -13,7 +13,7 @@ from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import EvalMode, TaskContext
 from sieval.core.tasks.meta import get_task_meta
 from sieval.datasets.arc_easy import ARCEasyDataset, ARCEasyDatasetSample
-from sieval.tasks.arc_easy_kshot_clp import ARCEasyFewShotClpTask
+from sieval.tasks.arc.arc_easy_kshot_clp import ARCEasyFewShotClpTask
 
 
 class _TopLogprobsGenModel(GenModel):

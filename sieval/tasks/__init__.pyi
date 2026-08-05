@@ -13,16 +13,16 @@ from .aime_2025_0shot_gen import (
 from .aime_2026_0shot_gen import (
     AIME2026ZeroShotGenTask,
 )
-from .arc_challenge_kshot_clp import (
+from .arc.arc_challenge_kshot_clp import (
     ARCChallengeFewShotClpTask,
 )
-from .arc_challenge_kshot_ppl import (
+from .arc.arc_challenge_kshot_ppl import (
     ARCChallengeFewShotPplTask,
 )
-from .arc_easy_kshot_clp import (
+from .arc.arc_easy_kshot_clp import (
     ARCEasyFewShotClpTask,
 )
-from .arc_easy_kshot_ppl import (
+from .arc.arc_easy_kshot_ppl import (
     ARCEasyFewShotPplTask,
 )
 from .browsecomp_0shot_gen import (

@@ -307,12 +307,37 @@ def iter_task_entries() -> Iterator[tuple[type[Task], TaskMeta]]:
         yield _TASK_CLASSES[name], meta
 
 
+def _try_import_task_module(module: str) -> bool:
+    """Import *module*; return False if that module simply does not exist.
+
+    Suppresses only the "no such task module" case. A nested
+    ``ModuleNotFoundError`` (the task module's own ``import`` statement failing)
+    means the user has a real missing dependency — surface it verbatim, or
+    they'll debug a ``KeyError``.
+    """
+    try:
+        importlib.import_module(module)
+    except ModuleNotFoundError as e:
+        if e.name != module:
+            raise
+        return False
+    return True
+
+
 def get_task_class(name: str) -> type[Task]:
     """Return the Task subclass registered under *name*.
 
-    Lazy-imports ``sieval.tasks.{name}`` on miss (decorator convention:
-    one task per eponymous module) to avoid the full ``import_all_tasks()``
-    cost. Raises ``KeyError`` if still unregistered after the import.
+    Lazy-imports the module defining *name* on miss, to avoid the full
+    ``import_all_tasks()`` cost. Raises ``KeyError`` if still unregistered after
+    the import.
+
+    Resolution follows the decorator convention first — one task per eponymous
+    module, ``sieval.tasks.{name}`` — then scans ``sieval.tasks`` subpackages for
+    ``{subpkg}.{name}``, because a benchmark whose variants outgrew a flat layout
+    keeps the eponymous filename inside its subpackage
+    (``sieval.tasks.arc.arc_easy_kshot_ppl``; see ``sieval/tasks/CLAUDE.md``).
+    The scan is one directory listing, paid only on a cache miss for a
+    subpackage-hosted task; flat tasks still resolve in a single import.
 
     After ``load_index()`` the ``_TASK_CLASSES`` cache is empty (the index is
     rebuilt from JSON and doesn't execute decorators), so the first call per
@@ -320,17 +345,15 @@ def get_task_class(name: str) -> type[Task]:
     point lookups (``task show``); if a future caller does this per-row
     across the full registry, call ``import_all_tasks()`` once upfront.
     """
-    if name not in _TASK_CLASSES:
-        expected = f"{_TASKS_PACKAGE}.{name}"
-        try:
-            importlib.import_module(expected)
-        except ModuleNotFoundError as e:
-            # Suppress only the "no such task module" case. A nested
-            # ModuleNotFoundError (task module's own `import` statement
-            # failing) means the user has a real missing dependency —
-            # surface it verbatim, or they'll debug a KeyError.
-            if e.name != expected:
-                raise
+    if name not in _TASK_CLASSES and not _try_import_task_module(
+        f"{_TASKS_PACKAGE}.{name}"
+    ):
+        pkg = importlib.import_module(_TASKS_PACKAGE)
+        for info in pkgutil.iter_modules(pkg.__path__):
+            if info.ispkg and _try_import_task_module(
+                f"{_TASKS_PACKAGE}.{info.name}.{name}"
+            ):
+                break
     return _TASK_CLASSES[name]
 
 

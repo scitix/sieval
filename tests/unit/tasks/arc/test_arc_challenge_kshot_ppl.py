@@ -16,8 +16,8 @@ from sieval.datasets.arc_challenge import (
     ARCChallengeDataset,
     ARCChallengeDatasetSample,
 )
-from sieval.tasks._arc import ARC_UNCOND_CONTEXT, echoed_logprob
-from sieval.tasks.arc_challenge_kshot_ppl import ARCChallengeFewShotPplTask
+from sieval.tasks.arc._base import ARC_UNCOND_CONTEXT, echoed_logprob
+from sieval.tasks.arc.arc_challenge_kshot_ppl import ARCChallengeFewShotPplTask
 
 
 class _ScriptedGenModel(GenModel):

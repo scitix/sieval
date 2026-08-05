@@ -48,7 +48,7 @@ from sieval.core.tasks import (
 )
 from sieval.datasets import ARCEasyDatasetSample
 
-from ._arc import (
+from ._base import (
     ARC_UNCOND_CONTEXT,
     DEFAULT_FEWSHOT_SEED,
     arc_judgement_record,

@@ -41,7 +41,9 @@ each and are unaffected. In prose, `k-shot` (the file-naming genre) and `top-k`
 
 ## Key Rules
 
-- ≥ 5 task files per benchmark → subdirectory with an empty `__init__.py` (lazy loading is handled by the top-level `tasks/__init__.py`). Empty on purpose: nothing imports a task class by name — the registry resolves it through the top-level package — so the subpackage needs no type surface of its own, and leaving it empty keeps exactly one import path per task. Contrast `sieval/datasets/`, whose subpackages do re-export, because tasks import them directly.
+- ≥ 5 files per benchmark → subdirectory with an empty `__init__.py` (lazy loading is handled by the top-level `tasks/__init__.py`). Empty on purpose: nothing imports a task class by name — the registry resolves it through the top-level package — so the subpackage needs no type surface of its own, and leaving it empty keeps exactly one import path per task. Contrast `sieval/datasets/`, whose subpackages do re-export, because tasks import them directly.
+- **The count includes the extracted shared module**, not just the task files: 4 task modules plus a `_base.py` trips it. That is deliberate — a benchmark only grows a shared module once its variants have logic worth reusing, so the shared module *is* the signal that the group has become a unit, and it is the thing a flat layout has nowhere good to put. `arc/` (4 tasks + `_base.py`) is the reference layout.
+- Keep the full task name as the filename inside the subpackage (`arc/arc_easy_kshot_ppl.py`, not `arc/easy_kshot_ppl.py`), so a grep for a registered task name still finds its file. The mildly repetitive import path costs nothing — no caller spells it.
 - Subpackage shared base module: file named `_base.py` (private module), classes inside without underscore prefix (package-internal public API, e.g. `from ._base import XxxTask`).
 - General code-quality + layer rules live in `.claude/rules/tasks.md`.
 

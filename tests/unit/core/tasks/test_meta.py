@@ -211,14 +211,15 @@ def test_clean_registry_fixture_leaves_task_modules_reimportable():
     its keep in a full-suite or multi-file run, where an earlier file has already
     imported a task module.
 
-    Also pins the eponymous-module convention `get_task_class()` depends on
-    (`sieval/core/tasks/meta.py`): every registered name must be reachable as
-    `sieval.tasks.{name}`, or `sieval task list` cannot resolve its class. Note
-    this is deliberately stricter than the lazy export map, which also accepts
-    subpackage-hosted tasks as `"subpkg.module_stem"` (`sieval/tasks/__init__.py`
-    "Subpackage .py modules"). Such a task would import and export fine but be
-    unreachable through `get_task_class()`, so the flat layout is the binding
-    constraint until that lookup learns to walk subpackages.
+    Also pins the eponymous-*filename* convention `get_task_class()` depends on
+    (`sieval/core/tasks/meta.py`): every registered name must be the last segment
+    of some loaded `sieval.tasks.*` module, or that lookup cannot resolve its
+    class. Depth is deliberately not constrained — both `sieval.tasks.{name}` and
+    a subpackage-hosted `sieval.tasks.{subpkg}.{name}` satisfy it, matching what
+    `get_task_class()` resolves and what the lazy export map already accepted
+    (`sieval/tasks/__init__.py` "Subpackage .py modules"). What stays banned is a
+    task whose defining file is named something other than the task, which no
+    amount of walking can find.
     """
     import sys
 
@@ -234,11 +235,14 @@ def test_clean_registry_fixture_leaves_task_modules_reimportable():
     assert tasks, "shipped index is non-empty"
     missing = {t.name for t in tasks} - set(TASK_REGISTRY)
     assert not missing, f"indexed tasks left unregistered: {sorted(missing)}"
-    off_convention = [
-        name for name in TASK_REGISTRY if f"sieval.tasks.{name}" not in sys.modules
-    ]
+    loaded_stems = {
+        module.rpartition(".")[2]
+        for module in sys.modules
+        if module.startswith("sieval.tasks.")
+    }
+    off_convention = sorted(set(TASK_REGISTRY) - loaded_stems)
     assert not off_convention, (
-        f"tasks not defined in an eponymous module: {sorted(off_convention)}"
+        f"tasks not defined in an eponymous module: {off_convention}"
     )
 
 
@@ -937,8 +941,59 @@ def test_get_task_class_lazy_imports_unregistered_module(tmp_path):
         sieval.tasks.__dict__.pop(name, None)
 
 
+def test_get_task_class_lazy_imports_subpackage_hosted_module(tmp_path):
+    """A benchmark that outgrew a flat layout keeps the eponymous filename inside
+    its subpackage (`sieval/tasks/CLAUDE.md`, `arc/`), so the lookup must fall
+    back to scanning subpackages for `{subpkg}.{name}`. Without that fallback the
+    module exists and imports fine but `get_task_class()` raises KeyError, taking
+    `sieval task show` and by-name task resolution down with it.
+    """
+    import sys
+
+    import sieval.tasks
+    from sieval.core.tasks.meta import TASK_REGISTRY, get_task_class
+
+    subpkg, name = "pkg_for_test", "nested_task_for_test"
+    (tmp_path / subpkg).mkdir()
+    (tmp_path / subpkg / "__init__.py").write_text("")
+    (tmp_path / subpkg / f"{name}.py").write_text(
+        "from sieval.core.tasks.meta import EvalMode, sieval_task\n"
+        f"from {__name__} import _StubTask\n"
+        "\n"
+        "\n"
+        "@sieval_task(\n"
+        f'    name="{name}",\n'
+        '    display_name="Nested",\n'
+        '    description="subpackage-hosted lazy-import target",\n'
+        "    eval_mode=EvalMode.GEN,\n"
+        ")\n"
+        "class NestedForTestTask(_StubTask):\n"
+        "    pass\n"
+    )
+    sieval.tasks.__path__.insert(0, str(tmp_path))
+    try:
+        assert name not in TASK_REGISTRY  # only the import can register it
+        # The flat path must genuinely miss first, or this proves nothing.
+        assert not (tmp_path / f"{name}.py").exists()
+        cls = get_task_class(name)
+        assert cls.__name__ == "NestedForTestTask"
+        assert TASK_REGISTRY[name].display_name == "Nested"
+    finally:
+        sieval.tasks.__path__.remove(str(tmp_path))
+        sys.modules.pop(f"sieval.tasks.{subpkg}.{name}", None)
+        sys.modules.pop(f"sieval.tasks.{subpkg}", None)
+        # The successful import also bound the submodule on the package; drop it
+        # so nothing outside this test can reach a module whose file is gone.
+        sieval.tasks.__dict__.pop(subpkg, None)
+
+
 def test_get_task_class_raises_key_error_on_unknown_name():
-    """Unregistered names raise KeyError — a programmer-error signal."""
+    """Unregistered names raise KeyError — a programmer-error signal.
+
+    Also covers the exhausted-scan path: neither the flat module nor any
+    subpackage hosts the name, and the lookup still ends in KeyError rather than
+    leaking a ModuleNotFoundError from the last candidate it tried.
+    """
     import pytest
 
     from sieval.core.tasks.meta import get_task_class

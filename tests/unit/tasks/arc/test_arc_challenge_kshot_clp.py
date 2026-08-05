@@ -16,7 +16,7 @@ from sieval.datasets.arc_challenge import (
     ARCChallengeDataset,
     ARCChallengeDatasetSample,
 )
-from sieval.tasks.arc_challenge_kshot_clp import ARCChallengeFewShotClpTask
+from sieval.tasks.arc.arc_challenge_kshot_clp import ARCChallengeFewShotClpTask
 
 
 class _TopLogprobsGenModel(GenModel):

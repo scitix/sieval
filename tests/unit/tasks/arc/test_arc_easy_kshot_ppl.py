@@ -13,8 +13,8 @@ from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import EvalMode, TaskContext
 from sieval.core.tasks.meta import get_task_meta
 from sieval.datasets.arc_easy import ARCEasyDataset, ARCEasyDatasetSample
-from sieval.tasks._arc import ARC_UNCOND_CONTEXT
-from sieval.tasks.arc_easy_kshot_ppl import ARCEasyFewShotPplTask
+from sieval.tasks.arc._base import ARC_UNCOND_CONTEXT
+from sieval.tasks.arc.arc_easy_kshot_ppl import ARCEasyFewShotPplTask
 
 
 class _ScriptedGenModel(GenModel):

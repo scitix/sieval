@@ -716,8 +716,8 @@ class TestCheckRelativeScope:
         # `from ._base import X` is the legal same-package pattern.
         f = self._write(
             tmp_path,
-            "sieval/tasks/arc_easy_kshot_ppl.py",
-            "from ._arc import echoed_logprob\n",
+            "sieval/tasks/arc/arc_easy_kshot_ppl.py",
+            "from ._base import echoed_logprob\n",
         )
         assert _check_relative_scope(f, ast.parse(f.read_text())) == []
 
@@ -808,8 +808,8 @@ class TestCheckFileRelativeScopeIntegration:
     def test_level_1_relative_import_stays_clean(self, tmp_path: Path):
         f = self._write(
             tmp_path,
-            "sieval/tasks/arc_easy_kshot_ppl.py",
-            "from ._arc import echoed_logprob\n",
+            "sieval/tasks/arc/arc_easy_kshot_ppl.py",
+            "from ._base import echoed_logprob\n",
         )
         assert _check_file(f) == []
 
@@ -818,7 +818,7 @@ class TestCheckFileRelativeScopeIntegration:
         f = self._write(
             tmp_path,
             "sieval/tasks/foo.py",
-            "from ._arc import _helper\n",
+            "from ._base import _helper\n",
         )
         assert _check_file(f) == []
 
