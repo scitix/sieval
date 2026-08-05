@@ -30,6 +30,26 @@
 # reproduces MathArena's own recorded verdicts to a mean of -0.8 pp across 85
 # (model, benchmark) cells, because sieval deliberately does not vendor
 # upstream's `normalize_string`. See each task's reference_impl.notes.
+#
+# ---- Long responses and failed samples --------------------------------------
+# sieval asks for all `n` rollouts in ONE request, where matharena issues `n`
+# separate ones. With a reasoning model the single response is n x longer, and a
+# gateway that drops a long stream mid-body fails the whole sample: httpx raises
+# `RemoteProtocolError: peer closed connection without sending complete message
+# body`, which the OpenAI client's `max_retries` CANNOT retry (it only covers
+# failures before the body starts). Only `max_iterations` recovers.
+#
+# Measured on gpt-oss-120b (reasoning_effort=high), failure rate tracked response
+# length: 0/30 and 0/53 failed at ~17-21k output tok/sample, 3/40 at ~29k, and
+# 6/12 at Apex's n=16 (~679k tok/sample). If you see failures, lower `n` or split
+# the run rather than assuming the port is broken.
+#
+# A FAILED SAMPLE SCORES 0, IT DOES NOT ABSTAIN — `report()` keeps it in the
+# denominator. Always read `fails` in report.json before comparing `score` to a
+# published number, and if it is non-zero, recompute over the completed problems
+# and compare against the official number on that same subset. Apex above
+# reported 0.5 against an official 1.0 purely because 6 samples died; on the 6
+# problems that completed it matched exactly.
 # ------------------------------------------------------------------------------
 result_dir: ./outputs/leaderboard-matharena
 
