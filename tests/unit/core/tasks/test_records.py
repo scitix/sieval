@@ -328,4 +328,14 @@ class TestIterGraderOutputs:
         assert iter_grader_outputs(build_prediction_record(["x"])) == []
         assert iter_grader_outputs("some text") == []
         assert iter_grader_outputs(None) == []
-        assert iter_grader_outputs({"rollouts": "not a list"}) == []
+
+    def test_judgement_whose_rollouts_are_not_mappings_is_empty(self):
+        """A malformed `rollouts` must be walked past, not indexed into.
+
+        `n_rollouts` is load-bearing in this fixture: without it the value is not
+        a judgement at all, the walk returns at the first guard, and the
+        per-rollout check this covers is never reached. A string is the sneaky
+        case -- iterable, so it yields characters rather than raising, and
+        dropping the guard turns those into `"n".get("extra")`.
+        """
+        assert iter_grader_outputs({"n_rollouts": 1, "rollouts": "not a list"}) == []

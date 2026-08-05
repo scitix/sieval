@@ -36,7 +36,7 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Any, NotRequired, TypedDict
+from typing import NotRequired, TypedDict, TypeGuard
 
 from sieval.core.types import JSONValue
 
@@ -270,7 +270,7 @@ def build_judgement_record(
 GRADER_OUTPUT_KEY = "grader_output"
 
 
-def iter_grader_outputs(value: Any) -> list[Mapping]:
+def iter_grader_outputs(value: object) -> list[Mapping]:
     """Every grader ``ModelOutput`` recorded on a judgement record, in order.
 
     A judged rollout carries the grader's flattened output under
@@ -293,7 +293,7 @@ def iter_grader_outputs(value: Any) -> list[Mapping]:
     return outputs
 
 
-def is_prediction_record(value: Any) -> bool:
+def is_prediction_record(value: object) -> TypeGuard[Mapping]:
     """Whether *value* is a postprocess-stage protocol record.
 
     The place the legacy-vs-protocol distinction is decided, for both in-memory
@@ -303,17 +303,24 @@ def is_prediction_record(value: Any) -> bool:
     Both record kinds carry ``rollouts``; only a judgement carries the
     materialized ``n_rollouts``, so its absence is what distinguishes a
     prediction from a judgement rather than merely from a legacy shape.
+
+    Narrows to ``Mapping`` -- deliberately a ``TypeGuard`` and not a ``TypeIs``:
+    a mapping that is *not* a record still fails this check, so the negative
+    branch says nothing about the value's type.
     """
     return (
         isinstance(value, Mapping) and "rollouts" in value and "n_rollouts" not in value
     )
 
 
-def is_judgement_record(value: Any) -> bool:
+def is_judgement_record(value: object) -> TypeGuard[Mapping]:
     """Whether *value* is a feedback-stage protocol record.
 
     Keys on ``n_rollouts``, which :func:`build_judgement_record` always
     materializes (even for zero rollouts) and a prediction never has -- so this
     genuinely tells a judgement from a prediction, not just from a legacy shape.
+
+    Narrows to ``Mapping``; see :func:`is_prediction_record` for why that is a
+    ``TypeGuard`` rather than a ``TypeIs``.
     """
     return isinstance(value, Mapping) and "n_rollouts" in value
