@@ -13,6 +13,24 @@ File: `<task>_<N>shot_<mode>.py` — suffix determines `model_type`:
 
 Class: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `FewShot`).
 
+### Constructor knobs: `n_shot` vs `k`
+
+Two counts that read alike and are not interchangeable. Enforced by
+`scripts/check_preflight.py --check check_task_shot_knobs`:
+
+- **`n_shot`** — the few-shot exemplar count. The only accepted spelling (not
+  `k`, `shots`, `num_shots`, `fewshot`, …). A task taking it **must** assign
+  `self.n_shot_used` in `__init__`, from the value it stores so constructor-side
+  normalisation is respected — that attribute is what `meta.json` records as the
+  count the run actually used, and a task that skips it silently persists the
+  declared `@sieval_task(n_shot=...)` default instead.
+- **`k`** — the `pass@k` rollout count, nothing else. A task taking `k` must
+  compute a `pass@k` metric, and `n_shot_used` may never be fed from it.
+
+`fewshot_split` / `fewshot_seed` / `fewshot_as_multiturn` name a different noun
+each and are unaffected. In prose, `k-shot` (the file-naming genre) and `top-k`
+(logprobs breadth) are unrelated to either knob.
+
 ### `ppl` vs `clp`
 
 - `ppl` — pick the answer whose full `context + candidate` has the highest
