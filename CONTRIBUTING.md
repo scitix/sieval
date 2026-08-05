@@ -69,7 +69,9 @@ Preflight compares your lock against its baseline and fails on version changes n
 python scripts/check_preflight.py --check check_deps
 ```
 
-If a package genuinely needs a newer version, raise its specifier in `pyproject.toml` in the same commit. That makes the bump reviewable, and it is what the check accepts as justification — along with a newly requested extra and a changed `requires-python`. The last one re-resolves everything, so the check cannot attribute those moves: it lists them as needing manual review rather than passing them silently.
+The question it asks of each moved package is whether a `--update-reuse` re-lock could have kept the old pin. If something that did not itself move now forbids the old version — a specifier you raised, or a new dependency's own requirement — the move was forced and passes. If the old pin would still have been valid, nothing asked for the move and it fails.
+
+So if a package genuinely needs a newer version, raise its specifier in `pyproject.toml` in the same commit: that both makes the bump reviewable and is what the check accepts. A changed `requires-python` is the exception — it re-resolves everything, so the check cannot attribute those moves and lists them as needing manual review rather than passing them silently.
 
 ## Testing
 

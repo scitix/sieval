@@ -288,76 +288,65 @@ def _parse_lock(text: str) -> tuple[dict[str, str], dict[str, list[str]]]:
     return {name: "/".join(sorted(v)) for name, v in found.items()}, edges
 
 
-def _declared_requirements(pyproject: dict) -> dict[str, tuple[set[str], set[str]]]:
-    """Canonical package name → (version specifiers, extras) declared for it,
-    across ``project.dependencies``, every optional-dependency group, and every
-    PEP 735 dependency group."""
+def _declared_entries(pyproject: dict) -> list[str]:
+    """Every requirement string declared in ``pyproject.toml``, across
+    ``project.dependencies``, each optional-dependency group, and each PEP 735
+    dependency group (whose members may be ``{include-group = "..."}`` tables
+    rather than strings)."""
     project = pyproject.get("project", {})
     entries: list[object] = list(project.get("dependencies", []))
     for deps in project.get("optional-dependencies", {}).values():
         entries.extend(deps)
     for deps in pyproject.get("dependency-groups", {}).values():
-        # PEP 735 members may be ``{include-group = "..."}`` tables, not strings.
         entries.extend(deps)
+    return [entry for entry in entries if isinstance(entry, str)]
 
-    out: dict[str, tuple[set[str], set[str]]] = {}
-    for entry in entries:
-        if not isinstance(entry, str):
-            continue
-        try:
-            req = Requirement(entry)
-        except InvalidRequirement:
-            continue
-        specifiers, extras = out.setdefault(canonicalize_name(req.name), (set(), set()))
-        specifiers.add(str(req.specifier))
-        extras.update(req.extras)
+
+def _imposed_specifiers(
+    edges: dict[str, list[str]], pyproject: dict, trusted: set[str]
+) -> dict[str, list[str]]:
+    """Canonical package name → every version specifier imposed on it by
+    ``pyproject.toml`` and by the lock entries named in *trusted*.
+
+    Only entries that did not themselves move are trustworthy. A bare re-lock
+    shifts the whole graph at once, and a package that moved for no reason will
+    then happily "require" the new version of everything beneath it — so
+    trusting a moved entry lets a drift justify itself. Measured on the one real
+    incident: trusting every entry excused 13 of 71 moves; trusting only the
+    unmoved ones excused none.
+
+    Markers are ignored: pdm resolves one lock for the whole interpreter range,
+    so a marker-gated edge it chose to record is part of that resolution.
+    """
+    out: dict[str, list[str]] = {}
+    groups = [_declared_entries(pyproject)]
+    groups.extend(deps for name, deps in edges.items() if name in trusted)
+    for group in groups:
+        for entry in group:
+            try:
+                req = Requirement(entry)
+            except InvalidRequirement:
+                continue
+            out.setdefault(canonicalize_name(req.name), []).append(str(req.specifier))
     return out
 
 
-def _forced_roots(
-    base_versions: dict[str, str], base_pyproject: dict, cand_pyproject: dict
-) -> set[str]:
-    """Requirements whose declaration changed in a way the locked version cannot
-    absorb — the only bumps a re-lock is allowed to make: a specifier the locked
-    version now violates, or a newly requested extra (a new edge into the graph,
-    so new constraints). A declaration merely *added* while its locked version
-    still satisfies it (``numpy<=2.2`` over a locked ``2.2.0``) forces nothing,
-    and dropping one removes packages rather than moving the survivors.
-    """
-    base_declared = _declared_requirements(base_pyproject)
-    cand_declared = _declared_requirements(cand_pyproject)
-
-    roots: set[str] = set()
-    for name, declared in cand_declared.items():
-        if declared == base_declared.get(name):
-            continue
-        specifiers, extras = declared
-        base_extras = base_declared.get(name, (set(), set()))[1]
-        if extras - base_extras:
-            roots.add(name)
-            continue
-        locked = base_versions.get(name)
-        if locked is None:
-            roots.add(name)  # newly declared: not drift, but its subtree may be
-            continue
+def _satisfies(version: str, specifiers: list[str]) -> bool:
+    """Whether *version* meets every specifier in *specifiers*. A multi-entry
+    node (``"2.2.0/2.3.0"``, see `_parse_lock`) must meet them at every version:
+    one entry violating a specifier is enough to make the node untenable."""
+    try:
+        versions = [Version(v) for v in version.split("/")]
+    except InvalidVersion:
+        return False
+    for spec in specifiers:
         try:
-            # `_parse_lock` joins a multi-entry node's versions; a specifier one
-            # of them violates still forces a move, so all of them must fit.
-            versions = [Version(v) for v in locked.split("/")]
-        except InvalidVersion:
-            roots.add(name)
-            continue
-        for spec in specifiers:
-            try:
-                allowed = SpecifierSet(spec, prereleases=True)
-            except InvalidSpecifier:
-                satisfied = False
-            else:
-                satisfied = all(v in allowed for v in versions)
-            if not satisfied:
-                roots.add(name)
-                break
-    return roots
+            allowed = SpecifierSet(spec, prereleases=True)
+        except InvalidSpecifier:
+            return False
+        if not all(v in allowed for v in versions):
+            return False
+    return True
 
 
 def lock_drift(
@@ -365,16 +354,20 @@ def lock_drift(
 ) -> LockDrift:
     """Classify every version change between two ``pdm.lock`` snapshots.
 
-    A change to an already-locked package is *justified* only if the package is
-    reachable, over the candidate lock's own dependency edges, from a declaration
-    `_forced_roots` accepts. Everything else is collateral from a bare
-    ``pdm lock``: versions nothing asked for, with no review trail.
+    A change to an already-locked package is *justified* only if the old version
+    violates a specifier that something which did **not** move imposes on it —
+    that is, only if a ``--update-reuse`` re-lock could not have kept the old
+    pin. Everything else is collateral from a bare ``pdm lock``: versions nothing
+    asked for, with no review trail.
 
-    Two deliberate gaps. Reachability is *forward* only, so a resolver that
-    backtracks onto a forced root's **parent** reports the parent as
-    unjustified — declaring that parent's floor turns it into a root and is the
-    honest diff anyway. And a genuinely new requirement excuses its whole
-    subtree, since the lock holds no prior opinion to compare against.
+    Asking whether the old pin *could* have survived, rather than which
+    declaration changed, is what stops a new requirement from excusing packages
+    it never constrained — being reachable from one is not justification.
+
+    One deliberate gap: a package raised only because something below it needed a
+    higher floor has nothing imposing that floor on it, so it reads as
+    unjustified. Declaring its floor in ``pyproject.toml`` is both the fix and
+    the honest diff.
     """
     base_versions, _ = _parse_lock(base_lock)
     cand_versions, cand_edges = _parse_lock(cand_lock)
@@ -403,24 +396,10 @@ def lock_drift(
         report.justified = [entries[name] for name in sorted(entries)]
         return report
 
-    # Blast radius of a forced bump: its own subtree, nothing else.
-    justified: set[str] = set()
-    stack = list(_forced_roots(base_versions, base_proj, cand_proj))
-    while stack:
-        name = stack.pop()
-        if name in justified:
-            continue
-        justified.add(name)
-        for edge in cand_edges.get(name, []):
-            try:
-                dep = canonicalize_name(Requirement(edge).name)
-            except InvalidRequirement:
-                continue
-            if dep not in justified:
-                stack.append(dep)
-
+    imposed = _imposed_specifiers(cand_edges, cand_proj, set(cand_edges) - set(drift))
     for name in sorted(entries):
-        bucket = report.justified if name in justified else report.unjustified
+        forced = not _satisfies(base_versions[name], imposed.get(name, []))
+        bucket = report.justified if forced else report.unjustified
         bucket.append(entries[name])
     return report
 

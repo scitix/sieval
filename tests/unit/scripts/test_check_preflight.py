@@ -738,8 +738,11 @@ class TestLockDrift:
         )
         assert report.unjustified == ["numpy 2.2.0 -> 2.1.0"]
 
-    def test_subtree_of_a_new_requirement_is_justified(self):
-        """A genuinely new dependency may drag the packages it depends on."""
+    def test_a_new_requirement_excuses_only_what_it_actually_forces(self):
+        """The real d805418a case: RULER's new `tiktoken` needed `regex`, but the
+        locked regex already satisfied `regex>=2022.1.18`, so tiktoken cannot be
+        the reason it moved. Being merely reachable from a new dependency is not
+        justification — only an unsatisfiable pin is."""
         report = lock_drift(
             _lock({"regex": "2025.11.3", "unrelated": "1.0.0"}),
             _lock(
@@ -749,8 +752,55 @@ class TestLockDrift:
             _pyproject(["httpx>=0.28"]),
             _pyproject(["httpx>=0.28", "tiktoken>=0.8.0"]),
         )
+        assert report.justified == []
+        assert report.unjustified == [
+            "regex 2025.11.3 -> 2026.7.10",
+            "unrelated 1.0.0 -> 2.0.0",
+        ]
+
+    def test_a_new_requirement_that_outruns_the_locked_version_is_justified(self):
+        """Same shape, but now the new dependency needs a regex the lock predates,
+        so the move really was forced."""
+        report = lock_drift(
+            _lock({"regex": "2025.11.3"}),
+            _lock(
+                {"tiktoken": "0.8.0", "regex": "2026.7.10"},
+                edges={"tiktoken": ["regex>=2026.1.1"]},
+            ),
+            _pyproject(["httpx>=0.28"]),
+            _pyproject(["httpx>=0.28", "tiktoken>=0.8.0"]),
+        )
         assert report.justified == ["regex 2025.11.3 -> 2026.7.10"]
-        assert report.unjustified == ["unrelated 1.0.0 -> 2.0.0"]
+        assert report.unjustified == []
+
+    def test_a_parent_raised_for_its_child_reads_as_unjustified(self):
+        """Documented gap. Raising `lib`'s floor forces `app` up too, because the
+        old app pinned `lib<2` — but nothing imposes a floor on `app` itself, so
+        it cannot be told apart from a gratuitous bump. Declaring `app`'s floor is
+        the fix, and it puts the reason in the diff."""
+        report = lock_drift(
+            _lock({"app": "1.0.0", "lib": "1.0.0"}, edges={"app": ["lib<2"]}),
+            _lock({"app": "2.0.0", "lib": "2.0.0"}, edges={"app": ["lib<3"]}),
+            _pyproject(["app>=1.0", "lib>=1.0"]),
+            _pyproject(["app>=1.0", "lib>=2.0"]),
+        )
+        assert report.justified == ["lib 1.0.0 -> 2.0.0"]
+        assert report.unjustified == ["app 1.0.0 -> 2.0.0"]
+
+    def test_a_moved_package_cannot_justify_the_packages_below_it(self):
+        """Why only unmoved entries are trusted. `top` drifted for no reason, and
+        the version it landed on requires a newer `dep`. If `top`'s own edge were
+        trusted, its unjustified move would silently excuse `dep` as well — the
+        mechanism that let 13 of d805418a's 71 moves excuse themselves."""
+        proj = _pyproject(["top>=1.0"])
+        report = lock_drift(
+            _lock({"top": "1.0.0", "dep": "1.0.0"}, edges={"top": ["dep>=1.0"]}),
+            _lock({"top": "2.0.0", "dep": "2.0.0"}, edges={"top": ["dep>=2.0"]}),
+            proj,
+            proj,
+        )
+        assert report.justified == []
+        assert report.unjustified == ["dep 1.0.0 -> 2.0.0", "top 1.0.0 -> 2.0.0"]
 
     def test_newly_requested_extra_justifies_its_pin(self):
         """`math-verify[antlr4_11_0]` pins antlr *down*; the specifier on
@@ -839,16 +889,19 @@ class TestLockDrift:
 
     def test_extras_variants_of_one_package_share_a_node(self):
         """``coverage`` and ``coverage[toml]`` are two lock entries at one
-        version; their edges must merge instead of shadowing each other."""
+        version, and only the extras one carries the ``tomli`` edge. If the plain
+        entry shadowed it, that constraint would go unseen and tomli's forced
+        move would read as unjustified."""
         proj_before = _pyproject(["httpx>=0.28"])
         proj_after = _pyproject(["httpx>=0.28", "coverage>=7"])
         cand = (
             _lock({"coverage": "7.15.2", "tomli": "2.3.0"})
             + '\n[[package]]\nname = "coverage"\nversion = "7.15.2"\n'
-            + 'extras = ["toml"]\ndependencies = ["tomli>=1.1"]\n'
+            + 'extras = ["toml"]\ndependencies = ["tomli>=2.1"]\n'
         )
         report = lock_drift(_lock({"tomli": "2.0.0"}), cand, proj_before, proj_after)
         assert report.justified == ["tomli 2.0.0 -> 2.3.0"]
+        assert report.unjustified == []
 
     def test_declaration_dropped_does_not_excuse_survivors(self):
         report = lock_drift(
