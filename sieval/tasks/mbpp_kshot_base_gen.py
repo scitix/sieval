@@ -266,7 +266,8 @@ class MBPPFewShotBaseGenTask(
             timeouts += sum(
                 1
                 for r in judgement["rollouts"]
-                if "timeout" in r["extra"]["msg"].lower()
+                # A null msg from the evaluator is absent on disk -- default it.
+                if "timeout" in (r["extra"].get("msg") or "").lower()
             )
 
         pass_at_1 = pass_at_1_total * 100 / total
