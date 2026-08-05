@@ -79,7 +79,11 @@ class TestMetricKeys:
             "parse_rate",
         ]
 
-    def test_thought_is_scored_when_enabled(self):
+    def test_thought_is_scored_when_enabled(self, monkeypatch):
+        # Enabling the axis builds the embedding client in `__init__`, and the
+        # OpenAI client refuses to construct on an empty key -- so the axis is not
+        # configurable without one. Nothing is called here; only `_metric_keys`.
+        monkeypatch.setenv("SIEVAL_EMBED_API_KEY", "not-a-real-key")
         assert _task(eval_thought=True)._metric_keys() == [
             "thought",
             "name",
