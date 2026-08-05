@@ -24,8 +24,10 @@ Two counts that read alike and are not interchangeable. Enforced by
   normalisation is respected: that attribute is what `meta.json` records as the
   count the run used, and skipping it persists the declared
   `@sieval_task(n_shot=...)` default instead.
-- **`k`** — the `pass@k` rollout count, nothing else. A task taking `k` must
-  compute a `pass@k` metric, and `n_shot_used` may never be fed from it.
+- **`k`** — the `k` in `pass@k`, nothing else: the metric's parameter, **not**
+  the sampling budget. That is `n`, forwarded to `agenerate(n=...)`, and
+  `k <= n` — `pass@k` is estimated from `n` samples per problem. A task taking
+  `k` must compute a `pass@k` metric, and `n_shot_used` may never be fed from it.
 
 The `n_shot` rules bind **every constructor under `sieval/tasks/`**, including an
 undecorated shared base in a subpackage (`arc/_base.py`) — a decorated task can

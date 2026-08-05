@@ -900,10 +900,11 @@ class PreflightRunner:
 
         1. a shot-count parameter is spelled ``n_shot``, nothing else;
         2. a constructor accepting ``n_shot`` assigns ``self.n_shot_used``;
-        3. ``k`` is a pass@k rollout count in every task that takes one, so a
-           task accepting ``k`` must compute a pass@k metric, and
-           ``n_shot_used`` may never be fed from it. This is what stops ``k``
-           from re-acquiring a second meaning.
+        3. ``k`` is the ``k`` in ``pass@k`` in every task that takes one — the
+           metric's parameter, not the sampling budget (that is ``n``, and
+           ``k <= n``) — so a task accepting ``k`` must compute a pass@k
+           metric, and ``n_shot_used`` may never be fed from it. This is what
+           stops ``k`` from re-acquiring a second meaning.
 
         Rules 1 and 2 bind *every* constructor under ``sieval/tasks/``, not only
         the decorated classes — see :func:`_classes_with_own_init`. Rule 3 reads
@@ -962,7 +963,7 @@ class PreflightRunner:
                     if names & {"k", "_k"}:
                         violations.append(
                             f"{where}: feeds self.n_shot_used from 'k', which "
-                            "is the pass@k rollout count, not a shot count"
+                            "is the k in pass@k, not a shot count"
                         )
 
                 if (
@@ -972,7 +973,7 @@ class PreflightRunner:
                 ):
                     violations.append(
                         f"{where}: takes 'k' but computes no pass@k metric; "
-                        "'k' is reserved for pass@k rollout counts — spell a "
+                        "'k' is reserved for the k in pass@k — spell a "
                         "few-shot knob 'n_shot'"
                     )
 

@@ -1510,7 +1510,7 @@ class TestCheckTaskShotKnobs:
         )
         assert r.status == "PASS"
 
-    # --- rule 3: `k` is the pass@k rollout count ---------------------------
+    # --- rule 3: `k` is the k in pass@k, not the sampling budget `n` --------
 
     def test_k_with_pass_at_k_metric_passes(self, tmp_path: Path):
         r = self._run(
@@ -1598,7 +1598,7 @@ class TestCheckTaskShotKnobs:
             "        return {f'pass@{self._k}': 1.0}\n",
         )
         assert r.status == "FAIL"
-        assert any("pass@k rollout count, not a shot count" in d for d in r.details)
+        assert any("the k in pass@k, not a shot count" in d for d in r.details)
 
     # --- scope -------------------------------------------------------------
 

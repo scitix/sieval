@@ -106,8 +106,9 @@ class Task[
     correct for a knobless task with no code of its own; ``0`` would instead
     turn a forgotten assignment into a wrong value, so do not default to it.
     Never infer it from an attribute name either — ``self._k`` is a shot count
-    in the ``*_kshot_*`` tasks but the ``pass@k`` rollout count in several
-    ``*_0shot_*`` ones.
+    in the ``*_kshot_*`` tasks but the ``k`` in ``pass@k`` in several
+    ``*_0shot_*`` ones (the metric's parameter; their sampling budget is
+    ``self._n``).
     """
 
     def make_context(
