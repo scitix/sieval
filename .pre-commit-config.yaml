@@ -61,8 +61,9 @@ repos:
         name: check pdm.lock for unrequested version drift
         entry: python scripts/check_preflight.py --check check_deps
         language: python
-        # Only this one preflight check runs here, and it needs no sieval
-        # import — just the lock, pyproject, and PEP 440 comparison.
+        # Runs the whole check_deps group, which at quick level is pure file
+        # reads plus PEP 440 comparison — no sieval import. Anything added to
+        # that group must stay import-light or this isolated env breaks.
         additional_dependencies: ["packaging>=21.0"]
         files: ^(pdm\.lock|pyproject\.toml)$
         pass_filenames: false

@@ -96,8 +96,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # Preflight's lock-drift check needs the merge base with main to know
-          # which versions this branch moved; a shallow clone has no baseline
-          # and would skip the check instead of running it.
+          # which versions this branch moved; a shallow clone would skip it.
           fetch-depth: 0
       - uses: pdm-project/setup-pdm@v4
         with:

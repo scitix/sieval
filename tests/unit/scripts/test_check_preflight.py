@@ -707,7 +707,7 @@ class TestLockDrift:
         report = lock_drift(lock, lock, proj, proj)
         assert report.unjustified == []
         assert report.justified == []
-        assert report.python_floor_changed is False
+        assert report.requires_python_changed is False
 
     def test_bump_with_no_requirement_change_is_unjustified(self):
         proj = _pyproject(["foo>=1.0"])
@@ -767,16 +767,64 @@ class TestLockDrift:
         assert report.justified == ["antlr4-python3-runtime 4.13.2 -> 4.11.0"]
         assert report.unjustified == []
 
-    def test_changed_python_floor_leaves_drift_unaudited(self):
+    def test_changed_requires_python_leaves_drift_unaudited(self):
         report = lock_drift(
             _lock({"foo": "1.0.0"}),
             _lock({"foo": "2.0.0"}),
             _pyproject(["foo>=1.0"], requires_python=">=3.12"),
             _pyproject(["foo>=1.0"], requires_python=">=3.13"),
         )
-        assert report.python_floor_changed is True
+        assert report.requires_python_changed is True
         assert report.justified == ["foo 1.0.0 -> 2.0.0"]
         assert report.unjustified == []
+
+    def test_a_moved_ceiling_also_leaves_drift_unaudited(self):
+        """Widening the ceiling demands support for a Python no locked version
+        had to cover, so it re-resolves just as a raised floor does."""
+        report = lock_drift(
+            _lock({"foo": "1.0.0"}),
+            _lock({"foo": "2.0.0"}),
+            _pyproject(["foo>=1.0"], requires_python=">=3.12,<3.15"),
+            _pyproject(["foo>=1.0"], requires_python=">=3.12,<3.16"),
+        )
+        assert report.requires_python_changed is True
+        assert report.unjustified == []
+
+    def test_entries_disagreeing_on_version_join_instead_of_shadowing(self):
+        """A multi-target lock can hold one name at two versions. Taking the
+        first entry would miss a move confined to the second."""
+        proj = _pyproject(["numpy>=2.0"])
+        split = '\n[[package]]\nname = "numpy"\nversion = "%s"\n'
+        base = _lock({"numpy": "2.2.0"}) + split % "2.3.0"
+        cand = _lock({"numpy": "2.2.0"}) + split % "2.9.9"
+        report = lock_drift(base, cand, proj, proj)
+        assert report.unjustified == ["numpy 2.2.0/2.3.0 -> 2.2.0/2.9.9"]
+
+    def test_a_specifier_one_entry_violates_forces_the_whole_node(self):
+        """`numpy<=2.2` leaves the 2.2.0 entry alone but not the 2.3.0 one, so
+        it does force a move — checking a single entry would miss that."""
+        split = '\n[[package]]\nname = "numpy"\nversion = "%s"\n'
+        report = lock_drift(
+            _lock({"numpy": "2.2.0"}) + split % "2.3.0",
+            _lock({"numpy": "2.1.0"}) + split % "2.2.0",
+            _pyproject(["numpy>=2.0"]),
+            _pyproject(["numpy>=2.0", "numpy<=2.2"]),
+        )
+        assert report.justified == ["numpy 2.2.0/2.3.0 -> 2.1.0/2.2.0"]
+        assert report.unjustified == []
+
+    def test_reordered_entries_are_not_drift(self):
+        """Same versions, different entry order: sorting keeps it unchanged."""
+        proj = _pyproject(["numpy>=2.0"])
+        split = '\n[[package]]\nname = "numpy"\nversion = "%s"\n'
+        report = lock_drift(
+            _lock({"numpy": "2.2.0"}) + split % "2.3.0",
+            _lock({"numpy": "2.3.0"}) + split % "2.2.0",
+            proj,
+            proj,
+        )
+        assert report.unjustified == []
+        assert report.justified == []
 
     def test_added_and_removed_packages_are_not_drift(self):
         proj = _pyproject(["foo>=1.0"])
@@ -934,6 +982,49 @@ class TestLockDriftBaseline:
         assert results[0].status == "FAIL"
         assert "30 locked package(s) drifted" in results[0].message
         assert any(d == "... and 10 more" for d in results[0].details)
+
+    def test_requires_python_change_lists_what_it_excused(self, tmp_path: Path):
+        """The one path that excuses drift wholesale still has to name the
+        moves — a bare count would let any number of them through unread."""
+        self._write_tree(
+            tmp_path,
+            _lock({"foo": "2.0.0"}),
+            _pyproject(["foo>=1.0"], requires_python=">=3.13"),
+        )
+        runner = PreflightRunner(project_root=tmp_path)
+        git = _fake_git(
+            {
+                "HEAD:pdm.lock": _lock({"foo": "1.0.0"}),
+                "HEAD:pyproject.toml": _pyproject(
+                    ["foo>=1.0"], requires_python=">=3.12"
+                ),
+            }
+        )
+        with patch("check_preflight.subprocess.run", side_effect=git):
+            results = runner._check_lock_drift()
+        assert [r.status for r in results] == ["WARN"]
+        assert "foo 1.0.0 -> 2.0.0" in results[0].details
+
+    def test_requires_python_change_on_a_clean_lock_passes(self, tmp_path: Path):
+        """Nothing moved, so there is nothing to hand back for review."""
+        lock = _lock({"foo": "1.0.0"})
+        self._write_tree(
+            tmp_path, lock, _pyproject(["foo>=1.0"], requires_python=">=3.13")
+        )
+        runner = PreflightRunner(project_root=tmp_path)
+        git = _fake_git(
+            {
+                "HEAD:pdm.lock": lock,  # nothing uncommitted
+                "bbbb2222:pdm.lock": lock,
+                "bbbb2222:pyproject.toml": _pyproject(
+                    ["foo>=1.0"], requires_python=">=3.12"
+                ),
+            },
+            merge_base="bbbb2222",
+        )
+        with patch("check_preflight.subprocess.run", side_effect=git):
+            results = runner._check_lock_drift()
+        assert [r.status for r in results] == ["PASS"]
 
 
 class TestCheckDepCoverage:
