@@ -188,6 +188,14 @@ def gate_resume_identity(root_dir: Path, identity: TaskRunIdentity | None) -> No
     derived from. A wider comparison would refuse a task merely redefined
     between runs, which is the version gate's business.
 
+    ``n_shot`` is excluded too, though it is the run's value rather than a
+    declaration and so escapes that argument: a same-task resume under a
+    different ``n_shot`` is a changed *invocation*, and the CLI's strict
+    ``--resume`` config match already refuses it by comparing the persisted
+    YAML body — ``tasks.*.args`` included — before a runner is built. What is
+    left for this gate is the one mismatch that match cannot see, because it
+    is not a config change at all: two different tasks aimed at one directory.
+
     Passes when either side has no name to compare: an absent block means a
     pre-feature run or an undecorated task, neither distinguishable from a
     match, so this only bites once both sides carry one. Runs after

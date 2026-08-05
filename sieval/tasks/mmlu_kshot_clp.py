@@ -151,6 +151,9 @@ class MMLUFewShotCLPTask(
         # Build every per-subject prefix up front, so a subject whose dev pool
         # is too short for n_shot aborts before any inference spend rather than
         # failing samples one at a time (matches C-Eval). No-op at n_shot == 0.
+        # Reaches only subjects the few-shot split contains: one present in
+        # `test` but absent from it has no prefix to build here, so that case
+        # still surfaces per sample, from _select_examples.
         self._ensure_few_shot_pool()
         for subject in self._few_shot_by_subject:
             self._build_few_shot_prompt(subject)
