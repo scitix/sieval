@@ -11,7 +11,14 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.community.scicode import build_test_program, encode_targets
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext, TaskStageOutput
+from sieval.core.tasks import (
+    PredictionRecord,
+    TaskContext,
+    TaskStageOutput,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.scicode import SciCodeDataset
 from sieval.tasks.scicode_0shot_gen import SciCodeZeroShotGenTask
 
@@ -71,6 +78,79 @@ def _task(model, **kw) -> SciCodeZeroShotGenTask:
     return SciCodeZeroShotGenTask(_dataset(), model, **kw)
 
 
+async def _run_infer(task, raw):
+    """Drive preprocess then infer, in the order the runner does.
+
+    infer() reuses the prompt preprocess recorded instead of rebuilding it, so
+    handing it a stand-in record would exercise a pipeline that never runs.
+    Returns both records, since several assertions compare them.
+    """
+    ctx = TaskContext(sample_id=0, raw_sample=raw)
+    pre = await task.preprocess(raw, ctx)
+    return pre, await task.infer(pre, ctx)
+
+
+# --- preprocess: the record holds the FIRST generated step's prompt ---
+
+
+@pytest.mark.anyio
+async def test_preprocess_records_first_step_prompt_and_step_accounting():
+    # A problem is a sequence of prompts, not one: only the first generated
+    # step's prompt exists before inference. The record must therefore say which
+    # step its `prompt` is for, so it cannot be read as the whole model input.
+    sub_steps = [
+        _substep("1.1", "def step_a():", ["assert step_a() == 1"]),
+        _substep("1.2", "def step_b():", ["assert step_b() == 1"]),
+    ]
+    task = _task(_ScriptedChatModel([]))
+    raw = {
+        "problem_id": "1",
+        "required_dependencies": "import numpy as np",
+        "sub_steps": sub_steps,
+    }
+
+    pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
+
+    assert len(pre["prompt"]) == 1
+    assert "describe 1.1" in pre["prompt"][0]["content"]
+    # Step 1.2 is a later prompt, assembled in infer once the model's step-1.1
+    # code exists — it must not leak into the first step's prompt.
+    assert "describe 1.2" not in pre["prompt"][0]["content"]
+    assert pre["extra"]["first_generated_step"] == "1.1"
+    assert pre["extra"]["n_generated_steps"] == 2
+    # The ground truth is a per-step test suite: a procedure, not a value.
+    assert "reference" not in pre
+
+
+@pytest.mark.anyio
+async def test_preprocess_seeds_gold_context_when_first_step_is_special():
+    # Problem 62's step 1 is scientist-authored, so the first *generated* step is
+    # 62.2 and its prompt already needs gold context. That prompt is knowable
+    # before inference precisely because gold code is static.
+    sub_steps = [
+        _substep(
+            "62.1", "class EnlargedBlock:\n    def __init__(self):", ["assert True"]
+        ),
+        _substep("62.2", "def uses_block():", ["assert uses_block() == 1"]),
+    ]
+    task = _task(_ScriptedChatModel([]))
+    raw = {
+        "problem_id": "62",
+        "required_dependencies": "import numpy as np",
+        "sub_steps": sub_steps,
+    }
+
+    pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
+
+    assert pre["extra"]["first_generated_step"] == "62.2"
+    assert pre["extra"]["n_generated_steps"] == 1
+    assert "class EnlargedBlock" in pre["prompt"][0]["content"]
+    # previous_code is handed to infer rather than recomputed there, so the code
+    # context recorded for the first step cannot drift from the prompt above.
+    assert pre["extra"]["previous_code"].startswith("import numpy as np")
+    assert "class EnlargedBlock" in pre["extra"]["previous_code"]
+
+
 # --- infer: sequential, single-n, prior code fed forward ---
 
 
@@ -88,12 +168,15 @@ async def test_infer_is_sequential_and_feeds_prior_code():
         "sub_steps": sub_steps,
     }
 
-    boxed = await task.infer(raw, TaskContext(sample_id=0, raw_sample=raw))
+    pre, boxed = await _run_infer(task, raw)
 
     assert isinstance(boxed, TaskStageOutput)
     assert model.calls == 2
     # Only the scheduling knob is forwarded to the model layer.
     assert model.last_kwargs == {"n": 1}
+    # The model provably receives the prompt that was recorded: infer reuses it
+    # rather than rebuilding it, so the two cannot drift.
+    assert model.prompts[0] == pre["prompt"]
     # The second prompt must embed the first step's generated function.
     assert "def step_a" in model.prompts[1][0]["content"]
 
@@ -103,6 +186,10 @@ async def test_infer_is_sequential_and_feeds_prior_code():
     assert steps[1]["code_content"].startswith("import numpy as np")
     assert "def step_a" in steps[1]["code_content"]
     assert "def step_b" in steps[1]["code_content"]
+    # extracted_code is just this step's answer, without the accumulated context
+    # — that is what becomes the prediction.
+    assert "def step_b" in steps[1]["extracted_code"]
+    assert "def step_a" not in steps[1]["extracted_code"]
 
 
 @pytest.mark.anyio
@@ -125,13 +212,15 @@ async def test_infer_uses_gold_context_for_special_step_without_calling_model():
         "sub_steps": sub_steps,
     }
 
-    boxed = await task.infer(raw, TaskContext(sample_id=0, raw_sample=raw))
+    _pre, boxed = await _run_infer(task, raw)
     steps = boxed.value
 
     # 3 generated steps -> 3 model calls; the special step is skipped.
     assert model.calls == 3
     assert steps[2]["tested"] is False
     assert steps[2]["code_content"] is None
+    # Never generated, so there is no answer for it to contribute.
+    assert steps[2]["extracted_code"] == ""
     # The 4th step's prompt must contain the gold generate_dna function.
     assert "def generate_dna" in model.prompts[2][0]["content"]
 
@@ -156,7 +245,7 @@ async def test_infer_embeds_full_gold_class_for_class_special_step():
         "sub_steps": sub_steps,
     }
 
-    await task.infer(raw, TaskContext(sample_id=0, raw_sample=raw))
+    await _run_infer(task, raw)
 
     # Only the one non-special step calls the model.
     assert model.calls == 1
@@ -187,7 +276,7 @@ async def test_infer_extract_mode_drops_class_for_class_special_step():
         "sub_steps": sub_steps,
     }
 
-    await task.infer(raw, TaskContext(sample_id=0, raw_sample=raw))
+    await _run_infer(task, raw)
 
     gold_ctx = model.prompts[0][0]["content"]
     # extract drops the class wrapper -> only a bare __init__ survives.
@@ -209,13 +298,13 @@ async def test_infer_flags_empty_extraction_when_model_returns_no_code():
         "sub_steps": sub_steps,
     }
 
-    boxed = await task.infer(raw, TaskContext(sample_id=0, raw_sample=raw))
+    _pre, boxed = await _run_infer(task, raw)
     step = boxed.value[0]
     assert step["empty_extraction"] is True
     assert step["raw_response"] == "I cannot help with that."
     # A normal fenced reply must NOT be flagged (discriminates the check).
     model2 = _ScriptedChatModel([_code_reply("only_step")])
-    boxed2 = await _task(model2).infer(raw, TaskContext(sample_id=0, raw_sample=raw))
+    _pre2, boxed2 = await _run_infer(_task(model2), raw)
     assert boxed2.value[0]["empty_extraction"] is False
 
 
@@ -238,7 +327,7 @@ async def test_infer_survives_empty_choices_response():
         "sub_steps": sub_steps,
     }
 
-    boxed = await task.infer(raw, TaskContext(sample_id=0, raw_sample=raw))
+    _pre, boxed = await _run_infer(task, raw)
     step = boxed.value[0]
     assert step["raw_response"] == ""
     assert step["empty_extraction"] is True
@@ -353,13 +442,22 @@ async def test_postprocess_builds_program_that_executes(tmp_path):
                 "step_number": "9.1",
                 "tested": True,
                 "code_content": "import numpy as np\n\ndef f():\n    return 42\n",
+                "extracted_code": "def f():\n    return 42\n",
                 "raw_response": "```python\ndef f():\n    return 42\n```",
                 "empty_extraction": False,
             }
         ]
     )
 
-    programs = await task.postprocess(inf, TaskContext(sample_id=0, raw_sample=raw))
+    record = await task.postprocess(inf, TaskContext(sample_id=0, raw_sample=raw))
+
+    # One rollout per problem: the whole dependent step sequence is the attempt.
+    assert len(record["rollouts"]) == 1
+    # The prediction is the model's per-step answer, not the executable harness.
+    assert record["rollouts"][0]["prediction"] == [
+        {"step_number": "9.1", "code": "def f():\n    return 42\n"}
+    ]
+    programs = record["extra"]["programs"]
     assert len(programs) == 1
     program = programs[0]["program"]
 
@@ -373,7 +471,146 @@ async def test_postprocess_builds_program_that_executes(tmp_path):
         exec(compile(bad, "<program>", "exec"), {})
 
 
-# --- feedback: transport timeout semantics ---
+def _step_code(step_number: str, *, empty: bool) -> dict:
+    code = "" if empty else "def f():\n    return 1\n"
+    return {
+        "step_number": step_number,
+        "tested": True,
+        "code_content": f"import numpy as np\n\n{code}",
+        "extracted_code": code,
+        "raw_response": "prose" if empty else f"```python\n{code}```",
+        "empty_extraction": empty,
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("empty_flags", "expect_extracted"),
+    [
+        ([False, False], True),
+        # A partial miss is still a real answer that just scores badly; only a
+        # problem where nothing extractable came back at all is "not extracted",
+        # which is what the extraction-failure anomaly rule reads.
+        ([True, False], True),
+        ([True, True], False),
+    ],
+)
+async def test_postprocess_reports_extraction_miss_only_when_total(
+    tmp_path, empty_flags, expect_extracted
+):
+    h5 = tmp_path / "raw_ground.h5"
+    numbers = ["4.1", "4.2"]
+    with h5py.File(h5, "w") as f:
+        for number in numbers:
+            f.create_dataset(f"{number}/test1/var1", data=1)
+    task = _task(_ScriptedChatModel([]), h5_path=str(h5))
+    raw = {
+        "problem_id": "4",
+        "sub_steps": [_substep(n, "def f():", ["assert f() == 1"]) for n in numbers],
+    }
+    inf = TaskStageOutput(
+        value=[
+            _step_code(n, empty=e) for n, e in zip(numbers, empty_flags, strict=True)
+        ]
+    )
+
+    record = await task.postprocess(inf, TaskContext(sample_id=0, raw_sample=raw))
+
+    assert record["rollouts"][0]["extracted"] is expect_extracted
+    assert (record["rollouts"][0]["prediction"] is None) is not expect_extracted
+    # The per-step flags ride with the programs either way, so feedback can still
+    # attribute a miss to the step it happened on.
+    assert [p["empty_extraction"] for p in record["extra"]["programs"]] == empty_flags
+
+
+# --- feedback: judgement record and transport timeout semantics ---
+
+
+def _prediction(step_numbers: list[str]) -> PredictionRecord:
+    """A prediction record carrying one executable program per tested step."""
+    code = "def f():\n    return 1\n"
+    return build_prediction_record(
+        [[{"step_number": n, "code": code} for n in step_numbers]],
+        extra={
+            "programs": [
+                {
+                    "step_number": n,
+                    "program": "assert False",
+                    "empty_extraction": False,
+                }
+                for n in step_numbers
+            ]
+        },
+    )
+
+
+def _scripted_eval(task, monkeypatch, statuses: list[bool]):
+    """Make the code-eval service return *statuses* in step order."""
+    queued = list(statuses)
+
+    class _Response:
+        def __init__(self, status: bool):
+            self._status = status
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            msg = "" if self._status else "failed: [AssertionError]"
+            return {"status": self._status, "msg": msg}
+
+    async def fake_post(url, **kwargs):
+        _ = (url, kwargs)
+        return _Response(queued.pop(0))
+
+    monkeypatch.setattr(task._http_client, "post", fake_post)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("statuses", "solved", "rate"),
+    [
+        ([True, True], True, 1.0),
+        # A partially-correct problem is NOT correct: `correct` is main-problem
+        # accuracy's numerator, so the step pass rate is partial credit only.
+        ([True, False], False, 0.5),
+        ([False, False], False, 0.0),
+    ],
+)
+async def test_feedback_scores_one_rollout_per_problem(
+    monkeypatch, statuses, solved, rate
+):
+    task = _task(_ScriptedChatModel([]))
+    _scripted_eval(task, monkeypatch, statuses)
+    try:
+        ok, judgement = await task.feedback(
+            _prediction(["7.1", "7.2"]), TaskContext(sample_id=0)
+        )
+    finally:
+        await task.shutdown()
+
+    assert ok is True
+    # A problem's dependent sub-steps are not independent attempts at the same
+    # thing, so they are step detail inside one rollout, not N rollouts.
+    assert judgement["n_rollouts"] == 1
+    assert judgement["n_correct"] == int(solved)
+    assert judgement["rollouts"][0]["correct"] is solved
+    assert judgement["score"] == pytest.approx(rate)
+    assert judgement["metrics"] == {
+        "main_problem_solved": solved,
+        "sub_problem_pass_rate": pytest.approx(rate),
+    }
+    # The reference is a procedure — this problem's per-step test suites — so
+    # there is no ground-truth value to record.
+    assert judgement["reference"] is None
+    # Raw counts, not just the rate: report() pools these, and per-problem rates
+    # cannot reconstruct a pooled figure across problems of different lengths.
+    assert judgement["extra"] == {
+        "correct_steps": sum(statuses),
+        "total_steps": len(statuses),
+    }
+    steps = judgement["rollouts"][0]["extra"]["steps"]
+    assert [s["correct"] for s in steps] == statuses
 
 
 @pytest.mark.anyio
@@ -395,21 +632,14 @@ async def test_feedback_disables_pool_timeout_but_keeps_request_deadline(monkeyp
 
     monkeypatch.setattr(task._http_client, "post", fake_post)
     try:
-        ok, feedbacks = await task.feedback(
-            [
-                {
-                    "step_number": "1.1",
-                    "program": "assert False",
-                    "empty_extraction": False,
-                }
-            ],
-            TaskContext(sample_id=0),
+        ok, judgement = await task.feedback(
+            _prediction(["1.1"]), TaskContext(sample_id=0)
         )
     finally:
         await task.shutdown()
 
     assert ok is True
-    assert feedbacks[0]["correct"] is False
+    assert judgement["rollouts"][0]["extra"]["steps"][0]["correct"] is False
     request_timeout = captured["timeout"]
     assert isinstance(request_timeout, httpx.Timeout)
     assert request_timeout.connect == 130.0
@@ -422,16 +652,36 @@ async def test_feedback_disables_pool_timeout_but_keeps_request_deadline(monkeyp
 
 
 def _final(sample_id, correct_flags, empty_flags=None, messages=None):
+    """A scored context whose judgement is shaped exactly as feedback builds it.
+
+    Built through the record builders rather than by hand so the derived fields
+    report() reads (``n_correct``) come from the same contract feedback uses.
+    """
     empty_flags = empty_flags or [False] * len(correct_flags)
     messages = messages or [""] * len(correct_flags)
+    steps = [
+        {"step_number": f"s{i}", "correct": c, "msg": msg, "empty_extraction": e}
+        for i, (c, e, msg) in enumerate(
+            zip(correct_flags, empty_flags, messages, strict=True)
+        )
+    ]
+    n_correct = sum(1 for step in steps if step["correct"])
+    solved = bool(steps) and n_correct == len(steps)
+    rate = n_correct / len(steps) if steps else 0.0
+    metrics = {"main_problem_solved": solved, "sub_problem_pass_rate": rate}
     return TaskContext(
         sample_id=sample_id,
-        feedback_result=[
-            {"step_number": f"s{i}", "correct": c, "msg": msg, "empty_extraction": e}
-            for i, (c, e, msg) in enumerate(
-                zip(correct_flags, empty_flags, messages, strict=True)
-            )
-        ],
+        feedback_result=build_judgement_record(
+            None,
+            [
+                build_rollout_judgement(
+                    0, solved, score=rate, metrics=metrics, extra={"steps": steps}
+                )
+            ],
+            score=rate,
+            metrics=metrics,
+            extra={"correct_steps": n_correct, "total_steps": len(steps)},
+        ),
     )
 
 
@@ -562,6 +812,33 @@ async def test_report_excludes_special_steps_from_failed_problem_count():
     assert report["total_steps"] == 6
     assert report["sub_problem_accuracy"] == pytest.approx(0.0)
     assert report["main_problem_accuracy"] == pytest.approx(0.0)
+
+
+@pytest.mark.anyio
+async def test_report_reads_what_feedback_actually_writes(monkeypatch):
+    # The other report tests build judgements with the same builders feedback
+    # uses; this one runs feedback for real and feeds its records straight into
+    # report, so a change to either side of the contract cannot pass silently.
+    task = _task(_ScriptedChatModel([]))
+    _scripted_eval(task, monkeypatch, [True, True, True, False])
+    try:
+        finals = []
+        for sample_id in (0, 1):
+            _ok, judgement = await task.feedback(
+                _prediction([f"{sample_id}.1", f"{sample_id}.2"]),
+                TaskContext(sample_id=sample_id),
+            )
+            finals.append(TaskContext(sample_id=sample_id, feedback_result=judgement))
+        report = await task.report(finals, fails=[])
+    finally:
+        await task.shutdown()
+
+    # Problem 0 fully solved, problem 1 half: 3 of 4 steps, 1 of 2 problems.
+    assert report["correct_steps"] == 3
+    assert report["total_steps"] == 4
+    assert report["sub_problem_accuracy"] == pytest.approx(75.0)
+    assert report["correct_problems"] == 1
+    assert report["main_problem_accuracy"] == pytest.approx(50.0)
 
 
 @pytest.mark.anyio
