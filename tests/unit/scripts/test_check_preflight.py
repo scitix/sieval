@@ -126,16 +126,17 @@ class TestPreflightRunner:
     """Runner orchestration."""
 
     def test_all_checks_listed(self):
-        assert len(PreflightRunner.ALL_CHECKS) == 9
+        assert len(PreflightRunner.ALL_CHECKS) == 10
         assert "check_links" in PreflightRunner.ALL_CHECKS
         assert "check_examples" in PreflightRunner.ALL_CHECKS
         assert "check_meta_index_sync" in PreflightRunner.ALL_CHECKS
         assert "check_version" in PreflightRunner.ALL_CHECKS
+        assert "check_task_shot_knobs" in PreflightRunner.ALL_CHECKS
 
     def test_run_all_returns_results(self):
         runner = PreflightRunner()
         results = runner.run()
-        assert len(results) >= 9
+        assert len(results) >= 10
         assert any(r.check == "check_links" for r in results)
         assert any(r.check == "check_deps" for r in results)
         assert any(r.check == "check_examples" for r in results)
@@ -1416,3 +1417,194 @@ class TestDatasetIntegrity:
             self._meta("c", ["local:/data/c"]),  # local exempt
         ]
         assert _dataset_integrity_violations(metas) == []
+
+
+class TestCheckTaskShotKnobs:
+    """The shot-knob naming + `n_shot_used` wiring guard."""
+
+    def _run(self, tmp_path: Path, source: str) -> CheckResult:
+        tasks_dir = tmp_path / "sieval" / "tasks"
+        tasks_dir.mkdir(parents=True)
+        # __init__.py is excluded from the scan; a sibling module is the subject.
+        (tasks_dir / "__init__.py").write_text("")
+        (tasks_dir / "demo_kshot_gen.py").write_text(source)
+        results = PreflightRunner(project_root=tmp_path).check_task_shot_knobs()
+        assert len(results) == 1
+        return results[0]
+
+    # --- rule 1: the shot-count parameter is spelled `n_shot` ---------------
+
+    def test_canonical_spelling_passes(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            "    def __init__(self, dataset, model, *, n_shot: int = 5):\n"
+            "        self._n_shot = n_shot\n"
+            "        self.n_shot_used = self._n_shot\n",
+        )
+        assert r.status == "PASS"
+
+    @pytest.mark.parametrize(
+        "param", ["k", "shots", "num_shots", "nshot", "fewshot", "shot_count"]
+    )
+    def test_misspelled_shot_param_flagged(self, tmp_path: Path, param: str):
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            f"    def __init__(self, dataset, model, *, {param}: int = 5):\n"
+            f"        self._n_shot = {param}\n"
+            "        self.n_shot_used = self._n_shot\n",
+        )
+        assert r.status == "FAIL"
+        assert len(r.details) == 1
+        assert "DemoTask" in r.details[0]
+
+    @pytest.mark.parametrize(
+        "param", ["fewshot_split", "fewshot_seed", "fewshot_as_multiturn"]
+    )
+    def test_compound_naming_another_noun_not_flagged(self, tmp_path: Path, param: str):
+        """`fewshot_split` names a split, not a count — must not be renamed."""
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            f"    def __init__(self, dataset, model, *, {param}=None):\n"
+            f"        self._x = {param}\n",
+        )
+        assert r.status == "PASS"
+
+    # --- rule 2: accepting `n_shot` means wiring `n_shot_used` --------------
+
+    def test_n_shot_without_n_shot_used_flagged(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            "    def __init__(self, dataset, model, *, n_shot: int = 5):\n"
+            "        self._n_shot = n_shot\n",
+        )
+        assert r.status == "FAIL"
+        assert "never assigns self.n_shot_used" in r.details[0]
+
+    def test_n_shot_used_from_a_derived_count_passes(self, tmp_path: Path):
+        """The source expression is unconstrained — only `k` is rejected."""
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            "    def __init__(self, dataset, model, *, n_shot: int = 5):\n"
+            "        self._examples = pick(n_shot)\n"
+            "        self.n_shot_used = len(self._examples)\n",
+        )
+        assert r.status == "PASS"
+
+    def test_task_without_shot_knob_passes(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            "    def __init__(self, dataset, model, *, seed: int = 0):\n"
+            "        self._seed = seed\n",
+        )
+        assert r.status == "PASS"
+
+    # --- rule 3: `k` is the pass@k rollout count ---------------------------
+
+    def test_k_with_pass_at_k_metric_passes(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            "    def __init__(self, dataset, model, *, k: int = 1, n: int = 10):\n"
+            "        self._k = k\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {f'pass@{self._k}': 1.0}\n",
+        )
+        assert r.status == "PASS"
+
+    def test_k_without_pass_at_k_metric_flagged(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            "    def __init__(self, dataset, model, *, k: int = 5):\n"
+            "        self._k = k\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {'score': 1.0}\n",
+        )
+        assert r.status == "FAIL"
+        assert "computes no pass@k metric" in r.details[0]
+
+    def test_n_shot_used_fed_from_k_flagged(self, tmp_path: Path):
+        """The regression this guard exists for: a shot count spelled `k`."""
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            "    def __init__(self, dataset, model, *, k: int = 5):\n"
+            "        self._k = k\n"
+            "        self.n_shot_used = self._k\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {f'pass@{self._k}': 1.0}\n",
+        )
+        assert r.status == "FAIL"
+        assert any("pass@k rollout count, not a shot count" in d for d in r.details)
+
+    # --- scope -------------------------------------------------------------
+
+    def test_undecorated_class_ignored(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "class Helper:\n"
+            "    def __init__(self, *, k: int = 5):\n"
+            "        self._k = k\n",
+        )
+        assert r.status == "PASS"
+        assert "all 0 task(s)" in r.message
+
+    def test_inherited_init_ignored(self, tmp_path: Path):
+        """A subclass with no `__init__` of its own has no knob to check."""
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\nclass DemoTask(Base):\n    pass\n",
+        )
+        assert r.status == "PASS"
+        assert "all 0 task(s)" in r.message
+
+    def test_subdirectory_tasks_are_scanned(self, tmp_path: Path):
+        """A benchmark with >= 5 task files lives in a subpackage — still bound.
+
+        Non-recursive scoping here would report PASS while covering nothing in
+        it, which is the silent-pass channel this check exists to close.
+        """
+        pkg = tmp_path / "sieval" / "tasks" / "bench"
+        pkg.mkdir(parents=True)
+        (tmp_path / "sieval" / "tasks" / "__init__.py").write_text("")
+        (pkg / "__init__.py").write_text("")
+        (pkg / "bench_kshot_gen.py").write_text(
+            "@sieval_task(name='bench')\n"
+            "class BenchTask:\n"
+            "    def __init__(self, dataset, model, *, k: int = 5):\n"
+            "        self._k = k\n"
+        )
+        results = PreflightRunner(project_root=tmp_path).check_task_shot_knobs()
+        assert len(results) == 1
+        assert results[0].status == "FAIL"
+        assert "bench_kshot_gen.py" in results[0].details[0]
+
+    def test_unparsable_module_reported_not_raised(self, tmp_path: Path):
+        r = self._run(tmp_path, "class Broken(:\n")
+        assert r.status == "FAIL"
+        assert "could not parse" in r.details[0]
+
+    def test_no_task_modules_skips(self, tmp_path: Path):
+        results = PreflightRunner(project_root=tmp_path).check_task_shot_knobs()
+        assert len(results) == 1
+        assert results[0].status == "SKIP"
+
+    def test_real_tasks_pass(self):
+        """Integration: the shipped tasks satisfy all three rules."""
+        results = PreflightRunner().check_task_shot_knobs()
+        assert [r.status for r in results] == ["PASS"]
