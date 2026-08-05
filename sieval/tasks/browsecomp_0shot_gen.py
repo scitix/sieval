@@ -40,6 +40,7 @@ from sieval.community.browsecomp import (
 )
 from sieval.core.models import ChatModel, Model, ModelOutput
 from sieval.core.tasks import (
+    GRADER_OUTPUT_KEY,
     EvalMode,
     JudgementRecord,
     PredictionRecord,
@@ -197,7 +198,7 @@ class BrowseCompZeroShotGenTask(
                     extra={
                         "grade": grade,
                         "confidence": parse_confidence(reply),
-                        "grader_output": obj_to_dict(out, add_type=False),
+                        GRADER_OUTPUT_KEY: obj_to_dict(out, add_type=False),
                     },
                 )
             )

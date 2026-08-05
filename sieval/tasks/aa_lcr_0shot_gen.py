@@ -63,6 +63,7 @@ from sieval.community.aa_lcr import (
 )
 from sieval.core.models import ChatModel, Model, ModelOutput
 from sieval.core.tasks import (
+    GRADER_OUTPUT_KEY,
     EvalMode,
     JudgementRecord,
     PredictionRecord,
@@ -232,7 +233,7 @@ class AALCRZeroShotGenTask(
                     grade == "CORRECT",
                     extra={
                         "grade": grade,
-                        "grader_output": obj_to_dict(out, add_type=False),
+                        GRADER_OUTPUT_KEY: obj_to_dict(out, add_type=False),
                     },
                 )
             )
