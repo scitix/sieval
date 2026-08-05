@@ -27,7 +27,7 @@ top_p=1, max_gen_toks=1024.
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-from typing import TypedDict, override
+from typing import override
 
 from sieval.community.deepseek_math import (
     STOP_WORDS,
@@ -39,6 +39,9 @@ from sieval.community.deepseek_math import (
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
     build_judgement_record,
@@ -50,12 +53,6 @@ from sieval.core.tasks import (
 from sieval.datasets import HendrycksMathDatasetSample
 
 N_SHOT = 4
-
-
-class Feedback(TypedDict):
-    correct: bool
-    answer: list[str]
-    prediction: list[str]
 
 
 @sieval_task(
@@ -79,10 +76,10 @@ class Feedback(TypedDict):
 class HendrycksMathFewShotBaseGenTask(
     Task[
         HendrycksMathDatasetSample,
-        str,
+        PromptRecord,
         ModelOutput,
-        list[str],
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):

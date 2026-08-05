@@ -23,11 +23,14 @@ AI-Generated Code - GPT-5.5 (OpenAI)
 """
 
 import re
-from typing import TypedDict, override
+from typing import override
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
     build_judgement_record,
@@ -44,23 +47,6 @@ STOP_SEQUENCES = ("Question:", "</s>", "<|im_end|>")
 
 _STRICT_ANSWER_RE = re.compile(r"#### (\-?[0-9\.\,]+)")
 _FLEXIBLE_ANSWER_RE = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
-
-
-class Feedback(TypedDict):
-    correct: bool
-    flexible_correct: bool
-    answer: str
-    prediction: str
-    flexible_prediction: str
-    extraction_method: str
-    flexible_extraction_method: str
-
-
-class Prediction(TypedDict):
-    answer: str
-    flexible_answer: str
-    extraction_method: str
-    flexible_extraction_method: str
 
 
 def _format_example(sample: GSM8KDatasetSample, include_answer: bool) -> str:
@@ -130,10 +116,10 @@ def _extract_flexible_match(text: str) -> tuple[str, str]:
 class GSM8KFewShotBaseGenTask(
     Task[
         GSM8KDatasetSample,
-        str,
+        PromptRecord,
         ModelOutput,
-        Prediction,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):

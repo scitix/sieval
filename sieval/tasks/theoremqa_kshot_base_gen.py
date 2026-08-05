@@ -35,11 +35,14 @@ import re
 from collections.abc import Callable
 from importlib import import_module
 from math import cos, e, exp, factorial, log, pi, sin, sqrt
-from typing import TypedDict, override
+from typing import override
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
     build_judgement_record,
@@ -210,12 +213,6 @@ _THEOREMQA_EXAMPLES: tuple[tuple[str, str], ...] = (
 )
 
 _DEFAULT_FEW_SHOT_COUNT = len(_THEOREMQA_EXAMPLES)
-
-
-class Feedback(TypedDict):
-    correct: bool
-    pred: str
-    answer: str
 
 
 def floatify(num: str):
@@ -442,7 +439,14 @@ def _normalize_k(k: int | None) -> int:
     ),
 )
 class TheoremQAKShotBaseGenTask(
-    Task[TheoremQADatasetSample, str, ModelOutput, str, Feedback, dict[str, float]]
+    Task[
+        TheoremQADatasetSample,
+        PromptRecord,
+        ModelOutput,
+        PredictionRecord,
+        JudgementRecord,
+        dict[str, float],
+    ]
 ):
     def __init__(
         self, dataset, model, name: str | None = None, *, k: int | None = None

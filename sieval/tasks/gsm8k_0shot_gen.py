@@ -44,13 +44,14 @@ zero-shot CoT).
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-from typing import TypedDict, override
-
-from openai.types.chat import ChatCompletionUserMessageParam
+from typing import override
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
     ReferenceImpl,
     Task,
     build_judgement_record,
@@ -67,12 +68,6 @@ from sieval.datasets import GSM8KDatasetSample
 COT_INSTRUCTION = (
     "\nPlease reason step by step, and put your final answer within \\boxed{}."
 )
-
-
-class Feedback(TypedDict):
-    correct: bool
-    answer: str
-    prediction: str
 
 
 def _gold_answer(answer: str) -> str:
@@ -110,10 +105,10 @@ def _gold_answer(answer: str) -> str:
 class GSM8KZeroShotGenTask(
     Task[
         GSM8KDatasetSample,
-        list[ChatCompletionUserMessageParam],
+        PromptRecord,
         ModelOutput,
-        str,
-        Feedback,
+        PredictionRecord,
+        JudgementRecord,
         dict[str, float],
     ]
 ):
