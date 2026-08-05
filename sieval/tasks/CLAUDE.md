@@ -27,6 +27,12 @@ Two counts that read alike and are not interchangeable. Enforced by
 - **`k`** — the `pass@k` rollout count, nothing else. A task taking `k` must
   compute a `pass@k` metric, and `n_shot_used` may never be fed from it.
 
+The `n_shot` rules bind **every constructor under `sieval/tasks/`**, including an
+undecorated shared base in a subpackage (`arc/_base.py`) — a decorated task can
+inherit its `__init__`, and checking only decorated classes would leave that
+knob unchecked. The `k` rule is decorated-classes-only: an undecorated base's
+`pass@k` is usually computed by the subclass.
+
 `fewshot_split` / `fewshot_seed` / `fewshot_as_multiturn` name a different noun
 each and are unaffected. In prose, `k-shot` (the file-naming genre) and `top-k`
 (logprobs breadth) are unrelated to either knob.

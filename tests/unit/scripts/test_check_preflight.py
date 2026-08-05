@@ -1537,6 +1537,54 @@ class TestCheckTaskShotKnobs:
         assert r.status == "FAIL"
         assert "computes no pass@k metric" in r.details[0]
 
+    def test_pass_at_k_in_a_docstring_is_not_evidence(self, tmp_path: Path):
+        """Prose must not satisfy rule 3 — else `k` slips back to meaning shots.
+
+        A class docstring mentioning pass@1 while computing nothing of the kind
+        used to flip this to PASS, which is the whole regression rule 3 guards.
+        """
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            '    """Scores things. Nothing to do with pass@1 really."""\n'
+            "    def __init__(self, dataset, model, *, k: int = 5):\n"
+            "        self._k = k\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {'score': 1.0}\n",
+        )
+        assert r.status == "FAIL"
+        assert "computes no pass@k metric" in r.details[0]
+
+    def test_pass_at_k_in_a_method_docstring_is_not_evidence(self, tmp_path: Path):
+        """Method docstrings are prose too, not just the class's own."""
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            "    def __init__(self, dataset, model, *, k: int = 5):\n"
+            "        self._k = k\n"
+            "    async def report(self, finals, fails):\n"
+            '        """Would report pass@k if it did that."""\n'
+            "        return {'score': 1.0}\n",
+        )
+        assert r.status == "FAIL"
+        assert "computes no pass@k metric" in r.details[0]
+
+    def test_pass_at_k_metric_key_still_counts_as_evidence(self, tmp_path: Path):
+        """The docstring exclusion must not swallow a real metric key."""
+        r = self._run(
+            tmp_path,
+            "@sieval_task(name='demo')\n"
+            "class DemoTask:\n"
+            '    """A docstring saying nothing about the metric."""\n'
+            "    def __init__(self, dataset, model, *, k: int = 1):\n"
+            "        self._k = k\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {f'pass@{self._k}': 1.0}\n",
+        )
+        assert r.status == "PASS"
+
     def test_n_shot_used_fed_from_k_flagged(self, tmp_path: Path):
         """The regression this guard exists for: a shot count spelled `k`."""
         r = self._run(
@@ -1554,7 +1602,12 @@ class TestCheckTaskShotKnobs:
 
     # --- scope -------------------------------------------------------------
 
-    def test_undecorated_class_ignored(self, tmp_path: Path):
+    def test_k_rule_is_decorated_classes_only(self, tmp_path: Path):
+        """An undecorated base's pass@k is usually computed by its subclass.
+
+        So rule 3 cannot be judged from the base's body — applying it there
+        would be a false positive. Rules 1 and 2 still bind it (below).
+        """
         r = self._run(
             tmp_path,
             "class Helper:\n"
@@ -1562,16 +1615,68 @@ class TestCheckTaskShotKnobs:
             "        self._k = k\n",
         )
         assert r.status == "PASS"
-        assert "all 0 task(s)" in r.message
 
-    def test_inherited_init_ignored(self, tmp_path: Path):
-        """A subclass with no `__init__` of its own has no knob to check."""
+    def test_subclass_without_own_init_is_not_counted(self, tmp_path: Path):
+        """Nothing to check on the subclass itself — the base carries the knob.
+
+        Coverage of the inherited constructor comes from scanning the base, not
+        from the subclass; see the two `shared base` tests below.
+        """
         r = self._run(
             tmp_path,
             "@sieval_task(name='demo')\nclass DemoTask(Base):\n    pass\n",
         )
         assert r.status == "PASS"
-        assert "all 0 task(s)" in r.message
+        assert "all 0 task constructor(s)" in r.message
+
+    def test_shared_base_carrying_the_knob_is_checked(self, tmp_path: Path):
+        """The hole this widening closes.
+
+        A decorated task may inherit `__init__` from an undecorated base (the
+        `arc/_base.py` layout). Keying the scan on the decorator skipped both
+        ends — subclass has no `__init__`, base has no decorator — so a knob
+        that never reached `n_shot_used` went unchecked, with only a silently
+        lower count to show for it.
+        """
+        r = self._run(
+            tmp_path,
+            "class _SharedInit:\n"
+            "    def __init__(self, dataset, model, *, n_shot: int = 25):\n"
+            "        self._n_shot = n_shot\n"
+            "\n"
+            "@sieval_task(name='demo')\n"
+            "class DemoTask(_SharedInit, Task):\n"
+            "    pass\n",
+        )
+        assert r.status == "FAIL"
+        assert "never assigns self.n_shot_used" in r.details[0]
+        assert "_SharedInit" in r.details[0]
+
+    def test_shared_base_wiring_the_knob_passes(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "class _SharedInit:\n"
+            "    def __init__(self, dataset, model, *, n_shot: int = 25):\n"
+            "        self._n_shot = n_shot\n"
+            "        self.n_shot_used = self._n_shot\n"
+            "\n"
+            "@sieval_task(name='demo')\n"
+            "class DemoTask(_SharedInit, Task):\n"
+            "    pass\n",
+        )
+        assert r.status == "PASS"
+        assert "all 1 task constructor(s)" in r.message
+
+    def test_shared_base_misspelling_the_knob_is_flagged(self, tmp_path: Path):
+        """Rule 1 binds the base too, not only decorated classes."""
+        r = self._run(
+            tmp_path,
+            "class _SharedInit:\n"
+            "    def __init__(self, dataset, model, *, num_shots: int = 25):\n"
+            "        self.n_shot_used = num_shots\n",
+        )
+        assert r.status == "FAIL"
+        assert "the repo spells it 'n_shot'" in r.details[0]
 
     def test_subdirectory_tasks_are_scanned(self, tmp_path: Path):
         """A benchmark with >= 5 task files lives in a subpackage — still bound.

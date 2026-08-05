@@ -117,18 +117,35 @@ def _dataset_integrity_violations(metas: "list[DatasetMeta]") -> list[str]:
     return violations
 
 
-def _decorated_task_classes(tree: ast.Module) -> list[ast.ClassDef]:
-    """Return the ``@sieval_task``-decorated classes in a parsed task module."""
-    classes: list[ast.ClassDef] = []
+def _is_sieval_task(cls: ast.ClassDef) -> bool:
+    """Whether *cls* carries the ``@sieval_task`` decorator."""
+    for deco in cls.decorator_list:
+        target = deco.func if isinstance(deco, ast.Call) else deco
+        if isinstance(target, ast.Name) and target.id == "sieval_task":
+            return True
+    return False
+
+
+def _classes_with_own_init(
+    tree: ast.Module,
+) -> list[tuple[ast.ClassDef, ast.FunctionDef | ast.AsyncFunctionDef]]:
+    """Every class in a task module declaring its own ``__init__``.
+
+    Deliberately *not* narrowed to ``@sieval_task``-decorated classes. A
+    decorated task may inherit its constructor from an undecorated base in the
+    same package (the ``arc/_base.py`` layout), and keying on the decorator
+    misses both ends of that: the subclass declares no ``__init__``, the base
+    carries no decorator. The knob-bearing constructor would then go unchecked
+    with only a silently lower count to show for it.
+    """
+    out: list[tuple[ast.ClassDef, ast.FunctionDef | ast.AsyncFunctionDef]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
-        for deco in node.decorator_list:
-            target = deco.func if isinstance(deco, ast.Call) else deco
-            if isinstance(target, ast.Name) and target.id == "sieval_task":
-                classes.append(node)
-                break
-    return classes
+        init = _init_of(node)
+        if init is not None:
+            out.append((node, init))
+    return out
 
 
 def _init_of(cls: ast.ClassDef) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
@@ -173,8 +190,35 @@ def _n_shot_used_sources(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[set
     return sources
 
 
+def _docstring_constant_ids(cls: ast.ClassDef) -> set[int]:
+    """``id()`` of every docstring Constant in *cls* (its own and its methods').
+
+    Prose is not evidence of behaviour. Without this, a class whose docstring
+    merely *mentions* ``pass@1`` satisfies :func:`_computes_pass_at_k`, so a
+    ``k`` parameter that is really a few-shot count passes rule 3 — the precise
+    regression rule 3 exists to catch. Metric *keys* (``f"pass@{k}"`` built in a
+    report dict) are real evidence and stay counted.
+    """
+    ids: set[int] = set()
+    for node in ast.walk(cls):
+        if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            ids.add(id(first.value))
+    return ids
+
+
 def _computes_pass_at_k(cls: ast.ClassDef) -> bool:
-    """Whether the class body mentions a pass@k metric."""
+    """Whether the class body computes a pass@k metric.
+
+    Docstrings do not count — see :func:`_docstring_constant_ids`.
+    """
+    docstrings = _docstring_constant_ids(cls)
     for node in ast.walk(cls):
         if isinstance(node, ast.Name) and node.id.endswith("pass_at_k"):
             return True
@@ -184,6 +228,7 @@ def _computes_pass_at_k(cls: ast.ClassDef) -> bool:
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
             and "pass@" in node.value
+            and id(node) not in docstrings
         ):
             return True
     return False
@@ -854,11 +899,17 @@ class PreflightRunner:
         covered:
 
         1. a shot-count parameter is spelled ``n_shot``, nothing else;
-        2. a task accepting ``n_shot`` assigns ``self.n_shot_used``;
+        2. a constructor accepting ``n_shot`` assigns ``self.n_shot_used``;
         3. ``k`` is a pass@k rollout count in every task that takes one, so a
            task accepting ``k`` must compute a pass@k metric, and
            ``n_shot_used`` may never be fed from it. This is what stops ``k``
            from re-acquiring a second meaning.
+
+        Rules 1 and 2 bind *every* constructor under ``sieval/tasks/``, not only
+        the decorated classes — see :func:`_classes_with_own_init`. Rule 3 reads
+        the metric off the class body, so it can only be judged where that body
+        is the task's: an undecorated base's ``pass@k`` may well be computed by
+        the subclass, so applying it there would be a false positive.
         """
         # Recursive, matching check_tasks' naming sweep: a benchmark with >= 5
         # task files lives in a subdirectory (sieval/tasks/CLAUDE.md). Subpackage
@@ -887,10 +938,7 @@ class PreflightRunner:
                 violations.append(f"{rel}: could not parse ({e})")
                 continue
 
-            for cls in _decorated_task_classes(tree):
-                init = _init_of(cls)
-                if init is None:
-                    continue
+            for cls, init in _classes_with_own_init(tree):
                 checked += 1
                 where = f"{rel}:{init.lineno} {cls.name}"
                 params = _param_names(init)
@@ -917,7 +965,11 @@ class PreflightRunner:
                             "is the pass@k rollout count, not a shot count"
                         )
 
-                if "k" in params and not _computes_pass_at_k(cls):
+                if (
+                    _is_sieval_task(cls)
+                    and "k" in params
+                    and not _computes_pass_at_k(cls)
+                ):
                     violations.append(
                         f"{where}: takes 'k' but computes no pass@k metric; "
                         "'k' is reserved for pass@k rollout counts — spell a "
@@ -937,7 +989,7 @@ class PreflightRunner:
             CheckResult(
                 "PASS",
                 "check_task_shot_knobs",
-                f"all {checked} task(s) with an __init__ spell and wire the "
+                f"all {checked} task constructor(s) spell and wire the "
                 "shot knob correctly",
             )
         ]
