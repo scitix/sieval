@@ -57,6 +57,15 @@ repos:
         language: python
         types: [python]
         files: ^(sieval|scripts)/
+      - id: lock-drift
+        name: check pdm.lock for unrequested version drift
+        entry: python scripts/check_preflight.py --check check_deps
+        language: python
+        # Only this one preflight check runs here, and it needs no sieval
+        # import — just the lock, pyproject, and PEP 440 comparison.
+        additional_dependencies: ["packaging>=21.0"]
+        files: ^(pdm\.lock|pyproject\.toml)$
+        pass_filenames: false
 
 ci:
   autofix_commit_msg: 🎨 [pre-commit.ci] Auto format from pre-commit.com hooks

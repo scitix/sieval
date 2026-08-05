@@ -59,6 +59,18 @@ Do not put task-specific logic into `core/`.
 - **Imports:** relative within same package, absolute across packages
 - **AI-generated code:** include `AI-Generated Code - <model> (<provider>)` as the last line of the module-level docstring
 
+## Dependencies
+
+Re-lock with `pdm lock --update-reuse`, never bare `pdm lock`. A bare re-lock re-resolves the whole graph, so a one-package change arrives with dozens of unrelated version bumps that nobody asked for or reviewed.
+
+Preflight compares your lock against its baseline and fails on version changes to already-locked packages that no requirement change asked for:
+
+```bash
+python scripts/check_preflight.py --check check_deps
+```
+
+If a package genuinely needs a newer version, raise its specifier in `pyproject.toml` in the same commit. That makes the bump reviewable, and it is what the check accepts as justification — along with a newly requested extra and a changed `requires-python`.
+
 ## Testing
 
 ```bash

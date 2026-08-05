@@ -25,6 +25,7 @@ from check_preflight import (  # noqa: E402  # type: ignore[unresolved-import]  
     _dataset_integrity_violations,
     format_json,
     format_text,
+    lock_drift,
     main,
 )
 
@@ -667,6 +668,272 @@ class TestCheckDeps:
         results = runner.check_deps()
         warn_msgs = [r.message for r in results if r.status == "WARN"]
         assert any("no optional-dependencies" in m for m in warn_msgs)
+
+    def test_lock_drift_skips_outside_a_repository(self, tmp_path: Path):
+        self._write_pyproject(tmp_path, optional_deps={"dev": ["pytest>=7"]})
+        self._write_lockfile(tmp_path)
+        runner = PreflightRunner(project_root=tmp_path)
+        results = runner.check_deps()
+        skips = [r.message for r in results if r.status == "SKIP"]
+        assert any("no baseline" in m for m in skips)
+
+
+def _lock(packages: dict[str, str], edges: dict[str, list[str]] | None = None) -> str:
+    """Minimal ``pdm.lock`` text: locked versions plus dependency edges."""
+    edges = edges or {}
+    out = ['[metadata]\ncontent_hash = "sha256:x"\n']
+    for name, version in packages.items():
+        out.append(f'\n[[package]]\nname = "{name}"\nversion = "{version}"\n')
+        if name in edges:
+            listed = ", ".join(f'"{d}"' for d in edges[name])
+            out.append(f"dependencies = [{listed}]\n")
+    return "".join(out)
+
+
+def _pyproject(deps: list[str], requires_python: str = "<3.15,>=3.12") -> str:
+    listed = ", ".join(f'"{d}"' for d in deps)
+    return (
+        f'[project]\nname = "sieval"\nrequires-python = "{requires_python}"\n'
+        f"dependencies = [{listed}]\n"
+    )
+
+
+class TestLockDrift:
+    """Tests for lock_drift — which version changes a re-lock may make."""
+
+    def test_identical_locks_have_no_drift(self):
+        lock = _lock({"foo": "1.0.0"})
+        proj = _pyproject(["foo>=1.0"])
+        report = lock_drift(lock, lock, proj, proj)
+        assert report.unjustified == []
+        assert report.justified == []
+        assert report.python_floor_changed is False
+
+    def test_bump_with_no_requirement_change_is_unjustified(self):
+        proj = _pyproject(["foo>=1.0"])
+        report = lock_drift(
+            _lock({"foo": "1.0.0"}), _lock({"foo": "2.0.0"}), proj, proj
+        )
+        assert report.unjustified == ["foo 1.0.0 -> 2.0.0"]
+        assert report.justified == []
+
+    def test_bump_forced_by_raised_specifier_is_justified(self):
+        report = lock_drift(
+            _lock({"foo": "1.0.0"}),
+            _lock({"foo": "2.0.0"}),
+            _pyproject(["foo>=1.0"]),
+            _pyproject(["foo>=2.0"]),
+        )
+        assert report.justified == ["foo 1.0.0 -> 2.0.0"]
+        assert report.unjustified == []
+
+    def test_new_constraint_the_locked_version_already_satisfies_forces_nothing(self):
+        """The `numpy<=2.2` case: a ceiling a locked 2.2.0 already met cannot be
+        the reason numpy moved, so the move stays unjustified."""
+        report = lock_drift(
+            _lock({"numpy": "2.2.0"}),
+            _lock({"numpy": "2.1.0"}),
+            _pyproject(["httpx>=0.28"]),
+            _pyproject(["httpx>=0.28", "numpy<=2.2"]),
+        )
+        assert report.unjustified == ["numpy 2.2.0 -> 2.1.0"]
+
+    def test_subtree_of_a_new_requirement_is_justified(self):
+        """A genuinely new dependency may drag the packages it depends on."""
+        report = lock_drift(
+            _lock({"regex": "2025.11.3", "unrelated": "1.0.0"}),
+            _lock(
+                {"tiktoken": "0.8.0", "regex": "2026.7.10", "unrelated": "2.0.0"},
+                edges={"tiktoken": ["regex>=2022.1.18"]},
+            ),
+            _pyproject(["httpx>=0.28"]),
+            _pyproject(["httpx>=0.28", "tiktoken>=0.8.0"]),
+        )
+        assert report.justified == ["regex 2025.11.3 -> 2026.7.10"]
+        assert report.unjustified == ["unrelated 1.0.0 -> 2.0.0"]
+
+    def test_newly_requested_extra_justifies_its_pin(self):
+        """`math-verify[antlr4_11_0]` pins antlr *down*; the specifier on
+        math-verify itself never stops matching, only the extra is new."""
+        report = lock_drift(
+            _lock({"math-verify": "0.8.0", "antlr4-python3-runtime": "4.13.2"}),
+            _lock(
+                {"math-verify": "0.8.0", "antlr4-python3-runtime": "4.11.0"},
+                edges={"math-verify": ["antlr4-python3-runtime==4.11.0"]},
+            ),
+            _pyproject(["math-verify==0.8.0"]),
+            _pyproject(["math-verify[antlr4_11_0]==0.8.0"]),
+        )
+        assert report.justified == ["antlr4-python3-runtime 4.13.2 -> 4.11.0"]
+        assert report.unjustified == []
+
+    def test_changed_python_floor_leaves_drift_unaudited(self):
+        report = lock_drift(
+            _lock({"foo": "1.0.0"}),
+            _lock({"foo": "2.0.0"}),
+            _pyproject(["foo>=1.0"], requires_python=">=3.12"),
+            _pyproject(["foo>=1.0"], requires_python=">=3.13"),
+        )
+        assert report.python_floor_changed is True
+        assert report.justified == ["foo 1.0.0 -> 2.0.0"]
+        assert report.unjustified == []
+
+    def test_added_and_removed_packages_are_not_drift(self):
+        proj = _pyproject(["foo>=1.0"])
+        report = lock_drift(
+            _lock({"foo": "1.0.0", "gone": "1.0.0"}),
+            _lock({"foo": "1.0.0", "fresh": "1.0.0"}),
+            proj,
+            proj,
+        )
+        assert report.unjustified == []
+        assert report.justified == []
+
+    def test_extras_variants_of_one_package_share_a_node(self):
+        """``coverage`` and ``coverage[toml]`` are two lock entries at one
+        version; their edges must merge instead of shadowing each other."""
+        proj_before = _pyproject(["httpx>=0.28"])
+        proj_after = _pyproject(["httpx>=0.28", "coverage>=7"])
+        cand = (
+            _lock({"coverage": "7.15.2", "tomli": "2.3.0"})
+            + '\n[[package]]\nname = "coverage"\nversion = "7.15.2"\n'
+            + 'extras = ["toml"]\ndependencies = ["tomli>=1.1"]\n'
+        )
+        report = lock_drift(_lock({"tomli": "2.0.0"}), cand, proj_before, proj_after)
+        assert report.justified == ["tomli 2.0.0 -> 2.3.0"]
+
+    def test_declaration_dropped_does_not_excuse_survivors(self):
+        report = lock_drift(
+            _lock({"foo": "1.0.0", "bar": "1.0.0"}),
+            _lock({"foo": "2.0.0", "bar": "1.0.0"}),
+            _pyproject(["foo>=1.0", "bar>=1.0"]),
+            _pyproject(["foo>=1.0"]),
+        )
+        assert report.unjustified == ["foo 1.0.0 -> 2.0.0"]
+
+    def test_unparsable_input_reports_nothing(self):
+        report = lock_drift("not = = toml", "still ] not", "[project", "[project")
+        assert report.unjustified == []
+        assert report.justified == []
+
+
+def _fake_git(
+    blobs: dict[str, str], head: str = "aaaa1111", merge_base: str | None = None
+):
+    """subprocess.run stand-in answering the git plumbing lock-drift uses.
+
+    *blobs* maps ``"<rev>:<path>"`` to contents; anything absent fails, as git
+    does for a blob a shallow clone never fetched.
+    """
+
+    def run(cmd, *_args, **_kwargs):
+        def ok(out: str):
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        def fail():
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: bad object")
+
+        if cmd[:2] == ["git", "show"]:
+            return ok(blobs[cmd[2]]) if cmd[2] in blobs else fail()
+        if cmd[:2] == ["git", "rev-parse"]:
+            return ok(f"{head}\n")
+        if cmd[:2] == ["git", "merge-base"]:
+            return ok(f"{merge_base}\n") if merge_base else fail()
+        return fail()
+
+    return run
+
+
+class TestLockDriftBaseline:
+    """Tests for _check_lock_drift — which revision the lock is judged against."""
+
+    def _write_tree(self, tmp_path: Path, lock: str, pyproject: str) -> None:
+        (tmp_path / "pdm.lock").write_text(lock)
+        (tmp_path / "pyproject.toml").write_text(pyproject)
+
+    def test_uncommitted_lock_change_is_judged_against_head(self, tmp_path: Path):
+        proj = _pyproject(["foo>=1.0"])
+        self._write_tree(tmp_path, _lock({"foo": "2.0.0"}), proj)
+        runner = PreflightRunner(project_root=tmp_path)
+        git = _fake_git(
+            {"HEAD:pdm.lock": _lock({"foo": "1.0.0"}), "HEAD:pyproject.toml": proj}
+        )
+        with patch("check_preflight.subprocess.run", side_effect=git):
+            results = runner._check_lock_drift()
+        assert [r.status for r in results] == ["FAIL"]
+        assert "vs HEAD" in results[0].message
+        assert "foo 1.0.0 -> 2.0.0" in results[0].details
+        assert any("--update-reuse" in d for d in results[0].details)
+
+    def test_committed_lock_is_judged_against_the_merge_base(self, tmp_path: Path):
+        proj = _pyproject(["foo>=1.0"])
+        committed = _lock({"foo": "2.0.0"})
+        self._write_tree(tmp_path, committed, proj)
+        runner = PreflightRunner(project_root=tmp_path)
+        git = _fake_git(
+            {
+                "HEAD:pdm.lock": committed,  # nothing uncommitted
+                "bbbb2222:pdm.lock": _lock({"foo": "1.0.0"}),
+                "bbbb2222:pyproject.toml": proj,
+            },
+            merge_base="bbbb2222",
+        )
+        with patch("check_preflight.subprocess.run", side_effect=git):
+            results = runner._check_lock_drift()
+        assert [r.status for r in results] == ["FAIL"]
+        assert "vs bbbb2222" in results[0].message
+
+    def test_skips_when_the_merge_base_is_head(self, tmp_path: Path):
+        """On the default branch there is nothing to compare against."""
+        proj = _pyproject(["foo>=1.0"])
+        committed = _lock({"foo": "2.0.0"})
+        self._write_tree(tmp_path, committed, proj)
+        runner = PreflightRunner(project_root=tmp_path)
+        git = _fake_git(
+            {"HEAD:pdm.lock": committed}, head="aaaa1111", merge_base="aaaa1111"
+        )
+        with patch("check_preflight.subprocess.run", side_effect=git):
+            results = runner._check_lock_drift()
+        assert [r.status for r in results] == ["SKIP"]
+
+    def test_skips_when_the_baseline_blob_is_unreachable(self, tmp_path: Path):
+        """Shallow clone: the merge base resolves but its blobs were never
+        fetched. A baseline we cannot read is not a violation."""
+        proj = _pyproject(["foo>=1.0"])
+        committed = _lock({"foo": "2.0.0"})
+        self._write_tree(tmp_path, committed, proj)
+        runner = PreflightRunner(project_root=tmp_path)
+        git = _fake_git({"HEAD:pdm.lock": committed}, merge_base="bbbb2222")
+        with patch("check_preflight.subprocess.run", side_effect=git):
+            results = runner._check_lock_drift()
+        assert [r.status for r in results] == ["SKIP"]
+
+    def test_passes_when_only_requested_versions_moved(self, tmp_path: Path):
+        self._write_tree(tmp_path, _lock({"foo": "2.0.0"}), _pyproject(["foo>=2.0"]))
+        runner = PreflightRunner(project_root=tmp_path)
+        git = _fake_git(
+            {
+                "HEAD:pdm.lock": _lock({"foo": "1.0.0"}),
+                "HEAD:pyproject.toml": _pyproject(["foo>=1.0"]),
+            }
+        )
+        with patch("check_preflight.subprocess.run", side_effect=git):
+            results = runner._check_lock_drift()
+        assert [r.status for r in results] == ["PASS"]
+        assert "1 justified" in results[0].message
+
+    def test_long_drift_lists_are_truncated(self, tmp_path: Path):
+        proj = _pyproject(["foo>=1.0"])
+        before = {f"pkg{i:03d}": "1.0.0" for i in range(30)}
+        after = dict.fromkeys(before, "2.0.0")
+        self._write_tree(tmp_path, _lock(after), proj)
+        runner = PreflightRunner(project_root=tmp_path)
+        git = _fake_git({"HEAD:pdm.lock": _lock(before), "HEAD:pyproject.toml": proj})
+        with patch("check_preflight.subprocess.run", side_effect=git):
+            results = runner._check_lock_drift()
+        assert results[0].status == "FAIL"
+        assert "30 locked package(s) drifted" in results[0].message
+        assert any(d == "... and 10 more" for d in results[0].details)
 
 
 class TestCheckDepCoverage:

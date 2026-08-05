@@ -20,6 +20,11 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
+
 if TYPE_CHECKING:
     from sieval.core.datasets.meta import DatasetMeta
 
@@ -48,6 +53,8 @@ _IMPORT_TO_PACKAGE: dict[str, str] = {
 _URL_PATTERN = re.compile(r"https?://[^\s\)\]>\"'`{}]+")
 _MD_RELATIVE_LINK = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _GH_NON_PERMANENT = re.compile(r"github\.com/[^/]+/[^/]+/blob/(main|master|develop)/")
+
+_MAX_DRIFT_DETAILS = 20
 
 _TASK_FILE_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]*_(\d+|k)shot_(gen|base_gen|ppl|clp|llmjudge_gen)\.py$"
@@ -232,6 +239,177 @@ def _computes_pass_at_k(cls: ast.ClassDef) -> bool:
         ):
             return True
     return False
+
+
+@dataclasses.dataclass
+class LockDrift:
+    """Version changes to already-locked packages, split by justification."""
+
+    justified: list[str] = dataclasses.field(default_factory=list)
+    unjustified: list[str] = dataclasses.field(default_factory=list)
+    python_floor_changed: bool = False
+
+
+def _load_toml(text: str) -> dict:
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return {}
+
+
+def _parse_lock(text: str) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Parse a ``pdm.lock`` into locked versions and dependency edges, both keyed
+    by canonical package name. A package appears once per extras combination;
+    those entries share a version, so their edges merge into one node."""
+    versions: dict[str, str] = {}
+    edges: dict[str, list[str]] = {}
+    for pkg in _load_toml(text).get("package", []):
+        raw_name, version = pkg.get("name"), pkg.get("version")
+        if not isinstance(raw_name, str) or not isinstance(version, str):
+            continue
+        name = canonicalize_name(raw_name)
+        versions.setdefault(name, version)
+        edges.setdefault(name, []).extend(
+            d for d in pkg.get("dependencies", []) if isinstance(d, str)
+        )
+    return versions, edges
+
+
+def _declared_requirements(pyproject: dict) -> dict[str, tuple[set[str], set[str]]]:
+    """Canonical package name → (version specifiers, extras) declared for it,
+    across ``project.dependencies``, every optional-dependency group, and every
+    PEP 735 dependency group."""
+    project = pyproject.get("project", {})
+    entries: list[object] = list(project.get("dependencies", []))
+    for deps in project.get("optional-dependencies", {}).values():
+        entries.extend(deps)
+    for deps in pyproject.get("dependency-groups", {}).values():
+        # PEP 735 members may be ``{include-group = "..."}`` tables, not strings.
+        entries.extend(deps)
+
+    out: dict[str, tuple[set[str], set[str]]] = {}
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        try:
+            req = Requirement(entry)
+        except InvalidRequirement:
+            continue
+        specifiers, extras = out.setdefault(canonicalize_name(req.name), (set(), set()))
+        specifiers.add(str(req.specifier))
+        extras.update(req.extras)
+    return out
+
+
+def _forced_roots(
+    base_versions: dict[str, str], base_pyproject: dict, cand_pyproject: dict
+) -> set[str]:
+    """Requirements whose declaration changed in a way the version already
+    locked cannot absorb — the only bumps a re-lock is allowed to make.
+
+    That means a specifier the locked version now violates, or a newly
+    requested extra (a new edge into the graph, so a new set of constraints).
+    A declaration merely *added* while its locked version still satisfies it
+    (``numpy<=2.2`` over a locked ``2.2.0``) forces nothing. Dropped
+    declarations force nothing either: removing a group removes packages, it
+    does not move the survivors.
+    """
+    base_declared = _declared_requirements(base_pyproject)
+    cand_declared = _declared_requirements(cand_pyproject)
+
+    roots: set[str] = set()
+    for name, declared in cand_declared.items():
+        if declared == base_declared.get(name):
+            continue
+        specifiers, extras = declared
+        base_extras = base_declared.get(name, (set(), set()))[1]
+        if extras - base_extras:
+            roots.add(name)
+            continue
+        locked = base_versions.get(name)
+        if locked is None:
+            roots.add(name)  # newly declared: not drift, but its subtree may be
+            continue
+        try:
+            version = Version(locked)
+        except InvalidVersion:
+            roots.add(name)
+            continue
+        for spec in specifiers:
+            try:
+                satisfied = version in SpecifierSet(spec, prereleases=True)
+            except InvalidSpecifier:
+                satisfied = False
+            if not satisfied:
+                roots.add(name)
+                break
+    return roots
+
+
+def lock_drift(
+    base_lock: str, cand_lock: str, base_pyproject: str, cand_pyproject: str
+) -> LockDrift:
+    """Classify every version change between two ``pdm.lock`` snapshots.
+
+    A change to an already-locked package is *justified* only if the package is
+    reachable, over the candidate lock's own dependency edges, from a
+    requirement whose declared specifier changed incompatibly (see
+    `_forced_roots`). Everything else is collateral damage from a bare
+    ``pdm lock`` — a resolver free-for-all that ships versions nothing asked
+    for, with no review trail tying them to an intent.
+
+    Two known gaps, both deliberate. Reachability is *forward* only, so a
+    resolver that backtracks onto a forced root's **parent** reports the parent
+    as unjustified; declaring that parent's new floor in ``pyproject.toml``
+    turns it into a root and is the documented fix. And a genuinely new
+    requirement excuses its whole subtree, so a package on that subtree can
+    ride along — which is why the check narrows drift rather than forbidding it.
+    """
+    base_versions, _ = _parse_lock(base_lock)
+    cand_versions, cand_edges = _parse_lock(cand_lock)
+    base_proj, cand_proj = _load_toml(base_pyproject), _load_toml(cand_pyproject)
+
+    report = LockDrift(
+        python_floor_changed=(
+            base_proj.get("project", {}).get("requires-python")
+            != cand_proj.get("project", {}).get("requires-python")
+        )
+    )
+    drift = {
+        name: (base_versions[name], cand_versions[name])
+        for name in base_versions.keys() & cand_versions.keys()
+        if base_versions[name] != cand_versions[name]
+    }
+    if not drift:
+        return report
+
+    entries = {name: f"{name} {old} -> {new}" for name, (old, new) in drift.items()}
+    if report.python_floor_changed:
+        # A different Python floor re-resolves the whole graph by definition;
+        # there is no per-package intent to check against.
+        report.justified = [entries[name] for name in sorted(entries)]
+        return report
+
+    # Blast radius of a forced bump: its own subtree, nothing else.
+    justified: set[str] = set()
+    stack = list(_forced_roots(base_versions, base_proj, cand_proj))
+    while stack:
+        name = stack.pop()
+        if name in justified:
+            continue
+        justified.add(name)
+        for edge in cand_edges.get(name, []):
+            try:
+                dep = canonicalize_name(Requirement(edge).name)
+            except InvalidRequirement:
+                continue
+            if dep not in justified:
+                stack.append(dep)
+
+    for name in sorted(entries):
+        bucket = report.justified if name in justified else report.unjustified
+        bucket.append(entries[name])
+    return report
 
 
 class PreflightRunner:
@@ -592,6 +770,112 @@ class PreflightRunner:
         with open(path, "rb") as f:
             return tomllib.load(f)
 
+    def _git_blob(self, rev: str, path: str) -> str | None:
+        """Contents of *path* at *rev*, or None if git or the blob is unavailable
+        (no repository, shallow clone that never fetched *rev*, tmp_path tests)."""
+        try:
+            result = subprocess.run(
+                ["git", "show", f"{rev}:{path}"],
+                capture_output=True,
+                text=True,
+                cwd=self.project_root,
+            )
+        except FileNotFoundError:
+            return None
+        return result.stdout if result.returncode == 0 else None
+
+    def _git_rev(self, *args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                capture_output=True,
+                text=True,
+                cwd=self.project_root,
+            )
+        except FileNotFoundError:
+            return None
+        return result.stdout.strip() or None if result.returncode == 0 else None
+
+    def _lock_baseline_rev(self) -> str | None:
+        """Revision whose lock the working tree's lock should be judged against.
+
+        ``HEAD`` while a lock change is still uncommitted — the pre-commit path,
+        where the author can still re-lock. Otherwise the merge base with the
+        default branch, so a pushed branch is judged against what it forked
+        from, which is what CI sees. None when neither resolves: a shallow clone
+        of the default branch has no baseline, and nothing to compare against is
+        not a violation.
+        """
+        head_lock = self._git_blob("HEAD", "pdm.lock")
+        if head_lock is None:
+            return None
+        lockfile = self.project_root / "pdm.lock"
+        if lockfile.exists() and lockfile.read_text(encoding="utf-8") != head_lock:
+            return "HEAD"
+        head = self._git_rev("rev-parse", "HEAD")
+        for ref in ("origin/main", "main"):
+            merge_base = self._git_rev("merge-base", ref, "HEAD")
+            if merge_base is not None and merge_base != head:
+                return merge_base
+        return None
+
+    def _check_lock_drift(self) -> list[CheckResult]:
+        """Enforce `.claude/rules/deps.md`: a lock change may move existing
+        package versions only where a changed requirement demands it."""
+        rev = self._lock_baseline_rev()
+        base_lock = self._git_blob(rev, "pdm.lock") if rev else None
+        base_pyproject = self._git_blob(rev, "pyproject.toml") if rev else None
+        if rev is None or base_lock is None or base_pyproject is None:
+            return [
+                CheckResult(
+                    "SKIP", "check_deps", "lock drift: no baseline revision to compare"
+                )
+            ]
+
+        label = "HEAD" if rev == "HEAD" else rev[:8]
+        report = lock_drift(
+            base_lock,
+            (self.project_root / "pdm.lock").read_text(encoding="utf-8"),
+            base_pyproject,
+            (self.project_root / "pyproject.toml").read_text(encoding="utf-8"),
+        )
+        if report.python_floor_changed:
+            return [
+                CheckResult(
+                    "WARN",
+                    "check_deps",
+                    f"requires-python changed — {len(report.justified)} version "
+                    f"change(s) vs {label} left unaudited",
+                )
+            ]
+        if report.unjustified:
+            shown = report.unjustified[:_MAX_DRIFT_DETAILS]
+            hidden = len(report.unjustified) - len(shown)
+            details = list(shown)
+            if hidden:
+                details.append(f"... and {hidden} more")
+            details.append(
+                "re-lock with `pdm lock --update-reuse`, or declare the bump in "
+                "pyproject.toml so the intent is reviewable"
+            )
+            return [
+                CheckResult(
+                    "FAIL",
+                    "check_deps",
+                    f"{len(report.unjustified)} locked package(s) drifted vs "
+                    f"{label} with no requirement change asking for it",
+                    details,
+                )
+            ]
+        return [
+            CheckResult(
+                "PASS",
+                "check_deps",
+                f"no unrequested version drift vs {label} "
+                f"({len(report.justified)} justified)",
+            )
+        ]
+
     def check_deps(self) -> list[CheckResult]:
         results: list[CheckResult] = []
 
@@ -635,6 +919,7 @@ class PreflightRunner:
             results.append(
                 CheckResult("PASS", "check_deps", "pdm.lock exists and is non-empty")
             )
+            results.extend(self._check_lock_drift())
 
         # Deep mode: dry-run install per group
         if self.level == "deep" and optional:
