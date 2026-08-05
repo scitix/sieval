@@ -80,9 +80,9 @@ class TestMetricKeys:
         ]
 
     def test_thought_is_scored_when_enabled(self, monkeypatch):
-        # Enabling the axis builds the embedding client in `__init__`, and the
-        # OpenAI client refuses to construct on an empty key -- so the axis is not
-        # configurable without one. Nothing is called here; only `_metric_keys`.
+        # Enabling the axis builds the embedding client in `__init__`, which
+        # requires a key -- so the axis is not configurable without one. Nothing
+        # is called here; only `_metric_keys`.
         monkeypatch.setenv("SIEVAL_EMBED_API_KEY", "not-a-real-key")
         assert _task(eval_thought=True)._metric_keys() == [
             "thought",
@@ -92,6 +92,25 @@ class TestMetricKeys:
             "args_f1_score",
             "parse_rate",
         ]
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_thought_scoring_without_a_key_names_the_variable_that_helps(
+        self, monkeypatch, value
+    ):
+        # The endpoint is our embedding service, so the OpenAI client's own
+        # `Missing credentials` error -- which names OPENAI_API_KEY -- points at a
+        # variable that would not help. Both an unset and an empty key must reach
+        # sieval's message instead; "" is the reachable case, since it is what an
+        # exported-but-blank variable gives.
+        if value is None:
+            monkeypatch.delenv("SIEVAL_EMBED_API_KEY", raising=False)
+        else:
+            monkeypatch.setenv("SIEVAL_EMBED_API_KEY", value)
+        with pytest.raises(ValueError, match="SIEVAL_EMBED_API_KEY") as excinfo:
+            _task(eval_thought=True)
+        assert "OPENAI_API_KEY" not in str(excinfo.value)
+        # The way out has to be in the message: the axis is optional.
+        assert "eval_thought" in str(excinfo.value)
 
     @pytest.mark.parametrize(
         ("eval_type", "expected"),

@@ -65,11 +65,25 @@ class TEvalBeforeCallingZeroShotGenTask(
         self._eval_thought = eval_thought
 
         if self._eval_thought:
+            # Check the key here rather than letting the client do it. Passing an
+            # explicit "" is not None, so it skips the OpenAI client's own
+            # OPENAI_API_KEY fallback and raises `Missing credentials` naming
+            # OPENAI_API_KEY -- a variable that would not help, since the endpoint
+            # is an embedding service of ours, not OpenAI's.
+            api_key = os.getenv("SIEVAL_EMBED_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "eval_thought=True scores the thought axis by embedding "
+                    "similarity, which needs a credential for the embedding "
+                    "endpoint: set SIEVAL_EMBED_API_KEY (and SIEVAL_EMBED_API if "
+                    "the endpoint is not the default). Leave eval_thought unset "
+                    "to skip that axis -- the other axes need no embedding call."
+                )
             self._bert_api_client = AsyncOpenAI(
                 base_url=os.getenv(
                     "SIEVAL_EMBED_API", "https://console.siflow.cn/model-api"
                 ),
-                api_key=os.getenv("SIEVAL_EMBED_API_KEY", ""),
+                api_key=api_key,
             )
         else:
             self._bert_api_client = None
