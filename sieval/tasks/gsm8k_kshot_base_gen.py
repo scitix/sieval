@@ -137,8 +137,7 @@ class GSM8KFewShotBaseGenTask(
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
         self._stop = stop
@@ -243,16 +242,16 @@ class GSM8KFewShotBaseGenTask(
                 "GSM8K few-shot base generative task requires a "
                 f"{self._fewshot_split!r} split for few-shot examples."
             )
-        if len(split) < self._n_shot:
+        if len(split) < self.n_shot:
             raise ValueError(
                 "GSM8K few-shot base generative task requires at least "
-                f"{self._n_shot} examples in split {self._fewshot_split!r}; "
+                f"{self.n_shot} examples in split {self._fewshot_split!r}; "
                 f"found {len(split)}."
             )
-        if self._n_shot == 0:
+        if self.n_shot == 0:
             return []
         return self.dataset.retrieve_samples(
-            self._n_shot,
+            self.n_shot,
             split=self._fewshot_split,
             mode="random",
             seed=self._fewshot_seed,

@@ -185,8 +185,7 @@ class HellaSwagFewShotPPLTask(
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
         # Built once in setup() (framework contract: runs before any sample);
@@ -291,7 +290,7 @@ class HellaSwagFewShotPPLTask(
         }
 
     def _build_fewshot_prefix(self) -> str:
-        if self._n_shot == 0:
+        if self.n_shot == 0:
             return ""
         split = self.dataset.dataset_dict.get(self._fewshot_split)
         if split is None:
@@ -299,14 +298,14 @@ class HellaSwagFewShotPPLTask(
                 "HellaSwag k-shot PPL task requires a "
                 f"{self._fewshot_split!r} split for few-shot exemplars."
             )
-        if len(split) < self._n_shot:
+        if len(split) < self.n_shot:
             raise ValueError(
                 "HellaSwag k-shot PPL task requires at least "
-                f"{self._n_shot} examples in split {self._fewshot_split!r}; "
+                f"{self.n_shot} examples in split {self._fewshot_split!r}; "
                 f"found {len(split)}."
             )
         examples = self.dataset.retrieve_samples(
-            self._n_shot,
+            self.n_shot,
             split=self._fewshot_split,
             mode="random",
             seed=self._fewshot_seed,

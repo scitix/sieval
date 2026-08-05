@@ -110,8 +110,7 @@ class ARCChallengeFewShotClpTask(
         if logprobs < 1:
             raise ValueError(f"logprobs must be >= 1, got {logprobs}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._logprobs = logprobs
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
@@ -169,6 +168,6 @@ class ARCChallengeFewShotClpTask(
 
     def _build_fewshot_prefix(self) -> str:
         examples = sample_arc_fewshot(
-            self.dataset, self._n_shot, self._fewshot_split, self._fewshot_seed
+            self.dataset, self.n_shot, self._fewshot_split, self._fewshot_seed
         )
         return build_arc_clp_fewshot_prefix(examples)

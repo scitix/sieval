@@ -270,7 +270,7 @@ class TestE2ERunMetaTaskIdentity:
             model=MockChatModel(answers=DEFAULT_ANSWERS),
             name="shot_override",
         )
-        task.n_shot_used = 7  # a real task sets this in __init__ from its knob
+        task.n_shot = 7  # a real task sets this in __init__ from its knob
         runner = TaskRunner(task, make_config(tmp_path))
         await runner.arun()
 

@@ -139,8 +139,7 @@ class MMLUFewShotCLPTask(
         if logprobs < 1:
             raise ValueError(f"logprobs must be >= 1, got {logprobs}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._logprobs = max(logprobs, len(CHOICES))
         self._fewshot_split = fewshot_split
         self._few_shot_by_subject: dict[str, list[MMLUDatasetSample]] = {}
@@ -159,7 +158,7 @@ class MMLUFewShotCLPTask(
             self._build_few_shot_prompt(subject)
 
     def _ensure_few_shot_pool(self) -> None:
-        if self._few_shot_by_subject or self._n_shot == 0:
+        if self._few_shot_by_subject or self.n_shot == 0:
             return
         split = self.dataset.dataset_dict.get(self._fewshot_split)
         if split is None:
@@ -172,19 +171,19 @@ class MMLUFewShotCLPTask(
             self._few_shot_by_subject.setdefault(subject, []).append(sample)
 
     def _select_examples(self, subject: str) -> list[MMLUDatasetSample]:
-        if self._n_shot == 0:
+        if self.n_shot == 0:
             return []
         self._ensure_few_shot_pool()
         examples = self._few_shot_by_subject.get(subject, [])
-        # Slicing a short pool would render fewer shots than n_shot_used reports
-        # in meta.json, with nothing on disk saying so. Fail instead, as C-Eval
-        # and MMMLU already do for the same per-subject pool.
-        if len(examples) < self._n_shot:
+        # Slicing a short pool would render fewer shots than meta.json reports,
+        # with nothing on disk saying so. Fail instead, as C-Eval and MMMLU
+        # already do for the same per-subject pool.
+        if len(examples) < self.n_shot:
             raise ValueError(
                 f"MMLU subject {subject!r} has {len(examples)} "
-                f"{self._fewshot_split!r} exemplars; need n_shot={self._n_shot}."
+                f"{self._fewshot_split!r} exemplars; need n_shot={self.n_shot}."
             )
-        return list(examples)[: self._n_shot]
+        return list(examples)[: self.n_shot]
 
     def _build_few_shot_prompt(self, subject: str) -> str:
         cached = self._few_shot_prompt_by_subject.get(subject)

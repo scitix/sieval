@@ -113,8 +113,7 @@ class MBPPFewShotBaseGenTask(
             )
 
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._k = k
         self._n = n
         self._max_concurrency = max_concurrency
@@ -145,13 +144,13 @@ class MBPPFewShotBaseGenTask(
 
     def _build_few_shot_str(self) -> str:
         parts: list[str] = []
-        for example in list_fewshot_samples()[: self._n_shot]:
+        for example in list_fewshot_samples()[: self.n_shot]:
             parts.append(self._doc_to_text(example))
             parts.append(f"{example['code']}\n[DONE]\n\n")
         return "".join(parts)
 
     def _get_few_shot_prefix(self) -> str:
-        # The prefix only depends on self._n_shot, so build it once and
+        # The prefix only depends on self.n_shot, so build it once and
         # reuse it for every sample rather than rebuilding per preprocess call.
         if self._few_shot_prefix is None:
             self._few_shot_prefix = self._build_few_shot_str()

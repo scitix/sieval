@@ -224,8 +224,7 @@ class MMMLUKShotClpTask(
         if logprobs < 1:
             raise ValueError(f"logprobs must be >= 1, got {logprobs}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._fewshot_split = fewshot_split
         self._logprobs = logprobs
         self._sample_fraction = _normalize_sample_fraction(sample_fraction)
@@ -241,7 +240,7 @@ class MMMLUKShotClpTask(
     @override
     async def setup(self) -> None:
         self._apply_sampling()
-        if self._n_shot > 0:
+        if self.n_shot > 0:
             self._ensure_fewshot_pool()
 
     @override
@@ -474,7 +473,7 @@ class MMMLUKShotClpTask(
         return (locale, str(row.get("Subject", "")).strip())
 
     def _ensure_fewshot_pool(self) -> None:
-        if self._n_shot <= 0:
+        if self.n_shot <= 0:
             self._fewshot_by_group = {}
             return
 
@@ -502,25 +501,25 @@ class MMMLUKShotClpTask(
             group = self._group(sample)
             group_totals[group] = group_totals.get(group, 0) + 1
             examples = fewshot_by_group.setdefault(group, [])
-            if len(examples) < self._n_shot:
+            if len(examples) < self.n_shot:
                 examples.append(sample)
                 if self._fewshot_split == "test":
                     source_indices.add(index)
 
         if self._fewshot_split == "test":
             for group, examples in fewshot_by_group.items():
-                if len(examples) < self._n_shot:
+                if len(examples) < self.n_shot:
                     raise ValueError(
                         "MMMLU official k-shot evaluation requires at least "
-                        f"{self._n_shot} {self._fewshot_split!r} examples for locale "
+                        f"{self.n_shot} {self._fewshot_split!r} examples for locale "
                         f"{group[0]!r}, subject {group[1]!r}; found {len(examples)}."
                     )
 
             for group, total in group_totals.items():
-                if total <= self._n_shot:
+                if total <= self.n_shot:
                     raise ValueError(
                         "MMMLU test-split few-shot evaluation requires at least "
-                        f"{self._n_shot + 1} test examples for locale {group[0]!r}, "
+                        f"{self.n_shot + 1} test examples for locale {group[0]!r}, "
                         f"subject {group[1]!r} so reserved few-shot examples can "
                         f"be excluded from the scored test set; found {total}."
                     )
@@ -552,7 +551,7 @@ class MMMLUKShotClpTask(
         self._eval_split_excludes_fewshot = True
 
     def _fewshot_examples_for(self, group: tuple[str, str]) -> list[MMMLUDatasetSample]:
-        if self._n_shot <= 0:
+        if self.n_shot <= 0:
             return []
         if self._fewshot_by_group is None:
             self._ensure_fewshot_pool()
@@ -562,13 +561,13 @@ class MMMLUKShotClpTask(
             raise RuntimeError("MMMLU few-shot pool was not initialized.")
 
         examples = fewshot_by_group.get(group, [])
-        if len(examples) < self._n_shot:
+        if len(examples) < self.n_shot:
             raise ValueError(
                 "MMMLU official k-shot evaluation requires at least "
-                f"{self._n_shot} {self._fewshot_split!r} examples for locale "
+                f"{self.n_shot} {self._fewshot_split!r} examples for locale "
                 f"{group[0]!r}, subject {group[1]!r}; found {len(examples)}."
             )
-        return examples[: self._n_shot]
+        return examples[: self.n_shot]
 
     def _add_group_metrics(
         self,

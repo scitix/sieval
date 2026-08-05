@@ -1420,7 +1420,7 @@ class TestDatasetIntegrity:
 
 
 class TestCheckTaskShotKnobs:
-    """The shot-knob naming + `n_shot_used` wiring guard."""
+    """The shot-knob naming + `self.n_shot` wiring guard."""
 
     def _run(self, tmp_path: Path, source: str) -> CheckResult:
         tasks_dir = tmp_path / "sieval" / "tasks"
@@ -1440,13 +1440,15 @@ class TestCheckTaskShotKnobs:
             "@sieval_task(name='demo')\n"
             "class DemoTask:\n"
             "    def __init__(self, dataset, model, *, n_shot: int = 5):\n"
-            "        self._n_shot = n_shot\n"
-            "        self.n_shot_used = self._n_shot\n",
+            "        self.n_shot = n_shot\n",
         )
         assert r.status == "PASS"
 
+    # `k` is deliberately absent: it is not a misspelling of `n_shot` but a
+    # different knob, caught by rule 3 rather than rule 1 (and by two rules at
+    # once when fed to `self.n_shot`). Its own cases are below.
     @pytest.mark.parametrize(
-        "param", ["k", "shots", "num_shots", "nshot", "fewshot", "shot_count"]
+        "param", ["shots", "num_shots", "nshot", "fewshot", "shot_count"]
     )
     def test_misspelled_shot_param_flagged(self, tmp_path: Path, param: str):
         r = self._run(
@@ -1454,8 +1456,7 @@ class TestCheckTaskShotKnobs:
             "@sieval_task(name='demo')\n"
             "class DemoTask:\n"
             f"    def __init__(self, dataset, model, *, {param}: int = 5):\n"
-            f"        self._n_shot = {param}\n"
-            "        self.n_shot_used = self._n_shot\n",
+            f"        self.n_shot = {param}\n",
         )
         assert r.status == "FAIL"
         assert len(r.details) == 1
@@ -1475,9 +1476,15 @@ class TestCheckTaskShotKnobs:
         )
         assert r.status == "PASS"
 
-    # --- rule 2: accepting `n_shot` means wiring `n_shot_used` --------------
+    # --- rule 2: accepting `n_shot` means storing it as self.n_shot --------
 
-    def test_n_shot_without_n_shot_used_flagged(self, tmp_path: Path):
+    def test_n_shot_not_stored_publicly_flagged(self, tmp_path: Path):
+        """Storing the knob privately leaves the decorator's class value standing.
+
+        The task itself works; only `meta.json` is silently wrong, reporting the
+        declared default as the count the run used. That is the whole reason
+        this rule survives the move to a public `n_shot`.
+        """
         r = self._run(
             tmp_path,
             "@sieval_task(name='demo')\n"
@@ -1486,9 +1493,9 @@ class TestCheckTaskShotKnobs:
             "        self._n_shot = n_shot\n",
         )
         assert r.status == "FAIL"
-        assert "never assigns self.n_shot_used" in r.details[0]
+        assert "never assigns self.n_shot" in r.details[0]
 
-    def test_n_shot_used_from_a_derived_count_passes(self, tmp_path: Path):
+    def test_n_shot_from_a_derived_count_passes(self, tmp_path: Path):
         """The source expression is unconstrained — only `k` is rejected."""
         r = self._run(
             tmp_path,
@@ -1496,7 +1503,7 @@ class TestCheckTaskShotKnobs:
             "class DemoTask:\n"
             "    def __init__(self, dataset, model, *, n_shot: int = 5):\n"
             "        self._examples = pick(n_shot)\n"
-            "        self.n_shot_used = len(self._examples)\n",
+            "        self.n_shot = len(self._examples)\n",
         )
         assert r.status == "PASS"
 
@@ -1585,7 +1592,7 @@ class TestCheckTaskShotKnobs:
         )
         assert r.status == "PASS"
 
-    def test_n_shot_used_fed_from_k_flagged(self, tmp_path: Path):
+    def test_n_shot_fed_from_k_flagged(self, tmp_path: Path):
         """The regression this guard exists for: a shot count spelled `k`."""
         r = self._run(
             tmp_path,
@@ -1593,7 +1600,7 @@ class TestCheckTaskShotKnobs:
             "class DemoTask:\n"
             "    def __init__(self, dataset, model, *, k: int = 5):\n"
             "        self._k = k\n"
-            "        self.n_shot_used = self._k\n"
+            "        self.n_shot = self._k\n"
             "    async def report(self, finals, fails):\n"
             "        return {f'pass@{self._k}': 1.0}\n",
         )
@@ -1635,7 +1642,7 @@ class TestCheckTaskShotKnobs:
         A decorated task may inherit `__init__` from an undecorated base (the
         `arc/_base.py` layout). Keying the scan on the decorator skipped both
         ends — subclass has no `__init__`, base has no decorator — so a knob
-        that never reached `n_shot_used` went unchecked, with only a silently
+        that never reached `self.n_shot` went unchecked, with only a silently
         lower count to show for it.
         """
         r = self._run(
@@ -1649,7 +1656,7 @@ class TestCheckTaskShotKnobs:
             "    pass\n",
         )
         assert r.status == "FAIL"
-        assert "never assigns self.n_shot_used" in r.details[0]
+        assert "never assigns self.n_shot" in r.details[0]
         assert "_SharedInit" in r.details[0]
 
     def test_shared_base_wiring_the_knob_passes(self, tmp_path: Path):
@@ -1657,8 +1664,7 @@ class TestCheckTaskShotKnobs:
             tmp_path,
             "class _SharedInit:\n"
             "    def __init__(self, dataset, model, *, n_shot: int = 25):\n"
-            "        self._n_shot = n_shot\n"
-            "        self.n_shot_used = self._n_shot\n"
+            "        self.n_shot = n_shot\n"
             "\n"
             "@sieval_task(name='demo')\n"
             "class DemoTask(_SharedInit, Task):\n"
@@ -1673,7 +1679,7 @@ class TestCheckTaskShotKnobs:
             tmp_path,
             "class _SharedInit:\n"
             "    def __init__(self, dataset, model, *, num_shots: int = 25):\n"
-            "        self.n_shot_used = num_shots\n",
+            "        self.n_shot = num_shots\n",
         )
         assert r.status == "FAIL"
         assert "the repo spells it 'n_shot'" in r.details[0]

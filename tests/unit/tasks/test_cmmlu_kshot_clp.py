@@ -155,7 +155,7 @@ async def test_k_requires_few_shot_split():
 @pytest.mark.anyio
 async def test_setup_raises_when_subject_has_too_few_dev_exemplars():
     # 'logical' holds 1 dev row against n_shot=2: a bare slice would render 1 shot
-    # while meta.json's n_shot_used records 2. Aborts at setup(), not per sample.
+    # while meta.json records n_shot=2. Aborts at setup(), not per sample.
     # Near-unreachable upstream: CMMLU dev is a uniform 5/subject, so it can only
     # fire for n_shot > 5.
     task = CMMLUFewShotClpTask(
@@ -170,7 +170,7 @@ async def test_setup_raises_when_subject_has_too_few_dev_exemplars():
 async def test_build_prompt_raises_for_subject_absent_from_dev():
     # A test subject with no dev rows at all is invisible to setup()'s sweep over
     # the dev pool, so it can only surface per sample. Still loud: 0 rendered
-    # shots would otherwise pass silently against n_shot_used=2.
+    # shots would otherwise pass silently against a recorded n_shot=2.
     task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=2)
     await task.setup()
 

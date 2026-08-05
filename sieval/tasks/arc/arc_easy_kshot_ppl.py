@@ -118,8 +118,7 @@ class ARCEasyFewShotPplTask(
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
         self._fewshot_prefix: str | None = None
@@ -186,6 +185,6 @@ class ARCEasyFewShotPplTask(
 
     def _build_fewshot_prefix(self) -> str:
         examples = sample_arc_fewshot(
-            self.dataset, self._n_shot, self._fewshot_split, self._fewshot_seed
+            self.dataset, self.n_shot, self._fewshot_split, self._fewshot_seed
         )
         return build_arc_ppl_fewshot_prefix(examples)

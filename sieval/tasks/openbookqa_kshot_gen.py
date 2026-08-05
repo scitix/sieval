@@ -117,8 +117,7 @@ class OpenBookQAFewShotGenTask(
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._fewshot_split = fewshot_split
         self._fewshot_as_multiturn = fewshot_as_multiturn
         self._stop = stop
@@ -159,7 +158,7 @@ class OpenBookQAFewShotGenTask(
         # by pattern priority (not first-by-position), a trailing match can then
         # override the real leading answer. Bound generation at the next example
         # boundary. n_shot=0 stays unbounded to match the upstream 0-shot config.
-        if self._n_shot > 0 and self._stop:
+        if self.n_shot > 0 and self._stop:
             return await self.model.agenerate(pre["prompt"], stop=list(self._stop))
         return await self.model.agenerate(pre["prompt"])
 
@@ -191,7 +190,7 @@ class OpenBookQAFewShotGenTask(
         return {"score": accuracy, "fails": len(fails), "accuracy": accuracy}
 
     def _retrieve_fewshot(self) -> list[OpenBookQADatasetSample]:
-        if self._n_shot <= 0:
+        if self.n_shot <= 0:
             return []
         split = self.dataset.dataset_dict.get(self._fewshot_split)
         if split is None:
@@ -200,18 +199,18 @@ class OpenBookQAFewShotGenTask(
                 f"{self._fewshot_split!r} split for few-shot examples."
             )
         # retrieve_samples clips out-of-range indices, which would render fewer
-        # shots than n_shot_used reports in meta.json with nothing on disk
+        # shots than meta.json reports with nothing on disk
         # saying so. Fail instead, as the other few-shot tasks do. Called from
         # setup(), so this aborts before any inference spend.
-        if len(split) < self._n_shot:
+        if len(split) < self.n_shot:
             raise ValueError(
                 "OpenBookQA few-shot generative task requires at least "
-                f"{self._n_shot} examples in split {self._fewshot_split!r}; "
+                f"{self.n_shot} examples in split {self._fewshot_split!r}; "
                 f"found {len(split)}."
             )
         return self.dataset.retrieve_samples(
-            self._n_shot,
+            self.n_shot,
             split=self._fewshot_split,
             mode="fixed",
-            indices=list(range(self._n_shot)),
+            indices=list(range(self.n_shot)),
         )

@@ -223,7 +223,7 @@ async def test_setup_aborts_when_train_split_is_shorter_than_n_shot():
     """
     dataset = _dataset([_sample("q0"), _sample("q1")])
     task = OpenBookQAFewShotGenTask(dataset, _CapturingChatModel(), n_shot=5)
-    assert task.n_shot_used == 5
+    assert task.n_shot == 5
     with pytest.raises(ValueError, match="requires at least 5 examples"):
         await task.setup()
 

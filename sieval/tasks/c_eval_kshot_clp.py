@@ -188,8 +188,7 @@ class CEvalFewShotCLPTask(
         if logprobs < 1:
             raise ValueError(f"logprobs must be >= 1, got {logprobs}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._logprobs = max(logprobs, len(CHOICES))
         self._few_shot_cache: dict[str, str] = {}
         self._few_shot_by_subject: dict[str, list[CEvalDatasetSample]] = {}
@@ -197,7 +196,7 @@ class CEvalFewShotCLPTask(
     @override
     async def setup(self) -> None:
         # Build every per-subject few-shot prefix once here, not per sample.
-        if self._n_shot <= 0:
+        if self.n_shot <= 0:
             return
         self._ensure_few_shot_pool()
         for subject in self._few_shot_by_subject:
@@ -205,7 +204,7 @@ class CEvalFewShotCLPTask(
 
     def _ensure_few_shot_pool(self) -> None:
         """Group ``dev`` exemplars by subject (idempotent)."""
-        if self._few_shot_by_subject or self._n_shot <= 0:
+        if self._few_shot_by_subject or self.n_shot <= 0:
             return
         dataset_dict = self.dataset.dataset_dict
         if _FEWSHOT_SPLIT not in dataset_dict:
@@ -222,12 +221,12 @@ class CEvalFewShotCLPTask(
         """First n_shot same-subject dev exemplars, in dataset order (upstream)."""
         self._ensure_few_shot_pool()
         examples = self._few_shot_by_subject.get(subject, [])
-        if len(examples) < self._n_shot:
+        if len(examples) < self.n_shot:
             raise ValueError(
                 f"C-Eval subject {subject!r} has {len(examples)} dev exemplars; "
-                f"need n_shot={self._n_shot}."
+                f"need n_shot={self.n_shot}."
             )
-        return list(examples)[: self._n_shot]
+        return list(examples)[: self.n_shot]
 
     def _format_example(
         self, sample: CEvalDatasetSample, *, include_answer: bool = True
@@ -242,7 +241,7 @@ class CEvalFewShotCLPTask(
 
     def _build_few_shot_prompt(self, subject: str) -> str:
         """Build (and cache) the few-shot prefix for a subject."""
-        if self._n_shot <= 0:
+        if self.n_shot <= 0:
             return ""
         cached = self._few_shot_cache.get(subject)
         if cached is not None:

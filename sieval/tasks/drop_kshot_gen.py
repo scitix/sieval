@@ -58,8 +58,7 @@ class DROPFewShotGenTask(
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._sep = sep
         # "" is a legitimate value (the n_shot=0 prefix), so None is the
         # not-yet-built sentinel, mirroring the ARC tasks.
@@ -96,7 +95,7 @@ class DROPFewShotGenTask(
         )
 
     def _build_few_shot_str(self) -> str:
-        if self._n_shot == 0:
+        if self.n_shot == 0:
             return ""
         split = self.dataset.dataset_dict.get(_FEWSHOT_SPLIT)
         if split is None:
@@ -105,12 +104,12 @@ class DROPFewShotGenTask(
                 f"{_FEWSHOT_SPLIT!r} split for few-shot examples."
             )
         # retrieve_samples truncates to the split length, which would render
-        # fewer shots than n_shot_used reports in meta.json with nothing on
+        # fewer shots than meta.json reports with nothing on
         # disk saying so. Fail instead, as the other few-shot tasks do.
-        if len(split) < self._n_shot:
+        if len(split) < self.n_shot:
             raise ValueError(
                 "DROP few-shot generative task requires at least "
-                f"{self._n_shot} examples in split {_FEWSHOT_SPLIT!r}; "
+                f"{self.n_shot} examples in split {_FEWSHOT_SPLIT!r}; "
                 f"found {len(split)}."
             )
         # Lazy, and after the guards: drop_eval pulls scipy, and importing this
@@ -118,7 +117,7 @@ class DROPFewShotGenTask(
         from sieval.community.simple_evals.drop_eval import FEW_SHOT_TEMPLATE
 
         examples = self.dataset.retrieve_samples(
-            self._n_shot,
+            self.n_shot,
             split=_FEWSHOT_SPLIT,
             mode="random",
             seed=_FEWSHOT_SEED,

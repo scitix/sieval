@@ -69,7 +69,7 @@ async def test_setup_aborts_when_train_split_is_shorter_than_n_shot():
     The abort belongs in setup() so it lands before any inference spend.
     """
     task = DROPFewShotGenTask(_dataset([_sample("t0")]), _StubChatModel(), n_shot=3)
-    assert task.n_shot_used == 3
+    assert task.n_shot == 3
     with pytest.raises(ValueError, match="requires at least 3 examples"):
         await task.setup()
 

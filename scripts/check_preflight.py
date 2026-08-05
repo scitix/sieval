@@ -165,11 +165,11 @@ def _param_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     return [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
 
 
-def _n_shot_used_sources(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[set[str]]:
-    """For each ``self.n_shot_used = <expr>``, the identifiers ``<expr>`` reads.
+def _n_shot_sources(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[set[str]]:
+    """For each ``self.n_shot = <expr>``, the identifiers ``<expr>`` reads.
 
-    ``self._n_shot`` contributes ``_n_shot``, a bare ``n_shot`` contributes
-    ``n_shot`` — enough to tell which knob feeds the persisted count.
+    A bare ``n_shot`` contributes ``n_shot``, ``_normalize_n_shot(n_shot)``
+    contributes both — enough to tell which knob feeds the persisted count.
     """
     sources: list[set[str]] = []
     for node in ast.walk(fn):
@@ -177,7 +177,7 @@ def _n_shot_used_sources(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[set
             continue
         assigns_it = any(
             isinstance(t, ast.Attribute)
-            and t.attr == "n_shot_used"
+            and t.attr == "n_shot"
             and isinstance(t.value, ast.Name)
             and t.value.id == "self"
             for t in node.targets
@@ -890,20 +890,21 @@ class PreflightRunner:
         """Verify the few-shot knob is spelled ``n_shot`` and reaches meta.json.
 
         ``meta.json`` records the shot count a run used by reading
-        ``Task.n_shot_used``. A task that takes a shot-count argument and never
-        assigns it persists the *declared* ``@sieval_task(n_shot=...)`` default
-        instead, and nothing at runtime can tell — the run directory reports a
-        number the run never used. So the wiring is checked here.
+        ``Task.n_shot``, which ``@sieval_task`` seeds on the class with the
+        declared value. A constructor that takes a shot-count argument and
+        stores it anywhere *but* ``self.n_shot`` therefore leaves the class
+        value standing, and nothing at runtime can tell — the run directory
+        reports a number the run never used. So the wiring is checked here.
 
         Three rules, AST-only so a task whose optional deps are absent is still
         covered:
 
         1. a shot-count parameter is spelled ``n_shot``, nothing else;
-        2. a constructor accepting ``n_shot`` assigns ``self.n_shot_used``;
+        2. a constructor accepting ``n_shot`` assigns ``self.n_shot``;
         3. ``k`` is the ``k`` in ``pass@k`` in every task that takes one — the
            metric's parameter, not the sampling budget (that is ``n``, and
            ``k <= n``) — so a task accepting ``k`` must compute a pass@k
-           metric, and ``n_shot_used`` may never be fed from it. This is what
+           metric, and ``self.n_shot`` may never be fed from it. This is what
            stops ``k`` from re-acquiring a second meaning.
 
         Rules 1 and 2 bind *every* constructor under ``sieval/tasks/``, not only
@@ -951,18 +952,18 @@ class PreflightRunner:
                             "the repo spells it 'n_shot'"
                         )
 
-                sources = _n_shot_used_sources(init)
+                sources = _n_shot_sources(init)
                 if "n_shot" in params and not sources:
                     violations.append(
                         f"{where}: takes 'n_shot' but never assigns "
-                        "self.n_shot_used, so meta.json would record the "
-                        "declared @sieval_task(n_shot=...) default rather than "
-                        "the count this run used"
+                        "self.n_shot, so the class value @sieval_task(n_shot=...) "
+                        "seeded would stand and meta.json would report the "
+                        "declared default rather than the count this run used"
                     )
                 for names in sources:
                     if names & {"k", "_k"}:
                         violations.append(
-                            f"{where}: feeds self.n_shot_used from 'k', which "
+                            f"{where}: feeds self.n_shot from 'k', which "
                             "is the k in pass@k, not a shot count"
                         )
 

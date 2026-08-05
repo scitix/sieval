@@ -439,7 +439,12 @@ class TestGetTaskRunIdentity:
 
     def test_n_shot_is_the_run_not_the_declaration(self):
         """A run directory answers "what did this run do", so the shot count
-        persisted there is the instance's, not the class's advertisement."""
+        persisted there is the instance's, not the class's advertisement.
+
+        The override has to be per *instance*: the decorator assigns
+        `cls.n_shot` after the class body executes, so a class-level value
+        would simply be overwritten by the declared one.
+        """
 
         @sieval_task(
             name="knob",
@@ -449,21 +454,47 @@ class TestGetTaskRunIdentity:
             n_shot=5,
         )
         class KnobTask(_StubTask):
-            # A real task assigns this in `__init__` from its shot-count knob;
-            # these stubs are built with `object.__new__`, so the class-level
-            # default stands in for that assignment.
-            n_shot_used = 3
+            pass
 
-        identity = _identity_of(KnobTask)
+        # What a real task's `__init__` does with its shot-count knob.
+        task = object.__new__(KnobTask)
+        task.n_shot = 3
+
+        identity = get_task_run_identity(task)
         assert identity is not None
         assert identity["n_shot"] == 3
         # Only the projection moves: the declaration and the catalog row it
         # feeds still say 5.
         assert get_task_meta(KnobTask).n_shot == 5
+        assert KnobTask.n_shot == 5
+
+    def test_class_level_n_shot_cannot_shadow_the_declaration(self):
+        """The decorator is the single declaration, so it wins over the body.
+
+        Guards the reading that a subclass could advertise one count while
+        `@sieval_task` declares another — it cannot, and a run that wants a
+        different count shadows per instance instead.
+        """
+
+        @sieval_task(
+            name="bodyshadow",
+            display_name="BodyShadow",
+            description="x",
+            eval_mode=EvalMode.CLP,
+            n_shot=5,
+        )
+        class BodyShadowTask(_StubTask):
+            n_shot = 3  # overwritten by the decorator
+
+        assert BodyShadowTask.n_shot == 5
+        identity = _identity_of(BodyShadowTask)
+        assert identity is not None
+        assert identity["n_shot"] == 5
 
     def test_declared_n_shot_stands_without_a_knob(self):
-        """`Task.n_shot_used` defaults to `None`, so a task with no shot-count
-        knob keeps projecting what it declared — the common case."""
+        """`@sieval_task` seeds `cls.n_shot`, so a task with no shot-count knob
+        keeps projecting what it declared, with no code of its own — the common
+        case."""
 
         @sieval_task(
             name="noknob",

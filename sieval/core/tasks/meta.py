@@ -220,6 +220,10 @@ def sieval_task[T: type[Task]](
         )
         setattr(cls, _TASK_META_ATTR, meta)
         cls.tags = protocol_tags
+        # Seeds the declared count on the class. A task with a shot-count knob
+        # shadows it per instance in __init__; a knobless one is already right,
+        # which is why no task needs code to make `meta.json` correct.
+        cls.n_shot = n_shot
         if model_type is not None:
             cls.model_type = model_type
         TASK_REGISTRY[name] = meta
@@ -257,28 +261,30 @@ def get_task_run_identity(task: Task) -> TaskRunIdentity | None:
     persisted field whose *values* are not frozen within `schema_version=1`
     (see the module docstring), so consumers should read it as advisory.
 
-    `n_shot` alone is read off the *instance*, via :attr:`Task.n_shot_used`,
-    falling back to the declared value when the task has no knob: it is the
-    one field a run can change, and a run directory is read to find out what
-    the run did.
+    `n_shot` alone comes off the *object* rather than `meta`, via
+    :attr:`Task.n_shot`: it is the one field a run can change, and a run
+    directory is read to find out what the run did. Attribute lookup resolves
+    it — an instance whose `__init__` took a knob shadows the class value, a
+    knobless one falls through to what the decorator seeded, which equals
+    `meta.n_shot`. So this needs no fallback of its own.
     """
     if isinstance(task, type):
         raise TypeError(
             "get_task_run_identity takes a Task instance, not a class "
-            f"({task.__qualname__}): `n_shot` is read off the instance, so a "
-            "class would silently omit the block."
+            f"({task.__qualname__}): `n_shot` is read off the instance, and a "
+            "class would report the declared default as though a run had used "
+            "it."
         )
     cls = type(task)
     meta: TaskMeta | None = cls.__dict__.get(_TASK_META_ATTR)
     if meta is None:
         return None
-    n_shot_used = task.n_shot_used
     return {
         "name": meta.name,
         "display_name": meta.display_name,
         "dataset": meta.dataset,
         "eval_mode": meta.eval_mode.value,
-        "n_shot": meta.n_shot if n_shot_used is None else n_shot_used,
+        "n_shot": task.n_shot,
         "tags": list(meta.tags),
         "status": meta.status,
     }

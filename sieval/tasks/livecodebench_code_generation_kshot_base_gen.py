@@ -131,8 +131,7 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = n_shot
-        self.n_shot_used = self._n_shot
+        self.n_shot = n_shot
         self._k = k
         self._n = n
         self._stop = stop
@@ -150,7 +149,7 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
     @override
     async def setup(self) -> None:
         self._fewshot_prefix = {
-            has_starter: get_base_model_fewshot_prefix(has_starter, self._n_shot)
+            has_starter: get_base_model_fewshot_prefix(has_starter, self.n_shot)
             for has_starter in (False, True)
         }
 

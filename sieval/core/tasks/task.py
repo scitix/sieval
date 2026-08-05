@@ -98,17 +98,20 @@ class Task[
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", task_name).strip("._-") or "task"
         return safe_name
 
-    n_shot_used: int | None = None
-    """Few-shot examples this *instance* renders — what ``meta.json`` records.
+    n_shot: int = 0
+    """Few-shot exemplars this task renders — what ``meta.json`` records.
 
-    Assigned in ``__init__`` by tasks whose constructor takes a shot-count
-    knob. ``None`` means the declared ``@sieval_task(n_shot=...)`` stands,
-    correct for a knobless task with no code of its own; ``0`` would instead
-    turn a forgotten assignment into a wrong value, so do not default to it.
-    Never infer it from an attribute name either — ``self._k`` is a shot count
-    in the ``*_kshot_*`` tasks but the ``k`` in ``pass@k`` in several
-    ``*_0shot_*`` ones (the metric's parameter; their sampling budget is
-    ``self._n``).
+    Seeded on the class by ``@sieval_task(n_shot=...)``, so a task with no
+    shot-count knob is already correct and needs no code of its own. A task
+    whose constructor takes one assigns ``self.n_shot`` in ``__init__``, which
+    shadows the class value for that instance: the catalog says what the task
+    advertises, a run directory says what the run did. ``"n_shot" in
+    task.__dict__`` distinguishes the two after the fact.
+
+    Deliberately a plain class attribute rather than a ``ClassVar`` like
+    :attr:`model_type` / :attr:`tags`: those are never set per instance, while
+    this is the one field a run can change — annotating it ``ClassVar`` would
+    make the shadowing assignment a type error.
     """
 
     def make_context(

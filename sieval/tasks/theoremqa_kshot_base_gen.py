@@ -454,8 +454,7 @@ class TheoremQAKShotBaseGenTask(
         self, dataset, model, name: str | None = None, *, n_shot: int | None = None
     ):
         super().__init__(dataset=dataset, model=model, name=name)
-        self._n_shot = _normalize_n_shot(n_shot)
-        self.n_shot_used = self._n_shot
+        self.n_shot = _normalize_n_shot(n_shot)
         self._prompt_no_input: str | None = None
         self._prompt_prefix: str | None = None
 
@@ -534,7 +533,7 @@ class TheoremQAKShotBaseGenTask(
         }
 
     def _build_prompt_parts(self) -> tuple[str, str]:
-        used_examples = list(_THEOREMQA_EXAMPLES[: self._n_shot])
+        used_examples = list(_THEOREMQA_EXAMPLES[: self.n_shot])
         return _get_short_format(used_examples)
 
     def _get_prompt_parts(self) -> tuple[str, str]:

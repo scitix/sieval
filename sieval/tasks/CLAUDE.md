@@ -19,15 +19,17 @@ Two counts that read alike and are not interchangeable. Enforced by
 `scripts/check_preflight.py --check check_task_shot_knobs`:
 
 - **`n_shot`** — the few-shot exemplar count. The only accepted spelling (not
-  `k`, `shots`, `num_shots`, `fewshot`, …). A task taking it **must** assign
-  `self.n_shot_used` in `__init__`, from the value it stores so any
-  normalisation is respected: that attribute is what `meta.json` records as the
-  count the run used, and skipping it persists the declared
-  `@sieval_task(n_shot=...)` default instead.
+  `k`, `shots`, `num_shots`, `fewshot`, …). Store it as **`self.n_shot`**, the
+  public field `Task` declares and `@sieval_task(n_shot=...)` seeds on the
+  class: assigning it shadows the class value for that instance, and that is
+  what `meta.json` records as the count the run used. Store it anywhere else
+  (`self._n_shot`, …) and the class value stands, so the run directory reports
+  the declared default. A task with **no** knob needs no code at all — the
+  seeded class value is already right.
 - **`k`** — the `k` in `pass@k`, nothing else: the metric's parameter, **not**
   the sampling budget. That is `n`, forwarded to `agenerate(n=...)`, and
   `k <= n` — `pass@k` is estimated from `n` samples per problem. A task taking
-  `k` must compute a `pass@k` metric, and `n_shot_used` may never be fed from it.
+  `k` must compute a `pass@k` metric, and `self.n_shot` may never be fed from it.
 
 The `n_shot` rules bind **every constructor under `sieval/tasks/`**, including an
 undecorated shared base in a subpackage (`arc/_base.py`) — a decorated task can

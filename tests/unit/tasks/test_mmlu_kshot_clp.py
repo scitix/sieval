@@ -290,7 +290,7 @@ async def test_missing_fewshot_split_raises():
 @pytest.mark.anyio
 async def test_setup_raises_when_subject_has_too_few_dev_exemplars():
     # 1 anatomy dev row against n_shot=5: a bare slice would render 1 shot while
-    # meta.json's n_shot_used records 5. Aborts at setup(), not per sample.
+    # meta.json records n_shot=5. Aborts at setup(), not per sample.
     # Near-unreachable upstream: MMLU dev is a uniform 5/subject, so it can only
     # fire for n_shot > 5.
     task = MMLUFewShotCLPTask(
@@ -306,7 +306,7 @@ async def test_setup_raises_when_subject_has_too_few_dev_exemplars():
 async def test_preprocess_raises_for_subject_absent_from_dev():
     # A test subject with no dev rows at all is invisible to setup()'s sweep over
     # the dev pool, so it can only surface per sample. Still loud: 0 rendered
-    # shots would otherwise pass silently against n_shot_used=5.
+    # shots would otherwise pass silently against a recorded n_shot=5.
     dev = [_sample("anatomy", f"a{i}", 0) for i in range(5)]
     test = _sample("astronomy", "t", 0)
     task = MMLUFewShotCLPTask(_dataset(dev, [test]), _ScriptedGenModel(), n_shot=5)
