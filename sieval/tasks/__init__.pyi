@@ -106,6 +106,21 @@ from .mmmlu_kshot_clp import (
 from .openbookqa_kshot_gen import (
     OpenBookQAFewShotGenTask,
 )
+from .platinum_bench.platinum_gsm8k_0shot_gen import (
+    PlatinumGSM8KZeroShotGenTask,
+)
+from .platinum_bench.platinum_multiarith_0shot_gen import (
+    PlatinumMultiArithZeroShotGenTask,
+)
+from .platinum_bench.platinum_singleop_0shot_gen import (
+    PlatinumSingleOpZeroShotGenTask,
+)
+from .platinum_bench.platinum_singleq_0shot_gen import (
+    PlatinumSingleEqZeroShotGenTask,
+)
+from .platinum_bench.platinum_svamp_0shot_gen import (
+    PlatinumSVAMPZeroShotGenTask,
+)
 from .ruler_0shot_gen import (
     RulerZeroShotGenTask,
 )
@@ -158,6 +173,11 @@ __all__ = [
     "MMLUZeroShotGenTask",
     "MMMLUKShotClpTask",
     "OpenBookQAFewShotGenTask",
+    "PlatinumGSM8KZeroShotGenTask",
+    "PlatinumMultiArithZeroShotGenTask",
+    "PlatinumSVAMPZeroShotGenTask",
+    "PlatinumSingleEqZeroShotGenTask",
+    "PlatinumSingleOpZeroShotGenTask",
     "RulerZeroShotGenTask",
     "SciCodeZeroShotGenTask",
     "SimpleQAVerifiedZeroShotGenTask",

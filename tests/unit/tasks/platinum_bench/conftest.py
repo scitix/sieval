@@ -1,0 +1,147 @@
+"""
+Shared fixtures for the PlatinumBench task tests.
+
+All five leaf tasks are 2-line subclasses of one base, so the model stub and the
+row/task factories live here instead of being copied into six files.
+
+AI-Generated Code - Claude Opus 5 (Anthropic)
+"""
+
+from sieval.core.models import ModelOutput
+from sieval.core.models.chat_model import ChatModel
+from sieval.core.tasks import EvalMode
+from sieval.core.tasks.meta import get_task_class, get_task_meta
+from sieval.datasets.platinum_bench import (
+    PlatinumBenchDataset,
+    PlatinumBenchDatasetSample,
+)
+from sieval.tasks.platinum_bench._base import (
+    PLATINUM_UPSTREAM_URL,
+    PlatinumMathGenTask,
+)
+
+COT_PROMPT = "What is 40 + 2?\nThink step by step. Then, provide 'Answer: <n>'."
+NO_COT_PROMPT = "What is 40 + 2?\nRespond with only 'Answer: <n>'."
+
+
+class CapturingChatModel(ChatModel):
+    """Returns a fixed completion and records the kwargs ``infer()`` passed."""
+
+    def __init__(self, text: str = "Answer: 42"):
+        super().__init__(model="mock-chat", api_key="fake")
+        self.last_kwargs: dict[str, object] = {}
+        self._text = text
+
+    async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
+        _ = prompt
+        self.last_kwargs = dict(kwargs)
+        return ModelOutput(model=self.meta(), texts=[self._text])
+
+    async def _alogprobs_impl(
+        self,
+        prompt,
+        *,
+        max_tokens: int = 1,
+        logprobs: int = 5,
+        echo: bool = True,
+        temperature: float = 0.0,
+        **kwargs,
+    ) -> ModelOutput:
+        _ = (prompt, max_tokens, logprobs, echo, temperature, kwargs)
+        return ModelOutput(model=self.meta(), texts=[""])
+
+
+def make_sample(
+    *,
+    subset: str = "gsm8k",
+    target: str = "42",
+    strategy: str = "math",
+) -> PlatinumBenchDatasetSample:
+    return {
+        "subset": subset,
+        "cleaning_status": "consensus",
+        "platinum_prompt": COT_PROMPT,
+        "platinum_prompt_no_cot": NO_COT_PROMPT,
+        "platinum_target": [target],
+        "original_target": [target],
+        "platinum_parsing_strategy": strategy,
+    }
+
+
+def make_dataset(subset: str) -> PlatinumBenchDataset:
+    """A dataset instance bound to *subset*, built without touching the hub."""
+    from datasets import Dataset as HFDataset
+    from datasets import DatasetDict as HFDatasetDict
+
+    return PlatinumBenchDataset(
+        _hf_dict=HFDatasetDict(
+            {"test": HFDataset.from_list([dict(make_sample(subset=subset))])}
+        ),
+        subset=subset,
+    )
+
+
+def assert_leaf_meta(
+    task_cls: type[PlatinumMathGenTask],
+    *,
+    name: str,
+    subset: str,
+    kept: int,
+    total: int,
+) -> None:
+    """Assert the registration contract every leaf shares.
+
+    Lives here rather than in each leaf test so a copy-paste slip between two
+    leaves (swapped subset, stale row count) fails in exactly one place.
+    """
+    meta = get_task_meta(task_cls)
+    assert meta.name == name
+    assert task_cls.subset == subset
+    # The FK is resolved from the *base* class's sample generic via the MRO —
+    # the leaves declare no generic of their own.
+    assert meta.dataset == "platinum_bench"
+    assert meta.eval_mode is EvalMode.GEN
+    assert meta.n_shot == 0
+    assert meta.model_type == "chat"
+    # Not yet validated against upstream's published per-dataset error counts.
+    assert meta.status == "experimental"
+    assert meta.tags == ("english", "math-word-problems", "open-ended")
+
+    assert meta.reference_impl is not None
+    assert meta.reference_impl.source == "MadryLab/platinum-benchmarks"
+    assert meta.reference_impl.url == PLATINUM_UPSTREAM_URL
+    notes = meta.reference_impl.notes
+    assert f"Subset '{subset}'" in notes
+    # kept + rejected == total, spelled out so a stale count cannot agree with
+    # itself.
+    assert f"{kept} rows kept of {total}" in notes
+    assert f"({total - kept} rejected)" in notes
+    # The row count is the one number a leaderboard reader compares, so it must
+    # also be in the one-line description.
+    assert str(kept) in meta.description
+
+    # Subpackage-hosted tasks must still resolve by name — this is what
+    # `sieval task show` / `sieval eval` go through.
+    assert get_task_class(name) is task_cls
+
+    # A leaf adds nothing but its subset; behaviour lives in the shared base, so
+    # the five subsets cannot silently drift apart. `tags` / `model_type` /
+    # `n_shot` are seeded onto the class by `@sieval_task`, not written by the
+    # leaf. Private names are excluded: `_sieval_task_meta` comes from the
+    # decorator and `_abc_impl` from ABCMeta. Every stage method is public, so an
+    # override still trips this.
+    own = {key for key in vars(task_cls) if not key.startswith("_")}
+    assert own == {"subset", "tags", "model_type", "n_shot"}
+
+
+def make_task[T: PlatinumMathGenTask](
+    task_cls: type[T],
+    *,
+    text: str = "Answer: 42",
+    subset: str | None = None,
+    **task_kwargs,
+) -> tuple[T, CapturingChatModel]:
+    """Instantiate *task_cls* against a dataset for *subset* (default: its own)."""
+    model = CapturingChatModel(text=text)
+    dataset = make_dataset(subset if subset is not None else task_cls.subset)
+    return task_cls(dataset, model, **task_kwargs), model

@@ -117,6 +117,10 @@ from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
 )
+from .platinum_bench import (
+    PlatinumBenchDataset,
+    PlatinumBenchDatasetSample,
+)
 from .ruler.ruler import (
     RulerDataset,
     RulerDatasetSample,
@@ -197,6 +201,8 @@ __all__ = [
     "MMMLUDatasetSample",
     "OpenBookQADataset",
     "OpenBookQADatasetSample",
+    "PlatinumBenchDataset",
+    "PlatinumBenchDatasetSample",
     "RulerDataset",
     "RulerDatasetSample",
     "SciCodeDataset",

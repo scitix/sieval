@@ -641,6 +641,28 @@
       "checksums": {}
     },
     {
+      "name": "platinum_bench",
+      "display_name": "PlatinumBench",
+      "description": "Label-noise-cleaned revisions of 15 benchmarks; one subset per instance.",
+      "source": [
+        "hf:madrylab/platinum-bench@51920a33bfb4620c789729ace14141e87a14969b"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "ElementaryMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "cc-by-sa-4.0",
+      "checksums": {}
+    },
+    {
       "name": "ruler",
       "display_name": "RULER",
       "description": "RULER long-context benchmark: 13 subtasks (NIAH ×8, VT, CWE, FWE, QA ×2).",
@@ -1497,6 +1519,111 @@
         "notes": "Prompt template (main variant) and first_option_postprocess vendored from OpenCompass. At n_shot=0 the prompt and extraction match the upstream 0-shot config; n_shot>0 is a sieval extension (fixed first n_shot train rows)."
       },
       "status": "stable"
+    },
+    {
+      "name": "platinum_gsm8k_0shot_gen",
+      "display_name": "PlatinumBench GSM8K (0-shot, generative)",
+      "description": "Label-noise-cleaned GSM8K: 268 grade-school math word problems.",
+      "dataset": "platinum_bench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "MadryLab/platinum-benchmarks",
+        "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
+        "notes": "Subset 'gsm8k' of madrylab/platinum-bench: 268 rows kept of 300 (32 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list — pass prompt_variant: no_cot for a reasoning model; upstream's o1-only \"Then, provide\" -> \"Provide\" prompt edit is not ported; a parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed. Not greedy, so upstream runs are not bit-reproducible either. max_tokens=6000 is applied in infer() (upstream's default) because a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. Not yet validated against upstream's published per-dataset error counts, so status=\"experimental\"."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "platinum_multiarith_0shot_gen",
+      "display_name": "PlatinumBench MultiArith (0-shot, generative)",
+      "description": "Label-noise-cleaned MultiArith: 170 multi-step arithmetic word problems.",
+      "dataset": "platinum_bench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "MadryLab/platinum-benchmarks",
+        "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
+        "notes": "Subset 'multiarith' of madrylab/platinum-bench: 170 rows kept of 174 (4 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list — pass prompt_variant: no_cot for a reasoning model; upstream's o1-only \"Then, provide\" -> \"Provide\" prompt edit is not ported; a parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed. Not greedy, so upstream runs are not bit-reproducible either. max_tokens=6000 is applied in infer() (upstream's default) because a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. Not yet validated against upstream's published per-dataset error counts, so status=\"experimental\"."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "platinum_singleop_0shot_gen",
+      "display_name": "PlatinumBench SingleOp (0-shot, generative)",
+      "description": "Label-noise-cleaned SingleOp: 150 single-operation arithmetic problems.",
+      "dataset": "platinum_bench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "MadryLab/platinum-benchmarks",
+        "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
+        "notes": "Subset 'singleop' of madrylab/platinum-bench: 150 rows kept of 159 (9 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list — pass prompt_variant: no_cot for a reasoning model; upstream's o1-only \"Then, provide\" -> \"Provide\" prompt edit is not ported; a parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed. Not greedy, so upstream runs are not bit-reproducible either. max_tokens=6000 is applied in infer() (upstream's default) because a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. Not yet validated against upstream's published per-dataset error counts, so status=\"experimental\"."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "platinum_singleq_0shot_gen",
+      "display_name": "PlatinumBench SingleEq (0-shot, generative)",
+      "description": "Label-noise-cleaned SingleEq: 100 single-equation math word problems.",
+      "dataset": "platinum_bench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "MadryLab/platinum-benchmarks",
+        "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
+        "notes": "Subset 'singleq' of madrylab/platinum-bench: 100 rows kept of 109 (9 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list — pass prompt_variant: no_cot for a reasoning model; upstream's o1-only \"Then, provide\" -> \"Provide\" prompt edit is not ported; a parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed. Not greedy, so upstream runs are not bit-reproducible either. max_tokens=6000 is applied in infer() (upstream's default) because a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. Not yet validated against upstream's published per-dataset error counts, so status=\"experimental\"."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "platinum_svamp_0shot_gen",
+      "display_name": "PlatinumBench SVAMP (0-shot, generative)",
+      "description": "Label-noise-cleaned SVAMP: 265 varied arithmetic word problems.",
+      "dataset": "platinum_bench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "MadryLab/platinum-benchmarks",
+        "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
+        "notes": "Subset 'svamp' of madrylab/platinum-bench: 265 rows kept of 300 (35 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list — pass prompt_variant: no_cot for a reasoning model; upstream's o1-only \"Then, provide\" -> \"Provide\" prompt edit is not ported; a parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed. Not greedy, so upstream runs are not bit-reproducible either. max_tokens=6000 is applied in infer() (upstream's default) because a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. Not yet validated against upstream's published per-dataset error counts, so status=\"experimental\"."
+      },
+      "status": "experimental"
     },
     {
       "name": "ruler_0shot_gen",

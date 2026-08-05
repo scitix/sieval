@@ -1,0 +1,243 @@
+"""
+Shared implementation for the PlatinumBench ``math``-parsing subsets.
+
+Five subsets (singleop, singleq, multiarith, svamp, gsm8k) declare
+``platinum_parsing_strategy == "math"`` at the pinned revision and are scored
+identically upstream, so they share one base class and differ only by the
+``subset`` they bind to. Each leaf module is a decorated 3-line subclass, which
+is what gives the leaderboard five columns instead of one aggregate.
+
+Alignment with MadryLab/platinum-benchmarks at ``8fd2f82``:
+
+* Prompt: taken verbatim from the row. Upstream builds no prompt of its own —
+  ``get_prompt`` picks between the data's ``platinum_prompt`` (CoT) and
+  ``platinum_prompt_no_cot`` columns and sends the string as a single user turn.
+* Extraction: ``get_parse_fn("math")``, vendored byte-faithfully in
+  ``sieval.community.platinum_bench``.
+* Scoring: ``check_prediction``, also vendored. For these five subsets that
+  resolves to ``float(platinum_target[0]) == float(prediction)`` — **exact**
+  float equality, not a tolerance, which is why the parse function strips a
+  trailing ``.0`` before comparison.
+
+Deviations, all deliberate:
+
+* ``prompt_variant`` (task arg, default ``"cot"``) replaces upstream's
+  ``ModelEngineFactory.reasoning_models`` name list, which decides CoT vs no-CoT
+  by hardcoded model name. A name list cannot classify an arbitrary served
+  endpoint, and silently switching prompts based on a model string is exactly
+  the kind of implicit behaviour that makes two runs incomparable. Set
+  ``prompt_variant: no_cot`` for a reasoning model.
+* Upstream's o1-only ``platinum_prompt_no_cot.replace('Then, provide',
+  'Provide')`` is not ported. It exists because o1-preview sometimes refused the
+  original wording; it is a workaround for two retired snapshots, and applying
+  it here would silently alter the prompt for every no-CoT model.
+* A parse failure becomes ``prediction=None`` and ``correct=False``. Upstream
+  reaches the same verdict, but by exception: ``parse_fn_math`` raises
+  ``AttributeError`` on digit-free output, ``run_benchmark.py`` catches it with a
+  bare ``except`` and stores the string ``'parsing error'``. Its
+  ``prediction != 'Parsing error'`` guard in ``check_prediction`` never matches
+  that lowercase value, so upstream then raises ``ValueError`` inside
+  ``float()`` and swallows that too. Same score, without replicating the bug.
+* Accuracy is over the full requested set (``finals + fails``), so a pipeline
+  failure counts as wrong. Upstream has no failure bucket — every row it fetched
+  gets a verdict — so this keeps the denominators equal.
+
+Upstream reports **error counts** per subset and a plain (non-size-weighted)
+mean across subsets, so ``report()`` emits ``errors`` alongside ``accuracy``;
+the cross-subset mean is the leaderboard's job, not this task's.
+
+Repro decoding (model-layer assets — set via ``models:`` / ``infer_args``, not
+in this code): ``temperature=0.5``, ``top_p`` unset, one sample per question, no
+seed (``models.py::ModelInferenceEngine``). Notably *not* greedy — upstream
+sampled at 0.5, so a single run is not bit-reproducible upstream either.
+``max_tokens=6000`` is applied in ``infer()`` rather than left to YAML, because
+a short default budget truncates CoT answers before the ``Answer:`` line and
+converts correct reasoning into parse failures.
+
+AI-Generated Code - Claude Opus 5 (Anthropic)
+"""
+
+from typing import ClassVar, Literal, override
+
+from sieval.community.platinum_bench import check_prediction, get_parse_fn
+from sieval.core.models import ModelOutput
+from sieval.core.tasks import (
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
+    Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
+)
+from sieval.datasets import PlatinumBenchDatasetSample
+
+PLATINUM_UPSTREAM_URL = "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py"
+
+# Shared tail of every leaf's `reference_impl.notes`. `sieval task show` is the
+# only place these facts surface, so they are repeated per task rather than left
+# to a module docstring no CLI reads.
+PLATINUM_REFERENCE_NOTES = (
+    "Prompt comes from the row, not from this code: upstream get_prompt() picks "
+    "between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns "
+    "and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring "
+    "(check_prediction, i.e. exact float equality on platinum_target[0]) are "
+    "vendored byte-faithfully in sieval.community.platinum_bench. Rows with "
+    "cleaning_status='rejected' are dropped, matching the published leaderboard. "
+    "Deviations: prompt_variant (task arg, default cot) replaces upstream's "
+    "hardcoded reasoning-model name list — pass prompt_variant: no_cot for a "
+    'reasoning model; upstream\'s o1-only "Then, provide" -> "Provide" prompt '
+    "edit is not ported; a parse failure is recorded as prediction=None/"
+    "correct=False instead of upstream's swallowed AttributeError. "
+    "Repro decoding (model-layer assets — set via models: / infer_args, not in "
+    "this code): temperature=0.5, one sample per question, no seed. Not greedy, "
+    "so upstream runs are not bit-reproducible either. max_tokens=6000 is "
+    "applied in infer() (upstream's default) because a smaller budget truncates "
+    "CoT before the 'Answer:' line and turns correct reasoning into parse errors. "
+    "Not yet validated against upstream's published per-dataset error counts, so "
+    'status="experimental".'
+)
+
+# `parsing_strategy` value shared by all five subsets this base serves. Asserted
+# per sample rather than assumed: it is a data column, so a future revision can
+# change it, and a silently-wrong parser would look like a model regression.
+MATH_PARSING_STRATEGY = "math"
+
+# models.py::ModelInferenceEngine's max_completion_tokens/max_tokens default.
+UPSTREAM_MAX_TOKENS = 6000
+
+TPromptVariant = Literal["cot", "no_cot"]
+
+_PROMPT_VARIANTS: tuple[TPromptVariant, ...] = ("cot", "no_cot")
+
+
+class PlatinumMathGenTask(
+    Task[
+        PlatinumBenchDatasetSample,
+        PromptRecord,
+        ModelOutput,
+        PredictionRecord,
+        JudgementRecord,
+        dict[str, float],
+    ]
+):
+    """Base for one PlatinumBench math subset; leaves set :attr:`subset`."""
+
+    #: The `madrylab/platinum-bench` config this task scores. Must match the
+    #: dataset instance it is wired to — enforced in `setup()`.
+    subset: ClassVar[str]
+
+    def __init__(
+        self,
+        dataset,
+        model,
+        name: str | None = None,
+        prompt_variant: TPromptVariant = "cot",
+        max_tokens: int = UPSTREAM_MAX_TOKENS,
+    ):
+        super().__init__(dataset=dataset, model=model, name=name)
+        if prompt_variant not in _PROMPT_VARIANTS:
+            raise ValueError(
+                f"prompt_variant must be one of {list(_PROMPT_VARIANTS)}, "
+                f"got {prompt_variant!r}."
+            )
+        self._prompt_variant = prompt_variant
+        self._max_tokens = max_tokens
+
+    def _prompt_text(self, raw: PlatinumBenchDatasetSample) -> str:
+        """The prompt column this run reads — upstream's ``get_prompt`` branches."""
+        if self._prompt_variant == "no_cot":
+            return raw["platinum_prompt_no_cot"]
+        return raw["platinum_prompt"]
+
+    @override
+    async def setup(self) -> None:
+        # One Dataset class serves all 15 configs, so YAML can wire this task to
+        # a sibling subset's instance and the run would score real answers
+        # against the wrong questions — a silently plausible result. Fail here
+        # instead, before any tokens are spent.
+        dataset_subset = getattr(self.dataset, "subset", None)
+        if dataset_subset != self.subset:
+            raise ValueError(
+                f"{type(self).__name__} scores the '{self.subset}' subset but was "
+                f"given a dataset for subset {dataset_subset!r}. Set "
+                f"`args.subset: {self.subset}` on the dataset this task uses."
+            )
+
+    @override
+    async def preprocess(self, raw, ctx):
+        strategy = raw["platinum_parsing_strategy"]
+        if strategy != MATH_PARSING_STRATEGY:
+            raise ValueError(
+                f"{type(self).__name__} parses answers with the "
+                f"'{MATH_PARSING_STRATEGY}' strategy, but this row declares "
+                f"{strategy!r}. The pinned revision's parsing strategy changed."
+            )
+        # The row carries the fully-rendered prompt; upstream sends it as-is as a
+        # single user turn and lets the backend apply the chat template.
+        return build_prompt_record(
+            [{"role": "user", "content": self._prompt_text(raw)}],
+            reference=list(raw["platinum_target"]),
+        )
+
+    @override
+    async def infer(self, pre, ctx):
+        return await self.model.agenerate(pre["prompt"], max_tokens=self._max_tokens)
+
+    @override
+    async def postprocess(self, inf, ctx):
+        text = inf.texts[0] if inf.texts else ""
+        try:
+            prediction = get_parse_fn(MATH_PARSING_STRATEGY)(text)
+        except AttributeError:
+            # No digit anywhere in the output: upstream's `re.search(...).group()`
+            # on None. `None` is the protocol's spelling of "could not extract".
+            prediction = None
+        return build_prediction_record([prediction])
+
+    @override
+    async def feedback(self, post, ctx):
+        reference = list(ctx.raw_sample["platinum_target"])
+        # `.get()`, not `[]`: a None prediction is ABSENT once the record
+        # round-trips through disk, which is what the resume path reads.
+        prediction = post["rollouts"][0].get("prediction")
+        if prediction is None:
+            correct = False
+        else:
+            try:
+                correct = check_prediction(
+                    prediction,
+                    reference,
+                    # Unused upstream, but this is the same string it passes.
+                    self._prompt_text(ctx.raw_sample),
+                    self.subset,
+                )
+            except (TypeError, ValueError):
+                # The parse regex can yield a non-float string (e.g. "1.2.3"),
+                # which upstream feeds straight into float() and swallows via its
+                # bare except. Unparseable-as-float is wrong, not an error.
+                correct = False
+        return True, build_judgement_record(
+            reference,
+            [build_rollout_judgement(0, correct)],
+            extra={"subset": self.subset},
+        )
+
+    @override
+    async def report(self, finals, fails):
+        total = len(finals) + len(fails)
+        if total == 0:
+            return {"score": 0.0, "fails": len(fails), "accuracy": 0.0, "errors": 0}
+        correct_num = sum(
+            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
+        )
+        accuracy = 100 * correct_num / total
+        return {
+            "score": accuracy,
+            "fails": len(fails),
+            "accuracy": accuracy,
+            # Upstream's headline unit: how many of this subset's questions the
+            # model got wrong. Directly comparable to its per-dataset tables.
+            "errors": total - correct_num,
+        }
