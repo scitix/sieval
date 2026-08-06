@@ -2350,9 +2350,8 @@ class TestCheckRecordKeyAccess:
         assert "confidence" in r.details[0]
 
     def test_unclassified_key_on_non_rollout_record_fails(self, tmp_path: Path):
-        # The classification spans all five record classes, not just the rollout
-        # ones: a key added to JudgementRecord must be decided on too. This is the
-        # hole `reference` sat in -- outside the gate without anyone saying so.
+        # Classification spans all five record classes, so a key added to
+        # JudgementRecord must be decided on too -- the hole `reference` sat in.
         r = self._run(
             tmp_path,
             "x = 1\n",
