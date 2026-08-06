@@ -179,9 +179,9 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
             elif sample.timeout_per_case is not None:
                 # Official LiveCodeBench's own backstop around a per-case budget:
                 # `check_correctness` joins the worker at (timeout + 1) * n + 5.
-                # A client that needs its own HTTP deadline has to predict this
-                # number, so it necessarily holds a second copy -- sieval's
-                # LiveCodeBench tasks do. Keep the two in step.
+                # A client needing its own HTTP deadline must predict this number, so
+                # it holds a second copy -- sieval's tasks do, and send it explicitly
+                # rather than take this branch. Keep the two in step.
                 timeout = (sample.timeout_per_case + 1.0) * n_inputs + 5.0
             else:
                 timeout = 6.0 + n_inputs * 2.0

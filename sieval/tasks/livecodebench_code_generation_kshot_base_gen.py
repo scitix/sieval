@@ -35,15 +35,9 @@ Deviations from the upstream LCB runner (complete list):
   3. Eval sandbox: code is executed by an external service at
      `$SIEVAL_CODE_EVAL_API` (POST code + test cases), not upstream's in-process
      `check_correctness`. The execution budget is client-owned, sent in the request
-     body, and enforced per test case as upstream does (`timeout_per_case`,
-     defaulting to upstream's 6s) rather than as one wall for the whole suite.
-
-Not a deviation any more, but worth knowing: until `timeout_per_case` landed this
-task graded against a single whole-suite wall scaled by case count. That is a
-different rule, not a looser one -- too generous to a submission with one slow case,
-too harsh on a uniformly slowish one -- so numbers recorded under it are not
-comparable with numbers recorded now. Measured -2.22 pp on a 90-rollout lane of the
-sibling 0-shot task.
+     body, but enforced per test case as upstream does (`timeout_per_case`, default
+     6s) rather than as one wall for the whole suite. Runs from before that rule
+     landed used the whole-suite wall and are NOT comparable.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
@@ -137,14 +131,12 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         max_concurrency: int = 4,
         timeout_per_case: float = 6.0,
     ):
-        """*timeout_per_case* is the budget **each test case** gets, upstream's rule
-        and its ``6.0`` default (``codegen_metrics(..., timeout=6)``). The whole-suite
-        wall is derived from it as upstream's own backstop and is not configurable, so
-        there is one number to reason about rather than two.
+        """*timeout_per_case* is the budget **each test case** gets -- upstream's rule
+        and its ``6.0`` default (``codegen_metrics(..., timeout=6)``, deviation 3
+        above). The whole-suite wall is derived from it and not configurable.
 
-        This replaces an earlier ``timeout``, which was the base of a whole-suite wall
-        -- a different rule. Passing it now raises ``TypeError`` rather than silently
-        grading by the old one.
+        It replaces an earlier ``timeout``, the base of a whole-suite wall and a
+        different rule; passing that now raises ``TypeError``.
         """
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
@@ -225,13 +217,11 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         outputs = [t["output"] for t in cases]
         fn_name = metadata.get("func_name", None)
 
-        # Each case is budgeted individually, so the whole-suite wall is only a
-        # backstop, for what a per-case clock cannot catch. It takes upstream's own
-        # shape -- `check_correctness` joins its worker at `(timeout + 1) * n + 5`.
-        #
-        # Sent explicitly rather than left to the evaluator's identical derivation, so
-        # the HTTP deadline below is provably outside the wall the server will enforce.
-        # Same computation as the sibling 0-shot task -- keep the two in step.
+        # Cases are budgeted individually, so this wall is only a backstop, for a
+        # worker wedged where a per-case signal cannot reach it. Upstream's own shape:
+        # `check_correctness` joins its worker at `(timeout + 1) * n + 5`. Sent rather
+        # than left to the evaluator's identical derivation, so the HTTP deadline below
+        # is provably outside it. Mirrored in the sibling 0-shot task.
         suite_timeout = (self._timeout_per_case + 1.0) * len(inputs) + 5.0
 
         for rollout in post["rollouts"]:

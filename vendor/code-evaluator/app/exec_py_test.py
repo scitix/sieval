@@ -183,12 +183,11 @@ def _subprocess_target(
             code, inputs, expect_outputs, fn_name, memory_limit, timeout_per_case
         )
         q.put((ok, msg, n_passed))
-    # `CaseTimeout` is spelled out because it is a BaseException, so `Exception`
-    # alone would not cover it. `_unsafe_execute` catches it around each case, but
-    # cancelling the timer cannot un-deliver a signal the kernel already sent: an
-    # alarm that fires just as a case finishes is raised at the next bytecode
-    # check, which can land past that `except`. Uncaught here it would leave the
-    # queue empty and strand the parent until the whole-suite wall.
+    # `CaseTimeout` is named because it is a BaseException, so `Exception` alone
+    # misses it. `_unsafe_execute` catches it per case, but cancelling the timer
+    # cannot un-deliver a signal the kernel already sent: an alarm firing just as a
+    # case ends is raised at the next bytecode check, which can land past that
+    # `except`. Uncaught, the queue stays empty and the parent waits out the wall.
     except (Exception, CaseTimeout) as e:
         q.put((False, f"failed: [{type(e).__name__}] {e}", 0))
 
@@ -453,12 +452,11 @@ def get_function(compiled_sol, fn_name: str):
 
 
 def compile_code(code: str, timeout_per_case: float | None = None):
-    # Upstream budgets this `exec` on the same per-case clock as a test case, arming
+    # Upstream budgets this `exec` on the per-case clock too, arming
     # `signal.alarm(timeout)` on entry and cancelling it in a `finally`. It matters on
     # the call-based path, where `exec` runs the submission's module-level statements
     # and a hang there is inside no case. The vendored copy had kept that `finally`
-    # with a bare `pass` after the alarm was dropped; the guard below both restores
-    # the budget and subsumes the cancelling the `finally` used to do.
+    # with a bare `pass` once the alarm was dropped; the guard restores both halves.
     with _case_time_limit(timeout_per_case):
         tmp_sol = ModuleType("tmp_sol", "")
         exec(code, tmp_sol.__dict__)

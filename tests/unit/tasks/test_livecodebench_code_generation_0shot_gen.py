@@ -1,16 +1,13 @@
 """Unit tests for the LiveCodeBench code-generation 0-shot chat task.
 
 Focused on the execution budget the task puts on the wire. Official LiveCodeBench
-budgets each test case, not the suite: ``lcb_runner`` re-arms ``signal.alarm(timeout)``
-inside the case loop of ``grade_call_based`` / ``grade_stdio``, with
-``codegen_metrics(..., timeout=6)`` supplying the default, and ``check_correctness``
-joining the worker at ``(timeout + 1) * n + 5`` as a backstop. That is the rule the
-task grades by, and the only one -- ``timeout_per_case`` is the single knob, and the
-whole-suite wall follows from it.
+budgets each test case, not the suite: ``codegen_metrics(..., timeout=6)`` re-armed
+per case in ``grade_call_based`` / ``grade_stdio``, with ``check_correctness``
+joining the worker at ``(timeout + 1) * n + 5`` as a backstop. ``timeout_per_case``
+is the single knob; the whole-suite wall follows from it.
 
-Only the task half is covered here. The guard that enforces the budget lives in the
-vendored evaluator, which is a separate deployable with its own repo -- see
-``vendor/code-evaluator/VENDORED.md``.
+Only the task half is covered here -- the guard that enforces the budget lives in
+the vendored evaluator, a separate deployable with its own repo.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """

@@ -1328,7 +1328,7 @@
       "reference_impl": {
         "source": "livecodebench",
         "url": "https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
-        "notes": "Prompt templates and extract_code vendored from lcb_runner/{prompts,utils}. Grading budget matches upstream: each test case gets its own 6s (codegen_metrics(..., timeout=6), re-armed per case in grade_call_based / grade_stdio), tunable via `timeout_per_case`. Runs recorded before that rule landed used one whole-suite wall instead and are NOT comparable -- measured -2.22 pp on a 90-rollout lane."
+        "notes": "Prompt templates and extract_code vendored from lcb_runner/{prompts,utils}. Grading budget matches upstream: 6s per test case (codegen_metrics(..., timeout=6)), via `timeout_per_case`. Runs from before that rule landed used one whole-suite wall and are NOT comparable -- measured -2.22 pp on a 90-rollout lane."
       },
       "status": "stable"
     },

@@ -86,8 +86,8 @@ Fields:
 - `code`: the code, as a string
 - `test`: LiveCodeBench-specific test description (`fn_name` / `inputs` / `outputs`)
 - `timeout`: float (optional, seconds; defaults below) — a wall for the **whole suite**
-- `timeout_per_case`: float (optional, seconds) — also budget each test case
-  individually. Opt-in; see "Per-case timeout" below
+- `timeout_per_case`: float (optional, seconds) — budget each test case
+  individually, as official LiveCodeBench does
 - `memory_limit`: int (optional, MB; default 1024)
 
 HumanEval (Python) example, with a custom timeout and memory limit:
@@ -170,7 +170,8 @@ When a request omits `timeout`, these defaults apply:
 
 - python / js: 3s
 - typescript: 5s
-- livecodebench: 6s + 2s * number of cases
+- livecodebench: 6s + 2s * number of cases, or `(timeout_per_case + 1) * n + 5`
+  when `timeout_per_case` was sent — upstream's own backstop shape
 
 ### Memory limit
 

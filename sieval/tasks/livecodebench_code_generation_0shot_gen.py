@@ -45,12 +45,10 @@ from sieval.datasets import LiveCodeBenchDatasetSample
         url="https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
         notes=(
             "Prompt templates and extract_code vendored from "
-            "lcb_runner/{prompts,utils}. Grading budget matches upstream: each "
-            "test case gets its own 6s (codegen_metrics(..., timeout=6), re-armed "
-            "per case in grade_call_based / grade_stdio), tunable via "
-            "`timeout_per_case`. Runs recorded before that rule landed used one "
-            "whole-suite wall instead and are NOT comparable -- measured -2.22 pp "
-            "on a 90-rollout lane."
+            "lcb_runner/{prompts,utils}. Grading budget matches upstream: 6s per "
+            "test case (codegen_metrics(..., timeout=6)), via `timeout_per_case`. "
+            "Runs from before that rule landed used one whole-suite wall and are "
+            "NOT comparable -- measured -2.22 pp on a 90-rollout lane."
         ),
     ),
 )
@@ -79,14 +77,12 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         official LiveCodeBench grades: ``lcb_runner`` re-arms ``signal.alarm(timeout)``
         inside the case loop of ``grade_call_based`` / ``grade_stdio``, and
         ``codegen_metrics(..., timeout=6)`` supplies the ``6.0`` default kept here.
+        The whole-suite wall is derived from it and not configurable (see
+        :meth:`feedback`).
 
-        The whole-suite wall is deliberately not configurable. It is derived as
-        upstream's own backstop and exists only to catch what a per-case clock cannot
-        (see :meth:`feedback`), so there is one number to reason about, not two.
-
-        This replaces an earlier ``timeout``, which was the base of a whole-suite
-        wall -- a different rule, and not the one LiveCodeBench defines. Passing it
-        now raises ``TypeError`` rather than silently grading by the old rule.
+        It replaces an earlier ``timeout``, the base of a whole-suite wall and a
+        different rule; passing that now raises ``TypeError`` rather than silently
+        grading by it.
         """
         super().__init__(dataset=dataset, model=model, name=name)
         self._cot = cot
@@ -148,15 +144,11 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         outputs = [t["output"] for t in cases]
         fn_name = metadata.get("func_name", None)
 
-        # Each case is budgeted individually, so the whole-suite wall is only a
-        # backstop, for what a per-case clock cannot catch (a worker wedged outside
-        # the interpreter). It takes official LiveCodeBench's own shape --
-        # `check_correctness` joins its worker at `(timeout + 1) * n + 5`.
-        #
-        # Sent explicitly rather than left to the evaluator's identical derivation,
-        # so the HTTP deadline below is provably outside the wall the server will
-        # enforce instead of relying on two implementations agreeing.
-        # Same computation as the sibling k-shot base task -- keep the two in step.
+        # Cases are budgeted individually, so this wall is only a backstop, for a
+        # worker wedged where a per-case signal cannot reach it. Upstream's own shape:
+        # `check_correctness` joins its worker at `(timeout + 1) * n + 5`. Sent rather
+        # than left to the evaluator's identical derivation, so the HTTP deadline below
+        # is provably outside it. Mirrored in the sibling k-shot base task.
         suite_timeout = (self._timeout_per_case + 1.0) * len(inputs) + 5.0
 
         rollouts: list[RolloutJudgement] = []
