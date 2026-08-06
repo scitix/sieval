@@ -161,6 +161,10 @@ from .theoremqa import (
     TheoremQADataset,
     TheoremQADatasetSample,
 )
+from .ugmathbench import (
+    UGMathBenchDataset,
+    UGMathBenchDatasetSample,
+)
 
 __all__ = [
     "AALCRDataset",
@@ -243,4 +247,6 @@ __all__ = [
     "TEvalBeforeCallingDatasetSample",
     "TheoremQADataset",
     "TheoremQADatasetSample",
+    "UGMathBenchDataset",
+    "UGMathBenchDatasetSample",
 ]

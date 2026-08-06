@@ -1,0 +1,254 @@
+"""Unit tests for UGMathBench prompting, extraction, and per-type grading.
+
+AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
+"""
+
+import pytest
+
+from sieval.community.ugmathbench import (
+    SUBJECTS,
+    VERSIONS,
+    build_prompt,
+    describe_answer_type,
+    extract_answer,
+    extract_predictions,
+    judge_answer,
+    judge_answers,
+    math_equal,
+    split_answers,
+)
+
+# --- prompt ----------------------------------------------------------------
+
+
+def test_single_answer_prompt_uses_singular_wording():
+    prompt = build_prompt("Algebra", "Solve $x+1=2$. [ANS]", 1, ["NV"])
+    assert "This problem involves only one placeholders [ANS]" in prompt
+    assert "The answer type is a numerical value without units." in prompt
+    assert 'end your response with: "The final answer is \\boxed{ANSWER}"' in prompt
+    assert "Problem:\nSolve $x+1=2$. [ANS]" in prompt
+
+
+def test_multi_answer_prompt_lists_every_type_in_order():
+    prompt = build_prompt(
+        "Trigonometry", "a) [ANS] b) [ANS]", 2, ["NV", "TF"], [[], []]
+    )
+    assert "This problem involves 2 placeholders [ANS]" in prompt
+    assert (
+        "Their answer types are, in order, a numerical value without units, "
+        "either True or False." in prompt
+    )
+    assert 'end your response with: "The final answers are \\boxed{ANSWER}"' in prompt
+
+
+def test_multiple_choice_description_embeds_the_option_list():
+    # Upstream interpolates the Python list repr; the model sees the brackets.
+    assert describe_answer_type("MCS", ["A", "B"]) == (
+        "one option of a multiple choice question with options ['A', 'B']"
+    )
+
+
+def test_unknown_answer_type_is_rejected():
+    with pytest.raises(KeyError, match="unknown UGMathBench answer type"):
+        describe_answer_type("XX")
+
+
+def test_answer_count_drives_the_wording_not_the_declared_type_count():
+    # A handful of pinned rows declare fewer types than answers; upstream takes
+    # the count from the answers and describes only the declared types.
+    prompt = build_prompt("Linear_algebra", "p", 5, ["NV", "NV"])
+    assert "This problem involves 5 placeholders [ANS]" in prompt
+    assert prompt.count("a numerical value without units") == 2
+
+
+def test_missing_option_entries_are_padded_not_fatal():
+    prompt = build_prompt("Algebra", "p", 2, ["MCS", "MCS"], [["A", "B"]])
+    assert "options ['A', 'B']" in prompt
+    assert "options []" in prompt
+
+
+def test_benchmark_shape_constants():
+    assert len(SUBJECTS) == 16
+    assert VERSIONS == 3
+
+
+# --- extraction ------------------------------------------------------------
+
+
+def test_extracts_the_last_box():
+    response = "First \\boxed{1}. On reflection, \\boxed{2}."
+    assert extract_answer(response) == "2"
+
+
+def test_boxed_extraction_is_brace_balanced():
+    assert extract_answer("So \\boxed{\\frac{1}{2}}") == "\\frac{1}{2}"
+
+
+def test_falls_back_to_an_explicit_answer_handoff():
+    assert extract_answer("blah blah. The final answer is 42.") == "42"
+
+
+def test_no_answer_at_all_is_none_not_a_guess():
+    # Strict extraction: a response full of numbers but no box and no hand-off
+    # must not be scored on the last number it happened to mention.
+    assert extract_answer("We compute 17, then 3, and stop.") is None
+    assert extract_predictions("We compute 17, then 3, and stop.") is None
+
+
+def test_normalization_strips_decoration_but_not_content():
+    assert extract_answer("\\boxed{\\left(\\frac{1}{2}\\right)}") == "(\\frac{1}{2})"
+    assert extract_answer("\\boxed{\\text{none}}") == "none"
+
+
+def test_split_keeps_bracketed_commas_together():
+    assert split_answers("1, (2, 3), [4, 5]") == ["1", "(2, 3)", "[4, 5]"]
+
+
+def test_split_keeps_latex_group_commas_together():
+    assert split_answers("\\frac{a,b}{c}, 2") == ["\\frac{a,b}{c}", "2"]
+
+
+def test_split_folds_latex_set_delimiters():
+    assert split_answers("\\{1, 2\\}, 3") == ["(1, 2)", "3"]
+
+
+# --- per-type grading ------------------------------------------------------
+
+
+def test_numerical_value_accepts_latex_equivalents():
+    assert judge_answer("\\frac{\\sqrt{3}}{3}", "1/sqrt(3)", "NV")
+    assert not judge_answer("2", "1/sqrt(3)", "NV")
+
+
+def test_numerical_value_uses_relative_tolerance():
+    assert judge_answer("1000.5", "1000.0", "NV", precision=1e-2)
+    assert not judge_answer("1000.5", "1000.0", "NV", precision=1e-6)
+
+
+def test_numerical_value_normalizes_a_percent_marked_reference():
+    # The dataset stores a few "numerical value without units" answers with a
+    # percent sign; a plain-number prediction still matches.
+    assert judge_answer("0.66", "0.66%", "NV")
+
+
+def test_expression_equivalence_is_symbolic():
+    assert judge_answer("x^3+2x^2+6", "x^3+2*x^2+6", "EX")
+    assert not judge_answer("x^3+2x^2+7", "x^3+2*x^2+6", "EX")
+
+
+def test_equation_equivalence():
+    assert judge_answer("T = 1.02x + 10", "T = 1.02*x+10", "EQ")
+
+
+def test_interval_equivalence():
+    assert judge_answer("(-\\infty, 5)", "(-infinity,5)", "INT")
+    assert not judge_answer("(-\\infty, 5]", "(-infinity,5)", "INT")
+
+
+def test_true_false_accepts_the_datasets_yn_spelling():
+    assert judge_answer("True", "Y", "TF")
+    assert judge_answer("yes", "Y", "TF")
+    assert judge_answer("False", "N", "TF")
+    assert not judge_answer("True", "N", "TF")
+    # Not a boolean at all -> wrong, never silently true.
+    assert not judge_answer("maybe", "Y", "TF")
+
+
+def test_single_choice_letter_forms():
+    options = ["A", "B", "C", "D"]
+    assert judge_answer("C", "C", "MCS", options)
+    assert judge_answer("c", "C", "MCS", options)
+    assert judge_answer("C. the third one", "C", "MCS", options)
+    assert not judge_answer("D", "C", "MCS", options)
+
+
+def test_single_choice_supports_non_letter_option_labels():
+    assert judge_answer("Q(X)", "Q(X)", "MCS", ["P(X)", "Q(X)"])
+
+
+def test_multiple_choice_ignores_order_but_not_membership():
+    options = ["A", "B", "C", "D", "E"]
+    assert judge_answer("DCA", "ACD", "MCM", options)
+    assert not judge_answer("ACDE", "ACD", "MCM", options)
+    assert not judge_answer("AC", "ACD", "MCM", options)
+
+
+def test_open_ended_is_text_not_mathematics():
+    assert judge_answer("None", "none", "OE")
+    assert not judge_answer("0", "none", "OE")
+
+
+def test_ordered_list_respects_order():
+    assert judge_answer("(1, 2, 3, 6)", "(1, 2, 3, 6)", "OL")
+    assert not judge_answer("(2, 1, 3, 6)", "(1, 2, 3, 6)", "OL")
+
+
+def test_unordered_list_ignores_order():
+    assert judge_answer("(x3, e)", "(e, x3)", "UOL")
+    assert not judge_answer("(x3, x4)", "(e, x3)", "UOL")
+
+
+def test_unordered_list_matches_multiset_not_set():
+    assert not judge_answer("(1, 1)", "(1, 2)", "UOL")
+
+
+def test_list_elements_may_be_booleans():
+    assert judge_answer("(True, 1)", "(Y, 1)", "OL")
+
+
+def test_math_equal_survives_unparseable_input():
+    # Malformed LaTeX must grade wrong, not raise into the runner.
+    assert not math_equal("\\frac{{{", "1")
+
+
+# --- sample-level grading --------------------------------------------------
+
+
+def test_every_slot_must_be_right():
+    golds = ["1", "2"]
+    types = ["NV", "NV"]
+    assert judge_answers(["1", "2"], golds, types) == [True, True]
+    assert judge_answers(["1", "3"], golds, types) == [True, False]
+
+
+def test_slot_count_mismatch_grades_everything_wrong():
+    assert judge_answers(["1"], ["1", "2"], ["NV", "NV"]) == [False, False]
+    assert judge_answers(["1", "2", "3"], ["1", "2"], ["NV", "NV"]) == [False, False]
+
+
+def test_missing_extraction_grades_everything_wrong():
+    assert judge_answers(None, ["1", "2"], ["NV", "NV"]) == [False, False]
+
+
+def test_undeclared_trailing_types_are_still_graded():
+    # 3 answers, 2 declared types: the trailing slot falls through to the
+    # mathematical rule instead of being dropped.
+    assert judge_answers(["1", "2", "3"], ["1", "2", "3"], ["NV", "NV"]) == [
+        True,
+        True,
+        True,
+    ]
+    assert judge_answers(["1", "2", "9"], ["1", "2", "3"], ["NV", "NV"]) == [
+        True,
+        True,
+        False,
+    ]
+
+
+def test_end_to_end_boxed_response():
+    response = (
+        "Working through it... The final answers are "
+        "\\boxed{-\\sqrt{3}, -1, \\sqrt{3}, \\frac{2\\sqrt{3}}{3}, \\sqrt{2}}"
+    )
+    golds = ["-sqrt(3)", "-1", "sqrt(3)", "2/sqrt(3)", "sqrt(2)"]
+    predictions = extract_predictions(response)
+    assert predictions is not None and len(predictions) == 5
+    assert all(judge_answers(predictions, golds, ["NV"] * 5))
+
+
+def test_a_reference_with_no_answers_is_never_correct():
+    # Two pinned rows are upstream-corrupt: the problem text is an error message
+    # and the answer sequence is empty. `all([])` is True, so an empty verdict
+    # list must not read as a correct sample.
+    assert judge_answers(["1"], [], []) == []
+    assert judge_answers(None, [], []) == []

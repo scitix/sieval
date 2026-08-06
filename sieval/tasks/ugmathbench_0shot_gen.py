@@ -1,0 +1,291 @@
+"""
+UGMathBench 0-shot generative task — effective accuracy and the reasoning gap.
+
+One sample is one *(problem, version)* pair, so a full run issues three
+inferences per problem, one per randomized version. That is what the benchmark's
+headline metric needs:
+
+* **AAcc** — average accuracy over every version.
+* **EAcc** — effective accuracy: the share of problems answered correctly in
+  *all* three versions. The headline (``score``).
+* **Delta** — the reasoning gap, ``AAcc - EAcc``. A model that reasons rather
+  than recognizes drives this toward zero; the paper reports double-digit gaps
+  for every model it evaluated.
+* **CAcc** — the share of problems answered correctly in at least one version.
+  Upstream reports it as the optimistic bound bracketing EAcc.
+
+Grading is per answer *slot*: a problem states how many ``[ANS]`` placeholders
+it has and what type each one takes, and a sample counts as correct only when
+every slot is. The per-slot rules live in
+:mod:`sieval.community.ugmathbench`, which also explains why the grader is an
+independent implementation rather than a port of the GPL-licensed reference.
+
+Two pinned rows are upstream-corrupt (empty answer sequence, problem text
+replaced by an error message); they are prompted and graded like any other
+sample, which scores them 0 exactly as the reference harness does.
+
+Budget note: a full run is 15,183 inferences, and grading a wrong answer costs
+roughly 25 ms of synchronous sympy per sample (a correct one is effectively
+free, since it short-circuits on string equality). Feedback is therefore worth
+a few minutes on a whole-benchmark run, and a subject subset is a reasonable
+smoke test — pass ``datasets.<name>.args.subjects``.
+
+AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
+"""
+
+from collections import defaultdict
+from typing import override
+
+from loguru import logger
+
+from sieval.community.ugmathbench import (
+    VERSIONS,
+    build_prompt,
+    extract_predictions,
+    judge_answers,
+)
+from sieval.core.models import ModelOutput
+from sieval.core.tasks import (
+    EvalMode,
+    JudgementRecord,
+    PredictionRecord,
+    PromptRecord,
+    ReferenceImpl,
+    Task,
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
+    sieval_task,
+)
+from sieval.datasets import UGMathBenchDatasetSample
+
+#: Relative tolerance for numeric answers. Matches the reference evaluator's
+#: CLI default (``eval_rule.py --precision``), not the stricter 1e-8 its
+#: ``Judger`` class defaults to.
+DEFAULT_PRECISION = 1e-3
+
+
+@sieval_task(
+    name="ugmathbench_0shot_gen",
+    display_name="UGMathBench (0-shot, generative)",
+    description="Undergraduate math, 3 randomized versions per problem; EAcc + gap.",
+    eval_mode=EvalMode.GEN,
+    n_shot=0,
+    tags=("english", "open-ended"),
+    deps_group="math",
+    model_type="chat",
+    status="experimental",
+    reference_impl=ReferenceImpl(
+        source="UGMathBench",
+        url="https://github.com/YangLabHKUST/UGMathBench/blob/df47bfa639bfb89bdb0220036a7b2f216e72b0b3/eval_rule.py",
+        notes=(
+            "Prompt and metric definitions mirror upstream's `raw` template and "
+            "`eval_file` (aacc / eacc / cacc / Delta / RE). The grader does NOT: "
+            "upstream's `judge_rule.py` is GPL-3.0 and cannot ship in an "
+            "Apache-2.0 distribution, so answer comparison is an independent "
+            "math-verify-based implementation of the same 10 answer types — "
+            "hence status=experimental, and scores are not guaranteed to "
+            "reproduce the paper's rule-based numbers. Deltas are enumerated in "
+            "sieval/community/ugmathbench.py. SAMPLING: upstream generates "
+            "greedily, one sample per version (temperature 0, max_tokens 2048), "
+            "and this task issues one rollout per version to match; set "
+            "temperature via the model config. Upstream also offers a "
+            "model-as-judge variant (eval_marj.py) which it now recommends over "
+            "the rule-based path — not implemented here."
+        ),
+    ),
+)
+class UGMathBenchZeroShotGenTask(
+    Task[
+        UGMathBenchDatasetSample,
+        PromptRecord,
+        ModelOutput,
+        PredictionRecord,
+        JudgementRecord,
+        dict[str, float],
+    ]
+):
+    def __init__(
+        self,
+        dataset,
+        model,
+        name: str | None = None,
+        precision: float = DEFAULT_PRECISION,
+    ):
+        super().__init__(dataset=dataset, model=model, name=name)
+        if precision <= 0:
+            raise ValueError(
+                f"precision must be > 0 (got {precision}); it is the relative "
+                "tolerance for numeric answers."
+            )
+        self._precision = precision
+
+    @override
+    async def preprocess(self, raw, ctx):
+        prompt = build_prompt(
+            raw["subject"],
+            raw["problem"],
+            len(raw["answer"]),
+            raw["answer_type"],
+            raw["options"],
+        )
+        return build_prompt_record(
+            [{"role": "user", "content": prompt}],
+            reference=raw["answer"],
+            # The version and its problem are what report() groups on; kept here
+            # too so a prompt row identifies its sibling versions on its own.
+            extra={
+                "problem_id": raw["id"],
+                "version": raw["version"],
+                "subject": raw["subject"],
+                "answer_type": raw["answer_type"],
+            },
+        )
+
+    @override
+    async def infer(self, pre, ctx):
+        return await self.model.agenerate(pre["prompt"])
+
+    @override
+    async def postprocess(self, inf, ctx):
+        # One prediction per rollout, itself the list of per-slot answers.
+        predictions: list = [extract_predictions(text) for text in inf.texts]
+        return build_prediction_record(predictions)
+
+    @override
+    async def feedback(self, post, ctx):
+        raw = ctx.raw_sample
+        if raw is None:
+            # Nothing to compare against; the reference is genuinely unknown
+            # rather than a procedure, so the verdict is wrong-by-default.
+            return True, build_judgement_record(
+                None,
+                [
+                    build_rollout_judgement(rollout["index"], False)
+                    for rollout in post["rollouts"]
+                ],
+            )
+
+        golds = raw["answer"]
+        rollouts = []
+        for rollout in post["rollouts"]:
+            per_slot = judge_answers(
+                rollout.get("prediction"),
+                golds,
+                raw["answer_type"],
+                raw["options"],
+                self._precision,
+            )
+            n_correct = sum(per_slot)
+            rollouts.append(
+                build_rollout_judgement(
+                    rollout["index"],
+                    bool(per_slot) and all(per_slot),
+                    metrics={
+                        # Slot-level credit, so a near-miss on a 20-blank table
+                        # is distinguishable from a blank answer. The headline
+                        # verdict stays all-or-nothing, as upstream grades.
+                        "answer_accuracy": n_correct / len(per_slot)
+                        if per_slot
+                        else 0.0
+                    },
+                    extra={"per_answer": per_slot, "n_answers": len(per_slot)},
+                )
+            )
+        return True, build_judgement_record(
+            golds,
+            rollouts,
+            # Aggregation raw material: report() reads these instead of
+            # raw_sample, which a persisted context is not required to carry.
+            extra={
+                "problem_id": raw["id"],
+                "version": raw["version"],
+                "subject": raw["subject"],
+            },
+        )
+
+    @override
+    async def report(self, finals, fails):
+        by_problem: dict[str, list[bool]] = defaultdict(list)
+        by_subject: dict[str, dict[str, list[bool]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        n_correct = 0
+
+        for final in finals:
+            judgement = final.feedback_result
+            extra = judgement.get("extra", {})
+            problem_id = extra.get("problem_id")
+            # UGMathBench asks one answer per version, so the verdict is the
+            # first rollout's. A model configured for n > 1 does not turn this
+            # into pass@n -- that would inflate every version-level accuracy the
+            # effective-accuracy metric is built from.
+            verdicts = judgement["rollouts"]
+            correct = bool(verdicts) and verdicts[0]["correct"]
+            n_correct += int(correct)
+            if problem_id is None:
+                continue
+            by_problem[problem_id].append(correct)
+            by_subject[extra.get("subject", "unknown")][problem_id].append(correct)
+
+        # A failed sample is an unanswered version, so it counts against the
+        # average — same convention as the pass@1 math tasks.
+        n_versions = len(finals) + len(fails)
+        aacc = n_correct * 100 / n_versions if n_versions else 0.0
+
+        incomplete = sum(
+            1 for verdicts in by_problem.values() if len(verdicts) != VERSIONS
+        )
+        if incomplete:
+            logger.warning(
+                "{}/{} problem(s) were judged on fewer than {} versions (failed or "
+                "sliced samples) and cannot count as effective-accuracy hits; "
+                "EAcc is a lower bound for this run.",
+                incomplete,
+                len(by_problem),
+                VERSIONS,
+            )
+
+        eacc = _effective_accuracy(by_problem)
+        metrics: dict[str, float] = {
+            "score": eacc,
+            "fails": float(len(fails)),
+            "eacc": eacc,
+            "aacc": aacc,
+            "cacc": _covered_accuracy(by_problem),
+            # Reasoning gap, in accuracy points; `relative_delta` expresses it as
+            # a percentage of EAcc (upstream's RE).
+            "delta": aacc - eacc,
+            "relative_delta": (aacc - eacc) * 100 / eacc if eacc else 0.0,
+            "n_problems": float(len(by_problem)),
+            "n_versions_judged": float(len(finals)),
+            "incomplete_problems": float(incomplete),
+        }
+        for subject, problems in sorted(by_subject.items()):
+            metrics[f"eacc_{subject.lower()}"] = _effective_accuracy(problems)
+        return metrics
+
+
+def _effective_accuracy(by_problem: dict[str, list[bool]]) -> float:
+    """Share of problems correct in *every* one of their randomized versions.
+
+    A problem judged on fewer versions than the benchmark defines cannot be
+    confirmed correct across all of them, so it never counts as a hit.
+    """
+    if not by_problem:
+        return 0.0
+    hits = sum(
+        1
+        for verdicts in by_problem.values()
+        if len(verdicts) == VERSIONS and all(verdicts)
+    )
+    return hits * 100 / len(by_problem)
+
+
+def _covered_accuracy(by_problem: dict[str, list[bool]]) -> float:
+    """Share of problems correct in at least one version — EAcc's upper bracket."""
+    if not by_problem:
+        return 0.0
+    hits = sum(1 for verdicts in by_problem.values() if any(verdicts))
+    return hits * 100 / len(by_problem)

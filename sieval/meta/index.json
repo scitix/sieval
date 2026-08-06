@@ -892,6 +892,27 @@
       "deps_group": null,
       "license": "MIT",
       "checksums": {}
+    },
+    {
+      "name": "ugmathbench",
+      "display_name": "UGMathBench",
+      "description": "Undergraduate math, 16 subjects, 3 randomized versions per problem.",
+      "source": [
+        "hf:UGMathBench/ugmathbench@8ab16f0c131a9b3b52195e64175cb5a8f3881bbf"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "AdvancedMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "GPL-3.0",
+      "checksums": {}
     }
   ],
   "tasks": [
@@ -1934,6 +1955,26 @@
         "notes": "Prompt follows official short-form examples by default; n_shot can select any prefix of the built-in examples. answer_clean and numeric matching mirror official utils.py/number_utils.py."
       },
       "status": "stable"
+    },
+    {
+      "name": "ugmathbench_0shot_gen",
+      "display_name": "UGMathBench (0-shot, generative)",
+      "description": "Undergraduate math, 3 randomized versions per problem; EAcc + gap.",
+      "dataset": "ugmathbench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "UGMathBench",
+        "url": "https://github.com/YangLabHKUST/UGMathBench/blob/df47bfa639bfb89bdb0220036a7b2f216e72b0b3/eval_rule.py",
+        "notes": "Prompt and metric definitions mirror upstream's `raw` template and `eval_file` (aacc / eacc / cacc / Delta / RE). The grader does NOT: upstream's `judge_rule.py` is GPL-3.0 and cannot ship in an Apache-2.0 distribution, so answer comparison is an independent math-verify-based implementation of the same 10 answer types — hence status=experimental, and scores are not guaranteed to reproduce the paper's rule-based numbers. Deltas are enumerated in sieval/community/ugmathbench.py. SAMPLING: upstream generates greedily, one sample per version (temperature 0, max_tokens 2048), and this task issues one rollout per version to match; set temperature via the model config. Upstream also offers a model-as-judge variant (eval_marj.py) which it now recommends over the rule-based path — not implemented here."
+      },
+      "status": "experimental"
     }
   ]
 }
