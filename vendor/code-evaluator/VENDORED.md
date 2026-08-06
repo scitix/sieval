@@ -47,6 +47,16 @@
   the submitted code's `except Exception` nor this module's own swallows it.
   Absent the field, behaviour is byte-for-byte what it was. Not yet upstream —
   land in `scitix/code-evaluator` and re-vendor.
+
+  **Expect this to LOWER a score, not raise one.** Per-case is a different rule,
+  not a looser one, and it bites in both directions: a submission whose cases are
+  uniformly slowish now passes where the shared wall failed it, but one that is
+  fast overall with a single slow case now fails where the shared wall let it
+  through. Re-grading a recorded 90-rollout lane at 6 s/case: **88 unchanged, 2
+  pass → fail, 0 fail → pass, net −2.22 pp.** Both regressions had completed
+  *every* case inside the old wall (s11 42/42 in 114 s, s57 44/44 in 118 s) and
+  own at least one case over 6 s. Adopt it because it is the rule LiveCodeBench
+  defines, and re-baseline; do not adopt it expecting the timeouts back.
 - `README.md` — translated from Chinese to English, so the vendored docs match
   the rest of the repo. Content is otherwise unchanged apart from the case-count
   section above.
