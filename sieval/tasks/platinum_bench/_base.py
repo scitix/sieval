@@ -244,7 +244,7 @@ class PlatinumMathGenTask(
 
     @override
     async def setup(self) -> None:
-        # One Dataset class serves all 15 configs, so YAML can wire this task to
+        # One Dataset class serves all 14 configs, so YAML can wire this task to
         # a sibling subset's instance and the run would score real answers
         # against the wrong questions — a silently plausible result. Fail here
         # instead, before any tokens are spent.
