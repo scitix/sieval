@@ -7,6 +7,9 @@ from .aa_lcr_0shot_gen import (
 from .advanced_if_0shot_gen import (
     AdvancedIFZeroShotGenTask,
 )
+from .agieval_0shot_gen import (
+    AGIEvalZeroShotGenTask,
+)
 from .aime_2024_0shot_gen import (
     AIME2024ZeroShotGenTask,
 )
@@ -181,6 +184,7 @@ from .ugmathbench_0shot_gen_fixed import (
 
 __all__ = [
     "AALCRZeroShotGenTask",
+    "AGIEvalZeroShotGenTask",
     "AIME2024ZeroShotGenTask",
     "AIME2025ZeroShotGenTask",
     "AIME2026ZeroShotGenTask",

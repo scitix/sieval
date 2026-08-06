@@ -1,0 +1,66 @@
+# ------------------------------------------------------------------------------
+# AGIEval — math subsets only (0-shot, two-stage)
+# ------------------------------------------------------------------------------
+# AGIEval ships 21 subsets across two languages and two answer formats. This runs
+# the 5 drawn from math exams — sat-math, aqua-rat, gaokao-mathqa, math,
+# gaokao-mathcloze (1,943 problems) — selected with `group: math`.
+#
+# Other selections:
+#   args: {group: all}                      # all 21 (7,272 problems)
+#   args: {group: en-mcq}                   # AGIEval-en leaderboard group (8)
+#   args: {group: zh-mcq}                   # AGIEval-zh leaderboard group (11)
+#   args: {subsets: [math, sat-math]}       # exact names, any combination
+#
+# Two-step flow:
+#   1. sieval dataset download agieval
+#   2. sieval eval agieval-math.yaml
+#
+# Each sample costs TWO model calls: the model answers, then re-reads its own
+# answer under an extraction cue and that short reply is what gets scored. This
+# is AGIEval's own zero-shot protocol, not an add-on — see the task's
+# reference_impl.notes.
+#
+# Edit these fields to match your setup:
+#   models.local-model.infer.checkpoint   — your model's on-disk path
+#   models.local-model.infer_meta.image   — swap to your own image if you need
+#                                           custom deps, or drop the block to run
+#                                           without a container
+# ------------------------------------------------------------------------------
+
+result_dir: ./outputs/agieval-math
+
+models:
+  local-model:
+    args:
+      concurrency_limit: 32
+      temperature: 0.0
+    infer:
+      backend: sglang
+      checkpoint: /path/to/your/model        # EDIT ME
+    infer_meta:
+      gpu: H100-80G
+      image: lmsysorg/sglang:latest
+
+datasets:
+  agieval_math:
+    class: AGIEvalDataset
+    path: "${SIEVAL_DATA_DIR}/agieval"   # `sieval dataset download agieval` stages this
+    args:
+      group: math
+
+tasks:
+  agieval_0shot_gen:
+    class: AGIEvalZeroShotGenTask
+    dataset: agieval_math
+    model: local-model
+    # Answer extraction (stage 2) runs on the model under test by default.
+    # Upstream instead ran it on a fixed cheap model; pin one here to match, and
+    # note the score depends on which you choose:
+    # args:
+    #   extractor:
+    #     model: gpt-3.5-turbo
+    #     api_base: https://api.openai.com/v1
+    #     temperature: 0.0
+    infer_args:
+      # Cloze subsets need room to work; MCQ subsets stop long before this.
+      max_tokens: 4096

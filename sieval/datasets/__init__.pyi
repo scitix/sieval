@@ -9,6 +9,10 @@ from .advanced_if import (
     AdvancedIFDataset,
     AdvancedIFDatasetSample,
 )
+from .agieval import (
+    AGIEvalDataset,
+    AGIEvalDatasetSample,
+)
 from .aime_2024 import (
     AIME2024Dataset,
     AIME2024DatasetSample,
@@ -197,6 +201,8 @@ from .ugmathbench import (
 __all__ = [
     "AALCRDataset",
     "AALCRDatasetSample",
+    "AGIEvalDataset",
+    "AGIEvalDatasetSample",
     "AIME2024Dataset",
     "AIME2024DatasetSample",
     "AIME2025Dataset",
