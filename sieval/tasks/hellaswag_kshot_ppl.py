@@ -259,7 +259,7 @@ class HellaSwagFewShotPPLTask(
         # mapping rather than recomputed -- the two cannot drift.
         metrics: dict[str, bool | float] = {
             "acc": post["extra"]["prediction_acc"] == gold,
-            "acc_norm": post["rollouts"][0]["prediction"] == gold,
+            "acc_norm": post["rollouts"][0].get("prediction") == gold,
         }
         return True, build_judgement_record(
             gold,

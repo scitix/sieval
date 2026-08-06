@@ -159,7 +159,7 @@ class ARCChallengeFewShotClpTask(
     @override
     async def feedback(self, post, ctx):
         return True, arc_judgement_record(
-            post["rollouts"][0]["prediction"], ctx.raw_sample
+            post["rollouts"][0].get("prediction"), ctx.raw_sample
         )
 
     @override

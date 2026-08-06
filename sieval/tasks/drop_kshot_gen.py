@@ -146,7 +146,7 @@ class DROPFewShotGenTask(
 
         ref = ctx.raw_sample["ref_text"]
         answers = ref.split("|")
-        prediction = post["rollouts"][0]["prediction"] or ""
+        prediction = post["rollouts"][0].get("prediction") or ""
         em, f1 = drop_metric(prediction, answers)
         # DROP's two published metrics fit the headline natively -- exact match is
         # the binary verdict, F1 the partial credit -- but both are also named in

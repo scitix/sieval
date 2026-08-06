@@ -235,7 +235,7 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
                         # An unextractable answer is None here but "" on the wire,
                         # so the evaluator still runs it and reports a compile
                         # error -- a real verdict rather than a skipped rollout.
-                        "code": rollout["prediction"] or "",
+                        "code": rollout.get("prediction") or "",
                         "test": {
                             "inputs": inputs,
                             "outputs": outputs,

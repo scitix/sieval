@@ -325,7 +325,7 @@ class MMMLUKShotClpTask(
         ],
     ) -> tuple[bool, JudgementRecord]:
         raw = ctx.raw_sample
-        prediction = post["rollouts"][0]["prediction"]
+        prediction = post["rollouts"][0].get("prediction")
         if raw is None:
             # No sample to grade against. The empty grouping keys are what the
             # pre-migration shape recorded, and report() maps them to "unknown".

@@ -136,7 +136,7 @@ class IFBenchZeroShotGenTask(
         raw = ctx.raw_sample
         prompt = raw["prompt"]
         instruction_ids = list(raw["instruction_id_list"])
-        response = post["rollouts"][0]["prediction"] or ""
+        response = post["rollouts"][0].get("prediction") or ""
         inp = InputExample(
             key=raw["key"],
             instruction_id_list=instruction_ids,

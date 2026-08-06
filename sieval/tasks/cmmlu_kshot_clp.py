@@ -418,7 +418,7 @@ class CMMLUFewShotClpTask(
 
     @override
     async def feedback(self, post, ctx):
-        prediction = post["rollouts"][0]["prediction"]
+        prediction = post["rollouts"][0].get("prediction")
         raw = ctx.raw_sample
         if raw is None:
             # No sample to compare against: the verdict is wrong-by-default, and

@@ -186,7 +186,7 @@ class GSM8KFewShotBaseGenTask(
         # Strict and flexible extraction are co-equal published metrics over one
         # response, so both are named in `metrics`; `correct` is DERIVED from the
         # strict one (the headline `exact_match`) so the two cannot drift.
-        prediction = post["rollouts"][0]["prediction"] or ""
+        prediction = post["rollouts"][0].get("prediction") or ""
         metrics: dict[str, bool | float] = {
             "exact_match": prediction == answer,
             "flexible_exact_match": post["extra"]["flexible_prediction"] == answer,

@@ -125,7 +125,7 @@ class HendrycksMathFewShotBaseGenTask(
         reference = extract_math_answer(
             ctx.raw_sample["problem"], ctx.raw_sample["solution"], "cot"
         )
-        prediction = post["rollouts"][0]["prediction"] or ""
+        prediction = post["rollouts"][0].get("prediction") or ""
         correct = bool(eval_math({"prediction": prediction, "answer": reference}))
         return True, build_judgement_record(
             reference, [build_rollout_judgement(0, correct)]

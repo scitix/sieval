@@ -176,7 +176,7 @@ class IMOAnswerBenchZeroShotGenTask(
         ground_truth = ctx.raw_sample["answer"]
         gold = normalize_answer(ground_truth)
         for rollout in post["rollouts"]:
-            pred = rollout["prediction"]
+            pred = rollout.get("prediction")
             if pred is None or gold is None:
                 rollouts.append(build_rollout_judgement(rollout["index"], False))
                 continue

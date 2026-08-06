@@ -8,7 +8,7 @@ description: Run preflight checks on the sieval codebase (link validation, depen
 
 $ARGUMENTS
 
-Accepts: `deep`, `quick` (default), or a specific check name (e.g., `check_links`, `check_deps`, `check_dep_coverage`, `check_tasks`, `check_datasets`, `check_examples`, `check_imports`, `check_meta_index_sync`, `check_version`).
+Accepts: `deep`, `quick` (default), or a specific check name (e.g., `check_links`, `check_deps`, `check_dep_coverage`, `check_tasks`, `check_task_shot_knobs`, `check_record_key_access`, `check_datasets`, `check_examples`, `check_imports`, `check_meta_index_sync`, `check_version`).
 
 ## Process
 

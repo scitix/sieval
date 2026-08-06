@@ -164,7 +164,7 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
                         # so the evaluator still runs it and reports a compile
                         # error -- the pre-protocol behaviour, and a real verdict
                         # rather than a skipped rollout.
-                        "code": rollout["prediction"] or "",
+                        "code": rollout.get("prediction") or "",
                         "test": {
                             "inputs": inputs,
                             "outputs": outputs,

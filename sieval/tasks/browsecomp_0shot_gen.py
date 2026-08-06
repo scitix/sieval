@@ -182,7 +182,7 @@ class BrowseCompZeroShotGenTask(
 
         rollouts: list[RolloutJudgement] = []
         for rollout in post["rollouts"]:
-            predicted = rollout["prediction"] or ""
+            predicted = rollout.get("prediction") or ""
             prompt = GRADER_TEMPLATE.format(
                 question=question,
                 correct_answer=gold,

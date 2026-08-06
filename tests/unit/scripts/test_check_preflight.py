@@ -127,12 +127,13 @@ class TestPreflightRunner:
     """Runner orchestration."""
 
     def test_all_checks_listed(self):
-        assert len(PreflightRunner.ALL_CHECKS) == 10
+        assert len(PreflightRunner.ALL_CHECKS) == 11
         assert "check_links" in PreflightRunner.ALL_CHECKS
         assert "check_examples" in PreflightRunner.ALL_CHECKS
         assert "check_meta_index_sync" in PreflightRunner.ALL_CHECKS
         assert "check_version" in PreflightRunner.ALL_CHECKS
         assert "check_task_shot_knobs" in PreflightRunner.ALL_CHECKS
+        assert "check_record_key_access" in PreflightRunner.ALL_CHECKS
 
     def test_run_all_returns_results(self):
         runner = PreflightRunner()
@@ -2129,4 +2130,160 @@ class TestCheckTaskShotKnobs:
     def test_real_tasks_pass(self):
         """Integration: the shipped tasks satisfy all three rules."""
         results = PreflightRunner().check_task_shot_knobs()
+        assert [r.status for r in results] == ["PASS"]
+
+
+class TestCheckRecordKeyAccess:
+    """The guard on `[]` access to a rollout key that is absent on disk."""
+
+    #: Minimal stand-in for sieval/core/tasks/records.py. Only the NotRequired
+    #: annotations on the two rollout TypedDicts are read.
+    RECORDS = (
+        "class RolloutPrediction(TypedDict):\n"
+        "    index: int\n"
+        "    prediction: NotRequired[JSONValue | None]\n"
+        "    extracted: bool\n"
+        "    extra: NotRequired[dict]\n"
+        "\n"
+        "class RolloutJudgement(TypedDict):\n"
+        "    index: int\n"
+        "    correct: bool\n"
+        "    score: NotRequired[float]\n"
+        "    metrics: NotRequired[dict[str, bool | float]]\n"
+        "    extra: NotRequired[dict]\n"
+    )
+
+    def _run(
+        self, tmp_path: Path, source: str, records: str | None = None
+    ) -> CheckResult:
+        records_dir = tmp_path / "sieval" / "core" / "tasks"
+        records_dir.mkdir(parents=True)
+        (records_dir / "records.py").write_text(
+            self.RECORDS if records is None else records
+        )
+        tasks_dir = tmp_path / "sieval" / "tasks"
+        tasks_dir.mkdir(parents=True)
+        (tasks_dir / "demo_0shot_gen.py").write_text(source)
+        results = PreflightRunner(project_root=tmp_path).check_record_key_access()
+        assert len(results) == 1
+        return results[0]
+
+    # --- the two shapes a rollout reaches a task through -------------------
+
+    def test_indexed_rollout_access_flagged(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "async def feedback(self, post, ctx):\n"
+            "    return post['rollouts'][0]['prediction']\n",
+        )
+        assert r.status == "FAIL"
+        assert len(r.details) == 1
+        assert "demo_0shot_gen.py:2" in r.details[0]
+
+    def test_iterated_rollout_access_flagged(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "async def feedback(self, post, ctx):\n"
+            "    for rollout in post['rollouts']:\n"
+            "        print(rollout['prediction'])\n",
+        )
+        assert r.status == "FAIL"
+        assert len(r.details) == 1
+
+    def test_comprehension_binding_flagged(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "async def report(self, finals, fails):\n"
+            "    return [r['prediction'] for r in finals[0]['rollouts']]\n",
+        )
+        assert r.status == "FAIL"
+
+    def test_get_rollouts_binding_flagged(self, tmp_path: Path):
+        # `(f.feedback_result or {}).get("rollouts", [])` is the report-stage idiom.
+        r = self._run(
+            tmp_path,
+            "async def report(self, finals, fails):\n"
+            "    for r in (finals[0] or {}).get('rollouts', []):\n"
+            "        print(r['prediction'])\n",
+        )
+        assert r.status == "FAIL"
+
+    # --- what must NOT be flagged ------------------------------------------
+
+    def test_get_access_passes(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "async def feedback(self, post, ctx):\n"
+            "    return post['rollouts'][0].get('prediction')\n",
+        )
+        assert r.status == "PASS"
+
+    def test_non_record_dict_not_flagged(self, tmp_path: Path):
+        # t_eval's `datum` carries a `prediction` key beside `ground_truth`; it is
+        # a task-local payload, not a PredictionRecord. Name-based matching would
+        # flag it and force a `.get()` that turns a real bug into a silent None.
+        r = self._run(
+            tmp_path,
+            "def _process(self, datum: dict):\n"
+            "    return datum['prediction'], datum['ground_truth']\n",
+        )
+        assert r.status == "PASS"
+
+    def test_required_rollout_keys_not_flagged(self, tmp_path: Path):
+        # `index` / `correct` are Required, so `[]` on them is safe.
+        r = self._run(
+            tmp_path,
+            "async def feedback(self, post, ctx):\n"
+            "    for rollout in post['rollouts']:\n"
+            "        print(rollout['index'], rollout['extracted'])\n",
+        )
+        assert r.status == "PASS"
+
+    def test_ungated_keys_not_flagged(self, tmp_path: Path):
+        # `extra` is NotRequired but deliberately ungated: every read is nested,
+        # so a mechanical `.get()` would swap KeyError for TypeError.
+        r = self._run(
+            tmp_path,
+            "async def report(self, finals, fails):\n"
+            "    for r in finals[0]['rollouts']:\n"
+            "        print(r['extra']['grade'], r['score'], r['metrics'])\n",
+        )
+        assert r.status == "PASS"
+
+    # --- the self-maintaining half -----------------------------------------
+
+    def test_unclassified_notrequired_key_fails(self, tmp_path: Path):
+        # A NotRequired rollout key in neither _GATED nor _UNGATED must fail
+        # rather than be silently skipped: that is what forces whoever adds a
+        # key to records.py to decide whether `[]` on it is a latent KeyError.
+        r = self._run(
+            tmp_path,
+            "x = 1\n",
+            records=self.RECORDS.replace(
+                "    extracted: bool\n",
+                "    extracted: bool\n    confidence: NotRequired[float]\n",
+            ),
+        )
+        assert r.status == "FAIL"
+        assert "confidence" in r.details[0]
+
+    def test_every_declared_key_is_classified(self):
+        """The real records.py declares no key the check cannot place."""
+        results = PreflightRunner().check_record_key_access()
+        assert [r.status for r in results] == ["PASS"]
+
+    def test_missing_records_module_skips(self, tmp_path: Path):
+        (tmp_path / "sieval" / "tasks").mkdir(parents=True)
+        results = PreflightRunner(project_root=tmp_path).check_record_key_access()
+        assert len(results) == 1
+        assert results[0].status == "SKIP"
+
+    def test_unparsable_module_reported_not_raised(self, tmp_path: Path):
+        r = self._run(tmp_path, "def broken(:\n")
+        assert r.status == "FAIL"
+        assert "could not parse" in r.details[0]
+
+    def test_real_modules_pass(self):
+        """Integration: no shipped module indexes a gated rollout key."""
+        results = PreflightRunner().check_record_key_access()
         assert [r.status for r in results] == ["PASS"]

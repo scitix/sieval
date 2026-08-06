@@ -218,7 +218,7 @@ class RulerZeroShotGenTask(
         per-sample term is computed here and report() averages the stored values.
         Same arithmetic, same floats, and now every row is inspectable.
         """
-        prediction = post["rollouts"][0]["prediction"] or ""
+        prediction = post["rollouts"][0].get("prediction") or ""
         references = list(ctx.raw_sample["outputs"])
         subtask = ctx.raw_sample["subtask"]
         lowered = prediction.lower()

@@ -108,7 +108,7 @@ class GPQADiamondZeroShotGenTask(
     @override
     async def feedback(self, post, ctx):
         reference = ctx.preprocess_result["reference"]
-        prediction = post["rollouts"][0]["prediction"]
+        prediction = post["rollouts"][0].get("prediction")
         return True, build_judgement_record(
             reference,
             [build_rollout_judgement(0, prediction == reference)],

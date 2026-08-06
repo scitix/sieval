@@ -102,7 +102,7 @@ class MMLUZeroShotGenTask(
         answer = "ABCD"[ctx.raw_sample["answer"]]
         subject = ctx.raw_sample.get("subject", "unknown")
         category = subject2category.get(subject, "other")
-        prediction = post["rollouts"][0]["prediction"]
+        prediction = post["rollouts"][0].get("prediction")
         return True, build_judgement_record(
             answer,
             [build_rollout_judgement(0, prediction == answer)],

@@ -142,7 +142,7 @@ class TEvalBeforeCallingZeroShotGenTask(
         `parse_error` is a count of unparseable segments, not a measurement of the
         answer, so it stays in `extra`.
         """
-        prediction = post["rollouts"][0]["prediction"] or ""
+        prediction = post["rollouts"][0].get("prediction") or ""
         resp_data_sample, error = self._process_response(
             {
                 "template": ctx.raw_sample["template"],

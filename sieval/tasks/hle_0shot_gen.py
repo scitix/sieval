@@ -224,7 +224,7 @@ class HLEZeroShotGenTask(
 
         rollouts: list[RolloutJudgement] = []
         for rollout in post["rollouts"]:
-            predicted = rollout["prediction"] or ""
+            predicted = rollout.get("prediction") or ""
             prompt = JUDGE_PROMPT.format(
                 question=question,
                 correct_answer=gold,

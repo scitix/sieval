@@ -143,7 +143,7 @@ class HumanEvalZeroShotBaseGenTask(
             # pre-protocol behaviour, and a real verdict rather than a skip.
             check_program = (
                 ctx.raw_sample["prompt"]
-                + (rollout["prediction"] or "")
+                + (rollout.get("prediction") or "")
                 + "\n"
                 + ctx.raw_sample["test"]
                 + "\n"

@@ -80,7 +80,7 @@ class MMLUProZeroShotGenTask(
     async def feedback(self, post, ctx):
         answer = ctx.raw_sample["answer"]
         category = ctx.raw_sample["category"]
-        prediction = post["rollouts"][0]["prediction"]
+        prediction = post["rollouts"][0].get("prediction")
         return True, build_judgement_record(
             answer,
             [build_rollout_judgement(0, prediction == answer)],

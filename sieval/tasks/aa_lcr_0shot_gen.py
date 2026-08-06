@@ -201,7 +201,7 @@ class AALCRZeroShotGenTask(
 
         rollouts: list[RolloutJudgement] = []
         for rollout in post["rollouts"]:
-            predicted = rollout["prediction"]
+            predicted = rollout.get("prediction")
             # Defensive, aa_lcr-specific by design (simpleqa_verified/browsecomp
             # omit it): the checker returns CORRECT on an empty candidate, which
             # would inflate accuracy. Not observed in the 4x300 validation runs

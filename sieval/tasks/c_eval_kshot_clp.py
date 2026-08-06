@@ -294,7 +294,7 @@ class CEvalFewShotCLPTask(
     async def feedback(self, post, ctx):
         raw = ctx.raw_sample
         answer = raw["answer"]
-        prediction = post["rollouts"][0]["prediction"]
+        prediction = post["rollouts"][0].get("prediction")
         return True, build_judgement_record(
             answer,
             [build_rollout_judgement(0, prediction == answer)],

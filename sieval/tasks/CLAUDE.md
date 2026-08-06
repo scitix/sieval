@@ -74,7 +74,7 @@ Records are named by **content**, not by the stage that emits them — a shard l
 Vocabulary — these denote **different layers**, keep them distinct:
 
 - **judgement** — the verdict record, mechanism-agnostic: string-compare, math-verify, test-suite *or* LLM verdicts all produce one.
-- **prediction** — the model's extracted answer. `None` means "could not extract" — never `""` or `-1`.
+- **prediction** — the model's extracted answer. `None` means "could not extract" — never `""` or `-1`. **Read it with `.get("prediction")`, never `["prediction"]`**: a `None` value is dropped by serialization, so on resume the key is *absent* and `[]` raises `KeyError` for exactly the samples whose extraction failed — on a fresh run the same line is fine, which is why in-memory tests never see it. `extracted` is the durable companion flag. Enforced by `scripts/check_preflight.py --check check_record_key_access`; neither `ty` nor `mypy --strict` reports it.
 - **reference** — ground truth; `None` when it is a *procedure* (test suite, rubric).
 - **correct** / **score** — the headline verdict. `correct` is the only axis comparable across tasks.
 - **metrics** — every metric measured, by name. A task with *co-equal* metrics (IFEval strict + loose, HellaSwag `acc` + `acc_norm`) records them all here and derives the headline from them; a metric parked in `extra` is hidden from any reader that doesn't already know the task.

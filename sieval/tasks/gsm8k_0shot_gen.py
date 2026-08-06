@@ -140,7 +140,7 @@ class GSM8KZeroShotGenTask(
 
         gold = _gold_answer(ctx.raw_sample["answer"])
         # `or ""` restores exactly what the grader saw pre-migration.
-        prediction = post["rollouts"][0]["prediction"] or ""
+        prediction = post["rollouts"][0].get("prediction") or ""
         correct = is_correct({"prediction": prediction, "answer": gold})
         return True, build_judgement_record(gold, [build_rollout_judgement(0, correct)])
 

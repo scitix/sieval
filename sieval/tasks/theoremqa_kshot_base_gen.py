@@ -488,7 +488,7 @@ class TheoremQAKShotBaseGenTask(
     async def feedback(self, post, ctx):
         answer, groundtruth_num = _groundtruth_args(ctx.raw_sample)
         # `or ""` restores exactly what the comparator saw pre-migration.
-        prediction = post["rollouts"][0]["prediction"] or ""
+        prediction = post["rollouts"][0].get("prediction") or ""
         return True, build_judgement_record(
             answer,
             [

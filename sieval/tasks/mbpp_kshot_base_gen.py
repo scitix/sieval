@@ -197,7 +197,7 @@ class MBPPFewShotBaseGenTask(
                 # An unextractable completion is None here but "" on the wire, so
                 # the evaluator still runs the tests alone and reports a real
                 # verdict -- the pre-protocol behaviour, not a skipped rollout.
-                pred = rollout["prediction"] or ""
+                pred = rollout.get("prediction") or ""
                 check_program = "\n".join(p for p in (pred, tests) if p).strip()
                 resp = await self._http_client.post(
                     self._code_eval_api,

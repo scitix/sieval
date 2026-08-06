@@ -101,7 +101,7 @@ class HMMTFeb2025ZeroShotGenTask(
         rollouts = []
         ground_truth = ctx.raw_sample["answer"]
         for rollout in post["rollouts"]:
-            pred = rollout["prediction"]
+            pred = rollout.get("prediction")
             if pred is None:
                 rollouts.append(build_rollout_judgement(rollout["index"], False))
                 continue
