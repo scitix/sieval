@@ -7,13 +7,35 @@ paths:
 
 ## Naming & Model Type
 
-- File naming must follow `<task>_<N>shot_<mode>.py` pattern (authoritative table in `sieval/tasks/CLAUDE.md`):
+- File naming must follow `<task>_<N>shot_<mode>[_<variant>].py` pattern (authoritative table in `sieval/tasks/CLAUDE.md`):
     - `_gen.py` → `model_type = "chat"`
     - `_base_gen.py` → `model_type = "gen"` (base model, uses GenModel)
     - `_ppl.py` → `model_type = "gen"` (perplexity, uses GenModel)
     - `_clp.py` → `model_type = "gen"` (conditional next-token log-prob, uses GenModel)
-- Class naming: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `FewShot`)
+- Class naming: `<Benchmark><ShotType><Mode>[<Variant>]Task` — words for shot count (`ZeroShot`, `FewShot`)
 - `ppl` vs `clp` distinction: see `sieval/tasks/CLAUDE.md`.
+
+### Variants
+
+An optional trailing segment names a **variant** of the same benchmark, so two
+readings can coexist as separate registered tasks. The variant may not spell a
+mode (`..._clp_gen.py` has two readings and is rejected).
+
+- **The unqualified name always means "what upstream measures"** — bugs included.
+  A run compared against a published number must never need to check which
+  variant it used. Never repurpose an unqualified name for a local change.
+- **`_fixed`** is ours, and is licensed by a **defect** in upstream's data or
+  grader — not by preference. Enumerate every divergence in
+  `reference_impl.notes` and **quantify** its score impact; a fork whose effect
+  on the score is unmeasured has no business claiming to be a fix.
+- A different **measurement regime** is not a variant — it gets its own
+  descriptive mode name, the way `arc_challenge_kshot_clp` and `_ppl` already
+  differ. `_fixed` must not become a label for "changed something".
+- Fixing **problem text or reference answers** is a `datasets/` concern, not
+  this one: add a dataset variant that applies an explicit patch table (`id`,
+  field, old → new, why) over the same pinned upstream revision. Never fork a
+  copy of the data — a patch table shrinks to empty when upstream fixes the row,
+  and that is the only exit condition a local fix can have.
 
 ## Checklist for New Benchmarks
 

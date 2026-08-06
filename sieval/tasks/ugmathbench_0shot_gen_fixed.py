@@ -1,5 +1,18 @@
 """
-UGMathBench 0-shot generative task — effective accuracy and the reasoning gap.
+UGMathBench 0-shot generative task, corrected — effective accuracy and the gap.
+
+The ``_fixed`` variant: this grades two classes of slot that upstream's judge
+cannot win, so it is deliberately *not* a reproduction of the published numbers.
+The unqualified name ``ugmathbench_0shot_gen`` is reserved for a faithful port
+and will stay vacant — upstream's grader is GPL-3.0 and cannot ship in an
+Apache-2.0 distribution, so no faithful port is possible here at all.
+
+The divergence is measured, not asserted: across all 15,183 samples it moves 27
+of 42,064 answer slots and 10 of 5,061 problems, an EAcc ceiling difference of
+0.198 pp — under a third of the 0.70 pp binomial standard error at this sample
+size, and a ceiling rather than an expectation, since it is only realized on a
+problem a model would otherwise answer correctly in all three versions.
+:mod:`sieval.community.ugmathbench` enumerates every divergence.
 
 One sample is one *(problem, version)* pair, so a full run issues three
 inferences per problem, one per randomized version. That is what the benchmark's
@@ -67,26 +80,37 @@ DEFAULT_PRECISION = 1e-3
 
 
 @sieval_task(
-    name="ugmathbench_0shot_gen",
-    display_name="UGMathBench (0-shot, generative)",
+    name="ugmathbench_0shot_gen_fixed",
+    display_name="UGMathBench (0-shot, generative, corrected)",
     description="Undergraduate math, 3 randomized versions per problem; EAcc + gap.",
     eval_mode=EvalMode.GEN,
     n_shot=0,
     tags=("english", "open-ended"),
     deps_group="math",
     model_type="chat",
-    status="experimental",
     reference_impl=ReferenceImpl(
         source="UGMathBench",
         url="https://github.com/YangLabHKUST/UGMathBench/blob/df47bfa639bfb89bdb0220036a7b2f216e72b0b3/eval_rule.py",
         notes=(
             "Prompt and metric definitions mirror upstream's `raw` template and "
-            "`eval_file` (aacc / eacc / cacc / Delta / RE). The grader does NOT: "
-            "upstream's `judge_rule.py` is GPL-3.0 and cannot ship in an "
-            "Apache-2.0 distribution, so answer comparison is an independent "
-            "math-verify-based implementation of the same 10 answer types — "
-            "hence status=experimental, and scores are not guaranteed to "
-            "reproduce the paper's rule-based numbers. Deltas are enumerated in "
+            "`eval_file` (aacc / eacc / cacc / Delta / RE). The grader does NOT, "
+            "and cannot: upstream's `judge_rule.py` is GPL-3.0 and would not ship "
+            "in an Apache-2.0 distribution, so answer comparison is an "
+            "independent math-verify-based implementation of the same 10 answer "
+            "types. The `_fixed` variant therefore does not reproduce the paper's "
+            "numbers, and the unqualified name stays vacant rather than reserved. "
+            "MEASURED DIVERGENCE: the two corrections that make a slot winnable "
+            "which upstream cannot win — a TF slot whose reference is not a "
+            "boolean (upstream asserts it is and swallows the AssertionError into "
+            "a False, so no answer wins), and normalizing the reference the same "
+            "way as the prediction (a few 'no units' answers are stored with a "
+            "percent sign) — move 27 of 42,064 slots and 10 of 5,061 problems, an "
+            "EAcc ceiling difference of 0.198 pp against a 0.70 pp binomial "
+            "standard error. Two further divergences are shape, not repair, and "
+            "are NOT covered by that figure: math-verify replaces upstream's "
+            "parse_latex + simplify + random-substitution chain, and the declared "
+            "answer type decides the rule where upstream's `is_equal` retries "
+            "every method until one accepts. All of them are enumerated in "
             "sieval/community/ugmathbench.py. SAMPLING: upstream generates "
             "greedily, one sample per version (temperature 0, max_tokens 2048), "
             "and this task issues one rollout per version to match; set "
@@ -96,7 +120,7 @@ DEFAULT_PRECISION = 1e-3
         ),
     ),
 )
-class UGMathBenchZeroShotGenTask(
+class UGMathBenchZeroShotGenFixedTask(
     Task[
         UGMathBenchDatasetSample,
         PromptRecord,

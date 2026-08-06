@@ -1187,12 +1187,37 @@ class TestTaskFileNamingPattern:
     @pytest.mark.parametrize(
         "name",
         [
+            "foo_0shot_gen_fixed.py",
+            "foo_0shot_base_gen_fixed.py",
+            "foo_kshot_ppl_fixed_v2.py",
+        ],
+    )
+    def test_accepts_a_variant_after_the_mode(self, name):
+        assert _TASK_FILE_PATTERN.match(name) is not None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
             "foo_clp.py",  # missing shot segment
-            "foo_5shot_clp_extra.py",  # trailing junk
             "foo_5shot_clpx.py",  # not a known mode
+            "foo_0shot_gen_.py",  # empty variant
+            "foo_0shot_gen_Fixed.py",  # variant is not lower-case
         ],
     )
     def test_rejects_malformed(self, name):
+        assert _TASK_FILE_PATTERN.match(name) is None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "foo_0shot_gen_gen.py",
+            "foo_5shot_clp_ppl.py",
+            "foo_0shot_gen_base_gen.py",
+        ],
+    )
+    def test_rejects_a_variant_that_spells_a_mode(self, name):
+        # Two readings (mode `gen` + variant `ppl`, or mode `ppl` misplaced), so
+        # the name is rejected rather than settled by alternation precedence.
         assert _TASK_FILE_PATTERN.match(name) is None
 
 

@@ -151,8 +151,8 @@ from .t_eval_before_calling_0shot_gen import (
 from .theoremqa_kshot_base_gen import (
     TheoremQAKShotBaseGenTask,
 )
-from .ugmathbench_0shot_gen import (
-    UGMathBenchZeroShotGenTask,
+from .ugmathbench_0shot_gen_fixed import (
+    UGMathBenchZeroShotGenFixedTask,
 )
 
 __all__ = [
@@ -206,5 +206,5 @@ __all__ = [
     "SimpleQAVerifiedZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
     "TheoremQAKShotBaseGenTask",
-    "UGMathBenchZeroShotGenTask",
+    "UGMathBenchZeroShotGenFixedTask",
 ]

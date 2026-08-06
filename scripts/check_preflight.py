@@ -56,8 +56,15 @@ _GH_NON_PERMANENT = re.compile(r"github\.com/[^/]+/[^/]+/blob/(main|master|devel
 
 _MAX_DRIFT_DETAILS = 20
 
+# `<task>_<N>shot_<mode>[_<variant>].py`. The mode alternation is anchored right
+# after the shot segment, so `model_type` stays readable off the name even when a
+# variant follows. Multi-token modes lead the alternation, and a variant may not
+# spell a mode (`..._clp_gen.py`) — that name has two readings, so it is rejected
+# rather than resolved by regex precedence.
+_TASK_MODE_ALTERNATION = "base_gen|llmjudge_gen|gen|ppl|clp"
 _TASK_FILE_PATTERN = re.compile(
-    r"^[a-z][a-z0-9_]*_(\d+|k)shot_(gen|base_gen|ppl|clp|llmjudge_gen)\.py$"
+    rf"^[a-z][a-z0-9_]*_(?:\d+|k)shot_(?:{_TASK_MODE_ALTERNATION})"
+    rf"(?:_(?!(?:{_TASK_MODE_ALTERNATION})\.py$)[a-z][a-z0-9_]*)?\.py$"
 )
 _DATASET_SUFFIX_PATTERN = re.compile(r"(Dataset|DatasetSample|CSVSample)$")
 

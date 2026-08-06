@@ -2,16 +2,52 @@
 
 ## Naming Conventions
 
-File: `<task>_<N>shot_<mode>.py` — suffix determines `model_type`:
+File: `<task>_<N>shot_<mode>[_<variant>].py` — the mode determines `model_type`:
 
-| Suffix | `model_type` |
+| Mode | `model_type` |
 | --- | --- |
 | `_gen.py` | `"chat"` |
 | `_base_gen.py` | `"gen"` |
 | `_ppl.py` | `"gen"` |
 | `_clp.py` | `"gen"` |
 
-Class: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `FewShot`).
+Class: `<Benchmark><ShotType><Mode>[<Variant>]Task` — words for shot count
+(`ZeroShot`, `FewShot`).
+
+### Variants
+
+The optional trailing segment names a **variant** of the same benchmark, letting
+two readings of it coexist as separate registered tasks — needed because
+upstream's buggy version and our corrected one are both worth keeping, for a
+long time. The task name is the registry key *and* the run-directory name, so a
+distinct name is the only place this distinction can live.
+
+The mode is still read off the position right after the shot segment, so a
+variant may not spell a mode: `foo_0shot_clp_gen.py` has two readings and is
+rejected outright rather than settled by regex precedence.
+
+**The unqualified name always tracks upstream, bugs included.** Anyone comparing
+a run against a published number can then read the name and stop thinking. A
+local change never takes over an unqualified name — it takes a variant, and the
+unqualified name stays free even if nothing will ever occupy it (`ugmathbench`'s
+faithful grader cannot ship at all: upstream is GPL-3.0).
+
+| Variant | Means |
+| --- | --- |
+| *(none)* | Tracks upstream — its protocol, its grader, its defects |
+| `_fixed` | Ours, diverging to repair a defect in upstream's grader or data |
+
+`_fixed` is licensed by a **defect**, not by preference, and carries two
+obligations: every divergence enumerated in `reference_impl.notes`, and its
+score impact **quantified**. An unmeasured fork does not get to call itself a
+fix — measuring it is what keeps `_fixed` from decaying into "changed something".
+
+Two things that are *not* variants:
+
+- A different **measurement regime**. `arc_challenge_kshot_clp` vs `_ppl` are
+  different rulers, not a fix and a bug; they already say so in the mode.
+- A fix to **problem text or reference answers**. That is a `datasets/` concern
+  — see `sieval/datasets/CLAUDE.md`.
 
 ### Constructor knobs: `n_shot` vs `k`
 

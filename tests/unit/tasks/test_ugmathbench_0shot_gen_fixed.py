@@ -1,4 +1,4 @@
-"""Unit tests for the UGMathBench task: stage plumbing and the version metrics.
+"""Unit tests for the corrected UGMathBench task: stage plumbing and metrics.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -19,7 +19,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
 )
 from sieval.datasets.ugmathbench import UGMathBenchDataset
-from sieval.tasks.ugmathbench_0shot_gen import UGMathBenchZeroShotGenTask
+from sieval.tasks.ugmathbench_0shot_gen_fixed import UGMathBenchZeroShotGenFixedTask
 
 
 def _sample(
@@ -49,13 +49,13 @@ def _inferred(*texts: str) -> ModelOutput:
     return ModelOutput(model=meta, texts=list(texts))
 
 
-def _task(precision: float = 1e-3) -> UGMathBenchZeroShotGenTask:
+def _task(precision: float = 1e-3) -> UGMathBenchZeroShotGenFixedTask:
     sample = _sample()
     dataset = UGMathBenchDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([sample])})
     )
     model = ChatModel(model="mock-chat", api_key="fake")
-    return UGMathBenchZeroShotGenTask(dataset, model, precision=precision)
+    return UGMathBenchZeroShotGenFixedTask(dataset, model, precision=precision)
 
 
 def _judged(
@@ -221,7 +221,7 @@ async def test_empty_run_reports_the_same_keys():
 def test_import_does_not_pull_math_verify():
     code = (
         "import sys\n"
-        "import sieval.tasks.ugmathbench_0shot_gen\n"
+        "import sieval.tasks.ugmathbench_0shot_gen_fixed\n"
         "assert 'math_verify' not in sys.modules, "
         "'math_verify must be lazy-imported'\n"
     )

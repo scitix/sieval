@@ -56,9 +56,16 @@ a comma inside an open-ended phrase, or an unbalanced bracket left by upstream's
 own answer splitting. They cannot be answered correctly here or upstream.
 
 The prompt builder, by contrast, IS exact: it reproduces upstream's ``raw``
-template byte-for-byte on all 15,183 rows. Scores are nonetheless *not*
-guaranteed to reproduce the paper's rule-based numbers, which is why the task
-ships ``status="experimental"``.
+template byte-for-byte on all 15,183 rows.
+
+Scores are nonetheless *not* the paper's, which is why the only task built on
+this module is the ``_fixed`` variant (``ugmathbench_0shot_gen_fixed``) and the
+unqualified name is left vacant. The two divergences above that *repair* a slot
+upstream cannot win — the non-boolean ``TF`` reference and the normalized
+reference — were measured across all 15,183 samples: together they move 27 of
+42,064 slots and 10 of 5,061 problems, an EAcc ceiling difference of 0.198 pp
+against a 0.70 pp binomial standard error. The first two divergences change the
+*shape* of grading rather than repairing it, and that figure does not cover them.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
