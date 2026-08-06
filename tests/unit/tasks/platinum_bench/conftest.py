@@ -36,16 +36,25 @@ O1_PROMPT = f"{_PROMPT_HEAD}Provide {_PROMPT_TAIL}"
 
 
 class CapturingChatModel(ChatModel):
-    """Returns a fixed completion and records the kwargs ``infer()`` passed."""
+    """Returns a fixed completion and records the request the model would send.
 
-    def __init__(self, text: str = "Answer: 42"):
-        super().__init__(model="mock-chat", api_key="fake")
+    ``last_kwargs`` is the **merged** result, not what ``infer()`` passed. The
+    override point (``_agenerate_impl``) sits below ``ChatModel``'s own
+    ``{**self._kwargs, **kwargs}``, so recording the call-time kwargs alone
+    would make every "the task injects no decoding params" assertion vacuous —
+    a task-side value that silently outranks the configured one would look
+    identical to no value at all. Reproducing the merge here is what lets a test
+    assert which side wins.
+    """
+
+    def __init__(self, text: str = "Answer: 42", **model_kwargs):
+        super().__init__(model="mock-chat", api_key="fake", **model_kwargs)
         self.last_kwargs: dict[str, object] = {}
         self._text = text
 
     async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
         _ = prompt
-        self.last_kwargs = dict(kwargs)
+        self.last_kwargs = {**self._kwargs, **kwargs}
         return ModelOutput(model=self.meta(), texts=[self._text])
 
     async def _alogprobs_impl(
@@ -150,9 +159,14 @@ def make_task[T: PlatinumMathGenTask](
     *,
     text: str = "Answer: 42",
     subset: str | None = None,
+    model_kwargs: dict[str, object] | None = None,
     **task_kwargs,
 ) -> tuple[T, CapturingChatModel]:
-    """Instantiate *task_cls* against a dataset for *subset* (default: its own)."""
-    model = CapturingChatModel(text=text)
+    """Instantiate *task_cls* against a dataset for *subset* (default: its own).
+
+    ``model_kwargs`` seeds the model's own request params — the `models:` /
+    ``infer_args`` side — so a test can assert what survives the merge.
+    """
+    model = CapturingChatModel(text=text, **(model_kwargs or {}))
     dataset = make_dataset(subset if subset is not None else task_cls.subset)
     return task_cls(dataset, model, **task_kwargs), model

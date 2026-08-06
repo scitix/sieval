@@ -49,6 +49,11 @@ from sieval.core.datasets import (
 )
 from sieval.core.utils.hf import ensure_dataset_dict
 
+# Pin the madrylab/platinum-bench snapshot consumed by `sieval dataset download`;
+# the loader reads the already-staged local dir, so the revision is not forwarded
+# to `load_dataset` (it would be a no-op on local files). Pass the bare hub id
+# instead of the staged path and you get whatever is current on the Hub — the row
+# counts below are the pinned revision's.
 PLATINUM_BENCH_REVISION = "51920a33bfb4620c789729ace14141e87a14969b"
 
 # The configs of madrylab/platinum-bench at the pinned revision, minus `vqa`
@@ -111,6 +116,10 @@ class PlatinumBenchDatasetSample(TypedDict):
     platinum_parsing_strategy: str
 
 
+# `categories` / `tags` describe the subsets that currently ship a task — the five
+# `math` ones. One sample TypedDict backs all 14 configs, so it is also the single
+# FK every future leaf resolves to: adding a `drop` / `squad` / `winograd_wsc` task
+# means widening these here, or the new leaf renders as ElementaryMath.
 @sieval_dataset(
     name="platinum_bench",
     display_name="PlatinumBench",

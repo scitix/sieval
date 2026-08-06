@@ -49,15 +49,20 @@ in this code): ``temperature=0.5``, ``top_p`` unset, one sample per question, no
 seed (``models.py::ModelInferenceEngine``); the o1 / o3 snapshots instead run at
 ``temperature=1``, which their API required. Notably *not* greedy — upstream
 sampled at 0.5, so a single run is not bit-reproducible upstream either.
-``max_tokens=6000`` is applied in ``infer()`` rather than left to YAML, because
-a short default budget truncates CoT answers before the ``Answer:`` line and
-converts correct reasoning into parse failures. Upstream sized that budget for
-non-thinking models, and on a thinking model it is not obviously enough: a live
-run of all five subsets against Qwen3-32B spent the whole 6000 inside the
-reasoning channel on one singleop question, leaving an empty answer that scores
-as an error. Raise ``max_tokens`` for a thinking model, and read ``errors``
-together with ``anomalies.json`` — ``truncated_output`` is what separates "ran
-out of budget" from "got it wrong".
+
+Infer prerequisites: set ``max_tokens=6000`` (upstream's
+``ModelInferenceEngine`` default) — the score is budget-sensitive, because a
+short budget truncates CoT before the ``Answer:`` line and converts correct
+reasoning into parse failures, which this benchmark counts as model errors. The
+task deliberately forwards **no** budget of its own: ``agenerate`` merges
+``{**model_kwargs, **task_kwargs}``, so a task-side value would silently outrank
+whatever the caller configured, and the one knob a user most needs to turn here
+would be the one they cannot. Upstream sized 6000 for non-thinking models; on a
+thinking model raise it, since a live run of all five subsets against Qwen3-32B
+spent the whole 6000 inside the reasoning channel on one singleop question and
+returned an empty answer that scores as an error. Read ``errors`` together with
+``anomalies.json`` — ``truncated_output`` is what separates "ran out of budget"
+from "got it wrong".
 
 Validation — every math cell of the paper's Table 3 (24 models x 5 subsets =
 120 error counts) is reproduced exactly by this task. Sampling at 0.5 with no
@@ -85,8 +90,9 @@ failures; 6 errors, of which 5 are ordinary wrong answers with a clean
 ``Answer:`` line and the sixth is the budget truncation described above. Nothing
 about a live run can confirm a *published* number — no model upstream evaluated
 is still served anywhere — so the two checks answer different questions: the
-replay pins scoring fidelity, the live run pins that ``max_tokens`` and
-``temperature`` reach the wire and that real completions survive the round trip.
+replay pins scoring fidelity, the live run pins that the configured
+``max_tokens`` and ``temperature`` reach the wire and that real completions
+survive the round trip.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -127,9 +133,12 @@ PLATINUM_REFERENCE_NOTES = (
     "Repro decoding (model-layer assets — set via models: / infer_args, not in "
     "this code): temperature=0.5, one sample per question, no seed; the o1/o3 "
     "snapshots ran at temperature=1. Not greedy, so upstream runs are not "
-    "bit-reproducible either. max_tokens=6000 is applied in infer() (upstream's "
-    "default) because a smaller budget truncates CoT before the 'Answer:' line "
-    "and turns correct reasoning into parse errors. That budget was sized for "
+    "bit-reproducible either. Infer prereqs: set max_tokens=6000 (upstream's "
+    "default) — the score is budget-sensitive, since a smaller budget truncates "
+    "CoT before the 'Answer:' line and turns correct reasoning into parse "
+    "errors. The task forwards no budget of its own on purpose: agenerate "
+    "merges {**model_kwargs, **task_kwargs}, so a task-side value would "
+    "silently outrank the one you configured. That budget was sized for "
     "non-thinking models: on a thinking model raise it, since a live Qwen3-32B "
     "run spent all 6000 in the reasoning channel on one question and scored the "
     "empty answer as an error. anomalies.json flags exactly that case as "
@@ -176,8 +185,10 @@ PLATINUM_REFERENCE_NOTES = (
 # change it, and a silently-wrong parser would look like a model regression.
 MATH_PARSING_STRATEGY = "math"
 
-# models.py::ModelInferenceEngine's max_completion_tokens/max_tokens default.
-UPSTREAM_MAX_TOKENS = 6000
+# Resolved once: `get_parse_fn` rebuilds its whole strategy table on every call
+# and depends on nothing but the strategy name, which `preprocess` pins per
+# sample anyway.
+PARSE_MATH_ANSWER = get_parse_fn(MATH_PARSING_STRATEGY)
 
 TPromptVariant = Literal["cot", "no_cot", "no_cot_o1"]
 
@@ -213,7 +224,6 @@ class PlatinumMathGenTask(
         model,
         name: str | None = None,
         prompt_variant: TPromptVariant = "cot",
-        max_tokens: int = UPSTREAM_MAX_TOKENS,
     ):
         super().__init__(dataset=dataset, model=model, name=name)
         if prompt_variant not in _PROMPT_VARIANTS:
@@ -222,7 +232,6 @@ class PlatinumMathGenTask(
                 f"got {prompt_variant!r}."
             )
         self._prompt_variant = prompt_variant
-        self._max_tokens = max_tokens
 
     def _prompt_text(self, raw: PlatinumBenchDatasetSample) -> str:
         """The prompt column this run reads — upstream's ``get_prompt`` branches."""
@@ -265,13 +274,17 @@ class PlatinumMathGenTask(
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre["prompt"], max_tokens=self._max_tokens)
+        # No decoding params: `agenerate` merges `{**model_kwargs, **task_kwargs}`,
+        # so anything passed here would silently outrank the caller's config.
+        # `max_tokens` is an infer prerequisite (6000 upstream) — see the module
+        # docstring; the score is budget-sensitive and the budget is the caller's.
+        return await self.model.agenerate(pre["prompt"])
 
     @override
     async def postprocess(self, inf, ctx):
         text = inf.texts[0] if inf.texts else ""
         try:
-            prediction = get_parse_fn(MATH_PARSING_STRATEGY)(text)
+            prediction = PARSE_MATH_ANSWER(text)
         except AttributeError:
             # No digit anywhere in the output: upstream's `re.search(...).group()`
             # on None. `None` is the protocol's spelling of "could not extract".

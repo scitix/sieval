@@ -22,7 +22,6 @@ from sieval.tasks.platinum_bench._base import (
     MATH_PARSING_STRATEGY,
     PLATINUM_REFERENCE_NOTES,
     PLATINUM_UPSTREAM_URL,
-    UPSTREAM_MAX_TOKENS,
 )
 from sieval.tasks.platinum_bench.platinum_gsm8k_0shot_gen import (
     PlatinumGSM8KZeroShotGenTask,
@@ -185,40 +184,37 @@ def test_math_strategy_constant_matches_upstreams_spelling():
 
 
 # ---------------------------------------------------------------------------
-# infer() — upstream's token budget, nothing else
+# infer() — the prompt and nothing else
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_infer_applies_upstreams_max_tokens():
-    # A short default budget truncates CoT before the "Answer:" line and turns
-    # correct reasoning into parse failures, so this is not left to YAML.
-    task, model = make_task(PlatinumGSM8KZeroShotGenTask)
-    raw = make_sample()
-    pre = await task.preprocess(raw, _ctx(raw_sample=raw))
-    await task.infer(pre, _ctx(raw_sample=raw))
-    assert model.last_kwargs["max_tokens"] == UPSTREAM_MAX_TOKENS == 6000
-
-
-@pytest.mark.anyio
-async def test_infer_max_tokens_is_overridable():
-    task, model = make_task(PlatinumGSM8KZeroShotGenTask, max_tokens=256)
-    raw = make_sample()
-    pre = await task.preprocess(raw, _ctx(raw_sample=raw))
-    await task.infer(pre, _ctx(raw_sample=raw))
-    assert model.last_kwargs["max_tokens"] == 256
-
-
-@pytest.mark.anyio
 async def test_infer_injects_no_decode_params():
-    # temperature/top_p/n/seed are model-layer assets (upstream sampled at 0.5);
-    # the task must not hardcode them or `infer_args` could never override.
+    # Every decoding param, max_tokens included, is a model-layer asset. The task
+    # must inject none of them: `agenerate` merges `{**model_kwargs, **kwargs}`,
+    # so a task-side value silently outranks whatever `models:` / `infer_args`
+    # configured — and max_tokens is the one knob this benchmark most needs a
+    # caller to turn, since the score is budget-sensitive.
     task, model = make_task(PlatinumGSM8KZeroShotGenTask)
     raw = make_sample()
     pre = await task.preprocess(raw, _ctx(raw_sample=raw))
     await task.infer(pre, _ctx(raw_sample=raw))
-    for forbidden in ("temperature", "top_p", "n", "seed", "stop"):
-        assert forbidden not in model.last_kwargs
+    assert model.last_kwargs == {}
+
+
+@pytest.mark.anyio
+async def test_infer_lets_the_configured_budget_reach_the_request():
+    # The regression this pins: with a task-side default the merge discarded the
+    # configured value, so a user raising the budget for a thinking model got
+    # upstream's 6000 anyway and the truncation they were fixing persisted.
+    task, model = make_task(
+        PlatinumGSM8KZeroShotGenTask,
+        model_kwargs={"max_tokens": 32000, "temperature": 0.5},
+    )
+    raw = make_sample()
+    pre = await task.preprocess(raw, _ctx(raw_sample=raw))
+    await task.infer(pre, _ctx(raw_sample=raw))
+    assert model.last_kwargs == {"max_tokens": 32000, "temperature": 0.5}
 
 
 # ---------------------------------------------------------------------------
@@ -452,3 +448,12 @@ def test_reference_notes_warn_that_the_token_budget_suits_non_thinking_models():
     # the reader is told to check `anomalies.json`. Measured, not theorized.
     assert "sized for non-thinking models" in PLATINUM_REFERENCE_NOTES
     assert "truncated_output" in PLATINUM_REFERENCE_NOTES
+
+
+def test_reference_notes_state_that_the_budget_is_the_callers():
+    # The task forwards no max_tokens, so a run at some backend's default budget
+    # silently under-scores. `sieval task show` is the only place a caller learns
+    # they have to set it — and that 6000 is the value that reproduces upstream.
+    assert "Infer prereqs" in PLATINUM_REFERENCE_NOTES
+    assert "max_tokens=6000" in PLATINUM_REFERENCE_NOTES
+    assert "budget-sensitive" in PLATINUM_REFERENCE_NOTES
