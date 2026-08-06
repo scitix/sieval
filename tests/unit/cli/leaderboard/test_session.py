@@ -444,6 +444,22 @@ class TestDatasetOperations:
             split="test",
         )
 
+    @pytest.mark.parametrize("bad", [True, False, "0.1", 0, 1.5, -0.5])
+    def test_stratified_sample_rejects_a_bad_fraction_naming_the_dataset(self, bad):
+        # Guarded at this layer too so the message names the offending dataset,
+        # like the 'by' and budget-count guards. `True` is the trap: an `int`
+        # subclass that passes a bare range test and keeps every row.
+        runner = self._make_runner()
+        ds = MagicMock()
+        ds.stratified_sample.return_value = ds
+        with pytest.raises(ValueError, match=r"test_ds.*'fraction' must be a number"):
+            runner._apply_dataset_operations(
+                ds,
+                [{"stratified_sample": {"by": "Subject", "fraction": bad}}],
+                "test_ds",
+            )
+        ds.stratified_sample.assert_not_called()
+
     def test_stratified_sample_defaults(self):
         runner = self._make_runner()
         ds = MagicMock()

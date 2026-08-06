@@ -1342,6 +1342,20 @@ class EvalSession:
                             f"Dataset '{dataset_name}': 'stratified_sample' "
                             f"'min_per_group' cannot be combined with 'per_group'"
                         )
+                    # Checked here as well as in the transform so the message
+                    # names the offending dataset, like the guards above. `bool`
+                    # is an `int` subclass, so `fraction: true` would otherwise
+                    # pass the range test and silently keep every row.
+                    if fraction is not None and (
+                        isinstance(fraction, bool)
+                        or not isinstance(fraction, int | float)
+                        or not 0 < fraction <= 1
+                    ):
+                        raise ValueError(
+                            f"Dataset '{dataset_name}': 'stratified_sample' "
+                            f"'fraction' must be a number in the interval (0, 1]; "
+                            f"got {fraction!r}"
+                        )
                     seed = op_args.get("seed", 0)
                     split = op_args.get("split", "test")
                     dataset = dataset.stratified_sample(
@@ -1356,11 +1370,11 @@ class EvalSession:
                     if per_group is not None:
                         budget_desc = f"per_group={per_group}"
                     elif fraction is not None:
-                        budget_desc = (
-                            f"fraction={fraction}, min_per_group={min_per_group}"
-                        )
+                        budget_desc = f"fraction={fraction}"
                     else:
-                        budget_desc = f"num={num}, min_per_group={min_per_group}"
+                        budget_desc = f"num={num}"
+                    if min_per_group is not None:
+                        budget_desc += f", min_per_group={min_per_group}"
                     logger.debug(
                         "Dataset '{}': stratified-sampled by '{}' ({}, seed={})",
                         dataset_name,

@@ -180,9 +180,14 @@ class Dataset[TSample](ABC):
 
         ``min_per_group`` applies to the ``num`` and ``fraction`` paths, which
         both allocate per stratum, and may not be combined with ``per_group``
-        (which already fixes the count). Within each stratum rows are chosen by a
-        deterministic *seed*-driven shuffle, so the selection reproduces across
-        runs and processes.
+        (which already fixes the count). It behaves differently on the two,
+        because rounding up already keeps every non-empty stratum: on ``num`` the
+        floor decides whether a small stratum survives at all (``min_per_group=0``
+        lets one drop to zero), while on ``fraction`` it can only *raise* a
+        stratum's share above its ceiling — a stratum there always keeps at least
+        one row. Within each stratum rows are chosen by a deterministic
+        *seed*-driven shuffle, so the selection reproduces across runs and
+        processes.
 
         Returns ``self`` unchanged if *split* is absent or empty.
         """
@@ -198,10 +203,19 @@ class Dataset[TSample](ABC):
                 "('num' / 'fraction') paths and cannot be combined with "
                 "'per_group'"
             )
-        if fraction is not None and not 0 < fraction <= 1:
+        # Budgets arrive from YAML, so the annotation is not a guarantee. `bool`
+        # is rejected explicitly because it is an `int` subclass: `fraction: true`
+        # would otherwise pass `0 < f <= 1` and silently keep every row. The
+        # message matches the one `EvalSession` raises, so the same bad value
+        # reads the same whether it came from YAML or a direct call.
+        if fraction is not None and (
+            isinstance(fraction, bool)
+            or not isinstance(fraction, int | float)
+            or not 0 < fraction <= 1
+        ):
             raise ValueError(
-                "stratified_sample: 'fraction' must be in the interval (0, 1]; "
-                f"got {fraction!r}"
+                "stratified_sample: 'fraction' must be a number in the interval "
+                f"(0, 1]; got {fraction!r}"
             )
 
         if split not in self._dataset_dict:

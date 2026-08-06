@@ -631,8 +631,26 @@ class TestStratifiedFraction:
     @pytest.mark.parametrize("bad", [0, 0.0, -0.5, 1.5, 2])
     def test_fraction_outside_the_unit_interval_raises(self, bad):
         ds = _make_grouped({"a": 5})
-        with pytest.raises(ValueError, match=r"'fraction' must be in the interval"):
+        with pytest.raises(ValueError, match=r"'fraction' must be a number"):
             ds.stratified_sample(by="subject", fraction=bad, seed=0)
+
+    @pytest.mark.parametrize("bad", [True, False, "0.1", [0.1]])
+    def test_non_numeric_fraction_raises(self, bad):
+        # Budgets come from YAML, so the annotation guarantees nothing. `True` is
+        # the trap: it is an `int` subclass, so it passes `0 < f <= 1` and would
+        # silently keep every row rather than sampling.
+        ds = _make_grouped({"a": 5})
+        with pytest.raises(ValueError, match=r"'fraction' must be a number"):
+            ds.stratified_sample(by="subject", fraction=bad, seed=0)
+
+    def test_min_per_group_zero_still_keeps_every_stratum(self):
+        # Asymmetry with the `num` path: rounding up already keeps every
+        # non-empty stratum, so a zero floor cannot drop one here.
+        ds = _make_grouped({"a": 100, "b": 1})
+        result = ds.stratified_sample(
+            by="subject", fraction=0.1, min_per_group=0, seed=0
+        )
+        assert _subject_counts(result) == {"a": 10, "b": 1}
 
     def test_no_test_set_returns_self(self):
         class _NoTestDataset(_ListDataset):

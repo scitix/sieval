@@ -20,12 +20,23 @@ Deviations from those references:
       not a task argument — the task used to carry its own stratified sampler::
 
           operations:
-            - stratified_sample: {by: [Locale, Subject], fraction: 0.1, seed: 0}
+            - stratified_sample:
+                {by: [Locale, Subject], fraction: 0.1, min_per_group: 6, seed: 0}
 
-      Group by ``[Locale]`` alone for a per-language share.  Operations run when
-      the dataset is built, so the subsample still precedes few-shot reservation
-      exactly as before, and scoring, reservation and aggregation stay identical
-      between full and sampled runs.
+      Stratify by ``[Locale, Subject]``, the same key few-shot reservation uses.
+      Reservation needs *more* than ``n_shot`` rows in every ``(Locale, Subject)``
+      cell, so the budget has to keep at least ``n_shot + 1`` per cell — hence
+      ``min_per_group``, and a *fraction* large enough for the smallest subject
+      (MMLU's smallest test subjects hold 100 rows, so ``0.1`` clears the default
+      ``n_shot=5``; ``0.05`` does not, and fails loudly).  Stratifying by
+      ``[Locale]`` alone applies no per-subject floor: it can leave a cell short
+      (a hard error) or drop one entirely, which is *silent* — the subject simply
+      never reaches the scored split and vanishes from the size-weighted
+      aggregation.  Do not sample this task that way.
+
+      Operations run when the dataset is built, so the subsample still precedes
+      few-shot reservation exactly as before, and the scoring, reservation and
+      aggregation *mechanism* is identical for full and sampled runs.
 
 Reproduction decoding: greedy ``temperature=0`` with ``max_tokens=1`` and
 top-``logprobs`` scoring.  These are structural to ``alogprobs`` (next-token
