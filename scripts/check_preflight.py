@@ -233,8 +233,8 @@ _UNGATED_RECORD_KEYS = frozenset(
         # milder still, since `build_prompt_record` omits it when None, so it is
         # absent in memory too and fresh and resumed runs fail identically
         # instead of diverging. What is missing for `reference` is not a `.get()`
-        # sweep but a durable signal of *which* of those two cases applies; see
-        # the issue linked from `check_record_key_access`.
+        # sweep but a durable signal of *which* of those two cases applies —
+        # tracked in https://github.com/scitix/sieval/issues/71.
         "reference",
     }
 )
