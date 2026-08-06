@@ -8,8 +8,9 @@ joining the worker at ``(timeout + 1) * n + 5`` as a backstop. That is the rule 
 task grades by, and the only one -- ``timeout_per_case`` is the single knob, and the
 whole-suite wall follows from it.
 
-The evaluator half of the same feature is covered by
-``tests/unit/vendor/code_evaluator/test_exec_py_test.py``.
+Only the task half is covered here. The guard that enforces the budget lives in the
+vendored evaluator, which is a separate deployable with its own repo -- see
+``vendor/code-evaluator/VENDORED.md``.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """

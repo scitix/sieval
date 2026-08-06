@@ -63,6 +63,13 @@
   Absent the field, behaviour is byte-for-byte what it was. Not yet upstream —
   land in `scitix/code-evaluator` and re-vendor.
 
+  Tests for the guard belong in that repo, not here — `tests/` mirrors `sieval/`,
+  and a copy under this tree would be orphaned by the next re-vendor. Thirteen of
+  them (seven in-process on the guard's semantics, six end-to-end through a spawned
+  worker, including the compile-time budget) were written against this patch and
+  passed; they are recoverable from `tests/unit/vendor/` at commit `7c426a69` to
+  port upstream alongside it.
+
   The field stays optional on the API, so an unpatched client is unaffected — but
   sieval's own LiveCodeBench tasks now always send it, at upstream's 6 s. It is
   the rule the benchmark defines, so it is the rule they grade by; there is no
