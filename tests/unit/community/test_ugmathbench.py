@@ -173,6 +173,15 @@ def test_multiple_choice_ignores_order_but_not_membership():
     assert not judge_answer("AC", "ACD", "MCM", options)
 
 
+def test_multiple_choice_supports_non_letter_option_labels():
+    # Option letters are matched a character at a time, so word-labelled choices
+    # yield no letters at all and the slot would be unwinnable without the
+    # whole-answer comparison the single-choice rule already does.
+    options = ["even", "odd", "neither"]
+    assert judge_answer("even, odd", "even, odd", "MCM", options)
+    assert not judge_answer("even", "even, odd", "MCM", options)
+
+
 def test_open_ended_is_text_not_mathematics():
     assert judge_answer("None", "none", "OE")
     assert not judge_answer("0", "none", "OE")

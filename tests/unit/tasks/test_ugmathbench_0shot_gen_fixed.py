@@ -80,6 +80,14 @@ def _all_versions(
     ]
 
 
+def _failed(problem_id: str, version: int) -> TaskContext:
+    """A sample that died before feedback but still knows which problem it is."""
+    return TaskContext(
+        sample_id=f"{problem_id}-v{version}",
+        raw_sample=_sample(problem_id, version),
+    ).to_failed(None, "error", "boom")
+
+
 def test_precision_must_be_positive():
     with pytest.raises(ValueError, match="precision must be > 0"):
         _task(precision=0)
@@ -174,12 +182,50 @@ async def test_a_problem_missing_a_version_cannot_be_an_effective_hit():
 @pytest.mark.anyio
 async def test_failed_samples_count_against_the_average():
     finals = _all_versions("p1", [True, True])
-    failed = TaskContext(sample_id="p1-v3").to_failed(None, "error", "boom")
-    report = await _task().report(finals, [failed])
+    report = await _task().report(finals, [_failed("p1", 3)])
 
     assert report["fails"] == 1.0
     assert report["n_versions_judged"] == 2.0
     assert report["aacc"] == pytest.approx(200 / 3)  # 2 correct out of 3 versions
+
+
+@pytest.mark.anyio
+async def test_a_wholly_failed_problem_stays_in_the_effective_accuracy_denominator():
+    # Every version of p2 failed, so p2 contributes no judgement at all. It must
+    # still occupy a slot: dropping it would compute EAcc over the survivors and
+    # report 100.0 for a run that answered half the problems.
+    finals = _all_versions("p1", [True, True, True])
+    report = await _task().report(finals, [_failed("p2", v) for v in (1, 2, 3)])
+
+    assert report["n_problems"] == 2.0
+    assert report["eacc"] == 50.0
+    assert report["cacc"] == 50.0
+    assert report["incomplete_problems"] == 1.0
+    assert report["unattributed_fails"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_a_failed_sample_is_identified_from_its_prompt_record():
+    # Persisted contexts are not required to carry raw_sample; the prompt record
+    # carries the same grouping keys, so identity survives either way.
+    raw = _sample("p2", 1)
+    ctx = await _task().preprocess(raw, TaskContext(sample_id="p2-v1", raw_sample=raw))
+    orphan = TaskContext(sample_id="p2-v1", preprocess_result=ctx).to_failed(
+        None, "error", "boom"
+    )
+    report = await _task().report(_all_versions("p1", [True, True, True]), [orphan])
+
+    assert report["n_problems"] == 2.0
+    assert report["unattributed_fails"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_a_fail_with_no_identity_is_counted_not_silently_dropped():
+    orphan = TaskContext(sample_id="?").to_failed(None, "error", "boom")
+    report = await _task().report(_all_versions("p1", [True, True, True]), [orphan])
+
+    assert report["unattributed_fails"] == 1.0
+    assert report["n_problems"] == 1.0  # nothing to attribute it to
 
 
 @pytest.mark.anyio

@@ -39,33 +39,68 @@ dependency). Known behavioural deltas versus the reference judge:
   elements (whose own types the dataset does not record).
 * Extraction is strict, matching upstream's ``Judger(strict_extract=True)`` as
   used by ``eval_rule.py``: no "guess the last number in the response" fallback.
-* Both sides are normalized before comparison, references included. A few
-  stored answers carry decoration their own type forbids (a percent sign on "a
-  numerical value without units"), and normalizing only the prediction marks
-  those right answers wrong.
+* Both sides are normalized *by the same pass*, references included. Upstream
+  normalizes its references too — ``judge()`` runs ``norm_ans_str`` over the
+  gold — but its extraction-time pass, ``Judger.normalize_answer``, runs on the
+  prediction alone and rewrites shapes the reference never sees, notably
+  ``sqrt(x)`` into ``sqrt{(}x)``. A plain-sympy reference such as
+  ``sqrt(1.83985)`` therefore cannot match itself upstream. This asymmetry, not
+  any single answer type, is the largest divergence in this module; it is
+  measured below.
 * A ``TF`` slot whose reference is not a boolean at all (9 of 1665, e.g. ``-22``,
   ``not real``) is compared as a value rather than graded wrong outright, which
   is what upstream's assert-then-swallow does. Those slots are otherwise
   unwinnable regardless of what the model answers.
+* A numeric slot whose reference is exactly zero is compared absolutely
+  (``|pred| <= tolerance``). Upstream divides by the reference, so a zero
+  reference raises into a bare ``except`` and the slot falls through to the
+  symbolic path instead.
 * Per-slot verdicts are returned rather than only the sample-level ``all()``,
   so a wrong answer can be located without re-running the grader.
 
-Not a divergence, but worth knowing: 26 of the 15,183 pinned rows (0.17%) store
-references the "comma-separated answers in one box" protocol cannot express —
-a comma inside an open-ended phrase, or an unbalanced bracket left by upstream's
-own answer splitting. They cannot be answered correctly here or upstream.
+29 of the 15,183 pinned rows (0.19%) cannot be graded correctly here even when
+the reference is replayed verbatim as the answer. 25 are unwinnable upstream
+too: the "comma-separated answers in one box" protocol cannot express them — a
+comma inside an open-ended phrase, or an unbalanced bracket left by upstream's
+own answer splitting. The other 4 are a shape this module loses and upstream
+wins — a ``UOL`` reference whose top-level commas sit outside any bracket, which
+:func:`split_answers` reads as separate slots
+(``Calculus_-_single_variable_0384`` v1-v3, ``Complex_analysis_0035`` v3).
 
 The prompt builder, by contrast, IS exact: it reproduces upstream's ``raw``
 template byte-for-byte on all 15,183 rows.
 
 Scores are nonetheless *not* the paper's, which is why the only task built on
 this module is the ``_fixed`` variant (``ugmathbench_0shot_gen_fixed``) and the
-unqualified name is left vacant. The two divergences above that *repair* a slot
-upstream cannot win — the non-boolean ``TF`` reference and the normalized
-reference — were measured across all 15,183 samples: together they move 27 of
-42,064 slots and 10 of 5,061 problems, an EAcc ceiling difference of 0.198 pp
-against a 0.70 pp binomial standard error. The first two divergences change the
-*shape* of grading rather than repairing it, and that figure does not cover them.
+unqualified name is left vacant.
+
+How far from upstream, measured rather than argued. Upstream's judge was run as
+a local *instrument* — GPL-3.0 restricts distribution, not use, and no upstream
+code is vendored or redistributed here — over all 15,183 pinned rows, with each
+row's own reference replayed back as a boxed answer:
+
+* upstream accepts its own reference on 14,616 rows (96.27%);
+* this module accepts 15,154 (99.81%);
+* the 546 rows that disagree (3.60%) span 190 of 5,061 problems, an EAcc
+  **ceiling** difference of **3.75 pp** — roughly five times the 0.70 pp
+  binomial standard error at this sample size, so the divergence is material
+  rather than noise;
+* per answer slot, running upstream's own dispatch loop without its
+  short-circuit: 788 of 42,064 slots disagree (1.87%), concentrated in ``EX``
+  (350) and ``NV`` (322), with ``TF`` contributing exactly the 9 non-boolean
+  references described above.
+
+Direction matters more than magnitude here: **542 of those 546 are rows where
+upstream rejects its own reference**, i.e. slots no model could win there. That
+is repair, not drift, and the prediction-only normalization above is its
+dominant cause; the non-boolean ``TF`` references contribute 9. Only 4 rows go
+the other way (the ``UOL`` note above). A *ceiling*, not an expectation: the
+difference is realized only on a problem a model would otherwise answer
+correctly in all three versions.
+
+The measurement is a replay of stored references, so it bounds the grader's
+divergence, not a model's score. What it cannot show is how the grader behaves
+on real model prose — see the promotion criteria on the task class.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -457,6 +492,12 @@ def _judge_multiple_choice_single(pred: str, gold: str, options: list[str]) -> b
 
 
 def _judge_multiple_choice_multiple(pred: str, gold: str, options: list[str]) -> bool:
+    # Same first move as the single-choice rule: options are usually bare
+    # letters, but a problem may label its choices with words, and
+    # `_option_letters` only ever matches single characters. Without this the
+    # slot would be unwinnable whenever the options are not letters.
+    if _squash(pred) == _squash(gold):
+        return True
     gold_letters = sorted(_option_letters(gold, options))
     pred_letters = sorted(_option_letters(pred, options))
     return bool(gold_letters) and gold_letters == pred_letters
