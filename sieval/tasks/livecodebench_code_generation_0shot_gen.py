@@ -164,7 +164,14 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
                         # so the evaluator still runs it and reports a compile
                         # error -- the pre-protocol behaviour, and a real verdict
                         # rather than a skipped rollout.
-                        "code": rollout["prediction"] or "",
+                        #
+                        # `.get`, not `[...]`: `obj_to_dict` DROPS None-valued keys, so
+                        # a blank generation persists as {"index", "extracted"} with no
+                        # `prediction` at all. In-process the key is present and the
+                        # subscript works; re-grading a lane from disk (`sieval run
+                        # --resume` after clearing its terminal records) then raises
+                        # KeyError on exactly the truncated rollouts.
+                        "code": rollout.get("prediction") or "",
                         "test": {
                             "inputs": inputs,
                             "outputs": outputs,
