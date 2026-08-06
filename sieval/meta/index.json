@@ -88,6 +88,48 @@
       "checksums": {}
     },
     {
+      "name": "apex_2025",
+      "display_name": "MathArena Apex 2025",
+      "description": "MathArena Apex 2025 — 12 problems curated from 2025 competitions to be very hard for models.",
+      "source": [
+        "hf:MathArena/apex_2025@ac8a641db12cc87be39e61ea89f2e04c80c5f2e7"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
+    },
+    {
+      "name": "apex_shortlist_2025",
+      "display_name": "MathArena Apex Shortlist 2025",
+      "description": "MathArena Apex Shortlist 2025 — 47 problems where frontier models score around 50%.",
+      "source": [
+        "hf:MathArena/apex-shortlist@f3efdf224ef665f129ddaae37699f6098c65781b"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
+    },
+    {
       "name": "arc_challenge",
       "display_name": "ARC-Challenge",
       "description": "ARC-Challenge science MCQ split from AI2 ARC, normalized for evaluation.",
@@ -157,6 +199,27 @@
       }
     },
     {
+      "name": "brumo_2025",
+      "display_name": "BRUMO 2025",
+      "description": "Brown University Math Olympiad, 2025, 30 problems.",
+      "source": [
+        "hf:MathArena/brumo_2025@6de9bc0987f5710c6376ee980e1483dbeb55cfda"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
+    },
+    {
       "name": "c_eval",
       "display_name": "C-Eval",
       "description": "C-Eval — Chinese multi-domain exam benchmark with 52 subjects.",
@@ -175,6 +238,27 @@
       ],
       "deps_group": null,
       "license": "cc-by-nc-sa-4.0",
+      "checksums": {}
+    },
+    {
+      "name": "cmimc_2025",
+      "display_name": "CMIMC 2025",
+      "description": "Carnegie Mellon Informatics and Mathematics Competition, 2025, 40 problems.",
+      "source": [
+        "hf:MathArena/cmimc_2025@8f27517ce4ad1d05e023c0e7eca4344754ba2a04"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-SA-4.0",
       "checksums": {}
     },
     {
@@ -741,6 +825,27 @@
       "checksums": {}
     },
     {
+      "name": "smt_2025",
+      "display_name": "SMT 2025",
+      "description": "Stanford Math Tournament, 2025, 53 problems.",
+      "source": [
+        "hf:MathArena/smt_2025@d8e99d83f1583842f46d4953cd960eea5d887e45"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-SA-4.0",
+      "checksums": {}
+    },
+    {
       "name": "t_eval_before_calling",
       "display_name": "T-Eval Before-Calling",
       "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
@@ -868,7 +973,47 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/aime/aime_2026.yaml",
-        "notes": "MathArena-aligned: boxed prompt + 0-999 integer hint, last-boxed extraction; equivalence via math-verify. REPEATS: matharena averages 4 runs per problem (runner default `--n 4`) while this task defaults to n=1 — set n=4 to compare against matharena.ai, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
+        "notes": "MathArena-aligned: boxed prompt + 0-999 integer hint, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "apex_2025_0shot_gen",
+      "display_name": "MathArena Apex 2025 (0-shot, generative)",
+      "description": "MathArena Apex 2025 — 12 problems curated from 2025 competitions to be very hard for models.",
+      "dataset": "apex_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "matharena",
+        "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/apex/apex_2025.yaml",
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: set n=16 to compare against matharena.ai — NOT the family's usual 4. Apex publishes at a higher repeat count than the rest of the suite (over apex_2025_outputs: 35 of 46 scored models at 16 runs/problem, 10 at 8, one at 4), which is how a 12-problem set gets a usable score. Pass it as `tasks.<name>.args.n`; this task still defaults to n=1, setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. SMALL N: 12 problems, so one problem moves the score by 8.3 points — read it alongside a full-size sibling, not on its own. OVERLAP: 3 of the 12 are byte-identical to smt_2025 problems 8, 42 and 43, so a run covering both datasets scores those twice; those are the only three, reconciled against every `source` string. apex_shortlist_2025 is an easier-band sibling (~50% vs this set's ~5%), NOT a superset — the two share no problem. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — 25 of 46 models on matharena.ai's Apex table (3,830/7,717 rollouts) match it and the rest carry a leading `Please reason step by step, and `, so the published table mixes two prompts in roughly equal parts. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. VALIDATED: replaying MathArena/apex_2025_outputs (7,717 rollouts) reproduces upstream's `correct` on 99.9% — the highest of any ported MathArena competition."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "apex_shortlist_2025_0shot_gen",
+      "display_name": "MathArena Apex Shortlist 2025 (0-shot, generative)",
+      "description": "MathArena Apex Shortlist 2025 — 47 problems where frontier models score around 50%.",
+      "dataset": "apex_shortlist_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "matharena",
+        "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/apex/shortlist_2025.yaml",
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. SYMBOLIC GOLDS: problems 8, 12, 14 and 39 answer in a free variable (n-1, n(n-1)/2, 2n(n-1), 4N^3+9N^2+6N+1), so they lean on math-verify's symbolic equivalence where the rest of the set needs only numeric — and the non-strict last-integer fallback can never satisfy them (upstream is `strict_parsing: false` here too, so the fallback itself is parity). OVERLAP: 5 of the 47 duplicate sibling datasets, so a run covering them scores those twice — 29 = brumo_2025 problem 30 and 27/28 = hmmt_feb_2025 problems 19/20 byte-for-byte, plus 25/26 = aime_2025 problems 14/15, which match only after normalization (same statement and gold; that loader mirrors opencompass/AIME2025, which re-typesets). Reconciled against every `source` string: the two it attributes to the HMMT 2025 team round are NOT duplicates, because hmmt_feb_2025 carries the individual rounds only. Not a superset of apex_2025 either — the two share no problem. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — 30 of 42 models on matharena.ai's shortlist table (4,813/9,659 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. VALIDATED: replaying MathArena/apex_shortlist_outputs (9,659 rollouts) reproduces upstream's `correct` on 99.4%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; 43 of the 62 residual disagreements would close if sieval vendored upstream's normalize_string (it deliberately does not) — this set's expression-valued golds invite `X = <expr>` and prose-wrapped boxes, which the integer-answer AIME/HMMT sets almost never produce."
       },
       "status": "stable"
     },
@@ -983,6 +1128,26 @@
       "status": "experimental"
     },
     {
+      "name": "brumo_2025_0shot_gen",
+      "display_name": "BRUMO 2025 (0-shot, generative)",
+      "description": "BRUMO 2025 — Brown University Math Olympiad, 30 problems.",
+      "dataset": "brumo_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "matharena",
+        "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/brumo/brumo_2025.yaml",
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. LIST GOLDS: problem 23's gold is a comma-separated list, and upstream joins every box on the final line whenever the gold holds a comma; this task derives that `list_answer` flag as grader.py does, so multi-box answers score identically. Wiring it moved 28 of 5,280 brumo_2025_outputs rollouts, all on problem 23, every one toward upstream's verdict. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 44 models on matharena.ai's BRUMO table (600/5,280 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect, and it is small: a paired A/B (gpt-oss-120b, reasoning_effort=high, n=4, one gateway/session, only the instruction differing) put the older prefix 0.8 pp ahead — 90.8 vs 90.0, 4 of 30 problems moving, two each way, t=0.37 — below this set's own sampling noise, so it explains no delta on its own. VALIDATED: replaying MathArena/brumo_2025_outputs (5,280 rollouts) reproduces upstream's `correct` on 98.8%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; residual is un-vendored normalize_string plus math-verify-vs-sympy."
+      },
+      "status": "stable"
+    },
+    {
       "name": "c_eval_kshot_clp",
       "display_name": "C-Eval (few-shot, next-token logprob)",
       "description": "C-Eval few-shot MCQ with CEval LLaMA next-token logprob scoring.",
@@ -999,6 +1164,26 @@
         "source": "ceval",
         "url": "https://raw.githubusercontent.com/hkust-nlp/ceval/cba65ae93bcf189149ced9f66ae0c958201faed9/code/evaluator_series/evaluators/llama.py",
         "notes": "Mirrors the non-CoT LLaMA evaluator: per-subject few-shot header with the English subject key, dev exemplars, and next-token A/B/C/D argmax via one-call top_logprobs (equivalent to the reference's softmax(logits[A,B,C,D]) while all four option tokens are in top-k; requires them present and fails otherwise). Faithful reproduction needs a top-k covering A/B/C/D (default logprobs=100; vLLM --max-logprobs 100, default 20; SGLang serves 100). Eval split is the released test set (reference scored val). Score is the macro-average over the 52 subjects (C-Eval paper Table 3), unlike lm-eval ceval-valid which micro-averages (weight_by_size). Comparison target: DeepSeek-V3 Table 3, C-Eval 5-shot 89.2 (Qwen2.5-72B-Base); the validated Qwen2.5-72B-Base 5-shot run on the test split scores 90.19 (macro)."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "cmimc_2025_0shot_gen",
+      "display_name": "CMIMC 2025 (0-shot, generative)",
+      "description": "CMIMC 2025 — Carnegie Mellon Informatics and Mathematics Competition, 40 problems.",
+      "dataset": "cmimc_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "matharena",
+        "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/cmimc/cmimc_2025.yaml",
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. PROMPT: the only ported competition whose upstream `instruction` goes beyond the plain boxed line — it also dictates a trailing `### Final answer` section, so this task uses matharena.CMIMC_INSTRUCTION rather than the shared BOXED_INSTRUCTION. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 4 of 35 models on matharena.ai's CMIMC table (640/5,600 rollouts) match it; the rest carry a leading `Please reason step by step, and `, and 1,088 rollouts predate the `### Final answer` section entirely, the widest prompt spread of any ported competition. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. VALIDATED: replaying MathArena/cmimc_2025_outputs (5,600 rollouts) reproduces upstream's `correct` on 99.1%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; 31 of the 51 residual disagreements would close if sieval vendored upstream's normalize_string (it deliberately does not)."
       },
       "status": "stable"
     },
@@ -1186,7 +1371,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2025.yaml",
-        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena averages 4 runs per problem (runner default `--n 4`) while this task defaults to n=1 — set n=4 to compare against matharena.ai, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. LIST GOLDS: problem 10's gold is a comma-separated list of two roots, and upstream joins every box on the final line whenever the gold holds a comma; this task derives that `list_answer` flag as grader.py does. Wiring it moved 16 of 7,680 hmmt_feb_2025_outputs rollouts, all on problem 10, every one toward upstream's verdict, lifting replay agreement from 99.4% to 99.6%. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 64 models on matharena.ai's HMMT Feb 2025 table (600/7,680 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise."
       },
       "status": "stable"
     },
@@ -1206,7 +1391,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2026.yaml",
-        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena averages 4 runs per problem (runner default `--n 4`) while this task defaults to n=1 — set n=4 to compare against matharena.ai, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
       },
       "status": "stable"
     },
@@ -1226,7 +1411,7 @@
       "reference_impl": {
         "source": "matharena",
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
-        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: matharena averages 4 runs per problem (runner default `--n 4`) while this task defaults to n=1 — set n=4 to compare against matharena.ai, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. VALIDATED against official MathArena: replaying its published 2640 outputs (22 models x 30 problems x 4 runs) through this task's grading path agrees with the upstream grader on 99.51% of outputs and reproduces 16/22 model scores exactly; Gemini 3 Flash is 93.33% three ways (published, upstream grader, sieval grader). A live sieval run of gemini-3-flash-preview scored 95.00% vs the published 93.33% — sampling variance, not a grading difference: both graders agree on 120/120 of sieval's own outputs."
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 22 models on matharena.ai's HMMT Nov 2025 table (600/2,640 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect, the live gemini-3-flash-preview delta below included; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. VALIDATED against official MathArena: replaying its published 2,640 outputs (22 models x 30 problems x 4 runs) through this task's grading path agrees with the upstream grader on 99.51% and reproduces 16/22 model scores exactly; Gemini 3 Flash is 93.33% three ways (published, upstream grader, sieval grader). A live sieval run of gemini-3-flash-preview scored 95.00% vs the published 93.33% — sampling variance, not a grading difference: both graders agree on 120/120 of sieval's own outputs."
       },
       "status": "stable"
     },
@@ -1685,6 +1870,26 @@
         "source": "simpleqa-verified",
         "url": "https://arxiv.org/abs/2509.07968",
         "notes": "Generative port of SimpleQA Verified (Google DeepMind, arXiv:2509.07968) — a 1,000-prompt curated subset of OpenAI SimpleQA. The autorater prompt is the paper's updated prompt (Appendix A); grade parsing (A/B/C -> CORRECT/INCORRECT/NOT_ATTEMPTED, default C) and the F1 aggregation mirror openai/simple-evals@5e623c2b simpleqa_eval.py. Headline metric = F1 (harmonic mean of overall-correct and correct-given-attempted; official Gemini 2.5 Pro = 55.6). Grader is a REAL LLM (official autorater: gpt-4.1-2025-04-14) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: unlike deterministic-grader tasks, scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample parsed grade and the grader's full ModelOutput (grader_output: reply, reasoning, usage, finish_reasons, model id) are persisted under the judgement record's `extra` — the reply being the only evidence of a verdict a re-grade need not reproduce, and (parse_grade defaults to NOT_ATTEMPTED) the only way to tell format drift from a real abstention; finish_reasons separates a reasoning autorater that spent its budget thinking from an empty API response. VALIDATION: google/gemma-4-31B-it scored F1 9.95 (n=1000, grader openai/gpt-4.1 via OpenRouter), within the official 10.7±2.1 band. Official numbers (Gemini 2.5 Pro 55.6; the band above) are from the DeepMind SimpleQA Verified leaderboard: https://www.kaggle.com/benchmarks/deepmind/simpleqa-verified"
+      },
+      "status": "stable"
+    },
+    {
+      "name": "smt_2025_0shot_gen",
+      "display_name": "SMT 2025 (0-shot, generative)",
+      "description": "SMT 2025 — Stanford Math Tournament, 53 problems.",
+      "dataset": "smt_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "matharena",
+        "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/smt/smt_2025.yaml",
+        "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. LIST GOLDS: problem 32's gold is a comma-separated list, and upstream joins every box on the final line whenever the gold holds a comma; this task derives that `list_answer` flag as grader.py does. Wiring it moved 0 of 10,875 smt_2025_outputs rollouts — every model that answered problem 32 boxed the whole list, so the flag is parity insurance here, not a fix. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 43 models on matharena.ai's SMT table (1,060/10,875 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. OVERLAP: apex_2025 re-uses problems 8, 42 and 43 verbatim. VALIDATED: replaying MathArena/smt_2025_outputs (10,875 rollouts) reproduces upstream's `correct` on 99.1%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; residual is un-vendored normalize_string plus math-verify-vs-sympy."
       },
       "status": "stable"
     },

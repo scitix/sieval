@@ -4,8 +4,9 @@ Each task's ``report()`` was rewritten to read protocol records instead of a
 bespoke feedback shape. The numbers must not have moved, so every expectation
 here is computed by hand from the fixture rather than from the implementation.
 
-Covers the pilot set: mmlu_pro, gpqa_diamond, aime_2026, hmmt_feb_2026,
-livecodebench, ifeval, simpleqa_verified.
+Covers mmlu_pro, gpqa_diamond, livecodebench, ifeval, simpleqa_verified and the
+whole pass@k math family (AIME, HMMT, MATH-500, IMO-AnswerBench, BRUMO, SMT,
+CMIMC, Apex, Apex Shortlist).
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -114,10 +115,18 @@ class TestGPQADiamondReport:
         ("sieval.tasks.hmmt_nov_2025_0shot_gen", "HMMTNov2025ZeroShotGenTask"),
         ("sieval.tasks.math_500_0shot_gen", "MATH500ZeroShotGenTask"),
         ("sieval.tasks.imo_answer_bench_0shot_gen", "IMOAnswerBenchZeroShotGenTask"),
+        ("sieval.tasks.brumo_2025_0shot_gen", "BRUMO2025ZeroShotGenTask"),
+        ("sieval.tasks.smt_2025_0shot_gen", "SMT2025ZeroShotGenTask"),
+        ("sieval.tasks.cmimc_2025_0shot_gen", "CMIMC2025ZeroShotGenTask"),
+        ("sieval.tasks.apex_2025_0shot_gen", "Apex2025ZeroShotGenTask"),
+        (
+            "sieval.tasks.apex_shortlist_2025_0shot_gen",
+            "ApexShortlist2025ZeroShotGenTask",
+        ),
     ],
 )
 class TestMathPassAtKReports:
-    """All eight pass@k math tasks share one implementation shape."""
+    """All thirteen pass@k math tasks share one implementation shape."""
 
     @staticmethod
     def _load(module_name, class_name):

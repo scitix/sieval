@@ -7,7 +7,7 @@ SiEval is a **model delivery quality verification system** with an asynchronous 
 - **Asynchronous streaming** — process samples concurrently without waiting for batch completion
 - **Iterative feedback loop** — multi-turn evaluation with feedback
 - **Resilient persistence** — sharded, append-only storage for crash recovery
-- **Broad benchmark coverage** — mathematics (AIME, HMMT, MATH-500), knowledge & reasoning (MMLU, MMLU-Pro, GPQA-Diamond, CMMLU), code (HumanEval, MBPP, LiveCodeBench), instruction-following (IFEval, IFBench), and tool-use (T-Eval Before-Calling); run `sieval dataset list` for the full roster
+- **Broad benchmark coverage** — spanning the six top-level categories of the shipped taxonomy: language, knowledge, logic, mathematics, code and agent. The roster is not duplicated here because it changes every release: `sieval dataset list` and `sieval task list` print what this build actually ships, and `sieval task show <name>` gives a task's reference implementation and its recorded deviations from upstream
 - **Type-safe pipelines** — fully typed task stages (preprocess → infer → postprocess → feedback)
 - **YAML-based configuration** — batch evaluation with model derivation and quota allocation
 - **Inference orchestration** — recipe-driven inference with auto-resolve and backend abstraction (vLLM, SGLang)
@@ -27,7 +27,7 @@ pdm install          # or: pip install -e .
 Optional extras (per-benchmark dependencies):
 
 ```bash
-pip install -e ".[math]"     # AIME, GSM8K, HMMT, IMO-AnswerBench, MATH-500, TheoremQA (math-verify)
+pip install -e ".[math]"     # symbolic answer checking, used by every math task (math-verify, regex)
 pip install -e ".[drop]"     # DROP (numpy, scipy)
 pip install -e ".[ifbench]"  # IFBench (emoji, nltk, setuptools, syllapy)
 pip install -e ".[ifeval]"   # IFEval (absl, langdetect, nltk, immutabledict)

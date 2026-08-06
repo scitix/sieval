@@ -1,16 +1,21 @@
 """MathArena-aligned prompting and answer extraction.
 
 Mirrors the eth-sri/matharena (MIT) reference implementation so sieval's
-AIME/HMMT tasks elicit and parse answers the same way matharena.ai does:
+final-answer competition tasks elicit and parse answers the same way
+matharena.ai does:
 
 * the per-competition ``instruction`` strings from
-  ``configs/competitions/{aime,hmmt}/*.yaml`` (final answer in ``\\boxed{}``;
-  AIME additionally states the 0-999 integer range);
+  ``configs/competitions/*/*.yaml`` (final answer in ``\\boxed{}``; AIME
+  additionally states the 0-999 integer range, CMIMC additionally demands a
+  ``### Final answer`` section);
 * the answer extractor is vendored from ``src/matharena/parser.py`` (see the
   ``# adapted from`` header on the extraction section below): take the LAST
   ``\\boxed{}``/``\\fbox{}`` (brace-balanced via recursive regex, inner boxes
   stripped, with the upstream approximation/decimal walk-back) and, when
-  ``strict_parsing`` is false, fall back to the last bare integer.
+  ``strict_parsing`` is false, fall back to the last bare integer. ``list_answer``
+  joins the boxes on the final line instead, for the comma-separated golds
+  upstream's ``grader.py`` switches on — callers derive it from the gold the same
+  way it does.
 
 Equivalence judging stays on the ``math-verify`` library in the task layer;
 this module only covers prompt construction and answer extraction, so the
@@ -24,13 +29,31 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 import re
 
 # Instruction strings copied verbatim from the matharena competition configs at
-# https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/{aime/aime_2026,hmmt/hmmt_feb_2026}.yaml
-# (YAML escapes ``\\boxed{{}}`` which resolves to ``\boxed{}``.)
+# https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/
+# The configs write ``\\boxed{{}}``: YAML resolves the escape to ``\boxed{{}}``,
+# and upstream then ``format_map``s the template to substitute ``{problem}``,
+# which collapses the doubled braces to ``\boxed{}``. sieval interpolates the
+# problem itself (``build_prompt``), so these constants hold the post-format text.
+#
+# Upstream keeps one ``instruction`` per competition and they are free to
+# diverge, so a competition earns its own constant here only when its string
+# actually differs. BOXED_INSTRUCTION is the plain-boxed text that
+# ``{hmmt/hmmt_feb_2025,hmmt/hmmt_feb_2026,hmmt/hmmt_nov_2025,brumo/brumo_2025,
+# smt/smt_2025,apex/apex_2025,apex/shortlist_2025}.yaml`` all carry byte-identical.
+BOXED_INSTRUCTION = "Put your final answer within \\boxed{}."
+# aime/aime_2026.yaml — prepends the plain-boxed line to an answer-range note.
 AIME_INSTRUCTION = (
     "Put your final answer within \\boxed{}.\n"
     "The answer is an integer between 0 and 999 inclusive."
 )
-HMMT_INSTRUCTION = "Put your final answer within \\boxed{}."
+# cmimc/cmimc_2025.yaml — the only ported competition that also dictates a
+# section layout for the final answer.
+CMIMC_INSTRUCTION = (
+    "Put your final answer within \\boxed{}. "
+    "Thus, format your final answer as follows:\n\n"
+    "### Final answer\n\n"
+    "The final answer is \\boxed{your final answer}."
+)
 
 
 def build_prompt(instruction: str, problem: str) -> str:
@@ -167,9 +190,15 @@ def find_last_boxed_content(text: str, list_answer: bool = False) -> str | None:
     return remove_inner_boxed(selected_match.group(2))
 
 
-def extract_boxed_answer(text: str) -> str | None:
-    """Return the content of the LAST ``\\boxed{}``/``\\fbox{}``, or None."""
-    answer = find_last_boxed_content(text)
+def extract_boxed_answer(text: str, list_answer: bool = False) -> str | None:
+    """Return the content of the LAST ``\\boxed{}``/``\\fbox{}``, or None.
+
+    ``list_answer`` mirrors upstream's flag of the same name: with it on, a
+    multi-part answer boxed piecewise on the final line is joined instead of
+    collapsed to its last box. Callers derive it the way ``grader.py`` does —
+    from a comma in the gold.
+    """
+    answer = find_last_boxed_content(text, list_answer)
     return answer.strip() if answer is not None else None
 
 
@@ -179,14 +208,17 @@ def extract_last_integer(text: str) -> str | None:
     return matches[-1] if matches else None
 
 
-def extract_answer(text: str, strict_parsing: bool = False) -> str | None:
+def extract_answer(
+    text: str, strict_parsing: bool = False, list_answer: bool = False
+) -> str | None:
     """matharena-aligned extraction.
 
     Take the last ``\\boxed{}``; if absent and ``strict_parsing`` is false,
-    fall back to the last integer (every AIME/HMMT competition config sieval
-    ports sets ``strict_parsing: false``).
+    fall back to the last integer (every competition config sieval ports sets
+    ``strict_parsing: false``). ``list_answer`` is upstream's comma-gold flag —
+    see :func:`extract_boxed_answer`.
     """
-    boxed = extract_boxed_answer(text)
+    boxed = extract_boxed_answer(text, list_answer)
     if boxed is not None:
         return boxed
     if not strict_parsing:

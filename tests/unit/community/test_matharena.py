@@ -5,7 +5,8 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 
 from sieval.community.matharena import (
     AIME_INSTRUCTION,
-    HMMT_INSTRUCTION,
+    BOXED_INSTRUCTION,
+    CMIMC_INSTRUCTION,
     build_prompt,
     extract_answer,
     extract_boxed_answer,
@@ -15,11 +16,27 @@ from sieval.community.matharena import (
 
 def test_build_prompt_appends_problem():
     assert (
-        build_prompt(HMMT_INSTRUCTION, "P?")
+        build_prompt(BOXED_INSTRUCTION, "P?")
         == "Put your final answer within \\boxed{}.\n\nP?"
     )
     assert AIME_INSTRUCTION.endswith("between 0 and 999 inclusive.")
     assert "\\boxed{}" in AIME_INSTRUCTION
+
+
+def test_instructions_carry_the_post_format_braces():
+    # Upstream's YAML writes ``\\boxed{{}}`` because it ``format_map``s the
+    # template to substitute ``{problem}``; sieval interpolates the problem itself,
+    # so the constants must already hold the collapsed single braces a model sees.
+    for instruction in (BOXED_INSTRUCTION, AIME_INSTRUCTION, CMIMC_INSTRUCTION):
+        assert "{{" not in instruction and "}}" not in instruction
+
+
+def test_cmimc_instruction_demands_a_final_answer_section():
+    # cmimc/cmimc_2025.yaml is the one ported config that goes beyond the plain
+    # boxed line — it starts with it, then dictates the section layout.
+    assert CMIMC_INSTRUCTION.startswith(BOXED_INSTRUCTION)
+    assert "\n\n### Final answer\n\n" in CMIMC_INSTRUCTION
+    assert CMIMC_INSTRUCTION.endswith("The final answer is \\boxed{your final answer}.")
 
 
 def test_extract_boxed_takes_last_box():
@@ -81,3 +98,29 @@ def test_extract_boxed_recursive_braces():
 def test_extract_last_integer_is_unsigned_word_bounded():
     # matharena uses \b\d+\b: the leading sign is not part of the integer.
     assert extract_last_integer("the result is -5") == "5"
+
+
+def test_list_answer_joins_boxes_on_the_final_line():
+    # grader.py sets list_answer whenever the gold has a comma; extraction then
+    # joins every box on the model's last line instead of keeping only the last.
+    text = "Working...\nThe roots are \\boxed{2} and \\boxed{3}."
+    assert extract_answer(text, strict_parsing=False, list_answer=True) == "2,3"
+    # Default stays upstream's: last box only.
+    assert extract_answer(text, strict_parsing=False) == "3"
+
+
+def test_list_answer_does_not_duplicate_an_already_listed_box():
+    # A comma inside a box means the model boxed the whole list once; joining
+    # would duplicate it, so upstream keeps that box verbatim.
+    text = "Answer: \\boxed{2,3}"
+    assert extract_answer(text, strict_parsing=False, list_answer=True) == "2,3"
+
+
+def test_list_answer_ignores_boxes_on_earlier_lines():
+    # Only the last line carrying a box is joined.
+    text = "Scratch \\boxed{9}\nFinal: \\boxed{2} and \\boxed{3}"
+    assert extract_answer(text, strict_parsing=False, list_answer=True) == "2,3"
+
+
+def test_list_answer_is_inert_for_a_single_box():
+    assert extract_boxed_answer("\\boxed{42}", list_answer=True) == "42"

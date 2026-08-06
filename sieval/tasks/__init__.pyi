@@ -13,6 +13,12 @@ from .aime_2025_0shot_gen import (
 from .aime_2026_0shot_gen import (
     AIME2026ZeroShotGenTask,
 )
+from .apex_2025_0shot_gen import (
+    Apex2025ZeroShotGenTask,
+)
+from .apex_shortlist_2025_0shot_gen import (
+    ApexShortlist2025ZeroShotGenTask,
+)
 from .arc.arc_challenge_kshot_clp import (
     ARCChallengeFewShotClpTask,
 )
@@ -28,8 +34,14 @@ from .arc.arc_easy_kshot_ppl import (
 from .browsecomp_0shot_gen import (
     BrowseCompZeroShotGenTask,
 )
+from .brumo_2025_0shot_gen import (
+    BRUMO2025ZeroShotGenTask,
+)
 from .c_eval_kshot_clp import (
     CEvalFewShotCLPTask,
+)
+from .cmimc_2025_0shot_gen import (
+    CMIMC2025ZeroShotGenTask,
 )
 from .cmmlu_kshot_clp import (
     CMMLUFewShotClpTask,
@@ -130,6 +142,9 @@ from .scicode_0shot_gen import (
 from .simpleqa_verified_0shot_gen import (
     SimpleQAVerifiedZeroShotGenTask,
 )
+from .smt_2025_0shot_gen import (
+    SMT2025ZeroShotGenTask,
+)
 from .t_eval_before_calling_0shot_gen import (
     TEvalBeforeCallingZeroShotGenTask,
 )
@@ -146,8 +161,12 @@ __all__ = [
     "ARCChallengeFewShotPplTask",
     "ARCEasyFewShotClpTask",
     "ARCEasyFewShotPplTask",
+    "Apex2025ZeroShotGenTask",
+    "ApexShortlist2025ZeroShotGenTask",
+    "BRUMO2025ZeroShotGenTask",
     "BrowseCompZeroShotGenTask",
     "CEvalFewShotCLPTask",
+    "CMIMC2025ZeroShotGenTask",
     "CMMLUFewShotClpTask",
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
@@ -179,6 +198,7 @@ __all__ = [
     "PlatinumSingleEqZeroShotGenTask",
     "PlatinumSingleOpZeroShotGenTask",
     "RulerZeroShotGenTask",
+    "SMT2025ZeroShotGenTask",
     "SciCodeZeroShotGenTask",
     "SimpleQAVerifiedZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",

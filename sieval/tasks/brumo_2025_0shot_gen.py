@@ -1,6 +1,6 @@
-"""HMMT November 2025 zero-shot generative task.
+"""BRUMO 2025 zero-shot generative task.
 
-AI-Generated Code - Claude Opus 4.8 (Anthropic)
+AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 from typing import override
@@ -22,15 +22,13 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.datasets import HMMTNov2025DatasetSample
+from sieval.datasets import BRUMO2025DatasetSample
 
 
 @sieval_task(
-    name="hmmt_nov_2025_0shot_gen",
-    display_name="HMMT Nov 2025 (0-shot, generative)",
-    description=(
-        "HMMT November 2025 — Harvard-MIT Mathematics Tournament, 30 problems."
-    ),
+    name="brumo_2025_0shot_gen",
+    display_name="BRUMO 2025 (0-shot, generative)",
+    description="BRUMO 2025 — Brown University Math Olympiad, 30 problems.",
     eval_mode=EvalMode.GEN,
     n_shot=0,
     tags=("english", "open-ended"),
@@ -38,7 +36,7 @@ from sieval.datasets import HMMTNov2025DatasetSample
     model_type="chat",
     reference_impl=ReferenceImpl(
         source="matharena",
-        url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
+        url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/brumo/brumo_2025.yaml",
         notes=(
             "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence "
             "via math-verify. REPEATS: upstream publishes at 4 runs/problem "
@@ -46,27 +44,31 @@ from sieval.datasets import HMMTNov2025DatasetSample
             "`tasks.<name>.args.n` to compare against matharena.ai — setting `n` on "
             "the model is overridden call-time, and k>n is rejected at construction. "
             "DEVIATION: golds are normalized by sieval.community.math.strip_string; "
-            "matharena does not. PROMPT COHORT: this task sends the pinned config's "
+            "matharena does not. LIST GOLDS: problem 23's gold is a comma-separated "
+            "list, and upstream joins every box on the final line whenever the gold "
+            "holds a comma; this task derives that `list_answer` flag as grader.py "
+            "does, so multi-box answers score identically. Wiring it moved 28 of "
+            "5,280 brumo_2025_outputs rollouts, all on problem 23, every one toward "
+            "upstream's verdict. PROMPT COHORT: this task sends the pinned config's "
             "`instruction`, which upstream later changed without re-running earlier "
-            "rows — only 5 of 22 models on matharena.ai's HMMT Nov 2025 table "
-            "(600/2,640 rollouts) match it; the rest carry a leading `Please reason "
-            "step by step, and `. That confounds any delta against an older row "
-            "rather than being a defect, the live gemini-3-flash-preview delta below "
-            "included; measured once, on brumo_2025, at 0.8 pp — below that set's "
-            "sampling noise. VALIDATED against official MathArena: replaying its "
-            "published 2,640 outputs (22 models x 30 problems x 4 runs) through this "
-            "task's grading path agrees with the upstream grader on 99.51% and "
-            "reproduces 16/22 model scores exactly; Gemini 3 Flash is 93.33% three "
-            "ways (published, upstream grader, sieval grader). A live sieval run of "
-            "gemini-3-flash-preview scored 95.00% vs the published 93.33% — sampling "
-            "variance, not a grading difference: both graders agree on 120/120 of "
-            "sieval's own outputs."
+            "rows — only 5 of 44 models on matharena.ai's BRUMO table (600/5,280 "
+            "rollouts) match it; the rest carry a leading `Please reason step by "
+            "step, and `. That confounds any delta against an older row rather than "
+            "being a defect, and it is small: a paired A/B (gpt-oss-120b, "
+            "reasoning_effort=high, n=4, one gateway/session, only the instruction "
+            "differing) put the older prefix 0.8 pp ahead — 90.8 vs 90.0, 4 of 30 "
+            "problems moving, two each way, t=0.37 — below this set's own sampling "
+            "noise, so it explains no delta on its own. VALIDATED: replaying "
+            "MathArena/brumo_2025_outputs (5,280 rollouts) reproduces upstream's "
+            "`correct` on 98.8%, inside the 96.2-99.7% band of the shipped AIME/HMMT "
+            "ports; residual is un-vendored normalize_string plus "
+            "math-verify-vs-sympy."
         ),
     ),
 )
-class HMMTNov2025ZeroShotGenTask(
+class BRUMO2025ZeroShotGenTask(
     Task[
-        HMMTNov2025DatasetSample,
+        BRUMO2025DatasetSample,
         PromptRecord,
         ModelOutput,
         PredictionRecord,
