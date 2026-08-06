@@ -5,9 +5,13 @@ disjoint, sharing no problem and not one entry in their `source` columns. They a
 two difficulty tiers off the same 2025-contest sweep: Apex kept only what no
 frontier model could solve in 4 tries, while the shortlist is the companion band
 where state-of-the-art models score around 50%. Both carry `source` naming each
-problem's originating contest. Three of these 47 overlap sibling loaders
-byte-for-byte — `brumo_2025` problem 30 and `hmmt_feb_2025` problems 19 and 20 —
-so evaluating those datasets in one run scores them twice. Upstream keeps the HF
+problem's originating contest. Five of these 47 duplicate sibling loaders, so
+evaluating those datasets in one run scores them twice: problem 29 is `brumo_2025`
+problem 30 and 27/28 are `hmmt_feb_2025` problems 19/20 byte-for-byte, while 25/26
+are `aime_2025` problems 14/15 — same statement and same gold, differing only
+because that loader mirrors opencompass/AIME2025, which re-typesets. The set is
+complete: it was reconciled against every `source` string, not just byte-equality.
+Upstream keeps the HF
 repo year-less (`MathArena/apex-shortlist`); the `_2025` here follows the
 competition config name (`apex/shortlist_2025.yaml`) and the dataset card's
 `pretty_name`.

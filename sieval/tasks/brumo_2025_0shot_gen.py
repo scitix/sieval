@@ -45,16 +45,26 @@ from sieval.datasets import BRUMO2025DatasetSample
             "model's `n` is silently overridden call-time. k>n is rejected at "
             "construction. DEVIATION: golds are normalized by "
             "sieval.community.math.strip_string; matharena does not. LIST GOLDS: "
-            "problem 23's gold is a comma-separated list; upstream turns its "
-            "extractor's `list_answer` on whenever the gold contains a comma, which "
-            "joins every box on the model's final line, whereas sieval's "
-            "extract_answer is family-wide `list_answer=False` and keeps only the "
-            "last box — a model that boxes each root separately scores 0 here and 1 "
-            "upstream. VALIDATED: replaying MathArena/brumo_2025_outputs (5,280 "
-            "rollouts) through this task's extraction + grading reproduces "
-            "upstream's own `correct` on 98.3% of them, inside the 96.2-99.7% band "
-            "the already-shipped AIME/HMMT ports sit in; the residual is upstream's "
-            "un-vendored normalize_string plus math-verify-vs-sympy."
+            "problem 23's gold is a comma-separated list. Upstream turns its "
+            "extractor's `list_answer` on whenever the gold contains a comma, "
+            "joining every box on the model's final line instead of keeping only "
+            "the last; this task derives the flag the same way grader.py does, so "
+            "a model that boxes each root separately is scored the same as "
+            "upstream. Measured over brumo_2025_outputs: wiring it moved 28 of "
+            "5,280 rollouts, all on problem 23, every one toward upstream's verdict "
+            "and none away. PROMPT COHORT: this task sends the pinned config's "
+            "`instruction`. Upstream changed that string and did not re-run the "
+            "earlier rows, so only 5 of the 44 models on matharena.ai's BRUMO table "
+            "(600 of 5,280 published rollouts) were scored under the prompt this "
+            "task sends; the rest carry a leading `Please reason step by step, and "
+            "`. sieval tracks the pinned config, so this is a property of the "
+            "comparison rather than a defect — but a delta measured against one of "
+            "those older rows is confounded by it. VALIDATED: replaying "
+            "MathArena/brumo_2025_outputs (5,280 rollouts) through this task's "
+            "extraction + grading reproduces upstream's own `correct` on 98.8% of "
+            "them, inside the 96.2-99.7% band the already-shipped AIME/HMMT ports "
+            "sit in; the residual is upstream's un-vendored normalize_string plus "
+            "math-verify-vs-sympy."
         ),
     ),
 )
@@ -98,8 +108,16 @@ class BRUMO2025ZeroShotGenTask(
     @override
     async def postprocess(self, inf, ctx):
         # MathArena-aligned: last \boxed{}; non-strict -> fall back to last integer.
+        # list_answer mirrors grader.py's `gold_answer_is_list`: a comma in the gold
+        # switches extraction to join the boxes on the model's final line instead of
+        # keeping only the last one.
+        raw = ctx.raw_sample
+        list_answer = raw is not None and "," in raw["answer"]
         return build_prediction_record(
-            [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+            [
+                extract_answer(choice, strict_parsing=False, list_answer=list_answer)
+                for choice in inf.texts
+            ]
         )
 
     @override

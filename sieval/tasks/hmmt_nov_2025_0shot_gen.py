@@ -46,7 +46,16 @@ from sieval.datasets import HMMTNov2025DatasetSample
             "compare against matharena.ai, as a task arg (tasks.<name>.args.n); the "
             "model's `n` is silently overridden call-time. k>n is rejected at "
             "construction. DEVIATION: golds are normalized by "
-            "sieval.community.math.strip_string; matharena does not. VALIDATED "
+            "sieval.community.math.strip_string; matharena does not. PROMPT "
+            "COHORT: this task sends the pinned config's `instruction`. Upstream "
+            "changed that string and did not re-run the earlier rows, so only 5 of "
+            "the 22 models on matharena.ai's HMMT Nov 2025 table (600 of 2,640 "
+            "published rollouts) were scored under the prompt this task sends; the "
+            "rest carry a leading `Please reason step by step, and `. sieval tracks "
+            "the pinned config, so this is a property of the comparison rather than "
+            "a defect — but a delta measured against one of those older rows is "
+            "confounded by it, including the live gemini-3-flash-preview delta "
+            "recorded below. VALIDATED "
             "against official MathArena: replaying its published 2640 outputs "
             "(22 models x 30 problems x 4 runs) through this task's grading path "
             "agrees with the upstream grader on 99.51% of outputs and reproduces "
@@ -98,8 +107,16 @@ class HMMTNov2025ZeroShotGenTask(
     @override
     async def postprocess(self, inf, ctx):
         # MathArena-aligned: last \boxed{}; non-strict -> fall back to last integer.
+        # list_answer mirrors grader.py's `gold_answer_is_list`: a comma in the gold
+        # switches extraction to join the boxes on the model's final line instead of
+        # keeping only the last one.
+        raw = ctx.raw_sample
+        list_answer = raw is not None and "," in raw["answer"]
         return build_prediction_record(
-            [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+            [
+                extract_answer(choice, strict_parsing=False, list_answer=list_answer)
+                for choice in inf.texts
+            ]
         )
 
     @override

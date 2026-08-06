@@ -90,8 +90,16 @@ class HMMTFeb2026ZeroShotGenTask(
     @override
     async def postprocess(self, inf, ctx):
         # MathArena-aligned: last \boxed{}; non-strict -> fall back to last integer.
+        # list_answer mirrors grader.py's `gold_answer_is_list`: a comma in the gold
+        # switches extraction to join the boxes on the model's final line instead of
+        # keeping only the last one.
+        raw = ctx.raw_sample
+        list_answer = raw is not None and "," in raw["answer"]
         return build_prediction_record(
-            [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+            [
+                extract_answer(choice, strict_parsing=False, list_answer=list_answer)
+                for choice in inf.texts
+            ]
         )
 
     @override

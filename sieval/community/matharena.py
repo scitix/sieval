@@ -12,7 +12,10 @@ matharena.ai does:
   ``# adapted from`` header on the extraction section below): take the LAST
   ``\\boxed{}``/``\\fbox{}`` (brace-balanced via recursive regex, inner boxes
   stripped, with the upstream approximation/decimal walk-back) and, when
-  ``strict_parsing`` is false, fall back to the last bare integer.
+  ``strict_parsing`` is false, fall back to the last bare integer. ``list_answer``
+  joins the boxes on the final line instead, for the comma-separated golds
+  upstream's ``grader.py`` switches on — callers derive it from the gold the same
+  way it does.
 
 Equivalence judging stays on the ``math-verify`` library in the task layer;
 this module only covers prompt construction and answer extraction, so the
@@ -187,9 +190,15 @@ def find_last_boxed_content(text: str, list_answer: bool = False) -> str | None:
     return remove_inner_boxed(selected_match.group(2))
 
 
-def extract_boxed_answer(text: str) -> str | None:
-    """Return the content of the LAST ``\\boxed{}``/``\\fbox{}``, or None."""
-    answer = find_last_boxed_content(text)
+def extract_boxed_answer(text: str, list_answer: bool = False) -> str | None:
+    """Return the content of the LAST ``\\boxed{}``/``\\fbox{}``, or None.
+
+    ``list_answer`` mirrors upstream's flag of the same name: with it on, a
+    multi-part answer boxed piecewise on the final line is joined instead of
+    collapsed to its last box. Callers derive it the way ``grader.py`` does —
+    from a comma in the gold.
+    """
+    answer = find_last_boxed_content(text, list_answer)
     return answer.strip() if answer is not None else None
 
 
@@ -199,14 +208,17 @@ def extract_last_integer(text: str) -> str | None:
     return matches[-1] if matches else None
 
 
-def extract_answer(text: str, strict_parsing: bool = False) -> str | None:
+def extract_answer(
+    text: str, strict_parsing: bool = False, list_answer: bool = False
+) -> str | None:
     """matharena-aligned extraction.
 
     Take the last ``\\boxed{}``; if absent and ``strict_parsing`` is false,
-    fall back to the last integer (every AIME/HMMT competition config sieval
-    ports sets ``strict_parsing: false``).
+    fall back to the last integer (every competition config sieval ports sets
+    ``strict_parsing: false``). ``list_answer`` is upstream's comma-gold flag —
+    see :func:`extract_boxed_answer`.
     """
-    boxed = extract_boxed_answer(text)
+    boxed = extract_boxed_answer(text, list_answer)
     if boxed is not None:
         return boxed
     if not strict_parsing:

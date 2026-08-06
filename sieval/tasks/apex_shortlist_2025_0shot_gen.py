@@ -61,8 +61,15 @@ from sieval.datasets import ApexShortlist2025DatasetSample
             "which re-typesets). Reconciled against every `source` string: the two "
             "it attributes to the HMMT 2025 team round are NOT duplicates, because "
             "hmmt_feb_2025 carries the individual rounds only. Not a superset of "
-            "apex_2025 either — the two sets share no problem at all. VALIDATED: "
-            "replaying "
+            "apex_2025 either — the two sets share no problem at all. PROMPT "
+            "COHORT: this task sends the pinned config's `instruction`. Upstream "
+            "changed that string and did not re-run the earlier rows, so 30 of the "
+            "42 models on matharena.ai's shortlist table (4,813 of 9,659 published "
+            "rollouts) were scored under the prompt this task sends; the rest carry "
+            "a leading `Please reason step by step, and `. sieval tracks the pinned "
+            "config, so this is a property of the comparison rather than a defect — "
+            "but a delta measured against one of those older rows is confounded by "
+            "it. VALIDATED: replaying "
             "MathArena/apex_shortlist_outputs (9,659 rollouts) through this task's "
             "extraction + grading reproduces upstream's own `correct` on 99.4% of "
             "them, inside the 96.2-99.7% band the already-shipped AIME/HMMT ports "
@@ -113,8 +120,16 @@ class ApexShortlist2025ZeroShotGenTask(
     @override
     async def postprocess(self, inf, ctx):
         # MathArena-aligned: last \boxed{}; non-strict -> fall back to last integer.
+        # list_answer mirrors grader.py's `gold_answer_is_list`: a comma in the gold
+        # switches extraction to join the boxes on the model's final line instead of
+        # keeping only the last one.
+        raw = ctx.raw_sample
+        list_answer = raw is not None and "," in raw["answer"]
         return build_prediction_record(
-            [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+            [
+                extract_answer(choice, strict_parsing=False, list_answer=list_answer)
+                for choice in inf.texts
+            ]
         )
 
     @override

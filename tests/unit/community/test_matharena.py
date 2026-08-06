@@ -98,3 +98,29 @@ def test_extract_boxed_recursive_braces():
 def test_extract_last_integer_is_unsigned_word_bounded():
     # matharena uses \b\d+\b: the leading sign is not part of the integer.
     assert extract_last_integer("the result is -5") == "5"
+
+
+def test_list_answer_joins_boxes_on_the_final_line():
+    # grader.py sets list_answer whenever the gold has a comma; extraction then
+    # joins every box on the model's last line instead of keeping only the last.
+    text = "Working...\nThe roots are \\boxed{2} and \\boxed{3}."
+    assert extract_answer(text, strict_parsing=False, list_answer=True) == "2,3"
+    # Default stays upstream's: last box only.
+    assert extract_answer(text, strict_parsing=False) == "3"
+
+
+def test_list_answer_does_not_duplicate_an_already_listed_box():
+    # A comma inside a box means the model boxed the whole list once; joining
+    # would duplicate it, so upstream keeps that box verbatim.
+    text = "Answer: \\boxed{2,3}"
+    assert extract_answer(text, strict_parsing=False, list_answer=True) == "2,3"
+
+
+def test_list_answer_ignores_boxes_on_earlier_lines():
+    # Only the last line carrying a box is joined.
+    text = "Scratch \\boxed{9}\nFinal: \\boxed{2} and \\boxed{3}"
+    assert extract_answer(text, strict_parsing=False, list_answer=True) == "2,3"
+
+
+def test_list_answer_is_inert_for_a_single_box():
+    assert extract_boxed_answer("\\boxed{42}", list_answer=True) == "42"

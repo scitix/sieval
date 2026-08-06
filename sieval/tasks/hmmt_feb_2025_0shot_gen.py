@@ -46,7 +46,22 @@ from sieval.datasets import HMMTFeb2025DatasetSample
             "compare against matharena.ai, as a task arg (tasks.<name>.args.n); the "
             "model's `n` is silently overridden call-time. k>n is rejected at "
             "construction. DEVIATION: golds are normalized by "
-            "sieval.community.math.strip_string; matharena does not."
+            "sieval.community.math.strip_string; matharena does not. LIST GOLDS: "
+            "problem 10's gold is a comma-separated list of two roots. Upstream "
+            "turns its extractor's `list_answer` on whenever the gold contains a "
+            "comma, joining every box on the model's final line instead of keeping "
+            "only the last; this task derives the flag the same way grader.py does. "
+            "Measured over hmmt_feb_2025_outputs: wiring it moved 16 of 7,680 "
+            "rollouts, all on problem 10, every one toward upstream's verdict and "
+            "none away, lifting replay agreement from 99.4% to 99.6%. PROMPT "
+            "COHORT: this task sends the pinned config's `instruction`. Upstream "
+            "changed that string and did not re-run the earlier rows, so only 5 of "
+            "the 64 models on matharena.ai's HMMT Feb 2025 table (600 of 7,680 "
+            "published rollouts) were scored under the prompt this task sends; the "
+            "rest carry a leading `Please reason step by step, and `. sieval tracks "
+            "the pinned config, so this is a property of the comparison rather than "
+            "a defect — but a delta measured against one of those older rows is "
+            "confounded by it."
         ),
     ),
 )
@@ -90,8 +105,16 @@ class HMMTFeb2025ZeroShotGenTask(
     @override
     async def postprocess(self, inf, ctx):
         # MathArena-aligned: last \boxed{}; non-strict -> fall back to last integer.
+        # list_answer mirrors grader.py's `gold_answer_is_list`: a comma in the gold
+        # switches extraction to join the boxes on the model's final line instead of
+        # keeping only the last one.
+        raw = ctx.raw_sample
+        list_answer = raw is not None and "," in raw["answer"]
         return build_prediction_record(
-            [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+            [
+                extract_answer(choice, strict_parsing=False, list_answer=list_answer)
+                for choice in inf.texts
+            ]
         )
 
     @override

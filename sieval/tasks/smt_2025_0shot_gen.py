@@ -45,13 +45,24 @@ from sieval.datasets import SMT2025DatasetSample
             "model's `n` is silently overridden call-time. k>n is rejected at "
             "construction. DEVIATION: golds are normalized by "
             "sieval.community.math.strip_string; matharena does not. LIST GOLDS: "
-            "problem 32's gold is a comma-separated list; upstream turns its "
-            "extractor's `list_answer` on whenever the gold contains a comma, which "
-            "joins every box on the model's final line, whereas sieval's "
-            "extract_answer is family-wide `list_answer=False` and keeps only the "
-            "last box — a model that boxes each value separately scores 0 here and 1 "
-            "upstream. OVERLAP: apex_2025 re-uses problems 8, 42 and 43 verbatim. "
-            "VALIDATED: replaying MathArena/smt_2025_outputs (10,875 rollouts) "
+            "problem 32's gold is a comma-separated list. Upstream turns its "
+            "extractor's `list_answer` on whenever the gold contains a comma, "
+            "joining every box on the model's final line instead of keeping only "
+            "the last; this task derives the flag the same way grader.py does, so "
+            "a model that boxes each value separately is scored the same as "
+            "upstream. Measured over smt_2025_outputs: wiring it moved 0 of 10,875 "
+            "rollouts — on this set every model that answered problem 32 boxed the "
+            "whole list, so the flag is parity insurance rather than a fix. "
+            "PROMPT COHORT: this task sends the pinned config's `instruction`. "
+            "Upstream changed that string and did not re-run the earlier rows, so "
+            "only 5 of the 43 models on matharena.ai's SMT table (1,060 of 10,875 "
+            "published rollouts) were scored under the prompt this task sends; the "
+            "rest carry a leading `Please reason step by step, and `. sieval tracks "
+            "the pinned config, so this is a property of the comparison rather than "
+            "a defect — but a delta measured against one of those older rows is "
+            "confounded by it. OVERLAP: apex_2025 re-uses problems 8, 42 and 43 "
+            "verbatim. VALIDATED: replaying MathArena/smt_2025_outputs (10,875 "
+            "rollouts) "
             "through this task's extraction + grading reproduces upstream's own "
             "`correct` on 99.1% of them, inside the 96.2-99.7% band the "
             "already-shipped AIME/HMMT ports sit in; the residual is upstream's "
@@ -99,8 +110,16 @@ class SMT2025ZeroShotGenTask(
     @override
     async def postprocess(self, inf, ctx):
         # MathArena-aligned: last \boxed{}; non-strict -> fall back to last integer.
+        # list_answer mirrors grader.py's `gold_answer_is_list`: a comma in the gold
+        # switches extraction to join the boxes on the model's final line instead of
+        # keeping only the last one.
+        raw = ctx.raw_sample
+        list_answer = raw is not None and "," in raw["answer"]
         return build_prediction_record(
-            [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+            [
+                extract_answer(choice, strict_parsing=False, list_answer=list_answer)
+                for choice in inf.texts
+            ]
         )
 
     @override

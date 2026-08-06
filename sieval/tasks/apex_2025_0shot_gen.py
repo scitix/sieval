@@ -57,7 +57,16 @@ from sieval.datasets import Apex2025DatasetSample
             "both datasets scores those problems twice; those are the only three, "
             "reconciled against every `source` string. apex_shortlist_2025 is an "
             "easier-band sibling (~50% vs this set's ~5%), NOT a superset — it "
-            "shares no problem with this set. VALIDATED: replaying "
+            "shares no problem with this set. PROMPT COHORT: this task sends the "
+            "pinned config's `instruction`. Upstream changed that string and did "
+            "not re-run the earlier rows, so 25 of the 46 models on matharena.ai's "
+            "Apex table (3,830 of 7,717 published rollouts) were scored under the "
+            "prompt this task sends; the rest carry a leading `Please reason step "
+            "by step, and `. The published table therefore mixes two prompts in "
+            "roughly equal parts. sieval tracks the pinned config, so this is a "
+            "property of the comparison rather than a defect — but a delta measured "
+            "against one of those older rows is confounded by it. VALIDATED: "
+            "replaying "
             "MathArena/apex_2025_outputs (7,717 rollouts) through this task's "
             "extraction + grading reproduces upstream's own `correct` on 99.9% of "
             "them — the highest of any ported MathArena competition."
@@ -104,8 +113,16 @@ class Apex2025ZeroShotGenTask(
     @override
     async def postprocess(self, inf, ctx):
         # MathArena-aligned: last \boxed{}; non-strict -> fall back to last integer.
+        # list_answer mirrors grader.py's `gold_answer_is_list`: a comma in the gold
+        # switches extraction to join the boxes on the model's final line instead of
+        # keeping only the last one.
+        raw = ctx.raw_sample
+        list_answer = raw is not None and "," in raw["answer"]
         return build_prediction_record(
-            [extract_answer(choice, strict_parsing=False) for choice in inf.texts]
+            [
+                extract_answer(choice, strict_parsing=False, list_answer=list_answer)
+                for choice in inf.texts
+            ]
         )
 
     @override
