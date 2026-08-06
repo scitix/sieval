@@ -41,12 +41,12 @@ from sieval.datasets import AIME2026DatasetSample
         url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/aime/aime_2026.yaml",
         notes=(
             "MathArena-aligned: boxed prompt + 0-999 integer hint, last-boxed "
-            "extraction; equivalence via math-verify. REPEATS: matharena averages 4 "
-            "runs per problem (runner default `--n 4`) while this task defaults to "
-            "n=1 — set n=4 to compare against matharena.ai, as a task arg "
-            "(tasks.<name>.args.n); the model's `n` is silently overridden "
-            "call-time. k>n is rejected at construction. DEVIATION: golds are "
-            "normalized by sieval.community.math.strip_string; matharena does not."
+            "extraction; equivalence via math-verify. REPEATS: upstream publishes at "
+            "4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as "
+            "`tasks.<name>.args.n` to compare against matharena.ai — setting `n` on "
+            "the model is overridden call-time, and k>n is rejected at construction. "
+            "DEVIATION: golds are normalized by sieval.community.math.strip_string; "
+            "matharena does not."
         ),
     ),
 )
