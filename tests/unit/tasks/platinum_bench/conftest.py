@@ -88,16 +88,22 @@ def make_sample(
     }
 
 
-def make_dataset(subset: str) -> PlatinumBenchDataset:
-    """A dataset instance bound to *subset*, built without touching the hub."""
+def make_dataset(*subsets: str) -> PlatinumBenchDataset:
+    """A dataset holding one row per named subset, built without touching the hub.
+
+    The loader merges every config and the caller narrows it, so *which* subsets
+    are present is the whole wiring contract: pass one for a correctly narrowed
+    dataset, several to stand in for an un-narrowed merged split, none for an
+    empty one.
+    """
     from datasets import Dataset as HFDataset
     from datasets import DatasetDict as HFDatasetDict
 
+    rows = [dict(make_sample(subset=s)) for s in subsets]
     return PlatinumBenchDataset(
         _hf_dict=HFDatasetDict(
-            {"test": HFDataset.from_list([dict(make_sample(subset=subset))])}
-        ),
-        subset=subset,
+            {"test": HFDataset.from_list(rows) if rows else HFDataset.from_dict({})}
+        )
     )
 
 

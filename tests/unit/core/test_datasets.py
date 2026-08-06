@@ -1,8 +1,8 @@
 """
 Unit tests for sieval/core/datasets.py.
 
-Covers: Dataset.repeat, slice, shuffle, retrieve_samples (random/fixed/lazy),
-_clone_with_new_dict, property accessors.
+Covers: Dataset.repeat, slice, shuffle, filter, retrieve_samples
+(random/fixed/lazy), _clone_with_new_dict, property accessors.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
@@ -210,6 +210,88 @@ class TestShuffle:
             _hf_dict=HFDatasetDict({"test": HFDataset.from_list([{"id": 0}])})
         )
         assert ds.shuffle(seed=1, split="train") is ds
+
+
+# ===================================================================
+# filter
+# ===================================================================
+def _make_tagged(tags):
+    """A _ListDataset with a 'tag' column, one row per entry in *tags*."""
+    return _ListDataset([{"id": i, "tag": t} for i, t in enumerate(tags)])
+
+
+class TestFilter:
+    def test_filter_keeps_matching_rows_and_preserves_type(self):
+        ds = _make_tagged(["a", "b", "a", "c"])
+        result = ds.filter("tag", "a")
+        assert [r["id"] for r in result.test_set] == [0, 2]
+        assert type(result) is type(ds)
+
+    def test_filter_preserves_relative_order(self):
+        # Load-bearing: a caller narrowing a merged split must get the same row
+        # sequence — and therefore the same sample ids — as loading it alone.
+        ds = _make_tagged(["b", "a", "b", "a", "b"])
+        assert [r["id"] for r in ds.filter("tag", "b").test_set] == [0, 2, 4]
+
+    def test_filter_leaves_the_original_untouched(self):
+        ds = _make_tagged(["a", "b"])
+        narrowed = ds.filter("tag", "a")
+        assert narrowed is not ds
+        assert len(ds.test_set) == 2
+        assert len(narrowed.test_set) == 1
+
+    def test_filter_accepts_a_list_of_values(self):
+        ds = _make_tagged(["a", "b", "c", "d"])
+        assert [r["tag"] for r in ds.filter("tag", ["a", "c"]).test_set] == ["a", "c"]
+
+    def test_filter_treats_a_string_as_one_value_not_a_character_set(self):
+        # `set("ab")` would match both 'a' and 'b'; a string must stay atomic.
+        ds = _make_tagged(["a", "b", "ab"])
+        assert [r["tag"] for r in ds.filter("tag", "ab").test_set] == ["ab"]
+
+    def test_filter_matches_a_falsy_value(self):
+        ds = _ListDataset([{"id": 0, "n": 0}, {"id": 1, "n": 1}, {"id": 2, "n": 0}])
+        kept = ds.filter("n", 0).test_set
+        assert kept is not None
+        assert [r["id"] for r in kept] == [0, 2]
+
+    def test_filter_unknown_column_raises(self):
+        ds = _make_tagged(["a"])
+        with pytest.raises(ValueError, match="column 'nope' not found"):
+            ds.filter("nope", "a")
+
+    def test_filter_no_match_raises_and_lists_present_values(self):
+        # An empty split would otherwise become a run that scores zero samples.
+        ds = _make_tagged(["a", "b"])
+        with pytest.raises(ValueError, match=r"no row of split 'test' has tag="):
+            ds.filter("tag", "z")
+        with pytest.raises(ValueError, match=r"present values: \['a', 'b'\]"):
+            ds.filter("tag", "z")
+
+    def test_filter_no_match_truncates_a_wide_value_list(self):
+        ds = _make_tagged([f"t{i}" for i in range(25)])
+        with pytest.raises(ValueError, match=r"\.\.\. \(25 distinct\)"):
+            ds.filter("tag", "nope")
+
+    def test_filter_acts_on_explicit_non_test_split(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict(
+                {"validation": HFDataset.from_list([{"tag": "a"}, {"tag": "b"}])}
+            )
+        )
+        result = ds.filter("tag", "a", split="validation")
+        assert result is not ds
+        assert len(result.dataset_dict["validation"]) == 1
+
+    def test_filter_missing_split_returns_self(self):
+        ds = _make_tagged(["a"])
+        assert ds.filter("tag", "a", split="train") is ds
+
+    def test_filter_empty_split_returns_self(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict({"test": HFDataset.from_dict({})})
+        )
+        assert ds.filter("tag", "a") is ds
 
 
 # ===================================================================

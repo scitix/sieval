@@ -18,8 +18,8 @@ TRetrieveStrategy = Literal["random", "fixed"]
 class Dataset[TSample](ABC):
     """Abstract evaluation dataset backed by a HuggingFace DatasetDict.
 
-    Transformations (repeat/slice/shuffle/stratified_sample) return immutable
-    shallow copies.
+    Transformations (repeat/slice/shuffle/filter/stratified_sample) return
+    immutable shallow copies.
     """
 
     def __init__(
@@ -97,6 +97,52 @@ class Dataset[TSample](ABC):
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
         new_dict[split] = new_dict[split].shuffle(seed=seed)
+        return self._clone_with_new_dict(new_dict)
+
+    def filter(
+        self,
+        by: str,
+        value: object,
+        *,
+        split: str = "test",
+    ) -> Self:
+        """Return a shallow clone of *split* keeping rows whose *by* column matches.
+
+        *value* is one accepted value, or a list/tuple/set of them (membership
+        test). A string is always one value, never a set of characters. Relative
+        order among the kept rows is preserved, so a caller that narrows to one
+        category gets the same sequence — and therefore the same sample ids — it
+        would have got by loading that category alone.
+
+        Returns ``self`` unchanged if *split* is absent or empty. Raises if *by*
+        is not a column, or if **nothing** matches: an empty result is a
+        misspelled *value* far more often than an intended selection, and it
+        would otherwise surface as a run that silently scores zero samples.
+        """
+        if split not in self._dataset_dict:
+            return self
+        hf = self._dataset_dict[split]
+        if len(hf) == 0:
+            return self
+
+        if by not in hf.column_names:
+            raise ValueError(
+                f"filter: column {by!r} not found; available columns: {hf.column_names}"
+            )
+
+        accepted = set(value) if isinstance(value, list | tuple | set) else {value}
+        kept = hf.filter(lambda v: v in accepted, input_columns=by)
+        if len(kept) == 0:
+            present = hf.unique(by)
+            shown = present[:10]
+            suffix = f", ... ({len(present)} distinct)" if len(present) > 10 else ""
+            raise ValueError(
+                f"filter: no row of split {split!r} has {by}={value!r}; "
+                f"present values: {shown}{suffix}"
+            )
+
+        new_dict = HFDatasetDict(self.dataset_dict)
+        new_dict[split] = kept
         return self._clone_with_new_dict(new_dict)
 
     def stratified_sample(

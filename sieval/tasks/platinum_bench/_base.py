@@ -214,8 +214,9 @@ class PlatinumMathGenTask(
 ):
     """Base for one PlatinumBench math subset; leaves set :attr:`subset`."""
 
-    #: The `madrylab/platinum-bench` config this task scores. Must match the
-    #: dataset instance it is wired to — enforced in `setup()`.
+    #: The `madrylab/platinum-bench` config this task scores. The single source
+    #: of truth for it: the dataset must be narrowed to this subset, which
+    #: `setup()` enforces.
     subset: ClassVar[str]
 
     def __init__(
@@ -244,16 +245,25 @@ class PlatinumMathGenTask(
 
     @override
     async def setup(self) -> None:
-        # One Dataset class serves all 14 configs, so YAML can wire this task to
-        # a sibling subset's instance and the run would score real answers
-        # against the wrong questions — a silently plausible result. Fail here
-        # instead, before any tokens are spent.
-        dataset_subset = getattr(self.dataset, "subset", None)
-        if dataset_subset != self.subset:
+        # The loader merges all 14 configs into one split, so the caller narrows
+        # it to a single subset. Forget that, or narrow to a sibling subset, and
+        # the run would score real answers against the wrong questions — a
+        # silently plausible result. Fail here instead, before any tokens are
+        # spent: `setup()` runs before the runner counts samples.
+        #
+        # A missing test split, a dataset of some other class, and an empty one
+        # all collapse to `[]`, so one comparison covers every way the wiring
+        # can be wrong.
+        test_set = self.dataset.test_set
+        if test_set is None or "subset" not in test_set.column_names:
+            present: list[str] = []
+        else:
+            present = sorted(test_set.unique("subset"))
+        if present != [self.subset]:
             raise ValueError(
-                f"{type(self).__name__} scores the '{self.subset}' subset but was "
-                f"given a dataset for subset {dataset_subset!r}. Set "
-                f"`args.subset: {self.subset}` on the dataset this task uses."
+                f"{type(self).__name__} scores the '{self.subset}' subset but its "
+                f"dataset carries {present!r}. Narrow it to one subset with "
+                f"`operations: [{{filter: {{by: subset, value: {self.subset}}}}}]`."
             )
 
     @override

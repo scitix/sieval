@@ -465,6 +465,23 @@ class TestValidateDatasets:
         assert not result.ok
         assert any("sort" in e for e in result.errors)
 
+    def test_operations_filter_is_a_known_op(self):
+        # `filter` is validated in two places — the name whitelist here and the
+        # dispatch in session.py. Adding it to only one makes `--dry-run` reject
+        # a config the run would happily execute.
+        cfg = {
+            "models": {},
+            "tasks": {},
+            "datasets": {
+                "d": {
+                    "class": "X",
+                    "operations": [{"filter": {"by": "subset", "value": "gsm8k"}}],
+                }
+            },
+        }
+        result = validate_eval_config(cfg)
+        assert not any("operation" in e.lower() for e in result.errors)
+
     def test_operations_renamed_op_gives_migration_hint(self):
         cfg = {
             "models": {},

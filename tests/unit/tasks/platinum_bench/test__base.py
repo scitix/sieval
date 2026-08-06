@@ -9,6 +9,7 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
 import pytest
+from datasets import Dataset as HFDataset
 
 from sieval.community.platinum_bench import check_prediction
 from sieval.core.models import ModelOutput
@@ -43,6 +44,7 @@ from .conftest import (
     COT_PROMPT,
     NO_COT_PROMPT,
     O1_PROMPT,
+    make_dataset,
     make_sample,
     make_task,
 )
@@ -100,8 +102,7 @@ async def test_setup_accepts_a_matching_dataset(task_cls):
 
 @pytest.mark.anyio
 async def test_setup_rejects_a_sibling_subsets_dataset():
-    # One Dataset class serves all 15 configs, so YAML can wire a task to the
-    # wrong instance; the run would then score real answers against the wrong
+    # Narrowing to the wrong subset would score real answers against the wrong
     # questions and look merely bad, not broken.
     task, _ = make_task(PlatinumGSM8KZeroShotGenTask, subset="svamp")
     with pytest.raises(ValueError, match="scores the 'gsm8k' subset"):
@@ -109,12 +110,43 @@ async def test_setup_rejects_a_sibling_subsets_dataset():
 
 
 @pytest.mark.anyio
-async def test_setup_rejects_a_dataset_without_a_subset(monkeypatch):
-    # A different Dataset class entirely (no `subset` attribute) must fail the
-    # same way rather than sail through on a None comparison.
+async def test_setup_rejects_an_un_narrowed_merged_dataset():
+    # The loader merges all 14 configs, so forgetting the filter operation is the
+    # likeliest wiring mistake — and the one that silently mixes subsets.
+    task, model = make_task(PlatinumGSM8KZeroShotGenTask)
+    task = type(task)(make_dataset("gsm8k", "svamp", "drop"), model)
+    with pytest.raises(ValueError, match=r"carries \['drop', 'gsm8k', 'svamp'\]"):
+        await task.setup()
+
+
+@pytest.mark.anyio
+async def test_setup_error_names_the_filter_operation():
+    # The message has to carry the fix; the wiring is no longer guessable from
+    # the task name alone.
+    task, _ = make_task(PlatinumGSM8KZeroShotGenTask, subset="svamp")
+    with pytest.raises(ValueError, match=r"filter: \{by: subset, value: gsm8k\}"):
+        await task.setup()
+
+
+@pytest.mark.anyio
+async def test_setup_rejects_a_dataset_without_a_subset_column(monkeypatch):
+    # A different Dataset class entirely (no `subset` column) must fail the same
+    # way rather than crash inside `unique()`.
     task, _ = make_task(PlatinumGSM8KZeroShotGenTask)
-    monkeypatch.delattr(type(task.dataset), "subset")
-    with pytest.raises(ValueError, match="subset None"):
+    monkeypatch.setattr(
+        type(task.dataset),
+        "test_set",
+        property(lambda _self: HFDataset.from_dict({"other": [1]})),
+    )
+    with pytest.raises(ValueError, match=r"carries \[\]"):
+        await task.setup()
+
+
+@pytest.mark.anyio
+async def test_setup_rejects_an_empty_dataset():
+    task, model = make_task(PlatinumGSM8KZeroShotGenTask)
+    task = type(task)(make_dataset(), model)
+    with pytest.raises(ValueError, match=r"carries \[\]"):
         await task.setup()
 
 

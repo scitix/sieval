@@ -239,6 +239,20 @@ class TestDatasetOperations:
                 (3,),
                 {"split": "test"},
             ),
+            (
+                "filter",
+                {"by": "subset", "value": "gsm8k"},
+                "filter",
+                ("subset", "gsm8k"),
+                {"split": "test"},
+            ),
+            (
+                "filter",
+                {"by": "subset", "value": ["gsm8k", "svamp"]},
+                "filter",
+                ("subset", ["gsm8k", "svamp"]),
+                {"split": "test"},
+            ),
         ],
     )
     def test_basic_operations(
@@ -288,6 +302,8 @@ class TestDatasetOperations:
         [
             ("slice", {}, "'slice' requires 'num'"),
             ("repeat", {}, "'repeat' requires 'times'"),
+            ("filter", {}, "'filter' requires 'by'"),
+            ("filter", {"by": "subset"}, "'filter' requires 'value'"),
         ],
     )
     def test_operation_required_args(self, op, missing_args, error_match):
@@ -295,6 +311,20 @@ class TestDatasetOperations:
         ds = MagicMock()
         with pytest.raises(ValueError, match=error_match):
             runner._apply_dataset_operations(ds, [{op: missing_args}], "test_ds")
+
+    # A falsy value is a value. Checking `op_args.get("value")` for truthiness
+    # would reject these as "omitted" and make integer/boolean columns
+    # unfilterable.
+    @pytest.mark.parametrize("value", [0, False, "", []])
+    def test_filter_accepts_a_falsy_value(self, value):
+        runner = self._make_runner()
+        ds = MagicMock()
+        ds.filter.return_value = ds
+
+        runner._apply_dataset_operations(
+            ds, [{"filter": {"by": "n", "value": value}}], "test_ds"
+        )
+        ds.filter.assert_called_once_with("n", value, split="test")
 
     def test_chained_operations(self):
         runner = self._make_runner()

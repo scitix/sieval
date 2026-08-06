@@ -643,7 +643,7 @@
     {
       "name": "platinum_bench",
       "display_name": "PlatinumBench",
-      "description": "Label-noise-cleaned revisions of 15 benchmarks; one subset per instance.",
+      "description": "Label-noise-cleaned revisions of 15 benchmarks; 14 subsets in one split, keyed by `subset`.",
       "source": [
         "hf:madrylab/platinum-bench@51920a33bfb4620c789729ace14141e87a14969b"
       ],

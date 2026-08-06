@@ -1300,6 +1300,25 @@ class EvalSession:
                     dataset = dataset.repeat(times, split=split)
                     logger.debug("Dataset '{}': repeated {} times", dataset_name, times)
 
+                case "filter":
+                    by = op_args.get("by")
+                    split = op_args.get("split", "test")
+                    if by is None:
+                        raise ValueError(
+                            f"Dataset '{dataset_name}': 'filter' requires 'by'"
+                        )
+                    # Presence, not truthiness: `value: 0` and `value: false` are
+                    # legitimate column values and must not read as "omitted".
+                    if "value" not in op_args:
+                        raise ValueError(
+                            f"Dataset '{dataset_name}': 'filter' requires 'value'"
+                        )
+                    value = op_args["value"]
+                    dataset = dataset.filter(by, value, split=split)
+                    logger.debug(
+                        "Dataset '{}': filtered to {}={}", dataset_name, by, value
+                    )
+
                 case "stratified_sample":
                     by = op_args.get("by")
                     num = op_args.get("num", op_args.get("n"))

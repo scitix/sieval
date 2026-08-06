@@ -32,7 +32,13 @@ _ROOT_KEYS: set[str] = set(RootConfigDict.__annotations__)
 _CONCURRENCY_KEYS: set[str] = {a.value for a in TaskAction}
 
 # Valid dataset operations
-_VALID_OPERATIONS: set[str] = {"slice", "shuffle", "repeat", "stratified_sample"}
+_VALID_OPERATIONS: set[str] = {
+    "slice",
+    "shuffle",
+    "repeat",
+    "filter",
+    "stratified_sample",
+}
 
 # Operations renamed away from earlier names; map old -> new so stale configs
 # get a migration hint instead of a bare "unknown operation".
