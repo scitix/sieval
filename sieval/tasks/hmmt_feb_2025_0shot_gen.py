@@ -61,7 +61,8 @@ from sieval.datasets import HMMTFeb2025DatasetSample
             "rest carry a leading `Please reason step by step, and `. sieval tracks "
             "the pinned config, so this is a property of the comparison rather than "
             "a defect — but a delta measured against one of those older rows is "
-            "confounded by it."
+            "confounded by it (its size is measured only on brumo_2025, where a paired "
+            "A/B put it at 0.8 pp — below that set's own sampling noise)."
         ),
     ),
 )
