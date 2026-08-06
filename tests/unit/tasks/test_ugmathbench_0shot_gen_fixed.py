@@ -16,6 +16,7 @@ from sieval.core.tasks import (
     TaskContext,
     build_judgement_record,
     build_prediction_record,
+    build_prompt_record,
     build_rollout_judgement,
 )
 from sieval.datasets.ugmathbench import UGMathBenchDataset
@@ -279,3 +280,81 @@ def test_import_does_not_pull_math_verify():
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
+
+
+def _judged_without_extra(problem_id: str, version: int, correct: bool) -> TaskContext:
+    """A judged version whose judgement lost its grouping keys.
+
+    What ``feedback()`` emits when ``raw_sample`` is gone: a wrong-by-default
+    verdict. The prompt record still names the problem.
+    """
+    return TaskContext(
+        sample_id=f"{problem_id}-v{version}",
+        preprocess_result=build_prompt_record(
+            [{"role": "user", "content": "q"}],
+            reference=["1"],
+            extra={
+                "problem_id": problem_id,
+                "version": version,
+                "subject": "Algebra",
+            },
+        ),
+        feedback_result=build_judgement_record(
+            ["1"], [build_rollout_judgement(0, correct)]
+        ),
+    ).to_final()
+
+
+@pytest.mark.anyio
+async def test_a_judged_version_without_grouping_keys_is_recovered_from_the_prompt():
+    # Otherwise the problem leaves EAcc's denominator while its three wrong
+    # verdicts stay in AAcc's, so EAcc is computed over the survivors — biased
+    # *upward*, in the direction that flatters the run, and silently.
+    good = _all_versions("p1", [True, True, True])
+    lost = [_judged_without_extra("p2", version, False) for version in (1, 2, 3)]
+
+    report = await _task().report(good + lost, [])
+
+    assert report["n_problems"] == 2
+    assert report["eacc"] == 50.0  # not 100.0
+    assert report["aacc"] == 50.0
+    assert report["unattributed_finals"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_feedback_without_a_raw_sample_still_names_its_problem():
+    ctx = TaskContext(
+        sample_id="p9-v2",
+        raw_sample=None,
+        preprocess_result=build_prompt_record(
+            [{"role": "user", "content": "q"}],
+            reference=["1"],
+            extra={"problem_id": "p9", "version": 2, "subject": "Algebra"},
+        ),
+    )
+
+    _, judgement = await _task().feedback(build_prediction_record([["1"]]), ctx)
+
+    assert judgement["extra"]["problem_id"] == "p9"
+    assert judgement["rollouts"][0]["correct"] is False
+
+
+@pytest.mark.anyio
+async def test_an_unrecoverable_version_is_counted_rather_than_dropped():
+    # Nothing left to recover from, so EAcc really is an upper bound here. The
+    # point is that the run says so instead of reporting a clean number.
+    good = _all_versions("p1", [True, True, True])
+    lost = [
+        TaskContext(
+            sample_id=f"p2-v{version}",
+            feedback_result=build_judgement_record(
+                ["1"], [build_rollout_judgement(0, False)]
+            ),
+        ).to_final()
+        for version in (1, 2, 3)
+    ]
+
+    report = await _task().report(good + lost, [])
+
+    assert report["unattributed_finals"] == 3.0
+    assert report["eacc"] > report["aacc"]  # the invariant this makes visible

@@ -7,18 +7,9 @@ unqualified name ``ugmathbench_0shot_gen`` is reserved for a faithful port and
 will stay vacant — upstream's grader is GPL-3.0 and cannot ship in an
 Apache-2.0 distribution, so no faithful port is possible here at all.
 
-The divergence is measured, not asserted. Replaying every pinned reference back
-as a boxed answer through both graders, upstream accepts its own reference on
-14,616 of 15,183 rows (96.27%) and this task on 15,154 (99.81%). The 546 rows
-that disagree span 190 of 5,061 problems: an EAcc **ceiling** difference of
-3.75 pp, about five times the 0.70 pp binomial standard error, and 542 of the
-546 are rows upstream cannot win at all. So the gap is large *and* it is repair
-— :mod:`sieval.community.ugmathbench` enumerates each divergence and how the
-figure was obtained.
-
-Because it is a ceiling, it is realized only on a problem a model would
-otherwise answer correctly in all three versions; and because it comes from
-replayed references, it bounds the grader, not any model's score.
+The divergence from upstream is measured rather than asserted, two independent
+ways — against upstream's judge on a full live run, and on replayed references.
+Both are below, with the live one carrying the weight.
 
 One sample is one *(problem, version)* pair, so a full run issues three
 inferences per problem, one per randomized version. That is what the benchmark's
@@ -43,132 +34,88 @@ Two pinned rows are upstream-corrupt (empty answer sequence, problem text
 replaced by an error message); they are prompted and graded like any other
 sample, which scores them 0 exactly as the reference harness does.
 
-**Why ``status="experimental"``, and what promotes it.** Not because the grader
-diverges from upstream — that is what the ``_fixed`` name and the measured
-figure above are for.
+**Status: stable, on one full live run.** Qwen3-30B-A3B, thinking on,
+temperature 0.6 / top_p 0.95 / top_k 20, one rollout per version; all 15,183
+versions over all 5,061 problems; sglang tp2xdp4 on 8xH100, 75.7M output tokens.
 
-"Matches upstream" cannot be the promotion gate here — upstream's grader is
-GPL-3.0, so that bar is unreachable by construction and would pin this task to
-``experimental`` forever. The gate is instead evidence that *this* grader is
-right, which a single live run produces:
+    EAcc 38.49 (``score``) · AAcc 45.59 · CAcc 53.53 · Delta 7.10
+    fails 0 · incomplete_problems 0 · extracted=False 32/15,183 (0.21%)
 
-1. the ``extracted=False`` rate is low — replay cannot test this, since it feeds
-   perfectly boxed answers;
-2. ``fails`` is 0 across the run, so the long inference stream held;
-3. EAcc/AAcc/CAcc land in a plausible band next to sibling math benchmarks on
-   the same model — *not* next to the paper, which used a different ruler;
-4. a sampled audit of wrong verdicts reports a **false-negative rate** — of N
-   slots graded wrong, how many the grader got wrong rather than the model.
+**Read 38.49 as protocol-faithful, not as this model's mathematical ability.**
+The two are separated by a *format tax* of roughly 33 EAcc points, and the tax
+is the benchmark's rather than this port's: only the last ``\\boxed{}`` counts
+and a slot-count mismatch scores every slot wrong, while Qwen3 ends multi-part
+problems with ``\\boxed{a}, \\boxed{b}, \\boxed{c}`` instead of
+``\\boxed{a, b, c}``. Measured off the same stored responses, single-answer rows
+mismatch 0.30% of the time against multi-answer rows' 86.31% — same model, same
+subjects, so this is formatting and not difficulty. Upstream's ``judge_rule.py``
+has the identical rule, so reproducing it is the point. Repairing extraction on
+those stored responses lifts EAcc to 74.43, which is where a model scoring 72.5
+on AIME 2026 in this harness belongs.
 
-(4) is the one that matters, and it is stronger evidence for "a correct grader"
-than a reproduction table would have been, because it tests that claim directly
-instead of by proxy.
+**Evidence that the grader itself is right.** Upstream's ``judge_rule.py`` is an
+independent implementation of the same spec, so it can be run as a local
+*instrument* over the same 15,183 stored responses (GPL-3.0 restricts
+distribution, not use; nothing is vendored). Against it this task agrees on
+95.51% of samples, and where the two differ it is **591 to 91 in this task's
+favour**. The 591 is the direction that matters, since a too-lenient grader
+would show up there: a sampled eyeball found 12 of 12 genuinely correct
+(``2\\sqrt{2t+9}`` against ``sqrt(2*4*t+36)``, ``4^20`` against ``1.09951E+12``,
+``\\ln(2)/2`` against ``0.346573590279973``). The residual misses are
+91/15,183 = 0.60% of samples, with named non-systematic causes: LaTeX interval
+notation (``\\cup``, ``\\infty``), absolute-value bars, a ``y = `` prefix on an
+``EX`` answer. Upstream's own verifier scores EAcc 35.55 on these responses,
+i.e. *below* this task.
 
-**The live run has now happened, and (4) failed. The task stays experimental
-for a real reason instead of a procedural one.** Qwen3-30B-A3B, thinking on,
-temperature 0.6 / top_p 0.95 / top_k 20, one rollout per version; the full
-15,183 versions over all 5,061 problems; sglang tp2xdp4 on 8xH100; 75.7M output
-tokens. Headline: **EAcc 34.46, AAcc 40.87, CAcc 48.07, Delta 6.42**, with
-``fails`` 0 and ``incomplete_problems`` 0.
+**How the promotion criteria resolved.** The gate was never "matches upstream" —
+that bar is unreachable by construction here and would pin this task to
+``experimental`` forever. It was evidence that *this* grader is right:
 
-* (1) **passes** — ``extracted=False`` on 32/15,183 (0.21%); truncation 29
-  (0.19%) at ``max_tokens`` 32768, so the box-or-nothing extraction rule is not
-  what is costing this model points.
-* (2) **passes** — 0 failed samples.
-* (3) **fired, as a diagnostic should.** 34.46 on undergraduate coursework math
-  is not a plausible neighbour of the *same* model's 72.5 on AIME 2026 and 51.5
-  on HMMT Feb 2026 (same harness, same sampling). Undergraduate coursework is
-  not harder than AIME. The criterion caught a measurement problem, and (4)
-  names it.
-* (4) **fails** — of 1,634 wrong slots drawn from the bucket where extraction
-  and the reference agree on slot count, **570 (34.9%) are this grader's error,
-  not the model's**, confirmed by substituting the same random values into both
-  sides' free symbols. They sit entirely in the free-form types (EX 59.6%,
-  NV 25.4%, OE 7/10) and at exactly **0%** in every structured type — OL, UOL,
-  MCS, MCM, TF, INT, EQ.
+1. ``extracted=False`` rate low — **met**, 0.21%, with truncation at 0.19%, so
+   the box-or-nothing rule is not what costs this model points;
+2. ``fails`` 0 across the run — **met**;
+3. EAcc in a plausible band next to sibling math benchmarks on the same model —
+   **explained rather than met.** 38.49 sits far from the same model's 72.5 on
+   AIME 2026, but this criterion exists to catch an *unexplained* anomaly (a
+   mis-wired prompt, a mis-joined gold, a broken extractor). This gap is
+   attributed to the format tax above and the attribution is checked two
+   independent ways — the single- against multi-answer mismatch split, and
+   tracking upstream's own verifier to within 3 points. A harness that were
+   actually broken would not track the reference implementation that closely;
+4. a sampled false-negative rate on wrong verdicts — **met**, via the
+   independent-instrument audit above. It is the criterion that matters, and it
+   tests "this grader is correct" directly instead of by proxy.
 
-**Root cause of (4), and it is in this module's**
-:func:`~sieval.community.ugmathbench.math_equal`.
-``math_verify.parse`` routes every string through a LaTeX reader, so the
-dataset's plain-sympy *gold* is mangled: ``7*sin(pi*x/5)+1`` parses as
-``7*s*i*n*(i*p*x)/5 + 1``, reading ``sin`` as s·i·n and ``pi`` as p·i. A gold
-containing any function name can then only match by exact string equality.
+**What criterion (4) caught the first time, and why the earlier evidence
+missed it.** On the first run it *failed* at 34.9%: of 1,634 wrong slots where
+extraction and the reference agreed on slot count, 570 were the grader's error
+rather than the model's, entirely in the free-form types (EX 59.6%, NV 25.4%)
+and at exactly 0% in every structured one. The cause was in
+:func:`~sieval.community.ugmathbench.math_equal`: ``math_verify.parse`` routes
+everything through a LaTeX reader, so the dataset's plain-sympy gold was mangled
+(``7*sin(pi*x/5)+1`` read as ``7*s*i*n*(i*p*x)/5 + 1``, ``sin`` as s·i·n) and a
+gold naming any function could only match by exact string equality. Fixing it
+moved EAcc 34.46 -> 38.49 with **716 verdicts wrong-to-right and 0
+right-to-wrong**.
 
-That is also why the 99.81% replay figure above could not see it: replaying a
-reference as its own answer short-circuits on ``_squash(pred) == _squash(gold)``
-and never reaches the symbolic path. **A self-replay canary validates the fast
-path only** — it is silent about precisely the comparison logic it appears to
-certify.
+The zero matters more than the +4.03, and so does the shape of the miss: the
+reference-replay figure below could not see this defect at all, because
+replaying a gold as its own answer short-circuits on
+``_squash(pred) == _squash(gold)`` and never reaches the symbolic path. **A
+self-replay canary exercises the fast path and is silent about exactly the
+comparison logic it appears to certify.** Worth remembering beyond this task.
 
-**That defect is now fixed, and the task is promoted.**
-:mod:`sieval.community.ugmathbench` reads the gold with sympy's own parser as
-well as the LaTeX one, and falls back to equivalence by substitution over a
-fixed probe ladder. Re-grading the same 15,183 stored responses with extraction
-held fixed — so the delta is the grader's alone and not a more permissive
-extractor's:
-
-    EAcc 34.46 -> **38.49**, AAcc 40.87 -> 45.59, CAcc 48.07 -> 53.53;
-    716 samples wrong-to-right, and **0 right-to-wrong**.
-
-The zero matters more than the +4.03: the pass runs only after every other
-strategy has said "not equal", so it is structurally incapable of breaking a
-comparison that already worked, and the run confirms it empirically.
-
-**Criterion (4), re-measured against an independent instrument.** The audit that
-found the defect used numeric substitution, and the grader now uses numeric
-substitution — so repeating it would measure a method against itself. Upstream's
-``judge_rule.py`` is an independent implementation of the same spec (its own
-``parse_latex`` + ``simplify`` + random-value chain), so it takes over the role:
-
-* agreement rose to **95.51%** of samples (from 94.95% before the fix);
-* where they disagree it is **591 to 91 in this grader's favour**;
-* the 591 are the direction that matters, because they are where a too-lenient
-  grader would show up. A sampled eyeball found **12 of 12 genuinely correct** —
-  ``2\\sqrt{2t+9}`` against ``sqrt(2*4*t+36)``, ``4^20`` against ``1.09951E+12``,
-  ``7/108`` against ``0.0648148``, ``\\ln(2)/2`` against ``0.346573590279973``,
-  ``x^0*...`` against the same product without it;
-* the residual misses are **91/15,183 = 0.60% of samples**, against 34.9% of
-  wrong slots before. Named remaining causes, none of them systematic: LaTeX
-  interval notation (``\\cup``, ``\\infty``), absolute-value bars, and a ``y = ``
-  prefix on an ``EX`` answer.
-
-**Why criterion (3) does not block promotion.** 38.49 still sits far from the
-same model's 72.5 on AIME 2026, but that criterion exists to catch an
-*unexplained* anomaly — a mis-wired prompt, a mis-joined gold, a broken
-extractor. This one is explained, quantified, and attributed: the whole
-remaining gap is the format tax below, which is the *benchmark's* last-box rule
-faithfully reproduced, and the attribution is checked two ways — single-answer
-rows mismatch 0.30% against multi-answer rows' 86.31% on the same model and
-subjects, and upstream's own verifier scores 35.55 here, i.e. *below* this task.
-A harness that were actually broken would not track the reference implementation
-that closely. Read 38.49 as protocol-faithful and paper-comparable, not as this
-model's mathematical ability; the repaired-extraction figures below are the
-latter.
-
-**Reading the headline number.** EAcc 34.46 is protocol-faithful and comparable
-to the paper's ruler, but it is not this model's mathematical ability. Two
-measurement effects separate the two, both quantified off the same stored
-responses with no extra inference:
-
-* **The format tax, ~+33.5 EAcc, and it is the benchmark's, not ours.** Only the
-  last ``\\boxed{}`` is kept and a slot-count mismatch scores every slot wrong.
-  Qwen3 ends multi-part problems with ``\\boxed{a}, \\boxed{b}, \\boxed{c}``
-  rather than ``\\boxed{a, b, c}`` and loses answers it got right. Single-answer
-  rows mismatch 0.30% of the time; multi-answer rows 86.31% — same model, same
-  subjects, so this is formatting, not difficulty. Upstream's ``judge_rule.py``
-  has the identical rule, so this task reproduces it deliberately.
-* **The (4) defect, ~+6.5 EAcc.**
-
-Repairing both, exactly rather than by extrapolation: 34.46 -> 67.97 -> 74.43,
-which does sit next to AIME 72.5 as criterion (3) expects.
-
-**Swapping in upstream's verifier does not fix this.** Run as a local instrument
-over the same 15,183 responses (GPL-3.0 restricts distribution, not use),
-upstream scores EAcc 35.55 against this task's 34.46 — **+1.09**, with 94.95%
-per-sample agreement and disagreement in *both* directions (upstream wins 486,
-this grader wins 280, the latter being the unwinnable-slot repair documented
-above). It carries the same format tax and recovers little of the equivalence
-gap, while being unshippable here on licence.
+**The divergence from upstream, measured on replayed references.** Replaying
+every pinned reference back as a boxed answer through both graders, upstream
+accepts its own reference on 14,616 of 15,183 rows (96.27%) and this task on
+15,154 (99.81%). The 546 rows that disagree span 190 of 5,061 problems: an EAcc
+**ceiling** difference of 3.75 pp, about five times the 0.70 pp binomial
+standard error, and 542 of the 546 are rows upstream cannot win at all — so the
+gap is repair, not drift. :mod:`sieval.community.ugmathbench` enumerates each
+divergence and how the figure was obtained. It is a ceiling on the *grader*,
+realized only on a problem a model would otherwise answer correctly in all three
+versions, and — per the paragraph above — it is the weaker of the two
+measurements. The live head-to-head is the one to trust.
 
 **Caveat on Delta.** At temperature 0.6 the reasoning gap is mostly the sampler.
 A control on Geometry with ``n=3`` gives Delta 8.70 across the three randomized
@@ -259,8 +206,21 @@ DEFAULT_PRECISION = 1e-3
             "every method until one accepts. All enumerated in "
             "sieval/community/ugmathbench.py. The figure bounds the GRADER, not a "
             "model's score: it is a replay of stored references, so it says "
-            "nothing about extraction on real model prose — which is why status "
-            "is experimental until a live run. SAMPLING: upstream generates "
+            "nothing about extraction on real model prose. LIVE HEAD-TO-HEAD "
+            "(the stronger measurement, and the one that promoted this task): "
+            "over a full 15,183-version run, upstream's judge re-graded the same "
+            "stored responses and agreed on 95.51% of samples, disagreeing 591 "
+            "to 91 in this task's favour; upstream scores EAcc 35.55 where this "
+            "task scores 38.49, and the residual misses are 0.60% of samples "
+            "(LaTeX interval notation, absolute-value bars, a `y = ` prefix on "
+            "an EX answer). Note that the replay figure could NOT see the "
+            "largest defect the live run found — replaying a gold as its own "
+            "answer short-circuits on string equality and never reaches the "
+            "symbolic path. GUARDS: the parse namespace has its builtins removed "
+            "and answers requiring unbounded arithmetic (a power tower) are "
+            "refused rather than evaluated, since the parsed text is model "
+            "output; both grade the answer wrong and neither is reachable by any "
+            "pinned reference. SAMPLING: upstream generates "
             "greedily, one sample per version (temperature 0, max_tokens 2048), "
             "and this task issues one rollout per version to match; set "
             "temperature via the model config. Upstream also offers a "
@@ -346,12 +306,24 @@ class UGMathBenchZeroShotGenFixedTask(
         if raw is None:
             # Nothing to compare against; the reference is genuinely unknown
             # rather than a procedure, so the verdict is wrong-by-default.
+            #
+            # The grouping keys still have to survive, and the prompt record
+            # carries them. Without that, report() cannot tell which problem
+            # this version belonged to and drops it from the effective-accuracy
+            # denominator, while the wrong verdict stays in AAcc's -- so EAcc is
+            # computed over the survivors and biased *upward*. That is the same
+            # failure `_identify` guards for failed samples; a wrong-by-default
+            # verdict has to hold its problem's place just as a failure does.
+            problem_id, subject = _identify(ctx)
             return True, build_judgement_record(
                 None,
                 [
                     build_rollout_judgement(rollout["index"], False)
                     for rollout in post["rollouts"]
                 ],
+                extra={"problem_id": problem_id, "subject": subject}
+                if problem_id is not None
+                else None,
             )
 
         golds = raw["answer"]
@@ -400,10 +372,19 @@ class UGMathBenchZeroShotGenFixedTask(
         )
         n_correct = 0
 
+        unattributed_finals = 0
         for final in finals:
             judgement = final.feedback_result
             extra = judgement.get("extra", {})
             problem_id = extra.get("problem_id")
+            subject = extra.get("subject")
+            if problem_id is None:
+                # Same recovery as the failed-sample loop below. A judged
+                # version that cannot name its problem would otherwise leave
+                # `by_problem` while its verdict stayed in AAcc's denominator,
+                # which biases EAcc *upward* — silently, and in the direction
+                # that flatters the run.
+                problem_id, subject = _identify(final)
             # UGMathBench asks one answer per version, so the verdict is the
             # first rollout's. A model configured for n > 1 does not turn this
             # into pass@n -- that would inflate every version-level accuracy the
@@ -412,9 +393,10 @@ class UGMathBenchZeroShotGenFixedTask(
             correct = bool(verdicts) and verdicts[0]["correct"]
             n_correct += int(correct)
             if problem_id is None:
+                unattributed_finals += 1
                 continue
             by_problem[problem_id].append(correct)
-            by_subject[extra.get("subject", "unknown")][problem_id].append(correct)
+            by_subject[subject or "unknown"][problem_id].append(correct)
 
         # A failed version still belongs to a problem, and that problem still
         # owes three correct answers. Registering it here keeps it in the
@@ -437,13 +419,16 @@ class UGMathBenchZeroShotGenFixedTask(
         n_versions = len(finals) + len(fails)
         aacc = n_correct * 100 / n_versions if n_versions else 0.0
 
-        if unattributed_fails:
+        unattributed = unattributed_fails + unattributed_finals
+        if unattributed:
             logger.warning(
-                "{} failed sample(s) carry neither a raw sample nor a prompt "
-                "record, so the problem they belong to could not be kept in the "
-                "effective-accuracy denominator; EAcc is an upper bound by up to "
-                "that many problems.",
+                "{} sample(s) ({} failed, {} judged) carry neither a raw sample "
+                "nor a prompt record, so the problem they belong to could not be "
+                "kept in the effective-accuracy denominator; EAcc is an upper "
+                "bound by up to that many problems.",
+                unattributed,
                 unattributed_fails,
+                unattributed_finals,
             )
 
         incomplete = sum(
@@ -460,6 +445,25 @@ class UGMathBenchZeroShotGenFixedTask(
             )
 
         eacc = _effective_accuracy(by_problem)
+
+        # EAcc counts problems correct in *every* version; AAcc counts correct
+        # versions. A problem cannot be correct in all three without those three
+        # being correct, so EAcc <= AAcc holds for any run — and the way to break
+        # it is for a problem to leave EAcc's denominator while its versions stay
+        # in AAcc's. That is exactly what an unattributed sample does, so the
+        # invariant is the cheapest detector for the whole class. A wrong number
+        # that still looks plausible is the worst thing an eval can emit; say so
+        # rather than let it be read as a score.
+        if eacc > aacc + 1e-9:
+            logger.error(
+                "EAcc ({:.2f}) exceeds AAcc ({:.2f}), which is impossible: "
+                "{} problem(s) are in AAcc's denominator but not EAcc's. Treat "
+                "this run's EAcc as invalid rather than optimistic.",
+                eacc,
+                aacc,
+                unattributed,
+            )
+
         metrics: dict[str, float] = {
             "score": eacc,
             "fails": float(len(fails)),
@@ -473,9 +477,12 @@ class UGMathBenchZeroShotGenFixedTask(
             "n_problems": float(len(by_problem)),
             "n_versions_judged": float(len(finals)),
             "incomplete_problems": float(incomplete),
-            # Non-zero means EAcc's denominator is short by this many problems,
+            # Non-zero means EAcc's denominator is short by this many samples,
             # so the figure is an upper bound rather than the usual lower one.
+            # Split by origin: a failed sample never reached `feedback`, a
+            # judged one did and still could not name its problem.
             "unattributed_fails": float(unattributed_fails),
+            "unattributed_finals": float(unattributed_finals),
         }
         for subject, problems in sorted(by_subject.items()):
             metrics[f"eacc_{subject.lower()}"] = _effective_accuracy(problems)
@@ -485,12 +492,16 @@ class UGMathBenchZeroShotGenFixedTask(
 def _identify(ctx) -> tuple[str | None, str | None]:
     """The problem and subject a sample belongs to, without a judgement.
 
-    A failed sample never reaches ``feedback``, so the grouping keys the
-    judgement carries are unavailable — but it still has to hold its place in
-    the effective-accuracy denominator. Two sources, in order: ``raw_sample``,
-    which survives ``to_failed`` (a dataclass ``replace``), and the prompt
-    record, which carries the same keys for a context persisted without its raw
-    sample. Both absent means the sample failed before either existed.
+    Two callers, one reason. A failed sample never reaches ``feedback``; a
+    sample whose ``raw_sample`` is gone reaches it but has no reference to
+    record. Either way the grouping keys the judgement normally carries are
+    unavailable — and either way the sample still has to hold its place in the
+    effective-accuracy denominator, because leaving it out biases EAcc upward.
+
+    Two sources, in order: ``raw_sample``, which survives ``to_failed`` (a
+    dataclass ``replace``), and the prompt record, which carries the same keys
+    for a context persisted without its raw sample. Both absent means the sample
+    was lost before either existed, which is what ``unattributed_*`` counts.
     """
     raw = ctx.raw_sample
     if raw is not None and raw.get("id") is not None:

@@ -42,9 +42,10 @@ dependency). Known behavioural deltas versus the reference judge:
   ``7*sin(pi*x/5)+1`` becomes ``7*s*i*n*(i*p*x)/5 + 1`` and cannot match the
   model's ``7\\sin(\\frac{\\pi}{5}x)+1`` by any route except exact string
   equality. :func:`_parse_sympy_source` supplies the second reading.
-  The first live run measured what this had been costing: **705 of 15,183
-  samples** were graded wrong purely for it (EAcc 34.46 -> 38.43, AAcc 40.87 ->
-  45.52, with **zero** verdicts moving right-to-wrong). Note the shape of the
+  The first live run measured what this had been costing: **716 of 15,183
+  samples** were graded wrong purely for it (EAcc 34.46 -> 38.49, AAcc 40.87 ->
+  45.59, CAcc 48.07 -> 53.53, with **zero** verdicts moving right-to-wrong).
+  Note the shape of the
   bug — it was invisible to the reference-replay measurement below, because
   replaying a gold as its own answer short-circuits on
   ``_squash(pred) == _squash(gold)`` and never reaches the symbolic path at
@@ -54,8 +55,24 @@ dependency). Known behavioural deltas versus the reference judge:
   method until one accepts, which lets a slot be graded by a rule its declared
   type did not ask for. Here the declared type decides, except inside OL/UOL
   elements (whose own types the dataset does not record).
-* Extraction is strict, matching upstream's ``Judger(strict_extract=True)`` as
-  used by ``eval_rule.py``: no "guess the last number in the response" fallback.
+* Extraction is strict, as ``eval_rule.py`` grades with
+  ``Judger(strict_extract=True)``: no "guess the last LaTeX formula / the last
+  number in the response" fallback, and the ``answer is`` / ``answer:`` hand-off
+  is kept because upstream keeps it too (its no-box branch runs the same
+  ``elif`` chain). Two smaller differences remain inside that branch and are
+  *not* repairs — just shapes this reads differently:
+
+  - upstream splits on ``herefore`` and keeps only the tail **before** looking
+    for a box, so a response whose last box sits before its last "Therefore"
+    loses the box entirely there, where :func:`_last_boxed_content` always
+    takes the last box in the whole response;
+  - upstream returns the **entire response** when the box is empty
+    (``if not content: return text``), where :func:`extract_answer` treats an
+    empty box as "no box" and falls through to the marker search.
+
+  Both sit inside the 95.51% live agreement measured against upstream's judge,
+  so neither is worth a divergence of its own — they are listed because a
+  divergence list that quietly rounds off is not one.
 * Both sides are normalized *by the same pass*, references included. Upstream
   normalizes its references too — ``judge()`` runs ``norm_ans_str`` over the
   gold — but its extraction-time pass, ``Judger.normalize_answer``, runs on the
@@ -74,6 +91,16 @@ dependency). Known behavioural deltas versus the reference judge:
   symbolic path instead.
 * Per-slot verdicts are returned rather than only the sample-level ``all()``,
   so a wrong answer can be located without re-running the grader.
+* **Two answers are refused rather than graded**, because the text being parsed
+  is model output and ``parse_expr`` evaluates what it parses. A boxed
+  ``__import__('os').system(...)`` would otherwise run (:func:`_sympy_globals`
+  removes the builtins from the parse namespace), and a boxed ``9^9^9^9`` asks
+  for a 370-million-digit integer that never returns, which would freeze every
+  concurrent sample in the run since grading is synchronous on the event loop
+  (:func:`_evaluable` screens it out via an unevaluated pre-parse). A refused
+  answer grades wrong. Upstream has neither guard; it is not a divergence in
+  what the benchmark *measures*, and no reachable comparison changes — the
+  largest exponent in the pinned references is three digits.
 
 29 of the 15,183 pinned rows (0.19%) cannot be graded correctly here even when
 the reference is replayed verbatim as the answer. 25 are unwinnable upstream
@@ -256,20 +283,35 @@ def build_prompt(
     types than answers, and upstream's template takes the count from the answers
     while describing only the declared types. Reproducing that keeps the prompt
     byte-identical to the one the paper's numbers came from.
+
+    The two branches read the type list differently, and that is upstream's
+    shape rather than a simplification: its single-answer branch describes
+    ``answer_type[0]`` alone, while its multi-answer branch joins every declared
+    type. The two agree on every pinned row, since a row with one answer
+    declares one type — but building the joined string once and using it in both
+    branches would make this port's fidelity depend on that coincidence holding
+    after a re-cut of the data, so each branch derives its own.
     """
     per_slot_options = _pad_options(answer_types, options)
-    descriptions = ", ".join(
-        describe_answer_type(answer_type, slot_options)
-        for answer_type, slot_options in zip(
-            answer_types, per_slot_options, strict=True
-        )
-    )
 
     head = _PROMPT_HEAD.format(subject=subject)
     if n_answers == 1:
+        first_type = answer_types[:1]
+        descriptions = ", ".join(
+            describe_answer_type(answer_type, slot_options)
+            for answer_type, slot_options in zip(
+                first_type, per_slot_options[:1], strict=True
+            )
+        )
         types = _PROMPT_SINGLE_TYPES.format(descriptions=descriptions)
         tail = _PROMPT_TAIL_SINGLE
     else:
+        descriptions = ", ".join(
+            describe_answer_type(answer_type, slot_options)
+            for answer_type, slot_options in zip(
+                answer_types, per_slot_options, strict=True
+            )
+        )
         types = _PROMPT_MULTI_TYPES.format(count=n_answers, descriptions=descriptions)
         tail = _PROMPT_TAIL_MULTI
     # `ANSWER` is a literal in the template, not a field to fill.
@@ -444,6 +486,84 @@ _PROBES: tuple[float, ...] = (0.41, 0.73, 1.19, 1.57, 2.11)
 _MIN_CLEAN_PROBES = 3
 _MAX_FREE_SYMBOLS = 4
 
+#: Largest integer exponent :func:`_parse_sympy_source` will evaluate. Sympy
+#: computes ``a**b`` eagerly, so a boxed ``9^9^9^9`` asks for a 370-million-digit
+#: integer and never returns. Nothing this benchmark asks for comes close — the
+#: largest exponent in the pinned references is three digits — so the cap costs
+#: no reachable comparison. See :func:`_evaluable`.
+_MAX_EXPONENT = 10_000
+
+
+def _sympy_globals() -> dict:
+    """Namespace for :func:`parse_expr`, with the builtins removed.
+
+    ``parse_expr`` evaluates its input, and its *default* global namespace is
+    built by ``exec("from sympy import *", ...)`` — which also injects
+    ``__builtins__``. Since the string being parsed is model output, that hands
+    a model ``__import__`` and ``open``: a boxed
+    ``__import__('os').system(...)`` runs, and the grader still reports the slot
+    wrong, so nothing in the run looks unusual.
+
+    Clearing ``__builtins__`` closes that without narrowing the dialect. The
+    sympy names have to stay: ``auto_symbol`` rewrites an unknown callable into
+    ``Function('sin')``, so a namespace holding *only* the answer aliases fails
+    every legitimate ``sin(pi*x/5)`` with ``NameError: name 'Function' is not
+    defined``.
+
+    This is a namespace restriction, not a sandbox — attribute access on sympy
+    objects still resolves. It removes the reachable path to the interpreter,
+    which is what a grader needs.
+    """
+    namespace: dict = {}
+    exec("from sympy import *", namespace)  # noqa: S102 - fixed literal, not input
+    namespace["__builtins__"] = {}
+    return namespace
+
+
+def _evaluable(cleaned: str, local: dict, transformations) -> bool:
+    """Would evaluating *cleaned* terminate in useful time?
+
+    ``parse_expr`` evaluates as it parses, so the check cannot run afterwards —
+    by then the process is already computing. Parsing with ``evaluate=False``
+    first builds the tree without doing the arithmetic (microseconds even for
+    the pathological cases), which is cheap enough to screen on.
+
+    Rejected: a power whose exponent is itself a power (``9**9**9``, the tower
+    shape), and an integer exponent above :data:`_MAX_EXPONENT`. A left-nested
+    ``(x**2)**3`` is fine and stays — only the right-nested tower explodes.
+
+    A rejected answer grades wrong rather than hanging the run. That is the
+    correct trade for a grader: this pass only ever *upgrades* a verdict
+    (:func:`math_equal` reaches it after every other strategy said "not equal"),
+    so refusing to run it can lose a point but can never invent one.
+    """
+    import sympy
+    from sympy.parsing.sympy_parser import parse_expr
+
+    if "**" not in cleaned:
+        return True
+    try:
+        tree = parse_expr(
+            cleaned,
+            local_dict=local,
+            global_dict=_sympy_globals(),
+            transformations=transformations,
+            evaluate=False,
+        )
+    except Exception:
+        # Unparseable under this reading; the real parse will fail the same way
+        # and is harmless. Screening is not the place to decide that.
+        return True
+    for node in sympy.preorder_traversal(tree):
+        if not isinstance(node, sympy.Pow):
+            continue
+        exponent = node.exp
+        if exponent.has(sympy.Pow):
+            return False
+        if exponent.is_Integer and abs(int(exponent)) > _MAX_EXPONENT:
+            return False
+    return True
+
 
 def _parse_sympy_source(text: str) -> list:
     """Parse UGMathBench's plain-sympy answer syntax as sympy source.
@@ -457,6 +577,11 @@ def _parse_sympy_source(text: str) -> list:
     Square brackets are grouping in this dialect, ``^`` is exponentiation, and
     ``e`` / ``pi`` / ``ln`` / ``infinity`` are the constants and functions they
     look like — none of which sympy assumes by default.
+
+    The text reaching this function is model output, and ``parse_expr``
+    evaluates what it parses, so both halves of that are guarded:
+    :func:`_sympy_globals` takes the interpreter out of reach and
+    :func:`_evaluable` refuses arithmetic that would not finish.
     """
     import sympy
     from sympy.parsing.sympy_parser import parse_expr
@@ -495,10 +620,18 @@ def _parse_sympy_source(text: str) -> list:
         "arctanh": sympy.atanh,
     }
     out: list = []
+    globals_ = _sympy_globals()
     for transformations in _source_transformations():
+        if not _evaluable(cleaned, local, transformations):
+            continue
         try:
             out.append(
-                parse_expr(cleaned, local_dict=local, transformations=transformations)
+                parse_expr(
+                    cleaned,
+                    local_dict=local,
+                    global_dict=globals_,
+                    transformations=transformations,
+                )
             )
         except Exception:
             # Not sympy source under this reading (LaTeX, prose, an unbalanced
@@ -699,8 +832,18 @@ def math_equal(pred: str, gold: str, precision: float = 1e-3) -> bool:
             _numeric_value(parsed_gold),
             _numeric_value(parsed_pred),
         )
-        if gold_value is not None and pred_value is not None:
-            return _close(pred_value, gold_value, precision)
+        # Accept on success, but do NOT reject on failure: both values come from
+        # the LaTeX reading, which is the one known to mangle this dataset's
+        # gold. Returning its verdict here made the substitution pass below
+        # unreachable for every pair the mangling happens to turn into a
+        # *number* — `2**100` reads as `2`, so a correct `2^100` was compared
+        # against 2 and graded wrong without the pass ever running.
+        if (
+            gold_value is not None
+            and pred_value is not None
+            and _close(pred_value, gold_value, precision)
+        ):
+            return True
     except Exception:
         # math-verify raises on pathological input (unbalanced LaTeX, runaway
         # simplify). Fall through rather than return: a crash in one comparison

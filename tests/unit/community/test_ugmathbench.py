@@ -355,3 +355,56 @@ def test_substitution_verdicts_are_deterministic():
     for _ in range(3):
         assert [math_equal(p, g) for p, g in pairs] == first
     assert first == [True, False]
+
+
+# --- untrusted-input guards ------------------------------------------------
+
+
+def test_parsing_a_prediction_cannot_reach_the_interpreter(tmp_path):
+    # `parse_expr` evaluates what it parses, and the string reaching it is model
+    # output -- on the ordinary path, since every wrong free-form answer falls
+    # through to the substitution pass. Its default global namespace is built by
+    # `exec("from sympy import *", ...)`, which also injects `__builtins__`.
+    marker = tmp_path / "executed"
+    payload = f"__import__('os').system('touch {marker}')"
+    assert judge_answers([payload], ["42"], ["EX"]) == [False]
+    assert not marker.exists()
+
+    payload = f"open('{marker}', 'w')"
+    assert judge_answers([payload], ["42"], ["EX"]) == [False]
+    assert not marker.exists()
+
+
+def test_a_power_tower_grades_wrong_instead_of_hanging():
+    # `^` is rewritten to `**` before parsing and sympy exponentiates eagerly,
+    # so `9^9^9^9` asks for a 370-million-digit integer. Grading has to reject
+    # it, not compute it: `feedback()` runs on the event loop, so one such
+    # sample would freeze every concurrent sample in the run.
+    assert judge_answer("9^9^9^9", "x+1", "EX") is False
+    assert judge_answer("2^{2^{100}}", "x+1", "EX") is False
+
+
+def test_the_exponent_cap_leaves_real_answers_alone():
+    # Only the tower shape and absurd exponents are refused. A large-but-sane
+    # power, and a left-nested one, still compare normally.
+    assert math_equal("2^100", "2**100")
+    assert math_equal("(x^2)^3", "x**6")
+    assert math_equal("4^20", "1.09951162778E+12")
+
+
+def test_a_mangled_numeric_gold_still_reaches_the_substitution_pass():
+    # The LaTeX reader turns `2**100` into `2`. Returning that comparison's
+    # verdict made the substitution pass unreachable for every pair the mangling
+    # happens to turn into a *number*, which is the exact defect the pass exists
+    # to repair -- so a correct `2^100` was graded against 2 and lost.
+    assert math_equal("2^100", "2**100")
+
+
+def test_single_answer_branch_describes_only_the_first_declared_type():
+    # Upstream's single-answer branch reads `answer_type[0]` alone, while its
+    # multi-answer branch joins every declared type. Every pinned row agrees
+    # (one answer means one type), so this pins the shape rather than a
+    # coincidence of the current data cut.
+    prompt = build_prompt("Algebra", "p", 1, ["NV", "EX"])
+    assert "The answer type is a numerical value without units." in prompt
+    assert "an expression" not in prompt
