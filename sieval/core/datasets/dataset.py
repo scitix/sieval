@@ -1,6 +1,7 @@
 """Abstract Dataset base class backed by HuggingFace DatasetDict."""
 
 import copy
+import math
 import random
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
@@ -151,6 +152,7 @@ class Dataset[TSample](ABC):
         *,
         num: int | None = None,
         per_group: int | None = None,
+        fraction: float | None = None,
         min_per_group: int | None = None,
         seed: int = 0,
         split: str = "test",
@@ -161,30 +163,45 @@ class Dataset[TSample](ABC):
         name, or a list whose values form a composite key). Exactly one budget
         must be given:
 
-        * ``num`` — **proportional** allocation. Each stratum gets a floor of
-          ``min(min_per_group, stratum_size)`` (``min_per_group`` defaults to 1);
-          the remaining budget toward *num* is distributed proportionally to
-          stratum size (capped by availability). If the floors already sum above
-          *num*, the total rises to honour them and a warning is logged.
+        * ``num`` — **proportional** allocation toward a *total*. Each stratum
+          gets a floor of ``min(min_per_group, stratum_size)`` (``min_per_group``
+          defaults to 1); the remaining budget toward *num* is distributed
+          proportionally to stratum size (capped by availability). If the floors
+          already sum above *num*, the total rises to honour them and a warning
+          is logged.
         * ``per_group`` — **equal** allocation. Each stratum keeps exactly
           ``min(per_group, stratum_size)`` rows; strata smaller than *per_group*
           keep all their rows and a single summary warning is logged.
+        * ``fraction`` — **share of each stratum**, in ``(0, 1]``. Each stratum
+          keeps ``ceil(stratum_size * fraction)`` rows, never fewer than the
+          floor. Unlike ``num`` this needs no total, so it states a protocol
+          ("10% of every locale") directly and stays correct when the dataset
+          grows. The resulting total is whatever the per-stratum ceilings sum to.
 
-        ``min_per_group`` applies only to the proportional (``num``) path and may
-        not be combined with ``per_group``. Within each stratum rows are chosen by
-        a deterministic *seed*-driven shuffle, so the selection reproduces across
+        ``min_per_group`` applies to the ``num`` and ``fraction`` paths, which
+        both allocate per stratum, and may not be combined with ``per_group``
+        (which already fixes the count). Within each stratum rows are chosen by a
+        deterministic *seed*-driven shuffle, so the selection reproduces across
         runs and processes.
 
         Returns ``self`` unchanged if *split* is absent or empty.
         """
-        if (num is None) == (per_group is None):
+        budgets = [num, per_group, fraction]
+        if sum(budget is not None for budget in budgets) != 1:
             raise ValueError(
-                "stratified_sample: provide exactly one of 'num' or 'per_group'"
+                "stratified_sample: provide exactly one of 'num', 'per_group' "
+                "or 'fraction'"
             )
         if per_group is not None and min_per_group is not None:
             raise ValueError(
-                "stratified_sample: 'min_per_group' applies only to proportional "
-                "('num') sampling and cannot be combined with 'per_group'"
+                "stratified_sample: 'min_per_group' applies to the per-stratum "
+                "('num' / 'fraction') paths and cannot be combined with "
+                "'per_group'"
+            )
+        if fraction is not None and not 0 < fraction <= 1:
+            raise ValueError(
+                "stratified_sample: 'fraction' must be in the interval (0, 1]; "
+                f"got {fraction!r}"
             )
 
         if split not in self._dataset_dict:
@@ -230,9 +247,19 @@ class Dataset[TSample](ABC):
                     len(keys),
                     sum(per_group - sizes[key] for key in short),
                 )
+        elif fraction is not None:
+            # Share of each stratum, rounded up so a small stratum still
+            # contributes; the floor applies as it does on the `num` path. No
+            # total is involved, so nothing has to be redistributed.
+            floor = 1 if min_per_group is None else min_per_group
+            alloc = {
+                key: min(sizes[key], max(floor, math.ceil(sizes[key] * fraction)))
+                for key in keys
+            }
         else:
             # Proportional allocation toward num, honouring the floor.
-            # num is non-None here (the per_group is None branch guarantees it).
+            # num is non-None here: it is the only budget left once per_group and
+            # fraction are ruled out, and exactly one was required.
             assert num is not None
             floor = 1 if min_per_group is None else min_per_group
             total = len(hf)

@@ -1,8 +1,9 @@
 """
 Unit tests for sieval/core/datasets.py.
 
-Covers: Dataset.repeat, slice, shuffle, filter, retrieve_samples
-(random/fixed/lazy), _clone_with_new_dict, property accessors.
+Covers: Dataset.repeat, slice, shuffle, filter, stratified_sample
+(num / per_group / fraction), retrieve_samples (random/fixed/lazy),
+_clone_with_new_dict, property accessors.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
@@ -515,12 +516,20 @@ class TestStratifiedSample:
         )
         assert ids1 == ids2
 
-    def test_requires_exactly_one_budget(self):
+    @pytest.mark.parametrize(
+        "budgets",
+        [
+            {},
+            {"num": 2, "per_group": 2},
+            {"num": 2, "fraction": 0.5},
+            {"per_group": 2, "fraction": 0.5},
+            {"num": 2, "per_group": 2, "fraction": 0.5},
+        ],
+    )
+    def test_requires_exactly_one_budget(self, budgets):
         ds = _make_grouped({"a": 5})
-        with pytest.raises(ValueError, match="exactly one of 'num' or 'per_group'"):
-            ds.stratified_sample(by="subject", seed=0)
-        with pytest.raises(ValueError, match="exactly one of 'num' or 'per_group'"):
-            ds.stratified_sample(by="subject", num=2, per_group=2, seed=0)
+        with pytest.raises(ValueError, match="exactly one of 'num', 'per_group'"):
+            ds.stratified_sample(by="subject", seed=0, **budgets)
 
     def test_min_per_group_excludes_per_group(self):
         ds = _make_grouped({"a": 5})
@@ -536,6 +545,109 @@ class TestStratifiedSample:
         ds = _make_grouped2({("en", "math"): 5})
         with pytest.raises(ValueError, match="nonexistent"):
             ds.stratified_sample(by=["locale", "nonexistent"], per_group=2, seed=0)
+
+
+# ===================================================================
+# stratified_sample — the `fraction` budget
+#
+# This is where MMMLU's efficient-eval subsampling lives now. It used to be
+# `sample_fraction`/`sample_seed`/`sample_by` on `mmmlu_kshot_clp`, applied by a
+# hand-rolled sampler; the cases below are the ones that carried its behaviour.
+# ===================================================================
+class TestStratifiedFraction:
+    def test_keeps_a_share_of_every_stratum(self):
+        ds = _make_grouped({"a": 100, "b": 50, "c": 10})
+        result = ds.stratified_sample(by="subject", fraction=0.1, seed=0)
+        assert _subject_counts(result) == {"a": 10, "b": 5, "c": 1}
+
+    def test_rounds_up_so_a_small_stratum_still_contributes(self):
+        # ceil, not round: at 10% a 12-row stratum yields 2, and a 1-row stratum
+        # survives on the floor rather than vanishing.
+        ds = _make_grouped({"big": 12, "tiny": 1})
+        result = ds.stratified_sample(by="subject", fraction=0.1, seed=0)
+        assert _subject_counts(result) == {"big": 2, "tiny": 1}
+
+    def test_fraction_one_keeps_everything(self):
+        ds = _make_grouped({"a": 7, "b": 3})
+        result = ds.stratified_sample(by="subject", fraction=1.0, seed=0)
+        assert _subject_counts(result) == {"a": 7, "b": 3}
+
+    def test_min_per_group_raises_the_floor(self):
+        ds = _make_grouped({"a": 100, "b": 4})
+        result = ds.stratified_sample(
+            by="subject", fraction=0.01, min_per_group=3, seed=0
+        )
+        # 'a' wants ceil(1.0)=1 but the floor lifts it to 3; 'b' is capped by size.
+        assert _subject_counts(result) == {"a": 3, "b": 3}
+
+    def test_min_per_group_capped_by_stratum_size(self):
+        ds = _make_grouped({"a": 10, "b": 2})
+        result = ds.stratified_sample(
+            by="subject", fraction=0.1, min_per_group=5, seed=0
+        )
+        assert _subject_counts(result) == {"a": 5, "b": 2}
+
+    def test_composite_key_matches_the_retired_mmmlu_case(self):
+        # The exact shape the task-level test used to assert: 4 cells x 4 rows at
+        # 50% -> 8 rows, 2 per (locale, subject).
+        cells = {
+            ("zh_cn", "abstract_algebra"): 4,
+            ("zh_cn", "business_ethics"): 4,
+            ("de_de", "abstract_algebra"): 4,
+            ("de_de", "business_ethics"): 4,
+        }
+        ds = _make_grouped2(cells)
+        result = ds.stratified_sample(by=["locale", "subject"], fraction=0.5, seed=42)
+        assert len(result.test_set) == 8
+        counts: dict = {}
+        for row in result.test_set:
+            key = (row["locale"], row["subject"])
+            counts[key] = counts.get(key, 0) + 1
+        assert counts == dict.fromkeys(cells, 2)
+
+    def test_same_seed_is_deterministic(self):
+        # Two independent calls must select the same rows — the property the
+        # retired idempotency test was protecting.
+        ds = _make_grouped2({("zh_cn", "algebra"): 4, ("zh_cn", "ethics"): 4})
+        first = ds.stratified_sample(by=["locale", "subject"], fraction=0.5, seed=42)
+        second = ds.stratified_sample(by=["locale", "subject"], fraction=0.5, seed=42)
+        assert [r["id"] for r in first.test_set] == [r["id"] for r in second.test_set]
+
+    def test_different_seed_changes_rows_not_counts(self):
+        ds = _make_grouped({"a": 40, "b": 40})
+        one = ds.stratified_sample(by="subject", fraction=0.25, seed=1)
+        two = ds.stratified_sample(by="subject", fraction=0.25, seed=2)
+        assert _subject_counts(one) == _subject_counts(two) == {"a": 10, "b": 10}
+        assert [r["id"] for r in one.test_set] != [r["id"] for r in two.test_set]
+
+    def test_row_order_is_preserved(self):
+        ds = _make_grouped({"a": 20, "b": 20})
+        ids = [
+            r["id"]
+            for r in ds.stratified_sample(by="subject", fraction=0.5, seed=0).test_set
+        ]
+        assert ids == sorted(ids)
+
+    @pytest.mark.parametrize("bad", [0, 0.0, -0.5, 1.5, 2])
+    def test_fraction_outside_the_unit_interval_raises(self, bad):
+        ds = _make_grouped({"a": 5})
+        with pytest.raises(ValueError, match=r"'fraction' must be in the interval"):
+            ds.stratified_sample(by="subject", fraction=bad, seed=0)
+
+    def test_no_test_set_returns_self(self):
+        class _NoTestDataset(_ListDataset):
+            def load(self, name_or_path, **kwargs):
+                return HFDatasetDict({"train": HFDataset.from_list([{"subject": "a"}])})
+
+        ds = _NoTestDataset([], None)
+        assert ds.stratified_sample(by="subject", fraction=0.5, seed=0) is ds
+
+    def test_missing_split_returns_self(self):
+        ds = _make_grouped({"a": 5})
+        assert (
+            ds.stratified_sample(by="subject", fraction=0.5, split="train", seed=0)
+            is ds
+        )
 
 
 # ===================================================================

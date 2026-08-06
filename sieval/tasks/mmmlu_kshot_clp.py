@@ -15,11 +15,17 @@ Deviations from those references:
       ``args.locales`` (e.g. ``[zh_cn]`` for a Chinese run).  There is no
       separate ZH-CN task; Chinese evaluation is this protocol restricted to
       one locale.
-    - The references define no sampling protocol.  Optional efficient
-      evaluation (e.g. the Qwen3 technical report's 10% MMMLU setting) is
-      offered via ``sample_fraction``/``sample_seed``/``sample_by``, applied in
-      ``setup()`` before few-shot reservation so scoring, reservation, and
-      aggregation are identical for full and sampled runs.
+    - The references define no sampling protocol.  Efficient evaluation (e.g.
+      the Qwen3 technical report's 10% MMMLU setting) is a *dataset* operation,
+      not a task argument — the task used to carry its own stratified sampler::
+
+          operations:
+            - stratified_sample: {by: [Locale, Subject], fraction: 0.1, seed: 0}
+
+      Group by ``[Locale]`` alone for a per-language share.  Operations run when
+      the dataset is built, so the subsample still precedes few-shot reservation
+      exactly as before, and scoring, reservation and aggregation stay identical
+      between full and sampled runs.
 
 Reproduction decoding: greedy ``temperature=0`` with ``max_tokens=1`` and
 top-``logprobs`` scoring.  These are structural to ``alogprobs`` (next-token
@@ -36,7 +42,6 @@ AI-Generated Code - GPT-5-Codex (OpenAI)
 """
 
 import math
-import random
 from collections.abc import Sequence
 from typing import TypedDict, cast, override
 
@@ -63,7 +68,6 @@ from sieval.datasets import MMMLUDatasetSample
 CHOICES = ("A", "B", "C", "D")
 DEFAULT_N_SHOT = 5
 OFFICIAL_MISSING_LOGPROB = -100.0
-MMMLU_SAMPLE_BY = ("locale", "locale_subject")
 
 
 class OfficialScores(TypedDict):
@@ -132,37 +136,6 @@ def _add_metric(
         counts["correct"] += 1
 
 
-def _normalize_sample_fraction(sample_fraction: object) -> float | None:
-    if sample_fraction is None:
-        return None
-    if isinstance(sample_fraction, bool) or not isinstance(
-        sample_fraction, int | float
-    ):
-        raise ValueError(
-            "MMMLU sample_fraction must be a number in the interval (0, 1]."
-        )
-    fraction = float(sample_fraction)
-    if not 0.0 < fraction <= 1.0:
-        raise ValueError(
-            "MMMLU sample_fraction must be a number in the interval (0, 1]."
-        )
-    return fraction
-
-
-def _normalize_sample_seed(sample_seed: object) -> int:
-    if isinstance(sample_seed, bool) or not isinstance(sample_seed, int):
-        raise ValueError("MMMLU sample_seed must be an integer.")
-    return sample_seed
-
-
-def _normalize_sample_by(sample_by: str) -> str:
-    normalized = str(sample_by).strip().lower()
-    if normalized not in MMMLU_SAMPLE_BY:
-        allowed = ", ".join(MMMLU_SAMPLE_BY)
-        raise ValueError(f"MMMLU sample_by must be one of: {allowed}.")
-    return normalized
-
-
 @sieval_task(
     name="mmmlu_kshot_clp",
     display_name="MMMLU (k-shot, CLP)",
@@ -215,9 +188,6 @@ class MMMLUKShotClpTask(
         n_shot: int = DEFAULT_N_SHOT,
         fewshot_split: str = "test",
         logprobs: int = 100,
-        sample_fraction: float | None = None,
-        sample_seed: int = 0,
-        sample_by: str = "locale_subject",
     ):
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
@@ -227,19 +197,14 @@ class MMMLUKShotClpTask(
         self.n_shot = n_shot
         self._fewshot_split = fewshot_split
         self._logprobs = logprobs
-        self._sample_fraction = _normalize_sample_fraction(sample_fraction)
-        self._sample_seed = _normalize_sample_seed(sample_seed)
-        self._sample_by = _normalize_sample_by(sample_by)
         self._fewshot_by_group: dict[tuple[str, str], list[MMMLUDatasetSample]] | None
         self._fewshot_by_group = None
         self._fewshot_source_indices: set[int] = set()
         self._eval_split_excludes_fewshot = False
-        self._sampling_applied = False
         self._prompt_cache: dict[tuple[str, str], str] = {}
 
     @override
     async def setup(self) -> None:
-        self._apply_sampling()
         if self.n_shot > 0:
             self._ensure_fewshot_pool()
 
@@ -436,41 +401,6 @@ class MMMLUKShotClpTask(
 
         self._prompt_cache[group] = prompt
         return prompt
-
-    def _apply_sampling(self) -> None:
-        # Idempotent like _ensure_fewshot_pool / _exclude_fewshot_examples: the
-        # runner calls setup() once, but a second call must not sample a sample.
-        if self._sampling_applied:
-            return
-        if self._sample_fraction is None:
-            return
-
-        test_split = self.dataset.dataset_dict.get("test")
-        if test_split is None or len(test_split) == 0:
-            return
-
-        groups: dict[tuple[str, ...], list[int]] = {}
-        for index, row in enumerate(test_split):
-            groups.setdefault(self._sample_key(row), []).append(index)
-
-        sampled_indices: list[int] = []
-        for key in sorted(groups):
-            indices = groups[key].copy()
-            rng = random.Random(
-                f"{self._sample_seed}:{self._sample_by}:{'|'.join(key)}"
-            )
-            rng.shuffle(indices)
-            sample_size = max(1, math.ceil(len(indices) * self._sample_fraction))
-            sampled_indices.extend(indices[:sample_size])
-
-        self.dataset.dataset_dict["test"] = test_split.select(sampled_indices)
-        self._sampling_applied = True
-
-    def _sample_key(self, row: dict[str, object]) -> tuple[str, ...]:
-        locale = str(row.get("Locale", "")).strip()
-        if self._sample_by == "locale":
-            return (locale,)
-        return (locale, str(row.get("Subject", "")).strip())
 
     def _ensure_fewshot_pool(self) -> None:
         if self.n_shot <= 0:

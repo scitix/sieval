@@ -3,7 +3,6 @@
 AI-Generated Code - GPT-5-Codex (OpenAI)
 """
 
-from collections import Counter
 from typing import cast
 
 import pytest
@@ -302,100 +301,16 @@ async def test_test_split_fewshot_requires_held_out_examples_per_locale_subject(
         await task.setup()
 
 
-@pytest.mark.anyio
-async def test_setup_samples_deterministically_by_locale_subject():
-    samples = [
-        *[_sample(i, locale="zh_cn", subject="abstract_algebra") for i in range(4)],
-        *[_sample(i, locale="zh_cn", subject="business_ethics") for i in range(4)],
-        *[
-            _sample(
-                i,
-                locale="de_de",
-                locale_display_name="German",
-                subject="abstract_algebra",
-            )
-            for i in range(4)
-        ],
-        *[
-            _sample(
-                i,
-                locale="de_de",
-                locale_display_name="German",
-                subject="business_ethics",
-            )
-            for i in range(4)
-        ],
-    ]
-    task = _task(
-        samples,
-        n_shot=0,
-        sample_fraction=0.5,
-        sample_seed=42,
-        sample_by="locale_subject",
-    )
-    repeat = _task(
-        samples,
-        n_shot=0,
-        sample_fraction=0.5,
-        sample_seed=42,
-        sample_by="locale_subject",
-    )
-
-    await task.setup()
-    await repeat.setup()
-
-    test_set = task.dataset.test_set
-    repeat_test_set = repeat.dataset.test_set
-    assert test_set is not None
-    assert repeat_test_set is not None
-    assert len(test_set) == 8
-    assert [row["Question"] for row in test_set] == [
-        row["Question"] for row in repeat_test_set
-    ]
-    counts = Counter((row["Locale"], row["Subject"]) for row in test_set)
-    assert counts == {
-        ("de_de", "abstract_algebra"): 2,
-        ("de_de", "business_ethics"): 2,
-        ("zh_cn", "abstract_algebra"): 2,
-        ("zh_cn", "business_ethics"): 2,
-    }
-
-
-@pytest.mark.anyio
-async def test_setup_sampling_is_idempotent_under_repeated_calls():
-    samples = [
-        *[_sample(i, locale="zh_cn", subject="abstract_algebra") for i in range(4)],
-        *[_sample(i, locale="zh_cn", subject="business_ethics") for i in range(4)],
-    ]
-    task = _task(
-        samples,
-        n_shot=0,
-        sample_fraction=0.5,
-        sample_seed=42,
-        sample_by="locale_subject",
-    )
-
-    await task.setup()
-    first_set = task.dataset.test_set
-    assert first_set is not None
-    first = [row["Question"] for row in first_set]
-    # A second setup() must not sample a sample (0.5 of the already-sampled set).
-    await task.setup()
-    second_set = task.dataset.test_set
-    assert second_set is not None
-    second = [row["Question"] for row in second_set]
-
-    assert len(first) == 4
-    assert first == second
+# Subsampling used to be `sample_fraction`/`sample_seed`/`sample_by` on this task,
+# applied by a hand-rolled sampler in `setup()`. It is now a dataset operation
+# (`stratified_sample(by=[Locale, Subject], fraction=...)`), so its coverage lives
+# with the transform in tests/unit/core/test_datasets.py::TestStratifiedFraction —
+# including that the subsample stays deterministic across two identical calls.
 
 
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
-        ({"sample_fraction": 0}, "sample_fraction"),
-        ({"sample_fraction": 1.5}, "sample_fraction"),
-        ({"sample_seed": "42"}, "sample_seed"),
-        ({"sample_by": "subject"}, "sample_by"),
         ({"n_shot": -1}, "n_shot must be >= 0"),
         ({"logprobs": 0}, "logprobs must be >= 1"),
     ],

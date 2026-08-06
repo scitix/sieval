@@ -1323,16 +1323,19 @@ class EvalSession:
                     by = op_args.get("by")
                     num = op_args.get("num", op_args.get("n"))
                     per_group = op_args.get("per_group")
+                    fraction = op_args.get("fraction")
                     min_per_group = op_args.get("min_per_group")
                     if by is None:
                         raise ValueError(
                             f"Dataset '{dataset_name}': 'stratified_sample' "
                             f"requires 'by'"
                         )
-                    if (num is None) == (per_group is None):
+                    budgets = [num, per_group, fraction]
+                    if sum(budget is not None for budget in budgets) != 1:
                         raise ValueError(
                             f"Dataset '{dataset_name}': 'stratified_sample' "
-                            f"requires exactly one of 'num' or 'per_group'"
+                            f"requires exactly one of 'num', 'per_group' or "
+                            f"'fraction'"
                         )
                     if per_group is not None and min_per_group is not None:
                         raise ValueError(
@@ -1345,19 +1348,24 @@ class EvalSession:
                         by,
                         num=num,
                         per_group=per_group,
+                        fraction=fraction,
                         min_per_group=min_per_group,
                         seed=seed,
                         split=split,
                     )
+                    if per_group is not None:
+                        budget_desc = f"per_group={per_group}"
+                    elif fraction is not None:
+                        budget_desc = (
+                            f"fraction={fraction}, min_per_group={min_per_group}"
+                        )
+                    else:
+                        budget_desc = f"num={num}, min_per_group={min_per_group}"
                     logger.debug(
                         "Dataset '{}': stratified-sampled by '{}' ({}, seed={})",
                         dataset_name,
                         by,
-                        (
-                            f"per_group={per_group}"
-                            if per_group is not None
-                            else f"num={num}, min_per_group={min_per_group}"
-                        ),
+                        budget_desc,
                         seed,
                     )
 
