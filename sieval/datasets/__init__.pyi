@@ -73,6 +73,10 @@ from .gsm8k import (
     GSM8KDataset,
     GSM8KDatasetSample,
 )
+from .gsm_plus import (
+    GSMPlusDataset,
+    GSMPlusDatasetSample,
+)
 from .hellaswag import (
     HellaSwagDataset,
     HellaSwagDatasetSample,
@@ -223,6 +227,8 @@ __all__ = [
     "GPQADiamondDatasetSample",
     "GSM8KDataset",
     "GSM8KDatasetSample",
+    "GSMPlusDataset",
+    "GSMPlusDatasetSample",
     "HLEDataset",
     "HLEDatasetSample",
     "HMMTFeb2025Dataset",

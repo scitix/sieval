@@ -64,6 +64,9 @@ from .gsm8k_0shot_gen import (
 from .gsm8k_kshot_base_gen import (
     GSM8KFewShotBaseGenTask,
 )
+from .gsm_plus_0shot_gen import (
+    GSMPlusZeroShotGenTask,
+)
 from .hellaswag_kshot_ppl import (
     HellaSwagFewShotPPLTask,
 )
@@ -192,6 +195,7 @@ __all__ = [
     "GPQADiamondZeroShotGenTask",
     "GSM8KFewShotBaseGenTask",
     "GSM8KZeroShotGenTask",
+    "GSMPlusZeroShotGenTask",
     "HLEZeroShotGenTask",
     "HMMTFeb2025ZeroShotGenTask",
     "HMMTFeb2026ZeroShotGenTask",

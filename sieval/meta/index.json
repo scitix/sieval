@@ -403,6 +403,29 @@
       "checksums": {}
     },
     {
+      "name": "gsm_plus",
+      "display_name": "GSM-Plus",
+      "description": "GSM-Plus - GSM8K test problems rewritten under 8 adversarial math perturbations.",
+      "source": [
+        "hf:qintongli/GSM-Plus@3b708db57b96a16e8e3368ed2956990c0809440e"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "ElementaryMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended",
+        "robustness"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-SA-4.0",
+      "checksums": {}
+    },
+    {
       "name": "hellaswag",
       "display_name": "HellaSwag",
       "description": "Commonsense sentence completion — pick the most plausible ending.",
@@ -1486,6 +1509,28 @@
       },
       "status": "stable",
       "reference_kind": "value"
+    },
+    {
+      "name": "gsm_plus_0shot_gen",
+      "display_name": "GSM-Plus (0-shot, generative)",
+      "description": "GSM-Plus 0-shot CoT eval, scored overall and per perturbation type.",
+      "dataset": "gsm_plus",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended",
+        "robustness"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "qtli/GSM-Plus",
+        "url": "https://github.com/qtli/GSM-Plus/tree/3474129ec12fcd3e8ac08cb037aca1928efca98c/scripts",
+        "notes": "Zero-shot CoT protocol (--prompt_type cot): system turn = the \"#### [value]\" instruction, user turn = \"Question:\\n{question}\\nAnswer:\\nLet's think step by step.\"; chat template applied by the serving backend. Gold from `solution` via extract_gold_ans; extraction dispatches on perturbation_type (extract_pred_ans_none for `critical thinking`, whose gold is the string \"None\"); normalize_final_answer + check_sympy_equivalence scoring. All vendored in sieval.community.gsm_plus. Replaying upstream's stored GPT-3.5-Turbo CoT predictions reproduces its gold/pred on 10552/10552 items and its verdict on 10527/10552 (99.76%); the 25 diffs are all genuinely-equal fraction/decimal pairs that upstream scored wrong because it pins sympy without the ANTLR runtime parse_latex needs, so its bare `except:` fell back to string equality (published 61.19 overall -> 61.43 here; the integer-decimal-fraction cell moves most, 62.32 -> 63.84). Single-rollout only: upstream's cot_sc majority-votes 5 samples at temperature 0.7 (test_answer mv=5). Upstream decoding for this path: temperature 0, top_p 1, max_tokens 512, no stop."
+      },
+      "status": "experimental"
     },
     {
       "name": "hellaswag_kshot_ppl",
