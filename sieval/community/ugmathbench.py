@@ -481,6 +481,18 @@ def _parse_sympy_source(text: str) -> list:
         "log": sympy.log,
         "oo": sympy.oo,
         "I": sympy.I,
+        # The dataset spells inverse trig `arcsin`; sympy calls it `asin`.
+        # Without the alias `arcsin(3/10)` parses as a *symbol* times a number,
+        # which silently changes the free-symbol set and loses the comparison.
+        "arcsin": sympy.asin,
+        "arccos": sympy.acos,
+        "arctan": sympy.atan,
+        "arcsec": sympy.asec,
+        "arccsc": sympy.acsc,
+        "arccot": sympy.acot,
+        "arcsinh": sympy.asinh,
+        "arccosh": sympy.acosh,
+        "arctanh": sympy.atanh,
     }
     out: list = []
     for transformations in _source_transformations():

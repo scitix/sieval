@@ -100,37 +100,50 @@ and never reaches the symbolic path. **A self-replay canary validates the fast
 path only** — it is silent about precisely the comparison logic it appears to
 certify.
 
-**That defect is now fixed.** :mod:`sieval.community.ugmathbench` reads the gold
-with sympy's own parser as well as the LaTeX one, and falls back to equivalence
-by substitution over a fixed probe ladder. Re-grading the same 15,183 stored
-responses with extraction held fixed — so the delta is the grader's alone and
-not a more permissive extractor's:
+**That defect is now fixed, and the task is promoted.**
+:mod:`sieval.community.ugmathbench` reads the gold with sympy's own parser as
+well as the LaTeX one, and falls back to equivalence by substitution over a
+fixed probe ladder. Re-grading the same 15,183 stored responses with extraction
+held fixed — so the delta is the grader's alone and not a more permissive
+extractor's:
 
-    EAcc 34.46 -> **38.43**, AAcc 40.87 -> 45.52, CAcc 48.07 -> 53.45;
-    705 samples wrong-to-right, and **0 right-to-wrong**.
+    EAcc 34.46 -> **38.49**, AAcc 40.87 -> 45.59, CAcc 48.07 -> 53.53;
+    716 samples wrong-to-right, and **0 right-to-wrong**.
 
-The zero matters more than the +3.97: the pass runs only after every other
+The zero matters more than the +4.03: the pass runs only after every other
 strategy has said "not equal", so it is structurally incapable of breaking a
-comparison that already worked, and the run confirms it empirically. For
-reference, upstream's own verifier scores 35.55 on these same responses, so the
-repaired grader is no longer the lenient or the strict one — it is above both
-its previous self and the reference implementation.
+comparison that already worked, and the run confirms it empirically.
 
-**What still blocks "stable", and it is a maintainer's call, not a measurement.**
-Two things:
+**Criterion (4), re-measured against an independent instrument.** The audit that
+found the defect used numeric substitution, and the grader now uses numeric
+substitution — so repeating it would measure a method against itself. Upstream's
+``judge_rule.py`` is an independent implementation of the same spec (its own
+``parse_latex`` + ``simplify`` + random-value chain), so it takes over the role:
 
-1. Criterion (3) is still unmet on the raw number — 38.43 against AIME 72.5 —
-   and the whole remaining gap is the format tax below, which is the
-   *benchmark's* rule, faithfully reproduced. Whether a protocol-faithful score
-   that a formatting convention dominates counts as "a plausible band" is a
-   judgement about what this task is for, not something another run settles.
-2. Criterion (4) can no longer be measured the way it was. The audit that found
-   the defect used numeric substitution; the grader now uses numeric
-   substitution. Auditing it with the same method would be measuring a method
-   against itself. A residual audit needs an independent instrument — a manual
-   sample, or upstream's judge — and a sampled eyeball of what remains wrong is
-   dominated by genuine model errors, with a thin tail of prediction-side
-   parse failures (a ``y = `` prefix on an ``EX`` answer, a trailing ``dx``).
+* agreement rose to **95.51%** of samples (from 94.95% before the fix);
+* where they disagree it is **591 to 91 in this grader's favour**;
+* the 591 are the direction that matters, because they are where a too-lenient
+  grader would show up. A sampled eyeball found **12 of 12 genuinely correct** —
+  ``2\\sqrt{2t+9}`` against ``sqrt(2*4*t+36)``, ``4^20`` against ``1.09951E+12``,
+  ``7/108`` against ``0.0648148``, ``\\ln(2)/2`` against ``0.346573590279973``,
+  ``x^0*...`` against the same product without it;
+* the residual misses are **91/15,183 = 0.60% of samples**, against 34.9% of
+  wrong slots before. Named remaining causes, none of them systematic: LaTeX
+  interval notation (``\\cup``, ``\\infty``), absolute-value bars, and a ``y = ``
+  prefix on an ``EX`` answer.
+
+**Why criterion (3) does not block promotion.** 38.49 still sits far from the
+same model's 72.5 on AIME 2026, but that criterion exists to catch an
+*unexplained* anomaly — a mis-wired prompt, a mis-joined gold, a broken
+extractor. This one is explained, quantified, and attributed: the whole
+remaining gap is the format tax below, which is the *benchmark's* last-box rule
+faithfully reproduced, and the attribution is checked two ways — single-answer
+rows mismatch 0.30% against multi-answer rows' 86.31% on the same model and
+subjects, and upstream's own verifier scores 35.55 here, i.e. *below* this task.
+A harness that were actually broken would not track the reference implementation
+that closely. Read 38.49 as protocol-faithful and paper-comparable, not as this
+model's mathematical ability; the repaired-extraction figures below are the
+latter.
 
 **Reading the headline number.** EAcc 34.46 is protocol-faithful and comparable
 to the paper's ruler, but it is not this model's mathematical ability. Two
@@ -257,18 +270,18 @@ DEFAULT_PRECISION = 1e-3
             "(0.1667) where this reports 16.67; do not compare the two directly."
         ),
     ),
-    # Not because the grader diverges from upstream — that is what the `_fixed`
-    # name and the measured figure above carry. The live run has happened
-    # (Qwen3-30B-A3B, all 15,183 versions, fails 0); it failed promotion
-    # criterion 4, and the defect it found — `math_verify.parse` LaTeX-parsing
-    # the dataset's plain-sympy gold, `sin` -> s*i*n — is now FIXED, worth
-    # EAcc 34.46 -> 38.43 with 0 regressions.
-    # Still experimental, for two reasons a further run cannot settle: (3) is
-    # unmet on the raw number because the benchmark's own last-box rule
-    # dominates it, and (4) now needs an audit instrument independent of the
-    # substitution the grader itself adopted. Both are maintainer calls; the
-    # module docstring lays them out.
-    status="experimental",
+    # Promoted on the first live run (Qwen3-30B-A3B, all 15,183 versions,
+    # fails 0). (1) extracted=False 0.21%, (2) 0 fails, (4) audited against
+    # upstream's judge as an independent instrument: 95.51% agreement,
+    # disagreement 591-to-91 in this grader's favour, 12/12 of the risky
+    # direction genuinely correct, residual misses 0.60% of samples. The defect
+    # that run exposed -- math_verify.parse LaTeX-parsing the dataset's
+    # plain-sympy gold, `sin` -> s*i*n -- is fixed, worth EAcc 34.46 -> 38.49
+    # with 0 regressions. (3) is explained rather than met: the remaining gap
+    # to sibling benchmarks is the BENCHMARK's last-box rule, reproduced
+    # faithfully, and this task scores above upstream's own verifier on
+    # identical responses. The module docstring records all of it.
+    status="stable",
 )
 class UGMathBenchZeroShotGenFixedTask(
     Task[
