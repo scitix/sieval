@@ -39,6 +39,21 @@
   wall as upstream's own backstop, `(timeout_per_case + 1) * n + 5` — the shape
   `check_correctness` joins its worker at.
 
+  `compile_code` runs on the same clock, which is also where upstream arms it.
+  That matters on the call-based path, where the `exec` runs the submission's
+  module-level statements: a hang there is inside no test case, so an
+  execution-only budget would let it through to the whole-suite wall — the one
+  outcome this patch exists to avoid. The vendored `compile_code` had kept a bare
+  `try/finally: pass` where upstream cancels its alarm; the guard restores what
+  that `finally` was for.
+
+  One deliberate difference remains: upstream cancels the alarm the moment the
+  submission returns and compares outputs off the clock, whereas the guard here
+  wraps call and comparison together. Ours is therefore marginally stricter. The
+  comparison is a line-wise `Decimal` walk, microseconds against a 6 s budget, so
+  no verdict is expected to turn on it — splitting the guard was judged not worth
+  threading it through `_unsafe_execute_fn_call` / `_unsafe_execute_stdio`.
+
   Second effect, and the reason it also improves reporting: a **per-case**
   timeout returns normally, so `n_passed` survives it. Only the whole-suite wall
   loses the count, because it kills the worker — measured on a 90-rollout

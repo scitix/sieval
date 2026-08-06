@@ -1328,7 +1328,7 @@
       "reference_impl": {
         "source": "livecodebench",
         "url": "https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
-        "notes": "Prompt templates and extract_code vendored from lcb_runner/{prompts,utils}."
+        "notes": "Prompt templates and extract_code vendored from lcb_runner/{prompts,utils}. Grading budget diverges by default: upstream gives each test case its own 6s (codegen_metrics(..., timeout=6), re-armed per case in grade_call_based / grade_stdio), while this task budgets the whole suite unless `timeout_per_case` is set. Measured -2.22 pp on a 90-rollout lane at 6s/case; set `timeout_per_case=6.0` to grade by the upstream rule."
       },
       "status": "stable"
     },
@@ -1350,7 +1350,7 @@
       "reference_impl": {
         "source": "livecodebench",
         "url": "https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
-        "notes": "Base-model few-shot template vendored from lcb_runner/prompts.get_base_model_question_template_answer and extract_code(lmstyle='GenericBase') from lcb_runner/utils. Default n_shot=3 and stop=('###',) follow DeepSeek-V3 Table 3 'LiveCodeBench-Base (Pass@1), 3-shot' and upstream's runner default. Upstream ships only 2 few-shot examples per pool, so the 3rd example is sieval-authored. Recommended problem window 2024-08-01..2024-11-01 is configured via dataset YAML args (version_tag/start_date/end_date)."
+        "notes": "Base-model few-shot template vendored from lcb_runner/prompts.get_base_model_question_template_answer and extract_code(lmstyle='GenericBase') from lcb_runner/utils. Default n_shot=3 and stop=('###',) follow DeepSeek-V3 Table 3 'LiveCodeBench-Base (Pass@1), 3-shot' and upstream's runner default. Upstream ships only 2 few-shot examples per pool, so the 3rd example is sieval-authored. Recommended problem window 2024-08-01..2024-11-01 is configured via dataset YAML args (version_tag/start_date/end_date). Grading budget diverges by default: upstream gives each test case its own 6s, while this task budgets the whole suite unless `timeout_per_case` is set -- see deviation 4 in the module docstring."
       },
       "status": "stable"
     },

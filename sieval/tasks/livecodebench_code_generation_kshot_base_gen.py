@@ -34,10 +34,16 @@ Deviations from the upstream LCB runner (complete list):
      approximate rather than exactly reproduce the reference.
   3. Eval sandbox: code is executed by an external service at
      `$SIEVAL_CODE_EVAL_API` (POST code + test cases), not upstream's in-process
-     `check_correctness`. The execution budget is client-owned — sent in the
-     request body, scaled by case count (`timeout + len(inputs) * 2.0`) since the
-     service runs all cases under one sequential budget — approximating upstream's
-     per-case 6s.
+     `check_correctness`. The execution budget is client-owned, sent in the request
+     body.
+  4. Grading budget, by default: upstream gives *each* test case its own 6s
+     (`codegen_metrics(..., timeout=6)`, re-armed per case in `grade_call_based` /
+     `grade_stdio`). By default this task instead sends one whole-suite wall scaled
+     by case count (`timeout + len(inputs) * 2.0`), which is a different rule, not
+     a looser one: it is too generous to a submission with a single slow case and
+     too harsh on a uniformly slowish one. Set `timeout_per_case=6.0` to grade by
+     the upstream rule; it is opt-in so existing result dirs stay comparable.
+     Measured -2.22 pp on a 90-rollout lane of the sibling 0-shot task.
 
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
@@ -101,7 +107,10 @@ STOP_SEQUENCES = ("###",)
             "'LiveCodeBench-Base (Pass@1), 3-shot' and upstream's runner default. "
             "Upstream ships only 2 few-shot examples per pool, so the 3rd example "
             "is sieval-authored. Recommended problem window 2024-08-01..2024-11-01 "
-            "is configured via dataset YAML args (version_tag/start_date/end_date)."
+            "is configured via dataset YAML args (version_tag/start_date/end_date). "
+            "Grading budget diverges by default: upstream gives each test case its "
+            "own 6s, while this task budgets the whole suite unless "
+            "`timeout_per_case` is set -- see deviation 4 in the module docstring."
         ),
     ),
 )
@@ -127,7 +136,13 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         stop: tuple[str, ...] = STOP_SEQUENCES,
         max_concurrency: int = 4,
         timeout: float = 6.0,
+        timeout_per_case: float | None = None,
     ):
+        """*timeout* is the base of the whole-suite wall; *timeout_per_case* opts
+        into upstream's rule of one budget per test case (deviation 4 above). Set it
+        to ``6.0`` to grade the way the benchmark defines. Left ``None``, behaviour
+        is unchanged, so existing result dirs stay comparable.
+        """
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
@@ -136,6 +151,7 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         self._n = n
         self._stop = stop
         self._timeout = timeout
+        self._timeout_per_case = timeout_per_case
         # Fixed few-shot prefixes, keyed by whether the target has starter code
         # (func vs stdin pool). Computed once in setup(); never per sample.
         self._fewshot_prefix: dict[bool, str] = {}
@@ -207,6 +223,17 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         outputs = [t["output"] for t in cases]
         fn_name = metadata.get("func_name", None)
 
+        # The whole-suite wall. Without `timeout_per_case` this is the only limit, so
+        # it scales by N. With it, the wall becomes the backstop and takes upstream's
+        # own shape -- `check_correctness` joins its worker at `(timeout + 1) * n + 5`.
+        # The evaluator derives the same number when a client sends only
+        # `timeout_per_case`; we need it here regardless, for the HTTP deadline below.
+        # Same computation as the sibling 0-shot task -- keep the two in step.
+        if self._timeout_per_case is not None:
+            suite_timeout = (self._timeout_per_case + 1.0) * len(inputs) + 5.0
+        else:
+            suite_timeout = self._timeout + len(inputs) * 2.0
+
         for rollout in post["rollouts"]:
             idx = rollout["index"]
             try:
@@ -224,13 +251,15 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
                             "outputs": outputs,
                             "fn_name": fn_name,
                         },
-                        # All N cases share one sequential budget, so scale by N.
-                        # Approximates official per-case 6s within a single run.
-                        "timeout": self._timeout + len(inputs) * 2.0,
+                        "timeout": suite_timeout,
+                        **(
+                            {"timeout_per_case": self._timeout_per_case}
+                            if self._timeout_per_case is not None
+                            else {}
+                        ),
                     },
-                    # allow more time for more test cases
-                    # with extra buffer for network latency
-                    timeout=self._timeout + len(inputs) * 2 + 2,
+                    # allow more time than the suite wall, for network latency
+                    timeout=suite_timeout + 2,
                 )
                 resp.raise_for_status()
                 res = resp.json()

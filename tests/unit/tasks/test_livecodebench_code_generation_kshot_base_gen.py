@@ -3,6 +3,8 @@
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
+import json
+
 import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -17,6 +19,7 @@ from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import (
     TaskContext,
     build_judgement_record,
+    build_prediction_record,
     build_rollout_judgement,
 )
 from sieval.datasets.livecodebench_code_generation import LiveCodeBenchDataset
@@ -238,3 +241,98 @@ async def test_report_pass_at_1_and_pass_at_k():
     assert report["pass@2"] == 100.0
     assert report["score"] == report["pass@1"]
     assert report["fails"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Execution budget on the wire (deviation 4 -- see the module docstring)
+# --------------------------------------------------------------------------- #
+_PUBLIC = [{"input": "1\n", "output": "2", "testtype": "stdin"}]
+_PRIVATE = [
+    {"input": "2\n", "output": "4", "testtype": "stdin"},
+    {"input": "3\n", "output": "6", "testtype": "stdin"},
+]
+_N_CASES = len(_PUBLIC) + len(_PRIVATE)
+
+
+class _Response:
+    @staticmethod
+    def raise_for_status() -> None:
+        return None
+
+    @staticmethod
+    def json() -> dict:
+        return {
+            "status": True,
+            "msg": "",
+            "data": {"n_cases": _N_CASES, "n_passed": _N_CASES},
+        }
+
+
+class _CapturingEvaluator:
+    """Stands in for the code-eval service, recording what was asked of it."""
+
+    def __init__(self):
+        self.bodies: list[dict] = []
+        self.deadlines: list[float] = []
+
+    async def post(self, url, *, json, timeout):
+        _ = url
+        self.bodies.append(json)
+        self.deadlines.append(timeout)
+        return _Response()
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _raw_with_cases() -> dict:
+    return {
+        "question_content": "Double the input.",
+        "starter_code": "",
+        "public_test_cases": json.dumps(_PUBLIC),
+        "private_test_cases": json.dumps(_PRIVATE),
+        "metadata": json.dumps({}),
+    }
+
+
+async def _post_one(**kwargs) -> _CapturingEvaluator:
+    """Run `feedback` for a single rollout and hand back what the evaluator saw."""
+    task, _ = _task(**kwargs)
+    await task._http_client.aclose()  # the real client is never used
+    evaluator = _CapturingEvaluator()
+    task._http_client = evaluator
+    raw = _raw_with_cases()
+    try:
+        await task.feedback(
+            build_prediction_record(["print(int(input()) * 2)"]),
+            TaskContext(sample_id=0, raw_sample=raw),
+        )
+    finally:
+        await task.shutdown()
+    return evaluator
+
+
+@pytest.mark.anyio
+async def test_without_per_case_the_request_is_what_it_always_was():
+    # The compatibility promise: absent `timeout_per_case` nothing about the
+    # request changes, so no existing result dir moves.
+    evaluator = await _post_one(timeout=30.0)
+
+    (body,) = evaluator.bodies
+    assert body["timeout"] == 30.0 + _N_CASES * 2.0 == 36.0
+    # Not merely None -- the key must be absent, so an evaluator that predates the
+    # field sees a byte-identical body.
+    assert "timeout_per_case" not in body
+    assert evaluator.deadlines == [36.0 + 2]
+
+
+@pytest.mark.anyio
+async def test_per_case_sends_the_field_and_upstreams_backstop_wall():
+    # Must stay in step with the sibling 0-shot task, which computes the same wall.
+    evaluator = await _post_one(timeout=30.0, timeout_per_case=6.0)
+
+    (body,) = evaluator.bodies
+    assert body["timeout_per_case"] == 6.0
+    # check_correctness joins its worker at (timeout + 1) * n + 5.
+    assert body["timeout"] == (6.0 + 1.0) * _N_CASES + 5.0 == 26.0
+    assert evaluator.deadlines == [26.0 + 2]

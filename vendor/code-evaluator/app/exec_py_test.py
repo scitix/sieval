@@ -183,7 +183,13 @@ def _subprocess_target(
             code, inputs, expect_outputs, fn_name, memory_limit, timeout_per_case
         )
         q.put((ok, msg, n_passed))
-    except Exception as e:
+    # `CaseTimeout` is spelled out because it is a BaseException, so `Exception`
+    # alone would not cover it. `_unsafe_execute` catches it around each case, but
+    # cancelling the timer cannot un-deliver a signal the kernel already sent: an
+    # alarm that fires just as a case finishes is raised at the next bytecode
+    # check, which can land past that `except`. Uncaught here it would leave the
+    # queue empty and strand the parent until the whole-suite wall.
+    except (Exception, CaseTimeout) as e:
         q.put((False, f"failed: [{type(e).__name__}] {e}", 0))
 
 
@@ -205,7 +211,8 @@ def _unsafe_execute(
 
     When *timeout_per_case* is set, each case additionally gets its own wall-clock
     budget and a case that exceeds it fails like any other -- with the count intact,
-    unlike the whole-suite wall, which kills the worker and loses it.
+    unlike the whole-suite wall, which kills the worker and loses it. Compilation is
+    budgeted on the same clock, which is where upstream also arms it.
     """
     if len(inputs) != len(expect_outputs):
         return False, "failed: number of inputs and outputs mismatch", 0
@@ -215,23 +222,28 @@ def _unsafe_execute(
     limit_bytes = int(memory_limit * 1024 * 1024) if memory_limit else None
     reliability_guard(maximum_memory_bytes=limit_bytes)
 
-    if fn_name is not None:
-        code_to_compile = import_string + "\n\n" + code
-        compiled_sol = compile_code(code_to_compile)
-        if compiled_sol is None:
-            return False, "failed: compile error", 0
-        fn = get_function(compiled_sol, fn_name)
-        if fn is None:
-            return False, "failed: no function defined", 0
-    else:
-        code_to_compile = clean_if_name(code)
-        code_to_compile = make_function(code_to_compile)
-        compiled_sol = compile_code(code_to_compile)
-        if compiled_sol is None:
-            return False, "failed: compile error", 0
-        fn = get_function(compiled_sol, "wrapped_function")
-        if fn is None:
-            return False, "failed: no function defined", 0
+    # Compilation runs on the per-case clock, as upstream does -- see `compile_code`.
+    # A timeout here passed zero cases, which is what the count already reports.
+    try:
+        if fn_name is not None:
+            code_to_compile = import_string + "\n\n" + code
+            compiled_sol = compile_code(code_to_compile, timeout_per_case)
+            if compiled_sol is None:
+                return False, "failed: compile error", 0
+            fn = get_function(compiled_sol, fn_name)
+            if fn is None:
+                return False, "failed: no function defined", 0
+        else:
+            code_to_compile = clean_if_name(code)
+            code_to_compile = make_function(code_to_compile)
+            compiled_sol = compile_code(code_to_compile, timeout_per_case)
+            if compiled_sol is None:
+                return False, "failed: compile error", 0
+            fn = get_function(compiled_sol, "wrapped_function")
+            if fn is None:
+                return False, "failed: no function defined", 0
+    except CaseTimeout:
+        return False, f"failed: compile timeout: {timeout_per_case}s", 0
 
     n_passed = 0
     for single_input, single_output in zip(inputs, expect_outputs):
@@ -440,8 +452,14 @@ def get_function(compiled_sol, fn_name: str):
         return
 
 
-def compile_code(code: str):
-    try:
+def compile_code(code: str, timeout_per_case: float | None = None):
+    # Upstream budgets this `exec` on the same per-case clock as a test case, arming
+    # `signal.alarm(timeout)` on entry and cancelling it in a `finally`. It matters on
+    # the call-based path, where `exec` runs the submission's module-level statements
+    # and a hang there is inside no case. The vendored copy had kept that `finally`
+    # with a bare `pass` after the alarm was dropped; the guard below both restores
+    # the budget and subsumes the cancelling the `finally` used to do.
+    with _case_time_limit(timeout_per_case):
         tmp_sol = ModuleType("tmp_sol", "")
         exec(code, tmp_sol.__dict__)
         if "class Solution" in code:
@@ -455,8 +473,6 @@ def compile_code(code: str):
             compiled_sol = tmp_sol
 
         assert compiled_sol is not None
-    finally:
-        pass
 
     return compiled_sol
 

@@ -45,7 +45,13 @@ from sieval.datasets import LiveCodeBenchDatasetSample
         url="https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
         notes=(
             "Prompt templates and extract_code vendored from "
-            "lcb_runner/{prompts,utils}."
+            "lcb_runner/{prompts,utils}. Grading budget diverges by default: "
+            "upstream gives each test case its own 6s "
+            "(codegen_metrics(..., timeout=6), re-armed per case in "
+            "grade_call_based / grade_stdio), while this task budgets the whole "
+            "suite unless `timeout_per_case` is set. Measured -2.22 pp on a "
+            "90-rollout lane at 6s/case; set `timeout_per_case=6.0` to grade by "
+            "the upstream rule."
         ),
     ),
 )
@@ -144,7 +150,10 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         # The whole-suite wall. Without `timeout_per_case` this is the only limit, and
         # all N cases share one sequential budget, so it scales by N. With it, the wall
         # becomes the backstop and takes official LiveCodeBench's own shape --
-        # `check_correctness` joins its worker at `(timeout + 1) * n + 5`.
+        # `check_correctness` joins its worker at `(timeout + 1) * n + 5`. The
+        # evaluator derives the same number when a client sends only
+        # `timeout_per_case`; we need it here regardless, for the HTTP deadline below.
+        # Same computation as the sibling k-shot base task -- keep the two in step.
         if self._timeout_per_case is not None:
             suite_timeout = (self._timeout_per_case + 1.0) * len(inputs) + 5.0
         else:
