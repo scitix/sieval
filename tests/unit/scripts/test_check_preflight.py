@@ -2136,18 +2136,37 @@ class TestCheckTaskShotKnobs:
 class TestCheckRecordKeyAccess:
     """The guard on `[]` access to a rollout key that is absent on disk."""
 
-    #: Minimal stand-in for sieval/core/tasks/records.py. Only the NotRequired
-    #: annotations on the two rollout TypedDicts are read.
+    #: Minimal stand-in for sieval/core/tasks/records.py. The NotRequired
+    #: annotations on all five record TypedDicts are read, not just the rollout
+    #: ones -- a key on PromptRecord/JudgementRecord must be classified too.
     RECORDS = (
+        "class PromptRecord(TypedDict):\n"
+        "    prompt: JSONValue\n"
+        "    reference: NotRequired[JSONValue | None]\n"
+        "    extra: NotRequired[dict]\n"
+        "\n"
         "class RolloutPrediction(TypedDict):\n"
         "    index: int\n"
         "    prediction: NotRequired[JSONValue | None]\n"
         "    extracted: bool\n"
         "    extra: NotRequired[dict]\n"
         "\n"
+        "class PredictionRecord(TypedDict):\n"
+        "    rollouts: list[RolloutPrediction]\n"
+        "    extra: NotRequired[dict]\n"
+        "\n"
         "class RolloutJudgement(TypedDict):\n"
         "    index: int\n"
         "    correct: bool\n"
+        "    score: NotRequired[float]\n"
+        "    metrics: NotRequired[dict[str, bool | float]]\n"
+        "    extra: NotRequired[dict]\n"
+        "\n"
+        "class JudgementRecord(TypedDict):\n"
+        "    reference: NotRequired[JSONValue | None]\n"
+        "    rollouts: list[RolloutJudgement]\n"
+        "    n_rollouts: int\n"
+        "    n_correct: int\n"
         "    score: NotRequired[float]\n"
         "    metrics: NotRequired[dict[str, bool | float]]\n"
         "    extra: NotRequired[dict]\n"
@@ -2208,6 +2227,47 @@ class TestCheckRecordKeyAccess:
         )
         assert r.status == "FAIL"
 
+    def test_enumerate_tuple_target_flagged(self, tmp_path: Path):
+        # The natural way to write feedback for a task that needs the rollout
+        # index. Needs both a tuple target and unwrapping the enumerate() call.
+        r = self._run(
+            tmp_path,
+            "async def feedback(self, post, ctx):\n"
+            "    for i, rollout in enumerate(post['rollouts']):\n"
+            "        print(i, rollout['prediction'])\n",
+        )
+        assert r.status == "FAIL"
+        assert len(r.details) == 1
+
+    def test_zip_tuple_target_flagged(self, tmp_path: Path):
+        # The rollout list is the second zip argument, so every argument has to
+        # be considered, not just the first.
+        r = self._run(
+            tmp_path,
+            "async def feedback(self, post, ctx):\n"
+            "    for gold, rollout in zip(golds, post['rollouts']):\n"
+            "        print(gold, rollout['prediction'])\n",
+        )
+        assert r.status == "FAIL"
+
+    def test_passthrough_builtin_flagged(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "async def feedback(self, post, ctx):\n"
+            "    for rollout in reversed(post['rollouts']):\n"
+            "        print(rollout['prediction'])\n",
+        )
+        assert r.status == "FAIL"
+
+    def test_walrus_flagged(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "async def feedback(self, post, ctx):\n"
+            "    for rollout in (rs := post['rollouts']):\n"
+            "        print(rollout['prediction'], len(rs))\n",
+        )
+        assert r.status == "FAIL"
+
     # --- what must NOT be flagged ------------------------------------------
 
     def test_get_access_passes(self, tmp_path: Path):
@@ -2250,6 +2310,28 @@ class TestCheckRecordKeyAccess:
         )
         assert r.status == "PASS"
 
+    def test_reference_not_flagged(self, tmp_path: Path):
+        # `reference` is classified but ungated: it is not read off a rollout, so
+        # gating it would be inert. ruler's `list(fb["reference"])` stays valid.
+        r = self._run(
+            tmp_path,
+            "async def report(self, finals, fails):\n"
+            "    fb = finals[0].feedback_result\n"
+            "    return list(fb['reference'])\n",
+        )
+        assert r.status == "PASS"
+
+    def test_known_limit_aliased_rollout_not_flagged(self, tmp_path: Path):
+        # Documented limit: following a rollout through a local name needs
+        # dataflow. Pinned so the gap is a decision, not a surprise.
+        r = self._run(
+            tmp_path,
+            "async def feedback(self, post, ctx):\n"
+            "    rollout = post['rollouts'][0]\n"
+            "    return rollout['prediction']\n",
+        )
+        assert r.status == "PASS"
+
     # --- the self-maintaining half -----------------------------------------
 
     def test_unclassified_notrequired_key_fails(self, tmp_path: Path):
@@ -2267,16 +2349,29 @@ class TestCheckRecordKeyAccess:
         assert r.status == "FAIL"
         assert "confidence" in r.details[0]
 
-    def test_every_declared_key_is_classified(self):
-        """The real records.py declares no key the check cannot place."""
-        results = PreflightRunner().check_record_key_access()
-        assert [r.status for r in results] == ["PASS"]
+    def test_unclassified_key_on_non_rollout_record_fails(self, tmp_path: Path):
+        # The classification spans all five record classes, not just the rollout
+        # ones: a key added to JudgementRecord must be decided on too. This is the
+        # hole `reference` sat in -- outside the gate without anyone saying so.
+        r = self._run(
+            tmp_path,
+            "x = 1\n",
+            records=self.RECORDS.replace(
+                "    n_rollouts: int\n",
+                "    n_rollouts: int\n    rubric: NotRequired[str]\n",
+            ),
+        )
+        assert r.status == "FAIL"
+        assert "rubric" in r.details[0]
 
-    def test_missing_records_module_skips(self, tmp_path: Path):
+    def test_missing_records_module_fails(self, tmp_path: Path):
+        # FAIL, not SKIP: records.py is the check's subject. A rename must not
+        # silently narrow the gate to nothing while preflight stays green.
         (tmp_path / "sieval" / "tasks").mkdir(parents=True)
         results = PreflightRunner(project_root=tmp_path).check_record_key_access()
         assert len(results) == 1
-        assert results[0].status == "SKIP"
+        assert results[0].status == "FAIL"
+        assert "not readable" in results[0].message
 
     def test_unparsable_module_reported_not_raised(self, tmp_path: Path):
         r = self._run(tmp_path, "def broken(:\n")
@@ -2284,6 +2379,10 @@ class TestCheckRecordKeyAccess:
         assert "could not parse" in r.details[0]
 
     def test_real_modules_pass(self):
-        """Integration: no shipped module indexes a gated rollout key."""
+        """Integration: the shipped tree satisfies both halves of the check.
+
+        No module indexes a gated rollout key, and the real ``records.py``
+        declares no ``NotRequired`` key the check cannot place.
+        """
         results = PreflightRunner().check_record_key_access()
         assert [r.status for r in results] == ["PASS"]
