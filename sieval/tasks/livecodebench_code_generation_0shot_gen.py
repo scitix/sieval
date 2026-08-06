@@ -45,13 +45,12 @@ from sieval.datasets import LiveCodeBenchDatasetSample
         url="https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
         notes=(
             "Prompt templates and extract_code vendored from "
-            "lcb_runner/{prompts,utils}. Grading budget diverges by default: "
-            "upstream gives each test case its own 6s "
-            "(codegen_metrics(..., timeout=6), re-armed per case in "
-            "grade_call_based / grade_stdio), while this task budgets the whole "
-            "suite unless `timeout_per_case` is set. Measured -2.22 pp on a "
-            "90-rollout lane at 6s/case; set `timeout_per_case=6.0` to grade by "
-            "the upstream rule."
+            "lcb_runner/{prompts,utils}. Grading budget matches upstream: each "
+            "test case gets its own 6s (codegen_metrics(..., timeout=6), re-armed "
+            "per case in grade_call_based / grade_stdio), tunable via "
+            "`timeout_per_case`. Runs recorded before that rule landed used one "
+            "whole-suite wall instead and are NOT comparable -- measured -2.22 pp "
+            "on a 90-rollout lane."
         ),
     ),
 )
@@ -74,23 +73,25 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         k: int = 1,
         n: int = 1,
         max_concurrency: int = 4,
-        timeout: float = 6.0,
-        timeout_per_case: float | None = None,
+        timeout_per_case: float = 6.0,
     ):
-        """*timeout* is the base of the whole-suite wall (see :meth:`feedback`).
+        """*timeout_per_case* is the budget **each test case** gets, which is how
+        official LiveCodeBench grades: ``lcb_runner`` re-arms ``signal.alarm(timeout)``
+        inside the case loop of ``grade_call_based`` / ``grade_stdio``, and
+        ``codegen_metrics(..., timeout=6)`` supplies the ``6.0`` default kept here.
 
-        *timeout_per_case* opts into official LiveCodeBench's rule instead, where each
-        test case gets its own budget: ``lcb_runner`` re-arms ``signal.alarm(timeout)``
-        inside the case loop of ``grade_call_based`` / ``grade_stdio``, with
-        ``codegen_metrics(..., timeout=6)`` supplying the default. Set it to ``6.0`` to
-        grade the way the benchmark defines. Left ``None``, behaviour is unchanged, so
-        existing result dirs stay comparable.
+        The whole-suite wall is deliberately not configurable. It is derived as
+        upstream's own backstop and exists only to catch what a per-case clock cannot
+        (see :meth:`feedback`), so there is one number to reason about, not two.
+
+        This replaces an earlier ``timeout``, which was the base of a whole-suite
+        wall -- a different rule, and not the one LiveCodeBench defines. Passing it
+        now raises ``TypeError`` rather than silently grading by the old rule.
         """
         super().__init__(dataset=dataset, model=model, name=name)
         self._cot = cot
         self._k = k
         self._n = n
-        self._timeout = timeout
         self._timeout_per_case = timeout_per_case
         self._code_eval_api = os.getenv(
             "SIEVAL_CODE_EVAL_API", "http://localhost:11451/evaluations"
@@ -147,17 +148,16 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         outputs = [t["output"] for t in cases]
         fn_name = metadata.get("func_name", None)
 
-        # The whole-suite wall. Without `timeout_per_case` this is the only limit, and
-        # all N cases share one sequential budget, so it scales by N. With it, the wall
-        # becomes the backstop and takes official LiveCodeBench's own shape --
-        # `check_correctness` joins its worker at `(timeout + 1) * n + 5`. The
-        # evaluator derives the same number when a client sends only
-        # `timeout_per_case`; we need it here regardless, for the HTTP deadline below.
+        # Each case is budgeted individually, so the whole-suite wall is only a
+        # backstop, for what a per-case clock cannot catch (a worker wedged outside
+        # the interpreter). It takes official LiveCodeBench's own shape --
+        # `check_correctness` joins its worker at `(timeout + 1) * n + 5`.
+        #
+        # Sent explicitly rather than left to the evaluator's identical derivation,
+        # so the HTTP deadline below is provably outside the wall the server will
+        # enforce instead of relying on two implementations agreeing.
         # Same computation as the sibling k-shot base task -- keep the two in step.
-        if self._timeout_per_case is not None:
-            suite_timeout = (self._timeout_per_case + 1.0) * len(inputs) + 5.0
-        else:
-            suite_timeout = self._timeout + len(inputs) * 2.0
+        suite_timeout = (self._timeout_per_case + 1.0) * len(inputs) + 5.0
 
         rollouts: list[RolloutJudgement] = []
         for rollout in post["rollouts"]:
@@ -179,11 +179,7 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
                             "fn_name": fn_name,
                         },
                         "timeout": suite_timeout,
-                        **(
-                            {"timeout_per_case": self._timeout_per_case}
-                            if self._timeout_per_case is not None
-                            else {}
-                        ),
+                        "timeout_per_case": self._timeout_per_case,
                     },
                     # allow more time than the suite wall, for network latency
                     timeout=suite_timeout + 2,

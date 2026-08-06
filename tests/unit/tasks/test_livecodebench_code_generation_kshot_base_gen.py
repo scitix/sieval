@@ -313,26 +313,28 @@ async def _post_one(**kwargs) -> _CapturingEvaluator:
 
 
 @pytest.mark.anyio
-async def test_without_per_case_the_request_is_what_it_always_was():
-    # The compatibility promise: absent `timeout_per_case` nothing about the
-    # request changes, so no existing result dir moves.
-    evaluator = await _post_one(timeout=30.0)
-
-    (body,) = evaluator.bodies
-    assert body["timeout"] == 30.0 + _N_CASES * 2.0 == 36.0
-    # Not merely None -- the key must be absent, so an evaluator that predates the
-    # field sees a byte-identical body.
-    assert "timeout_per_case" not in body
-    assert evaluator.deadlines == [36.0 + 2]
-
-
-@pytest.mark.anyio
-async def test_per_case_sends_the_field_and_upstreams_backstop_wall():
-    # Must stay in step with the sibling 0-shot task, which computes the same wall.
-    evaluator = await _post_one(timeout=30.0, timeout_per_case=6.0)
+async def test_the_default_is_upstreams_six_seconds_per_case():
+    # codegen_metrics(..., timeout=6). Pinned so a drift from upstream is loud.
+    evaluator = await _post_one()
 
     (body,) = evaluator.bodies
     assert body["timeout_per_case"] == 6.0
+
+
+@pytest.mark.anyio
+async def test_the_suite_wall_is_derived_as_upstreams_backstop():
+    # Must stay in step with the sibling 0-shot task, which computes the same wall.
+    evaluator = await _post_one(timeout_per_case=6.0)
+
+    (body,) = evaluator.bodies
     # check_correctness joins its worker at (timeout + 1) * n + 5.
     assert body["timeout"] == (6.0 + 1.0) * _N_CASES + 5.0 == 26.0
     assert evaluator.deadlines == [26.0 + 2]
+
+
+@pytest.mark.anyio
+async def test_the_old_whole_suite_knob_is_gone_not_silently_reinterpreted():
+    # `timeout` used to be the base of a whole-suite wall; a stale config setting it
+    # must fail at construction rather than be regraded under the new rule.
+    with pytest.raises(TypeError):
+        await _post_one(timeout=30.0)

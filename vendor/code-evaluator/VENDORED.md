@@ -63,6 +63,11 @@
   Absent the field, behaviour is byte-for-byte what it was. Not yet upstream —
   land in `scitix/code-evaluator` and re-vendor.
 
+  The field stays optional on the API, so an unpatched client is unaffected — but
+  sieval's own LiveCodeBench tasks now always send it, at upstream's 6 s. It is
+  the rule the benchmark defines, so it is the rule they grade by; there is no
+  whole-suite knob left to pick instead.
+
   **Expect this to LOWER a score, not raise one.** Per-case is a different rule,
   not a looser one, and it bites in both directions: a submission whose cases are
   uniformly slowish now passes where the shared wall failed it, but one that is
@@ -70,8 +75,9 @@
   through. Re-grading a recorded 90-rollout lane at 6 s/case: **88 unchanged, 2
   pass → fail, 0 fail → pass, net −2.22 pp.** Both regressions had completed
   *every* case inside the old wall (s11 42/42 in 114 s, s57 44/44 in 118 s) and
-  own at least one case over 6 s. Adopt it because it is the rule LiveCodeBench
-  defines, and re-baseline; do not adopt it expecting the timeouts back.
+  own at least one case over 6 s. LiveCodeBench numbers recorded before this
+  landed are not comparable with numbers recorded after it — re-baseline rather
+  than expecting the timeouts back.
 - `README.md` — translated from Chinese to English, so the vendored docs match
   the rest of the repo. Content is otherwise unchanged apart from the case-count
   section above.

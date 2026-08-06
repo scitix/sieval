@@ -4,9 +4,9 @@ Focused on the execution budget the task puts on the wire. Official LiveCodeBenc
 budgets each test case, not the suite: ``lcb_runner`` re-arms ``signal.alarm(timeout)``
 inside the case loop of ``grade_call_based`` / ``grade_stdio``, with
 ``codegen_metrics(..., timeout=6)`` supplying the default, and ``check_correctness``
-joining the worker at ``(timeout + 1) * n + 5`` as a backstop. ``timeout_per_case``
-opts into that rule; absent it the task must send exactly what it always sent, which
-is what keeps existing result dirs comparable.
+joining the worker at ``(timeout + 1) * n + 5`` as a backstop. That is the rule the
+task grades by, and the only one -- ``timeout_per_case`` is the single knob, and the
+whole-suite wall follows from it.
 
 The evaluator half of the same feature is covered by
 ``tests/unit/vendor/code_evaluator/test_exec_py_test.py``.
@@ -133,39 +133,52 @@ async def _post_one(**kwargs) -> _CapturingEvaluator:
 # Execution budget on the wire
 # --------------------------------------------------------------------------- #
 @pytest.mark.anyio
-async def test_without_per_case_the_request_is_what_it_always_was():
-    # The compatibility promise: absent `timeout_per_case` nothing about the
-    # request changes, so no existing result dir moves.
-    evaluator = await _post_one(timeout=30.0)
-
-    (body,) = evaluator.bodies
-    assert body["timeout"] == 30.0 + _N_CASES * 2.0 == 36.0
-    # Not merely None -- the key must be absent, so an evaluator that predates the
-    # field sees a byte-identical body.
-    assert "timeout_per_case" not in body
-    assert evaluator.deadlines == [36.0 + 2]
-
-
-@pytest.mark.anyio
-async def test_per_case_sends_the_field_and_upstreams_backstop_wall():
-    evaluator = await _post_one(timeout=30.0, timeout_per_case=6.0)
+async def test_the_default_is_upstreams_six_seconds_per_case():
+    # codegen_metrics(..., timeout=6). Pinned so a drift from upstream is loud.
+    evaluator = await _post_one()
 
     (body,) = evaluator.bodies
     assert body["timeout_per_case"] == 6.0
-    # check_correctness joins its worker at (timeout + 1) * n + 5; `timeout`, the
-    # whole-suite base, is deliberately NOT part of it any more.
+
+
+@pytest.mark.anyio
+async def test_the_suite_wall_is_derived_as_upstreams_backstop():
+    evaluator = await _post_one(timeout_per_case=6.0)
+
+    (body,) = evaluator.bodies
+    # check_correctness joins its worker at (timeout + 1) * n + 5. There is no
+    # separate whole-suite knob feeding this -- one number, per case, and the wall
+    # follows from it.
     assert body["timeout"] == (6.0 + 1.0) * _N_CASES + 5.0 == 26.0
     assert evaluator.deadlines == [26.0 + 2]
+
+
+@pytest.mark.anyio
+async def test_per_case_budget_is_configurable_and_moves_the_wall_with_it():
+    evaluator = await _post_one(timeout_per_case=30.0)
+
+    (body,) = evaluator.bodies
+    assert body["timeout_per_case"] == 30.0
+    assert body["timeout"] == (30.0 + 1.0) * _N_CASES + 5.0 == 98.0
 
 
 @pytest.mark.anyio
 async def test_http_deadline_stays_outside_the_suite_wall():
     # The client must not give up before the wall it just asked the server to
     # enforce, or a timing-out submission surfaces as a transport error instead.
-    for kwargs in ({}, {"timeout_per_case": 6.0}):
-        evaluator = await _post_one(timeout=30.0, **kwargs)
+    for budget in (6.0, 30.0):
+        evaluator = await _post_one(timeout_per_case=budget)
         (body,) = evaluator.bodies
         assert evaluator.deadlines[0] > body["timeout"]
+
+
+@pytest.mark.anyio
+async def test_the_old_whole_suite_knob_is_gone_not_silently_reinterpreted():
+    # `timeout` used to be the base of a whole-suite wall. Reusing the name for a
+    # per-case budget would silently regrade any config still setting it, so it was
+    # removed instead: a stale config now fails at construction.
+    with pytest.raises(TypeError):
+        await _post_one(timeout=30.0)
 
 
 # --------------------------------------------------------------------------- #
