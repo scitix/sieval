@@ -56,7 +56,8 @@
   6 s budget — so splitting the guard was judged not worth threading through
   `_unsafe_execute_fn_call` / `_unsafe_execute_stdio`.
 
-  **Expect this to LOWER a score.** Re-grading a recorded 90-rollout lane at
+  **Expect this to LOWER a score.** Replaying 90 recorded rollouts — the stored
+  submissions from an earlier run, re-graded without re-generating them — at
   6 s/case: **88 unchanged, 2 pass → fail, 0 fail → pass, net −2.22 pp.** Both
   regressions had finished *every* case inside the old wall (s11 42/42 in 114 s,
   s57 44/44 in 118 s) and own a case over 6 s. Numbers from before this landed

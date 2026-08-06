@@ -48,7 +48,7 @@ from sieval.datasets import LiveCodeBenchDatasetSample
             "lcb_runner/{prompts,utils}. Grading budget matches upstream: 6s per "
             "test case (codegen_metrics(..., timeout=6)), via `timeout_per_case`. "
             "Runs from before that rule landed used one whole-suite wall and are "
-            "NOT comparable -- measured -2.22 pp on a 90-rollout lane."
+            "NOT comparable -- re-grading 90 recorded rollouts cost 2.22 pp."
         ),
     ),
 )
