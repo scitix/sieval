@@ -69,6 +69,10 @@ from .gpqa_diamond import (
     GPQADiamondDataset,
     GPQADiamondDatasetSample,
 )
+from .gsm1k import (
+    GSM1KDataset,
+    GSM1KDatasetSample,
+)
 from .gsm8k import (
     GSM8KDataset,
     GSM8KDatasetSample,
@@ -225,6 +229,8 @@ __all__ = [
     "DROPDatasetSample",
     "GPQADiamondDataset",
     "GPQADiamondDatasetSample",
+    "GSM1KDataset",
+    "GSM1KDatasetSample",
     "GSM8KDataset",
     "GSM8KDatasetSample",
     "GSMPlusDataset",

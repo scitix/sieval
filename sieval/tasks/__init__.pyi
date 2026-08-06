@@ -58,6 +58,12 @@ from .drop_kshot_gen import (
 from .gpqa_diamond_0shot_gen import (
     GPQADiamondZeroShotGenTask,
 )
+from .gsm1k_0shot_gen import (
+    GSM1KZeroShotGenTask,
+)
+from .gsm1k_kshot_base_gen import (
+    GSM1KFewShotBaseGenTask,
+)
 from .gsm8k_0shot_gen import (
     GSM8KZeroShotGenTask,
 )
@@ -193,6 +199,8 @@ __all__ = [
     "ComplexConstraintsZeroShotGenTask",
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
+    "GSM1KFewShotBaseGenTask",
+    "GSM1KZeroShotGenTask",
     "GSM8KFewShotBaseGenTask",
     "GSM8KZeroShotGenTask",
     "GSMPlusZeroShotGenTask",

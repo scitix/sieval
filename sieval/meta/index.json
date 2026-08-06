@@ -381,6 +381,28 @@
       }
     },
     {
+      "name": "gsm1k",
+      "display_name": "GSM1k",
+      "description": "Grade School Math 1k - 1205 human-written GSM8K mirror problems.",
+      "source": [
+        "hf:ScaleAI/gsm1k@bc09569d09a614b9b530edc7f076fb214ac10493"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "ElementaryMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
       "name": "gsm8k",
       "display_name": "GSM8K",
       "description": "Grade School Math 8K - grade-school arithmetic word problems.",
@@ -1464,6 +1486,49 @@
       },
       "status": "stable",
       "reference_kind": "value"
+    },
+    {
+      "name": "gsm1k_0shot_gen",
+      "display_name": "GSM1k (0-shot, generative)",
+      "description": "GSM1k 0-shot chat-model eval, prompt-paired with gsm8k_0shot_gen.",
+      "dataset": "gsm1k",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "deepseek-ai/DeepSeek-Math",
+        "url": "https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
+        "notes": "Protocol borrowed from the sibling `gsm8k_0shot_gen`, so the two form a prompt-exact pair: user turn = question + \"Please reason step by step, and put your final answer within \\boxed{}.\", chat template applied by the serving backend; extract_answer(exhaust=False) (= extract_last_single_answer) and is_correct/math_equal (= eval_last_single_answer) are vendored byte-for-byte in sieval.community.deepseek_math. Gold is GSM1k's `answer` verbatim (already the bare final answer, so no '####' split). Scale AI published GSM1k at 5-shot raw completion only (see gsm1k_kshot_base_gen) — no published number matches this 0-shot chat protocol, so read the GSM8K - GSM1k diff, not the absolute score. Repeats: 1 rollout, greedy at temperature 0."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "gsm1k_kshot_base_gen",
+      "display_name": "GSM1k (few-shot, base generative)",
+      "description": "GSM1k few-shot eval on Scale AI's published lm-eval-harness protocol.",
+      "dataset": "gsm1k",
+      "eval_mode": "gen",
+      "n_shot": 5,
+      "tags": [
+        "english",
+        "math-word-problems",
+        "open-ended",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "scaleapi/gsm1k_eval",
+        "url": "https://github.com/scaleapi/gsm1k_eval/blob/39294c6f31855aca8255b6174b22fc3a6311be0b/lm_eval/tasks/gsm1k/gsm1k_scale.yaml",
+        "notes": "Scale's own lm-evaluation-harness fork task `gsm1k`: prompt \"Question: {q}\\nAnswer:\" with 5 GSM8k-train exemplars, one `flexible-extract` filter (last numeric match) and `exact_match` with regexes_to_ignore [',', '$', '(?s).*#### ', '.$'] + ignore_case. Upstream resamples the 5 exemplars per question and raises max generation length from 256 to 1000 tokens; this task fixes one exemplar set (documented in the module docstring) and leaves max_tokens to the model layer, where 1000 matches upstream. Repeats: upstream runs `repeats: 1`, greedy at temperature 0 — match it with n=1 and temperature=0. GSM1k is a paired benchmark: read it as a diff against GSM8K on the same extraction rule, not as a standalone score."
+      },
+      "status": "experimental"
     },
     {
       "name": "gsm8k_0shot_gen",
