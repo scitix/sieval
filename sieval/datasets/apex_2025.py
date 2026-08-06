@@ -1,11 +1,14 @@
 """MathArena Apex 2025 dataset loader (MathArena source).
 
 Apex is not a competition: MathArena curates it from 2025 contest problems that
-frontier models still fail, so its `source` column carries each problem's
-originating contest. Three of the twelve are byte-identical to `smt_2025`
-problems 8, 42 and 43 (upstream's own "the dataset now contains the remaining
-samples from SMT 2025" note) — evaluating both datasets in one run scores those
-problems twice.
+frontier models still fail — of ~100 competitions reviewed, only these 12 went
+unsolved by Grok 4, GPT-5 (High), Gemini 2.5 Pro and GLM 4.5 across 4 attempts
+each. So its `source` column carries each problem's originating contest, and the
+set is deliberately biased against those four models. Three of the twelve are
+byte-identical to `smt_2025` problems 8, 42 and 43 (upstream's own "the dataset
+now contains the remaining samples from SMT 2025" note) — evaluating both
+datasets in one run scores those problems twice. Note `apex_shortlist_2025` is a
+sibling tier, not a superset: it shares no problem with this set.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """

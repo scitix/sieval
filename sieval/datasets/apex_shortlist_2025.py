@@ -1,12 +1,16 @@
 """MathArena Apex Shortlist 2025 dataset loader (MathArena source).
 
-The shortlist Apex was drawn from: 47 problems from 2025 contests on which
-state-of-the-art models score around 50%, so its `source` column carries each
-problem's originating contest. Three overlap sibling loaders byte-for-byte —
-`brumo_2025` problem 30 and `hmmt_feb_2025` problems 19 and 20 — so evaluating
-those datasets in one run scores them twice. Upstream keeps the HF repo year-less
-(`MathArena/apex-shortlist`); the `_2025` here follows the competition config
-name (`apex/shortlist_2025.yaml`) and the dataset card's `pretty_name`.
+Despite the name this is NOT the pool `apex_2025` was selected from — the two are
+disjoint, sharing no problem and not one entry in their `source` columns. They are
+two difficulty tiers off the same 2025-contest sweep: Apex kept only what no
+frontier model could solve in 4 tries, while the shortlist is the companion band
+where state-of-the-art models score around 50%. Both carry `source` naming each
+problem's originating contest. Three of these 47 overlap sibling loaders
+byte-for-byte — `brumo_2025` problem 30 and `hmmt_feb_2025` problems 19 and 20 —
+so evaluating those datasets in one run scores them twice. Upstream keeps the HF
+repo year-less (`MathArena/apex-shortlist`); the `_2025` here follows the
+competition config name (`apex/shortlist_2025.yaml`) and the dataset card's
+`pretty_name`.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
