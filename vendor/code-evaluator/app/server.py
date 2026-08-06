@@ -97,6 +97,10 @@ class Sample(BaseModel):
     test: LiveCodeBenchTest | None = None
     lang: str = "python"
     timeout: float | None = None
+    # Per-case budget, applied on top of `timeout`, which stays a whole-suite wall.
+    # Opt-in: absent keeps the previous behaviour exactly. Official LiveCodeBench
+    # budgets per case rather than per suite -- see `exec_py_test.execute_test`.
+    timeout_per_case: float | None = None
     memory_limit: int = 1024  # MB
     kwargs: dict[str, Any] | None = None
 
@@ -169,8 +173,15 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
             # No test cases: the program itself is the single all-or-nothing case.
             n_cases, n_passed = 1, int(ok)
         else:
-            default_timeout = 6.0 + len(sample.test.inputs) * 2.0
-            timeout = sample.timeout if sample.timeout is not None else default_timeout
+            n_inputs = len(sample.test.inputs)
+            if sample.timeout is not None:
+                timeout = sample.timeout
+            elif sample.timeout_per_case is not None:
+                # Official LiveCodeBench's own backstop around a per-case budget:
+                # `check_correctness` joins the worker at (timeout + 1) * n + 5.
+                timeout = (sample.timeout_per_case + 1.0) * n_inputs + 5.0
+            else:
+                timeout = 6.0 + n_inputs * 2.0
             ok, msg, stats, n_passed = await exec_py_test(
                 code=sample.code,
                 inputs=sample.test.inputs,
@@ -178,6 +189,7 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
                 fn_name=sample.test.fn_name,
                 timeout=timeout,
                 memory_limit=sample.memory_limit,
+                timeout_per_case=sample.timeout_per_case,
             )
             n_cases = len(sample.test.inputs)
 

@@ -25,6 +25,28 @@
   nothing. `None` means unknown (subprocess killed on timeout), not zero.
   Consumers tolerate both fields being absent, so an unpatched evaluator still
   works. Not yet upstream — land in `scitix/code-evaluator` and re-vendor.
+- `app/exec_py_test.py`, `app/server.py` — **opt-in per-case timeout**
+  (`timeout_per_case`). `timeout` stays a wall for the whole suite; when
+  `timeout_per_case` is also given, each case additionally gets its own
+  wall-clock budget, armed with `signal.setitimer` around the case body and
+  cancelled after it. This is the rule official LiveCodeBench grades by —
+  `lcb_runner/evaluation/testing_util.py` re-arms `signal.alarm(timeout)` inside
+  the case loop of `grade_call_based` / `grade_stdio`, with
+  `codegen_metrics(..., timeout=6)` supplying the default — and it is *not* the
+  same as matching the total: a 43-case suite where one case takes 200 s and the
+  rest take 1 s fits inside a 258 s whole-suite wall and fails a 6 s-per-case
+  one. When only `timeout_per_case` is supplied, the server derives the suite
+  wall as upstream's own backstop, `(timeout_per_case + 1) * n + 5` — the shape
+  `check_correctness` joins its worker at.
+
+  Second effect, and the reason it also improves reporting: a **per-case**
+  timeout returns normally, so `n_passed` survives it. Only the whole-suite wall
+  loses the count, because it kills the worker — measured on a 90-rollout
+  LiveCodeBench run, every rollout missing `n_passed` was a timeout and no
+  timeout carried one. `CaseTimeout` derives from `BaseException` so that neither
+  the submitted code's `except Exception` nor this module's own swallows it.
+  Absent the field, behaviour is byte-for-byte what it was. Not yet upstream —
+  land in `scitix/code-evaluator` and re-vendor.
 - `README.md` — translated from Chinese to English, so the vendored docs match
   the rest of the repo. Content is otherwise unchanged apart from the case-count
   section above.

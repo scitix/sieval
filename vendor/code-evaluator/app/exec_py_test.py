@@ -1,8 +1,10 @@
 import ast
 import asyncio
+import contextlib
 import json
 import multiprocessing
 import os
+import signal
 import sys
 from decimal import Decimal
 from io import StringIO
@@ -27,6 +29,41 @@ _FLOAT_TOL = (
     if os.environ.get("CODE_EVAL_FLOAT_TOL")
     else None
 )
+
+
+class CaseTimeout(BaseException):
+    """Raised in the worker when one test case exceeds its own time budget.
+
+    Derived from ``BaseException``, not ``Exception``, so that neither the submitted
+    code nor this module's own ``except Exception`` handlers swallow it and report a
+    timeout as an ordinary wrong answer. (A submission with a bare ``except:`` can
+    still catch it -- upstream LiveCodeBench has the same hole -- but the whole-suite
+    wall in :func:`execute_test` remains as the backstop.)
+    """
+
+
+@contextlib.contextmanager
+def _case_time_limit(seconds: float | None):
+    """Arm a wall-clock alarm for a single test case; no-op when *seconds* is None.
+
+    ``setitimer`` rather than ``alarm`` because a per-case budget is naturally
+    fractional. Main thread of the worker process only, which is where
+    :func:`_unsafe_execute` runs.
+    """
+    if not seconds or seconds <= 0:
+        yield
+        return
+
+    def _fire(signum, frame):
+        raise CaseTimeout
+
+    previous = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _decimals_match(out_decimals: list, exp_decimals: list) -> bool:
@@ -72,19 +109,29 @@ async def execute_test(
     fn_name: str | None = None,
     timeout: float = 3.0,
     memory_limit: int | None = None,
+    timeout_per_case: float | None = None,
 ) -> tuple[bool, str, ResourceStats, int | None]:
     """Run the submitted code against the test cases in a spawned subprocess.
 
-    The fourth element is how many test cases passed, or ``None`` when the count
-    is genuinely unknown -- the subprocess was killed on timeout, or died without
-    putting a result on the queue, so no count was ever produced. ``None`` is
-    "unknown", never "zero".
+    ``timeout`` is a wall for the whole suite. ``timeout_per_case``, when given, also
+    budgets each case individually, which is how official LiveCodeBench grades
+    (``lcb_runner/evaluation/testing_util.py`` re-arms ``signal.alarm(timeout)`` on
+    every iteration of the case loop in ``grade_call_based`` / ``grade_stdio``, with
+    ``timeout=6`` defaulted by ``codegen_metrics``). Matching only the *total* is not
+    the same rule: a suite of 43 cases where one takes 200 s and the rest take 1 s
+    fits inside a 258 s whole-suite wall and fails a 6 s-per-case one.
+
+    The fourth element is how many test cases passed, or ``None`` when the count is
+    genuinely unknown -- the subprocess was killed on the whole-suite wall, or died
+    without putting a result on the queue. ``None`` is "unknown", never "zero". A
+    *per-case* timeout does not lose the count: the worker returns normally with the
+    cases it had already passed.
     """
     ctx = multiprocessing.get_context("spawn")
     q = ctx.SimpleQueue()
     p = ctx.Process(
         target=_subprocess_target,
-        args=(q, code, inputs, expect_outputs, fn_name, memory_limit),
+        args=(q, code, inputs, expect_outputs, fn_name, memory_limit, timeout_per_case),
     )
     p.start()
 
@@ -129,10 +176,11 @@ def _subprocess_target(
     expect_outputs: list[str],
     fn_name: str | None,
     memory_limit: int | None,
+    timeout_per_case: float | None = None,
 ):
     try:
         ok, msg, n_passed = _unsafe_execute(
-            code, inputs, expect_outputs, fn_name, memory_limit
+            code, inputs, expect_outputs, fn_name, memory_limit, timeout_per_case
         )
         q.put((ok, msg, n_passed))
     except Exception as e:
@@ -145,6 +193,7 @@ def _unsafe_execute(
     expect_outputs: list[str],
     fn_name: str | None,
     memory_limit: int | None,
+    timeout_per_case: float | None = None,
 ) -> tuple[bool, str, int]:
     """Run the submitted code against every test case, stopping at the first failure.
 
@@ -153,6 +202,10 @@ def _unsafe_execute(
     real count without the cost of running the remaining cases. Anything that
     fails before the loop (arity mismatch, compile error, missing function)
     passed zero cases.
+
+    When *timeout_per_case* is set, each case additionally gets its own wall-clock
+    budget and a case that exceeds it fails like any other -- with the count intact,
+    unlike the whole-suite wall, which kills the worker and loses it.
     """
     if len(inputs) != len(expect_outputs):
         return False, "failed: number of inputs and outputs mismatch", 0
@@ -182,10 +235,14 @@ def _unsafe_execute(
 
     n_passed = 0
     for single_input, single_output in zip(inputs, expect_outputs):
-        if fn_name is not None:
-            ok, msg = _unsafe_execute_fn_call(fn, single_input, single_output)
-        else:
-            ok, msg = _unsafe_execute_stdio(fn, single_input, single_output)
+        try:
+            with _case_time_limit(timeout_per_case):
+                if fn_name is not None:
+                    ok, msg = _unsafe_execute_fn_call(fn, single_input, single_output)
+                else:
+                    ok, msg = _unsafe_execute_stdio(fn, single_input, single_output)
+        except CaseTimeout:
+            return False, f"failed: case timeout: {timeout_per_case}s", n_passed
         if not ok:
             return False, f"failed: {msg}", n_passed
         n_passed += 1

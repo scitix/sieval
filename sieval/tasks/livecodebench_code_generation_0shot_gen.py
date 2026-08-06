@@ -69,12 +69,23 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         n: int = 1,
         max_concurrency: int = 4,
         timeout: float = 6.0,
+        timeout_per_case: float | None = None,
     ):
+        """*timeout* is the base of the whole-suite wall (see :meth:`feedback`).
+
+        *timeout_per_case* opts into official LiveCodeBench's rule instead, where each
+        test case gets its own budget: ``lcb_runner`` re-arms ``signal.alarm(timeout)``
+        inside the case loop of ``grade_call_based`` / ``grade_stdio``, with
+        ``codegen_metrics(..., timeout=6)`` supplying the default. Set it to ``6.0`` to
+        grade the way the benchmark defines. Left ``None``, behaviour is unchanged, so
+        existing result dirs stay comparable.
+        """
         super().__init__(dataset=dataset, model=model, name=name)
         self._cot = cot
         self._k = k
         self._n = n
         self._timeout = timeout
+        self._timeout_per_case = timeout_per_case
         self._code_eval_api = os.getenv(
             "SIEVAL_CODE_EVAL_API", "http://localhost:11451/evaluations"
         )
@@ -130,6 +141,15 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         outputs = [t["output"] for t in cases]
         fn_name = metadata.get("func_name", None)
 
+        # The whole-suite wall. Without `timeout_per_case` this is the only limit, and
+        # all N cases share one sequential budget, so it scales by N. With it, the wall
+        # becomes the backstop and takes official LiveCodeBench's own shape --
+        # `check_correctness` joins its worker at `(timeout + 1) * n + 5`.
+        if self._timeout_per_case is not None:
+            suite_timeout = (self._timeout_per_case + 1.0) * len(inputs) + 5.0
+        else:
+            suite_timeout = self._timeout + len(inputs) * 2.0
+
         rollouts: list[RolloutJudgement] = []
         for rollout in post["rollouts"]:
             idx = rollout["index"]
@@ -149,13 +169,15 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
                             "outputs": outputs,
                             "fn_name": fn_name,
                         },
-                        # All N cases share one sequential budget, so scale by N.
-                        # Approximates official per-case 6s within a single run.
-                        "timeout": self._timeout + len(inputs) * 2.0,
+                        "timeout": suite_timeout,
+                        **(
+                            {"timeout_per_case": self._timeout_per_case}
+                            if self._timeout_per_case is not None
+                            else {}
+                        ),
                     },
-                    # allow more time for more test cases
-                    # with extra buffer for network latency
-                    timeout=self._timeout + len(inputs) * 2 + 2,
+                    # allow more time than the suite wall, for network latency
+                    timeout=suite_timeout + 2,
                 )
                 resp.raise_for_status()
                 res = resp.json()
