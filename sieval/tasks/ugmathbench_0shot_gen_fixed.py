@@ -45,10 +45,7 @@ sample, which scores them 0 exactly as the reference harness does.
 
 **Why ``status="experimental"``, and what promotes it.** Not because the grader
 diverges from upstream — that is what the ``_fixed`` name and the measured
-figure above are for. It is experimental for the ordinary reason ``arc_*`` and
-``ifbench`` are: no served model has ever run this task. Everything known about
-the grader comes from replaying stored references, which says nothing about how
-extraction behaves on real model prose.
+figure above are for.
 
 "Matches upstream" cannot be the promotion gate here — upstream's grader is
 GPL-3.0, so that bar is unreachable by construction and would pin this task to
@@ -65,7 +62,76 @@ right, which a single live run produces:
 
 (4) is the one that matters, and it is stronger evidence for "a correct grader"
 than a reproduction table would have been, because it tests that claim directly
-instead of by proxy. Record the numbers here when promoting.
+instead of by proxy.
+
+**The live run has now happened, and (4) failed. The task stays experimental
+for a real reason instead of a procedural one.** Qwen3-30B-A3B, thinking on,
+temperature 0.6 / top_p 0.95 / top_k 20, one rollout per version; the full
+15,183 versions over all 5,061 problems; sglang tp2xdp4 on 8xH100; 75.7M output
+tokens. Headline: **EAcc 34.46, AAcc 40.87, CAcc 48.07, Delta 6.42**, with
+``fails`` 0 and ``incomplete_problems`` 0.
+
+* (1) **passes** — ``extracted=False`` on 32/15,183 (0.21%); truncation 29
+  (0.19%) at ``max_tokens`` 32768, so the box-or-nothing extraction rule is not
+  what is costing this model points.
+* (2) **passes** — 0 failed samples.
+* (3) **fired, as a diagnostic should.** 34.46 on undergraduate coursework math
+  is not a plausible neighbour of the *same* model's 72.5 on AIME 2026 and 51.5
+  on HMMT Feb 2026 (same harness, same sampling). Undergraduate coursework is
+  not harder than AIME. The criterion caught a measurement problem, and (4)
+  names it.
+* (4) **fails** — of 1,634 wrong slots drawn from the bucket where extraction
+  and the reference agree on slot count, **570 (34.9%) are this grader's error,
+  not the model's**, confirmed by substituting the same random values into both
+  sides' free symbols. They sit entirely in the free-form types (EX 59.6%,
+  NV 25.4%, OE 7/10) and at exactly **0%** in every structured type — OL, UOL,
+  MCS, MCM, TF, INT, EQ.
+
+**Root cause of (4), and it is in this module's**
+:func:`~sieval.community.ugmathbench.math_equal`.
+``math_verify.parse`` routes every string through a LaTeX reader, so the
+dataset's plain-sympy *gold* is mangled: ``7*sin(pi*x/5)+1`` parses as
+``7*s*i*n*(i*p*x)/5 + 1``, reading ``sin`` as s·i·n and ``pi`` as p·i. A gold
+containing any function name can then only match by exact string equality.
+
+That is also why the 99.81% replay figure above could not see it: replaying a
+reference as its own answer short-circuits on ``_squash(pred) == _squash(gold)``
+and never reaches the symbolic path. **A self-replay canary validates the fast
+path only** — it is silent about precisely the comparison logic it appears to
+certify. Fix ``math_equal`` (parse the gold as sympy source, or add a
+numeric-substitution fallback) and re-run before promoting.
+
+**Reading the headline number.** EAcc 34.46 is protocol-faithful and comparable
+to the paper's ruler, but it is not this model's mathematical ability. Two
+measurement effects separate the two, both quantified off the same stored
+responses with no extra inference:
+
+* **The format tax, ~+33.5 EAcc, and it is the benchmark's, not ours.** Only the
+  last ``\\boxed{}`` is kept and a slot-count mismatch scores every slot wrong.
+  Qwen3 ends multi-part problems with ``\\boxed{a}, \\boxed{b}, \\boxed{c}``
+  rather than ``\\boxed{a, b, c}`` and loses answers it got right. Single-answer
+  rows mismatch 0.30% of the time; multi-answer rows 86.31% — same model, same
+  subjects, so this is formatting, not difficulty. Upstream's ``judge_rule.py``
+  has the identical rule, so this task reproduces it deliberately.
+* **The (4) defect, ~+6.5 EAcc.**
+
+Repairing both, exactly rather than by extrapolation: 34.46 -> 67.97 -> 74.43,
+which does sit next to AIME 72.5 as criterion (3) expects.
+
+**Swapping in upstream's verifier does not fix this.** Run as a local instrument
+over the same 15,183 responses (GPL-3.0 restricts distribution, not use),
+upstream scores EAcc 35.55 against this task's 34.46 — **+1.09**, with 94.95%
+per-sample agreement and disagreement in *both* directions (upstream wins 486,
+this grader wins 280, the latter being the unwinnable-slot repair documented
+above). It carries the same format tax and recovers little of the equivalence
+gap, while being unshippable here on licence.
+
+**Caveat on Delta.** At temperature 0.6 the reasoning gap is mostly the sampler.
+A control on Geometry with ``n=3`` gives Delta 8.70 across the three randomized
+*versions* but 7.25 across three *rollouts of one fixed version* — only 1.45 pp
+is version sensitivity, 83% is sampling noise. Upstream generates greedily,
+where this does not arise; read Delta only against the sampling settings that
+produced it.
 
 Budget note: a full run is 15,183 inferences, and grading a wrong answer costs
 roughly 25 ms of synchronous sympy per sample (a correct one is effectively
@@ -161,10 +227,13 @@ DEFAULT_PRECISION = 1e-3
         ),
     ),
     # Not because the grader diverges from upstream — that is what the `_fixed`
-    # name and the measured figure above carry. Experimental for the ordinary
-    # reason `arc_*` and `ifbench` are: no served model has run this task yet, so
-    # every claim here rests on replayed references. The module docstring states
-    # what a live run has to show to promote this to "stable".
+    # name and the measured figure above carry. The live run has happened
+    # (Qwen3-30B-A3B, all 15,183 versions, fails 0) and it FAILED promotion
+    # criterion 4: 34.9% of wrong slots in the slot-aligned bucket are this
+    # grader's error, concentrated in EX/NV and zero in every structured type,
+    # because `math_verify.parse` LaTeX-parses the dataset's plain-sympy gold
+    # (`sin` -> s*i*n). Stays experimental until `math_equal` is fixed and
+    # re-measured; the module docstring records the full numbers.
     status="experimental",
 )
 class UGMathBenchZeroShotGenFixedTask(
