@@ -31,6 +31,9 @@ mode (`..._clp_gen.py` has two readings and is rejected).
 - A different **measurement regime** is not a variant — it gets its own
   descriptive mode name, the way `arc_challenge_kshot_clp` and `_ppl` already
   differ. `_fixed` must not become a label for "changed something".
+- `_fixed` is the only variant defined **so far**, not the only one allowed. The
+  segment is generic; a new variant earns a name when a second real case arrives
+  (a prompt-format variant is the likely next). Do not coin one speculatively.
 - Fixing **problem text or reference answers** is a `datasets/` concern, not
   this one: add a dataset variant that applies an explicit patch table (`id`,
   field, old → new, why) over the same pinned upstream revision. Never fork a

@@ -42,6 +42,13 @@ obligations: every divergence enumerated in `reference_impl.notes`, and its
 score impact **quantified**. An unmeasured fork does not get to call itself a
 fix — measuring it is what keeps `_fixed` from decaying into "changed something".
 
+That table is the current **vocabulary**, not the whole mechanism: the segment is
+generic, and a new variant earns a row when a second real case arrives — a
+prompt-format variant of one benchmark is the likely next one. Do not coin a
+variant name speculatively; do not read the one-row table as "`_fixed` is the
+only legal variant" either. What every variant must be is a different reading of
+the **same** measurement, so the two are worth comparing side by side.
+
 Two things that are *not* variants:
 
 - A different **measurement regime**. `arc_challenge_kshot_clp` vs `_ppl` are
