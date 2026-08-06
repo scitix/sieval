@@ -261,3 +261,97 @@ def test_a_reference_with_no_answers_is_never_correct():
     # list must not read as a correct sample.
     assert judge_answers(["1"], [], []) == []
     assert judge_answers(None, [], []) == []
+
+
+# --- gold parsed as sympy source, not as LaTeX -----------------------------
+# UGMathBench stores gold answers in a plain-sympy dialect while models answer
+# in LaTeX. `math_verify.parse` reads everything as LaTeX, where an unescaped
+# `sin` is the product s*i*n and `pi` is p*i, so `7*sin(pi*x/5)+1` came back as
+# `7*s*i*n*(i*p*x)/5 + 1` and could only ever match by exact string equality.
+# The first live run measured the cost at 34.9% of wrong slots in the
+# slot-aligned bucket, entirely in the free-form answer types.
+
+
+@pytest.mark.parametrize(
+    ("pred", "gold"),
+    [
+        # the canonical shape: LaTeX function names against sympy ones
+        ("7 \\sin(\\frac{\\pi}{5}x) + 1", "7*sin(pi*x/5)+1"),
+        ("a^x \\ln a", "ln(a)*a^x"),
+        ("7z - \\cos z + 11", "7*z-cos(z)+11"),
+        # equal only after simplification, which no normalizer reaches
+        ("3\\cos(2\\sqrt{35}t)", "3*cos(sqrt(980/7)*t)"),
+        ("\\dfrac{8}{5 - 4\\cos(q^2)}", "2*8/(2 + 1*8 - 1*8*cos(q^2))"),
+        ("-162\\pi", "-pi*2*9^2"),
+        # the dataset's square brackets are grouping, and x^0 is a literal 1
+        ("e^{-8x} \\cos(9x)", "x^0*e^(-8*x)*cos(9*x)"),
+        ("\\frac{18.02}{0.013} ( e^{0.013t} - 1 )", "1386.15*[e^{0.013*t}-1]"),
+        # implicit multiplication on the prediction side
+        ("5 - 5c", "-5*c+5*1"),
+        # same line, different parameterization
+        ("\\frac{23 - x}{54}", "0.333333+(-0.0185185)*(x-5)"),
+        # overflows to infinity at a large probe -- the ladder has to stay
+        # small enough to leave usable points, or a correct exponential answer
+        # is marked wrong for want of evidence
+        ("4 e^{\\cosh(4x)} \\sinh(4x)", "2.71828182845905^{cosh(4*x)} * sinh(4*x) * 4"),
+    ],
+)
+def test_latex_prediction_matches_plain_sympy_gold(pred, gold):
+    assert math_equal(pred, gold)
+
+
+@pytest.mark.parametrize(
+    ("pred", "gold"),
+    [
+        # rounded more coarsely than the benchmark's own relative tolerance:
+        # still wrong, and substitution must not rescue it
+        ("2.3", "2.2892"),
+        ("1.97", "1.97423402868049"),
+        ("0.16", "0.160257708151404"),
+        ("25/37", "0.657894736842105"),
+        # plainly different
+        ("x^2", "x^3"),
+        ("\\sin(x)", "cos(x)"),
+        ("10\\sqrt{2}", "5*[1+sqrt(2)]"),
+        ("162", "54"),
+        # same shape, different variable: not the same answer
+        ("x+1", "t+1"),
+        # exponentials that differ only in rate: the small probe ladder must
+        # still separate them
+        ("e^{x}", "e^{2x}"),
+        ("\\frac{1}{x}", "\\frac{1}{x^2}"),
+    ],
+)
+def test_substitution_does_not_credit_wrong_answers(pred, gold):
+    assert not math_equal(pred, gold)
+
+
+def test_substitution_reaches_list_elements_too():
+    # OL/UOL compare element-wise through `math_equal`, so the fix has to show
+    # up there as well -- that is where the multi-answer rows live.
+    assert judge_answer("(0, 2\\cos x \\sin x)", "(0,2*cos(x)*sin(x))", "OL")
+    assert judge_answer(
+        "(e^{-8x} \\cos(9x), x e^{-8x})",
+        "(x^1*e^(-8*x), x^0*e^(-8*x)*cos(9*x))",
+        "UOL",
+    )
+
+
+def test_structured_types_are_untouched_by_the_substitution_pass():
+    # TF / MCS / MCM / OE never route through `math_equal`, and the live-run
+    # audit found 0 false negatives in all of them. Pin that they stay strict.
+    assert not judge_answer("True", "False", "TF")
+    assert not judge_answer("B", "A", "MCS", ["A", "B", "C"])
+    assert not judge_answer("AB", "AC", "MCM", ["A", "B", "C"])
+    assert not judge_answer("prime", "composite", "OE")
+
+
+def test_substitution_verdicts_are_deterministic():
+    # The probe ladder is fixed rather than a seeded RNG on purpose: a grader
+    # has to return the same verdict for the same pair regardless of how many
+    # comparisons ran before it, and in every process.
+    pairs = [("7 \\sin(\\frac{\\pi}{5}x) + 1", "7*sin(pi*x/5)+1"), ("x^2", "x^3")]
+    first = [math_equal(p, g) for p, g in pairs]
+    for _ in range(3):
+        assert [math_equal(p, g) for p, g in pairs] == first
+    assert first == [True, False]

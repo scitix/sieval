@@ -27,12 +27,29 @@ distribution, so the comparison rules here were written against the answer-type
 semantics the prompt itself states, on top of ``math-verify`` (already a sieval
 dependency). Known behavioural deltas versus the reference judge:
 
-* Symbolic equivalence comes from ``math-verify``'s parse/verify rather than
-  upstream's bespoke ``parse_latex`` + ``simplify`` + random-value-substitution
-  chain. It is stricter on some near-equal expressions (no numeric sampling of
-  free symbols) and more permissive on LaTeX shapes upstream's normalizer never
-  learned. Numeric slots keep upstream's *relative* tolerance as a second
-  chance, since ``math-verify`` compares floats at fixed decimal rounding.
+* Symbolic equivalence starts from ``math-verify``'s parse/verify rather than
+  upstream's bespoke ``parse_latex`` + ``simplify`` chain, and is more permissive
+  on LaTeX shapes upstream's normalizer never learned. Numeric slots keep
+  upstream's *relative* tolerance as a second chance, since ``math-verify``
+  compares floats at fixed decimal rounding. Where it used to be *stricter* than
+  upstream — no numeric sampling of free symbols — it no longer is:
+  :func:`_same_function` closes that gap with a fixed ladder of substitution
+  probes, arrived at independently rather than ported. See the parser note
+  below for why that pass is load-bearing here.
+* **The dataset's gold is sympy source, not LaTeX, and only one parser reads it.**
+  ``math_verify.parse`` runs a LaTeX reader over both sides, and in LaTeX an
+  unescaped ``sin`` is the product s*i*n while ``pi`` is p*i — so the stored
+  ``7*sin(pi*x/5)+1`` becomes ``7*s*i*n*(i*p*x)/5 + 1`` and cannot match the
+  model's ``7\\sin(\\frac{\\pi}{5}x)+1`` by any route except exact string
+  equality. :func:`_parse_sympy_source` supplies the second reading.
+  The first live run measured what this had been costing: **705 of 15,183
+  samples** were graded wrong purely for it (EAcc 34.46 -> 38.43, AAcc 40.87 ->
+  45.52, with **zero** verdicts moving right-to-wrong). Note the shape of the
+  bug — it was invisible to the reference-replay measurement below, because
+  replaying a gold as its own answer short-circuits on
+  ``_squash(pred) == _squash(gold)`` and never reaches the symbolic path at
+  all. **A self-replay canary exercises the fast path and is silent about the
+  comparison logic it appears to certify.**
 * No answer-type *inference*: upstream's ``is_equal`` retries every judgement
   method until one accepts, which lets a slot be graded by a rule its declared
   type did not ask for. Here the declared type decides, except inside OL/UOL
@@ -105,6 +122,7 @@ on real model prose — see the promotion criteria on the task class.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+import math
 import re
 
 #: The 16 subject configs of the HF dataset, in the order the benchmark lists
@@ -404,10 +422,213 @@ def _to_float(text: str) -> float | None:
 def _parse_math(text: str) -> list:
     from math_verify import parse
 
-    # `$`-wrapping steers the LaTeX extractor at a bare answer string; the Expr
-    # config behind it still catches the plain-sympy shapes the dataset stores
-    # ("x^3+2*x^2+6", "(-infinity,5)").
+    # `$`-wrapping steers the LaTeX extractor at a bare answer string. It does
+    # NOT reliably read the plain-sympy shapes the dataset stores: `parse` runs
+    # a LaTeX reader, where an unescaped `sin` is the product s*i*n and `pi` is
+    # p*i, so the stored gold `7*sin(pi*x/5)+1` comes back as
+    # `7*s*i*n*(i*p*x)/5 + 1`. Bare algebra ("x^3+2*x^2+6") survives; anything
+    # naming a function does not. `_parse_sympy_source` is the other half.
     return parse(f"${text}$")
+
+
+#: Deterministic probe points for :func:`_same_function`. A *fixed* ladder, not
+#: a seeded RNG: a grader has to return the same verdict for the same pair on
+#: every run and in every process, and a module-level RNG would make the answer
+#: depend on how many comparisons preceded it. Off the integers and away from
+#: 0 and 1, so the usual poles and fixed points are avoided, yet deliberately
+#: kept small: an answer like ``e^{\cosh(4x)}`` overflows to infinity above
+#: x ~ 2, and every overflowed probe is discarded, so a ladder reaching into
+#: the twenties would leave too few usable points and mark a correct
+#: exponential answer wrong.
+_PROBES: tuple[float, ...] = (0.41, 0.73, 1.19, 1.57, 2.11)
+_MIN_CLEAN_PROBES = 3
+_MAX_FREE_SYMBOLS = 4
+
+
+def _parse_sympy_source(text: str) -> list:
+    """Parse UGMathBench's plain-sympy answer syntax as sympy source.
+
+    The dataset stores gold answers as sympy-ish source rather than LaTeX
+    (``x^3+2*x^2+6``, ``pi/6*(4^3-2^3)``, ``9*[sin(x)]^8*cos(x)``), while a
+    model answers in LaTeX. Reading the gold with the LaTeX parser mangles it
+    (see :func:`_parse_math`), so it is read here with sympy's own parser too
+    and both readings are offered to the comparison.
+
+    Square brackets are grouping in this dialect, ``^`` is exponentiation, and
+    ``e`` / ``pi`` / ``ln`` / ``infinity`` are the constants and functions they
+    look like — none of which sympy assumes by default.
+    """
+    import sympy
+    from sympy.parsing.sympy_parser import parse_expr
+
+    cleaned = (
+        text.replace("[", "(")
+        .replace("]", ")")
+        .replace("{", "(")
+        .replace("}", ")")
+        .replace("^", "**")
+        .replace("infinity", "oo")
+        .replace("$", "")
+        .strip()
+    )
+    if not cleaned:
+        return []
+    local = {
+        "e": sympy.E,
+        "E": sympy.E,
+        "pi": sympy.pi,
+        "ln": sympy.log,
+        "log": sympy.log,
+        "oo": sympy.oo,
+        "I": sympy.I,
+    }
+    out: list = []
+    for transformations in _source_transformations():
+        try:
+            out.append(
+                parse_expr(cleaned, local_dict=local, transformations=transformations)
+            )
+        except Exception:
+            # Not sympy source under this reading (LaTeX, prose, an unbalanced
+            # bracket) — the other readings are expected to handle those.
+            continue
+    return out
+
+
+def _source_transformations():
+    """Strict sympy source first, then the same with implicit multiplication.
+
+    Both readings are kept rather than just the permissive one. Implicit
+    multiplication is what a *prediction* sometimes needs (``5 - 5c`` is
+    ``5 - 5*c``, and neither the LaTeX parser nor strict sympy reads it that
+    way), but it also happily reinterprets a single symbol as a product, so it
+    is offered as an extra candidate and never as a replacement.
+    """
+    from sympy.parsing.sympy_parser import (
+        implicit_multiplication_application,
+        standard_transformations,
+    )
+
+    return (
+        standard_transformations,
+        standard_transformations + (implicit_multiplication_application,),
+    )
+
+
+def _sympy_candidates(text: str) -> list:
+    """Every plausible sympy reading of *text*, from both parsers.
+
+    Both are tried on both sides on purpose: the gold is usually sympy source
+    and the prediction usually LaTeX, but neither is guaranteed, and committing
+    a parser to a side would manufacture disagreements of its own.
+    """
+    import sympy
+
+    out: list = []
+    try:
+        candidates = _parse_math(text) + _parse_sympy_source(text)
+    except Exception:
+        return out
+    for item in candidates:
+        if isinstance(item, sympy.Basic) and not any(item == seen for seen in out):
+            out.append(item)
+    return out
+
+
+def _same_function(pred_expr, gold_expr, precision: float) -> bool:
+    """Do two expressions denote the same function, by numeric substitution?
+
+    Feeds identical values to identically *named* free symbols and compares the
+    results. This is what catches equivalence that survives no string
+    normalization — ``3\\cos(2\\sqrt{35}t)`` against ``3*cos(sqrt(980/7)*t)``,
+    or ``x^0*e^(-8*x)`` against ``e^{-8x}``.
+
+    Substitution is keyed on symbol *name*, never on the symbol object: the two
+    parsers build ``Symbol('x')`` with different assumptions, so the objects
+    compare unequal and a set union would yield two distinct ``x`` that then
+    receive two different values — making every equivalent pair look unequal.
+
+    Conservative by construction, because the only judgement this can change is
+    wrong-to-right:
+
+    * the two sides must involve the *same* set of symbol names, so an answer
+      in ``x`` never matches one in ``t``;
+    * every probe that evaluates cleanly must agree, and at least
+      ``_MIN_CLEAN_PROBES`` of them must evaluate cleanly, so a pair that only
+      survives at a single lucky point is rejected;
+    * non-finite and complex results are discarded rather than compared.
+    """
+    import sympy
+
+    pred_names = {symbol.name for symbol in pred_expr.free_symbols}
+    gold_names = {symbol.name for symbol in gold_expr.free_symbols}
+    if pred_names != gold_names or len(gold_names) > _MAX_FREE_SYMBOLS:
+        return False
+
+    if not gold_names:
+        try:
+            pred_value, gold_value = (
+                complex(pred_expr.evalf()),
+                complex(gold_expr.evalf()),
+            )
+        except Exception:
+            return False
+        if abs(pred_value.imag) > 1e-9 or abs(gold_value.imag) > 1e-9:
+            return False
+        return _close(pred_value.real, gold_value.real, precision)
+
+    ordered = sorted(gold_names)
+    clean = 0
+    for probe in _PROBES:
+        values = {
+            name: sympy.Float(probe + 0.17 * index)
+            for index, name in enumerate(ordered)
+        }
+        try:
+            pred_value = complex(
+                pred_expr.subs(
+                    {s: values[s.name] for s in pred_expr.free_symbols}
+                ).evalf()
+            )
+            gold_value = complex(
+                gold_expr.subs(
+                    {s: values[s.name] for s in gold_expr.free_symbols}
+                ).evalf()
+            )
+        except Exception:
+            continue
+        parts = (pred_value.real, pred_value.imag, gold_value.real, gold_value.imag)
+        # Reject only NaN and infinity. A magnitude ceiling would be wrong here:
+        # the comparison below is *relative*, and an exponential answer is
+        # legitimately enormous at these probes (e^cosh(4x) is ~1e40 at the
+        # first one), so capping magnitude discards every probe and silently
+        # marks a correct answer wrong.
+        if any(not math.isfinite(part) for part in parts):
+            continue  # undefined at this probe — it says nothing either way
+        clean += 1
+        if abs(pred_value.imag) > 1e-9 or abs(gold_value.imag) > 1e-9:
+            if abs(pred_value - gold_value) > abs(gold_value) * precision * 1.01:
+                return False
+            continue
+        if not _close(pred_value.real, gold_value.real, precision):
+            return False
+    return clean >= _MIN_CLEAN_PROBES
+
+
+def _equivalent_by_substitution(pred: str, gold: str, precision: float) -> bool:
+    """Last-chance equivalence check, over every parse of both sides."""
+    try:
+        pred_exprs = _sympy_candidates(pred)
+        gold_exprs = _sympy_candidates(gold)
+        for pred_expr in pred_exprs:
+            for gold_expr in gold_exprs:
+                if _same_function(pred_expr, gold_expr, precision):
+                    return True
+    except Exception:
+        # Same contract as the rest of the module: an ungradeable answer is a
+        # wrong answer, not a crashed run.
+        return False
+    return False
 
 
 def _numeric_value(parsed: list) -> float | None:
@@ -428,11 +649,26 @@ def _numeric_value(parsed: list) -> float | None:
 def math_equal(pred: str, gold: str, precision: float = 1e-3) -> bool:
     """Compare two mathematical answers.
 
-    Three chances, cheapest first: squashed string equality, plain-float
-    comparison at *precision* (relative, as upstream), then ``math-verify``
-    symbolic equivalence with a final relative-tolerance retry on the parsed
-    numeric values (``math-verify`` compares floats at fixed decimal rounding,
-    which rejects pairs upstream's relative tolerance accepts).
+    Four chances, cheapest first: squashed string equality, plain-float
+    comparison at *precision* (relative, as upstream), ``math-verify`` symbolic
+    equivalence with a relative-tolerance retry on the parsed numeric values
+    (``math-verify`` compares floats at fixed decimal rounding, which rejects
+    pairs upstream's relative tolerance accepts), and finally equivalence by
+    numeric substitution.
+
+    The substitution pass exists because the first three all compare a LaTeX
+    prediction against a gold that ``math-verify`` has read as LaTeX too — and
+    the dataset does not store LaTeX. A gold naming any function comes back
+    mangled (``sin`` as s*i*n, ``pi`` as p*i), so ``7\\sin(\\frac{\\pi}{5}x)+1``
+    could not match the stored ``7*sin(pi*x/5)+1`` by any route but exact string
+    equality. The first live run of this task measured the cost: of 1,634 wrong
+    slots where extraction and reference agreed on slot count, 570 (34.9%) were
+    this function's error rather than the model's, all of them in the free-form
+    types and none in the structured ones.
+
+    Because the new pass runs only after the others have said "not equal", the
+    only verdict it can change is wrong-to-right; it cannot break a comparison
+    that already succeeded.
     """
     if _squash(pred) == _squash(gold):
         return True
@@ -455,9 +691,11 @@ def math_equal(pred: str, gold: str, precision: float = 1e-3) -> bool:
             return _close(pred_value, gold_value, precision)
     except Exception:
         # math-verify raises on pathological input (unbalanced LaTeX, runaway
-        # simplify). An ungradeable answer is a wrong answer, not a crashed run.
-        return False
-    return False
+        # simplify). Fall through rather than return: a crash in one comparison
+        # strategy is not evidence about the answer, and the substitution pass
+        # below carries its own exception contract.
+        pass
+    return _equivalent_by_substitution(pred, gold, precision)
 
 
 def _close(pred: float, gold: float, precision: float) -> bool:

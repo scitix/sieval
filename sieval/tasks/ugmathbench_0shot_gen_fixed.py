@@ -98,8 +98,39 @@ That is also why the 99.81% replay figure above could not see it: replaying a
 reference as its own answer short-circuits on ``_squash(pred) == _squash(gold)``
 and never reaches the symbolic path. **A self-replay canary validates the fast
 path only** — it is silent about precisely the comparison logic it appears to
-certify. Fix ``math_equal`` (parse the gold as sympy source, or add a
-numeric-substitution fallback) and re-run before promoting.
+certify.
+
+**That defect is now fixed.** :mod:`sieval.community.ugmathbench` reads the gold
+with sympy's own parser as well as the LaTeX one, and falls back to equivalence
+by substitution over a fixed probe ladder. Re-grading the same 15,183 stored
+responses with extraction held fixed — so the delta is the grader's alone and
+not a more permissive extractor's:
+
+    EAcc 34.46 -> **38.43**, AAcc 40.87 -> 45.52, CAcc 48.07 -> 53.45;
+    705 samples wrong-to-right, and **0 right-to-wrong**.
+
+The zero matters more than the +3.97: the pass runs only after every other
+strategy has said "not equal", so it is structurally incapable of breaking a
+comparison that already worked, and the run confirms it empirically. For
+reference, upstream's own verifier scores 35.55 on these same responses, so the
+repaired grader is no longer the lenient or the strict one — it is above both
+its previous self and the reference implementation.
+
+**What still blocks "stable", and it is a maintainer's call, not a measurement.**
+Two things:
+
+1. Criterion (3) is still unmet on the raw number — 38.43 against AIME 72.5 —
+   and the whole remaining gap is the format tax below, which is the
+   *benchmark's* rule, faithfully reproduced. Whether a protocol-faithful score
+   that a formatting convention dominates counts as "a plausible band" is a
+   judgement about what this task is for, not something another run settles.
+2. Criterion (4) can no longer be measured the way it was. The audit that found
+   the defect used numeric substitution; the grader now uses numeric
+   substitution. Auditing it with the same method would be measuring a method
+   against itself. A residual audit needs an independent instrument — a manual
+   sample, or upstream's judge — and a sampled eyeball of what remains wrong is
+   dominated by genuine model errors, with a thin tail of prediction-side
+   parse failures (a ``y = `` prefix on an ``EX`` answer, a trailing ``dx``).
 
 **Reading the headline number.** EAcc 34.46 is protocol-faithful and comparable
 to the paper's ruler, but it is not this model's mathematical ability. Two
@@ -228,12 +259,15 @@ DEFAULT_PRECISION = 1e-3
     ),
     # Not because the grader diverges from upstream — that is what the `_fixed`
     # name and the measured figure above carry. The live run has happened
-    # (Qwen3-30B-A3B, all 15,183 versions, fails 0) and it FAILED promotion
-    # criterion 4: 34.9% of wrong slots in the slot-aligned bucket are this
-    # grader's error, concentrated in EX/NV and zero in every structured type,
-    # because `math_verify.parse` LaTeX-parses the dataset's plain-sympy gold
-    # (`sin` -> s*i*n). Stays experimental until `math_equal` is fixed and
-    # re-measured; the module docstring records the full numbers.
+    # (Qwen3-30B-A3B, all 15,183 versions, fails 0); it failed promotion
+    # criterion 4, and the defect it found — `math_verify.parse` LaTeX-parsing
+    # the dataset's plain-sympy gold, `sin` -> s*i*n — is now FIXED, worth
+    # EAcc 34.46 -> 38.43 with 0 regressions.
+    # Still experimental, for two reasons a further run cannot settle: (3) is
+    # unmet on the raw number because the benchmark's own last-box rule
+    # dominates it, and (4) now needs an audit instrument independent of the
+    # substitution the grader itself adopted. Both are maintainer calls; the
+    # module docstring lays them out.
     status="experimental",
 )
 class UGMathBenchZeroShotGenFixedTask(
