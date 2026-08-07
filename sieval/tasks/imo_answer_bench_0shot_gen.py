@@ -42,6 +42,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import IMOAnswerBenchDatasetSample
 
 # IMO-Bench AnswerBench is an agentic harness whose only instruction is
@@ -184,7 +185,11 @@ class IMOAnswerBenchZeroShotGenTask(
                 # Verbatim upstream grader (math_verify); symmetric $-wrapping like
                 # the HMMT sibling so full expressions parse, gold first. math_verify
                 # handles commutativity / factoring / set-equality — no bespoke logic.
-                correct = verify_math_answer(f"${gold}$", f"${pred}$")
+                # In a worker process, like every other math-verify grader: its
+                # timeouts are signal-based and it raises off the main thread.
+                correct = await run_cpu_bound(
+                    verify_math_answer, f"${gold}$", f"${pred}$", timeout=GRADE_TIMEOUT
+                )
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
                 correct = False
