@@ -5,6 +5,10 @@ from .aa_lcr import (
     AALCRDataset,
     AALCRDatasetSample,
 )
+from .advanced_if import (
+    AdvancedIFDataset,
+    AdvancedIFDatasetSample,
+)
 from .aime_2024 import (
     AIME2024Dataset,
     AIME2024DatasetSample,
@@ -179,6 +183,8 @@ __all__ = [
     "ARCChallengeDatasetSample",
     "ARCEasyDataset",
     "ARCEasyDatasetSample",
+    "AdvancedIFDataset",
+    "AdvancedIFDatasetSample",
     "Apex2025Dataset",
     "Apex2025DatasetSample",
     "ApexShortlist2025Dataset",

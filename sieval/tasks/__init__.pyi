@@ -4,6 +4,9 @@
 from .aa_lcr_0shot_gen import (
     AALCRZeroShotGenTask,
 )
+from .advanced_if_0shot_gen import (
+    AdvancedIFZeroShotGenTask,
+)
 from .aime_2024_0shot_gen import (
     AIME2024ZeroShotGenTask,
 )
@@ -164,6 +167,7 @@ __all__ = [
     "ARCChallengeFewShotPplTask",
     "ARCEasyFewShotClpTask",
     "ARCEasyFewShotPplTask",
+    "AdvancedIFZeroShotGenTask",
     "Apex2025ZeroShotGenTask",
     "ApexShortlist2025ZeroShotGenTask",
     "BRUMO2025ZeroShotGenTask",
