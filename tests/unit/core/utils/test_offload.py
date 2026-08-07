@@ -11,6 +11,19 @@ import pytest
 from sieval.core.utils import offload
 
 
+@pytest.fixture
+def warnings_sink():
+    """Collect loguru WARNINGs — this module logs through loguru, not stdlib."""
+    from loguru import logger
+
+    collected: list[str] = []
+    sink_id = logger.add(collected.append, format="{message}", level="WARNING")
+    try:
+        yield collected
+    finally:
+        logger.remove(sink_id)
+
+
 @pytest.fixture(autouse=True)
 def _reset_pool():
     """Each test starts from a cold module, and leaves no pool behind."""
@@ -106,14 +119,69 @@ async def test_a_broken_pool_degrades_instead_of_failing_the_run(monkeypatch):
     assert offload._pool_failed is True
 
 
+def test_the_pool_is_spawned_never_forked():
+    # The load-bearing choice in this module. The parent is an async process with
+    # live worker threads; forking one can inherit a held lock and deadlock the
+    # child. A mutation to "fork" here would not fail any behavioural test — it
+    # would just occasionally hang a run — so it is asserted directly.
+    pool = offload._get_pool()
+    assert pool is not None
+    assert pool._mp_context.get_start_method() == "spawn"
+
+
+def test_the_pool_is_built_once_and_reused(monkeypatch):
+    # Rebuilding per call would pay spawn + sympy import on every grade, which is
+    # the cost this module exists to avoid.
+    monkeypatch.setenv(offload._ENV_WORKERS, "2")
+    first = offload._get_pool()
+    assert first is not None
+    assert offload._get_pool() is first
+
+
+def test_the_pool_is_sized_by_the_worker_count(monkeypatch):
+    monkeypatch.setenv(offload._ENV_WORKERS, "3")
+    pool = offload._get_pool()
+    assert pool is not None
+    assert pool._max_workers == 3
+
+
+def test_a_disabled_pool_is_not_reconsidered(monkeypatch):
+    # Once disabled it must stay disabled for the run, or every sample pays the
+    # decision again.
+    monkeypatch.setenv(offload._ENV_WORKERS, "0")
+    assert offload._get_pool() is None
+    assert offload._pool_failed is True
+    # Even with the env var flipped back, the run does not silently change mode.
+    monkeypatch.setenv(offload._ENV_WORKERS, "4")
+    assert offload._get_pool() is None
+
+
+def test_a_failed_pool_start_is_not_retried_per_sample(monkeypatch):
+    starts = {"n": 0}
+
+    def _explode(*_args, **_kwargs):
+        starts["n"] += 1
+        raise OSError("no processes here")
+
+    monkeypatch.setattr(offload, "ProcessPoolExecutor", _explode)
+    assert offload._get_pool() is None
+    assert offload._get_pool() is None
+    assert starts["n"] == 1, "a failed start must not be attempted again"
+
+
 def test_worker_count_honours_the_env_var(monkeypatch):
     monkeypatch.setenv(offload._ENV_WORKERS, "3")
     assert offload._worker_count() == 3
 
 
-def test_worker_count_ignores_a_non_integer(monkeypatch):
+def test_worker_count_ignores_a_non_integer(monkeypatch, warnings_sink):
     monkeypatch.setenv(offload._ENV_WORKERS, "many")
     assert offload._worker_count() >= 1
+    # Silently falling back would hide a typo'd override for the whole run, so
+    # the warning has to quote what was actually set.
+    text = " ".join(warnings_sink)
+    assert offload._ENV_WORKERS in text
+    assert "many" in text
 
 
 def test_worker_count_clamps_a_negative_request_to_disabled(monkeypatch):
@@ -173,17 +241,21 @@ def test_shutdown_releases_the_pool_without_waiting(monkeypatch):
     assert offload._pool is None
 
 
-def test_a_broken_pool_is_reported_once_not_per_sample(caplog):
+def test_a_broken_pool_is_reported_once_not_per_sample(warnings_sink):
     # `_mark_unusable` fires on a path taken by every subsequent sample; warning
     # each time would bury the run's real output.
     offload._pool_failed = False
-    with caplog.at_level("WARNING"):
-        offload._mark_unusable(RuntimeError("first"))
-        offload._mark_unusable(RuntimeError("second"))
+    offload._mark_unusable(RuntimeError("first"))
+    offload._mark_unusable(RuntimeError("second"))
 
-    warnings = [r for r in caplog.records if "unusable" in r.getMessage()]
-    assert len(warnings) <= 1
+    warnings = [m for m in warnings_sink if "unusable" in m]
+    assert len(warnings) == 1
     assert offload._pool_failed is True
+    # The message is the operator's only signal that grading silently went back
+    # on the event loop, so it has to name the cause and the consequence.
+    assert "first" in warnings[0], "the warning must name the exception"
+    assert "event loop" in warnings[0]
+    assert "second" not in warnings[0]
 
 
 @pytest.mark.anyio

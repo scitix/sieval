@@ -37,10 +37,16 @@ Hierarchical: global (MultiTaskRunner) → task (TaskRunner) → stage → model
     * mutmut ≥ 3 dropped `--paths-to-mutate`; config lives in `[tool.mutmut]` in `pyproject.toml`.
       Scope a run by editing `paths_to_mutate` / `tests_dir` and restoring with
       `git checkout -- pyproject.toml`. Worktrees are fine — it mutates the cwd's tree.
-    * **A module whose tests spawn processes cannot be fully scored.** In a *spawned* worker
+    * **A module whose tests spawn processes cannot be scored to 100%.** In a *spawned* worker
       `mutmut.__main__` is not yet imported, so the trampoline re-executes it and hits the same
       `set_start_method` error; the worker dies and the code under test takes its own fallback
-      path. Mutants that only differ inside the worker are then unobservable. `core/utils/offload.py`
-      measures 48/93 = 51.6% for this reason — 27 of its 45 survivors are in `_get_pool`, which
-      never gets to run a real worker. Excluding that region it is 48/66 = 72.7%.
+      path. Mutants that only differ *inside* the worker are therefore unobservable — for
+      `core/utils/offload.py` that is the residual 22 (e.g. `pool.submit(func, …)` →
+      `submit(None, …)`, which the inline fallback answers identically).
+    * Do not read a low score as "this code is untestable" before checking. The same module went
+      **38.7% → 76.3%** without a single new behaviour, purely by asserting contracts the tests had
+      left implicit: that the pool is spawned rather than forked, built once and reused, sized by
+      the worker count, not retried after a failed start — and that the degradation warnings name
+      the cause, since a diagnostic that drops it is what makes silent fallback silent. Most of
+      what looks structural is a missing assertion.
 * Disk persistence tests: use fresh `TaskLoader` from disk, not `runner._contexts`
