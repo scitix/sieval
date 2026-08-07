@@ -402,3 +402,94 @@ class TestPbarPaths:
         assert fake_pbar.postfix_calls
         assert fake_pbar.postfix_calls[-1] == ({}, False)
         prog.close()
+
+
+class TestPbarConstruction:
+    """What the bar is *built with*, not just whether it is built.
+
+    The three gating conditions were covered; the arguments were not, and they
+    carry real behaviour — most of all `position`, which is how MultiTaskRunner
+    keeps one runner's bar from overwriting another's.
+    """
+
+    def _kwargs(self, **overrides) -> dict:
+        with (
+            patch("sys.stderr.isatty", return_value=True),
+            patch("sieval.core.tasks.progress.tqdm") as tqdm_cls,
+        ):
+            TaskProgress(
+                total=overrides.pop("total", 42),
+                desc=overrides.pop("desc", "a-task"),
+                **overrides,
+            ).close()
+        return dict(tqdm_cls.call_args.kwargs)
+
+    def test_total_and_desc_are_forwarded(self):
+        kwargs = self._kwargs(total=42, desc="a-task")
+        assert kwargs["total"] == 42
+        assert kwargs["desc"] == "a-task"
+
+    def test_position_is_forwarded(self):
+        # MultiTaskRunner passes progress_position=i; collapsing it to a
+        # constant makes concurrent runners draw over each other.
+        assert self._kwargs(position=3)["position"] == 3
+
+    def test_position_defaults_to_the_first_row(self):
+        assert self._kwargs()["position"] == 0
+
+    def test_the_bar_is_left_on_screen(self):
+        # leave=False would erase the final counts the moment a run finishes,
+        # which is the one moment they are worth reading.
+        assert self._kwargs()["leave"] is True
+
+    def test_the_unit_is_samples(self):
+        assert self._kwargs()["unit"] == "sample"
+
+
+class TestNonTtyLogFallback:
+    """`_enable_log` is exactly "show_progress and not a TTY"."""
+
+    def _enabled(self, *, show_progress: bool, tty: bool) -> bool:
+        with patch("sys.stderr.isatty", return_value=tty):
+            prog = make_progress(show_progress=show_progress)
+        enabled = prog._enable_log
+        prog.close()
+        return enabled
+
+    def test_enabled_only_off_tty(self):
+        assert self._enabled(show_progress=True, tty=False) is True
+
+    def test_disabled_on_a_tty_where_the_bar_takes_over(self):
+        assert self._enabled(show_progress=True, tty=True) is False
+
+    def test_disabled_when_progress_is_off_entirely(self):
+        # Silencing progress must silence both channels, not swap one for the
+        # other — otherwise `show_progress=False` still writes to the log.
+        assert self._enabled(show_progress=False, tty=False) is False
+        assert self._enabled(show_progress=False, tty=True) is False
+
+
+class TestDumpGating:
+    """The dump file exists only when a directory *and* the flag are given."""
+
+    def _has_file(self, *, root_dir, dump_progress: bool) -> bool:
+        prog = make_progress(root_dir=root_dir, dump_progress=dump_progress)
+        has = prog._progress_file is not None
+        prog.close()
+        return has
+
+    def test_both_required(self, tmp_path):
+        assert self._has_file(root_dir=tmp_path, dump_progress=True) is True
+
+    def test_a_directory_alone_does_not_enable_it(self, tmp_path):
+        assert self._has_file(root_dir=tmp_path, dump_progress=False) is False
+
+    def test_the_flag_alone_does_not_enable_it(self):
+        # No directory to write into; enabling here would raise mid-run rather
+        # than at construction.
+        assert self._has_file(root_dir=None, dump_progress=True) is False
+
+    def test_the_file_is_named_progress_json(self, tmp_path):
+        prog = make_progress(root_dir=tmp_path, dump_progress=True)
+        assert prog._progress_file == tmp_path / "progress.json"
+        prog.close()
