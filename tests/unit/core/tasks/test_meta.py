@@ -26,6 +26,7 @@ from sieval.core.tasks.meta import (
     get_task_run_identity,
     iter_task_metas,
     sieval_task,
+    task_meta_from_dict,
     task_meta_to_dict,
 )
 from tests.conftest import ModuleIsolation
@@ -1058,3 +1059,129 @@ def test_get_task_class_surfaces_nested_import_error(tmp_path):
     finally:
         sieval.tasks.__path__.remove(str(tmp_path))
         sys.modules.pop("sieval.tasks.broken_task_for_test", None)
+
+
+class TestTaskMetaRoundTrip:
+    """`task_meta_from_dict` is the reverse of `task_meta_to_dict`.
+
+    It had no field-level tests: 84 mutants survived, meaning any field could be
+    read from the wrong key, dropped, or swapped with its neighbour and nothing
+    would notice. `meta/index.json` is how every consumer outside this process
+    learns what a task is, so a mis-mapped field is not a local error.
+    """
+
+    def _full(self) -> TaskMeta:
+        # Every field distinct, so a swap between any two is visible.
+        return TaskMeta(
+            name="a_name",
+            display_name="A Display Name",
+            description="a description",
+            dataset="a_dataset",
+            eval_mode=EvalMode.GEN,
+            n_shot=7,
+            tags=("t1", "t2"),
+            deps_group="a_group",
+            model_type="chat",
+            reference_impl=ReferenceImpl(
+                source="a_source", url="https://example.com/x", notes="a note"
+            ),
+            status="experimental",
+        )
+
+    def test_round_trip_preserves_every_field(self):
+        meta = self._full()
+        assert task_meta_from_dict(task_meta_to_dict(meta)) == meta
+
+    def test_each_field_lands_in_its_own_slot(self):
+        # Round-trip equality alone cannot catch a *symmetric* swap, so the
+        # fields are also read back individually.
+        got = task_meta_from_dict(task_meta_to_dict(self._full()))
+        assert got.name == "a_name"
+        assert got.display_name == "A Display Name"
+        assert got.description == "a description"
+        assert got.dataset == "a_dataset"
+        assert got.eval_mode is EvalMode.GEN
+        assert got.n_shot == 7
+        assert got.tags == ("t1", "t2")
+        assert got.deps_group == "a_group"
+        assert got.model_type == "chat"
+        assert got.status == "experimental"
+
+    def test_reference_impl_survives_the_round_trip(self):
+        got = task_meta_from_dict(task_meta_to_dict(self._full()))
+        assert got.reference_impl is not None
+        assert got.reference_impl.source == "a_source"
+        assert got.reference_impl.url == "https://example.com/x"
+        assert got.reference_impl.notes == "a note"
+
+    def test_eval_mode_comes_back_as_the_enum(self):
+        # The dict carries its raw value; left as a string, a consumer comparing
+        # against EvalMode would silently never match.
+        got = task_meta_from_dict(task_meta_to_dict(self._full()))
+        assert isinstance(got.eval_mode, EvalMode)
+
+    def test_tags_come_back_as_a_tuple(self):
+        # TaskMeta is frozen+slots; a list would make it unhashable and mutable
+        # through the caller's own reference.
+        got = task_meta_from_dict(task_meta_to_dict(self._full()))
+        assert isinstance(got.tags, tuple)
+
+
+class TestTaskMetaFromDictDefaults:
+    """Absent optional keys fall back to the documented defaults.
+
+    `index.json` rows are release-authored and omit fields sitting at their
+    default, so a wrong default here silently rewrites what a task claims to be.
+    """
+
+    def _minimal(self) -> dict:
+        return {
+            "name": "n",
+            "display_name": "d",
+            "description": "desc",
+            "dataset": "ds",
+            "eval_mode": EvalMode.GEN.value,
+        }
+
+    def test_n_shot_defaults_to_zero(self):
+        assert task_meta_from_dict(self._minimal()).n_shot == 0
+
+    def test_tags_default_to_empty(self):
+        assert task_meta_from_dict(self._minimal()).tags == ()
+
+    def test_optional_strings_default_to_none(self):
+        got = task_meta_from_dict(self._minimal())
+        assert got.deps_group is None
+        assert got.model_type is None
+
+    def test_status_defaults_to_stable(self):
+        # An omitted status must not downgrade a task — consumers gate on this.
+        assert task_meta_from_dict(self._minimal()).status == "stable"
+
+    def test_absent_reference_impl_is_none(self):
+        assert task_meta_from_dict(self._minimal()).reference_impl is None
+
+    def test_reference_impl_notes_default_to_empty(self):
+        payload = self._minimal() | {
+            "reference_impl": {"source": "s", "url": "https://example.com/u"}
+        }
+        ref = task_meta_from_dict(payload).reference_impl
+        assert ref is not None
+        assert ref.notes == ""
+
+    def test_present_values_beat_the_defaults(self):
+        payload = self._minimal() | {
+            "n_shot": 5,
+            "tags": ["x"],
+            "deps_group": "g",
+            "model_type": "gen",
+            "status": "experimental",
+        }
+        got = task_meta_from_dict(payload)
+        assert (got.n_shot, got.tags, got.deps_group, got.model_type, got.status) == (
+            5,
+            ("x",),
+            "g",
+            "gen",
+            "experimental",
+        )
