@@ -540,7 +540,11 @@ class TestDetectionRuleRegistration:
     """
 
     def _register(self, func_name: str, **kwargs):
-        def rule(_ctx):
+        def rule(ctx: TaskContext) -> set[int]:
+            # Never fires: these tests are about registration, not detection.
+            # The parameter is named and typed to satisfy the DetectFunc
+            # protocol, which declares it positionally *and* by keyword.
+            del ctx
             return set()
 
         rule.__name__ = func_name
