@@ -24,5 +24,12 @@ Hierarchical: global (MultiTaskRunner) → task (TaskRunner) → stage → model
 ## Test Requirements
 
 * Coverage ≥ 95%: `python -m pytest tests/unit/ tests/integration/ --cov -v`
-* Mutation score ≥ 70% for modified modules: `mutmut run --paths-to-mutate=sieval/core/<module>.py`
+    * If `--cov` dies on `pyarrow.lib.ArrowKeyError: ... Array2DExtensionType already defined`,
+      that is the `pytest-cov` plugin, not your change — it reproduces on untouched modules.
+      `python -m coverage run --source=sieval -m pytest <tests>` then `coverage report -m` works.
+* Mutation score ≥ 70% for modified modules: `mutmut run "sieval.core.<module>.*"`
+    * mutmut ≥ 3 dropped `--paths-to-mutate`; config lives in `[tool.mutmut]` in `pyproject.toml`,
+      and the argument is a mutant-name glob. Run it from the **primary checkout**: from a
+      worktree it resolves `sieval` through the editable install's own path and collects a
+      different tree, failing before any mutant runs.
 * Disk persistence tests: use fresh `TaskLoader` from disk, not `runner._contexts`
