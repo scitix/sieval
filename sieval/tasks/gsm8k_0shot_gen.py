@@ -46,7 +46,7 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 
 from typing import override
 
-from loguru import logger
+from anyio.to_thread import run_sync
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -62,7 +62,6 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import GSM8KDatasetSample
 
 # Verbatim from run_subset_parallel.py::markup_question (language="en",
@@ -144,23 +143,12 @@ class GSM8KZeroShotGenTask(
         gold = _gold_answer(ctx.raw_sample["answer"])
         # `or ""` restores exactly what the grader saw pre-migration.
         prediction = post["rollouts"][0].get("prediction") or ""
-        # `math_equal` runs `parse_latex` + `simplify`: ~11 ms typical but up to
-        # 1.7 s for one comparison, and every runner in the session shares one
-        # event loop, so grading here would stall every other task for that long.
-        # A worker process rather than a thread — see `run_cpu_bound`.
-        try:
-            correct = await run_cpu_bound(
-                is_correct,
-                {"prediction": prediction, "answer": gold},
-                timeout=GRADE_TIMEOUT,
-            )
-        except TimeoutError:
-            logger.warning(
-                "Grading sample {} exceeded {}s and was scored wrong.",
-                ctx.sample_id,
-                GRADE_TIMEOUT,
-            )
-            correct = False
+        # `math_equal` runs `parse_latex` + `simplify`: ~11 ms typical, up to
+        # 1.7 s for one comparison. Every runner in a session shares one event
+        # loop, so grading inline stalls every other task for that long.
+        # This grader is pure sympy — no math-verify, so no signal-based
+        # timeout — and its verdicts are unchanged in a worker thread.
+        correct = await run_sync(is_correct, {"prediction": prediction, "answer": gold})
         return True, build_judgement_record(gold, [build_rollout_judgement(0, correct)])
 
     @override

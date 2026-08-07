@@ -32,12 +32,12 @@ step counts, so the two are different numbers.
 AI-Generated Code - Claude Opus 4.8 (1M context) (Anthropic)
 """
 
-import asyncio
 import os
 import time
 from typing import Literal, TypedDict, override
 
 import httpx
+from anyio.to_thread import run_sync
 from loguru import logger
 
 from sieval.community.scicode import (
@@ -403,7 +403,11 @@ class SciCodeZeroShotGenTask(
                 for sc, _code, cases in pending
             }
 
-        targets_by_step = await asyncio.to_thread(read_targets)
+        # `anyio.to_thread`, not `asyncio.to_thread`: the latter uses the loop's
+        # own executor and so escapes anyio's CapacityLimiter, putting these
+        # reads outside the session's thread budget. Same mechanism as every
+        # other offload in the repo.
+        targets_by_step = await run_sync(read_targets)
 
         programs: list[StepProgram] = []
         for sc, code, cases in pending:

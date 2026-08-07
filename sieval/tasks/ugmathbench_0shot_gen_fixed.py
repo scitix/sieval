@@ -158,13 +158,19 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
+from sieval.core.utils.offload import run_cpu_bound
 from sieval.datasets import UGMathBenchDatasetSample
 
 #: Relative tolerance for numeric answers. Matches the reference evaluator's
 #: CLI default (``eval_rule.py --precision``), not the stricter 1e-8 its
 #: ``Judger`` class defaults to.
 DEFAULT_PRECISION = 1e-3
+
+#: Ceiling for grading one rollout in a worker process. Generous against the
+#: ~23 ms a wrong answer costs and the 5 s math-verify allows itself per
+#: parse/verify, so reaching it means an input that got past the parser guards
+#: — worth a warning rather than a silent slow sample.
+GRADE_TIMEOUT = 30.0
 
 
 @sieval_task(
