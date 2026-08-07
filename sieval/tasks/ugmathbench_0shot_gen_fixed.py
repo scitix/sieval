@@ -108,9 +108,9 @@ comparison logic it appears to certify.** Worth remembering beyond this task.
 **The divergence from upstream, measured on replayed references.** Replaying
 every pinned reference back as a boxed answer through both graders, upstream
 accepts its own reference on 14,616 of 15,183 rows (96.27%) and this task on
-15,154 (99.81%). The 546 rows that disagree span 190 of 5,061 problems: an EAcc
-**ceiling** difference of 3.75 pp, about five times the 0.70 pp binomial
-standard error, and 542 of the 546 are rows upstream cannot win at all — so the
+15,160 (99.85%). The 552 rows that disagree span 192 of 5,061 problems: an EAcc
+**ceiling** difference of 3.79 pp, about five times the 0.70 pp binomial
+standard error, and 548 of the 552 are rows upstream cannot win at all — so the
 gap is repair, not drift. :mod:`sieval.community.ugmathbench` enumerates each
 divergence and how the figure was obtained. It is a ceiling on the *grader*,
 realized only on a problem a model would otherwise answer correctly in all three
@@ -125,10 +125,13 @@ where this does not arise; read Delta only against the sampling settings that
 produced it.
 
 Budget note: a full run is 15,183 inferences, and grading a wrong answer costs
-roughly 25 ms of synchronous sympy per sample (a correct one is effectively
-free, since it short-circuits on string equality). Feedback is therefore worth
-a few minutes on a whole-benchmark run, and a subject subset is a reasonable
-smoke test — pass ``datasets.<name>.args.subjects``.
+roughly 25 ms of sympy per sample (a correct one is effectively free, since it
+short-circuits on string equality). That work runs in a worker process
+(:func:`~sieval.core.utils.offload.run_cpu_bound`), so it does not hold the
+event loop the other tasks in the session are sharing, but it is still CPU the
+run has to spend. Feedback is therefore worth a few minutes on a whole-benchmark
+run, and a subject subset is a reasonable smoke test — pass
+``datasets.<name>.args.subjects``.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -158,19 +161,13 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.utils.offload import run_cpu_bound
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import UGMathBenchDatasetSample
 
 #: Relative tolerance for numeric answers. Matches the reference evaluator's
 #: CLI default (``eval_rule.py --precision``), not the stricter 1e-8 its
 #: ``Judger`` class defaults to.
 DEFAULT_PRECISION = 1e-3
-
-#: Ceiling for grading one rollout in a worker process. Generous against the
-#: ~23 ms a wrong answer costs and the 5 s math-verify allows itself per
-#: parse/verify, so reaching it means an input that got past the parser guards
-#: — worth a warning rather than a silent slow sample.
-GRADE_TIMEOUT = 30.0
 
 
 @sieval_task(
@@ -197,9 +194,9 @@ GRADE_TIMEOUT = 30.0
             "(GPL-3.0 restricts distribution, not use; nothing is vendored) over "
             "all 15,183 pinned rows, each row's own reference replayed back as a "
             "boxed answer. Upstream accepts its own reference on 14,616 rows "
-            "(96.27%), this task on 15,154 (99.81%); the 546 rows that disagree "
-            "span 190 of 5,061 problems — an EAcc ceiling difference of 3.75 pp, "
-            "about 5x the 0.70 pp binomial standard error. 542 of the 546 are rows "
+            "(96.27%), this task on 15,160 (99.85%); the 552 rows that disagree "
+            "span 192 of 5,061 problems — an EAcc ceiling difference of 3.79 pp, "
+            "about 5x the 0.70 pp binomial standard error. 548 of the 552 are rows "
             "upstream rejects its OWN reference on, so the gap is repair, not "
             "drift; only 4 go the other way (a UOL reference whose top-level "
             "commas sit outside any bracket). Dominant cause: upstream normalizes "
@@ -208,9 +205,17 @@ GRADE_TIMEOUT = 30.0
             "the prediction only, which a plain-sympy reference never survives. "
             "Contributing: a TF slot whose reference is not a boolean (9 of 1665; "
             "upstream asserts it is and swallows the AssertionError into a False, "
-            "so no answer wins), a zero-valued numeric reference, and the declared "
+            "so no answer wins), a zero-valued numeric reference, the declared "
             "answer type deciding the rule where upstream's `is_equal` retries "
-            "every method until one accepts. All enumerated in "
+            "every method until one accepts, and three deliberate differences in "
+            "where commas are split (9 rows): `<` and `>` are the relational "
+            "operators here, not brackets, so counting them as brackets — which "
+            "upstream does — swallows the comma after them and the row comes out "
+            "a slot short (6 rows); the bracket depth clamps at zero instead of "
+            "going negative, where upstream loses every remaining slot after one "
+            "unmatched closer (3 rows); and `{}` counts as a bracket, which costs "
+            "0 rows on the references but keeps a comma inside a LaTeX group in "
+            "the model's answer from splitting a slot in two. All enumerated in "
             "sieval/community/ugmathbench.py. The figure bounds the GRADER, not a "
             "model's score: it is a replay of stored references, so it says "
             "nothing about extraction on real model prose. LIVE HEAD-TO-HEAD "
@@ -223,11 +228,18 @@ GRADE_TIMEOUT = 30.0
             "an EX answer). Note that the replay figure could NOT see the "
             "largest defect the live run found — replaying a gold as its own "
             "answer short-circuits on string equality and never reaches the "
-            "symbolic path. GUARDS: the parse namespace has its builtins removed "
-            "and answers requiring unbounded arithmetic (a power tower) are "
-            "refused rather than evaluated, since the parsed text is model "
-            "output; both grade the answer wrong and neither is reachable by any "
-            "pinned reference. SAMPLING: upstream generates "
+            "symbolic path. GUARDS: since the parsed text is model output, three "
+            "shapes are refused rather than evaluated — the parse namespace has "
+            "its builtins removed; an answer containing a quote is refused "
+            "outright, because a quoted string handed to any callable (eval, "
+            "sympify, S, N, or any name at all, since auto_symbol makes unknown "
+            "names callable) is re-sympified with sympy's own default namespace "
+            "and gets the builtins back; and an answer requiring unbounded "
+            "arithmetic (a power tower) is screened out by an unevaluated "
+            "pre-parse. All three grade the answer wrong, and none is reachable "
+            "by any pinned reference — the largest exponent is three digits and "
+            "not one of the 42,064 gold slots contains a quote. "
+            "SAMPLING: upstream generates "
             "greedily, one sample per version (temperature 0, max_tokens 2048), "
             "and this task issues one rollout per version to match; set "
             "temperature via the model config. Upstream also offers a "

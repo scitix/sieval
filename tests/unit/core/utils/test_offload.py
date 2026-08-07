@@ -68,6 +68,11 @@ def _sleep_forever() -> None:
     time.sleep(30)
 
 
+def _sleep(seconds: float) -> float:
+    time.sleep(seconds)
+    return seconds
+
+
 @pytest.mark.anyio
 async def test_runs_the_function_and_returns_its_value():
     assert await offload.run_cpu_bound(_double, 21) == 42
@@ -137,6 +142,39 @@ async def test_a_broken_pool_degrades_instead_of_failing_the_run(monkeypatch):
     monkeypatch.setattr(offload, "_pool", _BrokenPool())
     assert await offload.run_cpu_bound(_double, 3) == 6
     # And it does not keep retrying into the broken pool.
+    assert offload._pool_failed is True
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("cannot schedule new futures after shutdown"),
+        OSError(12, "Cannot allocate memory"),
+        PermissionError(1, "Operation not permitted"),
+        MemoryError(),
+    ],
+    ids=["shutting-down", "enomem", "clone-blocked", "oom"],
+)
+async def test_any_submit_failure_degrades_rather_than_failing_the_run(
+    monkeypatch, failure
+):
+    # The module's contract is "degrades rather than fails", and a submit can
+    # fail for more reasons than the pool being broken: a worker that cannot be
+    # started surfaces as OSError (ENOMEM, RLIMIT_NPROC) or PermissionError (a
+    # seccomp-blocked `clone`), neither of which is a BrokenExecutor.
+    #
+    # Letting one escape is not a loud failure: callers wrap grading in a broad
+    # `except` and score the sample wrong, so a whole run silently reports zero.
+    class _FailingPool:
+        def submit(self, *_args, **_kwargs):
+            raise failure
+
+        def shutdown(self, **_kwargs):
+            pass
+
+    monkeypatch.setattr(offload, "_pool", _FailingPool())
+    assert await offload.run_cpu_bound(_double, 3) == 6
     assert offload._pool_failed is True
 
 
@@ -275,6 +313,101 @@ def test_a_broken_pool_is_reported_once_not_per_sample(warnings_sink):
     assert "first" in warnings[0], "the warning must name the exception"
     assert "event loop" in warnings[0]
     assert "second" not in warnings[0]
+
+
+def test_the_limiter_is_sized_to_the_pool_not_to_the_sample_concurrency(monkeypatch):
+    # Sized to the pool because it exists to bound the *queue* a caller can sit
+    # behind, and the queue drains at the worker count. Sizing it to the sample
+    # concurrency instead would put the backlog back on `timeout`'s clock.
+    monkeypatch.setenv(offload._ENV_WORKERS, "3")
+    offload._get_pool()
+    assert offload._limiter is not None
+    assert offload._limiter.total_tokens == 3 + offload._QUEUE_SLACK
+
+
+def test_shutdown_drops_the_limiter_with_the_pool(monkeypatch):
+    # A limiter outliving its pool would size the next pool's admissions to the
+    # previous pool's worker count.
+    monkeypatch.setenv(offload._ENV_WORKERS, "2")
+    offload._get_pool()
+    assert offload._limiter is not None
+    offload.shutdown()
+    assert offload._limiter is None
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(
+    _UNDER_MUTMUT,
+    reason="mutmut cannot instrument a spawned worker; the pool degrades to "
+    "inline, which borrows no thread tokens at all",
+)
+async def test_grading_does_not_draw_on_the_shared_thread_tokens(monkeypatch):
+    # anyio's default limiter is one 40-token budget for the whole process, and
+    # the loader, the deployer and scicode's reads all draw on it. Waiting for a
+    # worker there would let grading starve unrelated I/O in the same session.
+    import anyio
+    import anyio.to_thread
+
+    monkeypatch.setenv(offload._ENV_WORKERS, "2")
+    default = anyio.to_thread.current_default_thread_limiter()
+    baseline = default.borrowed_tokens
+    peak = 0
+
+    async def _one():
+        nonlocal peak
+        await offload.run_cpu_bound(_sleep, 0.2, timeout=30.0)
+        peak = max(peak, default.borrowed_tokens - baseline)
+
+    async with anyio.create_task_group() as task_group:
+        for _ in range(12):
+            task_group.start_soon(_one)
+
+    assert peak == 0, f"grading borrowed {peak} of the shared thread tokens"
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(
+    _UNDER_MUTMUT,
+    reason="mutmut cannot instrument a spawned worker; the pool degrades to "
+    "inline, which by design cannot time out",
+)
+async def test_a_backlog_does_not_spend_the_callers_timeout():
+    # `future.result(timeout)` counts from when the caller starts waiting, so it
+    # waits out everything queued ahead of it too. Without admission control a
+    # perfectly fast grade "times out" purely because the session was busy —
+    # and the caller cannot tell that apart from a genuinely hung one.
+    import anyio
+
+    job, jobs, timeout = 0.25, 8, 1.5
+    assert job * jobs > timeout, "the backlog must outlast the per-call ceiling"
+
+    os.environ[offload._ENV_WORKERS] = "1"
+    try:
+        pool = offload._get_pool()
+        assert pool is not None
+        # Warm the workers: ProcessPoolExecutor spawns them on first submit, and
+        # that one-off cost is charged to whichever caller happens to be first.
+        await offload.run_cpu_bound(_sleep, 0.0, timeout=60.0)
+
+        results: list[str] = []
+
+        async def _one():
+            try:
+                await offload.run_cpu_bound(_sleep, job, timeout=timeout)
+                results.append("ok")
+            except TimeoutError:
+                results.append("timeout")
+
+        async with anyio.create_task_group() as task_group:
+            for _ in range(jobs):
+                task_group.start_soon(_one)
+    finally:
+        os.environ.pop(offload._ENV_WORKERS, None)
+
+    assert results.count("timeout") == 0, (
+        f"{results.count('timeout')}/{jobs} jobs of {job}s hit a {timeout}s "
+        "ceiling; the backlog is being charged to the caller"
+    )
 
 
 @pytest.mark.anyio

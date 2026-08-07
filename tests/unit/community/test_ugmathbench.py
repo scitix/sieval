@@ -112,6 +112,36 @@ def test_split_folds_latex_set_delimiters():
     assert split_answers("\\{1, 2\\}, 3") == ["(1, 2)", "3"]
 
 
+def test_split_treats_angle_brackets_as_operators_not_grouping():
+    # Upstream counts `<` and `>` as brackets. Here they are the relational
+    # operators the dataset actually uses -- a slot whose whole answer is `<` --
+    # so counting them swallows the following comma and the row comes out short
+    # by a slot, which grades every slot in it wrong however good the answer.
+    assert split_answers("<, 55000") == ["<", "55000"]
+    assert split_answers("10/[5^{2*n+1}], <, monotone decreasing") == [
+        "10/[5^{2*n+1}]",
+        "<",
+        "monotone decreasing",
+    ]
+
+
+def test_split_does_not_let_an_unmatched_closer_swallow_the_rest():
+    # Upstream's depth goes negative here, and below zero no later comma splits
+    # -- so one stray `>` costs every remaining slot in the row, not just its
+    # own. `Arithmetic_0071` is exactly this shape.
+    assert split_answers("12+20/4, >, (12+20)/4") == ["12+20/4", ">", "(12+20)/4"]
+    assert split_answers(") , a, b") == [")", "a", "b"]
+
+
+def test_split_still_groups_latex_angle_delimiters():
+    # Dropping `<`/`>` costs no real grouping: the inner-product form is
+    # `\langle ... \rangle`, which is folded to parentheses before the scan.
+    # The fold is textual, so `\langle `'s trailing space rides along -- what
+    # matters is that the comma inside stays inside.
+    assert split_answers("\\langle 1, 2\\rangle, 3") == ["( 1, 2)", "3"]
+    assert split_answers("\\langle1,2\\rangle, 3") == ["(1,2)", "3"]
+
+
 # --- per-type grading ------------------------------------------------------
 
 
@@ -201,8 +231,30 @@ def test_unordered_list_matches_multiset_not_set():
     assert not judge_answer("(1, 1)", "(1, 2)", "UOL")
 
 
-def test_list_elements_may_be_booleans():
-    assert judge_answer("(True, 1)", "(Y, 1)", "OL")
+def test_list_elements_are_not_read_as_booleans():
+    # Upstream converts booleans only for a slot the dataset typed TF —
+    # `norm_ans_str` gates `norm_str2bool` on `ans_type == "TF"` — and leaves
+    # list elements alone under a standing `TODO: deal with OL with boolean`.
+    # No OL/UOL reference on the pinned revision holds a boolean: all 1,244 are
+    # values or parameter names, so there is nothing here to win by coercing.
+    assert not judge_answer("(True, 1)", "(Y, 1)", "OL")
+
+
+@pytest.mark.parametrize(
+    ("pred", "gold", "kind"),
+    [
+        ("(x, t)", "(x, y)", "OL"),
+        ("(1, f)", "(1, n)", "OL"),
+        ("(y, 2)", "(t, 2)", "UOL"),
+        ("(s, t)", "(s, y)", "UOL"),
+    ],
+)
+def test_parameter_names_are_not_truth_values(pred, gold, kind):
+    # `t`, `y`, `f` and `n` are the parameter names this dataset actually uses —
+    # 13 OL/UOL references on the pinned revision carry a bare `t` or `y`. Read
+    # as booleans they collapse into each other and a wrong answer scores right,
+    # which is the one direction a grader must never fail in.
+    assert not judge_answer(pred, gold, kind)
 
 
 def test_math_equal_survives_unparseable_input():
@@ -375,11 +427,50 @@ def test_parsing_a_prediction_cannot_reach_the_interpreter(tmp_path):
     assert not marker.exists()
 
 
+#: Every way a call can hand a *string* back to sympy, which re-sympifies it
+#: with sympy's own default namespace -- builtins included. Clearing
+#: `__builtins__` for the top-level parse does not reach into that nested one,
+#: so each of these executes despite the sanitized namespace. `eval` is the
+#: shape that survives the sanitizing most surprisingly: it is not a sympy name,
+#: so `auto_symbol` rewrites it to `Function('eval')`, and calling a sympy
+#: Function on a `str` sympifies the argument.
+_NESTED_SYMPIFY_CARRIERS = ["eval", "sympify", "S", "N", "Function('f')"]
+
+
+@pytest.mark.parametrize("carrier", _NESTED_SYMPIFY_CARRIERS)
+def test_no_call_shape_can_smuggle_a_string_back_into_the_interpreter(
+    tmp_path, carrier
+):
+    # The namespace restriction covers one parse. These carriers start another
+    # one, and refusing the callee by name cannot work -- `auto_symbol` turns
+    # every unknown name into a callable, so the allowlist would have to be of
+    # *all* names. What is refused instead is the quote.
+    marker = tmp_path / f"executed-{carrier[:4]}"
+    payload = f"{carrier}(\"__import__('os').system('touch {marker}')\")"
+    assert judge_answers([payload], ["42"], ["EX"]) == [False]
+    assert not marker.exists(), f"{carrier}(...) reached the interpreter"
+
+
+def test_a_quote_free_call_is_still_parsed_normally():
+    # The guard refuses quotes, not calls -- a nested sympify with no string
+    # literal to read gets a sympy object and does nothing (`chr(112)` stays
+    # symbolic). Refusing calls outright would drop every `sin(pi*x/5)` gold.
+    assert judge_answer("sin(pi/6)", "1/2", "EX") is True
+    assert judge_answer("eval(chr(112))", "42", "EX") is False
+
+
+def test_refusing_a_quoted_prediction_costs_only_the_sympy_reading():
+    # A refused prediction is not a refused sample: `_parse_sympy_source` is one
+    # of three readings, and the LaTeX and literal-equality paths still run. A
+    # correct answer that happens to carry a quote must still grade correct.
+    assert judge_answer("42'", "42'", "EX") is True
+
+
 def test_a_power_tower_grades_wrong_instead_of_hanging():
     # `^` is rewritten to `**` before parsing and sympy exponentiates eagerly,
     # so `9^9^9^9` asks for a 370-million-digit integer. Grading has to reject
-    # it, not compute it: `feedback()` runs on the event loop, so one such
-    # sample would freeze every concurrent sample in the run.
+    # it, not compute it: `feedback()` offloads to a worker process, so one
+    # such sample would hold a worker for the rest of the run.
     assert judge_answer("9^9^9^9", "x+1", "EX") is False
     assert judge_answer("2^{2^{100}}", "x+1", "EX") is False
 

@@ -73,6 +73,31 @@ dependency). Known behavioural deltas versus the reference judge:
   Both sit inside the 95.51% live agreement measured against upstream's judge,
   so neither is worth a divergence of its own — they are listed because a
   divergence list that quietly rounds off is not one.
+* **Commas are split at a different bracket depth**, in three ways. All three
+  are deliberate, and all three run in the same direction: a row upstream
+  miscounts — and therefore grades wrong in every slot, whatever the model
+  answered — this one counts correctly.
+
+  - Upstream's ``split_by_comma`` counts ``<`` and ``>`` as brackets.
+    :data:`_OPENERS` does not. In this dataset they are overwhelmingly the
+    *relational operators*, a slot whose entire answer is ``<``, so an opening
+    ``<`` swallows the comma after it; the grouping form ``\\langle`` /
+    ``\\rangle`` is folded to parentheses before the scan and keeps working.
+    Worth **6 rows** across ``Financial_mathematics_0300`` and
+    ``Calculus_-_single_variable_0824`` (all three versions each).
+  - Upstream lets its bracket depth go *negative*, so an unmatched closer parks
+    everything after it below zero, where no comma splits again. This clamps at
+    zero, which is worth **3 more rows** — ``Arithmetic_0071``, whose second
+    slot is ``>``: upstream splits the first comma, drops to -1 on the ``>``,
+    and never splits again.
+  - This also tracks ``{}``, which keeps a comma inside a LaTeX group
+    (``\\frac{a,b}{c}``) from splitting a slot in two. Worth **0 rows** on the
+    references — they are plain sympy source — so it earns its place only on
+    the prediction side, where the model writes LaTeX.
+
+  Nine rows total, all of them ours-accepts / upstream-rejects, and they are
+  counted inside the 552 below. The only ``<...>`` *pairs* in the 42,064 gold
+  slots are ``<br />`` markup, so the grouping reading buys back nothing.
 * Both sides are normalized *by the same pass*, references included. Upstream
   normalizes its references too — ``judge()`` runs ``norm_ans_str`` over the
   gold — but its extraction-time pass, ``Judger.normalize_answer``, runs on the
@@ -91,19 +116,28 @@ dependency). Known behavioural deltas versus the reference judge:
   symbolic path instead.
 * Per-slot verdicts are returned rather than only the sample-level ``all()``,
   so a wrong answer can be located without re-running the grader.
-* **Two answers are refused rather than graded**, because the text being parsed
-  is model output and ``parse_expr`` evaluates what it parses. A boxed
-  ``__import__('os').system(...)`` would otherwise run (:func:`_sympy_globals`
-  removes the builtins from the parse namespace), and a boxed ``9^9^9^9`` asks
-  for a 370-million-digit integer that never returns, which would freeze every
-  concurrent sample in the run since grading is synchronous on the event loop
-  (:func:`_evaluable` screens it out via an unevaluated pre-parse). A refused
-  answer grades wrong. Upstream has neither guard; it is not a divergence in
-  what the benchmark *measures*, and no reachable comparison changes — the
-  largest exponent in the pinned references is three digits.
+* **Some answers are refused rather than graded**, because the text being parsed
+  is model output and ``parse_expr`` evaluates what it parses. Three shapes:
 
-29 of the 15,183 pinned rows (0.19%) cannot be graded correctly here even when
-the reference is replayed verbatim as the answer. 25 are unwinnable upstream
+  - A boxed ``__import__('os').system(...)`` would otherwise run.
+    :func:`_sympy_globals` removes the builtins from the parse namespace.
+  - A boxed ``eval("...")`` — or ``sympify``/``S``/``N``, or any name at all,
+    since ``auto_symbol`` makes every unknown one callable — hands a *string*
+    back to sympy, which re-sympifies it with its own default namespace and so
+    gets the builtins back. :func:`_quotes_free` refuses the quote instead of
+    the callee, which is the only end of it that can be enumerated.
+  - A boxed ``9^9^9^9`` asks for a 370-million-digit integer that never
+    returns. :func:`_evaluable` screens it out with an unevaluated pre-parse.
+    Grading runs in a worker process, so this occupies one worker rather than
+    the shared event loop, but a worker held forever is still a worker lost.
+
+  A refused answer grades wrong. Upstream has none of these guards; they are
+  not a divergence in what the benchmark *measures*, and no reachable
+  comparison changes — the largest exponent in the pinned references is three
+  digits, and not one of the 42,064 gold slots contains a quote.
+
+23 of the 15,183 pinned rows (0.15%) cannot be graded correctly here even when
+the reference is replayed verbatim as the answer. 19 are unwinnable upstream
 too: the "comma-separated answers in one box" protocol cannot express them — a
 comma inside an open-ended phrase, or an unbalanced bracket left by upstream's
 own answer splitting. The other 4 are a shape this module loses and upstream
@@ -124,9 +158,9 @@ code is vendored or redistributed here — over all 15,183 pinned rows, with eac
 row's own reference replayed back as a boxed answer:
 
 * upstream accepts its own reference on 14,616 rows (96.27%);
-* this module accepts 15,154 (99.81%);
-* the 546 rows that disagree (3.60%) span 190 of 5,061 problems, an EAcc
-  **ceiling** difference of **3.75 pp** — roughly five times the 0.70 pp
+* this module accepts 15,160 (99.85%);
+* the 552 rows that disagree (3.64%) span 192 of 5,061 problems, an EAcc
+  **ceiling** difference of **3.79 pp** — roughly five times the 0.70 pp
   binomial standard error at this sample size, so the divergence is material
   rather than noise;
 * per answer slot, running upstream's own dispatch loop without its
@@ -134,11 +168,12 @@ row's own reference replayed back as a boxed answer:
   (350) and ``NV`` (322), with ``TF`` contributing exactly the 9 non-boolean
   references described above.
 
-Direction matters more than magnitude here: **542 of those 546 are rows where
+Direction matters more than magnitude here: **548 of those 552 are rows where
 upstream rejects its own reference**, i.e. slots no model could win there. That
 is repair, not drift, and the prediction-only normalization above is its
-dominant cause; the non-boolean ``TF`` references contribute 9. Only 4 rows go
-the other way (the ``UOL`` note above). A *ceiling*, not an expectation: the
+dominant cause; the non-boolean ``TF`` references contribute 9 and the
+comma-splitting rules below 9. Only 4 rows go the other way (the ``UOL`` note
+above). A *ceiling*, not an expectation: the
 difference is realized only on a problem a model would otherwise answer
 correctly in all three versions.
 
@@ -392,7 +427,15 @@ def extract_answer(response: str) -> str | None:
     return None
 
 
-_OPENERS = {"(": ")", "[": "]", "{": "}", "<": ">"}
+#: ``<`` and ``>`` are deliberately absent, unlike upstream's ``split_by_comma``
+#: which counts them as brackets. In this dataset they are overwhelmingly the
+#: *relational operators* — a slot whose whole answer is ``<`` — so treating an
+#: opening ``<`` as a bracket swallows the comma after it and the slot count
+#: comes out short, which grades every slot in the row wrong however good the
+#: answer. Angle brackets as grouping earn nothing back: of the 42,064 gold
+#: slots on the pinned revision the only ``<...>`` pairs are ``<br />`` markup,
+#: and ``\langle`` / ``\rangle`` are folded to parentheses below.
+_OPENERS = {"(": ")", "[": "]", "{": "}"}
 _CLOSERS = set(_OPENERS.values())
 _SET_DELIMITERS = {
     "\\{": "(",
@@ -411,8 +454,10 @@ def split_answers(text: str) -> list[str]:
     (``(1, 2, 3)``) or an interval (``(-\\infty, 5)``) stays whole. LaTeX set
     delimiters are folded to plain parentheses first so they nest like brackets.
 
-    Unlike upstream this also tracks ``{}``, which keeps a comma inside a LaTeX
-    group (``\\frac{a,b}{c}``) from splitting a slot in two.
+    Three deliberate differences from upstream's ``split_by_comma``, all
+    enumerated with their measured cost in the module docstring: ``{}`` counts
+    as a bracket here and does not upstream; ``<`` and ``>`` do not count here
+    and do upstream; and the depth clamps at zero instead of going negative.
     """
     folded = text
     for latex_delimiter, plain in _SET_DELIMITERS.items():
@@ -435,8 +480,15 @@ def split_answers(text: str) -> list[str]:
 
 # --- answer comparison -----------------------------------------------------
 
-_TRUE_WORDS = {"t", "y", "true", "yes"}
-_FALSE_WORDS = {"f", "n", "false", "no"}
+#: Upstream's ``norm_str2bool`` tests the single letters *before* lowercasing
+#: (``if s in ['T', 'Y']``), so only the capitals are booleans; the word forms
+#: are matched after a ``.lower()`` and so are case-insensitive. The asymmetry
+#: looks like an oversight but it is load-bearing: ``t`` and ``y`` are ordinary
+#: parameter names, and reading them as booleans marks a wrong answer right.
+_TRUE_LETTERS = {"T", "Y"}
+_FALSE_LETTERS = {"F", "N"}
+_TRUE_WORDS = {"true", "yes"}
+_FALSE_WORDS = {"false", "no"}
 _WHITESPACE = re.compile(r"\s+")
 
 
@@ -446,7 +498,21 @@ def _squash(text: str) -> str:
 
 
 def _to_bool(text: str) -> bool | None:
-    word = text.strip().strip(".").lower()
+    """Read a ``TF`` answer as a boolean, or ``None`` if it is not one.
+
+    Only reachable from the ``TF`` branch of :func:`judge_answer`. Upstream
+    gates the same conversion on the declared answer type — ``norm_ans_str``
+    calls ``norm_str2bool`` only ``if ans_type == "TF"`` — and leaves the
+    elements of a list alone, under a standing ``TODO: deal with OL with
+    boolean``. Applying it to list elements instead reads the parameter names
+    the dataset actually uses as truth values.
+    """
+    stripped = text.strip().strip(".")
+    if stripped in _TRUE_LETTERS:
+        return True
+    if stripped in _FALSE_LETTERS:
+        return False
+    word = stripped.lower()
     if word in _TRUE_WORDS:
         return True
     if word in _FALSE_WORDS:
@@ -511,13 +577,39 @@ def _sympy_globals() -> dict:
     defined``.
 
     This is a namespace restriction, not a sandbox — attribute access on sympy
-    objects still resolves. It removes the reachable path to the interpreter,
-    which is what a grader needs.
+    objects still resolves, and it only covers the namespace *this* parse runs
+    in. It does not survive a nested parse, which is why :func:`_quotes_free`
+    exists.
     """
     namespace: dict = {}
     exec("from sympy import *", namespace)  # noqa: S102 - fixed literal, not input
     namespace["__builtins__"] = {}
     return namespace
+
+
+def _quotes_free(text: str) -> bool:
+    """Is *text* free of the string literals that reopen the interpreter?
+
+    :func:`_sympy_globals` sanitizes the namespace the top-level parse runs in,
+    and that is not enough on its own. Sympy re-sympifies a *string* argument
+    with its own default namespace, which has the builtins back, so a call
+    carrying a string literal escapes the restriction and runs::
+
+        eval("__import__('os').system(...)")
+
+    ``sympify``, ``S`` and ``N`` do the same thing, and ``auto_symbol`` turns
+    any unrecognized name into a ``Function``, so the callee cannot be
+    allowlisted — every function call is a potential carrier. What can be
+    refused is the payload: without a quote there is no string literal for the
+    nested parse to read, and the argument comes back as a sympy object
+    (``eval(chr(112))`` evaluates ``chr`` symbolically and does nothing).
+
+    Nothing legitimate is lost. Not one of the 42,064 gold slots on the pinned
+    revision contains a quote — the dialect is sympy source, where quotes have
+    no meaning — and a refused prediction only loses this one reading, with the
+    LaTeX and literal-equality paths still offered to the comparison.
+    """
+    return "'" not in text and '"' not in text
 
 
 def _evaluable(cleaned: str, local: dict, transformations) -> bool:
@@ -579,8 +671,9 @@ def _parse_sympy_source(text: str) -> list:
     look like — none of which sympy assumes by default.
 
     The text reaching this function is model output, and ``parse_expr``
-    evaluates what it parses, so both halves of that are guarded:
-    :func:`_sympy_globals` takes the interpreter out of reach and
+    evaluates what it parses, so all three halves of that are guarded:
+    :func:`_sympy_globals` takes the interpreter out of the parse namespace,
+    :func:`_quotes_free` keeps a nested parse from handing it back, and
     :func:`_evaluable` refuses arithmetic that would not finish.
     """
     import sympy
@@ -596,7 +689,7 @@ def _parse_sympy_source(text: str) -> list:
         .replace("$", "")
         .strip()
     )
-    if not cleaned:
+    if not cleaned or not _quotes_free(cleaned):
         return []
     local = {
         "e": sympy.E,
@@ -904,10 +997,14 @@ def _list_elements(text: str) -> list[str]:
 
 
 def _element_equal(pred: str, gold: str, precision: float) -> bool:
-    """Compare one OL/UOL element, whose own answer type the dataset omits."""
-    pred_bool, gold_bool = _to_bool(pred), _to_bool(gold)
-    if gold_bool is not None:
-        return pred_bool is gold_bool
+    """Compare one OL/UOL element, whose own answer type the dataset omits.
+
+    Deliberately *not* boolean-aware. Upstream converts booleans only for a slot
+    the dataset typed ``TF`` and never for the elements inside a list, and the
+    elements here are overwhelmingly parameter names: reading ``t``, ``y``,
+    ``f`` and ``n`` as truth values makes ``(x, t)`` match a gold ``(x, y)``.
+    Thirteen OL/UOL references on the pinned data carry a bare ``t`` or ``y``.
+    """
     return math_equal(pred, gold, precision)
 
 

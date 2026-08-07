@@ -40,6 +40,7 @@ from collections.abc import Callable
 from concurrent.futures import BrokenExecutor, ProcessPoolExecutor
 from functools import partial
 
+import anyio
 import anyio.to_thread
 from loguru import logger
 
@@ -55,9 +56,32 @@ _ENV_WORKERS = "SIEVAL_OFFLOAD_WORKERS"
 #: the caller's own guards — worth surfacing rather than a silent slow sample.
 GRADE_TIMEOUT = 30.0
 
+#: Extra admissions beyond the worker count (see :data:`_limiter`). Enough that
+#: a worker never idles waiting for the next caller to be let in, small enough
+#: that the queue a caller can sit behind stays a fixed multiple of the pool.
+_QUEUE_SLACK = 2
+
 _pool: ProcessPoolExecutor | None = None
 _pool_failed = False
 _lock = threading.Lock()
+
+#: Admission control, sized to the pool rather than to the sample concurrency.
+#:
+#: Two things ride on this, and neither is served by the stage limiters upstream
+#: of here — those bound *samples in flight*, a different quantity from *pool
+#: capacity*.
+#:
+#: 1. ``timeout`` measures the grade, not the backlog. ``future.result(timeout)``
+#:    starts counting when the caller begins waiting, and it waits out the queue
+#:    ahead of it as well as its own call. Capping how many callers may be
+#:    waiting at once caps that queue at ``_QUEUE_SLACK`` items, so the worst
+#:    case is a small multiple of one grade instead of a function of how many
+#:    samples the session happens to run. Unbounded, an ordinary 1 s grade
+#:    "times out" purely from queueing.
+#: 2. It keeps grading off anyio's shared thread tokens. Passing ``limiter=``
+#:    to ``run_sync`` substitutes this one for the default 40, which the loader,
+#:    the deployer and scicode's reads are also drawing on.
+_limiter: anyio.CapacityLimiter | None = None
 
 
 def _worker_count() -> int:
@@ -75,8 +99,12 @@ def _worker_count() -> int:
 
 
 def _get_pool() -> ProcessPoolExecutor | None:
-    """The shared pool, created on first use. ``None`` means "run inline"."""
-    global _pool, _pool_failed
+    """The shared pool, created on first use. ``None`` means "run inline".
+
+    Call from the event loop: the admission limiter is an anyio primitive and
+    needs a running async context to be constructed.
+    """
+    global _pool, _pool_failed, _limiter
     if _pool is not None or _pool_failed:
         return _pool
     with _lock:
@@ -95,7 +123,7 @@ def _get_pool() -> ProcessPoolExecutor | None:
             _pool = ProcessPoolExecutor(
                 max_workers=workers, mp_context=multiprocessing.get_context("spawn")
             )
-            atexit.register(shutdown)
+            _limiter = anyio.CapacityLimiter(workers + _QUEUE_SLACK)
         except Exception as exc:
             _pool_failed = True
             logger.warning(
@@ -108,11 +136,17 @@ def _get_pool() -> ProcessPoolExecutor | None:
 
 def shutdown() -> None:
     """Tear the pool down. Registered with :mod:`atexit`; safe to call twice."""
-    global _pool
+    global _pool, _limiter
     with _lock:
         pool, _pool = _pool, None
+        _limiter = None
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+# Registered once, at import. Registering alongside each pool would add another
+# handler every time a pool is rebuilt after `shutdown()`.
+atexit.register(shutdown)
 
 
 async def run_cpu_bound[T](
@@ -129,6 +163,12 @@ async def run_cpu_bound[T](
     alternative — tearing down the pool — would punish every other in-flight
     sample for one bad input. The slot returns when the worker does.
 
+    *timeout* bounds the call itself, not the backlog in front of it — see
+    :data:`_limiter`. The one place it does not apply is the inline fallback
+    below: running on the event loop, there is nothing left to interrupt it
+    with. That path is bounded only by whatever guards the caller applies to
+    its own input.
+
     Falls back to running inline when no pool is available, so behaviour is
     degraded (slow) rather than broken.
     """
@@ -137,13 +177,22 @@ async def run_cpu_bound[T](
         return func(*args)
     try:
         future = pool.submit(func, *args)
-    except (BrokenExecutor, RuntimeError) as exc:
-        # Pool died (a worker segfaulted) or is shutting down. Do not retry into
-        # a broken pool; take the slow path for the rest of the run.
+    except Exception as exc:
+        # Pool died (a worker segfaulted), is shutting down, or could not start
+        # a worker at all — ENOMEM and a blocked `clone` surface here as
+        # OSError and PermissionError, not as BrokenExecutor. Every failure to
+        # submit means the same thing: do not retry into it, take the slow path
+        # for the rest of the run.
         _mark_unusable(exc)
         return func(*args)
     try:
-        return await anyio.to_thread.run_sync(partial(future.result, timeout))
+        # `_limiter` gates how many callers may be *waiting*, which is what puts
+        # a ceiling on `timeout`. Submissions and token handoffs are both FIFO,
+        # so a caller holding a token is within `_QUEUE_SLACK` of the front of
+        # the pool queue however long the backlog behind it grows.
+        return await anyio.to_thread.run_sync(
+            partial(future.result, timeout), limiter=_limiter
+        )
     except TimeoutError:
         future.cancel()
         raise
