@@ -29,7 +29,11 @@ Hierarchical: global (MultiTaskRunner) → task (TaskRunner) → stage → model
       `python -m coverage run --source=sieval -m pytest <tests>` then `coverage report -m` works.
 * Mutation score ≥ 70% for modified modules: `mutmut run "sieval.core.<module>.*"`
     * mutmut ≥ 3 dropped `--paths-to-mutate`; config lives in `[tool.mutmut]` in `pyproject.toml`,
-      and the argument is a mutant-name glob. Run it from the **primary checkout**: from a
-      worktree it resolves `sieval` through the editable install's own path and collects a
-      different tree, failing before any mutant runs.
+      and the argument is a mutant-name glob. Worktrees are fine — it mutates the cwd's tree.
+    * **A module that spawns processes cannot be mutated by mutmut 3.5.** Importing
+      `mutmut.__main__` (which the injected trampoline does on its first hit) runs
+      `set_start_method('fork')` at import time, so it raises `RuntimeError: context has already
+      been set` in any test process where the start method is already fixed. Nothing in the module
+      under test causes this — `multiprocessing.get_context("spawn")` leaves the global unset.
+      `core/utils/offload.py` is the current example.
 * Disk persistence tests: use fresh `TaskLoader` from disk, not `runner._contexts`
