@@ -215,14 +215,20 @@ output = "coverage.xml"
 
 [tool.mutmut]
 paths_to_mutate = ["sieval/core"]
-tests_dir = ["tests/unit"]
+tests_dir = ["tests/unit/core/utils"] # TEMP-SCOPE
 exclude = ["sieval/core/**/__init__.py"]
 also_copy = [
+  # `sieval/__init__.py` is load-bearing: without it `mutants/sieval` is a plain
+  # directory rather than a package, so every test in the copy resolves `sieval`
+  # through the editable install instead and mutmut reports a collection error
+  # before running a single mutant.
+  "sieval/__init__.py",
   "sieval/community",
   "sieval/datasets",
   "sieval/tasks",
   "sieval/infer",
   "sieval/cli",
+  "sieval/meta",
   "sieval/__main__.py",
 ]
 
