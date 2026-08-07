@@ -306,6 +306,28 @@
       }
     },
     {
+      "name": "complex_constraints",
+      "display_name": "ComplexConstraints",
+      "description": "75 multi-constraint prompts with 1,559 rubric criteria (Surge AI).",
+      "source": [
+        "hf:surgeai/ComplexConstraints@e9625c6f635f42b72cb85a04c2be64746f945126"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "english",
+        "instruction-following",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-4.0",
+      "checksums": {}
+    },
+    {
       "name": "drop",
       "display_name": "DROP",
       "description": "Discrete Reasoning Over Paragraphs — reading-comprehension benchmark.",
@@ -1269,6 +1291,27 @@
         "notes": "Mirrors the official qwen2.py base path (eval, not eval_instruct): non-CoT CMMLU prompt, same-subject dev shots, one-call next-token A/B/C/D scoring, and subject-level macro report. Runtime n_shot is configurable. Uses API top_logprobs as an OpenAI-compatible substitute for the official raw-logits choice argmax (equivalent while all four option tokens are in top-k). Scoring requires all of A/B/C/D in the top-k and fails the sample otherwise, so partial coverage is loud; faithful reproduction needs a top-k that always includes them (default logprobs=100; on vLLM start with --max-logprobs 100, default 20; SGLang serves 100 by default). The validated Qwen2.5-72B 5-shot run with logprobs=100 had the full A/B/C/D set across all 11,582 samples. Runner failures are reported separately and excluded from the score denominator. Target: 89.5 (Qwen2.5-72B Base, 5-shot, DeepSeek-V3 base-model table) as a cross-check only — DeepSeek's perplexity method is underspecified (letter vs. text unstated; appendix template lists single-letter OPTIONS) and is not the reproduced method. The official CMMLU leaderboard's 85.67 is the Instruct model, not this base target."
       },
       "status": "stable"
+    },
+    {
+      "name": "complex_constraints_0shot_gen",
+      "display_name": "ComplexConstraints (0-shot, generative)",
+      "description": "Multi-constraint instruction following; rubric graded by an LLM judge.",
+      "dataset": "complex_constraints",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "instruction-following",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "complex-constraints",
+        "url": "https://arxiv.org/abs/2606.09118",
+        "notes": "Generative port of ComplexConstraints (Surge AI, arXiv:2606.09118) — 75 multi-constraint prompts (CIF-001..CIF-075) with 10-40 atomic rubric criteria each (1,559 total), graded by rubric rather than exact match. NO UPSTREAM EVAL CODE AND NO UPSTREAM JUDGE PROMPT: the paper names GPT-5-mini as the per-criterion judge and defines the metrics, but the template, decoding settings and call structure are unstated, and the dataset card (https://huggingface.co/datasets/surgeai/ComplexConstraints/blob/e9625c6f635f42b72cb85a04c2be64746f945126/README.md) adds nothing — so the rubric prompt and verdict parsing are AUTHORED BY THIS PORT (sieval.community.complex_constraints), hence status=experimental. METRICS: headline = task pass rate (response satisfies EVERY criterion), the metric the paper's public leaderboard reports (Table 1). Also reported: criterion_pass_rate_macro (per-prompt satisfied fraction averaged over prompts — the paper's 'mean per-criterion pass rate', Table 3 caption) and criterion_pass_rate_micro (pooled over all criteria); the two differ because criteria counts vary 10-40 per prompt. GRADING: one judge call per rollout covering all of that prompt's criteria as an indexed PASS/FAIL list (upstream's call structure is unstated); an unreadable per-criterion verdict scores not-satisfied but is counted as n_unparsed so judge format drift stays visible; empty/whitespace responses satisfy zero criteria without invoking the judge (grader_output absent there, no call made). REPRODUCIBILITY: scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; per-criterion verdicts and the judge's full ModelOutput (extra.grader_output) are persisted per rollout, the reply being the only evidence of a verdict a re-grade need not reproduce. REPEATS: the leaderboard states no repeat count, so the port defaults to n=1; `n` is a task arg (tasks.<name>.args.n), NOT a model arg — infer forwards it call-time and call-time wins. NOT YET VALIDATED against the Table 1 leaderboard (snapshot 2026-06-03: Gemini 3.1 Pro 40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %)."
+      },
+      "status": "experimental"
     },
     {
       "name": "drop_kshot_gen",
