@@ -127,10 +127,10 @@ produced it.
 Budget note: a full run is 15,183 inferences, and grading a wrong answer costs
 roughly 25 ms of sympy per sample (a correct one is effectively free, since it
 short-circuits on string equality). That work runs in a worker process
-(:func:`~sieval.core.utils.offload.run_cpu_bound`), so it does not hold the
-event loop the other tasks in the session are sharing, but it is still CPU the
-run has to spend. Feedback is therefore worth a few minutes on a whole-benchmark
-run, and a subject subset is a reasonable smoke test — pass
+(:func:`~sieval.core.utils.offload.run_cpu_bound`) rather than on the event loop
+the rest of the session shares, but it is still CPU the run has to spend.
+Feedback is therefore worth a few minutes on a whole-benchmark run, and a
+subject subset is a reasonable smoke test — pass
 ``datasets.<name>.args.subjects``.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)

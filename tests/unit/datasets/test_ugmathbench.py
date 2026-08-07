@@ -75,6 +75,21 @@ def test_unknown_subject_is_rejected_with_the_valid_list(monkeypatch):
         UGMathBenchDataset("ignored", subjects=["Astrology"])
 
 
+def test_explicitly_empty_subjects_is_rejected_not_read_as_all(monkeypatch):
+    # `[]` is falsy, so a truthiness check would quietly load all 16 instead.
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "load_dataset",
+        lambda _p, config, **_kw: (
+            loaded.append(config) or HFDataset.from_list([_packed_row()])
+        ),
+    )
+    with pytest.raises(ValueError, match="`subjects` is empty"):
+        UGMathBenchDataset("ignored", subjects=[])
+    assert loaded == []
+
+
 def test_all_sixteen_subjects_load_by_default(monkeypatch):
     requested: list[str] = []
 

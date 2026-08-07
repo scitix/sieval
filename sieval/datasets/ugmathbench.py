@@ -72,7 +72,14 @@ class UGMathBenchDataset(Dataset[UGMathBenchDatasetSample]):
         subjects: list[str] | None = None,
         **kwargs,
     ) -> HFDatasetDict:
-        selected = tuple(subjects) if subjects else self.SUBJECTS
+        # `None` means "unspecified, load everything"; `[]` is a caller asking
+        # for nothing, which silently loading all 16 subjects would misread.
+        selected = self.SUBJECTS if subjects is None else tuple(subjects)
+        if not selected:
+            raise ValueError(
+                "UGMathBench `subjects` is empty; omit it to load all "
+                f"{len(self.SUBJECTS)} subjects."
+            )
         unknown = [subject for subject in selected if subject not in self.SUBJECTS]
         if unknown:
             raise ValueError(

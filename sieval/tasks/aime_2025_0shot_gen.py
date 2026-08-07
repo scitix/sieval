@@ -22,20 +22,7 @@ from sieval.core.tasks import (
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import AIME2025DatasetSample
 
-
-def _verify_answer(gold: str, pred: str) -> bool:
-    """One math-verify comparison, at module level so a worker process can run it.
-
-    Grading does not belong on the event loop: every runner in a session shares
-    one, so a comparison here stalls every other task too. It has to be a
-    *process* rather than a thread — math-verify bounds itself with
-    ``signal.SIGALRM``, which only arms on the main thread, and off it the call
-    raises rather than degrading, which would silently flip verdicts.
-    """
-    from math_verify import parse, verify
-
-    # math_verify.verify expects the gold answer as the first arg.
-    return bool(verify(parse(gold), parse(pred)))
+from ._math_verify import verify_answer
 
 
 @sieval_task(
@@ -113,7 +100,7 @@ class AIME2025ZeroShotGenTask(
             ref_with_env = f"${ground_truth}$"
             try:
                 correct = await run_cpu_bound(
-                    _verify_answer, ref_with_env, pred_with_env, timeout=GRADE_TIMEOUT
+                    verify_answer, ref_with_env, pred_with_env, timeout=GRADE_TIMEOUT
                 )
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)

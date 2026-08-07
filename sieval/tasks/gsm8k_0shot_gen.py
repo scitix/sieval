@@ -142,18 +142,10 @@ class GSM8KZeroShotGenTask(
         gold = _gold_answer(ctx.raw_sample["answer"])
         # `or ""` restores exactly what the grader saw pre-migration.
         prediction = post["rollouts"][0].get("prediction") or ""
-        # `math_equal` runs `parse_latex` + `simplify`: ~11 ms typical, up to
-        # 1.7 s for one comparison. Every runner in a session shares one event
-        # loop, so grading inline stalls every other task for that long.
-        #
-        # A worker process rather than a thread, even though this grader is
-        # thread-safe: 1.7 s is the worst case measured on the *reference* data,
-        # and `simplify` on arbitrary model output has no ceiling at all. Nothing
-        # here would stop it — `math_equal` is reached with `timeout=False`, so
-        # its own `call_with_timeout` never runs. A thread cannot be cancelled,
-        # so one runaway comparison would hold an anyio thread token for the rest
-        # of the session; a worker can be given up on. Verdicts are unchanged
-        # (`is_correct` takes and returns plain data).
+        # `math_equal` runs `parse_latex` + `simplify`: ~11 ms typical, 1.7 s
+        # worst case — measured on *reference* data, and `simplify` on arbitrary
+        # model output has no ceiling. Reached with `timeout=False`, so nothing
+        # else bounds it: criterion 2 in `core/utils/offload.py`.
         correct = await run_cpu_bound(
             is_correct,
             {"prediction": prediction, "answer": gold},

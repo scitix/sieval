@@ -145,13 +145,9 @@ async def test_feedback_scores_against_solution_via_eval_math():
 
 @pytest.mark.anyio
 async def test_grading_is_bounded_in_a_worker_process(monkeypatch):
-    """The mechanism, not the verdict — a thread offload scores the same.
-
-    `eval_math` reaches `math_equal(..., timeout=False)`, so the vendored
-    `call_with_timeout` never runs and nothing else bounds it. On a thread that
-    is unrecoverable: threads are not cancellable, so one runaway `simplify`
-    holds an anyio token until the session ends. Reverting to
-    `anyio.to_thread.run_sync` keeps every other test in this file passing.
+    """The mechanism, not the verdict — a thread offload scores identically, so
+    reverting to `anyio.to_thread.run_sync` keeps every other test in this file
+    passing. Why a process: criterion 2 in `core/utils/offload.py`.
     """
     seen: dict[str, object] = {}
 

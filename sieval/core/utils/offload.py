@@ -1,57 +1,35 @@
 """Run CPU-bound stage work off the event loop, in a worker process.
 
-**Reach for ``anyio.to_thread.run_sync`` first** — that is the house pattern,
-called directly at the site (``core/tasks/loader.py``, ``infer/deployer.py``,
-``cli/leaderboard/session.py``, scicode's target reads). Use this module when
-either of two things is true, and grading is where both show up:
+Every runner in a session shares one event loop — :meth:`MultiTaskRunner.arun`
+starts each :class:`TaskRunner` with ``tg.start_soon`` inside a single
+``anyio.run`` — so a stage that computes synchronously stalls *every* other
+task. Measured, a co-running benchmark dropped to 0.4% of its solo throughput.
 
-1. **A thread changes the answer.** ``math-verify`` is the case — see below.
+``anyio.to_thread.run_sync`` is the house pattern for that, called directly at
+the site (``core/tasks/loader.py``, ``infer/deployer.py``,
+``cli/leaderboard/session.py``, scicode's target reads). Reach for a *process*
+only when one of these holds:
+
+1. **A thread changes the answer.** ``math-verify`` bounds ``parse``/``verify``
+   with ``signal.SIGALRM``, which only arms on the main thread; off it the call
+   raises, the callers' broad ``except`` swallows it, and verdicts flip
+   (``\\frac{1}{2}`` against ``0.5`` goes True -> False). Disabling its timeout
+   makes it thread-safe but hands the caller a bound it cannot enforce.
 2. **The work has no bound of its own.** A thread cannot be cancelled, so an
-   input that never finishes holds its anyio token for the rest of the session,
-   silently, until enough of them accumulate to wedge every other offload. Only
-   a process can be given up on, which is what :data:`GRADE_TIMEOUT` does.
+   input that never finishes holds its anyio token for the rest of the session
+   until enough accumulate to wedge every other offload — surfacing as a session
+   that stops progressing, never as a wrong answer in testing. Only a process
+   can be given up on, which is what :data:`GRADE_TIMEOUT` does. The two
+   DeepSeek-Math graders are here on this criterion alone: thread-safe, but
+   reached with ``math_equal(..., timeout=False)``, so nothing else bounds them.
 
-Criterion 2 is the one that is easy to miss, because it does not show up as a
-wrong answer in testing — it shows up as a session that stops making progress.
-Every grader here reaches sympy's ``simplify`` on text a model wrote, so a
-worst case measured over reference data says nothing about the worst case in
-production.
+Not ``anyio.to_process.run_sync``, the obvious way to avoid hand-rolling a pool:
+its worker runs ``del sys.modules["__main__"]`` before re-importing the parent's
+main module, and ``dill`` (pulled in by HuggingFace ``datasets``) does
+``import __main__`` at import time, so a bare ``import sieval`` fails every
+worker's init. ``spawn`` *replaces* ``sys.modules["__main__"]``, never deletes it.
 
-Why it matters: every runner in a session shares one event loop —
-:meth:`MultiTaskRunner.arun` starts each :class:`TaskRunner` with
-``tg.start_soon`` inside a single ``anyio.run`` — so a stage that computes
-synchronously stalls *every* other task, not just its own samples. Measured, a
-co-running benchmark dropped to 0.4% of its solo throughput.
-
-Criterion 1 in detail: ``math-verify`` bounds its ``parse`` / ``verify`` with
-``signal.SIGALRM``, which only arms on the main thread, and off it raises rather
-than degrading::
-
-    ValueError: Math-Verify 'parse' function doesn't support threaded environment
-
-Callers wrap that in a broad ``except``, so in a thread the whole math-verify
-strategy vanishes silently and verdicts flip (``\\frac{1}{2}`` against ``0.5``
-goes True -> False). Disabling its timeout makes it thread-safe but then, in
-math-verify's own words, the caller "must provide the logic for timeout
-interuption yourself" — which a thread cannot, being uninterruptible. A worker
-process is the main thread of its own process, so timeouts work and verdicts are
-unchanged. A hang is contained too: it occupies one worker instead of the loop.
-
-The two DeepSeek-Math graders (``tasks/gsm8k_0shot_gen.py``,
-``tasks/hendrycks_math_kshot_base_gen.py``) are here on criterion 2 alone: pure
-sympy, thread-safe, and reached with ``math_equal(..., timeout=False)`` so the
-vendored ``call_with_timeout`` never runs. Nothing bounds them but this module.
-
-Not ``anyio.to_process.run_sync``, which is the obvious way to avoid hand-rolling
-a pool: its worker runs ``del sys.modules["__main__"]`` before re-importing the
-parent's main module, and anything importing ``__main__`` inside that window
-raises. ``dill`` does (``_dill.py``: ``import __main__ as _main_module``) and
-HuggingFace ``datasets`` imports ``dill``, so a bare ``import sieval`` is enough
-to make every worker fail init with ``BrokenWorkerProcess``. ``spawn`` is immune
-because it *replaces* ``sys.modules["__main__"]`` instead of removing it.
-
-Degrades rather than fails — if the pool cannot start, work runs inline: the
-behaviour from before this module existed, slow but correct.
+Degrades rather than fails: with no pool, work runs inline — slow but correct.
 ``SIEVAL_OFFLOAD_WORKERS=0`` forces that path.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
@@ -89,22 +67,18 @@ _pool: ProcessPoolExecutor | None = None
 _pool_failed = False
 _lock = threading.Lock()
 
-#: Admission control, sized to the pool rather than to the sample concurrency.
-#:
-#: Two things ride on this, and neither is served by the stage limiters upstream
-#: of here — those bound *samples in flight*, a different quantity from *pool
-#: capacity*.
+#: Admission control, sized to the pool rather than to the sample concurrency —
+#: the stage limiters upstream bound *samples in flight*, a different quantity.
 #:
 #: 1. ``timeout`` measures the grade, not the backlog. ``future.result(timeout)``
-#:    starts counting when the caller begins waiting, and it waits out the queue
-#:    ahead of it as well as its own call. Capping how many callers may be
-#:    waiting at once caps that queue at ``_QUEUE_SLACK`` items, so the worst
-#:    case is a small multiple of one grade instead of a function of how many
-#:    samples the session happens to run. Unbounded, an ordinary 1 s grade
-#:    "times out" purely from queueing.
-#: 2. It keeps grading off anyio's shared thread tokens. Passing ``limiter=``
-#:    to ``run_sync`` substitutes this one for the default 40, which the loader,
-#:    the deployer and scicode's reads are also drawing on.
+#:    starts counting when the caller begins waiting, so it waits out the queue
+#:    ahead of it too. Capping the waiters caps that queue at ``_QUEUE_SLACK``,
+#:    keeping the worst case a small multiple of one grade instead of a function
+#:    of how many samples the session happens to run. Unbounded, an ordinary 1 s
+#:    grade "times out" purely from queueing.
+#: 2. It keeps grading off anyio's shared thread tokens: passing ``limiter=`` to
+#:    ``run_sync`` substitutes this one for the default 40, which the loader, the
+#:    deployer and scicode's reads are also drawing on.
 _limiter: anyio.CapacityLimiter | None = None
 
 
@@ -178,23 +152,19 @@ async def run_cpu_bound[T](
 ) -> T:
     """Run *func(\\*args)* in a worker process, leaving the event loop free.
 
-    *func* must be importable by name (a module-level function, not a lambda or
-    a closure) and its arguments and return value must pickle — the grading
-    entry points take strings and return bools, which is the shape this is for.
+    *func* must be picklable by name (module-level, not a lambda or a closure),
+    as must its arguments and return value — the grading entry points take
+    strings and return bools, which is the shape this is for.
 
     Raises :exc:`TimeoutError` when *timeout* elapses. The worker is left to
-    finish on its own: a process pool cannot interrupt a running call, and the
-    alternative — tearing down the pool — would punish every other in-flight
-    sample for one bad input. The slot returns when the worker does.
+    finish on its own: a pool cannot interrupt a running call, and tearing the
+    pool down would punish every other in-flight sample for one bad input.
+    *timeout* bounds the call, not the backlog in front of it — see
+    :data:`_limiter`.
 
-    *timeout* bounds the call itself, not the backlog in front of it — see
-    :data:`_limiter`. The one place it does not apply is the inline fallback
-    below: running on the event loop, there is nothing left to interrupt it
-    with. That path is bounded only by whatever guards the caller applies to
-    its own input.
-
-    Falls back to running inline when no pool is available, so behaviour is
-    degraded (slow) rather than broken.
+    Falls back to running inline when no pool is available: degraded (slow)
+    rather than broken, and unbounded, since on the event loop there is nothing
+    left to interrupt it with.
     """
     pool = _get_pool()
     if pool is None:

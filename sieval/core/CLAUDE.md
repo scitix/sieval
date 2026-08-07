@@ -28,17 +28,17 @@ Hierarchical: global (MultiTaskRunner) → task (TaskRunner) → stage → model
       that is the `pytest-cov` plugin, not your change — it reproduces on untouched modules. Use
       `python -m coverage run --source=sieval -m pytest <tests>` + `coverage report -m`.
 * Mutation score ≥ 70% for modified modules: **`mutmut run`** — the console script.
-    * **Never `python -m mutmut`**: it executes `mutmut/__main__.py` twice (once as `__main__`,
-      again via the injected trampoline's `import mutmut.__main__`), and the second
-      `set_start_method('fork')` raises `RuntimeError: context has already been set` on the first
-      mutant of *any* module. Looks like a broken test; is a wrong invocation.
-    * Config lives in `[tool.mutmut]` (mutmut ≥ 3 dropped `--paths-to-mutate`). Scope a run by
-      editing `paths_to_mutate` / `tests_dir`, restore with `git checkout -- pyproject.toml`.
-      It must keep copying `sieval/__init__.py`, or `mutants/sieval` is not a package and every
-      run dies in stats collection — enforced by `check_preflight.py --check check_mutmut_config`.
+    * **Never `python -m mutmut`**: it runs `mutmut/__main__.py` twice (as `__main__`, then via
+      the injected trampoline's `import mutmut.__main__`), and the second `set_start_method`
+      raises `RuntimeError: context has already been set` on the first mutant of *any* module.
+      Looks like a broken test; is a wrong invocation.
+    * Scope by **mutant name** — `mutmut run "sieval.core.utils.offload.*"` — never by narrowing
+      `paths_to_mutate` in `[tool.mutmut]`. `also_copy` omits `sieval/core` (normally supplied by
+      `paths_to_mutate`), so pointing it at one file copies only that file and `conftest.py` dies
+      on import. `sieval/__init__.py` must stay copied too, or `mutants/sieval` is not a package
+      — enforced by `check_preflight.py --check check_mutmut_config`.
     * A module whose tests **spawn** processes cannot reach 100%: the trampoline re-executes in
-      the fresh worker and hits the same error, so the code takes its fallback path and
-      worker-internal mutants are unobservable.
+      the fresh worker and hits the same error, so worker-internal mutants are unobservable.
     * A low score usually means missing assertions, not untestable code — `core/utils/offload.py`
       went 38.7% → 76.3% with no new behaviour, only by pinning contracts the tests had left
       implicit (spawn-not-fork, pool reuse, and warnings that name their cause).

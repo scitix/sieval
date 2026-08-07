@@ -1211,6 +1211,8 @@ class TestTaskFileNamingPattern:
     @pytest.mark.parametrize(
         "name",
         [
+            # The example both CLAUDE.md and rules/tasks.md name as canonical.
+            "foo_0shot_clp_gen.py",
             "foo_0shot_gen_gen.py",
             "foo_5shot_clp_ppl.py",
             "foo_0shot_gen_base_gen.py",
