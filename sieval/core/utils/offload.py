@@ -4,8 +4,8 @@
 called directly at the site** — ``core/tasks/loader.py``, ``infer/deployer.py``
 and ``cli/leaderboard/session.py`` all do exactly that, and so do the two
 DeepSeek-Math graders, whose pure-sympy verdicts are unchanged in a thread.
-Reach for a thread first. This module exists for the one case where a thread
-provably changes the answer, and it is the *only* such case today.
+Reach for a thread first. This module is for the one case where a thread
+provably changes the answer: grading through ``math-verify``.
 
 Every runner in a session shares one event loop:
 :meth:`MultiTaskRunner.arun` starts each :class:`TaskRunner` with
@@ -31,12 +31,13 @@ own process, so the timeouts keep working and verdicts are unchanged.
 A hang is also contained rather than fatal: it occupies one worker while the
 others keep grading, where the same hang on the event loop stops the session.
 
-One caller today (``ugmathbench_0shot_gen_fixed``), but the contract it encodes
-is shared: *every* site grading through ``math-verify`` must avoid a thread or
-its verdicts flip, and twelve more math tasks grade that way. They are left on
-the loop deliberately — their whole run costs 0.2-0.7 s of it, against
-ugmathbench's ~190 s — so this is where that rule lives when one of them needs
-it, not a helper waiting for a second user.
+All thirteen math-verify graders use this — ``ugmathbench_0shot_gen_fixed`` plus
+the twelve competition and MATH-500 tasks. Uniformly, and not by cost: an
+earlier revision wired only ugmathbench (~190 s of blocked loop per run) and
+left the rest (0.2-0.7 s each) inline, but that line is drawn on the *run*
+rather than the task — 0.2 s assumes ``n=4`` where Apex publishes at ``n=16`` —
+and it came from short integer answers when the same sample already reached
+89 ms, with math-verify's own timeout at 5 s.
 
 Degrades rather than fails. If the pool cannot start (a restricted sandbox, a
 platform without ``spawn``), work runs inline — the same behaviour as before
@@ -60,6 +61,12 @@ from loguru import logger
 #: ``SIEVAL_OFFLOAD_WORKERS=0`` disables offloading entirely, which is the
 #: escape hatch for an environment where spawning is not allowed.
 _ENV_WORKERS = "SIEVAL_OFFLOAD_WORKERS"
+
+#: Default ceiling for grading one rollout. Generous against the tens of
+#: milliseconds a symbolic comparison normally costs and the 5 s ``math-verify``
+#: allows itself per parse/verify, so reaching it means an input that got past
+#: the caller's own guards — worth surfacing rather than a silent slow sample.
+GRADE_TIMEOUT = 30.0
 
 _pool: ProcessPoolExecutor | None = None
 _pool_failed = False

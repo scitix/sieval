@@ -22,7 +22,23 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import BRUMO2025DatasetSample
+
+
+def _verify_answer(gold: str, pred: str) -> bool:
+    """One math-verify comparison, at module level so a worker process can run it.
+
+    Grading does not belong on the event loop: every runner in a session shares
+    one, so a comparison here stalls every other task too. It has to be a
+    *process* rather than a thread — math-verify bounds itself with
+    ``signal.SIGALRM``, which only arms on the main thread, and off it the call
+    raises rather than degrading, which would silently flip verdicts.
+    """
+    from math_verify import parse, verify
+
+    # math_verify.verify expects the gold answer as the first arg.
+    return bool(verify(parse(gold), parse(pred)))
 
 
 @sieval_task(
@@ -120,8 +136,6 @@ class BRUMO2025ZeroShotGenTask(
 
     @override
     async def feedback(self, post, ctx):
-        from math_verify import parse, verify
-
         rollouts = []
         ground_truth = ctx.raw_sample["answer"]
         for rollout in post["rollouts"]:
@@ -132,10 +146,9 @@ class BRUMO2025ZeroShotGenTask(
             pred_with_env = f"${pred}$"
             ref_with_env = f"${ground_truth}$"
             try:
-                parsed_pred = parse(pred_with_env)
-                parsed_ref = parse(ref_with_env)
-                # math_verify.verify expects the gold answer as the first arg.
-                correct = verify(parsed_ref, parsed_pred)
+                correct = await run_cpu_bound(
+                    _verify_answer, ref_with_env, pred_with_env, timeout=GRADE_TIMEOUT
+                )
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
                 correct = False
