@@ -7,6 +7,7 @@ import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
+from sieval.community.deepseek_math import eval_math
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import (
@@ -15,10 +16,12 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.hendrycks_math import (
     HendrycksMathDataset,
     HendrycksMathDatasetSample,
 )
+from sieval.tasks import hendrycks_math_kshot_base_gen as module
 from sieval.tasks.hendrycks_math_kshot_base_gen import (
     N_SHOT,
     HendrycksMathFewShotBaseGenTask,
@@ -138,6 +141,36 @@ async def test_feedback_scores_against_solution_via_eval_math():
     assert correct_fb["rollouts"][0]["correct"] is True
     assert correct_fb["reference"] == ["16"]
     assert wrong_fb["rollouts"][0]["correct"] is False
+
+
+@pytest.mark.anyio
+async def test_grading_is_bounded_in_a_worker_process(monkeypatch):
+    """The mechanism, not the verdict — a thread offload scores the same.
+
+    `eval_math` reaches `math_equal(..., timeout=False)`, so the vendored
+    `call_with_timeout` never runs and nothing else bounds it. On a thread that
+    is unrecoverable: threads are not cancellable, so one runaway `simplify`
+    holds an anyio token until the session ends. Reverting to
+    `anyio.to_thread.run_sync` keeps every other test in this file passing.
+    """
+    seen: dict[str, object] = {}
+
+    async def _spy(func, *args, timeout=None):
+        seen.update(func=func, args=args, timeout=timeout)
+        return func(*args)
+
+    monkeypatch.setattr(module, "run_cpu_bound", _spy)
+
+    task, _ = _task()
+    raw = _sample(solution="Therefore $\\boxed{16}$.")
+    _, fb = await task.feedback(
+        build_prediction_record([["16"]]), TaskContext(sample_id=0, raw_sample=raw)
+    )
+
+    assert seen["func"] is eval_math
+    assert seen["args"] == ({"prediction": ["16"], "answer": ["16"]},)
+    assert seen["timeout"] == GRADE_TIMEOUT
+    assert fb["rollouts"][0]["correct"] is True
 
 
 @pytest.mark.anyio

@@ -406,8 +406,8 @@ class SciCodeZeroShotGenTask(
         # `anyio.to_thread`, not `asyncio.to_thread`: the latter uses the loop's
         # own executor and so escapes anyio's CapacityLimiter, putting these
         # reads outside the session's thread budget. This shares the default
-        # limiter with the loader, the deployer and the DeepSeek-Math graders;
-        # `core/utils/offload.py` is the one caller that substitutes its own.
+        # limiter with the loader and the deployer; grading does not, having
+        # moved to `core/utils/offload.py` and its own limiter.
         targets_by_step = await run_sync(read_targets)
 
         programs: list[StepProgram] = []

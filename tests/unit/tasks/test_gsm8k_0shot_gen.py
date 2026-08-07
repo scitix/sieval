@@ -7,6 +7,7 @@ import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
+from sieval.community.deepseek_math import is_correct
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import (
@@ -14,7 +15,9 @@ from sieval.core.tasks import (
     build_judgement_record,
     build_rollout_judgement,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.gsm8k import GSM8KDataset, GSM8KDatasetSample
+from sieval.tasks import gsm8k_0shot_gen as module
 from sieval.tasks.gsm8k_0shot_gen import (
     COT_INSTRUCTION,
     GSM8KZeroShotGenTask,
@@ -138,6 +141,37 @@ async def test_feedback_wrong_answer():
     post = await task.postprocess(inf, ctx)
     _, fb = await task.feedback(post, ctx)
     assert fb["rollouts"][0]["correct"] is False
+
+
+@pytest.mark.anyio
+async def test_grading_is_bounded_in_a_worker_process(monkeypatch):
+    """The mechanism, not the verdict — a thread offload scores the same.
+
+    `is_correct` reaches `math_equal(..., timeout=False)`, so the vendored
+    `call_with_timeout` never runs and nothing else bounds it. On a thread that
+    is unrecoverable: threads are not cancellable, so one runaway `simplify`
+    holds an anyio token until the session ends. Reverting to
+    `anyio.to_thread.run_sync` keeps every other test in this file passing.
+    """
+    seen: dict[str, object] = {}
+
+    async def _spy(func, *args, timeout=None):
+        seen.update(func=func, args=args, timeout=timeout)
+        return func(*args)
+
+    monkeypatch.setattr(module, "run_cpu_bound", _spy)
+
+    task, model = _task("x")
+    raw = _sample(answer="Work.\n#### 42")
+    inf = ModelOutput(model=model.meta(), texts=["The answer is $\\boxed{42}$."])
+    ctx = TaskContext(sample_id=0, raw_sample=raw, infer_result=inf)
+    post = await task.postprocess(inf, ctx)
+    _, fb = await task.feedback(post, ctx)
+
+    assert seen["func"] is is_correct
+    assert seen["args"] == ({"prediction": "42", "answer": "42"},)
+    assert seen["timeout"] == GRADE_TIMEOUT
+    assert fb["rollouts"][0]["correct"] is True
 
 
 # --- report accuracy + infer injects no decode params ---

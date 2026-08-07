@@ -2,9 +2,20 @@
 
 **Reach for ``anyio.to_thread.run_sync`` first** — that is the house pattern,
 called directly at the site (``core/tasks/loader.py``, ``infer/deployer.py``,
-``cli/leaderboard/session.py``, and the two DeepSeek-Math graders). This module
-is for the one case where a thread provably changes the answer: grading through
-``math-verify``.
+``cli/leaderboard/session.py``, scicode's target reads). Use this module when
+either of two things is true, and grading is where both show up:
+
+1. **A thread changes the answer.** ``math-verify`` is the case — see below.
+2. **The work has no bound of its own.** A thread cannot be cancelled, so an
+   input that never finishes holds its anyio token for the rest of the session,
+   silently, until enough of them accumulate to wedge every other offload. Only
+   a process can be given up on, which is what :data:`GRADE_TIMEOUT` does.
+
+Criterion 2 is the one that is easy to miss, because it does not show up as a
+wrong answer in testing — it shows up as a session that stops making progress.
+Every grader here reaches sympy's ``simplify`` on text a model wrote, so a
+worst case measured over reference data says nothing about the worst case in
+production.
 
 Why it matters: every runner in a session shares one event loop —
 :meth:`MultiTaskRunner.arun` starts each :class:`TaskRunner` with
@@ -12,9 +23,9 @@ Why it matters: every runner in a session shares one event loop —
 synchronously stalls *every* other task, not just its own samples. Measured, a
 co-running benchmark dropped to 0.4% of its solo throughput.
 
-Why a process and not a thread: ``math-verify`` bounds its ``parse`` / ``verify``
-with ``signal.SIGALRM``, which only arms on the main thread, and off it raises
-rather than degrading::
+Criterion 1 in detail: ``math-verify`` bounds its ``parse`` / ``verify`` with
+``signal.SIGALRM``, which only arms on the main thread, and off it raises rather
+than degrading::
 
     ValueError: Math-Verify 'parse' function doesn't support threaded environment
 
@@ -25,6 +36,11 @@ math-verify's own words, the caller "must provide the logic for timeout
 interuption yourself" — which a thread cannot, being uninterruptible. A worker
 process is the main thread of its own process, so timeouts work and verdicts are
 unchanged. A hang is contained too: it occupies one worker instead of the loop.
+
+The two DeepSeek-Math graders (``tasks/gsm8k_0shot_gen.py``,
+``tasks/hendrycks_math_kshot_base_gen.py``) are here on criterion 2 alone: pure
+sympy, thread-safe, and reached with ``math_equal(..., timeout=False)`` so the
+vendored ``call_with_timeout`` never runs. Nothing bounds them but this module.
 
 Degrades rather than fails — if the pool cannot start, work runs inline: the
 behaviour from before this module existed, slow but correct.
