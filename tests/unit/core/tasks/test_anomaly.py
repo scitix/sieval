@@ -530,6 +530,84 @@ class TestTaskAnomalyDetectorAsync:
         assert (tmp_path / "anomalies.json").exists()
 
 
+class TestDetectionRuleRegistration:
+    """What `@sieval_detection_rule` derives, not just that it registers.
+
+    The built-in rules are registered at import, so a test that only reads the
+    resulting registry cannot see the decorator's own logic. These exercise it
+    directly. The derived name is what `applies_to` and every stored report key
+    on, so a change here renames rules across the fleet.
+    """
+
+    def _register(self, func_name: str, **kwargs):
+        def rule(_ctx):
+            return set()
+
+        rule.__name__ = func_name
+        sieval_detection_rule(
+            description=kwargs.pop("description", "d"),
+            category=kwargs.pop("category", "output_quality"),
+            rationale=kwargs.pop("rationale", "r"),
+            **kwargs,
+        )(rule)
+        return _DETECTION_RULES
+
+    def test_the_detect_prefix_is_stripped_from_the_rule_name(self):
+        assert "empty_thing" in self._register("detect_empty_thing")
+
+    def test_a_private_detect_prefix_is_stripped_too(self):
+        assert "empty_thing" in self._register("_detect_empty_thing")
+
+    def test_a_name_without_the_prefix_is_kept_whole(self):
+        # Stripping a suffix instead, or matching case-insensitively, would
+        # silently rename rules that do not follow the convention.
+        assert "custom_rule" in self._register("custom_rule")
+
+    def test_default_tags_come_from_the_rule_name(self):
+        rules = self._register("detect_empty_thing")
+        assert rules["empty_thing"]["definition"]["tags"] == ["empty thing"]
+
+    def test_explicit_tags_win_over_the_derived_default(self):
+        rules = self._register("detect_empty_thing", tags=["explicit"])
+        assert rules["empty_thing"]["definition"]["tags"] == ["explicit"]
+
+    def test_an_empty_tag_list_is_respected_not_replaced(self):
+        # `is not None`, not truthiness: an explicitly empty list means "no
+        # tags", which is different from "derive some for me".
+        rules = self._register("detect_empty_thing", tags=[])
+        assert rules["empty_thing"]["definition"]["tags"] == []
+
+    def test_severity_defaults_to_warning(self):
+        rules = self._register("detect_empty_thing")
+        assert rules["empty_thing"]["definition"]["severity"] == "warning"
+
+    def test_severity_can_be_raised(self):
+        rules = self._register("detect_empty_thing", severity="error")
+        assert rules["empty_thing"]["definition"]["severity"] == "error"
+
+    def test_the_definition_carries_every_declared_field(self):
+        # These keys are serialized into `rules_schema` and hashed; a renamed
+        # key changes the hash and breaks any consumer reading the report.
+        rules = self._register(
+            "detect_empty_thing",
+            description="a description",
+            category="correctness",
+            rationale="a rationale",
+            applies_to=["gen"],
+            threshold=3,
+        )
+        definition = rules["empty_thing"]["definition"]
+        assert definition["description"] == "a description"
+        assert definition["category"] == "correctness"
+        assert definition["rationale"] == "a rationale"
+        assert definition["applies_to"] == ["gen"]
+        assert definition["threshold"] == 3
+
+    def test_the_registered_function_is_the_one_that_runs(self):
+        rules = self._register("detect_empty_thing")
+        assert rules["empty_thing"]["func"].__name__ == "detect_empty_thing"
+
+
 class TestDetectGating:
     """`detect` runs only the rules that apply, and only on finished samples."""
 
