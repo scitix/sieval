@@ -122,8 +122,8 @@ async def test_infer_forwards_n():
 @pytest.mark.anyio
 @pytest.mark.parametrize("blank", ["", "   ", "\n\n"])
 async def test_postprocess_normalizes_blank_to_none(blank: str):
-    task, _, _ = _task()
-    out = ModelOutput(model=None, texts=[blank])
+    task, model, _ = _task()
+    out = ModelOutput(model=model.meta(), texts=[blank])
     post = await task.postprocess(out, TaskContext(sample_id=0))
     assert post["rollouts"][0]["extracted"] is False
 
@@ -256,7 +256,9 @@ async def test_feedback_short_circuit_does_not_inherit_a_prior_verdict():
 # --- report: the three published rates over graded + failed samples ---
 
 
-def _final(sample_id: int, satisfied: int, n_criteria: int) -> TaskContext:
+def _final(
+    sample_id: int, satisfied: int, n_criteria: int, n_unparsed: int = 0
+) -> TaskContext:
     return TaskContext(
         sample_id=sample_id,
         feedback_result=build_judgement_record(
@@ -273,7 +275,7 @@ def _final(sample_id: int, satisfied: int, n_criteria: int) -> TaskContext:
                     extra={
                         "n_criteria": n_criteria,
                         "n_satisfied": satisfied,
-                        "n_unparsed": 0,
+                        "n_unparsed": n_unparsed,
                     },
                 )
             ],
@@ -355,10 +357,11 @@ async def test_report_surfaces_unparsed_verdicts():
     # Judge format drift must be visible in the report, not buried inside the
     # rates it silently depresses.
     task, _, _ = _task()
-    final = _final(0, 8, 10)
-    final.feedback_result["rollouts"][0]["extra"]["n_unparsed"] = 2
-    report = await task.report([final], fails=[])
+    report = await task.report([_final(0, 8, 10, n_unparsed=2)], fails=[])
     assert report["n_unparsed"] == 2
+    # The two unreadable verdicts are already inside the 8/10 -- surfacing them
+    # separately is what lets a reader tell drift from a real rubric failure.
+    assert report["criterion_pass_rate_micro"] == pytest.approx(80.0)
 
 
 @pytest.mark.anyio
