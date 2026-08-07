@@ -124,6 +124,9 @@ from .mmlu_pro_0shot_gen import (
 from .mmmlu_kshot_clp import (
     MMMLUKShotClpTask,
 )
+from .multi_if_0shot_gen import (
+    MultiIFZeroShotGenTask,
+)
 from .openbookqa_kshot_gen import (
     OpenBookQAFewShotGenTask,
 )
@@ -206,6 +209,7 @@ __all__ = [
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
     "MMMLUKShotClpTask",
+    "MultiIFZeroShotGenTask",
     "OpenBookQAFewShotGenTask",
     "PlatinumGSM8KZeroShotGenTask",
     "PlatinumMultiArithZeroShotGenTask",

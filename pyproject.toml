@@ -49,6 +49,20 @@ ifeval = [
   "nltk>=3.9.2",
   "immutabledict>=4.2.2",
 ]
+multi-if = [
+  # Multi-IF vendors its own multilingual fork of the IFEval checkers, so this
+  # group is deliberately not `ifeval`'s: no absl/immutabledict (the fork uses
+  # stdlib logging and MappingProxyType), and emoji is required rather than
+  # optional because the CJK word counter behind every Chinese length
+  # constraint counts emoji as words.
+  "emoji>=2.15.0",
+  "langdetect>=1.0.9",
+  "nltk>=3.9.2",
+  # Only reached when langdetect reports Thai for a model *response* (Thai is
+  # not one of the dataset's eight languages). Declared anyway so that path
+  # cannot die on ImportError mid-run; the import itself is deferred.
+  "pythainlp>=5.0.0",
+]
 math = [
   "latex2sympy2-extended>=1.10.2",
   # antlr4-11-0 extra pins antlr4-python3-runtime==4.11.0, which sympy 1.14's

@@ -768,6 +768,28 @@
       "checksums": {}
     },
     {
+      "name": "multi_if",
+      "display_name": "Multi-IF",
+      "description": "Multi-IF — 4,501 three-turn, eight-language instruction-following conversations extending IFEval.",
+      "source": [
+        "hf:facebook/Multi-IF@0ab97ce0b45c7f57772e8ba2ac1616f4b00bd3aa"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "multilingual",
+        "multi-turn",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-2.0",
+      "checksums": {}
+    },
+    {
       "name": "openbookqa",
       "display_name": "OpenBookQA",
       "description": "OpenBookQA elementary-science open-book multiple-choice QA.",
@@ -1831,6 +1853,27 @@
         "notes": "MMMLU locale/category/subject organization and size-weighted (micro) aggregation from lm-evaluation-harness; Hendrycks evaluate.py completion scoring via a single alogprobs call that reads the next token's top-logprobs over the space-prefixed option tokens ' A'/' B'/' C'/' D' (a missing option is filled with -100 per Hendrycks, not failed loudly; empirically ~0.009% of samples). Because the -100 fill is silent, faithful reproduction needs a server top-k that returns all four option tokens: SGLang serves 100 by default; on vLLM start with --max-logprobs 100 (default 20). Validated on Qwen2.5-72B (sglang): full 14-locale 5-shot = 76.13, zh_cn = 82.43. Those runs used the pre-rename PPL/base_gen packaging at an out-of-tree SHA; the scoring mechanism (single alogprobs call) is identical to this clp task, so the numbers carry over."
       },
       "status": "stable"
+    },
+    {
+      "name": "multi_if_0shot_gen",
+      "display_name": "Multi-IF (0-shot, generative)",
+      "description": "Multi-IF — 4,501 three-turn, eight-language instruction-following conversations extending IFEval.",
+      "dataset": "multi_if",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "multilingual",
+        "multi-turn",
+        "open-ended"
+      ],
+      "deps_group": "multi-if",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "facebookresearch/Multi-IF",
+        "url": "https://github.com/facebookresearch/Multi-IF/blob/1cdb53ed18499ad729e0766e5d3099dd5344406f/metrics.py",
+        "notes": "Multi-IF's own multilingual fork of the IFEval checkers is vendored (sieval.community.multi_if); the google-research IFEval sibling is NOT interchangeable with it. Upstream drives one pass per turn (--steps 1 2 3), one sample per turn; this task walks all three in one pass. Upstream reports fractions, this task percentages. Grading matches upstream's metrics_gen exactly — verified on 535 conversations across all 8 languages (3,098 follow-lists, all per-language overalls) — except for two conversations upstream cannot grade reproducibly itself: kwargs it rejects (letter='#'; missing keyword) send build_description to an unseeded random.choice. langdetect is likewise unseeded upstream, and picks the counting algorithm behind every length constraint. Both defects are tracked, not repaired, per the unqualified-name rule; fixing either needs a `_fixed` variant with a measured delta."
+      },
+      "status": "experimental"
     },
     {
       "name": "openbookqa_kshot_gen",
