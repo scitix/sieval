@@ -42,6 +42,14 @@ The two DeepSeek-Math graders (``tasks/gsm8k_0shot_gen.py``,
 sympy, thread-safe, and reached with ``math_equal(..., timeout=False)`` so the
 vendored ``call_with_timeout`` never runs. Nothing bounds them but this module.
 
+Not ``anyio.to_process.run_sync``, which is the obvious way to avoid hand-rolling
+a pool: its worker runs ``del sys.modules["__main__"]`` before re-importing the
+parent's main module, and anything importing ``__main__`` inside that window
+raises. ``dill`` does (``_dill.py``: ``import __main__ as _main_module``) and
+HuggingFace ``datasets`` imports ``dill``, so a bare ``import sieval`` is enough
+to make every worker fail init with ``BrokenWorkerProcess``. ``spawn`` is immune
+because it *replaces* ``sys.modules["__main__"]`` instead of removing it.
+
 Degrades rather than fails — if the pool cannot start, work runs inline: the
 behaviour from before this module existed, slow but correct.
 ``SIEVAL_OFFLOAD_WORKERS=0`` forces that path.
