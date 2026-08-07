@@ -34,6 +34,8 @@ Hierarchical: global (MultiTaskRunner) → task (TaskRunner) → stage → model
       mutant of *any* module. Looks like a broken test; is a wrong invocation.
     * Config lives in `[tool.mutmut]` (mutmut ≥ 3 dropped `--paths-to-mutate`). Scope a run by
       editing `paths_to_mutate` / `tests_dir`, restore with `git checkout -- pyproject.toml`.
+      It must keep copying `sieval/__init__.py`, or `mutants/sieval` is not a package and every
+      run dies in stats collection — enforced by `check_preflight.py --check check_mutmut_config`.
     * A module whose tests **spawn** processes cannot reach 100%: the trampoline re-executes in
       the fresh worker and hits the same error, so the code takes its fallback path and
       worker-internal mutants are unobservable.

@@ -583,6 +583,7 @@ class PreflightRunner:
         "check_imports",
         "check_examples",
         "check_meta_index_sync",
+        "check_mutmut_config",
         "check_version",
     ]
 
@@ -1920,6 +1921,57 @@ class PreflightRunner:
             return tag.removeprefix("v") if tag else None
         except (subprocess.CalledProcessError, FileNotFoundError):
             return None
+
+    def check_mutmut_config(self) -> list[CheckResult]:
+        """Verify ``[tool.mutmut]`` still produces an importable ``mutants/`` copy.
+
+        mutmut runs the suite from a copy of the tree built out of
+        ``paths_to_mutate`` + ``also_copy``. If that copy does not include
+        ``sieval/__init__.py``, ``mutants/sieval`` is a plain directory rather
+        than a package: every test in the copy resolves ``sieval`` through the
+        editable install instead, and the run dies during stats collection on
+        whichever unrelated import mismatches first.
+
+        That is a silent failure — it looks like a broken test, and it made the
+        mutation-score requirement in ``sieval/core/CLAUDE.md`` unsatisfiable for
+        as long as the entry was missing. Cheap to assert, invisible otherwise.
+        """
+        check = "check_mutmut_config"
+        pyproject = self.project_root / "pyproject.toml"
+        if not pyproject.exists():
+            return [CheckResult("FAIL", check, "pyproject.toml not found")]
+
+        import tomllib
+
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        mutmut = config.get("tool", {}).get("mutmut")
+        if not mutmut:
+            return [CheckResult("PASS", check, "no [tool.mutmut] section to check")]
+
+        copied = list(mutmut.get("also_copy", [])) + list(
+            mutmut.get("paths_to_mutate", [])
+        )
+        # A parent entry ("sieval") carries the file; an exact entry is the
+        # normal case. Anything else means the package root is not in the copy.
+        required = "sieval/__init__.py"
+        if not any(
+            required == entry or required.startswith(f"{entry}/") for entry in copied
+        ):
+            return [
+                CheckResult(
+                    "FAIL",
+                    check,
+                    f"[tool.mutmut] copies no {required!r}, so mutants/sieval is "
+                    "not an importable package and every mutation run dies "
+                    "during stats collection",
+                    [f"also_copy + paths_to_mutate = {copied}"],
+                )
+            ]
+        return [
+            CheckResult(
+                "PASS", check, "[tool.mutmut] copies an importable sieval package"
+            )
+        ]
 
     def check_version(self) -> list[CheckResult]:
         """Check CHANGELOG / git tag / Dockerfile version alignment."""

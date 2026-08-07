@@ -127,13 +127,14 @@ class TestPreflightRunner:
     """Runner orchestration."""
 
     def test_all_checks_listed(self):
-        assert len(PreflightRunner.ALL_CHECKS) == 11
+        assert len(PreflightRunner.ALL_CHECKS) == 12
         assert "check_links" in PreflightRunner.ALL_CHECKS
         assert "check_examples" in PreflightRunner.ALL_CHECKS
         assert "check_meta_index_sync" in PreflightRunner.ALL_CHECKS
         assert "check_version" in PreflightRunner.ALL_CHECKS
         assert "check_task_shot_knobs" in PreflightRunner.ALL_CHECKS
         assert "check_record_key_access" in PreflightRunner.ALL_CHECKS
+        assert "check_mutmut_config" in PreflightRunner.ALL_CHECKS
 
     def test_run_all_returns_results(self):
         runner = PreflightRunner()
@@ -2410,3 +2411,51 @@ class TestCheckRecordKeyAccess:
         """
         results = PreflightRunner().check_record_key_access()
         assert [r.status for r in results] == ["PASS"]
+
+
+class TestCheckMutmutConfig:
+    """`[tool.mutmut]` must still yield an importable `mutants/` copy."""
+
+    def _write(self, tmp_path, body: str) -> PreflightRunner:
+        (tmp_path / "pyproject.toml").write_text(body, encoding="utf-8")
+        return PreflightRunner(project_root=tmp_path)
+
+    def test_missing_package_root_fails(self, tmp_path):
+        # The real regression: also_copy lists the subpackages but not
+        # sieval/__init__.py, so mutants/sieval is a directory rather than a
+        # package and every mutation run dies during stats collection.
+        runner = self._write(
+            tmp_path,
+            '[tool.mutmut]\npaths_to_mutate = ["sieval/core"]\n'
+            'also_copy = ["sieval/tasks", "sieval/cli"]\n',
+        )
+        results = runner.check_mutmut_config()
+        assert [r.status for r in results] == ["FAIL"]
+        assert "not an importable package" in results[0].message
+
+    def test_explicit_package_root_passes(self, tmp_path):
+        runner = self._write(
+            tmp_path,
+            '[tool.mutmut]\npaths_to_mutate = ["sieval/core"]\n'
+            'also_copy = ["sieval/__init__.py", "sieval/tasks"]\n',
+        )
+        assert [r.status for r in runner.check_mutmut_config()] == ["PASS"]
+
+    def test_a_parent_entry_carries_the_package_root(self, tmp_path):
+        # Copying "sieval" wholesale brings __init__.py with it.
+        runner = self._write(tmp_path, '[tool.mutmut]\npaths_to_mutate = ["sieval"]\n')
+        assert [r.status for r in runner.check_mutmut_config()] == ["PASS"]
+
+    def test_no_mutmut_section_is_not_a_failure(self, tmp_path):
+        runner = self._write(tmp_path, "[project]\nname = 'x'\n")
+        assert [r.status for r in runner.check_mutmut_config()] == ["PASS"]
+
+    def test_missing_pyproject_fails(self, tmp_path):
+        runner = PreflightRunner(project_root=tmp_path)
+        assert [r.status for r in runner.check_mutmut_config()] == ["FAIL"]
+
+    def test_the_repo_config_is_registered_and_passes(self):
+        # Registration is the half that makes it run in CI; without it the
+        # function is dead code that reports nothing.
+        assert "check_mutmut_config" in PreflightRunner.ALL_CHECKS
+        assert [r.status for r in PreflightRunner().check_mutmut_config()] == ["PASS"]
