@@ -29,6 +29,8 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 
 from typing import override
 
+from loguru import logger
+
 from sieval.community.deepseek_math import (
     STOP_WORDS,
     eval_math,
@@ -50,6 +52,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import HendrycksMathDatasetSample
 
 N_SHOT = 4
@@ -126,7 +129,25 @@ class HendrycksMathFewShotBaseGenTask(
             ctx.raw_sample["problem"], ctx.raw_sample["solution"], "cot"
         )
         prediction = post["rollouts"][0].get("prediction") or ""
-        correct = bool(eval_math({"prediction": prediction, "answer": reference}))
+        # `math_equal` runs `parse_latex` + `simplify`: ~11 ms typical but up to
+        # 1.7 s for one comparison, and every runner in the session shares one
+        # event loop, so grading here would stall every other task for that long.
+        # A worker process rather than a thread — see `run_cpu_bound`.
+        try:
+            correct = bool(
+                await run_cpu_bound(
+                    eval_math,
+                    {"prediction": prediction, "answer": reference},
+                    timeout=GRADE_TIMEOUT,
+                )
+            )
+        except TimeoutError:
+            logger.warning(
+                "Grading sample {} exceeded {}s and was scored wrong.",
+                ctx.sample_id,
+                GRADE_TIMEOUT,
+            )
+            correct = False
         return True, build_judgement_record(
             reference, [build_rollout_judgement(0, correct)]
         )

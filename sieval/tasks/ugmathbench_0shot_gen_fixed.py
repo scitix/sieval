@@ -158,6 +158,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import UGMathBenchDatasetSample
 
 #: Relative tolerance for numeric answers. Matches the reference evaluator's
@@ -329,13 +330,32 @@ class UGMathBenchZeroShotGenFixedTask(
         golds = raw["answer"]
         rollouts = []
         for rollout in post["rollouts"]:
-            per_slot = judge_answers(
-                rollout.get("prediction"),
-                golds,
-                raw["answer_type"],
-                raw["options"],
-                self._precision,
-            )
+            # Grading is synchronous sympy — ~23 ms for a wrong answer, and every
+            # runner in the session shares one event loop, so doing it here would
+            # stall every other task too. `run_cpu_bound` moves it to a worker
+            # process; a process rather than a thread because math-verify's
+            # timeouts are signal-based and it refuses to run threaded at all.
+            try:
+                per_slot = await run_cpu_bound(
+                    judge_answers,
+                    rollout.get("prediction"),
+                    golds,
+                    raw["answer_type"],
+                    raw["options"],
+                    self._precision,
+                    timeout=GRADE_TIMEOUT,
+                )
+            except TimeoutError:
+                # Same contract as the rest of the grader: an answer that cannot
+                # be graded is a wrong answer, not a failed run. Loud, because a
+                # timeout here means an input the in-module guards did not catch.
+                logger.warning(
+                    "Grading sample {} exceeded {}s and was scored wrong; the "
+                    "prediction is likely a shape the parser guards miss.",
+                    ctx.sample_id,
+                    GRADE_TIMEOUT,
+                )
+                per_slot = [False] * len(golds)
             n_correct = sum(per_slot)
             rollouts.append(
                 build_rollout_judgement(
