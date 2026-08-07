@@ -12,6 +12,27 @@ from sieval.core.utils import offload
 
 
 @pytest.fixture
+def pool_spy(monkeypatch):
+    """Capture the kwargs the pool is constructed with.
+
+    Asserting on the construction rather than on the executor's private
+    attributes: `_mp_context` / `_max_workers` are CPython internals, and a test
+    that reads them is one stdlib refactor away from breaking.
+    """
+    captured: dict = {}
+
+    class _Spy:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def shutdown(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(offload, "ProcessPoolExecutor", _Spy)
+    return captured
+
+
+@pytest.fixture
 def warnings_sink():
     """Collect loguru WARNINGs — this module logs through loguru, not stdlib."""
     from loguru import logger
@@ -119,14 +140,13 @@ async def test_a_broken_pool_degrades_instead_of_failing_the_run(monkeypatch):
     assert offload._pool_failed is True
 
 
-def test_the_pool_is_spawned_never_forked():
-    # The load-bearing choice in this module. The parent is an async process with
-    # live worker threads; forking one can inherit a held lock and deadlock the
-    # child. A mutation to "fork" here would not fail any behavioural test — it
-    # would just occasionally hang a run — so it is asserted directly.
-    pool = offload._get_pool()
-    assert pool is not None
-    assert pool._mp_context.get_start_method() == "spawn"
+def test_the_pool_is_spawned_never_forked(pool_spy):
+    # The load-bearing choice in this module: the parent is an async process with
+    # live worker threads, and forking one can inherit a held lock and deadlock
+    # the child. A mutation to "fork" fails no behavioural test — it just
+    # occasionally hangs a run — so it is asserted at construction.
+    offload._get_pool()
+    assert pool_spy["mp_context"].get_start_method() == "spawn"
 
 
 def test_the_pool_is_built_once_and_reused(monkeypatch):
@@ -138,11 +158,10 @@ def test_the_pool_is_built_once_and_reused(monkeypatch):
     assert offload._get_pool() is first
 
 
-def test_the_pool_is_sized_by_the_worker_count(monkeypatch):
+def test_the_pool_is_sized_by_the_worker_count(monkeypatch, pool_spy):
     monkeypatch.setenv(offload._ENV_WORKERS, "3")
-    pool = offload._get_pool()
-    assert pool is not None
-    assert pool._max_workers == 3
+    offload._get_pool()
+    assert pool_spy["max_workers"] == 3
 
 
 def test_a_disabled_pool_is_not_reconsidered(monkeypatch):

@@ -17,28 +17,20 @@ paths:
 
 ### Variants
 
-An optional trailing segment names a **variant** of the same benchmark, so two
-readings can coexist as separate registered tasks. The variant may not spell a
-mode (`..._clp_gen.py` has two readings and is rejected).
+An optional trailing segment lets two readings of one benchmark coexist as
+separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
 
-- **The unqualified name always means "what upstream measures"** — bugs included.
-  A run compared against a published number must never need to check which
-  variant it used. Never repurpose an unqualified name for a local change.
-- **`_fixed`** is ours, and is licensed by a **defect** in upstream's data or
-  grader — not by preference. Enumerate every divergence in
-  `reference_impl.notes` and **quantify** its score impact; a fork whose effect
-  on the score is unmeasured has no business claiming to be a fix.
-- A different **measurement regime** is not a variant — it gets its own
-  descriptive mode name, the way `arc_challenge_kshot_clp` and `_ppl` already
-  differ. `_fixed` must not become a label for "changed something".
-- `_fixed` is the only variant defined **so far**, not the only one allowed. The
-  segment is generic; a new variant earns a name when a second real case arrives
-  (a prompt-format variant is the likely next). Do not coin one speculatively.
-- Fixing **problem text or reference answers** is a `datasets/` concern, not
-  this one: add a dataset variant that applies an explicit patch table (`id`,
-  field, old → new, why) over the same pinned upstream revision. Never fork a
-  copy of the data — a patch table shrinks to empty when upstream fixes the row,
-  and that is the only exit condition a local fix can have.
+- The unqualified name means **what upstream measures, bugs included**. Never
+  repurpose it for a local change.
+- `_fixed` requires a **defect** in upstream's data or grader, not a preference,
+  and owes both: every divergence in `reference_impl.notes`, and a **quantified**
+  score impact.
+- A variant may not spell a mode — `..._clp_gen.py` is rejected.
+- A different **measurement regime** is a mode, not a variant.
+- A fix to **problem text or reference answers** is a `datasets/` concern: a
+  dataset variant applying a patch table over the same pinned revision, never a
+  forked copy. See `sieval/datasets/CLAUDE.md`.
+- Do not coin a new variant name speculatively.
 
 ## Checklist for New Benchmarks
 

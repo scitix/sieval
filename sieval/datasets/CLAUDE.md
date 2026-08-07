@@ -16,24 +16,19 @@
 
 ## Corrected variants
 
-A dataset ships upstream's rows as they are. When a row is genuinely broken —
-problem text replaced by an error message, a reference answer the answer format
-cannot express — the repair is a **separate** registered dataset (`<name>_fixed`),
-paired with a `_fixed` task variant (see `sieval/tasks/CLAUDE.md`). The
-unqualified name keeps tracking upstream.
+A dataset ships upstream's rows as they are. Repairing a genuinely broken row
+(problem text replaced by an error message, an answer the format cannot express)
+means a **separate** registered dataset `<name>_fixed`, paired with a `_fixed`
+task variant; the unqualified name keeps tracking upstream.
 
-- **Apply an explicit patch table, never fork a copy of the data.** Keep the
-  same pinned `source` revision and carry the edits as data — `id`, field,
-  old → new, and why. The diff is then reviewable, what we changed stays legible
-  forever, and when upstream fixes the row the entry is deleted. A patch table
-  that shrinks to empty is the only exit condition a local fix can have; a forked
-  copy has none.
-- The patch table must **fail loudly** when a row it targets no longer matches
-  the recorded `old` value: upstream re-cut the data and the patch is now
-  guessing. Silent no-ops are how a fix survives past the bug it fixed.
-- A fixed dataset needs its own sample `TypedDict` — it is the reverse-lookup key
-  for `@sieval_task` and must be globally unique. An empty subclass of the
-  upstream one is enough to get a distinct key.
+- **Apply a patch table, never fork the data.** Same pinned `source` revision,
+  edits carried as data — `id`, field, old → new, why. A patch table shrinks to
+  empty when upstream fixes the row, which is the only exit condition a local fix
+  can have; a forked copy has none.
+- The table must **fail loudly** when a targeted row no longer matches its
+  recorded `old`: upstream re-cut the data and the patch is now guessing.
+- A fixed dataset needs its own sample `TypedDict` — that is `@sieval_task`'s
+  reverse-lookup key and must be globally unique. An empty subclass suffices.
 
 ## Subpackages
 

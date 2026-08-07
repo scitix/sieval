@@ -16,45 +16,29 @@ Class: `<Benchmark><ShotType><Mode>[<Variant>]Task` — words for shot count
 
 ### Variants
 
-The optional trailing segment names a **variant** of the same benchmark, letting
-two readings of it coexist as separate registered tasks — needed because
-upstream's buggy version and our corrected one are both worth keeping, for a
-long time. The task name is the registry key *and* the run-directory name, so a
-distinct name is the only place this distinction can live.
-
-The mode is still read off the position right after the shot segment, so a
-variant may not spell a mode: `foo_0shot_clp_gen.py` has two readings and is
-rejected outright rather than settled by regex precedence.
-
-**The unqualified name always tracks upstream, bugs included.** Anyone comparing
-a run against a published number can then read the name and stop thinking. A
-local change never takes over an unqualified name — it takes a variant, and the
-unqualified name stays free even if nothing will ever occupy it (`ugmathbench`'s
-faithful grader cannot ship at all: upstream is GPL-3.0).
+An optional trailing segment lets two readings of one benchmark coexist as
+separate registered tasks. The name is the registry key *and* the run-directory
+name, so it is the only place the distinction can live.
 
 | Variant | Means |
 | --- | --- |
 | *(none)* | Tracks upstream — its protocol, its grader, its defects |
 | `_fixed` | Ours, diverging to repair a defect in upstream's grader or data |
 
-`_fixed` is licensed by a **defect**, not by preference, and carries two
-obligations: every divergence enumerated in `reference_impl.notes`, and its
-score impact **quantified**. An unmeasured fork does not get to call itself a
-fix — measuring it is what keeps `_fixed` from decaying into "changed something".
+- **The unqualified name always tracks upstream, bugs included**, and is never
+  repurposed by a local change. It stays free even if nothing will occupy it —
+  `ugmathbench`'s faithful grader cannot ship at all (upstream is GPL-3.0).
+- **`_fixed` is licensed by a defect, not a preference**, and owes two things:
+  every divergence enumerated in `reference_impl.notes`, and its score impact
+  **quantified**. An unmeasured fork is not a fix.
+- The mode is read positionally, so a variant may not spell one:
+  `foo_0shot_clp_gen.py` has two readings and is rejected.
+- The table is the current vocabulary, not the limit — a new variant earns a row
+  when a second real case arrives. Do not coin one speculatively.
 
-That table is the current **vocabulary**, not the whole mechanism: the segment is
-generic, and a new variant earns a row when a second real case arrives — a
-prompt-format variant of one benchmark is the likely next one. Do not coin a
-variant name speculatively; do not read the one-row table as "`_fixed` is the
-only legal variant" either. What every variant must be is a different reading of
-the **same** measurement, so the two are worth comparing side by side.
-
-Two things that are *not* variants:
-
-- A different **measurement regime**. `arc_challenge_kshot_clp` vs `_ppl` are
-  different rulers, not a fix and a bug; they already say so in the mode.
-- A fix to **problem text or reference answers**. That is a `datasets/` concern
-  — see `sieval/datasets/CLAUDE.md`.
+Not variants: a different **measurement regime** (that is a mode —
+`arc_challenge_kshot_clp` vs `_ppl`), and a fix to **problem text or reference
+answers** (a `datasets/` concern — see `sieval/datasets/CLAUDE.md`).
 
 ### Constructor knobs: `n_shot` vs `k`
 

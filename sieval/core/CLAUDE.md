@@ -25,28 +25,19 @@ Hierarchical: global (MultiTaskRunner) → task (TaskRunner) → stage → model
 
 * Coverage ≥ 95%: `python -m pytest tests/unit/ tests/integration/ --cov -v`
     * If `--cov` dies on `pyarrow.lib.ArrowKeyError: ... Array2DExtensionType already defined`,
-      that is the `pytest-cov` plugin, not your change — it reproduces on untouched modules.
-      `python -m coverage run --source=sieval -m pytest <tests>` then `coverage report -m` works.
-* Mutation score ≥ 70% for modified modules: **`mutmut run`** (the console script)
-    * **Never `python -m mutmut`.** That loads `mutmut/__main__.py` as `__main__`, and the
-      trampoline mutmut injects then imports it *again* as `mutmut.__main__` — a second execution
-      of its top-level `set_start_method('fork')`, which raises `RuntimeError: context has already
-      been set` on the first mutant hit. It fails identically for every module, so it reads like a
-      broken test rather than a wrong invocation. The console script imports it once, under its
-      real name, and works.
-    * mutmut ≥ 3 dropped `--paths-to-mutate`; config lives in `[tool.mutmut]` in `pyproject.toml`.
-      Scope a run by editing `paths_to_mutate` / `tests_dir` and restoring with
-      `git checkout -- pyproject.toml`. Worktrees are fine — it mutates the cwd's tree.
-    * **A module whose tests spawn processes cannot be scored to 100%.** In a *spawned* worker
-      `mutmut.__main__` is not yet imported, so the trampoline re-executes it and hits the same
-      `set_start_method` error; the worker dies and the code under test takes its own fallback
-      path. Mutants that only differ *inside* the worker are therefore unobservable — for
-      `core/utils/offload.py` that is the residual 22 (e.g. `pool.submit(func, …)` →
-      `submit(None, …)`, which the inline fallback answers identically).
-    * Do not read a low score as "this code is untestable" before checking. The same module went
-      **38.7% → 76.3%** without a single new behaviour, purely by asserting contracts the tests had
-      left implicit: that the pool is spawned rather than forked, built once and reused, sized by
-      the worker count, not retried after a failed start — and that the degradation warnings name
-      the cause, since a diagnostic that drops it is what makes silent fallback silent. Most of
-      what looks structural is a missing assertion.
+      that is the `pytest-cov` plugin, not your change — it reproduces on untouched modules. Use
+      `python -m coverage run --source=sieval -m pytest <tests>` + `coverage report -m`.
+* Mutation score ≥ 70% for modified modules: **`mutmut run`** — the console script.
+    * **Never `python -m mutmut`**: it executes `mutmut/__main__.py` twice (once as `__main__`,
+      again via the injected trampoline's `import mutmut.__main__`), and the second
+      `set_start_method('fork')` raises `RuntimeError: context has already been set` on the first
+      mutant of *any* module. Looks like a broken test; is a wrong invocation.
+    * Config lives in `[tool.mutmut]` (mutmut ≥ 3 dropped `--paths-to-mutate`). Scope a run by
+      editing `paths_to_mutate` / `tests_dir`, restore with `git checkout -- pyproject.toml`.
+    * A module whose tests **spawn** processes cannot reach 100%: the trampoline re-executes in
+      the fresh worker and hits the same error, so the code takes its fallback path and
+      worker-internal mutants are unobservable.
+    * A low score usually means missing assertions, not untestable code — `core/utils/offload.py`
+      went 38.7% → 76.3% with no new behaviour, only by pinning contracts the tests had left
+      implicit (spawn-not-fork, pool reuse, and warnings that name their cause).
 * Disk persistence tests: use fresh `TaskLoader` from disk, not `runner._contexts`

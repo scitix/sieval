@@ -1,47 +1,34 @@
 """Run CPU-bound stage work off the event loop, in a worker process.
 
-**The house pattern for not blocking the loop is ``anyio.to_thread.run_sync``,
-called directly at the site** — ``core/tasks/loader.py``, ``infer/deployer.py``
-and ``cli/leaderboard/session.py`` all do exactly that, and so do the two
-DeepSeek-Math graders, whose pure-sympy verdicts are unchanged in a thread.
-Reach for a thread first. This module is for the one case where a thread
-provably changes the answer: grading through ``math-verify``.
+**Reach for ``anyio.to_thread.run_sync`` first** — that is the house pattern,
+called directly at the site (``core/tasks/loader.py``, ``infer/deployer.py``,
+``cli/leaderboard/session.py``, and the two DeepSeek-Math graders). This module
+is for the one case where a thread provably changes the answer: grading through
+``math-verify``.
 
-Every runner in a session shares one event loop:
+Why it matters: every runner in a session shares one event loop —
 :meth:`MultiTaskRunner.arun` starts each :class:`TaskRunner` with
-``tg.start_soon`` inside a single ``anyio.run``. A stage that computes
-synchronously therefore stalls *every* other task in the session, not only its
-own samples — a benchmark grading with sympy measured a co-running benchmark
-down to 0.4% of its solo throughput.
+``tg.start_soon`` inside a single ``anyio.run`` — so a stage that computes
+synchronously stalls *every* other task, not just its own samples. Measured, a
+co-running benchmark dropped to 0.4% of its solo throughput.
 
-**Why a process and not a thread.** ``math-verify`` bounds its own
-``parse`` / ``verify`` with ``signal.SIGALRM``, which only arms on the main
-thread, and it refuses outright rather than degrading::
+Why a process and not a thread: ``math-verify`` bounds its ``parse`` / ``verify``
+with ``signal.SIGALRM``, which only arms on the main thread, and off it raises
+rather than degrading::
 
     ValueError: Math-Verify 'parse' function doesn't support threaded environment
 
-Callers wrap that in a broad ``except``, so in a worker thread the whole
-math-verify strategy would vanish silently and verdicts would flip
-(``\\frac{1}{2}`` against ``0.5`` goes True -> False). Disabling its timeout
-does make it thread-safe, but math-verify then warns that the caller "must
-provide the logic for timeout interruption yourself" — which a thread cannot
-do, since it cannot be interrupted. A worker process is the main thread of its
-own process, so the timeouts keep working and verdicts are unchanged.
+Callers wrap that in a broad ``except``, so in a thread the whole math-verify
+strategy vanishes silently and verdicts flip (``\\frac{1}{2}`` against ``0.5``
+goes True -> False). Disabling its timeout makes it thread-safe but then, in
+math-verify's own words, the caller "must provide the logic for timeout
+interuption yourself" — which a thread cannot, being uninterruptible. A worker
+process is the main thread of its own process, so timeouts work and verdicts are
+unchanged. A hang is contained too: it occupies one worker instead of the loop.
 
-A hang is also contained rather than fatal: it occupies one worker while the
-others keep grading, where the same hang on the event loop stops the session.
-
-All thirteen math-verify graders use this — ``ugmathbench_0shot_gen_fixed`` plus
-the twelve competition and MATH-500 tasks. Uniformly, and not by cost: an
-earlier revision wired only ugmathbench (~190 s of blocked loop per run) and
-left the rest (0.2-0.7 s each) inline, but that line is drawn on the *run*
-rather than the task — 0.2 s assumes ``n=4`` where Apex publishes at ``n=16`` —
-and it came from short integer answers when the same sample already reached
-89 ms, with math-verify's own timeout at 5 s.
-
-Degrades rather than fails. If the pool cannot start (a restricted sandbox, a
-platform without ``spawn``), work runs inline — the same behaviour as before
-this module existed, which is slow but correct.
+Degrades rather than fails — if the pool cannot start, work runs inline: the
+behaviour from before this module existed, slow but correct.
+``SIEVAL_OFFLOAD_WORKERS=0`` forces that path.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
