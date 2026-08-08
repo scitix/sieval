@@ -40,55 +40,25 @@ Not variants: a different **measurement regime** (that is a mode —
 `arc_challenge_kshot_clp` vs `_ppl`), and a fix to **problem text or reference
 answers** (a `datasets/` concern — see `sieval/datasets/CLAUDE.md`).
 
-#### Fidelity stops at execution safety
+**Fidelity stops at execution safety.** Tracking upstream never extends to
+reproducing a path that executes model output, escapes the run directory, or
+cannot be bounded — grading is synchronous on one shared event loop, so an
+unbounded grade stalls the session, not just the sample. There the unqualified
+task carries the *hardened* behaviour, and it is the one divergence that does
+**not** earn a `_fixed`: a variant exists so two readings can be compared, and
+the unsafe reading is not one we will run. It still owes three things:
 
-Read literally, "the unqualified name tracks upstream, bugs included" asks us to
-ship an upstream harness's remote-code-execution path under the plain name. That
-is not the intent, and leaving it unsaid means the next person to hit it has to
-re-derive the answer from two rules that point opposite ways.
+- **Safety, not repair** — preserve upstream everywhere safety does not object,
+  including where upstream is wrong. A grader defect noticed along the way is
+  still a `_fixed` owing its own number, and a large safety delta is evidence
+  one got smuggled in.
+- **A quantified score impact** before shipping `stable`, measured against
+  upstream's actual behaviour on a stored run.
+- **Evidence that no bound binds** on the pinned data — a bound that truncates a
+  real comparison is a scoring change wearing a safety label.
 
-**Tracking upstream never extends to reproducing a path that executes model
-output, escapes the run directory, or cannot be bounded.** Where upstream's own
-harness does one of those, the unqualified task carries the *hardened*
-behaviour. This is the one divergence that does **not** earn a `_fixed`
-variant — a variant exists so two readings can be compared, and the unsafe
-reading is not one we will ever run, so there is no second reading for it to
-hold.
-
-The carve-out covers **unbounded computation** as well as execution, on the same
-footing rather than as an afterthought: grading is synchronous and every runner
-in a session shares one event loop (`MultiTaskRunner.arun` starts them all
-inside one `anyio.run`), so an answer that grades forever is a *session-wide*
-stall, not a slow sample. `factorial(2000000)` reached from model output is the
-same class of defect as `open()` reached from model output.
-
-Three obligations keep it from becoming an excuse for any change someone would
-rather not measure:
-
-1. **It licenses safety, not repair.** Preserve upstream's behaviour everywhere
-   safety does not require otherwise, including where upstream is *wrong*. A
-   grader defect you notice while hardening is still a `_fixed`, and still owes
-   its own number. Done properly the safety delta is usually near zero, and a
-   large one is evidence that a repair was smuggled in with it.
-2. **The score impact is still quantified before it may ship as `stable`** —
-   the same obligation `_fixed` carries, and the only thing separating
-   "hardened" from "changed". Quantify against upstream's *actual* behaviour, on
-   a stored run.
-3. **Every bound is shown not to bind.** A bound that silently truncates a real
-   comparison is a scoring change wearing a safety label, so record that no
-   input in the pinned data reaches it.
-
-Worked example: `theoremqa_kshot_base_gen`. Upstream evaluates extracted answers
-with a bare `eval(num)`; the task walks the AST instead. Replaying a stored
-800-sample run through both reaches 706 expressions, all 706 agree, no bound is
-reached, and accuracy is 44.625 either way — so the hardening ships under the
-plain name, and a set-display defect found along the way is left reproduced,
-with its `+2/800` measured and recorded for whoever wants the `_fixed`.
-
-Known sites: `theoremqa_kshot_base_gen` (done), `sieval/community/ugmathbench.py`
-(hardened under the same principle), and `sieval/community/deepseek_math.py`,
-which passes model output to `parse_expr` and is vendored GPL upstream, so it
-needs its own decision.
+`theoremqa_kshot_base_gen` is the worked example; its `reference_impl.notes`
+carry the measurement.
 
 ### Constructor knobs: `n_shot` vs `k`
 

@@ -31,17 +31,11 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
   dataset variant applying a patch table over the same pinned revision, never a
   forked copy. See `sieval/datasets/CLAUDE.md`.
 - Do not coin a new variant name speculatively.
-- **Fidelity stops at execution safety.** Tracking upstream never extends to
-  reproducing a path that executes model output, escapes the run directory, or
-  cannot be bounded (an unbounded grade stalls the whole session — grading is
-  synchronous on one shared event loop). Where upstream does that, the
-  **unqualified** task carries the hardened behaviour; this is the one
-  divergence that does *not* need a `_fixed`. It still owes all three of: a
-  quantified score impact before shipping `stable`, upstream's behaviour
-  preserved everywhere safety does not require otherwise (a grader defect
-  noticed along the way is still a separate `_fixed`), and evidence that no
-  bound binds on the pinned data. Full rationale and worked example in
-  `sieval/tasks/CLAUDE.md`.
+- **Fidelity stops at execution safety.** Never reproduce a path that executes
+  model output, escapes the run directory, or cannot be bounded — the
+  **unqualified** task carries the hardened behaviour and needs no `_fixed`. It
+  still owes a quantified score impact, upstream preserved everywhere safety
+  does not object, and evidence no bound binds. See `sieval/tasks/CLAUDE.md`.
 
 ## Checklist for New Benchmarks
 
