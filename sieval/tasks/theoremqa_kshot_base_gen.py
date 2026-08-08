@@ -19,7 +19,7 @@ typed groundtruth plumbing:
 * **Numeric answers are evaluated, not executed.** Upstream turns an extracted
   answer into a number with a bare ``eval(num)`` on model output.
   :func:`safe_eval` below replaces the interpreter with an AST walk over an
-  allowlist, which runs nothing and is bounded. This is the one
+  allowlist, which runs nothing and is bounded. This is the one *safety*
   divergence taken under the unqualified name rather than in a ``_fixed``
   variant -- see ``sieval/tasks/CLAUDE.md`` on where fidelity stops -- and it is
   measured at **zero**: replaying a stored 800-sample run through upstream's
@@ -29,6 +29,13 @@ typed groundtruth plumbing:
   attribute traversal) and *also* silently dropped ``abs`` / ``round`` / ``pow``;
   the walk restores them, so it is the more faithful of the two as well as the
   safe one.
+
+  The dialect is narrower than ``eval``'s outside the numeric subset the three
+  call sites reach: comparisons, boolean and conditional expressions, dict
+  displays, subscripts and string literals are all refused. Only the string
+  literal is refused *for* safety -- it is the one literal that can carry code
+  into a function that re-parses its argument -- and the rest are simply shapes
+  no answer on this benchmark is written in.
 * latex2sympy2 falls back to latex2sympy2_extended when the original package is
   unavailable.
 * Numeric groundtruths are derived from the dataset's Answer_type field instead
@@ -138,11 +145,15 @@ def _get_latex2sympy() -> Callable[[str], object]:
 #: the truncated value there, so it is reproduced exactly.
 E = 2.718
 
-#: Largest argument :func:`factorial` will accept. Upstream applies no bound,
-#: and ``factorial`` is in scope for every graded answer -- ``factorial(2000000)``
-#: grades one sample for ~16 s, and grading shares one event loop with every
-#: other task in the session, so an unbounded answer is a session-wide stall
-#: rather than a slow sample.
+#: Largest first argument :func:`factorial`, ``math.comb`` and ``math.perm``
+#: will accept. Upstream bounds none of them, all three are in scope for every
+#: graded answer, and each is reachable with a two-token literal: measured,
+#: ``factorial(2000000)`` runs ~16 s and ``math.comb(2000000, 1000000)`` ~14 s.
+#: Grading runs in a worker process under
+#: :data:`~sieval.core.utils.offload.GRADE_TIMEOUT`, but that frees the
+#: *caller* -- a pool cannot interrupt a running call, so an unbounded answer
+#: holds its worker until it finishes, and enough of them empty the pool for
+#: every task sharing it.
 _MAX_FACTORIAL = 1000
 
 #: Ceiling on the bit length of an integer power. ``a ** b`` is computed
@@ -155,6 +166,16 @@ _MAX_RESULT_BITS = 10_000
 #: Ceiling on AST node count, bounding both parse depth and the number of
 #: operations a single answer can ask for.
 _MAX_NODES = 500
+
+#: Ceiling on the length of a sequence built by *repetition*. A literal display
+#: is already bounded by :data:`_MAX_NODES`; ``[0] * n`` is not, and seven nodes
+#: build an 800 MB list at ``n = 10**8``. What this protects is not the sample
+#: -- callers treat a ``MemoryError`` as "not a number", like any other refusal
+#: -- but the pool: a worker killed by the OOM reaper reaches
+#: :func:`~sieval.core.utils.offload.run_cpu_bound` as a ``BrokenExecutor``,
+#: which drops *every* task in the session back to inline grading for the rest
+#: of the run.
+_MAX_SEQUENCE_LENGTH = 10_000
 
 
 class UnsafeExpression(ValueError):
@@ -192,6 +213,35 @@ def _guarded_factorial(value):
     return factorial(value)
 
 
+def _guarded_comb(n, k):
+    """``math.comb(n, k)``, under the :data:`_MAX_FACTORIAL` ceiling.
+
+    Bounded rather than refused: the ceiling is far above any answer this
+    benchmark asks for, so upstream's function survives for every reachable
+    comparison while the size-driven runaway does not.
+    """
+    if not isinstance(n, int) or n > _MAX_FACTORIAL:
+        raise UnsafeExpression(f"comb argument out of range: {n!r}")
+    return math.comb(n, k)
+
+
+def _guarded_perm(n, k=None):
+    """``math.perm(n, k)``, under the :data:`_MAX_FACTORIAL` ceiling."""
+    if not isinstance(n, int) or n > _MAX_FACTORIAL:
+        raise UnsafeExpression(f"perm argument out of range: {n!r}")
+    return math.perm(n, k)
+
+
+def _guarded_mul(left, right):
+    """``left * right``, refused when it repeats a sequence past the bound."""
+    for sequence, count in ((left, right), (right, left)):
+        if isinstance(sequence, (list, tuple)) and isinstance(count, int):
+            length = count * len(sequence)
+            if length > _MAX_SEQUENCE_LENGTH:
+                raise UnsafeExpression(f"sequence repetition of length {length}")
+    return operator.mul(left, right)
+
+
 def _guarded_lshift(value, amount):
     """``value << amount``, refused when the result cannot be bounded."""
     if not isinstance(amount, int) or amount > _MAX_RESULT_BITS:
@@ -226,15 +276,36 @@ _NAMES: dict[str, object] = {
     "complex": complex,
     "divmod": divmod,
     "len": len,
-    "True": True,
-    "False": False,
-    "None": None,
+    # `True` / `False` / `None` need no entry: all three parse as `ast.Constant`
+    # and are returned by that branch, never looked up here.
+}
+
+#: ``math`` members reachable through an attribute. An allowlist rather than
+#: ``hasattr(math, ...)``, because the module is also the way *past* the bounds
+#: above: ``math.factorial`` is not :func:`_guarded_factorial`, and
+#: ``math.comb`` / ``math.perm`` are the same size-driven integer computation
+#: under a different name. Replacing exactly those three with their bounded
+#: wrappers makes both spellings of each agree; what is left of the public
+#: surface returns floats or is a constant, and a float's only runaway is an
+#: ``OverflowError`` the call site already converts.
+#:
+#: The sequence-consuming members (``prod``, ``fsum``, ``lcm``, ``dist``) need
+#: no entry of their own -- their cost is the length of the sequence handed to
+#: them, which :data:`_MAX_NODES` and :data:`_MAX_SEQUENCE_LENGTH` bound between
+#: them. Built by filtering so the map tracks whatever ``math`` a given Python
+#: version ships, with only the bounded names spelled out.
+_MATH_ATTRS: dict[str, object] = {
+    name: getattr(math, name) for name in dir(math) if not name.startswith("_")
+} | {
+    "factorial": _guarded_factorial,
+    "comb": _guarded_comb,
+    "perm": _guarded_perm,
 }
 
 _BIN_OPS: dict[type, Callable] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
+    ast.Mult: _guarded_mul,
     ast.Div: operator.truediv,
     ast.FloorDiv: operator.floordiv,
     ast.Mod: operator.mod,
@@ -278,7 +349,17 @@ def _eval_node(node: ast.AST):
         op = _BIN_OPS.get(type(node.op))
         if op is None:
             raise UnsafeExpression(f"operator {type(node.op).__name__}")
-        return op(_eval_node(node.left), _eval_node(node.right))
+        # Converted on the same terms as a call: an operator that overflows or
+        # runs the process out of memory is an answer outside the subset, not a
+        # failed sample. Without this, `MemoryError` reaches the call sites as
+        # itself -- still caught by their broad `except`, but indistinguishable
+        # in a log from the pool dying.
+        try:
+            return op(_eval_node(node.left), _eval_node(node.right))
+        except UnsafeExpression:
+            raise
+        except (OverflowError, MemoryError) as exc:
+            raise UnsafeExpression(f"operator overflowed: {exc}") from exc
 
     if isinstance(node, ast.UnaryOp):
         op = _UNARY_OPS.get(type(node.op))
@@ -303,17 +384,16 @@ def _eval_node(node: ast.AST):
         return {_eval_node(item) for item in node.elts}
 
     if isinstance(node, ast.Attribute):
-        # Only ``math.<public name>``. Restricting the base to the literal name
-        # ``math`` and rejecting a leading underscore is what keeps this from
-        # being a traversal: ``math``'s public surface is functions and floats,
-        # and the dunder path that reaches anything else is spelled with one.
-        if (
-            isinstance(node.value, ast.Name)
-            and node.value.id == "math"
-            and not node.attr.startswith("_")
-            and hasattr(math, node.attr)
-        ):
-            return getattr(math, node.attr)
+        # Only ``math.<allowlisted name>``. Restricting the base to the literal
+        # name ``math`` is what keeps this from being a *traversal*: no other
+        # object is reachable, and the dunder path that would reach one is not
+        # in `_MATH_ATTRS`. The allowlist then carries the *size* bounds, which
+        # the base restriction alone does not give -- see its definition.
+        if isinstance(node.value, ast.Name) and node.value.id == "math":
+            try:
+                return _MATH_ATTRS[node.attr]
+            except KeyError:
+                raise UnsafeExpression(f"math member {node.attr!r}") from None
         raise UnsafeExpression("attribute access")
 
     if isinstance(node, ast.Call):
@@ -700,28 +780,41 @@ def _normalize_n_shot(n_shot: int | None) -> int:
             "Prompt follows official short-form examples by default; n_shot can "
             "select any prefix of the built-in examples. answer_clean and "
             "numeric matching follow official utils.py/number_utils.py, with "
-            "ONE deliberate divergence, taken for execution safety rather than "
-            "as a repair. UPSTREAM EXECUTES MODEL OUTPUT: number_utils.py turns "
+            "ONE deliberate SAFETY divergence, taken for execution safety "
+            "rather than as a repair. UPSTREAM EXECUTES MODEL OUTPUT: "
+            "number_utils.py turns "
             "an extracted answer into a number with a bare eval(num), which is "
             "arbitrary code execution driven by the model under test. This task "
             "evaluates the same expressions with an AST walk over an allowlist "
-            "(safe_eval, in this module) that executes nothing and is bounded "
-            "in node count, integer-power size and factorial argument. "
+            "(safe_eval, in this module) that executes nothing. BOUNDS: node "
+            "count; integer-power and shift size; sequence repetition; and the "
+            "first argument to factorial, math.comb and math.perm, which are "
+            "reached through an allowlist so that math.factorial(n) and "
+            "factorial(n) carry the same ceiling. "
             "MEASURED DIVERGENCE: ZERO. Replaying a stored 800-sample run "
             "(Qwen2.5-72B, 5-shot, greedy) through upstream's bare eval and "
             "through this walk reaches 706 expressions across the three call "
             "sites; 586 evaluate to an identical value, 120 fail under both, "
             "and 0 are refused here but evaluated by upstream. Task accuracy is "
             "44.625 under both readings, and no sample's verdict differs. None "
-            "of the three bounds is reached by any of the 706. Fidelity was "
-            "preserved wherever safety did not require otherwise: set displays "
+            "of the bounds in force at that replay (node count, integer-power "
+            "size, factorial argument) was reached by any of the 706; the "
+            "sequence-repetition and math-spelled ceilings were added in review "
+            "afterwards, and each sits orders of magnitude above the shapes "
+            "this benchmark's answers are written in. Fidelity was preserved "
+            "wherever safety did not object WITHIN the numeric subset the three "
+            "call sites reach: set displays "
             "and bitwise operators are supported purely because upstream "
             "computes them, and the builtins that upstream's eval exposed "
             "(abs/round/pow/min/max/sum/int/float/complex/divmod/len) are "
             "available again -- an earlier mitigation, eval with __builtins__ "
             "cleared, was BOTH escapable (clearing builtins does not stop "
             "attribute traversal; the catch_warnings route reaches a live open) "
-            "AND silently lost those names to a NameError. REPRODUCED DEFECT: "
+            "AND silently lost those names to a NameError. Outside that subset "
+            "the dialect is narrower than eval's: comparisons, boolean and "
+            "conditional expressions, dict displays, subscripts and string "
+            "literals are refused, and only the string literal is refused for a "
+            "safety reason. REPRODUCED DEFECT: "
             "latex2sympy folds a list answer such as [0, 0] into the set {0}, "
             "and evaluating that set cements the corruption; refusing set "
             "displays instead would score +2 of 800 samples correct (44.625 -> "
@@ -794,6 +887,13 @@ class TheoremQAKShotBaseGenTask(
         # answer_clean returns "" when nothing was extracted; None is the
         # protocol's spelling, and report()'s `empty` counter now reads
         # `extracted` instead of comparing against "".
+        #
+        # A timed-out extraction lands in that same counter, so `empty` means
+        # "no answer came out of extraction", not "the model wrote nothing".
+        # Deliberate: the two are the same fact for every consumer of the metric
+        # — no prediction to grade — and splitting them would add a second
+        # counter that is zero on every run where the grader keeps up. The
+        # warning above is what distinguishes them when it matters.
         return build_prediction_record([extracted or None])
 
     @override

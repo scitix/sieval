@@ -358,10 +358,24 @@ def test_unsafe_expression_is_a_value_error():
         "10**10**10",
         "(10**999)**999",
         "1 << 10**10",
+        # Same computations spelled through the module. `math` is in scope, so
+        # every bound above is reachable by a second name — measured on the
+        # unguarded build, `math.factorial(3000000)` ran 33 s and
+        # `math.comb(2000000, 1000000)` 14 s, both from five nodes.
+        "math.factorial(2000000)",
+        "math.comb(2000000, 1000000)",
+        "math.perm(200000, 100000)",
+        # Repetition, which no *literal* display can express under `_MAX_NODES`:
+        # seven nodes for an 800 MB list on the unguarded build.
+        "[0] * 100000000",
+        "100000000 * [0]",
+        "(0,) * 100000000",
     ],
 )
 def test_unbounded_computation_is_refused_promptly(expression):
-    """Grading shares one event loop, so an unbounded answer stalls a session."""
+    """An unbounded answer holds its worker: `GRADE_TIMEOUT` frees the caller,
+    but a pool cannot interrupt a running call, so enough of them empty the pool
+    for every task sharing it."""
     started = time.perf_counter()
     with pytest.raises(_unsafe_expression()):
         _safe_eval()(expression)
@@ -380,6 +394,56 @@ def test_factorial_is_bounded_but_usable():
     assert module.safe_eval(f"factorial({cap})") == math.factorial(cap)
     with pytest.raises(module.UnsafeExpression):
         module.safe_eval(f"factorial({cap + 1})")
+
+
+@pytest.mark.parametrize(
+    ("bare", "dotted"),
+    [("factorial({n})", "math.factorial({n})")],
+)
+def test_both_spellings_of_a_bounded_name_agree(bare, dotted):
+    """The module is the way *past* a bound wired only to the bare name.
+
+    `_NAMES["factorial"]` is the guarded wrapper, but `math.factorial` is the
+    unguarded original unless the attribute allowlist substitutes it — and the
+    asymmetry is invisible from the bare spelling alone, which is how it got
+    through the first time.
+    """
+    module = _task_module()
+    cap = module._MAX_FACTORIAL
+    assert module.safe_eval(bare.format(n=cap)) == module.safe_eval(
+        dotted.format(n=cap)
+    )
+    with pytest.raises(module.UnsafeExpression):
+        module.safe_eval(dotted.format(n=cap + 1))
+
+
+@pytest.mark.parametrize("expression", ["math.comb(1001, 2)", "math.perm(1001, 2)"])
+def test_math_integer_callees_share_the_factorial_ceiling(expression):
+    """`comb`/`perm` are the same size-driven integer computation as `factorial`."""
+    with pytest.raises(_unsafe_expression()):
+        _safe_eval()(expression)
+
+
+def test_sequence_repetition_is_bounded_but_usable():
+    module = _task_module()
+    cap = module._MAX_SEQUENCE_LENGTH
+    assert module.safe_eval(f"[0] * {cap}") == [0] * cap
+    with pytest.raises(module.UnsafeExpression, match="sequence repetition"):
+        module.safe_eval(f"[0] * {cap + 1}")
+
+
+def test_math_allowlist_keeps_the_cheap_surface():
+    """The bound is on size, not on `math` — narrowing further would be a
+    scoring change wearing a safety label."""
+    module = _task_module()
+    for expression, expected in [
+        ("math.prod([2, 3, 4])", 24),
+        ("math.gcd(12, 18)", 6),
+        ("math.isqrt(17)", 4),
+        ("math.log2(8)", 3.0),
+        ("math.hypot(3, 4)", 5.0),
+    ]:
+        assert module.safe_eval(expression) == expected
 
 
 #: Expressions drawn from the shapes the three call sites actually reach:
@@ -435,6 +499,17 @@ _FAITHFUL = [
     "1 << 4",
     "16 >> 2",
     "~5",
+    # keywords, which parse as `ast.Constant` rather than as a name lookup
+    "True",
+    "False",
+    "None",
+    # under the bounds, where the bounded spellings must still be upstream's
+    "math.factorial(5)",
+    "math.comb(10, 3)",
+    "math.perm(5, 2)",
+    "[0] * 5",
+    "3 * [1]",
+    "(1, 2) * 2",
 ]
 
 
