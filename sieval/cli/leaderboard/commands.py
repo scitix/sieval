@@ -13,7 +13,7 @@ from typing import Annotated
 import anyio
 import typer
 
-from sieval.cli.output import CommandResult, OutputFormat, cli_error_message, render
+from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
 
 from .catalog import scan_leaderboards
 from .scanner import RunInfo, build_matrix, resolve_model_name, scan_runs
@@ -26,6 +26,7 @@ leaderboard_app = typer.Typer(
 
 
 @leaderboard_app.command()
+@cli_command
 def report(
     dirs: Annotated[
         list[Path] | None,
@@ -87,6 +88,7 @@ def report(
 
 
 @leaderboard_app.command(name="list")
+@cli_command
 def list_cmd(
     directory: Annotated[
         Path,
@@ -141,6 +143,7 @@ def list_cmd(
 
 
 @leaderboard_app.command("run")
+@cli_command
 def run(
     ctx: typer.Context,
     config: Annotated[
@@ -225,13 +228,9 @@ def run(
     try:
         reports = anyio.run(_run)
     except KeyboardInterrupt:
+        # Ctrl-C is not a command failure: exit 130 without a result payload.
+        # Everything else is left to `@cli_command`.
         sys.exit(130)
-    except Exception as e:
-        cmd_result = CommandResult(
-            command=command_name, ok=False, error=cli_error_message(e)
-        )
-        render(cmd_result, output)
-        raise typer.Exit(1) from e
 
     tasks_data = {
         task_name: {"report": report} for task_name, report in reports.items()

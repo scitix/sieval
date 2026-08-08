@@ -22,9 +22,14 @@ _TRANSLATORS: dict[str, type[BackendTranslator]] = {
 
 
 def get_translator(name: str) -> BackendTranslator:
-    """Get a translator instance by backend name."""
+    """Get a translator instance by backend name.
+
+    Raises ``LookupError`` — not ``KeyError`` — because the message is a
+    sentence for the user and ``KeyError.__str__`` is ``repr(args[0])``,
+    which would double-quote it on the way to the CLI.
+    """
     cls = _TRANSLATORS.get(name)
     if cls is None:
         available = ", ".join(sorted(_TRANSLATORS)) or "(none)"
-        raise KeyError(f"Unknown backend {name!r}. Available: {available}")
+        raise LookupError(f"Unknown backend {name!r}. Available: {available}")
     return cls()

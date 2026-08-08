@@ -5,6 +5,10 @@ authors = [{ name = "ScitiX" }]
 dynamic = ["version"]
 dependencies = [
   "anyio>=4.11.0",
+  # Direct, not just via typer: sieval/cli/output.py imports click for the
+  # exception hierarchy typer does not re-export (ClickException, UsageError,
+  # get_current_context). Floor matches typer 0.24's own requirement.
+  "click>=8.2.1",
   "datasets>=4.2.0",
   "httpx>=0.28.1",
   "huggingface-hub>=0.36.0",

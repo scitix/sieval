@@ -18,7 +18,7 @@ from loguru import logger
 
 from sieval.cli.infer import cleanup_model, launch_model, resolve_infer_config
 from sieval.cli.leaderboard.session import resolve_deterministic, unwrap_proxies
-from sieval.cli.output import CommandResult, OutputFormat, cli_error_message, render
+from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import inject_user_env
@@ -215,6 +215,7 @@ def register_run_command(app: typer.Typer) -> None:
     """Register the run command directly on the main app."""
 
     @app.command()
+    @cli_command
     def run(
         config: Annotated[
             Path,
@@ -303,13 +304,9 @@ def register_run_command(app: typer.Typer) -> None:
         try:
             reports = anyio.run(_go)
         except KeyboardInterrupt:
+            # Ctrl-C is not a command failure: exit 130 without a result
+            # payload. Everything else is left to `@cli_command`.
             sys.exit(130)
-        except Exception as e:
-            cmd_result = CommandResult(
-                command="run", ok=False, error=cli_error_message(e)
-            )
-            render(cmd_result, output)
-            raise typer.Exit(1) from e
 
         tasks_data = {
             task_name: {"report": report} for task_name, report in reports.items()

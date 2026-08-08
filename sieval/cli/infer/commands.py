@@ -21,7 +21,7 @@ import anyio
 import typer
 from loguru import logger
 
-from sieval.cli.output import CommandResult, OutputFormat, render
+from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.process import pid_alive
@@ -144,6 +144,7 @@ def _coerce_value(raw: str) -> ParamValue:
         "allow_interspersed_args": True,
     },
 )
+@cli_command
 def infer_start(
     ctx: typer.Context,
     target: Annotated[
@@ -436,6 +437,7 @@ def infer_start(
 
 
 @infer_app.command("list")
+@cli_command
 def infer_list(
     output: Annotated[
         OutputFormat,
@@ -556,6 +558,7 @@ def infer_list(
 
 
 @infer_app.command("show")
+@cli_command
 def infer_show(
     name: Annotated[
         str,
@@ -602,6 +605,7 @@ def infer_show(
 
 
 @infer_app.command("stop")
+@cli_command
 def infer_stop(
     name: Annotated[
         str,
@@ -664,6 +668,7 @@ def infer_stop(
 
 
 @infer_app.command("logs")
+@cli_command
 def infer_logs(
     name: Annotated[
         str,

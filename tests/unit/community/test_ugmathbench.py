@@ -49,8 +49,13 @@ def test_multiple_choice_description_embeds_the_option_list():
 
 
 def test_unknown_answer_type_is_rejected():
-    with pytest.raises(KeyError, match="unknown UGMathBench answer type"):
+    # LookupError, not KeyError: the latter's `__str__` is `repr(args[0])`,
+    # so the sentence would reach the CLI wrapped in a second set of quotes.
+    with pytest.raises(LookupError) as exc_info:
         describe_answer_type("XX")
+
+    assert not isinstance(exc_info.value, KeyError)
+    assert str(exc_info.value).startswith("unknown UGMathBench answer type 'XX'")
 
 
 def test_answer_count_drives_the_wording_not_the_declared_type_count():

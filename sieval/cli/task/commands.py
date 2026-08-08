@@ -8,7 +8,7 @@ from typing import Annotated
 
 import typer
 
-from sieval.cli.output import OutputFormat, render
+from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
 from sieval.cli.task.render import render_task_list, render_task_show
 from sieval.core.datasets.meta import Level1Category
 from sieval.core.utils.logging import configure_logging
@@ -29,6 +29,7 @@ def _task_callback(
 
 
 @task_app.command("list")
+@cli_command
 def list_cmd(
     dataset: Annotated[
         str | None, typer.Option("--dataset", help="Filter by dataset name.")
@@ -73,6 +74,7 @@ def list_cmd(
 
 
 @task_app.command("show")
+@cli_command
 def show_cmd(
     name: Annotated[str, typer.Argument()],
     data_dir: Annotated[
@@ -84,10 +86,13 @@ def show_cmd(
     datasets, tasks = load_index()
     meta = next((t for t in tasks if t.name == name), None)
     if meta is None:
-        typer.secho(
-            f"Task {name!r} is not registered.",
-            fg=typer.colors.RED,
-            err=True,
+        render(
+            CommandResult(
+                command="task.show",
+                ok=False,
+                error=f"Task {name!r} is not registered.",
+            ),
+            output,
         )
         raise typer.Exit(code=1)
     ds = next((d for d in datasets if d.name == meta.dataset), None)

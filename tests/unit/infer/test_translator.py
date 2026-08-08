@@ -384,8 +384,14 @@ class TestGetTranslator:
     def test_unknown_raises(self):
         from sieval.infer.backends import get_translator
 
-        with pytest.raises(KeyError, match="Unknown backend"):
+        with pytest.raises(LookupError) as exc_info:
             get_translator("tensorrt-llm")
+
+        # Not a KeyError: its `__str__` is `repr(args[0])`, which would reach
+        # the CLI double-quoted. KeyError subclasses LookupError, so the type
+        # assertion is what has the teeth here.
+        assert not isinstance(exc_info.value, KeyError)
+        assert str(exc_info.value).startswith("Unknown backend 'tensorrt-llm'")
 
     def test_vllm_protocol(self):
         translator = VllmTranslator()

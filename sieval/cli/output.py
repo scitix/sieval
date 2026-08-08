@@ -7,12 +7,16 @@ single output path: text, JSON, or YAML.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import functools
 import json
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+import click
+import typer
 import yaml
 from loguru import logger
 
@@ -49,7 +53,16 @@ class CommandResult:
 
 
 def cli_error_message(exc: Exception) -> str:
-    """Translate API-framed core exceptions into CLI-flag vocabulary."""
+    """Translate API-framed core exceptions into CLI-flag vocabulary.
+
+    Everything else is rendered by ``str()``. Notably there is no `KeyError`
+    special case: a message-carrying `KeyError` would reach the user wrapped
+    in `repr`'s quotes, but unwrapping it here cannot tell a sentence from a
+    missing key, so it would strip the quotes off genuine lookup failures too
+    and leave a bare, contextless token in the ``error`` field. Registries
+    that need to explain themselves raise `LookupError`/`ValueError` instead
+    — see `sieval.infer.recipes.registry.load_recipe`.
+    """
     if isinstance(exc, ResultDirExistsError):
         return (
             f"Result directory '{exc.path}' already exists and contains data.\n"
@@ -89,6 +102,120 @@ def render(result: CommandResult, fmt: OutputFormat) -> None:
         print(json.dumps(payload, indent=2, default=str))
     elif fmt == OutputFormat.YAML:
         print(yaml.dump(payload, default_flow_style=False, sort_keys=False), end="")
+
+
+# ── command wrapper ───────────────────────────────────────────────────
+
+# Identities of the wrappers `cli_command` produced. Weak so a decorated
+# function stays collectable. Registering is not bookkeeping for its own sake:
+# it is the only way to *prove* a command is funnelled — `functools.wraps` hides
+# the wrapper behind the original's metadata, and Typer rebuilds the Click
+# callback around whatever it was handed, so nothing else distinguishes a
+# wrapped command from a bare one.
+_WRAPPED: weakref.WeakSet = weakref.WeakSet()
+
+
+def is_cli_command(fn: Callable) -> bool:
+    """Whether ``fn`` was wrapped by :func:`cli_command`."""
+    return fn in _WRAPPED
+
+
+def cli_command(fn: Callable) -> Callable:
+    """Funnel a command's failures through :func:`render`, like its successes.
+
+    ``sieval/cli/CLAUDE.md`` requires every command result to go through
+    ``CommandResult`` → ``render()``. Success paths did; failures escaped as
+    tracebacks, so ``--output json`` printed *nothing* on stdout when a command
+    raised — the one case a machine caller most needs to parse. This decorator
+    closes that by translating any escaping exception into a failed
+    ``CommandResult`` rendered in the caller's requested format.
+
+    Apply it *below* ``@app.command()``, so the handling is inside what Typer
+    invokes::
+
+        @infer_app.command("show")
+        @cli_command
+        def infer_show(...) -> None: ...
+
+    The requested format is read from the wrapped function's ``output``
+    parameter (Typer passes every parameter by keyword); commands without one
+    render as text.
+
+    Exit codes follow the exception, not the decorator: ``ClickException``
+    keeps its own (``2`` for a usage error), anything else exits ``1``.
+    Under text output a ``ClickException`` is re-raised untouched so Click
+    still prints its usage hint — only the machine-readable formats, which
+    have no such affordance, get the structured form instead.
+
+    Not covered: usage errors Click raises while *parsing* the command line
+    (unknown flag, missing argument). Those happen before the callback is
+    entered, so no callback decorator can see them; they stay as Click
+    renders them.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        # `click.exceptions.Exit` (which `typer.Exit` is) and `Abort` are
+        # RuntimeError subclasses, so they would be caught by the `Exception`
+        # clause below and turned into a bogus error result. They are control
+        # flow — a command that already rendered its own failure raises
+        # `typer.Exit(1)` — so re-raise them untouched.
+        try:
+            return fn(*args, **kwargs)
+        except (click.exceptions.Exit, click.exceptions.Abort):
+            raise
+        except click.ClickException as exc:
+            fmt = _requested_format(kwargs)
+            if fmt == OutputFormat.TEXT:
+                raise
+            render(
+                CommandResult(
+                    command=_invoked_command(), ok=False, error=exc.format_message()
+                ),
+                fmt,
+            )
+            raise typer.Exit(exc.exit_code) from exc
+        except Exception as exc:
+            render(
+                CommandResult(
+                    command=_invoked_command(), ok=False, error=cli_error_message(exc)
+                ),
+                _requested_format(kwargs),
+            )
+            raise typer.Exit(1) from exc
+
+    _WRAPPED.add(wrapper)
+    return wrapper
+
+
+def _invoked_command() -> str:
+    """Dotted name of the running command, e.g. ``"infer.start"``.
+
+    Derived from Click's context rather than passed in, because the dotted
+    names the success paths hardcode are already exactly the invocation path
+    with the program name dropped — so deriving cannot drift from them, and it
+    reproduces for free the one case that is not static: ``eval`` and
+    ``leaderboard run`` bind the same callable and must report the entry point
+    the user actually typed.
+
+    The trade-off is that only invocation paths are reachable. A command that
+    reports a *sub-result* under its own name — ``eval --dry-run`` renders
+    ``eval.dry_run`` — gets the base name here, so an exception escaping the
+    dry-run machinery is reported as ``eval`` while a dry-run that merely
+    fails its checks is reported as ``eval.dry_run``. Accepted: the sub-name
+    is chosen by the command body, and the decorator only ever runs when that
+    body did not get far enough to choose one.
+    """
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:  # called outside Click, e.g. a direct unit-test call
+        return "unknown"
+    return ".".join(ctx.command_path.split()[1:])
+
+
+def _requested_format(kwargs: dict) -> OutputFormat:
+    """Read the ``--output`` value Typer passed, defaulting to text."""
+    fmt = kwargs.get("output")
+    return fmt if isinstance(fmt, OutputFormat) else OutputFormat.TEXT
 
 
 # ── text renderers ────────────────────────────────────────────────────
@@ -475,6 +602,27 @@ def _render_text_dataset_list(result: CommandResult) -> None:
         log_user("{}: all {}", header, value)
 
 
+def _render_text_dataset_download(result: CommandResult) -> None:
+    """Text renderer for dataset.download.
+
+    Per-source progress and warnings were already streamed while the download
+    ran; this renders only the outcome. The failure branch comes first because
+    the not-registered path carries no ``data`` at all.
+    """
+    data = result.data if isinstance(result.data, dict) else {}
+    records = [r for r in data.get("datasets", []) if isinstance(r, dict)]
+    if not result.ok:
+        logger.error("{}", result.error)
+        for r in records:
+            if not r.get("ok"):
+                logger.error("  - {}: {}", r.get("name"), r.get("error"))
+        return
+    if not records:
+        log_user("Nothing to download.")
+        return
+    log_user("{} dataset(s) ready in {}", len(records), data.get("data_dir", "-"))
+
+
 _TASK_LIST_COLS: list[tuple[str, str]] = [
     ("NAME", "name"),
     ("DATASET", "dataset"),
@@ -627,6 +775,7 @@ _TEXT_RENDERERS: dict[str, Callable[[CommandResult], None]] = {
     "leaderboard.list": _render_text_leaderboard_list,
     "dataset.list": _render_text_dataset_list,
     "dataset.show": _render_text_dataset_show,
+    "dataset.download": _render_text_dataset_download,
     "task.list": _render_text_task_list,
     "task.show": _render_text_task_show,
 }

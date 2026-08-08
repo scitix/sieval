@@ -52,13 +52,28 @@ class TestLoadRecipe:
         assert "H200-141G" in recipe.profiles
 
     def test_load_recipe_not_found(self) -> None:
-        """Verify KeyError for nonexistent recipe."""
-        with pytest.raises(KeyError, match="nonexistent-model"):
+        """Verify LookupError for nonexistent recipe."""
+        with pytest.raises(LookupError, match="nonexistent-model"):
             load_recipe("nonexistent-model")
 
+    def test_load_recipe_not_found_is_not_a_key_error(self) -> None:
+        """The message is a sentence for the user, and `KeyError.__str__` is
+        `repr(args[0])` — raising one here would reach the CLI double-quoted.
+        `KeyError` subclasses `LookupError`, so the assertion above alone
+        would not catch a regression to `KeyError`.
+        """
+        with pytest.raises(LookupError) as exc_info:
+            load_recipe("nonexistent-model")
+
+        assert not isinstance(exc_info.value, KeyError)
+        assert str(exc_info.value).startswith("Recipe 'nonexistent-model' not found")
+
     def test_load_recipe_underscore_prefix_rejected(self) -> None:
-        """Verify KeyError for underscore-prefixed recipe names (metadata keys)."""
-        with pytest.raises(KeyError, match="must not start with '_'"):
+        """Verify ValueError for underscore-prefixed recipe names (metadata keys).
+
+        A reserved name is malformed input, not a lookup miss.
+        """
+        with pytest.raises(ValueError, match="must not start with '_'"):
             load_recipe("_metadata")
 
     def test_load_recipe_qwen3_235b_a22b_has_fp8_profile(self) -> None:

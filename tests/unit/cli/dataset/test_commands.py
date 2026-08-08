@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from sieval.cli.dataset.commands import dataset_app
+from sieval.core.datasets.meta import Category, DatasetMeta, Level1Category
+from sieval.datasets.downloaders.local import LocalSourceUnavailable
 
 runner = CliRunner()
 
@@ -323,6 +325,346 @@ def test_dataset_download_domain_filter(tmp_path):
         assert mock_hf.call_count >= 1
 
 
+# ── download: unified output contract ──────────────────────────────────────
+
+
+def test_dataset_download_json_stdout_is_pure_json_while_progress_streams(tmp_path):
+    """The whole point of giving `download` an `--output` flag.
+
+    Progress is emitted *while* the download runs, so it can only coexist with
+    `--output json` if it lands on stderr. Asserting the payload parses is not
+    enough — a single stray `print` upstream of it would break a real caller's
+    `| jq` — so this also pins that the progress text is on stderr and absent
+    from stdout.
+    """
+    with (
+        patch("sieval.datasets.downloaders.url.URLHandler.download"),
+        patch(
+            "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
+            return_value=False,
+        ),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+    ):
+        result = runner.invoke(
+            dataset_app, ["download", "drop", "--data-dir", str(tmp_path), "-o", "json"]
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)  # would raise if progress leaked to stdout
+    assert payload["command"] == "dataset.download"
+    assert payload["ok"] is True
+    assert "fetching" in result.stderr
+    assert "fetching" not in result.stdout
+
+
+def test_dataset_download_json_success_payload_reports_per_dataset_counts(tmp_path):
+    with (
+        patch("sieval.datasets.downloaders.url.URLHandler.download"),
+        patch(
+            "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
+            return_value=False,
+        ),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+    ):
+        result = runner.invoke(
+            dataset_app, ["download", "drop", "--data-dir", str(tmp_path), "-o", "json"]
+        )
+
+    data = json.loads(result.stdout)["data"]
+    assert data["data_dir"] == str(tmp_path)
+    assert (data["requested"], data["succeeded"], data["failed"]) == (1, 1, 0)
+    # DROP has 2 URL sources, neither already present.
+    assert data["datasets"] == [
+        {
+            "name": "drop",
+            "ok": True,
+            "fetched": 2,
+            "already_present": 0,
+            "error": None,
+            "warnings": [],
+        }
+    ]
+
+
+def test_dataset_download_json_unknown_name_is_structured(tmp_path, monkeypatch):
+    # --data-dir agreeing with the env keeps the mismatch warning out, so the
+    # payload can be asserted whole.
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
+    result = runner.invoke(
+        dataset_app,
+        ["download", "nonexistent_zzz", "--data-dir", str(tmp_path), "-o", "json"],
+    )
+
+    assert result.exit_code == 1
+    # `data` is present here too, so `data.failed` / `data.datasets` are
+    # unconditional reads across every download outcome. One dataset was
+    # requested and it failed — not `requested: 0`.
+    assert json.loads(result.stdout) == {
+        "command": "dataset.download",
+        "ok": False,
+        "data": {
+            "data_dir": str(tmp_path),
+            "requested": 1,
+            "succeeded": 0,
+            "failed": 1,
+            "datasets": [
+                {
+                    "name": "nonexistent_zzz",
+                    "ok": False,
+                    "fetched": 0,
+                    "already_present": 0,
+                    "error": "Dataset 'nonexistent_zzz' is not registered.",
+                    "warnings": [],
+                }
+            ],
+        },
+        "error": "Dataset 'nonexistent_zzz' is not registered.",
+    }
+
+
+def test_dataset_download_json_batch_failures_are_itemised(tmp_path):
+    """Batch failure must be machine-readable per dataset, not just a count."""
+
+    def fail_hf(_source, _dest_root, dataset_name, **_kwargs):
+        raise RuntimeError(f"boom: {dataset_name}")
+
+    with (
+        patch(
+            "sieval.datasets.downloaders.hf.HFHandler.is_downloaded", return_value=False
+        ),
+        patch(
+            "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
+            return_value=True,
+        ),
+        patch("sieval.datasets.downloaders.hf.HFHandler.download", side_effect=fail_hf),
+        patch(
+            "sieval.datasets.downloaders.local.LocalHandler.is_downloaded",
+            return_value=True,
+        ),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+    ):
+        result = runner.invoke(
+            dataset_app,
+            ["download", "--all", "--data-dir", str(tmp_path), "-o", "json"],
+        )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    data = payload["data"]
+    assert data["failed"] > 0
+    assert data["requested"] == data["succeeded"] + data["failed"]
+    assert payload["error"] == (
+        f"{data['failed']} of {data['requested']} dataset(s) failed."
+    )
+    failed = [r for r in data["datasets"] if not r["ok"]]
+    assert len(failed) == data["failed"]
+    assert all(r["error"].startswith("boom: ") for r in failed)
+
+
+def test_dataset_download_records_have_one_shape_regardless_of_outcome(tmp_path):
+    """Every record carries every key, so a caller never has to branch on `ok`
+    before reading `fetched`. Mixed batch: `--all` with one source class
+    failing leaves both kinds in the same list.
+    """
+
+    def fail_hf(_source, _dest_root, dataset_name, **_kwargs):
+        raise RuntimeError(f"boom: {dataset_name}")
+
+    with (
+        patch(
+            "sieval.datasets.downloaders.hf.HFHandler.is_downloaded", return_value=False
+        ),
+        patch("sieval.datasets.downloaders.hf.HFHandler.download", side_effect=fail_hf),
+        patch(
+            "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
+            return_value=True,
+        ),
+        patch(
+            "sieval.datasets.downloaders.local.LocalHandler.is_downloaded",
+            return_value=True,
+        ),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+        patch("sieval.cli.dataset.commands.extras_unsatisfied", return_value=[]),
+    ):
+        result = runner.invoke(
+            dataset_app,
+            ["download", "--all", "--data-dir", str(tmp_path), "-o", "json"],
+        )
+
+    records = json.loads(result.stdout)["data"]["datasets"]
+    expected_keys = {"name", "ok", "fetched", "already_present", "error", "warnings"}
+    assert {r["ok"] for r in records} == {True, False}  # both kinds present
+    assert all(set(r) == expected_keys for r in records)
+    # The aggregate a caller actually writes, over the whole list — it used to
+    # KeyError on the failure records, which are the ones worth inspecting.
+    failed = [r for r in records if not r["ok"]]
+    assert failed and all(r["fetched"] == r["already_present"] == 0 for r in failed)
+    assert sum(r["fetched"] + r["already_present"] for r in records) == sum(
+        r["already_present"] for r in records if r["ok"]
+    )  # every url/local source was already present; the hf ones all failed
+
+
+def test_dataset_download_attributes_warnings_to_their_dataset(tmp_path, monkeypatch):
+    """Per-dataset warnings ride on the record, not a flat command-level list.
+
+    With `--all` a flat list leaves 40-odd unattributed strings — the
+    human-only-text problem this payload exists to avoid.
+    """
+    # --data-dir agreeing with the env keeps the mismatch warning (which *is*
+    # command-scoped) out, so the command-level absence below is meaningful.
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
+    meta = DatasetMeta(
+        name="ds",
+        display_name="ds",
+        description="d",
+        source=("url:https://example.com/f.csv",),
+        categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+        deps_group="math",
+    )
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = True
+
+    with (
+        patch("sieval.cli.dataset.commands.load_index", return_value=([meta], [])),
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+        patch(
+            "sieval.cli.dataset.commands.extras_unsatisfied",
+            return_value=["sympy>=1.13"],
+        ),
+    ):
+        result = runner.invoke(
+            dataset_app, ["download", "ds", "--data-dir", str(tmp_path), "-o", "json"]
+        )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    (record,) = payload["data"]["datasets"]
+    assert any("requires extras group 'math'" in w for w in record["warnings"])
+    # Not duplicated into the command-level list, which stays command-scoped.
+    assert "warnings" not in payload
+
+
+def test_dataset_download_keeps_warnings_raised_past_on_the_record(tmp_path):
+    """A BYO corpus emits its per-file instructions and *then* raises. Those
+    instructions are the actionable half, so they must survive onto the failed
+    record rather than being lost with the return value.
+    """
+    metas = [
+        DatasetMeta(
+            name=n,
+            display_name=n,
+            description="d",
+            source=("local:corpus.jsonl",),
+            categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+        )
+        for n in ("byo_a", "byo_b")  # 2 metas ⇒ batch mode, so failures itemise
+    ]
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = False
+    fake_handler.download.side_effect = LocalSourceUnavailable("place it at <path>")
+
+    with (
+        patch("sieval.cli.dataset.commands.load_index", return_value=(metas, [])),
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+    ):
+        result = runner.invoke(
+            dataset_app,
+            ["download", "--all", "--data-dir", str(tmp_path), "-o", "json"],
+        )
+
+    assert result.exit_code == 1
+    records = json.loads(result.stdout)["data"]["datasets"]
+    assert [r["ok"] for r in records] == [False, False]
+    assert all("place it at <path>" in " ".join(r["warnings"]) for r in records)
+    assert all("bring-your-own" in r["error"] for r in records)
+
+
+def test_dataset_download_usage_error_is_structured_in_json():
+    """Exactly-one-target is a usage error: exit 2, and still parseable.
+
+    Invoked through the real `sieval` app, not `dataset_app`, because the
+    command name on this path is derived from Click's context rather than
+    hardcoded — the sub-app alone would report a truncated `"download"`.
+    """
+    from sieval.cli.main import app
+
+    result = runner.invoke(app, ["dataset", "download", "-o", "json"], prog_name="siev")
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout) == {
+        "command": "dataset.download",
+        "ok": False,
+        "error": "Exactly one of <name>, --domain, or --all must be provided.",
+    }
+
+
+def test_dataset_download_data_dir_warning_ships_in_the_json_payload(
+    tmp_path, monkeypatch
+):
+    """The warning must reach a machine caller too, not only the stderr stream."""
+    env_root = tmp_path / "env"
+    env_root.mkdir()
+    override = tmp_path / "override"
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(env_root))
+
+    with (
+        patch(
+            "sieval.datasets.downloaders.hf.HFHandler.is_downloaded", return_value=True
+        ),
+        patch("sieval.datasets.downloaders.hf.HFHandler.download"),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+    ):
+        result = runner.invoke(
+            dataset_app,
+            ["download", "aime_2024", "--data-dir", str(override), "-o", "json"],
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert any(
+        str(override) in w and "SIEVAL_DATA_DIR" in w for w in payload["warnings"]
+    )
+    # Still emitted live as well — a download can be Ctrl-C'd long before the
+    # final payload is rendered.
+    assert "SIEVAL_DATA_DIR" in result.stderr
+
+
+def test_dataset_download_domain_matching_nothing_is_success_with_zero_requested():
+    """Matching no datasets is a no-op, not a failure: exit 0, requested=0."""
+    with patch("sieval.cli.dataset.commands.load_index", return_value=([], [])):
+        result = runner.invoke(
+            dataset_app, ["download", "--domain", "Mathematics", "-o", "json"]
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["data"]["requested"] == 0
+    assert payload["data"]["datasets"] == []
+    assert any("No datasets matched" in w for w in payload["warnings"])
+
+
+def test_dataset_download_text_mode_summarises_outcome(tmp_path):
+    with (
+        patch("sieval.datasets.downloaders.url.URLHandler.download"),
+        patch(
+            "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
+            return_value=False,
+        ),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+    ):
+        result = runner.invoke(
+            dataset_app, ["download", "drop", "--data-dir", str(tmp_path)]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert f"1 dataset(s) ready in {tmp_path}" in result.output
+
+
 # ── readiness correctness (regression tests for C1 bug, migrated from downloaded) ──
 
 
@@ -457,7 +799,7 @@ def test_download_one_deletes_and_raises_on_checksum_mismatch(tmp_path):
         patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
         pytest.raises(RuntimeError, match="checksum verification failed"),
     ):
-        _download_one(meta, tmp_path, force=False)
+        _download_one(meta, tmp_path, False, [])
 
     assert not (tmp_path / "ds" / "f.csv").exists()  # bad file deleted
 
@@ -483,7 +825,7 @@ def test_download_one_verifies_even_when_already_present(tmp_path):
         patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
         pytest.raises(RuntimeError, match="checksum verification failed"),
     ):
-        _download_one(meta, tmp_path, force=False)
+        _download_one(meta, tmp_path, False, [])
 
     fake_handler.download.assert_not_called()  # verify ran despite the skip
 
