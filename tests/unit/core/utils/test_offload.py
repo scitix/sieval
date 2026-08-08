@@ -146,6 +146,62 @@ async def test_a_broken_pool_degrades_instead_of_failing_the_run(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_a_pool_that_dies_mid_run_is_not_retried_per_sample(monkeypatch):
+    # The sibling above pins the *flag*, which is not the same thing: `_get_pool`
+    # returns `_pool` whenever it is set, so setting the flag alone stops the
+    # pool being rebuilt and never stops the dead one being handed back. Every
+    # later sample then pays another failed `submit` before falling back — which
+    # is not what the module's own warning ("for the rest of this run") says.
+    from concurrent.futures import BrokenExecutor
+
+    attempts = {"n": 0}
+
+    class _DyingPool:
+        def submit(self, *_args, **_kwargs):
+            attempts["n"] += 1
+            raise BrokenExecutor("worker died")
+
+        def shutdown(self, **_kwargs):
+            pass
+
+    monkeypatch.setattr(offload, "_pool", _DyingPool())
+    for value in range(4):
+        assert await offload.run_cpu_bound(_double, value) == value * 2
+    assert attempts["n"] == 1, "the dead pool must be dropped, not re-submitted to"
+    assert offload._pool is None
+    assert offload._get_pool() is None
+
+
+def test_a_failed_limiter_does_not_leave_a_live_pool_behind(monkeypatch):
+    # The limiter is what makes `timeout` mean "one grade" rather than "grade
+    # plus however long the queue in front of it is". A pool that outlived a
+    # failed limiter would still be handed out (the guard returns `_pool`
+    # whenever it is set) and would run against anyio's shared 40-token default,
+    # silently undoing that bound — the failure mode being a timeout that fires
+    # on a healthy sample, which reads as a bad model answer.
+    shutdowns = {"n": 0}
+
+    class _Pool:
+        def __init__(self, **_kwargs):
+            pass
+
+        def shutdown(self, **_kwargs):
+            shutdowns["n"] += 1
+
+    def _no_limiter(*_args, **_kwargs):
+        raise RuntimeError("no async backend here")
+
+    monkeypatch.setattr(offload, "ProcessPoolExecutor", _Pool)
+    monkeypatch.setattr(offload.anyio, "CapacityLimiter", _no_limiter)
+
+    assert offload._get_pool() is None
+    assert offload._pool is None
+    assert offload._limiter is None
+    assert offload._pool_failed is True
+    assert shutdowns["n"] == 1, "the half-built pool must not be leaked"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "failure",
     [

@@ -123,6 +123,15 @@ def _get_pool() -> ProcessPoolExecutor | None:
             )
             _limiter = anyio.CapacityLimiter(workers + _QUEUE_SLACK)
         except Exception as exc:
+            # Both objects or neither. A pool that outlived a failed limiter
+            # would still be handed out below (the guard above returns `_pool`
+            # whenever it is set), and would then run against anyio's shared
+            # 40-token default — silently undoing the admission control that
+            # makes `timeout` mean "one grade" rather than "grade plus queue".
+            if _pool is not None:
+                _pool.shutdown(wait=False, cancel_futures=True)
+                _pool = None
+            _limiter = None
             _pool_failed = True
             logger.warning(
                 "Could not start the offload pool ({}); CPU-bound stage work "
@@ -196,8 +205,16 @@ async def run_cpu_bound[T](
 
 
 def _mark_unusable(exc: Exception) -> None:
-    global _pool_failed
+    global _pool, _pool_failed
     with _lock:
+        # Drop the handle as well as setting the flag. `_get_pool` returns
+        # `_pool` whenever it is set, so the flag alone only stops the pool
+        # being *rebuilt* — it never stops the dead one being handed out, and
+        # every later sample would pay another failed `submit` before falling
+        # back. Not shut down here: callers already awaiting a future from it
+        # still need it alive, and its workers are gone in the case that
+        # brought us here anyway.
+        _pool = None
         if not _pool_failed:
             _pool_failed = True
             logger.warning(
