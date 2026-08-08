@@ -13,12 +13,35 @@ Two common anomaly classes are therefore expected compatibility artifacts:
 long chain-of-thought outputs can finish with reason="length", and repeated
 "The answer is" triggers can be treated as ICL leakage by the upstream cleaner.
 
-Known implementation deviations are import/runtime safety and typed
-groundtruth plumbing: numeric eval is sandboxed instead of using upstream bare
-eval, latex2sympy2 falls back to latex2sympy2_extended when the original
-package is unavailable, and numeric groundtruths are derived from the
-dataset's Answer_type field instead of the official loader's runtime Python
-types to reproduce the same typed comparison inputs.
+Known implementation deviations are execution safety, import fallback, and
+typed groundtruth plumbing:
+
+* **Numeric answers are evaluated, not executed.** Upstream turns an extracted
+  answer into a number with a bare ``eval(num)`` on model output.
+  :mod:`sieval.tasks._theoremqa_eval` replaces the interpreter with an AST walk
+  over an allowlist, which runs nothing and is bounded. This is the one
+  divergence taken under the unqualified name rather than in a ``_fixed``
+  variant -- see ``sieval/tasks/CLAUDE.md`` on where fidelity stops -- and it is
+  measured at **zero**: replaying a stored 800-sample run through upstream's
+  ``eval`` and through this walk reaches 706 expressions, all 706 agree, and
+  accuracy is 44.625 either way. The earlier mitigation here, an ``eval`` with
+  ``__builtins__`` cleared, was escapable (clearing builtins does not stop
+  attribute traversal) and *also* silently dropped ``abs`` / ``round`` / ``pow``;
+  the walk restores them, so it is the more faithful of the two as well as the
+  safe one.
+* latex2sympy2 falls back to latex2sympy2_extended when the original package is
+  unavailable.
+* Numeric groundtruths are derived from the dataset's Answer_type field instead
+  of the official loader's runtime Python types, to reproduce the same typed
+  comparison inputs.
+
+One upstream grader defect is reproduced rather than repaired, as the
+unqualified name requires: ``latex2sympy`` folds a list answer such as
+``[0, 0]`` into the set ``{0}``, and evaluating that set cements the corruption
+where refusing it would let the original correct string survive to the
+string-equality check. Repairing it is worth **+2 of 800 samples** (44.625 ->
+44.875, no verdict moving right-to-wrong) and belongs to a ``_fixed`` variant,
+which is deliberately left uncoined for a delta this size.
 
 The Qwen2.5 technical report Table 2 lists TheoremQA as a 5-shot base-model
 benchmark: Qwen2.5-72B scores 42.4, while 42.8 belongs to Qwen2-72B. By
@@ -34,8 +57,9 @@ import math
 import re
 from collections.abc import Callable
 from importlib import import_module
-from math import cos, e, exp, factorial, log, pi, sin, sqrt
 from typing import override
+
+from loguru import logger
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -51,7 +75,9 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import TheoremQADatasetSample
+from sieval.tasks._theoremqa_eval import safe_eval
 
 
 def _load_latex2sympy():
@@ -73,23 +99,6 @@ def _get_latex2sympy() -> Callable[[str], object]:
         _LATEX2SYMPY = _load_latex2sympy()
     return _LATEX2SYMPY
 
-
-E = 2.718
-# Upstream uses bare eval(num). SiEval keeps eval sandboxed for task runtime
-# safety, so builtins such as abs/round/pow are intentionally unavailable.
-_EVAL_GLOBALS = {
-    "__builtins__": {},
-    "math": math,
-    "sqrt": sqrt,
-    "sin": sin,
-    "cos": cos,
-    "log": log,
-    "pi": pi,
-    "factorial": factorial,
-    "exp": exp,
-    "e": e,
-    "E": E,
-}
 
 _DIRECT_ANSWER_TRIGGERS = ["The answer is:", "The answer is", "the answer is"]
 _STOP_TOKENS = [
@@ -263,7 +272,7 @@ def number_it(num):
         return floatify(num)
 
     try:
-        num_value = eval(num, _EVAL_GLOBALS)
+        num_value = safe_eval(num)
         if isinstance(num_value, (list, tuple)):
             num_value = num_value[0]
         if floatify(num_value) is not None:
@@ -310,7 +319,7 @@ def extract_theoremqa_answer(pred: str, answer_flag: bool = True):
         pred = clean_units(pred)
         try:
             tmp = str(_get_latex2sympy()(pred))
-            pred = str(eval(tmp, _EVAL_GLOBALS))
+            pred = str(safe_eval(tmp))
         except Exception:
             if re.match(r"-?[\d.]+\s\D+$", pred) or re.match(
                 r"-?[\d.]+\s[^\s]+$",
@@ -363,7 +372,7 @@ def compare_answer_with_groundtruth(
             return compare_two_numbers(number_it(answer), groundtruth_num)
         if answer.startswith("(") and answer.endswith(")"):
             try:
-                answer_list = list(eval(answer, _EVAL_GLOBALS))
+                answer_list = list(safe_eval(answer))
                 answer_list = [number_it(a) for a in answer_list]
             except Exception:
                 return False
@@ -436,7 +445,39 @@ def _normalize_n_shot(n_shot: int | None) -> int:
         notes=(
             "Prompt follows official short-form examples by default; n_shot can "
             "select any prefix of the built-in examples. answer_clean and "
-            "numeric matching mirror official utils.py/number_utils.py."
+            "numeric matching follow official utils.py/number_utils.py, with "
+            "ONE deliberate divergence, taken for execution safety rather than "
+            "as a repair. UPSTREAM EXECUTES MODEL OUTPUT: number_utils.py turns "
+            "an extracted answer into a number with a bare eval(num), which is "
+            "arbitrary code execution driven by the model under test. This task "
+            "evaluates the same expressions with an AST walk over an allowlist "
+            "(sieval/tasks/_theoremqa_eval.py) that executes nothing and is "
+            "bounded in node count, integer-power size and factorial argument. "
+            "MEASURED DIVERGENCE: ZERO. Replaying a stored 800-sample run "
+            "(Qwen2.5-72B, 5-shot, greedy) through upstream's bare eval and "
+            "through this walk reaches 706 expressions across the three call "
+            "sites; 586 evaluate to an identical value, 120 fail under both, "
+            "and 0 are refused here but evaluated by upstream. Task accuracy is "
+            "44.625 under both readings, and no sample's verdict differs. None "
+            "of the three bounds is reached by any of the 706. Fidelity was "
+            "preserved wherever safety did not require otherwise: set displays "
+            "and bitwise operators are supported purely because upstream "
+            "computes them, and the builtins that upstream's eval exposed "
+            "(abs/round/pow/min/max/sum/int/float/complex/divmod/len) are "
+            "available again -- an earlier mitigation, eval with __builtins__ "
+            "cleared, was BOTH escapable (clearing builtins does not stop "
+            "attribute traversal; the catch_warnings route reaches a live open) "
+            "AND silently lost those names to a NameError. REPRODUCED DEFECT: "
+            "latex2sympy folds a list answer such as [0, 0] into the set {0}, "
+            "and evaluating that set cements the corruption; refusing set "
+            "displays instead would score +2 of 800 samples correct (44.625 -> "
+            "44.875) with no verdict moving right-to-wrong. That is a grader "
+            "repair, not a safety measure, so it is NOT taken here and the "
+            "_fixed name is left uncoined for a delta this size. GRADING: "
+            "extraction and comparison both reach latex2sympy, which is "
+            "synchronous and unbounded, so both run in a worker process "
+            "(sieval/core/utils/offload.py) rather than on the event loop the "
+            "session shares."
         ),
     ),
 )
@@ -477,30 +518,57 @@ class TheoremQAKShotBaseGenTask(
     @override
     async def postprocess(self, inf, ctx):
         text = inf.texts[0] if inf.texts else ""
+        # Extraction runs latex2sympy over model output, which is synchronous
+        # and has no bound of its own, and every runner in the session shares
+        # one event loop — so doing it here would stall every other task. A
+        # worker process rather than a thread for exactly the reason
+        # `run_cpu_bound` documents: a thread cannot be given up on, so one
+        # unparseable answer would hold its slot for the rest of the run.
+        try:
+            extracted = await run_cpu_bound(
+                answer_clean, _DIRECT_ANSWER_TRIGGERS, text, timeout=GRADE_TIMEOUT
+            )
+        except TimeoutError:
+            logger.warning(
+                "Extracting sample {} exceeded {}s; recorded as not extracted. "
+                "The response is likely a shape latex2sympy cannot parse "
+                "quickly.",
+                ctx.sample_id,
+                GRADE_TIMEOUT,
+            )
+            extracted = ""
         # answer_clean returns "" when nothing was extracted; None is the
         # protocol's spelling, and report()'s `empty` counter now reads
         # `extracted` instead of comparing against "".
-        return build_prediction_record(
-            [answer_clean(_DIRECT_ANSWER_TRIGGERS, text) or None]
-        )
+        return build_prediction_record([extracted or None])
 
     @override
     async def feedback(self, post, ctx):
         answer, groundtruth_num = _groundtruth_args(ctx.raw_sample)
         # `or ""` restores exactly what the comparator saw pre-migration.
         prediction = post["rollouts"][0].get("prediction") or ""
+        # Offloaded on the same grounds as postprocess: the comparator reaches
+        # latex2sympy through number_it.
+        try:
+            correct = await run_cpu_bound(
+                compare_answer_with_groundtruth,
+                prediction,
+                answer,
+                groundtruth_num,
+                timeout=GRADE_TIMEOUT,
+            )
+        except TimeoutError:
+            # Same contract as the rest of the grader: an answer that cannot be
+            # graded is a wrong answer, not a failed run.
+            logger.warning(
+                "Grading sample {} exceeded {}s and was scored wrong.",
+                ctx.sample_id,
+                GRADE_TIMEOUT,
+            )
+            correct = False
         return True, build_judgement_record(
             answer,
-            [
-                build_rollout_judgement(
-                    0,
-                    compare_answer_with_groundtruth(
-                        prediction,
-                        answer,
-                        groundtruth_num,
-                    ),
-                )
-            ],
+            [build_rollout_judgement(0, correct)],
         )
 
     @override
