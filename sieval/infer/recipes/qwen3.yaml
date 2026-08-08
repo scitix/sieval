@@ -8,6 +8,12 @@
 # gen→base) and merges it over the hardware layer. Within a layer there is no
 # inheritance or merge — what you see is what you get.
 #
+# `base:` is declared explicitly empty rather than omitted. Resolution returns
+# {} for an absent key either way, so the empty block is documentation, not
+# behavior: it records that the base checkpoint was considered and needs none
+# of these params. A sweep test asserts every entry declares both model types,
+# so a new entry cannot skip that decision without someone noticing.
+#
 # Hardware notes:
 #   A100-40G:  40GB HBM2e, Ampere, no native FP8 (bf16 only)
 #   H100-80G:  80GB HBM3,  Hopper, native FP8, NVLink 4 (900GB/s)

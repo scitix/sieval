@@ -825,6 +825,35 @@ class TestCapabilityLayerResolution:
             assert key not in params, f"{key} leaked into an inferred-gen model"
 
     @pytest.mark.anyio
+    async def test_capabilities_merge_after_hardware(self, tmp_path: Path) -> None:
+        """Capability params must land *after* hardware params in the plan.
+
+        Key order reaches ``infer_plans.yaml``, which ``--resume`` compares
+        byte-for-byte, so the argument order of the ``merge_params`` call in
+        ``_resolve_recipe_params`` is part of the on-disk contract rather than
+        an implementation detail. The golden fixture cannot pin this: it calls
+        the two layer helpers itself, so it would stay green while the
+        production merge reordered underneath it.
+        """
+        model_dir = tmp_path / "Qwen3-4B"
+        _write_qwen3_4b_checkpoint(model_dir)
+        yaml_path = self._write_cfg(tmp_path, model_dir, {"type": "chat"})
+
+        with patch(_GPU_PATCH, new_callable=AsyncMock, return_value=_MOCK_GPU):
+            _, plan, _env = await resolve_infer_config(yaml_path)
+
+        keys = list(plan.assignments[0].engine_params)
+        hardware_keys = {"dtype", "mem_fraction_static", "context_length"}
+        capability_keys = {"reasoning_parser", "tool_call_parser"}
+        assert hardware_keys <= set(keys), keys
+        assert capability_keys <= set(keys), keys
+        last_hardware = max(keys.index(k) for k in hardware_keys)
+        first_capability = min(keys.index(k) for k in capability_keys)
+        assert last_hardware < first_capability, (
+            f"capability params must merge after hardware params; got {keys}"
+        )
+
+    @pytest.mark.anyio
     async def test_chat_task_still_gets_parsers(self, tmp_path: Path) -> None:
         """The inference must not flip instruct models to base."""
         model_dir = tmp_path / "Qwen3-4B"

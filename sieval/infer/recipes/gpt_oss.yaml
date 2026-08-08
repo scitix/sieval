@@ -17,6 +17,12 @@
 #   hardware[gpu][precision][framework]  → perf/memory/parallelism/context
 #   capabilities[model_type][framework]  → behavior (parsers, tool choice)
 #
+# `base:` is declared explicitly empty rather than omitted. Resolution returns
+# {} for an absent key either way, so the empty block is documentation, not
+# behavior: it records that the base checkpoint was considered and needs none
+# of these params. A sweep test asserts every entry declares both model types,
+# so a new entry cannot skip that decision without someone noticing.
+#
 # Perf flags (max_num_batched_tokens, max_cudagraph_capture_size,
 # stream_interval, no_enable_prefix_caching) are copied verbatim from
 # vllm-project/recipes OpenAI/GPT-OSS_Hopper.yaml.

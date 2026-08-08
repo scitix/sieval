@@ -633,6 +633,33 @@ def resolve_task_class(class_spec: str) -> type:
     )
 
 
+def _validate_named_config_map(
+    section_name: str,
+    section_cfg: Any,
+) -> dict[str, dict[str, Any]]:
+    """Validate a config section is a ``name -> dict`` mapping, and return it.
+
+    Shared so every entry point that reads a section reports the same error for
+    the same malformed config. ``derive_model_type`` is now reached from the
+    infer layer *before* an ``EvalSession`` exists, and full config validation
+    only runs under ``--dry-run``, so without this a list-shaped ``tasks:``
+    surfaced as an ``AttributeError`` from inside recipe resolution.
+    """
+    if not isinstance(section_cfg, dict):
+        raise ValueError(
+            f"'{section_name}' configuration must be a dictionary "
+            "mapping names to config"
+        )
+
+    for item_name, item_cfg in section_cfg.items():
+        if not isinstance(item_cfg, dict):
+            raise ValueError(
+                f"'{section_name}.{item_name}' configuration must be a dictionary"
+            )
+
+    return section_cfg
+
+
 def derive_model_type(
     model_name: str,
     explicit_type: str | None,
@@ -651,6 +678,10 @@ def derive_model_type(
     ``type`` twice. Explicit-only would silently mean "instruct" for every
     config in the wild, since ``type`` is normally left to this inference.
 
+    It stays in this module, despite the caller now being the infer CLI, because
+    the inference step *is* task-class resolution — moving it would drag
+    :func:`resolve_task_class` along or split the two apart.
+
     Args:
         model_name: Name of the model in config.
         explicit_type: Explicitly specified type from config, if any.
@@ -660,13 +691,15 @@ def derive_model_type(
         Model type: ``"chat"`` or ``"gen"``.
 
     Raises:
-        ValueError: If tasks pointing at this model require conflicting types.
+        ValueError: If tasks pointing at this model require conflicting types,
+            or if ``tasks_cfg`` is not a ``name -> dict`` mapping.
     """
     # 1. User explicitly specified
     if explicit_type is not None:
         return explicit_type
 
     # 2. Infer from tasks
+    tasks_cfg = _validate_named_config_map("tasks", tasks_cfg)
     required_types: set[tuple[str, str]] = set()
 
     for task_name, task_cfg in tasks_cfg.items():
@@ -925,20 +958,10 @@ class EvalSession:
 
     def _get_named_config_map(self, section_name: str) -> dict[str, dict[str, Any]]:
         """Get a config section and validate it is a name -> dict mapping."""
-        section_cfg = self.config.get(section_name, {})
-        if not isinstance(section_cfg, dict):
-            raise ValueError(
-                f"'{section_name}' configuration must be a dictionary "
-                "mapping names to config"
-            )
-
-        for item_name, item_cfg in section_cfg.items():
-            if not isinstance(item_cfg, dict):
-                raise ValueError(
-                    f"'{section_name}.{item_name}' configuration must be a dictionary"
-                )
-
-        return section_cfg
+        return _validate_named_config_map(
+            section_name,
+            self.config.get(section_name, {}),
+        )
 
     @staticmethod
     def _normalize_dict(value: Any, field_name: str) -> dict[str, Any]:

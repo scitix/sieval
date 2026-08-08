@@ -238,7 +238,21 @@ def infer_start(
                 assignments=(new_a,) + plan.assignments[1:],
             )
     else:
-        # Auto-resolve mode: target is a checkpoint path
+        # Auto-resolve mode: target is a checkpoint path.
+        #
+        # `model_type` is deliberately left at its "instruct" default here, and
+        # this is the one path that does not follow the eval session. A bare
+        # checkpoint carries no task context, so the derivation the YAML leg and
+        # `sieval run` use (tasks → chat/gen) has nothing to read. Serving a base
+        # checkpoint through this path therefore still resolves the instruct
+        # capability params — which are inert on it: the parser/tool-choice flags
+        # are accepted and unused, not a startup failure. They do land in the
+        # persisted plan, so the params recorded for such a launch overstate what
+        # the engine actually used. Deriving the type from the checkpoint itself
+        # (an absent `chat_template` in `tokenizer_config.json` marks a base
+        # model) would close the gap; it is not done here because introspection
+        # currently reads only `config.json` and a dead flag does not justify
+        # widening it.
         async def _resolve() -> ResolveResult:
             return await auto_resolve_plan(
                 target,

@@ -24,6 +24,11 @@ import yaml
 _OUT = Path(__file__).parent / "golden_recipe_profiles.json"
 _RECIPES = ("gpt_oss.yaml", "qwen2_5.yaml", "qwen3.yaml")
 
+# Last commit on main still carrying the pre-split ``profiles`` key — this
+# branch's base. Not ``origin/main``: once the split merges, that ref no longer
+# has the schema this script reads, and the capture would come back empty.
+_PRE_SPLIT_REF = "1c15c00c"
+
 
 def _load_at_ref(ref: str, path: str) -> dict:
     proc = subprocess.run(
@@ -68,7 +73,7 @@ def capture(ref: str) -> list[dict]:
 
 
 if __name__ == "__main__":
-    ref = sys.argv[1] if len(sys.argv) > 1 else "origin/main"
+    ref = sys.argv[1] if len(sys.argv) > 1 else _PRE_SPLIT_REF
     records = capture(ref)
     if not records:
         raise SystemExit(f"No pre-split recipes found at {ref!r}")

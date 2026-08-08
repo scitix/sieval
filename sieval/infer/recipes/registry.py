@@ -51,11 +51,27 @@ CAPABILITY_MODEL_TYPES: tuple[str, ...] = ("instruct", "base")
 def capability_model_type(model_type: str | None) -> str:
     """Map an eval config's model ``type`` onto a recipe capability key.
 
-    ``"chat"`` → ``"instruct"``, ``"gen"`` → ``"base"``. Anything else
-    (including ``None``) falls back to ``"instruct"``, matching the eval
-    config's own default for an undeclared ``type``.
+    ``"chat"`` → ``"instruct"``, ``"gen"`` → ``"base"``. ``None`` → ``"instruct"``,
+    matching the eval config's own default for an undeclared ``type``.
+
+    Anything else raises. The config vocabulary (``chat``/``gen``) and the recipe
+    vocabulary (``instruct``/``base``) differ, so writing the recipe's word into
+    a model config is an easy mistake — and ``type: base`` silently defaulting
+    would select the *opposite* capability layer. The eval session rejects an
+    unknown ``type`` too, but only once it builds the model, which is after the
+    engine has been launched; failing here keeps the typo cheap.
+
+    Raises:
+        ValueError: If ``model_type`` is neither ``"chat"``, ``"gen"`` nor ``None``.
     """
-    return "base" if model_type == "gen" else "instruct"
+    if model_type is None or model_type == "chat":
+        return "instruct"
+    if model_type == "gen":
+        return "base"
+    raise ValueError(
+        f"Unknown model type {model_type!r}; expected 'chat' or 'gen'. "
+        f"('instruct' / 'base' are recipe capability keys, not config types.)"
+    )
 
 
 @dataclass

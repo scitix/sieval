@@ -491,6 +491,21 @@ class TestCapabilityModelType:
         """Matches the eval config's own default for an undeclared type."""
         assert capability_model_type(None) == "instruct"
 
+    def test_recipe_vocabulary_is_rejected(self) -> None:
+        """`type: base` must not silently select the *instruct* layer.
+
+        The config vocabulary is chat/gen and the recipe's is instruct/base, so
+        writing the recipe's word into a model config is the likely mistake —
+        and defaulting it would pick the opposite layer of the one intended.
+        """
+        for bad in ("base", "instruct"):
+            with pytest.raises(ValueError, match="expected 'chat' or 'gen'"):
+                capability_model_type(bad)
+
+    def test_unknown_type_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unknown model type"):
+            capability_model_type("cht")
+
 
 class TestResolveCapabilityProfile:
     @pytest.fixture

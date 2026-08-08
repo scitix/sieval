@@ -8,6 +8,12 @@
 # gen→base) and merges it over the hardware layer. Within a layer there is no
 # inheritance or merge — what you see is what you get.
 #
+# `base:` is declared explicitly empty rather than omitted. Resolution returns
+# {} for an absent key either way, so the empty block is documentation, not
+# behavior: it records that the base checkpoint was considered and needs none
+# of these params. A sweep test asserts every entry declares both model types,
+# so a new entry cannot skip that decision without someone noticing.
+#
 # The base layer matters here: Qwen2.5-72B-Base is the comparison target for
 # the ARC and HellaSwag ppl/clp tasks, and it resolves to the same size bucket
 # as Qwen2.5-72B-Instruct.

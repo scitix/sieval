@@ -424,9 +424,13 @@ async def auto_resolve_plan(
         prec_key = precision_key(identity)
         profile = resolve_hardware_profile(recipe, gpu.model, prec_key, backend)
         capabilities = resolve_capability_profile(recipe, model_type, backend)
-        merged = {**(profile or {}), **capabilities}
-        if merged:
-            recipe_params = merged
+        # Capabilities last, matching `_resolve_recipe_params`; both sites feed
+        # the same `infer_plans.yaml`, whose key order `--resume` compares
+        # byte-for-byte. `merge_params` (not a dict literal) so a dash/underscore
+        # collision across the two layers is reported here rather than silently
+        # picking a winner.
+        if profile is not None or capabilities:
+            recipe_params = merge_params(profile or {}, capabilities)
 
     # 4. Build user hints from overrides; non-topology keys become engine params
     hints: UserHints | None = None
