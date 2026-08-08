@@ -135,24 +135,48 @@ class TaskRunnerConfig:
     deterministic: bool = False
 
 
+def _read_run_meta(root_dir: Path) -> dict | None:
+    """Return the parsed ``root_dir/meta.json``, or ``None`` if unusable.
+
+    Sole reader: missing, unreadable and non-mapping all collapse to ``None``,
+    and what that means is the caller's call — fail-closed for
+    :func:`gate_resume_version`, a pass for :func:`gate_resume_identity`.
+    """
+    try:
+        meta = orjson.loads((root_dir / "meta.json").read_bytes())
+    except (OSError, orjson.JSONDecodeError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
+def read_run_version(root_dir: Path) -> str | None:
+    """Return the sieval version in ``root_dir/meta.json``, or ``None``.
+
+    Public for the CLI, which explains a cross-version resume in an abort it
+    raises before any runner exists. One reader, so its message cannot come to
+    describe a different file than :func:`gate_resume_version` read.
+
+    ``None`` covers every unusable case: no file, unreadable, not a mapping, no
+    ``version``, or a non-string one.
+    """
+    meta = _read_run_meta(root_dir)
+    if meta is None:
+        return None
+    version = meta.get("version")
+    return version if isinstance(version, str) else None
+
+
 def gate_resume_version(root_dir: Path, current_version: str) -> None:
     """Refuse to resume across an incompatible sieval version.
 
-    Reads the format-stable ``version`` from ``root_dir/meta.json`` and
-    applies :func:`resume_version_verdict`. Missing, unreadable, or
-    version-less ``meta.json`` is fail-closed (reject). Raises
-    :class:`ResumeVersionError` on reject; logs a warning on a compatible
-    non-exact resume; silent on an exact match.
+    Reads the format-stable ``version`` from ``root_dir/meta.json`` via
+    :func:`read_run_version` and applies :func:`resume_version_verdict`.
+    Missing, unreadable, or version-less ``meta.json`` is fail-closed
+    (reject). Raises :class:`ResumeVersionError` on reject; logs a warning on
+    a compatible non-exact resume; silent on an exact match.
     """
-    meta_path = root_dir / "meta.json"
-    v_run: object = None
-    try:
-        meta = orjson.loads(meta_path.read_bytes())
-        v_run = meta.get("version") if isinstance(meta, dict) else None
-    except (OSError, orjson.JSONDecodeError):
-        v_run = None
-
-    if not isinstance(v_run, str):
+    v_run = read_run_version(root_dir)
+    if v_run is None:
         raise ResumeVersionError(
             format_reject_message(
                 "<missing>",
@@ -204,11 +228,8 @@ def gate_resume_identity(root_dir: Path, identity: TaskRunIdentity | None) -> No
     """
     if identity is None:
         return
-    try:
-        meta = orjson.loads((root_dir / "meta.json").read_bytes())
-    except (OSError, orjson.JSONDecodeError):
-        return
-    if not isinstance(meta, dict):
+    meta = _read_run_meta(root_dir)
+    if meta is None:
         return
     persisted = meta.get("task")
     if not isinstance(persisted, dict):
