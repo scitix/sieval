@@ -46,6 +46,7 @@ Each layer has its own `CLAUDE.md` with layer-specific import constraints. **Do 
 * `runners`: canonical path is `sieval.core.runners` (`TaskRunner`, `MultiTaskRunner`).
 * `session`: canonical path is `sieval.cli.leaderboard.session` (`EvalSession`, `arun_session`).
 * `validation`: canonical path is `sieval.cli.validation` (`validate_eval_config`, `run_dry_run`).
+* `resolution`: canonical path is `sieval.cli.resolution` (`resolve_task_class`, `resolve_dataset_class`, `derive_model_type`). Reaching them via `session` resolves, but is not API. `cli/infer/` must not import `cli/leaderboard/`.
 * Same package: relative imports. Cross-package: absolute imports.
 * Imports imply public API. Cross-module `from sieval.x.y import _foo` in production code is a smell — promote the name or redesign the call site.
 * Private modules (`_*.py`) are **protected** — accessible only within their own package subtree. Same-package siblings may use `from ._x import Y`; descendants may import via absolute path into the ancestor's private module. Peer-subpackage or out-of-subtree access is forbidden. Tests are the carve-out for both rules.

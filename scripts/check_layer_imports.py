@@ -1,7 +1,7 @@
 """
 Pre-commit hook: enforce sieval import policy.
 
-Three categories of check:
+Four categories of check:
 
 1. **Layer boundary imports** — each layer has a hard-coded set of sibling
    layers it must not import from. Current map:
@@ -12,6 +12,9 @@ Three categories of check:
        datasets/     → depends on core + community
        core/         → zero upper-layer dependencies (independently publishable)
        community/    → third-party evaluation adaptations (used by tasks/datasets)
+
+1b. **Sub-package boundary imports** — the same rule at dotted granularity.
+   Check 1 is layer-granular, so it cannot express an edge *inside* a layer.
 
 2. **Private-access discipline** (encodes CLAUDE.md `## Import Policy`):
 
@@ -58,6 +61,30 @@ FORBIDDEN: dict[str, set[str]] = {
     "infer": {"cli", "tasks", "datasets", "community"},
     "tasks": {"cli", "infer"},
 }
+
+# dotted sub-package -> sub-packages it must NOT import. FORBIDDEN is keyed on a
+# single segment, so it cannot express an edge *inside* a layer: `cli/` depends
+# on every layer, which says nothing about its own sub-packages reaching into
+# each other. `sieval.cli.resolution` exists to remove the edge below.
+FORBIDDEN_SUBPACKAGE: dict[str, set[str]] = {
+    "sieval.cli.infer": {"sieval.cli.leaderboard"},
+}
+
+# Guard: a non-dotted entry can never match a resolved module, so the rule would
+# look enforced while being dead. Same failure mode as _layer_sibling_collision.
+_malformed_subpackage_rules = {
+    pkg
+    for pkg in (
+        *FORBIDDEN_SUBPACKAGE,
+        *(t for targets in FORBIDDEN_SUBPACKAGE.values() for t in targets),
+    )
+    if not pkg.startswith("sieval.")
+}
+if _malformed_subpackage_rules:
+    raise RuntimeError(
+        f"FORBIDDEN_SUBPACKAGE entries must be dotted 'sieval.' sub-packages; "
+        f"got {sorted(_malformed_subpackage_rules)}."
+    )
 
 # Repo-level sibling directories of the `sieval/` package. When the repo
 # directory is itself named `sieval`, an absolute path such as
@@ -261,6 +288,75 @@ def _check_layer_imports(path: Path, tree: ast.AST) -> list[str]:
     return errors
 
 
+def _forbidden_subpackages_for(file_pkg: str) -> set[str]:
+    """Return every sub-package *file_pkg* must not import.
+
+    Rules inherit down the subtree: one on ``sieval.cli.infer`` also binds
+    ``sieval.cli.infer.sub``.
+    """
+    targets: set[str] = set()
+    for root, forbidden in FORBIDDEN_SUBPACKAGE.items():
+        if _is_within_subtree(file_pkg, root):
+            targets |= forbidden
+    return targets
+
+
+def _check_subpackage_imports(path: Path, tree: ast.AST) -> list[str]:
+    """Sub-package boundary check — check 1 at dotted granularity.
+
+    Matches the three shapes ``_check_layer_imports`` does: module path,
+    relative form (via ``_absolute_module``), and the imported alias
+    (``from sieval.cli import leaderboard``). Tests are exempt, as in
+    ``_check_private_access``.
+    """
+    if "tests" in path.parts:
+        return []
+    file_pkg = _file_package(path)
+    if not file_pkg:
+        return []
+    targets = _forbidden_subpackages_for(file_pkg)
+    if not targets:
+        return []
+
+    def _hit(module: str) -> str | None:
+        """Return the forbidden root *module* falls under, if any."""
+        for target in sorted(targets):
+            if _is_within_subtree(module, target):
+                return target
+        return None
+
+    def _error(lineno: int, target: str, written: str) -> str:
+        return (
+            f"{path}:{lineno}: "
+            f"{file_pkg} must not import {target} ({written}) — "
+            f"move the shared name into a leaf both sub-packages can import"
+        )
+
+    errors: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                target = _hit(alias.name)
+                if target:
+                    errors.append(_error(node.lineno, target, alias.name))
+        elif isinstance(node, ast.ImportFrom):
+            module = _absolute_module(node, file_pkg)
+            if not module:
+                continue
+            target = _hit(module)
+            if target:
+                errors.append(_error(node.lineno, target, module))
+                continue
+            # `from sieval.cli import leaderboard` — the target is the imported
+            # name, not the module path. Same violation, different shape.
+            for alias in node.names:
+                composed = f"{module}.{alias.name}"
+                target = _hit(composed)
+                if target:
+                    errors.append(_error(node.lineno, target, composed))
+    return errors
+
+
 def _check_private_access(path: Path, tree: ast.AST) -> list[str]:
     """Private-name + protected-module subtree check (CLAUDE.md Import Policy).
 
@@ -387,6 +483,7 @@ def _check_file(path: Path) -> list[str]:
     except SyntaxError:
         return []
     errors = _check_layer_imports(path, tree)
+    errors.extend(_check_subpackage_imports(path, tree))
     errors.extend(_check_private_access(path, tree))
     errors.extend(_check_relative_scope(path, tree))
     return errors

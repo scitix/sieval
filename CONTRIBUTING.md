@@ -52,6 +52,10 @@ infer → core only
 
 Do not put task-specific logic into `core/`.
 
+`cli/` depends on every layer, but its sub-packages may not depend on each other:
+`cli/infer/` must not import `cli/leaderboard/`. Shared helpers go in a leaf both
+import (`cli/resolution.py`). Enforced by `scripts/check_layer_imports.py`.
+
 ## Code Conventions
 
 - **Formatter/Linter:** `ruff`
