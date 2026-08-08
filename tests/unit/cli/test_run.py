@@ -368,6 +368,94 @@ class TestDeterministicPlanPropagation:
         assert translated_plans[0].deterministic is True
 
 
+class TestPathOnlyCapabilityLayer:
+    """Path-only mode must translate the config model type into the recipe's
+    capability vocabulary before handing it to ``auto_resolve_plan``.
+
+    The two vocabularies sit one call apart (``chat``/``gen`` in the config,
+    ``instruct``/``base`` in the recipe). Every other test here patches
+    ``auto_resolve_plan`` wholesale, so without these assertions dropping the
+    ``capability_model_type`` translation — passing a raw ``"chat"`` straight
+    through — leaves the whole suite green while an instruct model silently
+    loses its parser params.
+    """
+
+    async def _capability_for(self, tmp_path: Path, config: dict) -> str:
+        from sieval.cli.run import _run_all
+
+        config_path = tmp_path / "cfg.yaml"
+        config_path.write_text(yaml.safe_dump(config))
+
+        resolve = AsyncMock(return_value=ResolveResult(plan=_fake_plan(), steps=()))
+        mock_translator = MagicMock()
+        mock_translator.translate.side_effect = _make_translate_capture()[1]
+        mock_handle = MagicMock()
+        mock_handle.endpoint = "http://localhost:8000/v1"
+
+        with (
+            patch("sieval.cli.run.auto_resolve_plan", new=resolve),
+            patch("sieval.cli.run.get_translator", return_value=mock_translator),
+            patch(
+                "sieval.cli.run.launch_model",
+                new=AsyncMock(return_value=([mock_handle], None)),
+            ),
+            patch("sieval.cli.run.cleanup_model", new=AsyncMock()),
+            patch("sieval.infer.topology.validator.validate_plan", return_value=[]),
+            patch(
+                "sieval.cli.leaderboard.session.arun_session",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            await _run_all(config_path=config_path, verbose=False, resume=False)
+
+        resolve.assert_awaited_once()
+        call = resolve.await_args
+        assert call is not None
+        return call.kwargs["capability"]
+
+    @pytest.mark.anyio
+    async def test_chat_config_resolves_instruct_layer(self, tmp_path: Path):
+        capability = await self._capability_for(
+            tmp_path,
+            {
+                "models": {"model_a": {"path": "/tmp/ckpt", "type": "chat"}},
+                "result_dir": str(tmp_path / "out"),
+                "tasks": {},
+            },
+        )
+        assert capability == "instruct"
+
+    @pytest.mark.anyio
+    async def test_gen_config_resolves_base_layer(self, tmp_path: Path):
+        capability = await self._capability_for(
+            tmp_path,
+            {
+                "models": {"model_a": {"path": "/tmp/ckpt", "type": "gen"}},
+                "result_dir": str(tmp_path / "out"),
+                "tasks": {},
+            },
+        )
+        assert capability == "base"
+
+    @pytest.mark.anyio
+    async def test_undeclared_type_is_derived_from_the_tasks(self, tmp_path: Path):
+        """The load-bearing case: no `type:` in the config, a gen task on it."""
+        capability = await self._capability_for(
+            tmp_path,
+            {
+                "models": {"model_a": {"path": "/tmp/ckpt"}},
+                "result_dir": str(tmp_path / "out"),
+                "tasks": {
+                    "arc_ppl": {
+                        "model": "model_a",
+                        "class": "ARCEasyFewShotPplTask",
+                    },
+                },
+            },
+        )
+        assert capability == "base"
+
+
 class TestDeterministicPassedToSession:
     """`_run_all` forwards the raw CLI ``deterministic`` value to
     ``arun_session``; EvalSession computes the monotone OR with YAML

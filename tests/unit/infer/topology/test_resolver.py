@@ -656,6 +656,62 @@ class TestAutoResolvePlan:
         assert result.plan.validate() == []
 
     @pytest.mark.anyio
+    async def test_capabilities_merge_after_hardware(self, tmp_path):
+        """The hardware layer must precede the capability layer in the plan.
+
+        Same on-disk contract as the CLI path: engine_params key order reaches
+        ``infer_plans.yaml`` and ``--resume`` compares it byte-for-byte. This is
+        the only test that sees the order ``auto_resolve_plan`` actually
+        produces, so a swapped merge here would otherwise go unnoticed.
+        """
+        import json
+        from unittest.mock import AsyncMock, patch
+
+        from sieval.infer.introspect import GPUInfo
+        from sieval.infer.topology.resolver import auto_resolve_plan
+
+        checkpoint = tmp_path / "Qwen3-4B"
+        checkpoint.mkdir()
+        (checkpoint / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["Qwen3ForCausalLM"],
+                    "model_type": "qwen3",
+                    "vocab_size": 151936,
+                    "hidden_size": 2560,
+                    "num_hidden_layers": 36,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "intermediate_size": 9216,
+                    "torch_dtype": "bfloat16",
+                }
+            )
+        )
+
+        gpu = GPUInfo(model="NVIDIA H100-SXM5-80GB", count=1, memory_mib=81920)
+        with patch(
+            "sieval.infer.topology.resolver.detect_local_gpu",
+            new_callable=AsyncMock,
+            return_value=gpu,
+        ):
+            result = await auto_resolve_plan(
+                str(checkpoint),
+                backend="sglang",
+                capability="instruct",
+            )
+
+        keys = list(result.plan.assignments[0].engine_params)
+        hardware_keys = {"dtype", "mem_fraction_static", "context_length"}
+        capability_keys = {"reasoning_parser", "tool_call_parser"}
+        assert hardware_keys <= set(keys), keys
+        assert capability_keys <= set(keys), keys
+        last_hardware = max(keys.index(k) for k in hardware_keys)
+        first_capability = min(keys.index(k) for k in capability_keys)
+        assert last_hardware < first_capability, (
+            f"capability params must merge after hardware params; got {keys}"
+        )
+
+    @pytest.mark.anyio
     async def test_no_gpu_raises(self, tmp_path):
         """auto_resolve_plan with no GPU should raise RuntimeError."""
         import json

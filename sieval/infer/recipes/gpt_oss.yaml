@@ -13,9 +13,24 @@
 #   gpt-oss-120b H100-80G profile assumes TP>=2. Single-card H100-80G OOMs on
 #   defaults; override gpu_memory_utilization=0.95 and max_num_batched_tokens=1024.
 #
+# Structure:
+#   hardware[gpu][precision][framework]  → perf/memory/parallelism/context
+#   capabilities[model_type][framework]  → behavior (parsers, tool choice)
+#
+# `base:` is declared explicitly empty rather than omitted. Resolution returns
+# {} for an absent key either way, so the empty block is documentation, not
+# behavior: it records that the base checkpoint was considered and needs none
+# of these params. A sweep test asserts every entry declares both model types,
+# so a new entry cannot skip that decision without someone noticing.
+#
 # Perf flags (max_num_batched_tokens, max_cudagraph_capture_size,
 # stream_interval, no_enable_prefix_caching) are copied verbatim from
 # vllm-project/recipes OpenAI/GPT-OSS_Hopper.yaml.
+#
+# `no_enable_prefix_caching` is a model-intrinsic recommendation rather than a
+# hardware property, so it does not really belong in the hardware layer. It
+# stays there for now: prefix caching is being modelled as an engine-level
+# constraint (scitix/sieval#47), and moving the flag first would migrate it twice.
 
 _family: gpt-oss
 
@@ -26,15 +41,12 @@ gpt-oss-20b:
     sglang: [">=0.5.2"]
   known_issues:
     - "Deterministic inference: use vLLM (gpt-oss batch-invariance fixed in vllm#35404). SGLang's --enable-deterministic-inference is unreliable on gpt-oss (sglang#19431 tracks 120b; no direct 20b repro)."
-  profiles:
+  hardware:
     H100-80G:
       mxfp4:
         vllm:
           max_model_len: 131072
           gpu_memory_utilization: 0.90
-          reasoning_parser: openai
-          tool_call_parser: openai
-          enable_auto_tool_choice: true
           max_num_batched_tokens: 8192
           max_cudagraph_capture_size: 2048
           stream_interval: 20
@@ -42,16 +54,11 @@ gpt-oss-20b:
         sglang:
           context_length: 131072
           mem_fraction_static: 0.85
-          reasoning_parser: gpt-oss
-          tool_call_parser: gpt-oss
     H200-141G:
       mxfp4:
         vllm:
           max_model_len: 131072
           gpu_memory_utilization: 0.90
-          reasoning_parser: openai
-          tool_call_parser: openai
-          enable_auto_tool_choice: true
           max_num_batched_tokens: 8192
           max_cudagraph_capture_size: 2048
           stream_interval: 20
@@ -59,8 +66,18 @@ gpt-oss-20b:
         sglang:
           context_length: 131072
           mem_fraction_static: 0.85
-          reasoning_parser: gpt-oss
-          tool_call_parser: gpt-oss
+  capabilities:
+    instruct:
+      vllm:
+        reasoning_parser: openai
+        tool_call_parser: openai
+        enable_auto_tool_choice: true
+      sglang:
+        reasoning_parser: gpt-oss
+        tool_call_parser: gpt-oss
+    base:
+      vllm: {}
+      sglang: {}
 
 gpt-oss-120b:
   size_range: [100, 150]
@@ -69,15 +86,12 @@ gpt-oss-120b:
     sglang: [">=0.5.2"]
   known_issues:
     - "Deterministic inference: use vLLM (gpt-oss batch-invariance fixed in vllm#35404). SGLang's --enable-deterministic-inference diverges at large batch sizes on gpt-oss-120b (sglang#19431, open)."
-  profiles:
+  hardware:
     H100-80G:
       mxfp4:
         vllm:
           max_model_len: 131072
           gpu_memory_utilization: 0.85
-          reasoning_parser: openai
-          tool_call_parser: openai
-          enable_auto_tool_choice: true
           max_num_batched_tokens: 8192
           max_cudagraph_capture_size: 2048
           stream_interval: 20
@@ -85,16 +99,11 @@ gpt-oss-120b:
         sglang:
           context_length: 131072
           mem_fraction_static: 0.82
-          reasoning_parser: gpt-oss
-          tool_call_parser: gpt-oss
     H200-141G:
       mxfp4:
         vllm:
           max_model_len: 131072
           gpu_memory_utilization: 0.90
-          reasoning_parser: openai
-          tool_call_parser: openai
-          enable_auto_tool_choice: true
           max_num_batched_tokens: 8192
           max_cudagraph_capture_size: 2048
           stream_interval: 20
@@ -102,5 +111,15 @@ gpt-oss-120b:
         sglang:
           context_length: 131072
           mem_fraction_static: 0.85
-          reasoning_parser: gpt-oss
-          tool_call_parser: gpt-oss
+  capabilities:
+    instruct:
+      vllm:
+        reasoning_parser: openai
+        tool_call_parser: openai
+        enable_auto_tool_choice: true
+      sglang:
+        reasoning_parser: gpt-oss
+        tool_call_parser: gpt-oss
+    base:
+      vllm: {}
+      sglang: {}

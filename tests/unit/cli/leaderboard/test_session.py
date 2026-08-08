@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 from sieval.cli.leaderboard.session import (
     _NONMATCH_RUNNER_KEYS,
@@ -34,6 +35,7 @@ from sieval.cli.leaderboard.session import (
     _strip_header,
     _strip_noncomparable_fields,
     arun_session,
+    derive_model_type,
     load_class_from_name,
     load_class_from_path,
     resolve_class,
@@ -610,6 +612,69 @@ class TestInferModelType:
             pytest.raises(ValueError, match="different types"),
         ):
             runner._infer_model_type("m", None)
+
+
+class TestDeriveModelType:
+    """`derive_model_type` is shared by the eval session and recipe resolution,
+    so both reach the same answer for one model. Tested directly because
+    `sieval run` calls the function, not the session method."""
+
+    def test_explicit_type_wins(self):
+        assert derive_model_type("m", "gen", {}) == "gen"
+
+    def test_defaults_to_chat_with_no_tasks(self):
+        assert derive_model_type("m", None, {}) == "chat"
+
+    def test_rejects_non_mapping_tasks_section(self):
+        """A list-shaped `tasks:` must not surface as an AttributeError.
+
+        The infer layer reaches this before an EvalSession exists, and full
+        config validation only runs under `--dry-run`, so this is the first
+        code to touch the section on a normal `sieval run`. The shapes come
+        from `yaml.safe_load` rather than a literal because that is how an
+        untyped config actually reaches the annotated parameter.
+        """
+        tasks_cfg = yaml.safe_load("tasks:\n  - arc\n  - hellaswag\n")["tasks"]
+        with pytest.raises(ValueError, match="'tasks' configuration must be"):
+            derive_model_type("m", None, tasks_cfg)
+
+    def test_rejects_non_mapping_task_entry(self):
+        tasks_cfg = yaml.safe_load("tasks:\n  arc: ARCEasyFewShotPplTask\n")["tasks"]
+        with pytest.raises(ValueError, match="'tasks.arc' configuration must be"):
+            derive_model_type("m", None, tasks_cfg)
+
+    def test_infers_gen_from_task_without_explicit_type(self):
+        """The case explicit-only reading would miss: no `type:` in config."""
+
+        class FakeTask:
+            model_type = "gen"
+
+        tasks_cfg = {"t1": {"model": "m", "class": "fake.FakeTask"}}
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=FakeTask,
+        ):
+            assert derive_model_type("m", None, tasks_cfg) == "gen"
+
+    def test_ignores_tasks_pointing_at_other_models(self):
+        class FakeTask:
+            model_type = "gen"
+
+        tasks_cfg = {"t1": {"model": "other", "class": "fake.FakeTask"}}
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=FakeTask,
+        ):
+            assert derive_model_type("m", None, tasks_cfg) == "chat"
+
+    def test_unresolvable_task_class_is_skipped(self):
+        """Validation reports import errors; derivation must not raise here."""
+        tasks_cfg = {"t1": {"model": "m", "class": "missing.Task"}}
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            side_effect=ImportError("nope"),
+        ):
+            assert derive_model_type("m", None, tasks_cfg) == "chat"
 
 
 class TestSetupModelsEngine:

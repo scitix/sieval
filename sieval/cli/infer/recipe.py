@@ -15,6 +15,7 @@ import typer
 import yaml
 from loguru import logger
 
+from sieval.cli.leaderboard.session import derive_model_type
 from sieval.infer.config import ParamValue
 from sieval.infer.introspect import (
     GPUInfo,
@@ -26,11 +27,13 @@ from sieval.infer.introspect import (
 from sieval.infer.params import merge_params
 from sieval.infer.recipes import (
     Recipe,
+    capability_model_type,
     list_recipes,
     load_family_recipes,
     load_recipe,
     match_recipe,
-    resolve_profile,
+    resolve_capability_profile,
+    resolve_hardware_profile,
 )
 from sieval.infer.topology.models import (
     CP_KEYS,
@@ -108,6 +111,13 @@ async def resolve_infer_config(
     raw_env = infer_dict.get("env") or {}
     user_env: dict[str, str] = {k: str(v) for k, v in raw_env.items()}
 
+    # Which capability layer to serve. Derived from the same config the eval
+    # session reads, so a base checkpoint gets base capabilities even when the
+    # config leaves `type` to task inference (the normal case).
+    capability = capability_model_type(
+        derive_model_type(model_name, mcfg.get("type"), cfg.get("tasks") or {})
+    )
+
     # Recipe resolution
     recipe_params: dict[str, ParamValue] | None = None
     recipe_name = infer_dict.get("recipe")
@@ -120,6 +130,7 @@ async def resolve_infer_config(
             checkpoint,
             backend_name,
             overrides,
+            capability,
         )
     elif checkpoint:
         # Case 2: no recipe, but checkpoint available → try auto-resolve
@@ -128,6 +139,7 @@ async def resolve_infer_config(
             backend_name=backend_name,
             overrides=overrides,
             model_name=model_name,
+            capability=capability,
         )
     elif overrides:
         # Case 3: no recipe, no checkpoint, but overrides → use as-is
@@ -232,13 +244,21 @@ async def _resolve_recipe_params(
     recipe: Recipe,
     backend_name: str,
     overrides: dict[str, ParamValue],
+    capability: str,
 ) -> dict[str, ParamValue]:
     """Resolve engine params for a recipe.
 
-    Pipeline: formula TP/DP → profile → overrides → safety check.
+    Pipeline: formula TP/DP → hardware profile → capability profile →
+    overrides → safety check.
 
     Extracted from _resolve_with_recipe / _try_auto_resolve_recipe to
     eliminate duplication.
+
+    Args:
+        capability: Recipe capability key (``"instruct"`` / ``"base"``), which
+            selects the capability layer. A base checkpoint resolves to no
+            parser or tool-choice params. Recipe vocabulary, not a config
+            ``type:`` — map one with :func:`capability_model_type`.
     """
     # Normalize overrides once up front so the dtype check below and the
     # final merge operate on a single canonical key form.
@@ -259,16 +279,19 @@ async def _resolve_recipe_params(
             if dp > 1:
                 params[dp_key] = dp
 
-    # Profile overrides formula
+    # Recipe layers override the formula: hardware first, then the capability
+    # layer for this model type (a base checkpoint contributes nothing).
     prec_key = precision_key(identity)
     gpu_model = gpu.model if gpu else None
-    profile = resolve_profile(recipe, gpu_model, prec_key, backend_name)
+    profile = resolve_hardware_profile(recipe, gpu_model, prec_key, backend_name)
+    capabilities = resolve_capability_profile(recipe, capability, backend_name)
 
     if profile is None and identity.dtype and "dtype" not in overrides:
-        # No profile → fallback to model's intrinsic dtype (unless user overrode).
+        # No hardware profile → fall back to the model's intrinsic dtype
+        # (unless the user overrode it).
         params["dtype"] = identity.dtype
 
-    params = merge_params(params, profile or {}, overrides)
+    params = merge_params(params, profile or {}, capabilities, overrides)
 
     # Safety check
     if gpu:
@@ -282,6 +305,7 @@ async def _resolve_with_recipe(
     checkpoint: str,
     backend_name: str,
     overrides: dict[str, ParamValue],
+    capability: str,
 ) -> dict[str, ParamValue] | None:
     """Merge params for an already-loaded recipe via shared merge logic.
 
@@ -302,7 +326,13 @@ async def _resolve_with_recipe(
             )
 
     if identity is not None:
-        return await _resolve_recipe_params(identity, recipe, backend_name, overrides)
+        return await _resolve_recipe_params(
+            identity,
+            recipe,
+            backend_name,
+            overrides,
+            capability,
+        )
     else:
         # No identity — can only use overrides
         return dict(overrides) if overrides else None
@@ -343,6 +373,7 @@ async def _try_auto_resolve_recipe(
     backend_name: str,
     overrides: dict[str, ParamValue],
     model_name: str,
+    capability: str,
 ) -> dict[str, ParamValue] | None:
     """Attempt to auto-resolve a recipe from checkpoint introspection.
 
@@ -379,7 +410,13 @@ async def _try_auto_resolve_recipe(
 
     if recipe is not None:
         # Matched — use shared merge logic
-        params = await _resolve_recipe_params(identity, recipe, backend_name, overrides)
+        params = await _resolve_recipe_params(
+            identity,
+            recipe,
+            backend_name,
+            overrides,
+            capability,
+        )
 
         family_recipes = load_family_recipes(identity.family)
         family_names = [r.name for r in family_recipes]

@@ -1,7 +1,22 @@
-# Qwen2.5 family recipes — profile-based structure
+# Qwen2.5 family recipes — two-layer structure
 #
-# Each profile: profiles[hardware][precision][framework] → complete params
-# No inheritance or merge — what you see is what you get.
+#   hardware[gpu][precision][framework]  → perf/memory/parallelism/context
+#   capabilities[model_type][framework]  → behavior (parsers, tool choice)
+#
+# One entry serves both the instruct and the base checkpoint of a family/size;
+# resolution picks the capability layer from the model's `type` (chat→instruct,
+# gen→base) and merges it over the hardware layer. Within a layer there is no
+# inheritance or merge — what you see is what you get.
+#
+# `base:` is declared explicitly empty rather than omitted. Resolution returns
+# {} for an absent key either way, so the empty block is documentation, not
+# behavior: it records that the base checkpoint was considered and needs none
+# of these params. A sweep test asserts every entry declares both model types,
+# so a new entry cannot skip that decision without someone noticing.
+#
+# The base layer matters here: Qwen2.5-72B-Base is the comparison target for
+# the ARC and HellaSwag ppl/clp tasks, and it resolves to the same size bucket
+# as Qwen2.5-72B-Instruct.
 #
 # Hardware notes:
 #   A100-40G:  40GB HBM2e, Ampere, no native FP8 (bf16 only)
@@ -44,459 +59,424 @@ qwen2.5-0.5b:
   tested_versions:
     vllm: [">=0.9.0"]
     sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
-  profiles:
+  hardware:
     A100-40G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
     H100-80G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
     H200-141G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
+  capabilities:
+    instruct:
+      vllm:
+        enable_auto_tool_choice: true
+        tool_call_parser: hermes
+      sglang:
+        tool_call_parser: qwen
+    base:
+      vllm: {}
+      sglang: {}
 
 qwen2.5-1.5b:
   size_range: [1, 2]
   tested_versions:
     vllm: [">=0.9.0"]
     sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
-  profiles:
+  hardware:
     A100-40G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
     H100-80G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
     H200-141G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
+  capabilities:
+    instruct:
+      vllm:
+        enable_auto_tool_choice: true
+        tool_call_parser: hermes
+      sglang:
+        tool_call_parser: qwen
+    base:
+      vllm: {}
+      sglang: {}
 
 qwen2.5-3b:
   size_range: [2, 5]
   tested_versions:
     vllm: [">=0.9.0"]
     sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
-  profiles:
+  hardware:
     A100-40G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
     H100-80G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
     H200-141G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
+  capabilities:
+    instruct:
+      vllm:
+        enable_auto_tool_choice: true
+        tool_call_parser: hermes
+      sglang:
+        tool_call_parser: qwen
+    base:
+      vllm: {}
+      sglang: {}
 
 qwen2.5-7b:
   size_range: [5, 10]
   tested_versions:
     vllm: [">=0.9.0"]
     sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
-  profiles:
+  hardware:
     A100-40G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.90
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
-          tool_call_parser: qwen
     H100-80G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
     H200-141G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
+  capabilities:
+    instruct:
+      vllm:
+        enable_auto_tool_choice: true
+        tool_call_parser: hermes
+      sglang:
+        tool_call_parser: qwen
+    base:
+      vllm: {}
+      sglang: {}
 
 qwen2.5-14b:
   size_range: [10, 20]
   tested_versions:
     vllm: [">=0.9.0"]
     sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
-  profiles:
+  hardware:
     A100-40G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 16384
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 16384
-          tool_call_parser: qwen
     H100-80G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
     H200-141G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
+  capabilities:
+    instruct:
+      vllm:
+        enable_auto_tool_choice: true
+        tool_call_parser: hermes
+      sglang:
+        tool_call_parser: qwen
+    base:
+      vllm: {}
+      sglang: {}
 
 qwen2.5-32b:
   size_range: [20, 40]
   tested_versions:
     vllm: [">=0.9.0"]
     sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
-  profiles:
+  hardware:
     A100-40G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 16384
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 16384
-          tool_call_parser: qwen
     H100-80G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
     H200-141G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
+  capabilities:
+    instruct:
+      vllm:
+        enable_auto_tool_choice: true
+        tool_call_parser: hermes
+      sglang:
+        tool_call_parser: qwen
+    base:
+      vllm: {}
+      sglang: {}
 
 qwen2.5-72b:
   size_range: [60, 80]
   tested_versions:
     vllm: [">=0.9.0"]
     sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
-  profiles:
+  hardware:
     A100-40G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 16384
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 16384
-          tool_call_parser: qwen
     H100-80G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
     H200-141G:
       bf16:
         vllm:
           dtype: bfloat16
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
       fp8:
         vllm:
           gpu_memory_utilization: 0.95
           max_model_len: 32768
-          enable_auto_tool_choice: true
-          tool_call_parser: hermes
         sglang:
           mem_fraction_static: 0.90
           context_length: 32768
-          tool_call_parser: qwen
+  capabilities:
+    instruct:
+      vllm:
+        enable_auto_tool_choice: true
+        tool_call_parser: hermes
+      sglang:
+        tool_call_parser: qwen
+    base:
+      vllm: {}
+      sglang: {}

@@ -5,8 +5,14 @@ Supports two-level matching:
   1. Family match: model architecture → recipe YAML file (e.g. qwen3 → qwen.yaml)
   2. Size match: parameter count → size bucket within that file (e.g. ~4B → qwen3-4b)
 
-Profile resolution uses fuzzy GPU matching to look up a complete, self-contained
-parameter set from ``profiles[hardware][precision][framework]``.
+A matched recipe carries two independent param layers, resolved separately and
+merged by the caller (capabilities last):
+
+* ``hardware[gpu][precision][framework]`` — perf/memory/parallelism/context,
+  looked up by fuzzy GPU matching.
+* ``capabilities[model_type][framework]`` — behavior (parsers, tool choice),
+  looked up by model type, so one entry serves a family/size's instruct **and**
+  base checkpoint without the base one inheriting instruct-only params.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
@@ -38,34 +44,96 @@ def _coerce_param(value: object) -> ParamValue:
     return str(value)
 
 
+CAPABILITY_MODEL_TYPES: tuple[str, ...] = ("instruct", "base")
+"""Model-type keys a recipe's ``capabilities`` layer may declare."""
+
+
+def capability_model_type(model_type: str | None) -> str:
+    """Map an eval config's model ``type`` onto a recipe capability key.
+
+    ``"chat"`` → ``"instruct"``, ``"gen"`` → ``"base"``. ``None`` → ``"instruct"``,
+    matching the eval config's own default for an undeclared ``type``.
+
+    Anything else raises. The config vocabulary (``chat``/``gen``) and the recipe
+    vocabulary (``instruct``/``base``) differ, so writing the recipe's word into
+    a model config is an easy mistake — and ``type: base`` silently defaulting
+    would select the *opposite* capability layer. The eval session rejects an
+    unknown ``type`` too, but only once it builds the model, which is after the
+    engine has been launched; failing here keeps the typo cheap.
+
+    Raises:
+        ValueError: If ``model_type`` is neither ``"chat"``, ``"gen"`` nor ``None``.
+    """
+    if model_type is None or model_type == "chat":
+        return "instruct"
+    if model_type == "gen":
+        return "base"
+    raise ValueError(
+        f"Unknown model type {model_type!r}; expected 'chat' or 'gen'. "
+        f"('instruct' / 'base' are recipe capability keys, not config types.)"
+    )
+
+
 @dataclass
 class Recipe:
     """Typed representation of a model infer recipe.
 
+    A recipe entry serves both the instruct and the base checkpoint of a
+    family/size, so serving params are split by who owns them:
+
     Fields:
         name: Recipe name (e.g. "qwen3-8b")
         size_range: [min_b, max_b) parameter count range in billions
-        profiles: Per-hardware, per-precision, per-framework params, e.g.
-            {"H100-80G": {"bf16": {"vllm": {"dtype": "bfloat16", ...}}}}
+        hardware: Per-hardware, per-precision, per-framework perf/memory
+            params, e.g. {"H100-80G": {"bf16": {"vllm": {"dtype": ...}}}}
+        capabilities: Per-model-type, per-framework behavior params (parsers,
+            tool choice), e.g. {"instruct": {"vllm": {"tool_call_parser": ...}}}
         known_issues: Human-readable issue descriptions
         tested_versions: Per-framework version specifiers
     """
 
     name: str = ""
     size_range: tuple[float, float] = (0.0, float("inf"))
-    profiles: dict[str, dict[str, dict[str, dict[str, ParamValue]]]] = field(
+    hardware: dict[str, dict[str, dict[str, dict[str, ParamValue]]]] = field(
+        default_factory=dict,
+    )
+    capabilities: dict[str, dict[str, dict[str, ParamValue]]] = field(
         default_factory=dict,
     )
     known_issues: list[str] = field(default_factory=list)
     tested_versions: dict[str, list[str]] = field(default_factory=dict)
 
 
+def _coerce_params(raw: object) -> dict[str, ParamValue]:
+    """Coerce a raw YAML mapping into a flat framework param dict."""
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): _coerce_param(v) for k, v in raw.items()}
+
+
+def _coerce_framework_map(raw: object) -> dict[str, dict[str, ParamValue]]:
+    """Coerce a raw YAML mapping of ``framework -> params``."""
+    if not isinstance(raw, dict):
+        return {}
+    return {str(fw): _coerce_params(params) for fw, params in raw.items()}
+
+
 def _parse_recipe(name: str, raw: dict[str, object]) -> Recipe:
     """Parse a raw YAML dict into a typed Recipe.
 
     Old fields (``frameworks``, ``hardware_overrides``, ``precision_overrides``)
-    are silently ignored if present — only ``profiles`` is parsed.
+    are silently ignored if present. The pre-split ``profiles`` key is rejected
+    outright — recipe files ship in-repo, so there is no legacy on-disk state to
+    support, and silently reading it would hand base checkpoints the parser
+    params the split exists to withhold.
     """
+    if "profiles" in raw:
+        raise ValueError(
+            f"Recipe {name!r} uses the removed 'profiles' key. Split it into "
+            "'hardware' (hw -> precision -> framework: dtype, memory, "
+            "parallelism, context) and 'capabilities' (instruct|base -> "
+            "framework: parsers, tool choice)."
+        )
     # size_range (optional)
     raw_range = raw.get("size_range")
     if isinstance(raw_range, list) and len(raw_range) == 2:
@@ -77,24 +145,30 @@ def _parse_recipe(name: str, raw: dict[str, object]) -> Recipe:
     else:
         size_range = (0.0, float("inf"))
 
-    # profiles (optional) — hw_key → prec_key → framework → params
-    raw_profiles = raw.get("profiles", {})
-    profiles: dict[str, dict[str, dict[str, dict[str, ParamValue]]]] = {}
-    if isinstance(raw_profiles, dict):
-        for hw_key, prec_map in raw_profiles.items():
-            if isinstance(prec_map, dict):
-                prec_dict: dict[str, dict[str, dict[str, ParamValue]]] = {}
-                for prec_key, fw_map in prec_map.items():
-                    if isinstance(fw_map, dict):
-                        fw_dict: dict[str, dict[str, ParamValue]] = {}
-                        for fw_name, fw_params in fw_map.items():
-                            if isinstance(fw_params, dict):
-                                typed: dict[str, ParamValue] = {}
-                                for k, v in fw_params.items():
-                                    typed[str(k)] = _coerce_param(v)
-                                fw_dict[str(fw_name)] = typed
-                        prec_dict[str(prec_key)] = fw_dict
-                profiles[str(hw_key)] = prec_dict
+    # hardware (optional) — hw_key → prec_key → framework → params
+    raw_hardware = raw.get("hardware", {})
+    hardware: dict[str, dict[str, dict[str, dict[str, ParamValue]]]] = {}
+    if isinstance(raw_hardware, dict):
+        for hw_key, prec_map in raw_hardware.items():
+            if not isinstance(prec_map, dict):
+                continue
+            hardware[str(hw_key)] = {
+                str(prec_key): _coerce_framework_map(fw_map)
+                for prec_key, fw_map in prec_map.items()
+            }
+
+    # capabilities (optional) — model_type → framework → params
+    raw_caps = raw.get("capabilities", {})
+    capabilities: dict[str, dict[str, dict[str, ParamValue]]] = {}
+    if isinstance(raw_caps, dict):
+        for model_type, fw_map in raw_caps.items():
+            if str(model_type) not in CAPABILITY_MODEL_TYPES:
+                raise ValueError(
+                    f"Recipe {name!r} declares unknown capability model type "
+                    f"{model_type!r}; expected one of "
+                    f"{', '.join(CAPABILITY_MODEL_TYPES)}."
+                )
+            capabilities[str(model_type)] = _coerce_framework_map(fw_map)
 
     # known_issues (optional)
     raw_issues = raw.get("known_issues", [])
@@ -115,7 +189,8 @@ def _parse_recipe(name: str, raw: dict[str, object]) -> Recipe:
     return Recipe(
         name=name,
         size_range=size_range,
-        profiles=profiles,
+        hardware=hardware,
+        capabilities=capabilities,
         known_issues=known_issues,
         tested_versions=tested_versions,
     )
@@ -254,21 +329,21 @@ def match_recipe(family: str, param_billions: float) -> Recipe | None:
     return None
 
 
-def resolve_profile(
+def resolve_hardware_profile(
     recipe: Recipe,
     gpu_model: str | None,
     precision: str | None,
     framework: str,
 ) -> dict[str, ParamValue] | None:
-    """Look up a complete parameter set from the recipe's profiles.
+    """Look up the perf/memory parameter set from the recipe's hardware layer.
 
-    Uses fuzzy GPU matching: splits the profile hardware key on ``[-_\\s]+``
-    and checks that every resulting token appears in ``gpu_model`` (case-
-    insensitive).  For example, key ``"H100-80G"`` matches GPU string
+    Uses fuzzy GPU matching: splits the hardware key on ``[-_\\s]+`` and checks
+    that every resulting token appears in ``gpu_model`` (case-insensitive).
+    For example, key ``"H100-80G"`` matches GPU string
     ``"NVIDIA H100-SXM5-80GB"``.
 
     Args:
-        recipe: Typed Recipe with a ``profiles`` field.
+        recipe: Typed Recipe with a ``hardware`` field.
         gpu_model: Detected GPU name (e.g. ``"NVIDIA A100-SXM4-80GB"``).
             ``None`` → return ``None`` immediately.
         precision: Precision key (e.g. ``"bf16"``, ``"fp8"``).
@@ -285,17 +360,17 @@ def resolve_profile(
     if precision is None:
         precision = "bf16"
 
-    if not recipe.profiles:
+    if not recipe.hardware:
         return None
 
     gpu_lower = gpu_model.lower()
-    for hw_key, prec_map in recipe.profiles.items():
+    for hw_key, prec_map in recipe.hardware.items():
         key_tokens = re.split(r"[-_\s]+", hw_key.lower())
         if all(token in gpu_lower for token in key_tokens):
-            logger.info("GPU {!r} matched profile hardware key {!r}", gpu_model, hw_key)
+            logger.info("GPU {!r} matched hardware key {!r}", gpu_model, hw_key)
             if precision not in prec_map:
                 logger.warning(
-                    "Precision {!r} not in profile for hw {!r} (available: {})",
+                    "Precision {!r} not in hardware {!r} (available: {})",
                     precision,
                     hw_key,
                     ", ".join(prec_map),
@@ -304,7 +379,7 @@ def resolve_profile(
             fw_map = prec_map[precision]
             if framework not in fw_map:
                 logger.info(
-                    "Framework {!r} not in profile {}[{}] (available: {})",
+                    "Framework {!r} not in hardware {}[{}] (available: {})",
                     framework,
                     hw_key,
                     precision,
@@ -314,13 +389,52 @@ def resolve_profile(
             return dict(fw_map[framework])
 
     logger.info(
-        "GPU {!r} did not match any profile hardware key "
-        "in recipe {!r} (available: {})",
+        "GPU {!r} did not match any hardware key in recipe {!r} (available: {})",
         gpu_model,
         recipe.name,
-        ", ".join(recipe.profiles),
+        ", ".join(recipe.hardware),
     )
     return None
+
+
+def resolve_capability_profile(
+    recipe: Recipe,
+    capability: str,
+    framework: str,
+) -> dict[str, ParamValue]:
+    """Look up behavior params for a capability layer + framework.
+
+    The parameter is named ``capability``, not ``model_type``, because it takes
+    the *recipe* vocabulary (``instruct``/``base``) rather than the config's
+    (``chat``/``gen``). The two coexist one call apart — see
+    :func:`capability_model_type`, which translates — and an unrecognized key
+    would otherwise resolve to ``{}``, i.e. silently to base-like serving.
+
+    Args:
+        recipe: Typed Recipe with a ``capabilities`` field.
+        capability: A recipe capability key — ``"instruct"`` or ``"base"``.
+            Use :func:`capability_model_type` to map an eval config's
+            ``type`` onto it.
+        framework: Framework name (e.g. ``"vllm"``, ``"sglang"``).
+
+    Returns:
+        A shallow copy of the matched params, or ``{}`` when the recipe declares
+        no entry for this ``capability``/``framework`` — the expected case for a
+        base checkpoint, which declares no capability params.
+
+    Raises:
+        ValueError: If ``capability`` is not one of
+            :data:`CAPABILITY_MODEL_TYPES`. A key outside that set can only be
+            a caller bug, and returning ``{}`` for it would withhold the very
+            params this layer exists to supply.
+    """
+    if capability not in CAPABILITY_MODEL_TYPES:
+        raise ValueError(
+            f"Unknown recipe capability {capability!r}; expected one of "
+            f"{', '.join(CAPABILITY_MODEL_TYPES)}. (Config model types are "
+            f"'chat' / 'gen' — map them with capability_model_type() first.)"
+        )
+    return dict(recipe.capabilities.get(capability, {}).get(framework, {}))
 
 
 def load_recipe(name: str) -> Recipe:

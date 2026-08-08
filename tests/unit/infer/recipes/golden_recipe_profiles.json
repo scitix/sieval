@@ -1,0 +1,4538 @@
+[
+  {
+    "recipe": "gpt-oss-120b",
+    "hardware_key": "H100-80G",
+    "precision": "mxfp4",
+    "framework": "sglang",
+    "params": [
+      [
+        "context_length",
+        131072
+      ],
+      [
+        "mem_fraction_static",
+        0.82
+      ],
+      [
+        "reasoning_parser",
+        "gpt-oss"
+      ],
+      [
+        "tool_call_parser",
+        "gpt-oss"
+      ]
+    ]
+  },
+  {
+    "recipe": "gpt-oss-120b",
+    "hardware_key": "H100-80G",
+    "precision": "mxfp4",
+    "framework": "vllm",
+    "params": [
+      [
+        "max_model_len",
+        131072
+      ],
+      [
+        "gpu_memory_utilization",
+        0.85
+      ],
+      [
+        "reasoning_parser",
+        "openai"
+      ],
+      [
+        "tool_call_parser",
+        "openai"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "max_num_batched_tokens",
+        8192
+      ],
+      [
+        "max_cudagraph_capture_size",
+        2048
+      ],
+      [
+        "stream_interval",
+        20
+      ],
+      [
+        "no_enable_prefix_caching",
+        true
+      ]
+    ]
+  },
+  {
+    "recipe": "gpt-oss-120b",
+    "hardware_key": "H200-141G",
+    "precision": "mxfp4",
+    "framework": "sglang",
+    "params": [
+      [
+        "context_length",
+        131072
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "reasoning_parser",
+        "gpt-oss"
+      ],
+      [
+        "tool_call_parser",
+        "gpt-oss"
+      ]
+    ]
+  },
+  {
+    "recipe": "gpt-oss-120b",
+    "hardware_key": "H200-141G",
+    "precision": "mxfp4",
+    "framework": "vllm",
+    "params": [
+      [
+        "max_model_len",
+        131072
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "reasoning_parser",
+        "openai"
+      ],
+      [
+        "tool_call_parser",
+        "openai"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "max_num_batched_tokens",
+        8192
+      ],
+      [
+        "max_cudagraph_capture_size",
+        2048
+      ],
+      [
+        "stream_interval",
+        20
+      ],
+      [
+        "no_enable_prefix_caching",
+        true
+      ]
+    ]
+  },
+  {
+    "recipe": "gpt-oss-20b",
+    "hardware_key": "H100-80G",
+    "precision": "mxfp4",
+    "framework": "sglang",
+    "params": [
+      [
+        "context_length",
+        131072
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "reasoning_parser",
+        "gpt-oss"
+      ],
+      [
+        "tool_call_parser",
+        "gpt-oss"
+      ]
+    ]
+  },
+  {
+    "recipe": "gpt-oss-20b",
+    "hardware_key": "H100-80G",
+    "precision": "mxfp4",
+    "framework": "vllm",
+    "params": [
+      [
+        "max_model_len",
+        131072
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "reasoning_parser",
+        "openai"
+      ],
+      [
+        "tool_call_parser",
+        "openai"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "max_num_batched_tokens",
+        8192
+      ],
+      [
+        "max_cudagraph_capture_size",
+        2048
+      ],
+      [
+        "stream_interval",
+        20
+      ],
+      [
+        "no_enable_prefix_caching",
+        true
+      ]
+    ]
+  },
+  {
+    "recipe": "gpt-oss-20b",
+    "hardware_key": "H200-141G",
+    "precision": "mxfp4",
+    "framework": "sglang",
+    "params": [
+      [
+        "context_length",
+        131072
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "reasoning_parser",
+        "gpt-oss"
+      ],
+      [
+        "tool_call_parser",
+        "gpt-oss"
+      ]
+    ]
+  },
+  {
+    "recipe": "gpt-oss-20b",
+    "hardware_key": "H200-141G",
+    "precision": "mxfp4",
+    "framework": "vllm",
+    "params": [
+      [
+        "max_model_len",
+        131072
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "reasoning_parser",
+        "openai"
+      ],
+      [
+        "tool_call_parser",
+        "openai"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "max_num_batched_tokens",
+        8192
+      ],
+      [
+        "max_cudagraph_capture_size",
+        2048
+      ],
+      [
+        "stream_interval",
+        20
+      ],
+      [
+        "no_enable_prefix_caching",
+        true
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-0.5b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-1.5b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        16384
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        16384
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-14b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        16384
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        16384
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-32b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-3b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        16384
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        16384
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-72b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen2.5-7b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        40960
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        40960
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        40960
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-0.6b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        40960
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        40960
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        40960
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.85
+      ],
+      [
+        "context_length",
+        40960
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-1.7b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.9
+      ],
+      [
+        "max_model_len",
+        40960
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-14b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        8192
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        8192
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-235b-a22b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-30b-a3b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-32b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-4b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        16384
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-72b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "A100-40G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "H100-80G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "H100-80G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "sglang",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "H200-141G",
+    "precision": "bf16",
+    "framework": "vllm",
+    "params": [
+      [
+        "dtype",
+        "bfloat16"
+      ],
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "sglang",
+    "params": [
+      [
+        "mem_fraction_static",
+        0.9
+      ],
+      [
+        "context_length",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "tool_call_parser",
+        "qwen"
+      ]
+    ]
+  },
+  {
+    "recipe": "qwen3-8b",
+    "hardware_key": "H200-141G",
+    "precision": "fp8",
+    "framework": "vllm",
+    "params": [
+      [
+        "gpu_memory_utilization",
+        0.95
+      ],
+      [
+        "max_model_len",
+        32768
+      ],
+      [
+        "reasoning_parser",
+        "qwen3"
+      ],
+      [
+        "enable_auto_tool_choice",
+        true
+      ],
+      [
+        "tool_call_parser",
+        "hermes"
+      ]
+    ]
+  }
+]

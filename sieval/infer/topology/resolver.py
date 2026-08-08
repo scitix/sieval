@@ -20,7 +20,11 @@ from sieval.infer.introspect import (
     introspect_checkpoint_with_config,
 )
 from sieval.infer.params import merge_params
-from sieval.infer.recipes import match_recipe, resolve_profile
+from sieval.infer.recipes import (
+    match_recipe,
+    resolve_capability_profile,
+    resolve_hardware_profile,
+)
 from sieval.infer.topology.models import (
     TOPO_KEYS,
     DeploymentPlan,
@@ -371,11 +375,21 @@ async def auto_resolve_plan(
     *,
     backend: str = "sglang",
     overrides: dict[str, ParamValue] | None = None,
+    capability: str = "instruct",
 ) -> ResolveResult:
     """Auto-resolve a DeploymentPlan from a checkpoint path.
 
     Replaces resolve.auto_resolve(). Same 5-step flow but returns
     ResolveResult instead of InferConfig.
+
+    Args:
+        capability: Recipe capability key (``"instruct"`` / ``"base"``). Base
+            checkpoints resolve without parser or tool-choice params. Defaults
+            to ``"instruct"`` for standalone callers with no task context.
+            This is the *recipe* vocabulary, not a config ``type:`` — pass a
+            config type through
+            :func:`sieval.infer.recipes.capability_model_type` first. An
+            unrecognized value raises rather than resolving to no capabilities.
     """
     # Normalize keys at the entry: the TOPO_KEYS filter (step 4) and
     # _overrides_to_hints both look up specific underscore-form keys, so a
@@ -407,14 +421,24 @@ async def auto_resolve_plan(
         gpu_memory_mib=gpu.memory_mib,
     )
 
-    # 3. Match recipe → resolve profile → recipe_params
+    # 3. Match recipe → resolve hardware + capability layers → recipe_params
     recipe = match_recipe(identity.family, identity.param_billions)
     recipe_params: dict[str, ParamValue] | None = None
     if recipe is not None:
         prec_key = precision_key(identity)
-        profile = resolve_profile(recipe, gpu.model, prec_key, backend)
-        if profile is not None:
-            recipe_params = profile
+        profile = resolve_hardware_profile(recipe, gpu.model, prec_key, backend)
+        capabilities = resolve_capability_profile(recipe, capability, backend)
+        # Capabilities last, matching `_resolve_recipe_params`; both sites feed
+        # the same `infer_plans.yaml`, whose key order `--resume` compares
+        # byte-for-byte. `merge_params` rather than a dict literal so both sites
+        # emit one canonical key form — it normalizes each source, so a
+        # dash-form recipe key cannot reach the plan through only one of them.
+        # Note it does *not* flag a dash/underscore clash *across* sources: it
+        # normalizes and the later source wins. Recipe YAML is underscore-only
+        # by convention (`sieval/infer/params.py`), and a within-layer clash
+        # still raises.
+        if profile is not None or capabilities:
+            recipe_params = merge_params(profile or {}, capabilities)
 
     # 4. Build user hints from overrides; non-topology keys become engine params
     hints: UserHints | None = None

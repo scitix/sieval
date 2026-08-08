@@ -633,6 +633,127 @@ def resolve_task_class(class_spec: str) -> type:
     )
 
 
+def _validate_named_config_map(
+    section_name: str,
+    section_cfg: Any,
+) -> dict[str, dict[str, Any]]:
+    """Validate a config section is a ``name -> dict`` mapping, and return it.
+
+    Shared so every entry point that reads a section reports the same error for
+    the same malformed config. ``derive_model_type`` is now reached from the
+    infer layer *before* an ``EvalSession`` exists, and full config validation
+    only runs under ``--dry-run``, so without this a list-shaped ``tasks:``
+    surfaced as an ``AttributeError`` from inside recipe resolution.
+    """
+    if not isinstance(section_cfg, dict):
+        raise ValueError(
+            f"'{section_name}' configuration must be a dictionary "
+            "mapping names to config"
+        )
+
+    for item_name, item_cfg in section_cfg.items():
+        if not isinstance(item_cfg, dict):
+            raise ValueError(
+                f"'{section_name}.{item_name}' configuration must be a dictionary"
+            )
+
+    return section_cfg
+
+
+def derive_model_type(
+    model_name: str,
+    explicit_type: str | None,
+    tasks_cfg: Mapping[str, Mapping[str, Any]],
+) -> str:
+    """Decide whether a config's model is a ``"chat"`` or ``"gen"`` model.
+
+    Priority:
+      1. The config's explicit ``type``.
+      2. The ``model_type`` declared by the tasks pointing at this model.
+      3. Default to ``"chat"``.
+
+    Both the eval session (which model class to construct) and infer recipe
+    resolution (which capability layer to serve) must reach the same answer for
+    the same model, so the derivation lives here rather than being read off
+    ``type`` twice. Explicit-only would silently mean "instruct" for every
+    config in the wild, since ``type`` is normally left to this inference.
+
+    It stays in this module, despite the caller now being the infer CLI, because
+    the inference step *is* task-class resolution — moving it would drag
+    :func:`resolve_task_class` along or split the two apart.
+
+    Args:
+        model_name: Name of the model in config.
+        explicit_type: Explicitly specified type from config, if any.
+        tasks_cfg: The config's ``tasks`` mapping, used for inference.
+
+    Returns:
+        Model type: ``"chat"`` or ``"gen"``.
+
+    Raises:
+        ValueError: If tasks pointing at this model require conflicting types,
+            or if ``tasks_cfg`` is not a ``name -> dict`` mapping.
+    """
+    # 1. User explicitly specified
+    if explicit_type is not None:
+        return explicit_type
+
+    # 2. Infer from tasks
+    tasks_cfg = _validate_named_config_map("tasks", tasks_cfg)
+    required_types: set[tuple[str, str]] = set()
+
+    for task_name, task_cfg in tasks_cfg.items():
+        if task_cfg.get("model") != model_name:
+            continue
+
+        # Resolve task class to check its model_type attribute
+        task_class_spec = task_cfg.get("class")
+        if not task_class_spec:
+            continue
+
+        try:
+            task_class = resolve_task_class(task_class_spec)
+            task_model_type = getattr(task_class, "model_type", None)
+
+            if task_model_type is not None:
+                required_types.add((task_name, task_model_type))
+        except (ImportError, AttributeError):
+            # If we can't resolve the task class yet, skip it
+            # Validation will catch issues later
+            continue
+
+    # Check for conflicts
+    unique_types = {t for _, t in required_types}
+
+    if len(unique_types) > 1:
+        # Conflicting requirements
+        conflict_info = "\n".join(
+            f"  - {task_name} requires '{model_type}'"
+            for task_name, model_type in sorted(required_types)
+        )
+        raise ValueError(
+            f"Model '{model_name}' is used by tasks requiring different types:\n"
+            f"{conflict_info}\n"
+            f"Please either:\n"
+            f"  1. Explicitly specify 'type: chat' or 'type: gen' in model config\n"
+            f"  2. Use separate models for different types"
+        )
+
+    if len(unique_types) == 1:
+        # All tasks agree on the same type
+        inferred_type = unique_types.pop()
+        logger.info(
+            "Inferred model '{}' type as '{}' from task requirements",
+            model_name,
+            inferred_type,
+        )
+        return inferred_type
+
+    # 3. Default to "chat"
+    logger.info("Using default type 'chat' for model '{}'", model_name)
+    return "chat"
+
+
 def _guess_submodule_names(class_name: str) -> list[str]:
     """
     Guess possible submodule names from a class name.
@@ -837,20 +958,10 @@ class EvalSession:
 
     def _get_named_config_map(self, section_name: str) -> dict[str, dict[str, Any]]:
         """Get a config section and validate it is a name -> dict mapping."""
-        section_cfg = self.config.get(section_name, {})
-        if not isinstance(section_cfg, dict):
-            raise ValueError(
-                f"'{section_name}' configuration must be a dictionary "
-                "mapping names to config"
-            )
-
-        for item_name, item_cfg in section_cfg.items():
-            if not isinstance(item_cfg, dict):
-                raise ValueError(
-                    f"'{section_name}.{item_name}' configuration must be a dictionary"
-                )
-
-        return section_cfg
+        return _validate_named_config_map(
+            section_name,
+            self.config.get(section_name, {}),
+        )
 
     @staticmethod
     def _normalize_dict(value: Any, field_name: str) -> dict[str, Any]:
@@ -871,82 +982,12 @@ class EvalSession:
         return value
 
     def _infer_model_type(self, model_name: str, explicit_type: str | None) -> str:
-        """
-        Infer the model type based on task requirements.
-
-        Priority:
-        1. User explicitly specifies type in config
-        2. Infer from tasks that use this model
-        3. Default to "chat"
-
-        Args:
-            model_name: Name of the model in config
-            explicit_type: Explicitly specified type from config (if any)
-
-        Returns:
-            Model type: "chat" or "gen"
-
-        Raises:
-            ValueError: If tasks require conflicting model types
-        """
-        # 1. User explicitly specified
-        if explicit_type is not None:
-            return explicit_type
-
-        # 2. Infer from tasks
-        tasks_cfg = self._get_named_config_map("tasks")
-        required_types: set[tuple[str, str]] = set()
-
-        for task_name, task_cfg in tasks_cfg.items():
-            if task_cfg.get("model") != model_name:
-                continue
-
-            # Resolve task class to check its model_type attribute
-            task_class_spec = task_cfg.get("class")
-            if not task_class_spec:
-                continue
-
-            try:
-                task_class = resolve_task_class(task_class_spec)
-                task_model_type = getattr(task_class, "model_type", None)
-
-                if task_model_type is not None:
-                    required_types.add((task_name, task_model_type))
-            except (ImportError, AttributeError):
-                # If we can't resolve the task class yet, skip it
-                # Validation will catch issues later
-                continue
-
-        # Check for conflicts
-        unique_types = {t for _, t in required_types}
-
-        if len(unique_types) > 1:
-            # Conflicting requirements
-            conflict_info = "\n".join(
-                f"  - {task_name} requires '{model_type}'"
-                for task_name, model_type in sorted(required_types)
-            )
-            raise ValueError(
-                f"Model '{model_name}' is used by tasks requiring different types:\n"
-                f"{conflict_info}\n"
-                f"Please either:\n"
-                f"  1. Explicitly specify 'type: chat' or 'type: gen' in model config\n"
-                f"  2. Use separate models for different types"
-            )
-
-        if len(unique_types) == 1:
-            # All tasks agree on the same type
-            inferred_type = unique_types.pop()
-            logger.info(
-                "Inferred model '{}' type as '{}' from task requirements",
-                model_name,
-                inferred_type,
-            )
-            return inferred_type
-
-        # 3. Default to "chat"
-        logger.info("Using default type 'chat' for model '{}'", model_name)
-        return "chat"
+        """Infer this session's model type — see :func:`derive_model_type`."""
+        return derive_model_type(
+            model_name,
+            explicit_type,
+            self._get_named_config_map("tasks"),
+        )
 
     def _setup_models(self) -> None:
         """Initialize all models from config."""

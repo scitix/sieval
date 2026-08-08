@@ -17,13 +17,18 @@ import yaml
 from loguru import logger
 
 from sieval.cli.infer import cleanup_model, launch_model, resolve_infer_config
-from sieval.cli.leaderboard.session import resolve_deterministic, unwrap_proxies
+from sieval.cli.leaderboard.session import (
+    derive_model_type,
+    resolve_deterministic,
+    unwrap_proxies,
+)
 from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import inject_user_env
 from sieval.infer.config import InferHandle
 from sieval.infer.deployer import LocalDeployer
+from sieval.infer.recipes import capability_model_type
 from sieval.infer.topology.resolver import auto_resolve_plan
 
 
@@ -92,10 +97,19 @@ async def _run_all(
                     model_name,
                 )
             else:
-                # Path-only mode: auto-resolve from checkpoint
+                # Path-only mode: auto-resolve from checkpoint. The capability
+                # layer follows the same model type the eval session will use,
+                # which is usually inferred from the tasks rather than declared.
                 checkpoint = model_config["path"]
                 result = await auto_resolve_plan(
                     checkpoint=checkpoint,
+                    capability=capability_model_type(
+                        derive_model_type(
+                            model_name,
+                            model_config.get("type"),
+                            config.get("tasks") or {},
+                        )
+                    ),
                 )
                 plan = result.plan
                 user_env = {}  # path-only mode has no YAML env section
