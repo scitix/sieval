@@ -29,6 +29,8 @@ AI-Generated Code - Claude Opus 4.8 (Anthropic)
 
 from typing import override
 
+from loguru import logger
+
 from sieval.community.deepseek_math import (
     STOP_WORDS,
     eval_math,
@@ -50,6 +52,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import HendrycksMathDatasetSample
 
 N_SHOT = 4
@@ -126,7 +129,33 @@ class HendrycksMathFewShotBaseGenTask(
             ctx.raw_sample["problem"], ctx.raw_sample["solution"], "cot"
         )
         prediction = post["rollouts"][0].get("prediction") or ""
-        correct = bool(eval_math({"prediction": prediction, "answer": reference}))
+        # `math_equal` runs `parse_latex` + `simplify`: ~11 ms typical, 1.7 s
+        # worst case — measured on *reference* data, and `simplify` on arbitrary
+        # model output has no ceiling. Reached with `timeout=False`, so nothing
+        # else bounds it: criterion 2 in `core/utils/offload.py`.
+        try:
+            correct = bool(
+                await run_cpu_bound(
+                    eval_math,
+                    {"prediction": prediction, "answer": reference},
+                    timeout=GRADE_TIMEOUT,
+                )
+            )
+        except TimeoutError:
+            # An answer that cannot be graded is a wrong answer, not a failed
+            # run — the contract every sibling math grader keeps. Letting this
+            # propagate would land the sample in `fails` instead, which reads as
+            # an infrastructure failure and is one of the signals a run is
+            # promoted on. The accuracy is identical either way (`report` counts
+            # fails in the denominator), so the only thing at stake is whether
+            # the number means what it says.
+            logger.warning(
+                "Grading sample {} exceeded {}s and was scored wrong; the "
+                "prediction is likely a shape `simplify` cannot bound.",
+                ctx.sample_id,
+                GRADE_TIMEOUT,
+            )
+            correct = False
         return True, build_judgement_record(
             reference, [build_rollout_judgement(0, correct)]
         )

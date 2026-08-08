@@ -22,7 +22,10 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import CMIMC2025DatasetSample
+
+from ._math_verify import verify_answer
 
 
 @sieval_task(
@@ -121,8 +124,6 @@ class CMIMC2025ZeroShotGenTask(
 
     @override
     async def feedback(self, post, ctx):
-        from math_verify import parse, verify
-
         rollouts = []
         ground_truth = ctx.raw_sample["answer"]
         for rollout in post["rollouts"]:
@@ -133,10 +134,9 @@ class CMIMC2025ZeroShotGenTask(
             pred_with_env = f"${pred}$"
             ref_with_env = f"${ground_truth}$"
             try:
-                parsed_pred = parse(pred_with_env)
-                parsed_ref = parse(ref_with_env)
-                # math_verify.verify expects the gold answer as the first arg.
-                correct = verify(parsed_ref, parsed_pred)
+                correct = await run_cpu_bound(
+                    verify_answer, ref_with_env, pred_with_env, timeout=GRADE_TIMEOUT
+                )
             except Exception as e:
                 logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
                 correct = False

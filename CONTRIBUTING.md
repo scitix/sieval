@@ -92,7 +92,9 @@ See [tests/README.md](tests/README.md) for mock infrastructure and full command 
 1. Create dataset in `sieval/datasets/` — keep upstream field names, and cast a column's dtype
    only if the pinned revision requires it (each Task binds 1:1 to its own sample `TypedDict`, so
    uniformity with a sibling loader buys nothing)
-2. Create task in `sieval/tasks/` — file naming: `<task>_<N>shot_<mode>.py` (see `sieval/tasks/CLAUDE.md`)
+2. Create task in `sieval/tasks/` — file naming: `<task>_<N>shot_<mode>[_<variant>].py`
+   (see `sieval/tasks/CLAUDE.md`). The unqualified name tracks upstream, bugs included; a
+   local correction takes a `_fixed` variant and owes a quantified score impact
 3. If the reference implementation repeats sampling (`n_repeats`, `--n 4`) and your task's default
    `n` differs, record that in `reference_impl.notes` with how to match it
 4. Add unit tests under `tests/unit/datasets/` and `tests/unit/tasks/` mirroring the source layout

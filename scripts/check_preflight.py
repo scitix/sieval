@@ -56,8 +56,15 @@ _GH_NON_PERMANENT = re.compile(r"github\.com/[^/]+/[^/]+/blob/(main|master|devel
 
 _MAX_DRIFT_DETAILS = 20
 
+# `<task>_<N>shot_<mode>[_<variant>].py`. The mode alternation is anchored right
+# after the shot segment, so `model_type` stays readable off the name even when a
+# variant follows. Multi-token modes lead the alternation, and a variant may not
+# spell a mode (`..._clp_gen.py`) — that name has two readings, so it is rejected
+# rather than resolved by regex precedence.
+_TASK_MODE_ALTERNATION = "base_gen|llmjudge_gen|gen|ppl|clp"
 _TASK_FILE_PATTERN = re.compile(
-    r"^[a-z][a-z0-9_]*_(\d+|k)shot_(gen|base_gen|ppl|clp|llmjudge_gen)\.py$"
+    rf"^[a-z][a-z0-9_]*_(?:\d+|k)shot_(?:{_TASK_MODE_ALTERNATION})"
+    rf"(?:_(?!(?:{_TASK_MODE_ALTERNATION})\.py$)[a-z][a-z0-9_]*)?\.py$"
 )
 _DATASET_SUFFIX_PATTERN = re.compile(r"(Dataset|DatasetSample|CSVSample)$")
 
@@ -576,6 +583,7 @@ class PreflightRunner:
         "check_imports",
         "check_examples",
         "check_meta_index_sync",
+        "check_mutmut_config",
         "check_version",
     ]
 
@@ -1913,6 +1921,75 @@ class PreflightRunner:
             return tag.removeprefix("v") if tag else None
         except (subprocess.CalledProcessError, FileNotFoundError):
             return None
+
+    def check_mutmut_config(self) -> list[CheckResult]:
+        """Verify ``[tool.mutmut]`` still produces an importable ``mutants/`` copy.
+
+        mutmut runs the suite from a copy of the tree built out of
+        ``paths_to_mutate`` + ``also_copy``. Anything the suite imports that the
+        copy omits makes the run die during stats collection, before a single
+        mutant executes — and it surfaces as an unrelated broken test rather
+        than as a configuration error, which is why this went unnoticed twice.
+
+        Two entries are load-bearing, for the same reason and with the same
+        symptom:
+
+        * ``sieval/__init__.py`` — without it ``mutants/sieval`` is a plain
+          directory rather than a package, so every test in the copy resolves
+          ``sieval`` through the editable install instead.
+        * ``scripts`` — ``scripts/`` is not a package, so ``tests/unit/scripts/``
+          puts it on ``sys.path`` by walking up from its own ``__file__``. In the
+          copy that resolves to ``mutants/scripts``.
+
+        Cheap to assert, invisible otherwise: it made the mutation-score
+        requirement in ``sieval/core/CLAUDE.md`` unsatisfiable for as long as
+        either entry was missing.
+        """
+        check = "check_mutmut_config"
+        pyproject = self.project_root / "pyproject.toml"
+        if not pyproject.exists():
+            return [CheckResult("FAIL", check, "pyproject.toml not found")]
+
+        import tomllib
+
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        mutmut = config.get("tool", {}).get("mutmut")
+        if not mutmut:
+            return [CheckResult("PASS", check, "no [tool.mutmut] section to check")]
+
+        copied = list(mutmut.get("also_copy", [])) + list(
+            mutmut.get("paths_to_mutate", [])
+        )
+        # A parent entry ("sieval") carries the file; an exact entry is the
+        # normal case. Anything else means the path is not in the copy.
+        required = {
+            "sieval/__init__.py": "mutants/sieval is not an importable package",
+            "scripts": "tests/unit/scripts/ cannot import the module it tests",
+        }
+        missing = [
+            f"{path!r} ({why})"
+            for path, why in required.items()
+            if not any(
+                path == entry or path.startswith(f"{entry}/") for entry in copied
+            )
+        ]
+        if missing:
+            return [
+                CheckResult(
+                    "FAIL",
+                    check,
+                    "[tool.mutmut] omits a path the suite imports, so every "
+                    "mutation run dies during stats collection",
+                    [*missing, f"also_copy + paths_to_mutate = {copied}"],
+                )
+            ]
+        return [
+            CheckResult(
+                "PASS",
+                check,
+                "[tool.mutmut] copies every path the suite imports",
+            )
+        ]
 
     def check_version(self) -> list[CheckResult]:
         """Check CHANGELOG / git tag / Dockerfile version alignment."""

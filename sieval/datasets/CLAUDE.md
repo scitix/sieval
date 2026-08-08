@@ -14,6 +14,19 @@
 - `hf:` sources are revision-pinned; `url:` sources carry per-file `checksums` (sha256).
   Regenerate the meta index (`scripts/sync_meta_index.py`) after editing either.
 
+## Corrected variants
+
+A dataset ships upstream's rows as they are. Repairing a genuinely broken row is
+a `datasets/` concern rather than a task one: a separate registered
+`<name>_fixed` dataset over the **same pinned revision**, applying a patch table
+rather than forking the data — a patch table shrinks to empty when upstream
+fixes the row, which is the only exit condition a local fix can have. The
+unqualified name keeps tracking upstream, as it does for tasks
+(`sieval/tasks/CLAUDE.md`).
+
+No such dataset exists yet. The first one settles the details — do not design
+the patch-table format in advance.
+
 ## Subpackages
 
 A multi-module benchmark gets a subdirectory; `datasets/__init__.py` lazy-loads it.

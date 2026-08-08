@@ -2,16 +2,43 @@
 
 ## Naming Conventions
 
-File: `<task>_<N>shot_<mode>.py` — suffix determines `model_type`:
+File: `<task>_<N>shot_<mode>[_<variant>].py` — the mode determines `model_type`:
 
-| Suffix | `model_type` |
+| Mode | `model_type` |
 | --- | --- |
 | `_gen.py` | `"chat"` |
 | `_base_gen.py` | `"gen"` |
 | `_ppl.py` | `"gen"` |
 | `_clp.py` | `"gen"` |
 
-Class: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `FewShot`).
+Class: `<Benchmark><ShotType><Mode>[<Variant>]Task` — words for shot count
+(`ZeroShot`, `FewShot`).
+
+### Variants
+
+An optional trailing segment lets two readings of one benchmark coexist as
+separate registered tasks. The name is the registry key *and* the run-directory
+name, so it is the only place the distinction can live.
+
+| Variant | Means |
+| --- | --- |
+| *(none)* | Tracks upstream — its protocol, its grader, its defects |
+| `_fixed` | Ours, diverging to repair a defect in upstream's grader or data |
+
+- **The unqualified name always tracks upstream, bugs included**, and is never
+  repurposed by a local change. It stays free even if nothing will occupy it —
+  `ugmathbench`'s faithful grader cannot ship at all (upstream is GPL-3.0).
+- **`_fixed` is licensed by a defect, not a preference**, and owes two things:
+  every divergence enumerated in `reference_impl.notes`, and its score impact
+  **quantified**. An unmeasured fork is not a fix.
+- The mode is read positionally, so a variant may not spell one:
+  `foo_0shot_clp_gen.py` has two readings and is rejected.
+- The table is the current vocabulary, not the limit — a new variant earns a row
+  when a second real case arrives. Do not coin one speculatively.
+
+Not variants: a different **measurement regime** (that is a mode —
+`arc_challenge_kshot_clp` vs `_ppl`), and a fix to **problem text or reference
+answers** (a `datasets/` concern — see `sieval/datasets/CLAUDE.md`).
 
 ### Constructor knobs: `n_shot` vs `k`
 

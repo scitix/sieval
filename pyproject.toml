@@ -218,11 +218,23 @@ paths_to_mutate = ["sieval/core"]
 tests_dir = ["tests/unit"]
 exclude = ["sieval/core/**/__init__.py"]
 also_copy = [
+  # `sieval/__init__.py` is load-bearing: without it `mutants/sieval` is a plain
+  # directory rather than a package, so every test in the copy resolves `sieval`
+  # through the editable install instead, and mutmut dies on an unrelated import
+  # before running a single mutant.
+  "sieval/__init__.py",
+  # `scripts/` is not a package, so `tests/unit/scripts/` puts it on `sys.path`
+  # by walking up from its own `__file__`. Inside the copy that resolves to
+  # `mutants/scripts`, so without this entry stats collection dies on
+  # `ModuleNotFoundError: No module named 'check_layer_imports'` — the same
+  # class of failure as the entry above, and just as invisible.
+  "scripts",
   "sieval/community",
   "sieval/datasets",
   "sieval/tasks",
   "sieval/infer",
   "sieval/cli",
+  "sieval/meta",
   "sieval/__main__.py",
 ]
 

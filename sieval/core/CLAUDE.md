@@ -23,6 +23,14 @@ Hierarchical: global (MultiTaskRunner) → task (TaskRunner) → stage → model
 
 ## Test Requirements
 
-* Coverage ≥ 95%: `python -m pytest tests/unit/ tests/integration/ --cov -v`
-* Mutation score ≥ 70% for modified modules: `mutmut run --paths-to-mutate=sieval/core/<module>.py`
+* **Coverage ≥ 95%** — gated in CI (`fail_under = 95` over `sieval/core`). Locally `pytest --cov`
+  dies on a pyarrow double-registration in some environments; it reproduces on untouched modules,
+  so use `python -m coverage run --source=sieval -m pytest <tests>` + `coverage report -m`.
+* **Mutation score ≥ 70%** for modified modules — **currently unobtainable, and not in CI.**
+  `mutmut run` (never `python -m mutmut`, which double-executes its `__main__` and dies on the
+  first mutant) fails during stats collection: a test that spawns a fresh interpreter re-imports
+  mutmut's injected trampoline and fails on it. Scope by mutant name
+  (`mutmut run "sieval.core.utils.offload.*"`), never by narrowing `paths_to_mutate`. The copy
+  paths are asserted by `check_preflight.py --check check_mutmut_config` — necessary, not
+  sufficient. **Do not quote a mutation score until this is fixed.**
 * Disk persistence tests: use fresh `TaskLoader` from disk, not `runner._contexts`

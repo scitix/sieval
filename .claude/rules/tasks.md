@@ -7,13 +7,30 @@ paths:
 
 ## Naming & Model Type
 
-- File naming must follow `<task>_<N>shot_<mode>.py` pattern (authoritative table in `sieval/tasks/CLAUDE.md`):
+- File naming must follow `<task>_<N>shot_<mode>[_<variant>].py` pattern (authoritative table in `sieval/tasks/CLAUDE.md`):
     - `_gen.py` → `model_type = "chat"`
     - `_base_gen.py` → `model_type = "gen"` (base model, uses GenModel)
     - `_ppl.py` → `model_type = "gen"` (perplexity, uses GenModel)
     - `_clp.py` → `model_type = "gen"` (conditional next-token log-prob, uses GenModel)
-- Class naming: `<Benchmark><ShotType><Mode>Task` — words for shot count (`ZeroShot`, `FewShot`)
+- Class naming: `<Benchmark><ShotType><Mode>[<Variant>]Task` — words for shot count (`ZeroShot`, `FewShot`)
 - `ppl` vs `clp` distinction: see `sieval/tasks/CLAUDE.md`.
+
+### Variants
+
+An optional trailing segment lets two readings of one benchmark coexist as
+separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
+
+- The unqualified name means **what upstream measures, bugs included**. Never
+  repurpose it for a local change.
+- `_fixed` requires a **defect** in upstream's data or grader, not a preference,
+  and owes both: every divergence in `reference_impl.notes`, and a **quantified**
+  score impact.
+- A variant may not spell a mode — `..._clp_gen.py` is rejected.
+- A different **measurement regime** is a mode, not a variant.
+- A fix to **problem text or reference answers** is a `datasets/` concern: a
+  dataset variant applying a patch table over the same pinned revision, never a
+  forked copy. See `sieval/datasets/CLAUDE.md`.
+- Do not coin a new variant name speculatively.
 
 ## Checklist for New Benchmarks
 

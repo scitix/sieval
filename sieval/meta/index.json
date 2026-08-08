@@ -892,6 +892,27 @@
       "deps_group": null,
       "license": "MIT",
       "checksums": {}
+    },
+    {
+      "name": "ugmathbench",
+      "display_name": "UGMathBench",
+      "description": "Undergraduate math, 16 subjects, 3 randomized versions per problem.",
+      "source": [
+        "hf:UGMathBench/ugmathbench@8ab16f0c131a9b3b52195e64175cb5a8f3881bbf"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "AdvancedMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "GPL-3.0",
+      "checksums": {}
     }
   ],
   "tasks": [
@@ -1932,6 +1953,26 @@
         "source": "TIGER-AI-Lab/TheoremQA",
         "url": "https://github.com/TIGER-AI-Lab/TheoremQA/blob/acfc9686aa9b49f3c8f189364a9a9ee9c53da039/run.py",
         "notes": "Prompt follows official short-form examples by default; n_shot can select any prefix of the built-in examples. answer_clean and numeric matching mirror official utils.py/number_utils.py."
+      },
+      "status": "stable"
+    },
+    {
+      "name": "ugmathbench_0shot_gen_fixed",
+      "display_name": "UGMathBench (0-shot, generative, corrected)",
+      "description": "Undergraduate math, 3 randomized versions per problem; EAcc + gap.",
+      "dataset": "ugmathbench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "UGMathBench",
+        "url": "https://github.com/YangLabHKUST/UGMathBench/blob/df47bfa639bfb89bdb0220036a7b2f216e72b0b3/eval_rule.py",
+        "notes": "Prompt and metric definitions mirror upstream's `raw` template and `eval_file` (aacc / eacc / cacc / Delta / RE). The grader does NOT, and cannot: upstream's `judge_rule.py` is GPL-3.0 and would not ship in an Apache-2.0 distribution, so answer comparison is an independent math-verify-based implementation of the same 10 answer types. The `_fixed` variant therefore does not reproduce the paper's numbers, and the unqualified name stays vacant rather than reserved. MEASURED DIVERGENCE: upstream's judge was run as a local instrument (GPL-3.0 restricts distribution, not use; nothing is vendored) over all 15,183 pinned rows, each row's own reference replayed back as a boxed answer. Upstream accepts its own reference on 14,616 rows (96.27%), this task on 15,160 (99.85%); the 552 rows that disagree span 192 of 5,061 problems — an EAcc ceiling difference of 3.79 pp, about 5x the 0.70 pp binomial standard error. 548 of the 552 are rows upstream rejects its OWN reference on, so the gap is repair, not drift; only 4 go the other way (a UOL reference whose top-level commas sit outside any bracket). Dominant cause: upstream normalizes the prediction and the reference by different passes — its extraction-time normalize_answer rewrites sqrt(x) into sqrt{(}x) on the prediction only, which a plain-sympy reference never survives. Contributing: a TF slot whose reference is not a boolean (9 of 1665; upstream asserts it is and swallows the AssertionError into a False, so no answer wins), a zero-valued numeric reference, the declared answer type deciding the rule where upstream's `is_equal` retries every method until one accepts, and three deliberate differences in where commas are split (9 rows): `<` and `>` are the relational operators here, not brackets, so counting them as brackets — which upstream does — swallows the comma after them and the row comes out a slot short (6 rows); the bracket depth clamps at zero instead of going negative, where upstream loses every remaining slot after one unmatched closer (3 rows); and `{}` counts as a bracket, which costs 0 rows on the references but keeps a comma inside a LaTeX group in the model's answer from splitting a slot in two. All enumerated in sieval/community/ugmathbench.py. The figure bounds the GRADER, not a model's score: it is a replay of stored references, so it says nothing about extraction on real model prose. LIVE HEAD-TO-HEAD (the stronger measurement, and the one that promoted this task): over a full 15,183-version run, upstream's judge re-graded the same stored responses and agreed on 95.51% of samples, disagreeing 591 to 91 in this task's favour; upstream scores EAcc 35.55 where this task scores 38.49, and the residual misses are 0.60% of samples (LaTeX interval notation, absolute-value bars, a `y = ` prefix on an EX answer). Note that the replay figure could NOT see the largest defect the live run found — replaying a gold as its own answer short-circuits on string equality and never reaches the symbolic path. GUARDS: since the parsed text is model output, three shapes are refused rather than evaluated — the parse namespace has its builtins removed; an answer containing a quote is refused outright, because a quoted string handed to any callable (eval, sympify, S, N, or any name at all, since auto_symbol makes unknown names callable) is re-sympified with sympy's own default namespace and gets the builtins back; and an answer requiring unbounded arithmetic (a power tower) is screened out by an unevaluated pre-parse. All three grade the answer wrong, and none is reachable by any pinned reference — the largest exponent is three digits and not one of the 42,064 gold slots contains a quote. SAMPLING: upstream generates greedily, one sample per version (temperature 0, max_tokens 2048), and this task issues one rollout per version to match; set temperature via the model config. Upstream also offers a model-as-judge variant (eval_marj.py) which it now recommends over the rule-based path — not implemented here. METRICS: `relative_delta` is upstream's RE scaled by 100 — upstream prints the bare ratio (0.1667) where this reports 16.67; do not compare the two directly."
       },
       "status": "stable"
     }

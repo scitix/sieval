@@ -127,13 +127,14 @@ class TestPreflightRunner:
     """Runner orchestration."""
 
     def test_all_checks_listed(self):
-        assert len(PreflightRunner.ALL_CHECKS) == 11
+        assert len(PreflightRunner.ALL_CHECKS) == 12
         assert "check_links" in PreflightRunner.ALL_CHECKS
         assert "check_examples" in PreflightRunner.ALL_CHECKS
         assert "check_meta_index_sync" in PreflightRunner.ALL_CHECKS
         assert "check_version" in PreflightRunner.ALL_CHECKS
         assert "check_task_shot_knobs" in PreflightRunner.ALL_CHECKS
         assert "check_record_key_access" in PreflightRunner.ALL_CHECKS
+        assert "check_mutmut_config" in PreflightRunner.ALL_CHECKS
 
     def test_run_all_returns_results(self):
         runner = PreflightRunner()
@@ -1187,12 +1188,39 @@ class TestTaskFileNamingPattern:
     @pytest.mark.parametrize(
         "name",
         [
+            "foo_0shot_gen_fixed.py",
+            "foo_0shot_base_gen_fixed.py",
+            "foo_kshot_ppl_fixed_v2.py",
+        ],
+    )
+    def test_accepts_a_variant_after_the_mode(self, name):
+        assert _TASK_FILE_PATTERN.match(name) is not None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
             "foo_clp.py",  # missing shot segment
-            "foo_5shot_clp_extra.py",  # trailing junk
             "foo_5shot_clpx.py",  # not a known mode
+            "foo_0shot_gen_.py",  # empty variant
+            "foo_0shot_gen_Fixed.py",  # variant is not lower-case
         ],
     )
     def test_rejects_malformed(self, name):
+        assert _TASK_FILE_PATTERN.match(name) is None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # The example both CLAUDE.md and rules/tasks.md name as canonical.
+            "foo_0shot_clp_gen.py",
+            "foo_0shot_gen_gen.py",
+            "foo_5shot_clp_ppl.py",
+            "foo_0shot_gen_base_gen.py",
+        ],
+    )
+    def test_rejects_a_variant_that_spells_a_mode(self, name):
+        # Two readings (mode `gen` + variant `ppl`, or mode `ppl` misplaced), so
+        # the name is rejected rather than settled by alternation precedence.
         assert _TASK_FILE_PATTERN.match(name) is None
 
 
@@ -1225,6 +1253,13 @@ class TestCheckMetaIndexSync:
         drift locally before anyone pushes.
         """
         runner = PreflightRunner()
+        if runner.project_root.name == "mutants":
+            # mutmut runs the suite from a copy of the tree, where neither side
+            # of this comparison is the thing it is about: the "committed" index
+            # is a copy and the registry is importable only by accident. It is
+            # the last test standing between `mutmut run` and a score, and
+            # skipping it costs nothing — CI runs this check on the real tree.
+            pytest.skip("meaningless inside a mutmut copy of the tree")
         results = runner.check_meta_index_sync()
         assert len(results) == 1
         assert results[0].status == "PASS", results[0].details
@@ -2385,3 +2420,69 @@ class TestCheckRecordKeyAccess:
         """
         results = PreflightRunner().check_record_key_access()
         assert [r.status for r in results] == ["PASS"]
+
+
+class TestCheckMutmutConfig:
+    """`[tool.mutmut]` must still yield an importable `mutants/` copy."""
+
+    def _write(self, tmp_path, body: str) -> PreflightRunner:
+        (tmp_path / "pyproject.toml").write_text(body, encoding="utf-8")
+        return PreflightRunner(project_root=tmp_path)
+
+    def test_missing_package_root_fails(self, tmp_path):
+        # The first regression: also_copy lists the subpackages but not
+        # sieval/__init__.py, so mutants/sieval is a directory rather than a
+        # package and every mutation run dies during stats collection.
+        runner = self._write(
+            tmp_path,
+            '[tool.mutmut]\npaths_to_mutate = ["sieval/core"]\n'
+            'also_copy = ["sieval/tasks", "scripts"]\n',
+        )
+        results = runner.check_mutmut_config()
+        assert [r.status for r in results] == ["FAIL"]
+        assert any("sieval/__init__.py" in d for d in results[0].details)
+
+    def test_missing_scripts_fails(self, tmp_path):
+        # The second, found the same way: `scripts/` is not a package, so
+        # tests/unit/scripts/ puts it on sys.path by walking up from __file__.
+        # In the copy that is mutants/scripts, which without this entry does not
+        # exist -- and the run dies on `No module named 'check_layer_imports'`,
+        # which reads as a broken test rather than a missing copy path.
+        runner = self._write(
+            tmp_path,
+            '[tool.mutmut]\npaths_to_mutate = ["sieval/core"]\n'
+            'also_copy = ["sieval/__init__.py", "sieval/tasks"]\n',
+        )
+        results = runner.check_mutmut_config()
+        assert [r.status for r in results] == ["FAIL"]
+        assert any("scripts" in d for d in results[0].details)
+
+    def test_every_required_path_present_passes(self, tmp_path):
+        runner = self._write(
+            tmp_path,
+            '[tool.mutmut]\npaths_to_mutate = ["sieval/core"]\n'
+            'also_copy = ["sieval/__init__.py", "scripts", "sieval/tasks"]\n',
+        )
+        assert [r.status for r in runner.check_mutmut_config()] == ["PASS"]
+
+    def test_a_parent_entry_carries_the_package_root(self, tmp_path):
+        # Copying "sieval" wholesale brings __init__.py with it.
+        runner = self._write(
+            tmp_path,
+            '[tool.mutmut]\npaths_to_mutate = ["sieval"]\nalso_copy = ["scripts"]\n',
+        )
+        assert [r.status for r in runner.check_mutmut_config()] == ["PASS"]
+
+    def test_no_mutmut_section_is_not_a_failure(self, tmp_path):
+        runner = self._write(tmp_path, "[project]\nname = 'x'\n")
+        assert [r.status for r in runner.check_mutmut_config()] == ["PASS"]
+
+    def test_missing_pyproject_fails(self, tmp_path):
+        runner = PreflightRunner(project_root=tmp_path)
+        assert [r.status for r in runner.check_mutmut_config()] == ["FAIL"]
+
+    def test_the_repo_config_is_registered_and_passes(self):
+        # Registration is the half that makes it run in CI; without it the
+        # function is dead code that reports nothing.
+        assert "check_mutmut_config" in PreflightRunner.ALL_CHECKS
+        assert [r.status for r in PreflightRunner().check_mutmut_config()] == ["PASS"]

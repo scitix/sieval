@@ -7,6 +7,7 @@ import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
+from sieval.community.deepseek_math import is_correct
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import (
@@ -14,7 +15,9 @@ from sieval.core.tasks import (
     build_judgement_record,
     build_rollout_judgement,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.gsm8k import GSM8KDataset, GSM8KDatasetSample
+from sieval.tasks import gsm8k_0shot_gen as module
 from sieval.tasks.gsm8k_0shot_gen import (
     COT_INSTRUCTION,
     GSM8KZeroShotGenTask,
@@ -138,6 +141,61 @@ async def test_feedback_wrong_answer():
     post = await task.postprocess(inf, ctx)
     _, fb = await task.feedback(post, ctx)
     assert fb["rollouts"][0]["correct"] is False
+
+
+@pytest.mark.anyio
+async def test_grading_is_bounded_in_a_worker_process(monkeypatch):
+    """The mechanism, not the verdict — a thread offload scores identically, so
+    reverting to `anyio.to_thread.run_sync` keeps every other test in this file
+    passing. Why a process: criterion 2 in `core/utils/offload.py`.
+    """
+    seen: dict[str, object] = {}
+
+    async def _spy(func, *args, timeout=None):
+        seen.update(func=func, args=args, timeout=timeout)
+        return func(*args)
+
+    monkeypatch.setattr(module, "run_cpu_bound", _spy)
+
+    task, model = _task("x")
+    raw = _sample(answer="Work.\n#### 42")
+    inf = ModelOutput(model=model.meta(), texts=["The answer is $\\boxed{42}$."])
+    ctx = TaskContext(sample_id=0, raw_sample=raw, infer_result=inf)
+    post = await task.postprocess(inf, ctx)
+    _, fb = await task.feedback(post, ctx)
+
+    assert seen["func"] is is_correct
+    assert seen["args"] == ({"prediction": "42", "answer": "42"},)
+    assert seen["timeout"] == GRADE_TIMEOUT
+    assert fb["rollouts"][0]["correct"] is True
+
+
+@pytest.mark.anyio
+async def test_a_grading_timeout_scores_wrong_rather_than_failing_the_sample(
+    monkeypatch,
+):
+    # Offloading introduced a failure mode the synchronous call did not have:
+    # before, a runaway `simplify` blocked: now it raises at GRADE_TIMEOUT. Left
+    # to propagate, the runner turns it into a failed sample, so a slow grade
+    # shows up as `fails > 0` -- which reads as infrastructure breakage and is
+    # one of the signals a run is promoted on. Every sibling math grader scores
+    # an ungradeable answer wrong instead; this one has to agree.
+    async def _raise_timeout(_func, *_args, **_kwargs):
+        raise TimeoutError("grading took too long")
+
+    monkeypatch.setattr(module, "run_cpu_bound", _raise_timeout)
+
+    task, model = _task("x")
+    raw = _sample(answer="Work.\n#### 42")
+    inf = ModelOutput(model=model.meta(), texts=["The answer is $\\boxed{42}$."])
+    ctx = TaskContext(sample_id=0, raw_sample=raw, infer_result=inf)
+    post = await task.postprocess(inf, ctx)
+
+    finalize, fb = await task.feedback(post, ctx)
+
+    assert finalize is True
+    assert fb["rollouts"][0]["correct"] is False
+    assert fb["reference"] == "42"
 
 
 # --- report accuracy + infer injects no decode params ---
