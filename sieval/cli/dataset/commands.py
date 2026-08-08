@@ -7,7 +7,9 @@ AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 from pathlib import Path
 from typing import Annotated
 
+import click
 import typer
+from loguru import logger
 
 from sieval.cli.dataset.render import (
     render_dataset_list,
@@ -15,7 +17,7 @@ from sieval.cli.dataset.render import (
 )
 from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
 from sieval.core.datasets.meta import DatasetMeta, Level1Category
-from sieval.core.utils.logging import configure_logging
+from sieval.core.utils.logging import configure_logging, log_user
 from sieval.core.utils.paths import resolve_data_dir
 from sieval.datasets.downloaders import resolve as resolve_handler
 from sieval.datasets.downloaders.local import LocalSourceUnavailable
@@ -102,42 +104,47 @@ def download_cmd(
     all_: Annotated[bool, typer.Option("--all/--no-all")] = False,
     data_dir: Annotated[str | None, typer.Option("--data-dir")] = None,
     force: Annotated[bool, typer.Option("--force/--no-force")] = False,
+    output: Annotated[OutputFormat, typer.Option("-o", "--output")] = OutputFormat.TEXT,
 ) -> None:
     """Download dataset sources to local storage."""
     datasets, _ = load_index()
 
-    # Mutually exclusive input mode
+    # Mutually exclusive input mode. `click.UsageError`, not
+    # `typer.BadParameter`: no single value is invalid, the *combination* is,
+    # and BadParameter's "Invalid value:" framing would misdescribe it. Both
+    # exit 2; both reach `@cli_command`'s ClickException branch, so `--output
+    # json` gets the structured form while text keeps Click's usage hint.
     provided = sum(bool(x) for x in (name, domain, all_))
     if provided != 1:
-        typer.secho(
-            "Exactly one of <name>, --domain, or --all must be provided.",
-            fg=typer.colors.RED,
-            err=True,
+        raise click.UsageError(
+            "Exactly one of <name>, --domain, or --all must be provided."
         )
-        raise typer.Exit(code=2)
 
     dest_root = resolve_data_dir(data_dir)
     dest_root.mkdir(parents=True, exist_ok=True)
 
+    warnings: list[str] = []
     # `task list` / `eval` read from the default, not --data-dir.
-    # Fire upfront so Ctrl-C doesn't swallow the warning.
     if data_dir is not None and resolve_data_dir(None) != dest_root:
-        typer.secho(
+        _warn(
+            warnings,
             f"⚠ --data-dir {dest_root} differs from the default "
             f"({resolve_data_dir(None)}). `sieval task list` / `sieval eval` "
             f"will read from the default. "
             f"Set SIEVAL_DATA_DIR={dest_root} to make this override persistent.",
-            fg=typer.colors.YELLOW,
-            err=True,
         )
 
     if name:
         meta = next((d for d in datasets if d.name == name), None)
         if meta is None:
-            typer.secho(
-                f"Dataset {name!r} is not registered.",
-                fg=typer.colors.RED,
-                err=True,
+            render(
+                CommandResult(
+                    command="dataset.download",
+                    ok=False,
+                    error=f"Dataset {name!r} is not registered.",
+                    warnings=warnings or None,
+                ),
+                output,
             )
             raise typer.Exit(code=1)
         metas = [meta]
@@ -151,57 +158,115 @@ def download_cmd(
             ) from e
         metas = [m for m in datasets if any(c.level1 is level1 for c in m.categories)]
         if not metas:
-            typer.secho(
-                f"No datasets matched --domain {domain!r}.",
-                fg=typer.colors.YELLOW,
-                err=True,
+            # Matching nothing is not a failure — exit 0, with the empty
+            # summary a machine caller can read as "requested: 0".
+            _warn(warnings, f"No datasets matched --domain {domain!r}.")
+            render(
+                CommandResult(
+                    command="dataset.download",
+                    ok=True,
+                    data=_summary(dest_root, []),
+                    warnings=warnings,
+                ),
+                output,
             )
-            raise typer.Exit(code=0)
+            return
     else:
         metas = datasets
 
     batch = len(metas) > 1
-    failures: list[tuple[str, Exception]] = []
+    records: list[dict] = []
     for m in metas:
         try:
-            _download_one(m, dest_root, force)
+            record, dataset_warnings = _download_one(m, dest_root, force)
         except Exception as exc:
             if not batch:
-                # Fail-fast on single-target to preserve the original traceback.
+                # Fail-fast on single-target: the user asked for exactly one
+                # dataset, so there is no partial result worth reporting.
+                # `@cli_command` renders the exception in the chosen format.
                 raise
-            # Batch mode: one bad source shouldn't block the rest.
-            typer.secho(
-                f"[{m.name}] FAILED: {exc}",
-                fg=typer.colors.RED,
-                err=True,
-            )
-            failures.append((m.name, exc))
+            # Batch mode: one bad source shouldn't block the rest. Report it as
+            # it happens — a long batch shouldn't stay silent until the end.
+            logger.error("[{}] FAILED: {}", m.name, exc)
+            records.append({"name": m.name, "ok": False, "error": str(exc)})
+        else:
+            records.append(record)
+            warnings.extend(dataset_warnings)
 
+    failures = [r for r in records if not r["ok"]]
+    render(
+        CommandResult(
+            command="dataset.download",
+            ok=not failures,
+            data=_summary(dest_root, records),
+            error=(
+                f"{len(failures)} of {len(records)} dataset(s) failed."
+                if failures
+                else None
+            ),
+            warnings=warnings or None,
+        ),
+        output,
+    )
     if failures:
-        typer.secho(
-            f"\n{len(failures)} of {len(metas)} dataset(s) failed:",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        for fname, exc in failures:
-            typer.secho(f"  - {fname}: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 
-def _download_one(m: DatasetMeta, dest_root: Path, force: bool) -> None:
+def _warn(sink: list[str], message: str) -> None:
+    """Record a warning for the result payload *and* surface it immediately.
+
+    Both, deliberately. ``CommandResult.warnings`` is a machine-payload field —
+    no text renderer prints it — and a download runs for as long as its sources
+    take, so a warning held back until the final render would never reach a user
+    who walks away or hits Ctrl-C. Emitting through ``logger`` also keeps it on
+    stderr, where it cannot corrupt ``--output json`` on stdout.
+    """
+    sink.append(message)
+    logger.warning("{}", message)
+
+
+def _summary(dest_root: Path, records: list[dict]) -> dict:
+    """Wire shape for the download result."""
+    return {
+        "data_dir": str(dest_root),
+        "requested": len(records),
+        "succeeded": sum(1 for r in records if r["ok"]),
+        "failed": sum(1 for r in records if not r["ok"]),
+        "datasets": records,
+    }
+
+
+def _download_one(
+    m: DatasetMeta, dest_root: Path, force: bool
+) -> tuple[dict, list[str]]:
+    """Fetch one dataset's sources and verify them.
+
+    Returns its wire record plus any non-fatal warnings; raises on failure.
+    Warnings are also emitted as they occur, so the ones raised past — a
+    bring-your-own corpus whose instructions precede the raise — still reach
+    the user; the exception message carries the same substance for machines.
+    """
+    warnings: list[str] = []
     missing_local_sources: list[str] = []
+    fetched = 0
+    already_present = 0
     for src in m.source:
         h = resolve_handler(src)
         if h.is_downloaded(src, dest_root, m.name) and not force:
-            typer.echo(f"[{m.name}] already present: {src}")
+            # Progress, not result data: `log_user` keeps it on stderr so
+            # `--output json` stays parseable on stdout.
+            log_user("[{}] already present: {}", m.name, src)
+            already_present += 1
             continue
-        typer.echo(f"[{m.name}] fetching {src}")
+        log_user("[{}] fetching {}", m.name, src)
         try:
             h.download(src, dest_root, m.name, force=force)
         except LocalSourceUnavailable as e:
             # BYO corpus: surface the instructions and track for a summary.
-            typer.secho(f"[{m.name}] {e}", fg=typer.colors.YELLOW)
+            _warn(warnings, f"[{m.name}] {e}")
             missing_local_sources.append(src)
+        else:
+            fetched += 1
 
     mismatches = verify_checksums(m, dest_root)
     if mismatches:
@@ -234,11 +299,22 @@ def _download_one(m: DatasetMeta, dest_root: Path, force: bool) -> None:
         unmet = extras_unsatisfied(m.deps_group)
         if unmet:
             details = "\n".join(f"    - {u}" for u in unmet)
-            typer.secho(
+            _warn(
+                warnings,
                 f"Dataset {m.name!r} requires extras group {m.deps_group!r}.\n"
                 f"  Unsatisfied requirements:\n{details}\n"
                 f"  To enable:\n"
                 f"    pip install 'sieval[{m.deps_group}]'\n"
                 f"  (PDM/Poetry/uv users: use your tool's equivalent.)",
-                fg=typer.colors.YELLOW,
             )
+
+    return (
+        {
+            "name": m.name,
+            "ok": True,
+            "fetched": fetched,
+            "already_present": already_present,
+            "error": None,
+        },
+        warnings,
+    )

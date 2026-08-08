@@ -595,6 +595,27 @@ def _render_text_dataset_list(result: CommandResult) -> None:
         log_user("{}: all {}", header, value)
 
 
+def _render_text_dataset_download(result: CommandResult) -> None:
+    """Text renderer for dataset.download.
+
+    Per-source progress and warnings were already streamed while the download
+    ran; this renders only the outcome. The failure branch comes first because
+    the not-registered path carries no ``data`` at all.
+    """
+    data = result.data if isinstance(result.data, dict) else {}
+    records = [r for r in data.get("datasets", []) if isinstance(r, dict)]
+    if not result.ok:
+        logger.error("{}", result.error)
+        for r in records:
+            if not r.get("ok"):
+                logger.error("  - {}: {}", r.get("name"), r.get("error"))
+        return
+    if not records:
+        log_user("Nothing to download.")
+        return
+    log_user("{} dataset(s) ready in {}", len(records), data.get("data_dir", "-"))
+
+
 _TASK_LIST_COLS: list[tuple[str, str]] = [
     ("NAME", "name"),
     ("DATASET", "dataset"),
@@ -747,6 +768,7 @@ _TEXT_RENDERERS: dict[str, Callable[[CommandResult], None]] = {
     "leaderboard.list": _render_text_leaderboard_list,
     "dataset.list": _render_text_dataset_list,
     "dataset.show": _render_text_dataset_show,
+    "dataset.download": _render_text_dataset_download,
     "task.list": _render_text_task_list,
     "task.show": _render_text_task_show,
 }

@@ -13,6 +13,7 @@ import typer
 import yaml
 
 from sieval.cli.output import (
+    _TEXT_RENDERERS,
     CommandResult,
     OutputFormat,
     _collapse_constant_columns,
@@ -946,3 +947,51 @@ class TestEveryCommandIsWrapped:
             "task.list",
             "task.show",
         }
+
+
+class TestEveryCommandOffersMachineReadableOutput:
+    """Funnelling failures is half the contract; the other half is that a
+    caller can *ask* for a machine-readable format in the first place.
+
+    ``dataset download`` shipped without ``--output`` and printed its result
+    through ``typer.secho``, so "which datasets failed" was human-only text.
+    An exception list keeps that from recurring silently: adding a command
+    without ``--output`` now has to argue for itself here.
+    """
+
+    # `infer logs` follows a running job's log stream — it has no result to
+    # render, and `cli/CLAUDE.md` names it as a `log_user()` streaming
+    # carve-out. Its *failures* still go through `@cli_command`.
+    STREAMING_ONLY = {"infer.logs"}
+
+    def test_every_non_streaming_command_takes_output(self):
+        import inspect
+
+        from sieval.cli.main import app
+
+        missing = {
+            name
+            for name, fn in _walk_commands(app)
+            if "output" not in inspect.signature(fn).parameters
+        }
+
+        assert missing == self.STREAMING_ONLY
+
+    def test_every_command_with_output_has_a_text_renderer(self):
+        """``--output text`` is the default, so a missing renderer degrades to
+        `render()`'s generic fallback — a raw dict dumped at the user.
+        """
+        import inspect
+
+        from sieval.cli.main import app
+
+        no_renderer = {
+            name
+            for name, fn in _walk_commands(app)
+            if "output" in inspect.signature(fn).parameters
+            and name not in _TEXT_RENDERERS
+            # `eval`/`run`/`leaderboard.run` also register a `<name>.dry_run`
+            # variant; the base name is what the walk yields.
+        }
+
+        assert no_renderer == set()
