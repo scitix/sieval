@@ -31,6 +31,11 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
   dataset variant applying a patch table over the same pinned revision, never a
   forked copy. See `sieval/datasets/CLAUDE.md`.
 - Do not coin a new variant name speculatively.
+- **Fidelity stops at execution safety.** Never reproduce a path that executes
+  model output, escapes the run directory, or cannot be bounded — the
+  **unqualified** task carries the hardened behaviour and needs no `_fixed`. It
+  still owes a quantified score impact, upstream preserved everywhere safety
+  does not object, and evidence no bound binds. See `sieval/tasks/CLAUDE.md`.
 
 ## Checklist for New Benchmarks
 

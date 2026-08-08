@@ -13,12 +13,42 @@ Two common anomaly classes are therefore expected compatibility artifacts:
 long chain-of-thought outputs can finish with reason="length", and repeated
 "The answer is" triggers can be treated as ICL leakage by the upstream cleaner.
 
-Known implementation deviations are import/runtime safety and typed
-groundtruth plumbing: numeric eval is sandboxed instead of using upstream bare
-eval, latex2sympy2 falls back to latex2sympy2_extended when the original
-package is unavailable, and numeric groundtruths are derived from the
-dataset's Answer_type field instead of the official loader's runtime Python
-types to reproduce the same typed comparison inputs.
+Known implementation deviations are execution safety, import fallback, and
+typed groundtruth plumbing:
+
+* **Numeric answers are evaluated, not executed.** Upstream turns an extracted
+  answer into a number with a bare ``eval(num)`` on model output.
+  :func:`safe_eval` below replaces the interpreter with an AST walk over an
+  allowlist, which runs nothing and is bounded. This is the one *safety*
+  divergence taken under the unqualified name rather than in a ``_fixed``
+  variant -- see ``sieval/tasks/CLAUDE.md`` on where fidelity stops -- and it is
+  measured at **zero**: replaying a stored 800-sample run through upstream's
+  ``eval`` and through this walk reaches 706 expressions, all 706 agree, and
+  accuracy is 44.625 either way. The earlier mitigation here, an ``eval`` with
+  ``__builtins__`` cleared, was escapable (clearing builtins does not stop
+  attribute traversal) and *also* silently dropped ``abs`` / ``round`` / ``pow``;
+  the walk restores them, so it is the more faithful of the two as well as the
+  safe one.
+
+  The dialect is narrower than ``eval``'s outside the numeric subset the three
+  call sites reach: comparisons, boolean and conditional expressions, dict
+  displays, subscripts and string literals are all refused. Only the string
+  literal is refused *for* safety -- it is the one literal that can carry code
+  into a function that re-parses its argument -- and the rest are simply shapes
+  no answer on this benchmark is written in.
+* latex2sympy2 falls back to latex2sympy2_extended when the original package is
+  unavailable.
+* Numeric groundtruths are derived from the dataset's Answer_type field instead
+  of the official loader's runtime Python types, to reproduce the same typed
+  comparison inputs.
+
+One upstream grader defect is reproduced rather than repaired, as the
+unqualified name requires: ``latex2sympy`` folds a list answer such as
+``[0, 0]`` into the set ``{0}``, and evaluating that set cements the corruption
+where refusing it would let the original correct string survive to the
+string-equality check. Repairing it is worth **+2 of 800 samples** (44.625 ->
+44.875, no verdict moving right-to-wrong) and belongs to a ``_fixed`` variant,
+which is deliberately left uncoined for a delta this size.
 
 The Qwen2.5 technical report Table 2 lists TheoremQA as a 5-shot base-model
 benchmark: Qwen2.5-72B scores 42.4, while 42.8 belongs to Qwen2-72B. By
@@ -31,11 +61,14 @@ AI-Generated Code - GPT-5.5 (OpenAI)
 import ast
 import contextlib
 import math
+import operator
 import re
 from collections.abc import Callable
 from importlib import import_module
 from math import cos, e, exp, factorial, log, pi, sin, sqrt
 from typing import override
+
+from loguru import logger
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -51,6 +84,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import TheoremQADatasetSample
 
 
@@ -74,22 +108,331 @@ def _get_latex2sympy() -> Callable[[str], object]:
     return _LATEX2SYMPY
 
 
+# ---------------------------------------------------------------------------
+# Numeric answer evaluation, without an interpreter.
+#
+# Upstream's number_utils.py turns an extracted answer into a number with a bare
+# `eval(num)`. The answer is model output, so that is arbitrary code execution;
+# the usual mitigation -- `eval(num, {"__builtins__": {}})`, which is what this
+# task shipped before -- does not close it, because clearing the builtins does
+# not remove *attribute traversal*, and the standard `catch_warnings` route
+# walks from a literal back to a live `open`:
+#
+#     [c for c in ().__class__.__base__.__subclasses__()
+#      if c.__name__=='catch_warnings'][0]()._module.__builtins__['open']('x','w')
+#
+# `safe_eval` parses to an AST and evaluates an explicit allowlist of node types
+# itself. Nothing is executed, so there is no namespace to escape from and no
+# sandbox to audit -- the payload above dies at its first `Attribute` node,
+# before any object is reached. Preferred over the `parse_expr` route used for
+# the UGMathBench grader (`sieval/community/ugmathbench.py`) because that one
+# *is* an execution path, needing a cleared namespace, a quote screen and a
+# power-tower pre-parse to be safe; those guards are load-bearing there because
+# that grader wants a *symbolic* comparison, where the three call sites here
+# want a *number* out of a Python-ish expression.
+#
+# Fidelity is not traded away for it, and the module docstring records the
+# measurement: the dialect is upstream's numeric subset, and the builtins that
+# upstream's `eval` exposed and the cleared namespace silently lost (abs, round,
+# pow, min, max, sum, int, float, complex, divmod, len) are back, as *values* in
+# a namespace only a validated tree can reach. Exposing them is safe here in a
+# way it is not under `eval`: the danger was never `abs`, it was the traversal
+# that reaches everything else, and no allowlisted node can express one.
+# ---------------------------------------------------------------------------
+
+#: Upstream's ``E``. ``number_utils.py`` defines it as this truncated literal
+#: rather than :data:`math.e`, and an answer written ``E`` is compared against
+#: the truncated value there, so it is reproduced exactly.
 E = 2.718
-# Upstream uses bare eval(num). SiEval keeps eval sandboxed for task runtime
-# safety, so builtins such as abs/round/pow are intentionally unavailable.
-_EVAL_GLOBALS = {
-    "__builtins__": {},
+
+#: Largest first argument :func:`factorial`, ``math.comb`` and ``math.perm``
+#: will accept. Upstream bounds none of them, all three are in scope for every
+#: graded answer, and each is reachable with a two-token literal: measured,
+#: ``factorial(2000000)`` runs ~16 s and ``math.comb(2000000, 1000000)`` ~14 s.
+#: Grading runs in a worker process under
+#: :data:`~sieval.core.utils.offload.GRADE_TIMEOUT`, but that frees the
+#: *caller* -- a pool cannot interrupt a running call, so an unbounded answer
+#: holds its worker until it finishes, and enough of them empty the pool for
+#: every task sharing it.
+_MAX_FACTORIAL = 1000
+
+#: Ceiling on the bit length of an integer power. ``a ** b`` is computed
+#: eagerly, so ``9**9**9`` asks for a 370-million-digit integer and never
+#: returns. The bound is on the *result*, estimated before computing it, so it
+#: composes: a nested tower is refused at whichever level first crosses it.
+#: ~3000 decimal digits, far above any answer this benchmark asks for.
+_MAX_RESULT_BITS = 10_000
+
+#: Ceiling on AST node count, bounding both parse depth and the number of
+#: operations a single answer can ask for.
+_MAX_NODES = 500
+
+#: Ceiling on the length of a sequence built by *repetition*. A literal display
+#: is already bounded by :data:`_MAX_NODES`; ``[0] * n`` is not, and seven nodes
+#: build an 800 MB list at ``n = 10**8``. What this protects is not the sample
+#: -- callers treat a ``MemoryError`` as "not a number", like any other refusal
+#: -- but the pool: a worker killed by the OOM reaper reaches
+#: :func:`~sieval.core.utils.offload.run_cpu_bound` as a ``BrokenExecutor``,
+#: which drops *every* task in the session back to inline grading for the rest
+#: of the run.
+_MAX_SEQUENCE_LENGTH = 10_000
+
+
+class UnsafeExpression(ValueError):
+    """The expression is outside the evaluable subset, or exceeds a bound.
+
+    A subclass of :exc:`ValueError` so the call sites' existing broad
+    ``except Exception`` treats a refusal exactly as they already treat a
+    ``SyntaxError`` or a ``NameError`` from ``eval``: the answer does not
+    become a number, and the sample grades wrong.
+    """
+
+
+def _guarded_pow(base, power):
+    """``base ** power``, refused when the result cannot be bounded."""
+    # bits(base**power) == power * log2(|base|); checked before computing.
+    if (
+        isinstance(power, int)
+        and isinstance(base, int)
+        and base not in (0, 1, -1)
+        and power > 0
+        and power * base.bit_length() > _MAX_RESULT_BITS
+    ):
+        raise UnsafeExpression("integer power exceeds the size bound")
+    if isinstance(power, float) and abs(power) > _MAX_RESULT_BITS:
+        raise UnsafeExpression("float power exceeds the size bound")
+    try:
+        return operator.pow(base, power)
+    except (OverflowError, MemoryError) as exc:
+        raise UnsafeExpression(f"power overflowed: {exc}") from exc
+
+
+def _guarded_factorial(value):
+    if not isinstance(value, int) or value > _MAX_FACTORIAL:
+        raise UnsafeExpression(f"factorial argument out of range: {value!r}")
+    return factorial(value)
+
+
+def _guarded_comb(n, k):
+    """``math.comb(n, k)``, under the :data:`_MAX_FACTORIAL` ceiling.
+
+    Bounded rather than refused: the ceiling is far above any answer this
+    benchmark asks for, so upstream's function survives for every reachable
+    comparison while the size-driven runaway does not.
+    """
+    if not isinstance(n, int) or n > _MAX_FACTORIAL:
+        raise UnsafeExpression(f"comb argument out of range: {n!r}")
+    return math.comb(n, k)
+
+
+def _guarded_perm(n, k=None):
+    """``math.perm(n, k)``, under the :data:`_MAX_FACTORIAL` ceiling."""
+    if not isinstance(n, int) or n > _MAX_FACTORIAL:
+        raise UnsafeExpression(f"perm argument out of range: {n!r}")
+    return math.perm(n, k)
+
+
+def _guarded_mul(left, right):
+    """``left * right``, refused when it repeats a sequence past the bound."""
+    for sequence, count in ((left, right), (right, left)):
+        if isinstance(sequence, (list, tuple)) and isinstance(count, int):
+            length = count * len(sequence)
+            if length > _MAX_SEQUENCE_LENGTH:
+                raise UnsafeExpression(f"sequence repetition of length {length}")
+    return operator.mul(left, right)
+
+
+def _guarded_lshift(value, amount):
+    """``value << amount``, refused when the result cannot be bounded."""
+    if not isinstance(amount, int) or amount > _MAX_RESULT_BITS:
+        raise UnsafeExpression(f"shift amount out of range: {amount!r}")
+    return operator.lshift(value, amount)
+
+
+#: Names resolvable as bare identifiers. Upstream's ``eval`` saw
+#: ``number_utils.py``'s module globals plus the builtins; this reproduces the
+#: numeric part of both. ``factorial`` is wrapped to carry a bound.
+_NAMES: dict[str, object] = {
     "math": math,
     "sqrt": sqrt,
     "sin": sin,
     "cos": cos,
     "log": log,
     "pi": pi,
-    "factorial": factorial,
+    "factorial": _guarded_factorial,
     "exp": exp,
     "e": e,
     "E": E,
+    # Builtins upstream exposed. Pure numeric functions: none of them can reach
+    # an object the allowlisted nodes cannot already name.
+    "abs": abs,
+    "round": round,
+    "pow": _guarded_pow,
+    "min": min,
+    "max": max,
+    "sum": sum,
+    "int": int,
+    "float": float,
+    "complex": complex,
+    "divmod": divmod,
+    "len": len,
+    # `True` / `False` / `None` need no entry: all three parse as `ast.Constant`
+    # and are returned by that branch, never looked up here.
 }
+
+#: ``math`` members reachable through an attribute. An allowlist rather than
+#: ``hasattr(math, ...)``, because the module is also the way *past* the bounds
+#: above: ``math.factorial`` is not :func:`_guarded_factorial`, and
+#: ``math.comb`` / ``math.perm`` are the same size-driven integer computation
+#: under a different name. Replacing exactly those three with their bounded
+#: wrappers makes both spellings of each agree; what is left of the public
+#: surface returns floats or is a constant, and a float's only runaway is an
+#: ``OverflowError`` the call site already converts.
+#:
+#: The sequence-consuming members (``prod``, ``fsum``, ``lcm``, ``dist``) need
+#: no entry of their own -- their cost is the length of the sequence handed to
+#: them, which :data:`_MAX_NODES` and :data:`_MAX_SEQUENCE_LENGTH` bound between
+#: them. Built by filtering so the map tracks whatever ``math`` a given Python
+#: version ships, with only the bounded names spelled out.
+_MATH_ATTRS: dict[str, object] = {
+    name: getattr(math, name) for name in dir(math) if not name.startswith("_")
+} | {
+    "factorial": _guarded_factorial,
+    "comb": _guarded_comb,
+    "perm": _guarded_perm,
+}
+
+_BIN_OPS: dict[type, Callable] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: _guarded_mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: _guarded_pow,
+    # Bitwise operators carry no escape and no size explosion (except a shift,
+    # which is bounded). They are here for *fidelity*, not utility: upstream's
+    # eval computes them, so omitting them would be a divergence that safety
+    # does not ask for. `^` is the only one the measured corpus reaches, where
+    # it is a model writing exponentiation in ASCII.
+    ast.BitXor: operator.xor,
+    ast.BitAnd: operator.and_,
+    ast.BitOr: operator.or_,
+    ast.LShift: _guarded_lshift,
+    ast.RShift: operator.rshift,
+}
+
+_UNARY_OPS: dict[type, Callable] = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+    ast.Invert: operator.invert,
+}
+
+
+def _eval_node(node: ast.AST):
+    if isinstance(node, ast.Constant):
+        # Numbers and booleans only. A string constant is refused: it is the one
+        # literal that can carry code into a function that re-parses its
+        # argument, and no numeric answer needs one.
+        if isinstance(node.value, (int, float, complex, bool)) or node.value is None:
+            return node.value
+        raise UnsafeExpression(f"literal of type {type(node.value).__name__}")
+
+    if isinstance(node, ast.Name):
+        try:
+            return _NAMES[node.id]
+        except KeyError:
+            # Same outcome as upstream's NameError for an unknown identifier.
+            raise UnsafeExpression(f"unknown name {node.id!r}") from None
+
+    if isinstance(node, ast.BinOp):
+        op = _BIN_OPS.get(type(node.op))
+        if op is None:
+            raise UnsafeExpression(f"operator {type(node.op).__name__}")
+        # Converted on the same terms as a call: an operator that overflows or
+        # runs the process out of memory is an answer outside the subset, not a
+        # failed sample. Without this, `MemoryError` reaches the call sites as
+        # itself -- still caught by their broad `except`, but indistinguishable
+        # in a log from the pool dying.
+        try:
+            return op(_eval_node(node.left), _eval_node(node.right))
+        except UnsafeExpression:
+            raise
+        except (OverflowError, MemoryError) as exc:
+            raise UnsafeExpression(f"operator overflowed: {exc}") from exc
+
+    if isinstance(node, ast.UnaryOp):
+        op = _UNARY_OPS.get(type(node.op))
+        if op is None:
+            raise UnsafeExpression(f"unary operator {type(node.op).__name__}")
+        return op(_eval_node(node.operand))
+
+    if isinstance(node, ast.Tuple):
+        return tuple(_eval_node(item) for item in node.elts)
+
+    if isinstance(node, ast.List):
+        return [_eval_node(item) for item in node.elts]
+
+    if isinstance(node, ast.Set):
+        # A set *display* only -- `ast.SetComp` stays refused, and it is the
+        # comprehension, not the display, that the escape payload needs. Kept
+        # for fidelity: upstream evaluates `{0}` to a set, and although a set
+        # can never grade correct here (`compare_two_list` requires a `list`,
+        # and `number_it` cannot floatify one), refusing it would rescue an
+        # answer upstream loses. That is a grader repair, not a safety measure,
+        # so it belongs to a `_fixed` variant rather than to this name.
+        return {_eval_node(item) for item in node.elts}
+
+    if isinstance(node, ast.Attribute):
+        # Only ``math.<allowlisted name>``. Restricting the base to the literal
+        # name ``math`` is what keeps this from being a *traversal*: no other
+        # object is reachable, and the dunder path that would reach one is not
+        # in `_MATH_ATTRS`. The allowlist then carries the *size* bounds, which
+        # the base restriction alone does not give -- see its definition.
+        if isinstance(node.value, ast.Name) and node.value.id == "math":
+            try:
+                return _MATH_ATTRS[node.attr]
+            except KeyError:
+                raise UnsafeExpression(f"math member {node.attr!r}") from None
+        raise UnsafeExpression("attribute access")
+
+    if isinstance(node, ast.Call):
+        if node.keywords:
+            raise UnsafeExpression("keyword arguments")
+        func = _eval_node(node.func)
+        if not callable(func):
+            raise UnsafeExpression("call of a non-callable")
+        args = [_eval_node(arg) for arg in node.args]
+        try:
+            return func(*args)
+        except UnsafeExpression:
+            raise
+        except (OverflowError, MemoryError) as exc:
+            raise UnsafeExpression(f"call overflowed: {exc}") from exc
+
+    raise UnsafeExpression(f"node {type(node).__name__}")
+
+
+def safe_eval(expression: str):
+    """Evaluate *expression* as a numeric expression, executing nothing.
+
+    Drop-in for the ``eval(expression, _EVAL_GLOBALS)`` this replaces: it
+    returns the same value for every expression inside the numeric subset, and
+    raises for everything else, which the call sites already treat as "not a
+    number".
+
+    :raises UnsafeExpression: the expression is outside the subset or exceeds a
+        bound.
+    :raises SyntaxError: *expression* does not parse, as with ``eval``.
+    """
+    tree = ast.parse(expression, mode="eval")
+    # Bound the walk before starting it, so a pathological but syntactically
+    # legal answer is refused rather than walked.
+    node_count = sum(1 for _ in ast.walk(tree))
+    if node_count > _MAX_NODES:
+        raise UnsafeExpression(f"expression too large: {node_count} nodes")
+    return _eval_node(tree.body)
+
 
 _DIRECT_ANSWER_TRIGGERS = ["The answer is:", "The answer is", "the answer is"]
 _STOP_TOKENS = [
@@ -263,7 +606,7 @@ def number_it(num):
         return floatify(num)
 
     try:
-        num_value = eval(num, _EVAL_GLOBALS)
+        num_value = safe_eval(num)
         if isinstance(num_value, (list, tuple)):
             num_value = num_value[0]
         if floatify(num_value) is not None:
@@ -310,7 +653,7 @@ def extract_theoremqa_answer(pred: str, answer_flag: bool = True):
         pred = clean_units(pred)
         try:
             tmp = str(_get_latex2sympy()(pred))
-            pred = str(eval(tmp, _EVAL_GLOBALS))
+            pred = str(safe_eval(tmp))
         except Exception:
             if re.match(r"-?[\d.]+\s\D+$", pred) or re.match(
                 r"-?[\d.]+\s[^\s]+$",
@@ -363,7 +706,7 @@ def compare_answer_with_groundtruth(
             return compare_two_numbers(number_it(answer), groundtruth_num)
         if answer.startswith("(") and answer.endswith(")"):
             try:
-                answer_list = list(eval(answer, _EVAL_GLOBALS))
+                answer_list = list(safe_eval(answer))
                 answer_list = [number_it(a) for a in answer_list]
             except Exception:
                 return False
@@ -436,7 +779,52 @@ def _normalize_n_shot(n_shot: int | None) -> int:
         notes=(
             "Prompt follows official short-form examples by default; n_shot can "
             "select any prefix of the built-in examples. answer_clean and "
-            "numeric matching mirror official utils.py/number_utils.py."
+            "numeric matching follow official utils.py/number_utils.py, with "
+            "ONE deliberate SAFETY divergence, taken for execution safety "
+            "rather than as a repair. UPSTREAM EXECUTES MODEL OUTPUT: "
+            "number_utils.py turns "
+            "an extracted answer into a number with a bare eval(num), which is "
+            "arbitrary code execution driven by the model under test. This task "
+            "evaluates the same expressions with an AST walk over an allowlist "
+            "(safe_eval, in this module) that executes nothing. BOUNDS: node "
+            "count; integer-power and shift size; sequence repetition; and the "
+            "first argument to factorial, math.comb and math.perm, which are "
+            "reached through an allowlist so that math.factorial(n) and "
+            "factorial(n) carry the same ceiling. "
+            "MEASURED DIVERGENCE: ZERO. Replaying a stored 800-sample run "
+            "(Qwen2.5-72B, 5-shot, greedy) through upstream's bare eval and "
+            "through this walk reaches 706 expressions across the three call "
+            "sites; 586 evaluate to an identical value, 120 fail under both, "
+            "and 0 are refused here but evaluated by upstream. Task accuracy is "
+            "44.625 under both readings, and no sample's verdict differs. None "
+            "of the bounds in force at that replay (node count, integer-power "
+            "size, factorial argument) was reached by any of the 706; the "
+            "sequence-repetition and math-spelled ceilings were added in review "
+            "afterwards, and each sits orders of magnitude above the shapes "
+            "this benchmark's answers are written in. Fidelity was preserved "
+            "wherever safety did not object WITHIN the numeric subset the three "
+            "call sites reach: set displays "
+            "and bitwise operators are supported purely because upstream "
+            "computes them, and the builtins that upstream's eval exposed "
+            "(abs/round/pow/min/max/sum/int/float/complex/divmod/len) are "
+            "available again -- an earlier mitigation, eval with __builtins__ "
+            "cleared, was BOTH escapable (clearing builtins does not stop "
+            "attribute traversal; the catch_warnings route reaches a live open) "
+            "AND silently lost those names to a NameError. Outside that subset "
+            "the dialect is narrower than eval's: comparisons, boolean and "
+            "conditional expressions, dict displays, subscripts and string "
+            "literals are refused, and only the string literal is refused for a "
+            "safety reason. REPRODUCED DEFECT: "
+            "latex2sympy folds a list answer such as [0, 0] into the set {0}, "
+            "and evaluating that set cements the corruption; refusing set "
+            "displays instead would score +2 of 800 samples correct (44.625 -> "
+            "44.875) with no verdict moving right-to-wrong. That is a grader "
+            "repair, not a safety measure, so it is NOT taken here and the "
+            "_fixed name is left uncoined for a delta this size. GRADING: "
+            "extraction and comparison both reach latex2sympy, which is "
+            "synchronous and unbounded, so both run in a worker process "
+            "(sieval/core/utils/offload.py) rather than on the event loop the "
+            "session shares."
         ),
     ),
 )
@@ -477,30 +865,64 @@ class TheoremQAKShotBaseGenTask(
     @override
     async def postprocess(self, inf, ctx):
         text = inf.texts[0] if inf.texts else ""
+        # Extraction runs latex2sympy over model output, which is synchronous
+        # and has no bound of its own, and every runner in the session shares
+        # one event loop — so doing it here would stall every other task. A
+        # worker process rather than a thread for exactly the reason
+        # `run_cpu_bound` documents: a thread cannot be given up on, so one
+        # unparseable answer would hold its slot for the rest of the run.
+        try:
+            extracted = await run_cpu_bound(
+                answer_clean, _DIRECT_ANSWER_TRIGGERS, text, timeout=GRADE_TIMEOUT
+            )
+        except TimeoutError:
+            logger.warning(
+                "Extracting sample {} exceeded {}s; recorded as not extracted. "
+                "The response is likely a shape latex2sympy cannot parse "
+                "quickly.",
+                ctx.sample_id,
+                GRADE_TIMEOUT,
+            )
+            extracted = ""
         # answer_clean returns "" when nothing was extracted; None is the
         # protocol's spelling, and report()'s `empty` counter now reads
         # `extracted` instead of comparing against "".
-        return build_prediction_record(
-            [answer_clean(_DIRECT_ANSWER_TRIGGERS, text) or None]
-        )
+        #
+        # A timed-out extraction lands in that same counter, so `empty` means
+        # "no answer came out of extraction", not "the model wrote nothing".
+        # Deliberate: the two are the same fact for every consumer of the metric
+        # — no prediction to grade — and splitting them would add a second
+        # counter that is zero on every run where the grader keeps up. The
+        # warning above is what distinguishes them when it matters.
+        return build_prediction_record([extracted or None])
 
     @override
     async def feedback(self, post, ctx):
         answer, groundtruth_num = _groundtruth_args(ctx.raw_sample)
         # `or ""` restores exactly what the comparator saw pre-migration.
         prediction = post["rollouts"][0].get("prediction") or ""
+        # Offloaded on the same grounds as postprocess: the comparator reaches
+        # latex2sympy through number_it.
+        try:
+            correct = await run_cpu_bound(
+                compare_answer_with_groundtruth,
+                prediction,
+                answer,
+                groundtruth_num,
+                timeout=GRADE_TIMEOUT,
+            )
+        except TimeoutError:
+            # Same contract as the rest of the grader: an answer that cannot be
+            # graded is a wrong answer, not a failed run.
+            logger.warning(
+                "Grading sample {} exceeded {}s and was scored wrong.",
+                ctx.sample_id,
+                GRADE_TIMEOUT,
+            )
+            correct = False
         return True, build_judgement_record(
             answer,
-            [
-                build_rollout_judgement(
-                    0,
-                    compare_answer_with_groundtruth(
-                        prediction,
-                        answer,
-                        groundtruth_num,
-                    ),
-                )
-            ],
+            [build_rollout_judgement(0, correct)],
         )
 
     @override

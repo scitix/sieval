@@ -40,6 +40,26 @@ Not variants: a different **measurement regime** (that is a mode —
 `arc_challenge_kshot_clp` vs `_ppl`), and a fix to **problem text or reference
 answers** (a `datasets/` concern — see `sieval/datasets/CLAUDE.md`).
 
+**Fidelity stops at execution safety.** Tracking upstream never extends to
+reproducing a path that executes model output, escapes the run directory, or
+cannot be bounded — grading is synchronous on one shared event loop, so an
+unbounded grade stalls the session, not just the sample. There the unqualified
+task carries the *hardened* behaviour, and it is the one divergence that does
+**not** earn a `_fixed`: a variant exists so two readings can be compared, and
+the unsafe reading is not one we will run. It still owes three things:
+
+- **Safety, not repair** — preserve upstream everywhere safety does not object,
+  including where upstream is wrong. A grader defect noticed along the way is
+  still a `_fixed` owing its own number, and a large safety delta is evidence
+  one got smuggled in.
+- **A quantified score impact** before shipping `stable`, measured against
+  upstream's actual behaviour on a stored run.
+- **Evidence that no bound binds** on the pinned data — a bound that truncates a
+  real comparison is a scoring change wearing a safety label.
+
+`theoremqa_kshot_base_gen` is the worked example; its `reference_impl.notes`
+carry the measurement.
+
 ### Constructor knobs: `n_shot` vs `k`
 
 Two counts that read alike and are not interchangeable. The spelling rules are
