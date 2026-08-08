@@ -330,10 +330,14 @@ def load_recipe(name: str) -> Recipe:
     Recipe names are top-level keys in YAML files. A recipe named
     "qwen3-8b" could be in any .yaml file (e.g., qwen.yaml).
 
-    Raises KeyError if recipe not found or name starts with '_'.
+    Raises ``LookupError`` when no recipe carries *name*, and ``ValueError``
+    when *name* is not a legal recipe name or the entry it selects is
+    malformed. Neither is a ``KeyError``: these messages are sentences meant
+    for the user, and ``KeyError.__str__`` is ``repr(args[0])``, so a
+    ``KeyError`` would reach the CLI wrapped in a second layer of quotes.
     """
     if name.startswith("_"):
-        raise KeyError(
+        raise ValueError(
             f"Recipe name {name!r} must not start with '_' (reserved for metadata)"
         )
 
@@ -343,13 +347,13 @@ def load_recipe(name: str) -> Recipe:
         if isinstance(data, dict) and name in data:
             raw = data[name]
             if not isinstance(raw, dict):
-                raise KeyError(f"Recipe {name!r} is not a dict")
+                raise ValueError(f"Recipe {name!r} is not a dict")
             recipe = _parse_recipe(name, raw)
             _emit_known_issues(recipe)
             return recipe
 
     available = list_recipes()
-    raise KeyError(
+    raise LookupError(
         f"Recipe {name!r} not found. Available: {', '.join(available) or '(none)'}"
     )
 

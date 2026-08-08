@@ -53,7 +53,16 @@ class CommandResult:
 
 
 def cli_error_message(exc: Exception) -> str:
-    """Translate API-framed core exceptions into CLI-flag vocabulary."""
+    """Translate API-framed core exceptions into CLI-flag vocabulary.
+
+    Everything else is rendered by ``str()``. Notably there is no `KeyError`
+    special case: a message-carrying `KeyError` would reach the user wrapped
+    in `repr`'s quotes, but unwrapping it here cannot tell a sentence from a
+    missing key, so it would strip the quotes off genuine lookup failures too
+    and leave a bare, contextless token in the ``error`` field. Registries
+    that need to explain themselves raise `LookupError`/`ValueError` instead
+    — see `sieval.infer.recipes.registry.load_recipe`.
+    """
     if isinstance(exc, ResultDirExistsError):
         return (
             f"Result directory '{exc.path}' already exists and contains data.\n"
@@ -61,16 +70,6 @@ def cli_error_message(exc: Exception) -> str:
             "To start fresh, pass --result-dir <path> "
             "or delete the existing directory."
         )
-    if (
-        isinstance(exc, KeyError)
-        and len(exc.args) == 1
-        and isinstance(exc.args[0], str)
-    ):
-        # `KeyError.__str__` is `repr(key)`, so a message-carrying KeyError —
-        # `raise KeyError(f"Recipe {name!r} not found. Available: ...")`, which
-        # the recipe registry does — reaches the user wrapped in a second layer
-        # of quotes. The CLI is the last stop before that text is printed.
-        return exc.args[0]
     return str(exc)
 
 
@@ -198,6 +197,14 @@ def _invoked_command() -> str:
     reproduces for free the one case that is not static: ``eval`` and
     ``leaderboard run`` bind the same callable and must report the entry point
     the user actually typed.
+
+    The trade-off is that only invocation paths are reachable. A command that
+    reports a *sub-result* under its own name — ``eval --dry-run`` renders
+    ``eval.dry_run`` — gets the base name here, so an exception escaping the
+    dry-run machinery is reported as ``eval`` while a dry-run that merely
+    fails its checks is reported as ``eval.dry_run``. Accepted: the sub-name
+    is chosen by the command body, and the decorator only ever runs when that
+    body did not get far enough to choose one.
     """
     ctx = click.get_current_context(silent=True)
     if ctx is None:  # called outside Click, e.g. a direct unit-test call

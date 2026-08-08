@@ -275,10 +275,15 @@ def describe_answer_type(answer_type: str, options: list[str] | None = None) -> 
 
     Upstream interpolates the option list with Python's ``list`` repr, so the
     model sees ``['A', 'B', 'C', 'D', 'E']``; kept as-is for prompt fidelity.
+
+    The unknown-type guard is a sieval addition (upstream indexes the mapping
+    directly). It raises ``LookupError`` rather than ``KeyError`` so the
+    sentence reaches the CLI unquoted — ``KeyError.__str__`` is
+    ``repr(args[0])``.
     """
     description = TYPE_DESCRIPTIONS.get(answer_type)
     if description is None:
-        raise KeyError(
+        raise LookupError(
             f"unknown UGMathBench answer type {answer_type!r}; "
             f"expected one of {sorted(TYPE_DESCRIPTIONS)}"
         )

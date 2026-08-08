@@ -137,11 +137,16 @@ def download_cmd(
     if name:
         meta = next((d for d in datasets if d.name == name), None)
         if meta is None:
+            # Carries the same `data` shape as every other outcome, so
+            # `data.failed` / `data.datasets` are unconditional reads. One
+            # dataset was requested and it failed — not `requested: 0`.
+            error = f"Dataset {name!r} is not registered."
             render(
                 CommandResult(
                     command="dataset.download",
                     ok=False,
-                    error=f"Dataset {name!r} is not registered.",
+                    data=_summary(dest_root, [_record(name, ok=False, error=error)]),
+                    error=error,
                     warnings=warnings or None,
                 ),
                 output,
@@ -166,7 +171,7 @@ def download_cmd(
                     command="dataset.download",
                     ok=True,
                     data=_summary(dest_root, []),
-                    warnings=warnings,
+                    warnings=warnings or None,
                 ),
                 output,
             )
@@ -177,8 +182,13 @@ def download_cmd(
     batch = len(metas) > 1
     records: list[dict] = []
     for m in metas:
+        # Per-dataset sink, passed in rather than returned, so the warnings a
+        # dataset produced before raising survive onto its record — the BYO
+        # corpus case warns with the file-by-file instructions and *then*
+        # raises, and those instructions are the actionable part.
+        dataset_warnings: list[str] = []
         try:
-            record, dataset_warnings = _download_one(m, dest_root, force)
+            record = _download_one(m, dest_root, force, dataset_warnings)
         except Exception as exc:
             if not batch:
                 # Fail-fast on single-target: the user asked for exactly one
@@ -188,10 +198,11 @@ def download_cmd(
             # Batch mode: one bad source shouldn't block the rest. Report it as
             # it happens — a long batch shouldn't stay silent until the end.
             logger.error("[{}] FAILED: {}", m.name, exc)
-            records.append({"name": m.name, "ok": False, "error": str(exc)})
+            records.append(
+                _record(m.name, ok=False, error=str(exc), warnings=dataset_warnings)
+            )
         else:
             records.append(record)
-            warnings.extend(dataset_warnings)
 
     failures = [r for r in records if not r["ok"]]
     render(
@@ -225,8 +236,41 @@ def _warn(sink: list[str], message: str) -> None:
     logger.warning("{}", message)
 
 
+def _record(
+    name: str,
+    *,
+    ok: bool,
+    fetched: int = 0,
+    already_present: int = 0,
+    error: str | None = None,
+    warnings: list[str] | None = None,
+) -> dict:
+    """Build one dataset's wire record.
+
+    Every key is present on every record, success or failure, so a caller can
+    read ``r["fetched"]`` or ``r["error"]`` without branching on ``r["ok"]``
+    first. The three construction sites go through here rather than each
+    spelling out a dict, because they must agree on that shape.
+    """
+    return {
+        "name": name,
+        "ok": ok,
+        "fetched": fetched,
+        "already_present": already_present,
+        "error": error,
+        "warnings": warnings or [],
+    }
+
+
 def _summary(dest_root: Path, records: list[dict]) -> dict:
-    """Wire shape for the download result."""
+    """Wire shape for the download result.
+
+    Warnings are split by scope: command-wide ones (``--data-dir`` mismatch,
+    an empty ``--domain``) go in ``CommandResult.warnings``, per-dataset ones
+    on the dataset's own record. Not duplicated across both — with ``--all``
+    that would leave 40-odd unattributed strings in a flat list, which is the
+    human-only-text problem this payload exists to avoid.
+    """
     return {
         "data_dir": str(dest_root),
         "requested": len(records),
@@ -237,16 +281,16 @@ def _summary(dest_root: Path, records: list[dict]) -> dict:
 
 
 def _download_one(
-    m: DatasetMeta, dest_root: Path, force: bool
-) -> tuple[dict, list[str]]:
+    m: DatasetMeta, dest_root: Path, force: bool, warnings: list[str]
+) -> dict:
     """Fetch one dataset's sources and verify them.
 
-    Returns its wire record plus any non-fatal warnings; raises on failure.
-    Warnings are also emitted as they occur, so the ones raised past — a
-    bring-your-own corpus whose instructions precede the raise — still reach
-    the user; the exception message carries the same substance for machines.
+    Returns its wire record; raises on failure. Non-fatal warnings are pushed
+    into the caller's *warnings* sink as they occur rather than returned, so
+    the ones this function raises past still reach the caller — a
+    bring-your-own corpus emits its per-file instructions and *then* raises,
+    and those instructions are the actionable half of that failure.
     """
-    warnings: list[str] = []
     missing_local_sources: list[str] = []
     fetched = 0
     already_present = 0
@@ -308,13 +352,10 @@ def _download_one(
                 f"  (PDM/Poetry/uv users: use your tool's equivalent.)",
             )
 
-    return (
-        {
-            "name": m.name,
-            "ok": True,
-            "fetched": fetched,
-            "already_present": already_present,
-            "error": None,
-        },
-        warnings,
+    return _record(
+        m.name,
+        ok=True,
+        fetched=fetched,
+        already_present=already_present,
+        warnings=warnings,
     )

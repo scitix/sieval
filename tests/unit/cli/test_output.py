@@ -81,27 +81,23 @@ class TestCliErrorMessage:
     def test_generic_exception_falls_through_to_str(self):
         assert cli_error_message(RuntimeError("kaboom")) == "kaboom"
 
-    def test_message_carrying_key_error_loses_reprs_quotes(self):
-        """`str(KeyError(msg))` is `repr(msg)`. The recipe registry raises
-        message-carrying KeyErrors, so without this the user reads
-        ``"Recipe 'qwen3' not found."`` — quotes and all.
+    def test_explanatory_lookup_error_reaches_the_user_unquoted(self):
+        """Registries that explain themselves raise `LookupError`, whose
+        ``str()`` is the message. This is what keeps the recipe-not-found text
+        readable in a JSON ``error`` field — see
+        `tests/unit/infer/test_recipes.py` for the raise-site half.
         """
-        exc = KeyError("Recipe 'qwen3' not found. Available: qwen3-4b")
-        assert str(exc).startswith('"')
+        exc = LookupError("Recipe 'qwen3' not found. Available: qwen3-4b")
 
         assert cli_error_message(exc) == "Recipe 'qwen3' not found. Available: qwen3-4b"
 
-    def test_plain_lookup_key_error_is_still_readable(self):
-        """A KeyError from an actual dict miss carries the key, not a sentence.
-        Unquoting it is still an improvement, not a loss.
+    def test_key_error_keeps_reprs_quotes(self):
+        """A genuine dict miss is left alone. Stripping `repr`'s quotes here
+        would need to tell a sentence from a key and cannot, so it would turn
+        ``KeyError('models')`` into a bare ``models`` — a contextless token in
+        the ``error`` field. The quotes are the only thing marking it as a key.
         """
-        assert cli_error_message(KeyError("models")) == "models"
-
-    def test_multi_arg_key_error_falls_through(self):
-        """Only the single-string form is a message; anything else keeps
-        ``str()`` rather than being silently truncated to ``args[0]``.
-        """
-        assert cli_error_message(KeyError("a", "b")) == str(KeyError("a", "b"))
+        assert cli_error_message(KeyError("models")) == "'models'"
 
 
 class TestRenderJson:
