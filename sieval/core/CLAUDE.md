@@ -23,23 +23,14 @@ Hierarchical: global (MultiTaskRunner) → task (TaskRunner) → stage → model
 
 ## Test Requirements
 
-* Coverage ≥ 95%: `python -m pytest tests/unit/ tests/integration/ --cov -v`
-    * If `--cov` dies on `pyarrow.lib.ArrowKeyError: ... Array2DExtensionType already defined`,
-      that is the `pytest-cov` plugin, not your change — it reproduces on untouched modules. Use
-      `python -m coverage run --source=sieval -m pytest <tests>` + `coverage report -m`.
-* Mutation score ≥ 70% for modified modules: **`mutmut run`** — the console script.
-    * **Never `python -m mutmut`**: it runs `mutmut/__main__.py` twice (as `__main__`, then via
-      the injected trampoline's `import mutmut.__main__`), and the second `set_start_method`
-      raises `RuntimeError: context has already been set` on the first mutant of *any* module.
-      Looks like a broken test; is a wrong invocation.
-    * Scope by **mutant name** — `mutmut run "sieval.core.utils.offload.*"` — never by narrowing
-      `paths_to_mutate` in `[tool.mutmut]`. `also_copy` omits `sieval/core` (normally supplied by
-      `paths_to_mutate`), so pointing it at one file copies only that file and `conftest.py` dies
-      on import. `sieval/__init__.py` must stay copied too, or `mutants/sieval` is not a package
-      — enforced by `check_preflight.py --check check_mutmut_config`.
-    * A module whose tests **spawn** processes cannot reach 100%: the trampoline re-executes in
-      the fresh worker and hits the same error, so worker-internal mutants are unobservable.
-    * A low score usually means missing assertions, not untestable code — `core/utils/offload.py`
-      went 38.7% → 76.3% with no new behaviour, only by pinning contracts the tests had left
-      implicit (spawn-not-fork, pool reuse, and warnings that name their cause).
+* **Coverage ≥ 95%** — gated in CI (`fail_under = 95` over `sieval/core`). Locally `pytest --cov`
+  dies on a pyarrow double-registration in some environments; it reproduces on untouched modules,
+  so use `python -m coverage run --source=sieval -m pytest <tests>` + `coverage report -m`.
+* **Mutation score ≥ 70%** for modified modules — **currently unobtainable, and not in CI.**
+  `mutmut run` (never `python -m mutmut`, which double-executes its `__main__` and dies on the
+  first mutant) fails during stats collection: a test that spawns a fresh interpreter re-imports
+  mutmut's injected trampoline and fails on it. Scope by mutant name
+  (`mutmut run "sieval.core.utils.offload.*"`), never by narrowing `paths_to_mutate`. The copy
+  paths are asserted by `check_preflight.py --check check_mutmut_config` — necessary, not
+  sufficient. **Do not quote a mutation score until this is fixed.**
 * Disk persistence tests: use fresh `TaskLoader` from disk, not `runner._contexts`
