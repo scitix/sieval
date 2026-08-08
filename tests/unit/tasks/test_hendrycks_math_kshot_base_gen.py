@@ -170,6 +170,33 @@ async def test_grading_is_bounded_in_a_worker_process(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_a_grading_timeout_scores_wrong_rather_than_failing_the_sample(
+    monkeypatch,
+):
+    # Offloading introduced a failure mode the synchronous call did not have:
+    # before, a runaway `simplify` blocked; now it raises at GRADE_TIMEOUT. Left
+    # to propagate, the runner turns it into a failed sample, so a slow grade
+    # shows up as `fails > 0` -- which reads as infrastructure breakage and is
+    # one of the signals a run is promoted on. Every sibling math grader scores
+    # an ungradeable answer wrong instead; this one has to agree.
+    async def _raise_timeout(_func, *_args, **_kwargs):
+        raise TimeoutError("grading took too long")
+
+    monkeypatch.setattr(module, "run_cpu_bound", _raise_timeout)
+
+    task, _ = _task()
+    raw = _sample(solution="Therefore $\\boxed{16}$.")
+
+    finalize, fb = await task.feedback(
+        build_prediction_record([["16"]]), TaskContext(sample_id=0, raw_sample=raw)
+    )
+
+    assert finalize is True
+    assert fb["rollouts"][0]["correct"] is False
+    assert fb["reference"] == ["16"]
+
+
+@pytest.mark.anyio
 async def test_feedback_percentage_equivalence():
     # math_equal's numeric layer treats 50\% as 0.5 (include_percentage),
     # independent of the (env-degraded) parse_latex symbolic layer.
