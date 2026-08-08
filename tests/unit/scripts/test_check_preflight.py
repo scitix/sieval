@@ -1253,6 +1253,13 @@ class TestCheckMetaIndexSync:
         drift locally before anyone pushes.
         """
         runner = PreflightRunner()
+        if runner.project_root.name == "mutants":
+            # mutmut runs the suite from a copy of the tree, where neither side
+            # of this comparison is the thing it is about: the "committed" index
+            # is a copy and the registry is importable only by accident. It is
+            # the last test standing between `mutmut run` and a score, and
+            # skipping it costs nothing — CI runs this check on the real tree.
+            pytest.skip("meaningless inside a mutmut copy of the tree")
         results = runner.check_meta_index_sync()
         assert len(results) == 1
         assert results[0].status == "PASS", results[0].details
@@ -2423,29 +2430,47 @@ class TestCheckMutmutConfig:
         return PreflightRunner(project_root=tmp_path)
 
     def test_missing_package_root_fails(self, tmp_path):
-        # The real regression: also_copy lists the subpackages but not
+        # The first regression: also_copy lists the subpackages but not
         # sieval/__init__.py, so mutants/sieval is a directory rather than a
         # package and every mutation run dies during stats collection.
         runner = self._write(
             tmp_path,
             '[tool.mutmut]\npaths_to_mutate = ["sieval/core"]\n'
-            'also_copy = ["sieval/tasks", "sieval/cli"]\n',
+            'also_copy = ["sieval/tasks", "scripts"]\n',
         )
         results = runner.check_mutmut_config()
         assert [r.status for r in results] == ["FAIL"]
-        assert "not an importable package" in results[0].message
+        assert any("sieval/__init__.py" in d for d in results[0].details)
 
-    def test_explicit_package_root_passes(self, tmp_path):
+    def test_missing_scripts_fails(self, tmp_path):
+        # The second, found the same way: `scripts/` is not a package, so
+        # tests/unit/scripts/ puts it on sys.path by walking up from __file__.
+        # In the copy that is mutants/scripts, which without this entry does not
+        # exist -- and the run dies on `No module named 'check_layer_imports'`,
+        # which reads as a broken test rather than a missing copy path.
         runner = self._write(
             tmp_path,
             '[tool.mutmut]\npaths_to_mutate = ["sieval/core"]\n'
             'also_copy = ["sieval/__init__.py", "sieval/tasks"]\n',
         )
+        results = runner.check_mutmut_config()
+        assert [r.status for r in results] == ["FAIL"]
+        assert any("scripts" in d for d in results[0].details)
+
+    def test_every_required_path_present_passes(self, tmp_path):
+        runner = self._write(
+            tmp_path,
+            '[tool.mutmut]\npaths_to_mutate = ["sieval/core"]\n'
+            'also_copy = ["sieval/__init__.py", "scripts", "sieval/tasks"]\n',
+        )
         assert [r.status for r in runner.check_mutmut_config()] == ["PASS"]
 
     def test_a_parent_entry_carries_the_package_root(self, tmp_path):
         # Copying "sieval" wholesale brings __init__.py with it.
-        runner = self._write(tmp_path, '[tool.mutmut]\npaths_to_mutate = ["sieval"]\n')
+        runner = self._write(
+            tmp_path,
+            '[tool.mutmut]\npaths_to_mutate = ["sieval"]\nalso_copy = ["scripts"]\n',
+        )
         assert [r.status for r in runner.check_mutmut_config()] == ["PASS"]
 
     def test_no_mutmut_section_is_not_a_failure(self, tmp_path):

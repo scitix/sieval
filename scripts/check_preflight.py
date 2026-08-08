@@ -1926,15 +1926,24 @@ class PreflightRunner:
         """Verify ``[tool.mutmut]`` still produces an importable ``mutants/`` copy.
 
         mutmut runs the suite from a copy of the tree built out of
-        ``paths_to_mutate`` + ``also_copy``. If that copy does not include
-        ``sieval/__init__.py``, ``mutants/sieval`` is a plain directory rather
-        than a package: every test in the copy resolves ``sieval`` through the
-        editable install instead, and the run dies during stats collection on
-        whichever unrelated import mismatches first.
+        ``paths_to_mutate`` + ``also_copy``. Anything the suite imports that the
+        copy omits makes the run die during stats collection, before a single
+        mutant executes — and it surfaces as an unrelated broken test rather
+        than as a configuration error, which is why this went unnoticed twice.
 
-        That is a silent failure — it looks like a broken test, and it made the
-        mutation-score requirement in ``sieval/core/CLAUDE.md`` unsatisfiable for
-        as long as the entry was missing. Cheap to assert, invisible otherwise.
+        Two entries are load-bearing, for the same reason and with the same
+        symptom:
+
+        * ``sieval/__init__.py`` — without it ``mutants/sieval`` is a plain
+          directory rather than a package, so every test in the copy resolves
+          ``sieval`` through the editable install instead.
+        * ``scripts`` — ``scripts/`` is not a package, so ``tests/unit/scripts/``
+          puts it on ``sys.path`` by walking up from its own ``__file__``. In the
+          copy that resolves to ``mutants/scripts``.
+
+        Cheap to assert, invisible otherwise: it made the mutation-score
+        requirement in ``sieval/core/CLAUDE.md`` unsatisfiable for as long as
+        either entry was missing.
         """
         check = "check_mutmut_config"
         pyproject = self.project_root / "pyproject.toml"
@@ -1952,24 +1961,33 @@ class PreflightRunner:
             mutmut.get("paths_to_mutate", [])
         )
         # A parent entry ("sieval") carries the file; an exact entry is the
-        # normal case. Anything else means the package root is not in the copy.
-        required = "sieval/__init__.py"
-        if not any(
-            required == entry or required.startswith(f"{entry}/") for entry in copied
-        ):
+        # normal case. Anything else means the path is not in the copy.
+        required = {
+            "sieval/__init__.py": "mutants/sieval is not an importable package",
+            "scripts": "tests/unit/scripts/ cannot import the module it tests",
+        }
+        missing = [
+            f"{path!r} ({why})"
+            for path, why in required.items()
+            if not any(
+                path == entry or path.startswith(f"{entry}/") for entry in copied
+            )
+        ]
+        if missing:
             return [
                 CheckResult(
                     "FAIL",
                     check,
-                    f"[tool.mutmut] copies no {required!r}, so mutants/sieval is "
-                    "not an importable package and every mutation run dies "
-                    "during stats collection",
-                    [f"also_copy + paths_to_mutate = {copied}"],
+                    "[tool.mutmut] omits a path the suite imports, so every "
+                    "mutation run dies during stats collection",
+                    [*missing, f"also_copy + paths_to_mutate = {copied}"],
                 )
             ]
         return [
             CheckResult(
-                "PASS", check, "[tool.mutmut] copies an importable sieval package"
+                "PASS",
+                check,
+                "[tool.mutmut] copies every path the suite imports",
             )
         ]
 
