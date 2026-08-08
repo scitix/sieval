@@ -120,14 +120,14 @@ dependency). Known behavioural deltas versus the reference judge:
   is model output and ``parse_expr`` evaluates what it parses. Three shapes:
 
   - A boxed ``__import__('os').system(...)`` would otherwise run.
-    :func:`_sympy_globals` removes the builtins from the parse namespace.
+    :func:`~sieval.community._sympy_guards.sympy_globals` removes the builtins from the parse namespace.
   - A boxed ``eval("...")`` — or ``sympify``/``S``/``N``, or any name at all,
     since ``auto_symbol`` makes every unknown one callable — hands a *string*
     back to sympy, which re-sympifies it with its own default namespace and so
-    gets the builtins back. :func:`_quotes_free` refuses the quote instead of
+    gets the builtins back. :func:`~sieval.community._sympy_guards.quotes_free` refuses the quote instead of
     the callee, which is the only end of it that can be enumerated.
   - A boxed ``9^9^9^9`` asks for a 370-million-digit integer that never
-    returns. :func:`_evaluable` screens it out with an unevaluated pre-parse.
+    returns. :func:`~sieval.community._sympy_guards.evaluable` screens it out with an unevaluated pre-parse.
     Grading runs in a worker process, so this occupies one worker rather than
     the shared event loop, but a worker held forever is still a worker lost.
 
@@ -186,6 +186,8 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 
 import math
 import re
+
+from ._sympy_guards import evaluable, quotes_free, sympy_globals
 
 #: The 16 subject configs of the HF dataset, in the order the benchmark lists
 #: them. Doubles as the default load order, so a sliced run is reproducible.
@@ -552,123 +554,6 @@ _PROBES: tuple[float, ...] = (0.41, 0.73, 1.19, 1.57, 2.11)
 _MIN_CLEAN_PROBES = 3
 _MAX_FREE_SYMBOLS = 4
 
-#: Largest integer exponent :func:`_parse_sympy_source` will evaluate. Sympy
-#: computes ``a**b`` eagerly, so a boxed ``9^9^9^9`` asks for a 370-million-digit
-#: integer and never returns. Nothing this benchmark asks for comes close — the
-#: largest exponent in the pinned references is three digits — so the cap costs
-#: no reachable comparison. See :func:`_evaluable`.
-_MAX_EXPONENT = 10_000
-
-
-def _sympy_globals() -> dict:
-    """Namespace for :func:`parse_expr`, with the builtins removed.
-
-    ``parse_expr`` evaluates its input, and its *default* global namespace is
-    built by ``exec("from sympy import *", ...)`` — which also injects
-    ``__builtins__``. Since the string being parsed is model output, that hands
-    a model ``__import__`` and ``open``: a boxed
-    ``__import__('os').system(...)`` runs, and the grader still reports the slot
-    wrong, so nothing in the run looks unusual.
-
-    Clearing ``__builtins__`` closes that without narrowing the dialect. The
-    sympy names have to stay: ``auto_symbol`` rewrites an unknown callable into
-    ``Function('sin')``, so a namespace holding *only* the answer aliases fails
-    every legitimate ``sin(pi*x/5)`` with ``NameError: name 'Function' is not
-    defined``.
-
-    This is a namespace restriction, not a sandbox — attribute access on sympy
-    objects still resolves, and it only covers the namespace *this* parse runs
-    in. It does not survive a nested parse, which is why :func:`_quotes_free`
-    exists.
-    """
-    namespace: dict = {}
-    exec("from sympy import *", namespace)  # noqa: S102 - fixed literal, not input
-    namespace["__builtins__"] = {}
-    return namespace
-
-
-def _quotes_free(text: str) -> bool:
-    """Is *text* free of the string literals that reopen the interpreter?
-
-    :func:`_sympy_globals` sanitizes the namespace the top-level parse runs in,
-    and that is not enough on its own. Sympy re-sympifies a *string* argument
-    with its own default namespace, which has the builtins back, so a call
-    carrying a string literal escapes the restriction and runs::
-
-        eval("__import__('os').system(...)")
-
-    ``sympify``, ``S`` and ``N`` do the same thing, and ``auto_symbol`` turns
-    any unrecognized name into a ``Function``, so the callee cannot be
-    allowlisted — every function call is a potential carrier. What can be
-    refused is the payload: without a quote there is no string literal for the
-    nested parse to read, and the argument comes back as a sympy object
-    (``eval(chr(112))`` evaluates ``chr`` symbolically and does nothing).
-
-    Nothing legitimate is lost. Not one of the 42,064 gold slots on the pinned
-    revision contains a quote — the dialect is sympy source, where quotes have
-    no meaning — and a refused prediction only loses this one reading, with the
-    LaTeX and literal-equality paths still offered to the comparison.
-    """
-    return "'" not in text and '"' not in text
-
-
-def _evaluable(cleaned: str, local: dict, transformations) -> bool:
-    """Is *cleaned* free of the two exponent shapes that never finish?
-
-    Deliberately narrower than "would this terminate". ``parse_expr`` evaluates
-    as it parses, so the check cannot run afterwards — by then the process is
-    already computing. Parsing with ``evaluate=False`` first builds the tree
-    without doing the arithmetic (microseconds even for the pathological cases),
-    which is cheap enough to screen on.
-
-    Rejected: a power whose exponent is itself a power (``9**9**9``, the tower
-    shape), and an integer exponent above :data:`_MAX_EXPONENT`. A left-nested
-    ``(x**2)**3`` is fine and stays — only the right-nested tower explodes.
-
-    What it does **not** screen: an eagerly-evaluating sympy callable that needs
-    no exponent to be expensive. ``from sympy import *`` puts ``factorial``,
-    ``prime`` and ``primepi`` in the parse namespace, and the early return below
-    lets anything without ``**`` straight through — measured, ``primepi(10**12)``
-    takes 48 s and ``factorial(1000000)`` 3.8 s. Enumerating those callees is
-    the same losing game as allowlisting them in :func:`_quotes_free`, so the
-    bound that actually holds is the caller's: grading runs in a worker process
-    under :data:`~sieval.core.utils.offload.GRADE_TIMEOUT`, which scores the slot
-    wrong and moves on. This screen only buys back the two shapes common enough
-    to be worth not spending a worker on.
-
-    A rejected answer grades wrong rather than hanging the run. That is the
-    correct trade for a grader: this pass only ever *upgrades* a verdict
-    (:func:`math_equal` reaches it after every other strategy said "not equal"),
-    so refusing to run it can lose a point but can never invent one.
-    """
-    import sympy
-    from sympy.parsing.sympy_parser import parse_expr
-
-    if "**" not in cleaned:
-        return True
-    try:
-        tree = parse_expr(
-            cleaned,
-            local_dict=local,
-            global_dict=_sympy_globals(),
-            transformations=transformations,
-            evaluate=False,
-        )
-    except Exception:
-        # Unparseable under this reading; the real parse will fail the same way
-        # and is harmless. Screening is not the place to decide that.
-        return True
-    for node in sympy.preorder_traversal(tree):
-        if not isinstance(node, sympy.Pow):
-            continue
-        exponent = node.exp
-        if exponent.has(sympy.Pow):
-            return False
-        if exponent.is_Integer and abs(int(exponent)) > _MAX_EXPONENT:
-            return False
-    return True
-
-
 def _parse_sympy_source(text: str) -> list:
     """Parse UGMathBench's plain-sympy answer syntax as sympy source.
 
@@ -684,9 +569,9 @@ def _parse_sympy_source(text: str) -> list:
 
     The text reaching this function is model output, and ``parse_expr``
     evaluates what it parses, so all three halves of that are guarded:
-    :func:`_sympy_globals` takes the interpreter out of the parse namespace,
-    :func:`_quotes_free` keeps a nested parse from handing it back, and
-    :func:`_evaluable` refuses arithmetic that would not finish.
+    :func:`~sieval.community._sympy_guards.sympy_globals` takes the interpreter out of the parse namespace,
+    :func:`~sieval.community._sympy_guards.quotes_free` keeps a nested parse from handing it back, and
+    :func:`~sieval.community._sympy_guards.evaluable` refuses arithmetic that would not finish.
     """
     import sympy
     from sympy.parsing.sympy_parser import parse_expr
@@ -701,7 +586,7 @@ def _parse_sympy_source(text: str) -> list:
         .replace("$", "")
         .strip()
     )
-    if not cleaned or not _quotes_free(cleaned):
+    if not cleaned or not quotes_free(cleaned):
         return []
     local = {
         "e": sympy.E,
@@ -725,9 +610,9 @@ def _parse_sympy_source(text: str) -> list:
         "arctanh": sympy.atanh,
     }
     out: list = []
-    globals_ = _sympy_globals()
+    globals_ = sympy_globals()
     for transformations in _source_transformations():
-        if not _evaluable(cleaned, local, transformations):
+        if not evaluable(cleaned, local, transformations):
             continue
         try:
             out.append(

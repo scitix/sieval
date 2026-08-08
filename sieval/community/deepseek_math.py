@@ -27,6 +27,30 @@ Shared across the DeepSeek-Math GSM8K and MATH tasks:
   (`few_shot_prompts/cot_minerva_math_4_shot.py` + the `math-cot-test` path).
 
 Deviations from upstream:
+- **`symbolic_equal` does not execute model output.** Upstream parses a
+  prediction with a bare `parse_expr`, whose default namespace carries
+  `__builtins__`, and — when both parsers fail — returns the *raw string*, which
+  then reaches `N`, and `N` sympifies it with sympy's own default namespace.
+  (Only `N`: `simplify(a - b)` raises `TypeError` first, since sympy's
+  arithmetic dunders sympify strictly.) Either route runs
+  `__import__('os').system(...)` supplied as an answer, and the grader still
+  reports the sample wrong, so nothing in the run looks unusual. Two changes
+  close it: `parse_expr` runs under `_sympy_guards` (cleared namespace, quote
+  screen, unevaluated exponent pre-parse), and an unparseable answer becomes
+  `None` and refuses the comparison rather than reaching `N` as text. The second
+  matters more than the first — once `__import__` resolves through the default
+  namespace, a payload needs no quote at all, so guarding only the parse would
+  have moved the hole rather than closed it.
+  MEASURED DIVERGENCE: ZERO. Replayed over two full stored runs — GSM8K 1319
+  samples (deepseek-llm-7b-chat) and MATH 5000 (Qwen2.5-72B) — under both a
+  working and a deliberately disabled `parse_latex`, the latter forcing every
+  comparison down the guarded path (1622 of 5000 fall through on MATH). All
+  four cells agree with upstream on every sample: GSM8K 63.3813 / 63.3055 and
+  MATH 61.2600 / 60.0200, upstream and guarded alike.
+  The exponent pre-parse also declines a right-nested `**` tower and an exponent
+  above `MAX_EXPONENT`, which upstream evaluates; `parse_latex` reads those
+  spellings first, so the zero covers them too. See `sieval/tasks/CLAUDE.md` on
+  why this ships under the unqualified task names.
 - `math_equal` is only ever called with the default `timeout=False` (via
   `eval_math` / `is_correct` and the GSM8K path), so the
   `symbolic_equal_process` / `call_with_timeout` multiprocessing path is unused
@@ -53,6 +77,8 @@ import regex
 from sympy import N, simplify
 from sympy.parsing.latex import parse_latex
 from sympy.parsing.sympy_parser import parse_expr
+
+from ._sympy_guards import evaluable, quotes_free, sympy_globals
 
 
 def _fix_fracs(string):
@@ -312,16 +338,36 @@ def is_digit(num):
     # paired with parse_digits
     return parse_digits(num) is not None
 
+def _guarded_parse_expr(s):
+    """`parse_expr` with the three guards in `_sympy_guards` applied.
+
+    SIEVAL DIVERGENCE (execution safety). Upstream calls bare `parse_expr(s)`
+    on model output, whose default namespace carries `__builtins__`, so a
+    prediction of `__import__('os').system(...)` runs. See `_sympy_guards`.
+    """
+    if not quotes_free(s) or not evaluable(s):
+        raise ValueError("refused by sieval: unsafe to hand to sympy")
+    return parse_expr(s, global_dict=sympy_globals())
+
+
 def symbolic_equal(a, b):
     def _parse(s):
-        for f in [parse_latex, parse_expr]:
+        for f in [parse_latex, _guarded_parse_expr]:
             try:
                 return f(s)
             except:
                 pass
-        return s
+        # SIEVAL DIVERGENCE (execution safety). Upstream returns `s` here, the
+        # raw model output, which reaches `N` below -- and `N` sympifies it with
+        # sympy's own default namespace, not the caller's. (Not `simplify(a-b)`:
+        # the subtraction raises TypeError first.) That alone defeats the guards
+        # above -- with `__import__` resolvable a payload needs no quote -- so an
+        # unparseable answer becomes None and the comparison is refused.
+        return None
     a = _parse(a)
     b = _parse(b)
+    if a is None or b is None:
+        return False
 
     try:
         if simplify(a-b) == 0:
