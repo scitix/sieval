@@ -116,8 +116,9 @@ class ScalingPolicy:
 class RoleAssignment:
     """Complete deployment description for one role.
 
-    engine_params carries non-parallel parameters from recipe profiles
-    (dtype, max_model_len, gpu_memory_utilization, etc.). Each role can
+    engine_params carries non-parallel parameters merged from a recipe's
+    hardware and capability layers (dtype, max_model_len,
+    gpu_memory_utilization, tool_call_parser, etc.). Each role can
     have different engine_params -- e.g. PD split with different hardware
     or different memory budgets per role. The translator appends these
     as CLI flags alongside the parallel topology flags.

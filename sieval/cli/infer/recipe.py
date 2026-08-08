@@ -114,7 +114,7 @@ async def resolve_infer_config(
     # Which capability layer to serve. Derived from the same config the eval
     # session reads, so a base checkpoint gets base capabilities even when the
     # config leaves `type` to task inference (the normal case).
-    model_type = capability_model_type(
+    capability = capability_model_type(
         derive_model_type(model_name, mcfg.get("type"), cfg.get("tasks") or {})
     )
 
@@ -130,7 +130,7 @@ async def resolve_infer_config(
             checkpoint,
             backend_name,
             overrides,
-            model_type,
+            capability,
         )
     elif checkpoint:
         # Case 2: no recipe, but checkpoint available → try auto-resolve
@@ -139,7 +139,7 @@ async def resolve_infer_config(
             backend_name=backend_name,
             overrides=overrides,
             model_name=model_name,
-            model_type=model_type,
+            capability=capability,
         )
     elif overrides:
         # Case 3: no recipe, no checkpoint, but overrides → use as-is
@@ -244,7 +244,7 @@ async def _resolve_recipe_params(
     recipe: Recipe,
     backend_name: str,
     overrides: dict[str, ParamValue],
-    model_type: str,
+    capability: str,
 ) -> dict[str, ParamValue]:
     """Resolve engine params for a recipe.
 
@@ -255,9 +255,10 @@ async def _resolve_recipe_params(
     eliminate duplication.
 
     Args:
-        model_type: Recipe capability key (``"instruct"`` / ``"base"``), which
+        capability: Recipe capability key (``"instruct"`` / ``"base"``), which
             selects the capability layer. A base checkpoint resolves to no
-            parser or tool-choice params.
+            parser or tool-choice params. Recipe vocabulary, not a config
+            ``type:`` — map one with :func:`capability_model_type`.
     """
     # Normalize overrides once up front so the dtype check below and the
     # final merge operate on a single canonical key form.
@@ -283,7 +284,7 @@ async def _resolve_recipe_params(
     prec_key = precision_key(identity)
     gpu_model = gpu.model if gpu else None
     profile = resolve_hardware_profile(recipe, gpu_model, prec_key, backend_name)
-    capabilities = resolve_capability_profile(recipe, model_type, backend_name)
+    capabilities = resolve_capability_profile(recipe, capability, backend_name)
 
     if profile is None and identity.dtype and "dtype" not in overrides:
         # No hardware profile → fall back to the model's intrinsic dtype
@@ -304,7 +305,7 @@ async def _resolve_with_recipe(
     checkpoint: str,
     backend_name: str,
     overrides: dict[str, ParamValue],
-    model_type: str,
+    capability: str,
 ) -> dict[str, ParamValue] | None:
     """Merge params for an already-loaded recipe via shared merge logic.
 
@@ -330,7 +331,7 @@ async def _resolve_with_recipe(
             recipe,
             backend_name,
             overrides,
-            model_type,
+            capability,
         )
     else:
         # No identity — can only use overrides
@@ -372,7 +373,7 @@ async def _try_auto_resolve_recipe(
     backend_name: str,
     overrides: dict[str, ParamValue],
     model_name: str,
-    model_type: str,
+    capability: str,
 ) -> dict[str, ParamValue] | None:
     """Attempt to auto-resolve a recipe from checkpoint introspection.
 
@@ -414,7 +415,7 @@ async def _try_auto_resolve_recipe(
             recipe,
             backend_name,
             overrides,
-            model_type,
+            capability,
         )
 
         family_recipes = load_family_recipes(identity.family)

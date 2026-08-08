@@ -34,6 +34,7 @@ from sieval.infer.config import (
 )
 from sieval.infer.deployer import DeployError, DeployTimeoutError
 from sieval.infer.params import merge_params
+from sieval.infer.recipes import capability_model_type
 from sieval.infer.topology.models import (
     ResolveResult,
     RoleAssignment,
@@ -196,6 +197,18 @@ def infer_start(
             ),
         ),
     ] = None,
+    model_type: Annotated[
+        str | None,
+        typer.Option(
+            "--model-type",
+            help=(
+                "'chat' or 'gen', for checkpoint (auto-resolve) mode only. "
+                "Selects the recipe's capability layer: 'gen' serves a base "
+                "checkpoint without the instruct parser/tool-choice params. "
+                "Rejected in YAML mode, which reads the type from the config."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Launch an inference service.\n
     1. Auto-resolve (recommended):\n
@@ -214,7 +227,17 @@ def infer_start(
 
     # Decide mode: YAML file vs checkpoint directory
     if target_path.suffix in (".yaml", ".yml") and target_path.is_file():
-        # YAML mode
+        # YAML mode. The config already carries the model type (declared, or
+        # derived from the tasks), so accepting the flag here would let the two
+        # disagree silently — reject it rather than pick a winner.
+        if model_type is not None:
+            raise typer.BadParameter(
+                "--model-type applies to checkpoint mode only; in YAML mode the "
+                "model type comes from the config's `type:` or is derived from "
+                "the tasks using the model.",
+                param_hint="--model-type",
+            )
+
         async def _resolve_yaml() -> ResolvedInferConfig:
             return await resolve_infer_config(target_path, model)
 
@@ -240,24 +263,25 @@ def infer_start(
     else:
         # Auto-resolve mode: target is a checkpoint path.
         #
-        # `model_type` is deliberately left at its "instruct" default here, and
-        # this is the one path that does not follow the eval session. A bare
-        # checkpoint carries no task context, so the derivation the YAML leg and
-        # `sieval run` use (tasks → chat/gen) has nothing to read. Serving a base
-        # checkpoint through this path therefore still resolves the instruct
-        # capability params — which are inert on it: the parser/tool-choice flags
-        # are accepted and unused, not a startup failure. They do land in the
-        # persisted plan, so the params recorded for such a launch overstate what
-        # the engine actually used. Deriving the type from the checkpoint itself
-        # (an absent `chat_template` in `tokenizer_config.json` marks a base
-        # model) would close the gap; it is not done here because introspection
-        # currently reads only `config.json` and a dead flag does not justify
-        # widening it.
+        # This is the one path with no task context, so the derivation the YAML
+        # leg and `sieval run` use (tasks → chat/gen) has nothing to read. The
+        # operator declares it instead, via `--model-type`; unset keeps the
+        # instruct default. Introspection is deliberately not widened to guess
+        # it (an absent `chat_template` in `tokenizer_config.json` marks a base
+        # model, but introspection reads only `config.json` today) — an explicit
+        # flag is both cheaper and unambiguous. Left unset on a base checkpoint,
+        # the instruct parser/tool-choice params still resolve; they are inert
+        # on it — accepted and unused, not a startup failure — but they do land
+        # in the persisted plan, so the recorded params overstate what the
+        # engine applied.
+        capability = capability_model_type(model_type)
+
         async def _resolve() -> ResolveResult:
             return await auto_resolve_plan(
                 target,
                 backend=backend,
                 overrides=engine_overrides or None,
+                capability=capability,
             )
 
         resolve_result = anyio.run(_resolve)

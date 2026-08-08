@@ -399,24 +399,42 @@ def resolve_hardware_profile(
 
 def resolve_capability_profile(
     recipe: Recipe,
-    model_type: str,
+    capability: str,
     framework: str,
 ) -> dict[str, ParamValue]:
-    """Look up behavior params for a model type + framework.
+    """Look up behavior params for a capability layer + framework.
+
+    The parameter is named ``capability``, not ``model_type``, because it takes
+    the *recipe* vocabulary (``instruct``/``base``) rather than the config's
+    (``chat``/``gen``). The two coexist one call apart — see
+    :func:`capability_model_type`, which translates — and an unrecognized key
+    would otherwise resolve to ``{}``, i.e. silently to base-like serving.
 
     Args:
         recipe: Typed Recipe with a ``capabilities`` field.
-        model_type: A recipe capability key — ``"instruct"`` or ``"base"``.
+        capability: A recipe capability key — ``"instruct"`` or ``"base"``.
             Use :func:`capability_model_type` to map an eval config's
             ``type`` onto it.
         framework: Framework name (e.g. ``"vllm"``, ``"sglang"``).
 
     Returns:
-        A shallow copy of the matched params, or ``{}`` when the
-        ``model_type``/``framework`` entry is absent — the expected case for a
+        A shallow copy of the matched params, or ``{}`` when the recipe declares
+        no entry for this ``capability``/``framework`` — the expected case for a
         base checkpoint, which declares no capability params.
+
+    Raises:
+        ValueError: If ``capability`` is not one of
+            :data:`CAPABILITY_MODEL_TYPES`. A key outside that set can only be
+            a caller bug, and returning ``{}`` for it would withhold the very
+            params this layer exists to supply.
     """
-    return dict(recipe.capabilities.get(model_type, {}).get(framework, {}))
+    if capability not in CAPABILITY_MODEL_TYPES:
+        raise ValueError(
+            f"Unknown recipe capability {capability!r}; expected one of "
+            f"{', '.join(CAPABILITY_MODEL_TYPES)}. (Config model types are "
+            f"'chat' / 'gen' — map them with capability_model_type() first.)"
+        )
+    return dict(recipe.capabilities.get(capability, {}).get(framework, {}))
 
 
 def load_recipe(name: str) -> Recipe:

@@ -693,7 +693,7 @@ class TestResolveRecipeParamsKeyNormalization:
                 recipe,
                 backend_name="vllm",
                 overrides={"foo-bar": 42},
-                model_type="instruct",
+                capability="instruct",
             )
 
         assert result == {"foo_bar": 42}
@@ -726,7 +726,7 @@ class TestResolveRecipeParamsKeyNormalization:
                 recipe,
                 backend_name="vllm",
                 overrides={"max-model-len": 4096},
-                model_type="instruct",
+                capability="instruct",
             )
 
         # Fallback injects identity.dtype; dash-form override normalizes to underscore.

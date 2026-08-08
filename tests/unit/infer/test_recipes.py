@@ -539,8 +539,27 @@ class TestResolveCapabilityProfile:
     def test_unknown_framework_returns_empty(self, sample_recipe: Recipe) -> None:
         assert resolve_capability_profile(sample_recipe, "instruct", "tensorrt") == {}
 
-    def test_undeclared_model_type_returns_empty(self, sample_recipe: Recipe) -> None:
-        assert resolve_capability_profile(sample_recipe, "nonexistent", "vllm") == {}
+    def test_valid_but_undeclared_capability_returns_empty(
+        self, sample_recipe: Recipe
+    ) -> None:
+        """A recipe may omit a layer entirely; that is not a caller error."""
+        recipe = _parse_recipe(
+            "instruct-only",
+            {"capabilities": {"instruct": {"vllm": {"tool_call_parser": "hermes"}}}},
+        )
+        assert resolve_capability_profile(recipe, "base", "vllm") == {}
+
+    def test_unknown_capability_rejected(self, sample_recipe: Recipe) -> None:
+        """A key outside CAPABILITY_MODEL_TYPES is a caller bug, not a base model.
+
+        Returning ``{}`` would make every typo — and every config-vocabulary
+        word reaching the recipe layer by mistake — resolve to *no* capability
+        params, i.e. silently to base-like serving. `auto_resolve_plan` takes
+        this key as a public kwarg, so the mistake is reachable from outside.
+        """
+        for bad in ("nonexistent", "chat", "gen", ""):
+            with pytest.raises(ValueError, match="Unknown recipe capability"):
+                resolve_capability_profile(sample_recipe, bad, "vllm")
 
     def test_returns_a_copy(self, sample_recipe: Recipe) -> None:
         """Mutating the result must not corrupt the loaded recipe."""

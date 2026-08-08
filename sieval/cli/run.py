@@ -103,7 +103,7 @@ async def _run_all(
                 checkpoint = model_config["path"]
                 result = await auto_resolve_plan(
                     checkpoint=checkpoint,
-                    model_type=capability_model_type(
+                    capability=capability_model_type(
                         derive_model_type(
                             model_name,
                             model_config.get("type"),

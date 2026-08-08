@@ -9,6 +9,14 @@ It is captured from a git ref rather than from the working tree, because the
 pre-split schema no longer exists in the code: pre-split ``resolve_profile``
 returned the YAML leaf dict verbatim, so the leaf order *is* the resolved order.
 
+The committed fixture — not this script — is the durable artifact. What it pins
+is a historical fact that cannot change, so nothing in the test suite needs to
+regenerate it; the script exists to show where those numbers came from and to
+let a reviewer reproduce them. That also bounds the cost of the git dependency:
+if ``_PRE_SPLIT_REF`` ever becomes unreachable (a shallow clone, or a re-cut
+history), this script stops working while the tests keep passing. It fails with
+the ref named rather than writing an empty fixture.
+
 Usage: pdm run python tests/unit/infer/recipes/_capture_golden.py [git-ref]
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
@@ -27,7 +35,9 @@ _RECIPES = ("gpt_oss.yaml", "qwen2_5.yaml", "qwen3.yaml")
 # Last commit on main still carrying the pre-split ``profiles`` key — this
 # branch's base. Not ``origin/main``: once the split merges, that ref no longer
 # has the schema this script reads, and the capture would come back empty.
-_PRE_SPLIT_REF = "1c15c00c"
+# Full SHA, not abbreviated: an abbreviation is only unambiguous against the
+# history that existed when it was written.
+_PRE_SPLIT_REF = "1c15c00c499b640808db03a64f73591ac9733c06"
 
 
 def _load_at_ref(ref: str, path: str) -> dict:
@@ -35,8 +45,16 @@ def _load_at_ref(ref: str, path: str) -> dict:
         ["git", "show", f"{ref}:{path}"],
         capture_output=True,
         text=True,
-        check=True,
     )
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"Cannot read {path!r} at {ref!r}: {proc.stderr.strip()}\n"
+            "The pre-split ref is unreachable here (shallow clone, or the "
+            "history no longer contains it). The committed fixture remains "
+            "valid — it pins a fact that cannot change — so the test suite is "
+            "unaffected; only regeneration is. Pass a reachable ref that still "
+            "carries the `profiles` schema if you need to re-derive it."
+        )
     return yaml.safe_load(proc.stdout) or {}
 
 

@@ -697,7 +697,7 @@ class TestAutoResolvePlan:
             result = await auto_resolve_plan(
                 str(checkpoint),
                 backend="sglang",
-                model_type="instruct",
+                capability="instruct",
             )
 
         keys = list(result.plan.assignments[0].engine_params)
