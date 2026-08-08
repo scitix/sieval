@@ -15,7 +15,7 @@ import typer
 import yaml
 from loguru import logger
 
-from sieval.cli.leaderboard.session import derive_model_type
+from sieval.cli.resolution import derive_model_type
 from sieval.infer.config import ParamValue
 from sieval.infer.introspect import (
     GPUInfo,

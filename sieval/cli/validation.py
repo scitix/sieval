@@ -17,11 +17,8 @@ from typing import NotRequired, TypedDict
 
 import yaml
 
-from sieval.cli.leaderboard.session import (
-    RootConfigDict,
-    resolve_dataset_class,
-    resolve_task_class,
-)
+from sieval.cli.leaderboard.session import RootConfigDict
+from sieval.cli.resolution import resolve_dataset_class, resolve_task_class
 from sieval.core.runners import TaskRunnerConfig
 from sieval.core.tasks.consts import TaskAction
 

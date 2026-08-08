@@ -17,12 +17,9 @@ import yaml
 from loguru import logger
 
 from sieval.cli.infer import cleanup_model, launch_model, resolve_infer_config
-from sieval.cli.leaderboard.session import (
-    derive_model_type,
-    resolve_deterministic,
-    unwrap_proxies,
-)
+from sieval.cli.leaderboard.session import resolve_deterministic, unwrap_proxies
 from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
+from sieval.cli.resolution import derive_model_type
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import inject_user_env
