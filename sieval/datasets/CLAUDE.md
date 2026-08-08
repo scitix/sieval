@@ -16,19 +16,16 @@
 
 ## Corrected variants
 
-A dataset ships upstream's rows as they are. Repairing a genuinely broken row
-(problem text replaced by an error message, an answer the format cannot express)
-means a **separate** registered dataset `<name>_fixed`, paired with a `_fixed`
-task variant; the unqualified name keeps tracking upstream.
+A dataset ships upstream's rows as they are. Repairing a genuinely broken row is
+a `datasets/` concern rather than a task one: a separate registered
+`<name>_fixed` dataset over the **same pinned revision**, applying a patch table
+rather than forking the data — a patch table shrinks to empty when upstream
+fixes the row, which is the only exit condition a local fix can have. The
+unqualified name keeps tracking upstream, as it does for tasks
+(`sieval/tasks/CLAUDE.md`).
 
-- **Apply a patch table, never fork the data.** Same pinned `source` revision,
-  edits carried as data — `id`, field, old → new, why. A patch table shrinks to
-  empty when upstream fixes the row, which is the only exit condition a local fix
-  can have; a forked copy has none.
-- The table must **fail loudly** when a targeted row no longer matches its
-  recorded `old`: upstream re-cut the data and the patch is now guessing.
-- A fixed dataset needs its own sample `TypedDict` — that is `@sieval_task`'s
-  reverse-lookup key and must be globally unique. An empty subclass suffices.
+No such dataset exists yet. The first one settles the details — do not design
+the patch-table format in advance.
 
 ## Subpackages
 
