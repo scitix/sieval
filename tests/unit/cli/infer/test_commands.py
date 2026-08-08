@@ -29,6 +29,20 @@ from sieval.infer.topology.resolver import ResolveResult
 runner = CliRunner()
 
 
+def _failure_text(result) -> str:
+    """Everywhere a failed command's message can surface, joined.
+
+    A raised exception and rendered stdout are not interchangeable, and which
+    one carries the message is a property of the CLI's error plumbing, not of
+    the behavior under test. Today an escaping `ValueError` reaches
+    `result.exception`; once command failures are funnelled through `render()`
+    (scitix/sieval#85) the same message arrives on stdout with
+    `result.exception` set to `SystemExit`. Asserting on both keeps these tests
+    about the message, so they do not depend on which change lands first.
+    """
+    return f"{result.output}\n{result.exception!r}"
+
+
 def _fake_plan() -> DeploymentPlan:
     return DeploymentPlan(
         checkpoint="/ckpt",
@@ -119,7 +133,7 @@ class TestInferStartModelType:
             ["start", str(ckpt), "--dry-run", "--model-type", bad],
         )
         assert result.exit_code != 0
-        assert "expected 'chat' or 'gen'" in str(result.exception or result.output)
+        assert "expected 'chat' or 'gen'" in _failure_text(result)
 
     def test_rejected_in_yaml_mode(self, tmp_path: Path):
         """YAML already carries the type; accepting the flag would let them differ."""
@@ -145,4 +159,4 @@ class TestInferStartModelType:
         assert result.exit_code != 0
         # Typer renders the message inside a wrapped Rich panel, so match a
         # fragment short enough to survive line breaking.
-        assert "applies to checkpoint mode" in result.output
+        assert "applies to checkpoint mode" in _failure_text(result)
