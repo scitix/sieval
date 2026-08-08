@@ -13,7 +13,7 @@ from sieval.cli.dataset.render import (
     render_dataset_list,
     render_dataset_show,
 )
-from sieval.cli.output import OutputFormat, render
+from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
 from sieval.core.datasets.meta import DatasetMeta, Level1Category
 from sieval.core.utils.logging import configure_logging
 from sieval.core.utils.paths import resolve_data_dir
@@ -37,6 +37,7 @@ def _dataset_callback(
 
 
 @dataset_app.command("list")
+@cli_command
 def list_cmd(
     domain: Annotated[
         str | None, typer.Option("--domain", help="Filter by Level1Category.")
@@ -64,6 +65,7 @@ def list_cmd(
 
 
 @dataset_app.command("show")
+@cli_command
 def show_cmd(
     name: Annotated[str, typer.Argument()],
     data_dir: Annotated[
@@ -75,11 +77,16 @@ def show_cmd(
     datasets, tasks = load_index()
     meta = next((d for d in datasets if d.name == name), None)
     if meta is None:
-        typer.secho(
-            f"Dataset {name!r} is not registered. "
-            "Run `sieval dataset list` to see available options.",
-            fg=typer.colors.RED,
-            err=True,
+        render(
+            CommandResult(
+                command="dataset.show",
+                ok=False,
+                error=(
+                    f"Dataset {name!r} is not registered. "
+                    "Run `sieval dataset list` to see available options."
+                ),
+            ),
+            output,
         )
         raise typer.Exit(code=1)
     related = [t for t in tasks if t.dataset == name]
@@ -88,6 +95,7 @@ def show_cmd(
 
 
 @dataset_app.command("download")
+@cli_command
 def download_cmd(
     name: Annotated[str | None, typer.Argument()] = None,
     domain: Annotated[str | None, typer.Option("--domain")] = None,

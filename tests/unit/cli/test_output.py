@@ -4,15 +4,22 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
 import json
+from typing import Annotated
 from unittest.mock import patch
 
+import click
+import pytest
+import typer
 import yaml
 
 from sieval.cli.output import (
     CommandResult,
     OutputFormat,
     _collapse_constant_columns,
+    _invoked_command,
+    cli_command,
     cli_error_message,
+    is_cli_command,
     render,
 )
 from sieval.core.runners import ResultDirExistsError
@@ -72,6 +79,28 @@ class TestCliErrorMessage:
 
     def test_generic_exception_falls_through_to_str(self):
         assert cli_error_message(RuntimeError("kaboom")) == "kaboom"
+
+    def test_message_carrying_key_error_loses_reprs_quotes(self):
+        """`str(KeyError(msg))` is `repr(msg)`. The recipe registry raises
+        message-carrying KeyErrors, so without this the user reads
+        ``"Recipe 'qwen3' not found."`` — quotes and all.
+        """
+        exc = KeyError("Recipe 'qwen3' not found. Available: qwen3-4b")
+        assert str(exc).startswith('"')
+
+        assert cli_error_message(exc) == "Recipe 'qwen3' not found. Available: qwen3-4b"
+
+    def test_plain_lookup_key_error_is_still_readable(self):
+        """A KeyError from an actual dict miss carries the key, not a sentence.
+        Unquoting it is still an improvement, not a loss.
+        """
+        assert cli_error_message(KeyError("models")) == "models"
+
+    def test_multi_arg_key_error_falls_through(self):
+        """Only the single-string form is a message; anything else keeps
+        ``str()`` rather than being silently truncated to ``args[0]``.
+        """
+        assert cli_error_message(KeyError("a", "b")) == str(KeyError("a", "b"))
 
 
 class TestRenderJson:
@@ -706,3 +735,214 @@ class TestDatasetTaskListTextCollapse:
             render(result, OutputFormat.TEXT)
         logged = _format_log_user(mock)
         assert ": all " not in logged
+
+
+def _walk_commands(typer_app, prefix=""):
+    """Yield ``(dotted_name, callback)`` for every command the app registers."""
+    for info in typer_app.registered_commands:
+        yield f"{prefix}{info.name or info.callback.__name__}", info.callback
+    for group in typer_app.registered_groups:
+        assert group.typer_instance is not None
+        yield from _walk_commands(group.typer_instance, f"{prefix}{group.name}.")
+
+
+class TestCliCommand:
+    """The decorator that funnels command failures into CommandResult."""
+
+    @staticmethod
+    def _app():
+        """A miniature app shaped like the real one: root plus a nested group."""
+        app = typer.Typer()
+        group = typer.Typer()
+        app.add_typer(group, name="infer")
+
+        @group.command("start")
+        @cli_command
+        def start(
+            output: Annotated[
+                OutputFormat, typer.Option("-o", "--output")
+            ] = OutputFormat.TEXT,
+            mode: Annotated[str, typer.Option("--mode")] = "raise",
+        ) -> None:
+            if mode == "raise":
+                raise ValueError("kaboom")
+            if mode == "usage":
+                raise typer.BadParameter("bad flag")
+            if mode == "exit":
+                render(CommandResult(command="infer.start", ok=True), output)
+                raise typer.Exit(3)
+            if mode == "interrupt":
+                raise KeyboardInterrupt
+
+        return app
+
+    def _invoke(self, argv):
+        """Run the mini app the way Click does, returning its exit code."""
+        return self._app()(argv, standalone_mode=False, prog_name="sieval")
+
+    def test_exception_becomes_failed_result_in_json(self, capsys):
+        code = self._invoke(["infer", "start", "--output", "json"])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {"command": "infer.start", "ok": False, "error": "kaboom"}
+        assert code == 1
+
+    def test_exception_becomes_failed_result_in_yaml(self, capsys):
+        self._invoke(["infer", "start", "--output", "yaml"])
+
+        payload = yaml.safe_load(capsys.readouterr().out)
+        assert payload == {"command": "infer.start", "ok": False, "error": "kaboom"}
+
+    def test_error_message_goes_through_cli_error_message(self, tmp_path):
+        """Not bare ``str(exc)`` — the CLI-flag translation must still apply."""
+        app = typer.Typer()
+
+        @app.command("go")
+        @cli_command
+        def go(
+            # Unused in the body on purpose: the decorator reads `--output` out
+            # of the kwargs Typer passes, so declaring it *is* the exercise.
+            output: Annotated[  # noqa: ARG001
+                OutputFormat, typer.Option("-o", "--output")
+            ] = OutputFormat.TEXT,
+        ) -> None:
+            raise ResultDirExistsError(tmp_path / "existing")
+
+        with patch("sieval.cli.output.render") as mock_render:
+            app(["--output", "json"], standalone_mode=False, prog_name="sieval")
+
+        assert "--resume" in mock_render.call_args.args[0].error
+
+    def test_typer_exit_passes_through_untouched(self, capsys):
+        """``typer.Exit`` is control flow, not a failure — and it subclasses
+        ``RuntimeError``, so a naive ``except Exception`` would swallow a
+        command's own rendered result into a bogus error one.
+        """
+        code = self._invoke(["infer", "start", "--output", "json", "--mode", "exit"])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is True
+        assert code == 3
+
+    def test_keyboard_interrupt_stays_exit_130_and_renders_nothing(self, capsys):
+        """Ctrl-C is not a command failure. It reaches Click as a
+        ``BaseException``, which exits 130 — the convention ``cli/CLAUDE.md``
+        mandates. Catching it here would both render a bogus failure result and
+        turn 130 into 1.
+        """
+        code = self._invoke(
+            ["infer", "start", "--output", "json", "--mode", "interrupt"]
+        )
+
+        assert code == 130
+        assert capsys.readouterr().out == ""
+
+    def test_usage_error_keeps_exit_code_2_in_json(self, capsys):
+        code = self._invoke(["infer", "start", "--output", "json", "--mode", "usage"])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {
+            "command": "infer.start",
+            "ok": False,
+            # `format_message()`, not `str(exc)`: it carries Click's own
+            # "Invalid value:" framing, which `str()` drops.
+            "error": "Invalid value: bad flag",
+        }
+        assert code == 2
+
+    def test_usage_error_reraised_under_text_for_clicks_usage_hint(self, capsys):
+        """Text output gets Click's usage hint; the machine formats have no
+        equivalent affordance, so only they are given the structured form.
+        """
+        with pytest.raises(click.UsageError):
+            self._invoke(["infer", "start", "--mode", "usage"])
+
+        assert capsys.readouterr().out == ""
+
+    def test_command_name_follows_the_invoked_path_not_the_callable(self, capsys):
+        """``eval`` and ``leaderboard run`` share one callable; the reported
+        command must be the entry point the user actually typed.
+        """
+        app = typer.Typer()
+        group = typer.Typer()
+        app.add_typer(group, name="leaderboard")
+
+        @cli_command
+        def _shared(
+            output: Annotated[  # noqa: ARG001  (read from kwargs by the decorator)
+                OutputFormat, typer.Option("-o", "--output")
+            ] = OutputFormat.TEXT,
+        ) -> None:
+            raise ValueError("kaboom")
+
+        app.command("eval")(_shared)
+        group.command("run")(_shared)
+
+        app(["eval", "--output", "json"], standalone_mode=False, prog_name="sieval")
+        assert json.loads(capsys.readouterr().out)["command"] == "eval"
+
+        app(
+            ["leaderboard", "run", "--output", "json"],
+            standalone_mode=False,
+            prog_name="sieval",
+        )
+        assert json.loads(capsys.readouterr().out)["command"] == "leaderboard.run"
+
+    def test_command_without_output_option_renders_as_text(self):
+        app = typer.Typer()
+
+        @app.command("go")
+        @cli_command
+        def go() -> None:
+            raise ValueError("kaboom")
+
+        with patch("sieval.cli.output.render") as mock_render:
+            app([], standalone_mode=False, prog_name="sieval")
+
+        assert mock_render.call_args.args[1] == OutputFormat.TEXT
+
+    def test_invoked_command_outside_click_context(self):
+        assert _invoked_command() == "unknown"
+
+    def test_is_cli_command_distinguishes_wrapped_from_bare(self):
+        """The sweep below is only worth anything if the predicate can say no."""
+
+        def bare() -> None: ...
+
+        assert is_cli_command(cli_command(bare)) is True
+        assert is_cli_command(bare) is False
+
+
+class TestEveryCommandIsWrapped:
+    """A command added without ``@cli_command`` reopens the traceback hole."""
+
+    def test_all_registered_commands_are_wrapped(self):
+        from sieval.cli.main import app
+
+        unwrapped = [name for name, fn in _walk_commands(app) if not is_cli_command(fn)]
+
+        assert unwrapped == []
+
+    def test_the_sweep_sees_every_command(self):
+        """Guards the sweep above: were the walk to return nothing — a renamed
+        Typer attribute, a restructured app — it would pass vacuously.
+        """
+        from sieval.cli.main import app
+
+        assert {name for name, _ in _walk_commands(app)} == {
+            "run",
+            "eval",
+            "infer.start",
+            "infer.list",
+            "infer.show",
+            "infer.stop",
+            "infer.logs",
+            "leaderboard.report",
+            "leaderboard.list",
+            "leaderboard.run",
+            "dataset.list",
+            "dataset.show",
+            "dataset.download",
+            "task.list",
+            "task.show",
+        }

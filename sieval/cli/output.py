@@ -7,12 +7,16 @@ single output path: text, JSON, or YAML.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import functools
 import json
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+import click
+import typer
 import yaml
 from loguru import logger
 
@@ -57,6 +61,16 @@ def cli_error_message(exc: Exception) -> str:
             "To start fresh, pass --result-dir <path> "
             "or delete the existing directory."
         )
+    if (
+        isinstance(exc, KeyError)
+        and len(exc.args) == 1
+        and isinstance(exc.args[0], str)
+    ):
+        # `KeyError.__str__` is `repr(key)`, so a message-carrying KeyError —
+        # `raise KeyError(f"Recipe {name!r} not found. Available: ...")`, which
+        # the recipe registry does — reaches the user wrapped in a second layer
+        # of quotes. The CLI is the last stop before that text is printed.
+        return exc.args[0]
     return str(exc)
 
 
@@ -89,6 +103,112 @@ def render(result: CommandResult, fmt: OutputFormat) -> None:
         print(json.dumps(payload, indent=2, default=str))
     elif fmt == OutputFormat.YAML:
         print(yaml.dump(payload, default_flow_style=False, sort_keys=False), end="")
+
+
+# ── command wrapper ───────────────────────────────────────────────────
+
+# Identities of the wrappers `cli_command` produced. Weak so a decorated
+# function stays collectable. Registering is not bookkeeping for its own sake:
+# it is the only way to *prove* a command is funnelled — `functools.wraps` hides
+# the wrapper behind the original's metadata, and Typer rebuilds the Click
+# callback around whatever it was handed, so nothing else distinguishes a
+# wrapped command from a bare one.
+_WRAPPED: weakref.WeakSet = weakref.WeakSet()
+
+
+def is_cli_command(fn: Callable) -> bool:
+    """Whether ``fn`` was wrapped by :func:`cli_command`."""
+    return fn in _WRAPPED
+
+
+def cli_command(fn: Callable) -> Callable:
+    """Funnel a command's failures through :func:`render`, like its successes.
+
+    ``sieval/cli/CLAUDE.md`` requires every command result to go through
+    ``CommandResult`` → ``render()``. Success paths did; failures escaped as
+    tracebacks, so ``--output json`` printed *nothing* on stdout when a command
+    raised — the one case a machine caller most needs to parse. This decorator
+    closes that by translating any escaping exception into a failed
+    ``CommandResult`` rendered in the caller's requested format.
+
+    Apply it *below* ``@app.command()``, so the handling is inside what Typer
+    invokes::
+
+        @infer_app.command("show")
+        @cli_command
+        def infer_show(...) -> None: ...
+
+    The requested format is read from the wrapped function's ``output``
+    parameter (Typer passes every parameter by keyword); commands without one
+    render as text.
+
+    Exit codes follow the exception, not the decorator: ``ClickException``
+    keeps its own (``2`` for a usage error), anything else exits ``1``.
+    Under text output a ``ClickException`` is re-raised untouched so Click
+    still prints its usage hint — only the machine-readable formats, which
+    have no such affordance, get the structured form instead.
+
+    Not covered: usage errors Click raises while *parsing* the command line
+    (unknown flag, missing argument). Those happen before the callback is
+    entered, so no callback decorator can see them; they stay as Click
+    renders them.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        # `click.exceptions.Exit` (which `typer.Exit` is) and `Abort` are
+        # RuntimeError subclasses, so they would be caught by the `Exception`
+        # clause below and turned into a bogus error result. They are control
+        # flow — a command that already rendered its own failure raises
+        # `typer.Exit(1)` — so re-raise them untouched.
+        try:
+            return fn(*args, **kwargs)
+        except (click.exceptions.Exit, click.exceptions.Abort):
+            raise
+        except click.ClickException as exc:
+            fmt = _requested_format(kwargs)
+            if fmt == OutputFormat.TEXT:
+                raise
+            render(
+                CommandResult(
+                    command=_invoked_command(), ok=False, error=exc.format_message()
+                ),
+                fmt,
+            )
+            raise typer.Exit(exc.exit_code) from exc
+        except Exception as exc:
+            render(
+                CommandResult(
+                    command=_invoked_command(), ok=False, error=cli_error_message(exc)
+                ),
+                _requested_format(kwargs),
+            )
+            raise typer.Exit(1) from exc
+
+    _WRAPPED.add(wrapper)
+    return wrapper
+
+
+def _invoked_command() -> str:
+    """Dotted name of the running command, e.g. ``"infer.start"``.
+
+    Derived from Click's context rather than passed in, because the dotted
+    names the success paths hardcode are already exactly the invocation path
+    with the program name dropped — so deriving cannot drift from them, and it
+    reproduces for free the one case that is not static: ``eval`` and
+    ``leaderboard run`` bind the same callable and must report the entry point
+    the user actually typed.
+    """
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:  # called outside Click, e.g. a direct unit-test call
+        return "unknown"
+    return ".".join(ctx.command_path.split()[1:])
+
+
+def _requested_format(kwargs: dict) -> OutputFormat:
+    """Read the ``--output`` value Typer passed, defaulting to text."""
+    fmt = kwargs.get("output")
+    return fmt if isinstance(fmt, OutputFormat) else OutputFormat.TEXT
 
 
 # ── text renderers ────────────────────────────────────────────────────
