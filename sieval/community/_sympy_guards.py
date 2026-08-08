@@ -92,11 +92,15 @@ def quotes_free(text: str) -> bool:
     ``simplify``, where ``__import__`` resolves without any quote at all — see
     the module docstring.
 
-    Nothing legitimate is lost in the dialects these graders read. Not one of
-    UGMathBench's 42,064 gold slots on the pinned revision contains a quote —
-    the dialect is sympy source, where quotes have no meaning — and a refused
-    prediction only loses this one reading, with the LaTeX and literal-equality
-    paths still offered to the comparison.
+    Nothing legitimate is lost in the dialects these graders read, and each half
+    of that carries its own evidence. For UGMathBench's sympy source, not one of
+    the 42,064 gold slots on the pinned revision contains a quote — the dialect
+    is one where quotes have no meaning. For the LaTeX the deepseek grader
+    reads, it is the replay recorded in that module's deviations note: 6,319
+    samples across both benchmarks, in both `parse_latex` environments, with no
+    verdict changed. Either way a refused prediction only loses this one
+    reading, with the LaTeX and literal-equality paths still offered to the
+    comparison.
     """
     return "'" not in text and '"' not in text
 
