@@ -613,16 +613,28 @@ def _quotes_free(text: str) -> bool:
 
 
 def _evaluable(cleaned: str, local: dict, transformations) -> bool:
-    """Would evaluating *cleaned* terminate in useful time?
+    """Is *cleaned* free of the two exponent shapes that never finish?
 
-    ``parse_expr`` evaluates as it parses, so the check cannot run afterwards —
-    by then the process is already computing. Parsing with ``evaluate=False``
-    first builds the tree without doing the arithmetic (microseconds even for
-    the pathological cases), which is cheap enough to screen on.
+    Deliberately narrower than "would this terminate". ``parse_expr`` evaluates
+    as it parses, so the check cannot run afterwards — by then the process is
+    already computing. Parsing with ``evaluate=False`` first builds the tree
+    without doing the arithmetic (microseconds even for the pathological cases),
+    which is cheap enough to screen on.
 
     Rejected: a power whose exponent is itself a power (``9**9**9``, the tower
     shape), and an integer exponent above :data:`_MAX_EXPONENT`. A left-nested
     ``(x**2)**3`` is fine and stays — only the right-nested tower explodes.
+
+    What it does **not** screen: an eagerly-evaluating sympy callable that needs
+    no exponent to be expensive. ``from sympy import *`` puts ``factorial``,
+    ``prime`` and ``primepi`` in the parse namespace, and the early return below
+    lets anything without ``**`` straight through — measured, ``primepi(10**12)``
+    takes 48 s and ``factorial(1000000)`` 3.8 s. Enumerating those callees is
+    the same losing game as allowlisting them in :func:`_quotes_free`, so the
+    bound that actually holds is the caller's: grading runs in a worker process
+    under :data:`~sieval.core.utils.offload.GRADE_TIMEOUT`, which scores the slot
+    wrong and moves on. This screen only buys back the two shapes common enough
+    to be worth not spending a worker on.
 
     A rejected answer grades wrong rather than hanging the run. That is the
     correct trade for a grader: this pass only ever *upgrades* a verdict

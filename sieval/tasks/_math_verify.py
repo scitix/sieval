@@ -1,5 +1,13 @@
 """The math-verify comparison shared by the math-competition tasks.
 
+Extracted rather than copied twelve times because the twelve call sites were
+already byte-identical and share a contract that has to change together — gold
+first, both sides ``$``-wrapped. The cost of that is worth stating plainly:
+**editing this function rotates the verdicts of all twelve benchmarks at once**
+(AIME x3, HMMT x3, Apex x2, BRUMO, CMIMC, SMT, MATH-500), where the duplication
+it replaced let them drift apart deliberately. A change here needs the same
+before/after count a scorer change in any one of them would need.
+
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
