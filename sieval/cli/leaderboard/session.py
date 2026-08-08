@@ -17,6 +17,7 @@ from types import MappingProxyType
 from typing import Any, Literal, TypedDict, cast
 
 import anyio
+import orjson
 import yaml
 from anyio.to_thread import run_sync
 from loguru import logger
@@ -175,16 +176,114 @@ def _diff_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     return diffs
 
 
+def _diff_key_order(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
+    """Return ``- <path>: [keys] → [keys]`` lines where mapping key ORDER differs.
+
+    Only meaningful once :func:`_diff_lines` is empty: the two parse to the same
+    structure, so any remaining textual difference is ordering or whitespace.
+    ``yaml.safe_load`` builds plain dicts, which preserve document order, so the
+    key sequence at each level is recoverable from the parsed tree.
+
+    Reported because a byte-for-byte comparison is order-sensitive while
+    :func:`_diff_lines` is not — without this, a pure reordering aborts a resume
+    with a message saying nothing differs.
+    """
+    diffs: list[str] = []
+
+    def _walk(x: Any, y: Any, path: str) -> None:
+        if isinstance(x, dict) and isinstance(y, dict):
+            if list(x) != list(y):
+                diffs.append(f"- {path or '(root)'}: {list(x)} → {list(y)}")
+            for k in x:
+                if k in y:
+                    _walk(x[k], y[k], f"{path}.{k}" if path else k)
+        elif isinstance(x, list) and isinstance(y, list) and len(x) == len(y):
+            for i, (xv, yv) in enumerate(zip(x, y, strict=True)):
+                _walk(xv, yv, f"{path}[{i}]")
+
+    _walk(a, b, "")
+    return diffs
+
+
 def _diff_dicts(a: dict[str, Any], b: dict[str, Any]) -> str:
     """Return a short human-readable hint describing which keys differ.
 
-    Thin wrapper over :func:`_diff_lines`; reports up to 10 differing leaf
-    paths and a "formatting only" sentinel when nothing differs.
+    Reports up to 10 differing leaf paths from :func:`_diff_lines`. When nothing
+    differs structurally, falls back to :func:`_diff_key_order` — a caller doing
+    a byte comparison aborts on reordering too, and "nothing differs" is not an
+    answer it can act on. Only when order matches as well is the difference
+    genuinely whitespace / formatting.
     """
     lines = _diff_lines(a, b)
-    if not lines:
-        return "Diff: (whitespace / formatting only)"
-    return "Diff:\n" + "\n".join(f"  {line}" for line in lines[:10])
+    if lines:
+        return "Diff:\n" + "\n".join(f"  {line}" for line in lines[:10])
+
+    order = _diff_key_order(a, b)
+    if order:
+        return (
+            "Diff: same contents, different key order "
+            "(the comparison is byte-for-byte, so order counts):\n"
+            + "\n".join(f"  {line}" for line in order[:10])
+        )
+    return "Diff: (whitespace / formatting only)"
+
+
+async def _cross_version_resume_hint(result_path: anyio.Path) -> str:
+    """Return a hint line when this result_dir was produced by an incompatible version.
+
+    ``EvalSession`` compares its persisted artifacts (``effective_config.yaml``,
+    ``infer_plans.yaml``) *before* any ``TaskRunner`` exists, so
+    ``gate_resume_version`` — which fires in ``TaskRunner.__init__`` — cannot
+    pre-empt those aborts. A cross-version resume therefore surfaces as an
+    artifact diff, and the user is left to work out that the version, not their
+    invocation, is what changed. This adds that sentence to the diff rather than
+    moving the gate: the gate reads a *per-task* ``<result_dir>/<task>/meta.json``
+    and is fail-closed on a missing one, which a not-yet-started task
+    legitimately has, so hoisting it to session level is a semantics change and
+    not this function's job.
+
+    Returns ``""`` when no incompatible version is found, so callers can
+    interpolate it unconditionally. Best-effort and deliberately NOT fail-closed:
+    any read or parse problem yields ``""`` — a hint must never mask the caller's
+    own abort, nor invent a version problem where there is none.
+    """
+    from sieval import __version__
+    from sieval.core.runners.resume_gate import ResumeAction, resume_version_verdict
+
+    def _scan() -> set[str]:
+        found: set[str] = set()
+        root = Path(result_path)
+        if not root.is_dir():
+            return found
+        for meta_path in sorted(root.glob("*/meta.json")):
+            try:
+                meta = orjson.loads(meta_path.read_bytes())
+            except (OSError, orjson.JSONDecodeError):
+                continue
+            version = meta.get("version") if isinstance(meta, dict) else None
+            if not isinstance(version, str):
+                continue
+            try:
+                verdict = resume_version_verdict(version, __version__)
+            except Exception:
+                continue
+            if verdict.action is ResumeAction.REJECT:
+                found.add(version)
+        return found
+
+    try:
+        persisted = await run_sync(_scan)
+    except Exception:  # pragma: no cover - defensive; must not mask the abort
+        return ""
+
+    if not persisted:
+        return ""
+    return (
+        f"Note: this result_dir was produced by sieval "
+        f"{', '.join(sorted(persisted))}, which is not resume-compatible with "
+        f"{__version__} — that is the likely cause of the difference above, not "
+        f"your invocation.\n"
+    )
 
 
 def _brief_diff(existing: str, current: str) -> str:
@@ -1376,6 +1475,7 @@ class EvalSession:
                 raise RuntimeError(
                     f"Resume aborted: {target} does not match current invocation.\n"
                     f"{_brief_diff(existing_body, body)}\n"
+                    f"{await _cross_version_resume_hint(result_path)}"
                     "Either:\n"
                     "  1. Remove the result_dir and start fresh\n"
                     f"  2. Match the invocation to the persisted {audit_label}"
@@ -1415,6 +1515,7 @@ class EvalSession:
                 raise RuntimeError(
                     f"Resume aborted: {target} does not match current invocation.\n"
                     f"{_diff_dicts(stripped_existing, stripped_current)}\n"
+                    f"{await _cross_version_resume_hint(result_path)}"
                     "Either:\n"
                     "  1. Remove the result_dir and start fresh\n"
                     f"  2. Match the invocation to the persisted {audit_label}"

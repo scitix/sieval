@@ -5,6 +5,7 @@ dataset operations, and runner config building.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import json
 import re
 import types
 from pathlib import Path
@@ -12,6 +13,7 @@ from types import MappingProxyType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
 
 from sieval.cli.leaderboard.session import (
@@ -23,7 +25,9 @@ from sieval.cli.leaderboard.session import (
     _append_resume_note,
     _apply_endpoint_injection,
     _brief_diff,
+    _cross_version_resume_hint,
     _diff_dicts,
+    _diff_key_order,
     _diff_lines,
     _format_comment_header,
     _reify_cli_overrides,
@@ -3044,6 +3048,52 @@ class TestDiffLines:
         assert lines == ["- a.b: 1 → 2"]
 
 
+class TestDiffKeyOrder:
+    """Reordering is invisible to `_diff_lines` but aborts a byte comparison."""
+
+    def test_same_order_returns_empty(self):
+        assert _diff_key_order({"a": 1, "b": 2}, {"a": 1, "b": 2}) == []
+
+    def test_root_reorder_reported(self):
+        lines = _diff_key_order({"a": 1, "b": 2}, {"b": 2, "a": 1})
+        assert lines == ["- (root): ['a', 'b'] → ['b', 'a']"]
+
+    def test_nested_reorder_carries_its_path(self):
+        lines = _diff_key_order(
+            {"m": {"p": {"x": 1, "y": 2}}},
+            {"m": {"p": {"y": 2, "x": 1}}},
+        )
+        assert lines == ["- m.p: ['x', 'y'] → ['y', 'x']"]
+
+    def test_reorder_inside_a_list_element(self):
+        """The real shape: engine_params sits under assignments[0]."""
+        lines = _diff_key_order(
+            {"models": {"m": {"assignments": [{"engine_params": {"a": 1, "b": 2}}]}}},
+            {"models": {"m": {"assignments": [{"engine_params": {"b": 2, "a": 1}}]}}},
+        )
+        assert lines == [
+            "- models.m.assignments[0].engine_params: ['a', 'b'] → ['b', 'a']"
+        ]
+
+    def test_differing_key_sets_are_left_to_diff_lines(self):
+        """Only called once `_diff_lines` is empty; it must not crash regardless."""
+        assert _diff_key_order({"a": 1}, {"b": 1}) == [
+            "- (root): ['a'] → ['b']",
+        ]
+
+    def test_diff_dicts_reports_order_instead_of_formatting_only(self):
+        """The bug this closes: aborting with a message saying nothing differs.
+
+        A pure reordering has no structural diff, so `_diff_dicts` used to answer
+        "(whitespace / formatting only)" — while its caller was aborting a resume
+        precisely because the bytes differ.
+        """
+        out = _diff_dicts({"a": 1, "b": 2}, {"b": 2, "a": 1})
+        assert "formatting only" not in out
+        assert "different key order" in out
+        assert "['a', 'b'] → ['b', 'a']" in out
+
+
 class TestAppendResumeNote:
     def test_note_inserted_before_closing_border_and_split_stable(self):
         header = _format_comment_header(
@@ -3110,13 +3160,132 @@ class TestBriefDiff:
         assert "not valid YAML" in out
 
     def test_whitespace_only_diff(self):
-        """Structurally identical dicts still trip a body-byte mismatch
-        (e.g. key reorder, trailing whitespace) — diff helper reports
-        that clearly instead of an empty diff block."""
+        """Same structure AND same key order — the difference really is layout.
+
+        Previously this case was illustrated with a key reorder, which conflated
+        two things the caller must tell apart: whitespace is cosmetic, key order
+        is not (the strict comparison is byte-for-byte). See the reorder test
+        below.
+        """
+        existing = "a: 1\nb: 2\n"
+        current = "a:   1\nb: 2\n"
+        out = _brief_diff(existing, current)
+        assert "whitespace / formatting only" in out
+
+    def test_key_reorder_is_named_not_called_formatting(self):
+        """A reorder aborts a byte comparison, so it must be reported as one."""
         existing = "a: 1\nb: 2\n"
         current = "b: 2\na: 1\n"
         out = _brief_diff(existing, current)
-        assert "whitespace / formatting only" in out
+        assert "different key order" in out
+        assert "formatting only" not in out
+
+
+class TestCrossVersionResumeHint:
+    """`EvalSession` compares its artifacts before any TaskRunner exists, so
+    `gate_resume_version` cannot pre-empt those aborts — a cross-version resume
+    arrives as an artifact diff. The hint names the version so the user is not
+    left auditing their own invocation.
+    """
+
+    def _write_meta(self, root: Path, task: str, payload: object) -> None:
+        (root / task).mkdir(parents=True, exist_ok=True)
+        (root / task / "meta.json").write_text(json.dumps(payload))
+
+    @pytest.mark.anyio
+    async def test_incompatible_version_is_named(self, tmp_path: Path):
+        self._write_meta(tmp_path, "arc_easy", {"version": "0.1.0"})
+        out = await _cross_version_resume_hint(anyio.Path(tmp_path))
+        assert "0.1.0" in out
+        assert "not resume-compatible" in out
+
+    @pytest.mark.anyio
+    async def test_compatible_version_yields_nothing(self, tmp_path: Path):
+        """Same series ⇒ the version is not the explanation; stay quiet."""
+        from sieval import __version__
+
+        self._write_meta(tmp_path, "arc_easy", {"version": __version__})
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_missing_meta_yields_nothing(self, tmp_path: Path):
+        """Unlike the gate, this is NOT fail-closed: a task that never started
+        has no meta.json, and that is not evidence of a version problem."""
+        (tmp_path / "arc_easy").mkdir()
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_unreadable_meta_yields_nothing(self, tmp_path: Path):
+        """A hint must never mask the caller's own abort."""
+        (tmp_path / "arc_easy").mkdir()
+        (tmp_path / "arc_easy" / "meta.json").write_text("{not json")
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_absent_result_dir_yields_nothing(self, tmp_path: Path):
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path / "nope")) == ""
+
+    @pytest.mark.anyio
+    async def test_every_incompatible_version_present_is_listed(self, tmp_path: Path):
+        self._write_meta(tmp_path, "task_a", {"version": "0.1.0"})
+        self._write_meta(tmp_path, "task_b", {"version": "0.2.0"})
+        out = await _cross_version_resume_hint(anyio.Path(tmp_path))
+        assert "0.1.0" in out and "0.2.0" in out
+
+    @pytest.mark.anyio
+    async def test_strict_abort_carries_both_the_order_diff_and_the_hint(
+        self, tmp_path: Path
+    ):
+        """End-to-end on the real path: the message a cross-version resume of a
+        reordered plan actually produces."""
+        cfg = _write_yaml_config(tmp_path, "cfg.yaml", "models: {}\n")
+        result_dir = tmp_path / "out"
+        result_dir.mkdir()
+        self._write_meta(result_dir, "arc_easy", {"version": "0.1.0"})
+
+        def _plan(engine_params: dict) -> dict:
+            return {
+                "checkpoint": "/ckpt",
+                "backend": "vllm",
+                "assignments": [
+                    {
+                        "role": "full",
+                        "devices": {"count": 1, "gpu_model": "H100"},
+                        "topology": {"tp": 1, "dp": 1, "pp": 1},
+                        "replicas": 1,
+                        "engine_params": engine_params,
+                        "scaling": None,
+                    }
+                ],
+                "deterministic": False,
+                "seed": 0,
+            }
+
+        before = {"max_model_len": 4096, "tool_call_parser": "hermes", "dtype": "bf16"}
+        after = {"max_model_len": 4096, "dtype": "bf16", "tool_call_parser": "hermes"}
+
+        await EvalSession(
+            config_path=str(cfg),
+            result_dir_override=str(result_dir),
+            infer_plans={"m": _plan(before)},
+            invocation="sieval run cfg.yaml",
+        )._persist_infer_plans()
+
+        resumed = EvalSession(
+            config_path=str(cfg),
+            result_dir_override=str(result_dir),
+            infer_plans={"m": _plan(after)},
+            resume=True,
+            invocation="sieval run cfg.yaml --resume",
+        )
+        with pytest.raises(RuntimeError) as exc:
+            await resumed._persist_infer_plans()
+
+        message = str(exc.value)
+        assert "different key order" in message
+        assert "engine_params" in message
+        assert "0.1.0" in message
+        assert "formatting only" not in message
 
 
 # ── Tests for env expansion + error-hint wrapping in _setup_datasets ──
