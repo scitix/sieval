@@ -4,6 +4,7 @@
 resolution, so it lives here with the class-resolution helpers it stands on
 rather than in ``leaderboard/session.py`` — importing the session to reach it
 would point the dependency sideways across the two CLI subpackages.
+``scripts/check_layer_imports.py`` rejects that edge.
 
 It imports nothing from sieval (``sieval.tasks`` / ``sieval.datasets`` are
 reached through ``importlib`` at call time), so it is a leaf both subpackages can
