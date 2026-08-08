@@ -18,23 +18,15 @@ This directory contains local adaptations of third-party evaluation tools (e.g. 
 
 ## First-Party Modules
 
-`_sympy_guards.py` is original code, not a wrapper: it holds the execution guards
-the `deepseek_math` and `ugmathbench` graders share. It lives here because both
-hand model output to sympy under the same threat model, so a new escape route has
-to close in both or one is left open — the coupling is to these two graders, not
-to anything upstream.
+`_sympy_guards.py` is original code, not a wrapper: the execution guards
+`deepseek_math` and `ugmathbench` share. Holding it *outside* both serves
+upstream alignment rather than working against it — the vendored files keep only
+a small annotated divergence each, instead of carrying a copy of the guards
+inline where it would swamp a diff against upstream. Do not add more original
+code here without the same argument; a helper with one caller belongs in that
+caller's module.
 
-The package-wide `ruff` / `mypy` exclusions (`pyproject.toml`) and the
-`pre-commit` exclusion exist to keep *vendored* code byte-identical to upstream,
-and they cover this file too — which is the wrong default for the module holding
-a security boundary. Until those exclusions are narrowed to the vendored paths,
-keep first-party modules here lint-clean and formatted by hand:
-
-```bash
-ruff check --config 'exclude=["vendor"]' sieval/community/_sympy_guards.py
-ruff format --check --config 'exclude=["vendor"]' sieval/community/_sympy_guards.py
-```
-
-Do not add new original code here without the same coupling argument — a helper
-with one caller belongs in that caller's module, and one shared by non-community
-callers belongs in `sieval/core/utils/`.
+The package-wide `ruff` / `mypy` / `pre-commit` exclusions exist to keep vendored
+code byte-identical and cover this file too, which is the wrong default for a
+security boundary. Until they are narrowed, lint it by hand:
+`ruff check --config 'exclude=["vendor"]' sieval/community/_sympy_guards.py`.

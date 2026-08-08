@@ -30,10 +30,9 @@ Deviations from upstream:
 - **`symbolic_equal` does not execute model output.** Upstream parses a
   prediction with a bare `parse_expr`, whose default namespace carries
   `__builtins__`, and — when both parsers fail — returns the *raw string*, which
-  then reaches `N`, and `N` sympifies a string with sympy's own default
-  namespace. (Only `N`: the `simplify(a - b)` before it never sees the text,
-  because the subtraction runs first and sympy's arithmetic dunders sympify
-  strictly, so `str - Expr` raises `TypeError`.) Either route runs
+  then reaches `N`, and `N` sympifies it with sympy's own default namespace.
+  (Only `N`: `simplify(a - b)` raises `TypeError` first, since sympy's
+  arithmetic dunders sympify strictly.) Either route runs
   `__import__('os').system(...)` supplied as an answer, and the grader still
   reports the sample wrong, so nothing in the run looks unusual. Two changes
   close it: `parse_expr` runs under `_sympy_guards` (cleared namespace, quote
@@ -48,14 +47,10 @@ Deviations from upstream:
   comparison down the guarded path (1622 of 5000 fall through on MATH). All
   four cells agree with upstream on every sample: GSM8K 63.3813 / 63.3055 and
   MATH 61.2600 / 60.0200, upstream and guarded alike.
-  The raw-string refusal is not the only edge the guards add, and it is not the
-  one that can flip a verdict: the exponent pre-parse also declines a
-  right-nested `**` tower (`2**3**2`) and an integer exponent above
-  `MAX_EXPONENT`, both of which upstream evaluates. Those spellings are
-  unreachable while the antlr4 pin holds, since `parse_latex` resolves them
-  first, and the zero above covers the disabled-`parse_latex` cells too — so
-  neither shape occurs in either stored run. See `sieval/tasks/CLAUDE.md` on why
-  this ships under the unqualified task names.
+  The exponent pre-parse also declines a right-nested `**` tower and an exponent
+  above `MAX_EXPONENT`, which upstream evaluates; `parse_latex` reads those
+  spellings first, so the zero covers them too. See `sieval/tasks/CLAUDE.md` on
+  why this ships under the unqualified task names.
 - `math_equal` is only ever called with the default `timeout=False` (via
   `eval_math` / `is_correct` and the GSM8K path), so the
   `symbolic_equal_process` / `call_with_timeout` multiprocessing path is unused
@@ -363,15 +358,11 @@ def symbolic_equal(a, b):
             except:
                 pass
         # SIEVAL DIVERGENCE (execution safety). Upstream returns `s` here, the
-        # raw model output, which then reaches `N` below -- and `N` sympifies a
-        # string argument using sympy's own default namespace, not the
-        # caller's. `simplify(a-b)` is not a second route: the subtraction runs
-        # first and sympy's arithmetic dunders sympify strictly, so a raw `s`
-        # raises TypeError before simplify is entered. `N` alone is enough to
-        # defeat the guards above outright -- with `__import__` resolvable, a
-        # payload needs no quote at all. So an unparseable answer becomes None
-        # and the comparison is refused, instead of being handed to sympify by
-        # another name.
+        # raw model output, which reaches `N` below -- and `N` sympifies it with
+        # sympy's own default namespace, not the caller's. (Not `simplify(a-b)`:
+        # the subtraction raises TypeError first.) That alone defeats the guards
+        # above -- with `__import__` resolvable a payload needs no quote -- so an
+        # unparseable answer becomes None and the comparison is refused.
         return None
     a = _parse(a)
     b = _parse(b)
