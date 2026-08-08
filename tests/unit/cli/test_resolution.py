@@ -260,14 +260,45 @@ class TestDeriveModelType:
         ):
             assert derive_model_type("m", None, tasks_cfg) == "chat"
 
-    def test_unresolvable_task_class_is_skipped(self):
+    @pytest.mark.parametrize(
+        "error",
+        [ImportError("module not found"), AttributeError("class not found")],
+    )
+    def test_unresolvable_task_class_is_skipped(self, error):
         """Validation reports import errors; derivation must not raise here."""
         tasks_cfg = {"t1": {"model": "m", "class": "missing.Task"}}
         with patch(
             "sieval.cli.resolution.resolve_task_class",
-            side_effect=ImportError("nope"),
+            side_effect=error,
         ):
             assert derive_model_type("m", None, tasks_cfg) == "chat"
+
+    def test_unresolvable_task_does_not_block_resolvable_task(self):
+        """One task failing to resolve must not hide a sibling that succeeds."""
+
+        class GenTask:
+            model_type = "gen"
+
+        tasks_cfg = {
+            "bad_task": {"model": "m", "class": "bad.module.BadTask"},
+            "good_task": {"model": "m", "class": "good.module.GenTask"},
+        }
+
+        call_count = 0
+
+        def mock_resolve(_spec):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ImportError("bad module")
+            return GenTask
+
+        with patch(
+            "sieval.cli.resolution.resolve_task_class",
+            side_effect=mock_resolve,
+        ):
+            assert derive_model_type("m", None, tasks_cfg) == "gen"
+        assert call_count == 2
 
 
 class TestResolveTaskClass:

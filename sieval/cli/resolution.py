@@ -1,15 +1,12 @@
 """Config-string → class resolution, and the model-type derivation built on it.
 
-Both the eval session (which model class to construct) and infer recipe
-resolution (which capability layer to serve) must reach the same model type for
-one model, so :func:`derive_model_type` is shared rather than duplicated. It
-lives here, with the class-resolution helpers it depends on, instead of in
-``leaderboard/session.py``: the infer CLI needs it, and importing the eval
-session to get it would point the dependency sideways across the two CLI
-subpackages for a function that has nothing to do with running a session.
+:func:`derive_model_type` is shared by the eval session and infer recipe
+resolution, so it lives here with the class-resolution helpers it stands on
+rather than in ``leaderboard/session.py`` — importing the session to reach it
+would point the dependency sideways across the two CLI subpackages.
 
-It imports nothing from sieval — ``sieval.tasks`` and ``sieval.datasets`` are
-reached through ``importlib`` at call time — so it is a leaf both subpackages can
+It imports nothing from sieval (``sieval.tasks`` / ``sieval.datasets`` are
+reached through ``importlib`` at call time), so it is a leaf both subpackages can
 depend on. That is about the dependency graph, not load time: ``sieval/cli``'s
 own ``__init__`` builds the whole app, so importing any ``sieval.cli`` submodule
 already pulls in the session either way.
@@ -190,15 +187,11 @@ def derive_model_type(
       2. The ``model_type`` declared by the tasks pointing at this model.
       3. Default to ``"chat"``.
 
-    Both the eval session (which model class to construct) and infer recipe
-    resolution (which capability layer to serve) must reach the same answer for
-    the same model, so the derivation lives here rather than being read off
+    Both callers — the eval session (which model class to construct) and infer
+    recipe resolution (which capability layer to serve) — must reach the same
+    answer for one model, so the derivation is shared rather than read off
     ``type`` twice. Explicit-only would silently mean "instruct" for every
     config in the wild, since ``type`` is normally left to this inference.
-
-    It stays in this module, despite the caller now being the infer CLI, because
-    the inference step *is* task-class resolution — moving it would drag
-    :func:`resolve_task_class` along or split the two apart.
 
     Args:
         model_name: Name of the model in config.
