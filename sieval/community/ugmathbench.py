@@ -29,7 +29,9 @@ dependency). Known behavioural deltas versus the reference judge:
 
 * Symbolic equivalence starts from ``math-verify``'s parse/verify rather than
   upstream's bespoke ``parse_latex`` + ``simplify`` chain, and is more permissive
-  on LaTeX shapes upstream's normalizer never learned. Numeric slots keep
+  on LaTeX shapes upstream's normalizer never learned. ``parse_latex`` is still
+  read from — as one candidate among several (see the parser note below), not as
+  the chain upstream drives the comparison with. Numeric slots keep
   upstream's *relative* tolerance as a second chance, since ``math-verify``
   compares floats at fixed decimal rounding. Where it used to be *stricter* than
   upstream — no numeric sampling of free symbols — it no longer is:
@@ -41,10 +43,12 @@ dependency). Known behavioural deltas versus the reference judge:
   unescaped ``sin`` is the product s*i*n while ``pi`` is p*i — so the stored
   ``7*sin(pi*x/5)+1`` becomes ``7*s*i*n*(i*p*x)/5 + 1`` and cannot match the
   model's ``7\\sin(\\frac{\\pi}{5}x)+1`` by any route except exact string
-  equality. :func:`_parse_sympy_source` supplies the second reading.
+  equality. :func:`_parse_sympy_source` supplies a second reading, and
+  :func:`_parse_latex_strict` a third — case-preserving LaTeX, which neither of
+  the other two can produce.
   The first live run measured what this had been costing: **716 of 15,183
-  samples** were graded wrong purely for it (EAcc 34.46 -> 38.49, AAcc 40.87 ->
-  45.59, CAcc 48.07 -> 53.53, with **zero** verdicts moving right-to-wrong).
+  samples** were graded wrong purely for it, with **zero** verdicts moving
+  right-to-wrong.
   Note the shape of the
   bug — it was invisible to the reference-replay measurement below, because
   replaying a gold as its own answer short-circuits on
