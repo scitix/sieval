@@ -101,6 +101,9 @@ from typing import ClassVar, Literal, override
 
 from sieval.community.platinum_bench import check_prediction, get_parse_fn
 from sieval.core.models import ModelOutput
+from collections import defaultdict
+
+from sieval.core.tasks.sampling_metrics import sampling_metrics
 from sieval.core.tasks import (
     JudgementRecord,
     PredictionRecord,
@@ -225,8 +228,16 @@ class PlatinumMathGenTask(
         model,
         name: str | None = None,
         prompt_variant: TPromptVariant = "cot",
+        k: int = 1,
+        n: int = 1,
     ):
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}."
+            )
+        self._k = k
+        self._n = n
         if prompt_variant not in _PROMPT_VARIANTS:
             raise ValueError(
                 f"prompt_variant must be one of {list(_PROMPT_VARIANTS)}, "
@@ -306,26 +317,31 @@ class PlatinumMathGenTask(
         reference = list(ctx.raw_sample["platinum_target"])
         # `.get()`, not `[]`: a None prediction is ABSENT once the record
         # round-trips through disk, which is what the resume path reads.
-        prediction = post["rollouts"][0].get("prediction")
-        if prediction is None:
-            correct = False
-        else:
-            try:
-                correct = check_prediction(
-                    prediction,
-                    reference,
-                    # Unused upstream, but this is the same string it passes.
-                    self._prompt_text(ctx.raw_sample),
-                    self.subset,
-                )
-            except (TypeError, ValueError):
-                # The parse regex can yield a non-float string (e.g. "1.2.3"),
-                # which upstream feeds straight into float() and swallows via its
-                # bare except. Unparseable-as-float is wrong, not an error.
+        judgements = []
+        for index, rollout in enumerate(post["rollouts"]):
+            # `.get()`, not `[]`: a None prediction is ABSENT once the record
+            # round-trips through disk, which is what the resume path reads.
+            prediction = rollout.get("prediction")
+            if prediction is None:
                 correct = False
+            else:
+                try:
+                    correct = check_prediction(
+                        prediction,
+                        reference,
+                        # Unused upstream, but this is the same string it passes.
+                        self._prompt_text(ctx.raw_sample),
+                        self.subset,
+                    )
+                except (TypeError, ValueError):
+                    # The parse regex can yield a non-float string (e.g. "1.2.3"),
+                    # which upstream feeds straight into float() and swallows via its
+                    # bare except. Unparseable-as-float is wrong, not an error.
+                    correct = False
+            judgements.append(build_rollout_judgement(index, correct))
         return True, build_judgement_record(
             reference,
-            [build_rollout_judgement(0, correct)],
+            judgements or [build_rollout_judgement(0, False)],
             extra={"subset": self.subset},
         )
 
@@ -334,11 +350,14 @@ class PlatinumMathGenTask(
         total = len(finals) + len(fails)
         if total == 0:
             return {"score": 0.0, "fails": len(fails), "accuracy": 0.0, "errors": 0}
+        # `accuracy` and `errors` keep their first-rollout definition so they stay
+        # comparable with upstream's per-dataset tables; the sampling metrics below are
+        # additive and never touch them.
         correct_num = sum(
             1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
         )
         accuracy = 100 * correct_num / total
-        return {
+        metrics = {
             "score": accuracy,
             "fails": len(fails),
             "accuracy": accuracy,
@@ -346,3 +365,20 @@ class PlatinumMathGenTask(
             # model got wrong. Directly comparable to its per-dataset tables.
             "errors": total - correct_num,
         }
+        if self._n > 1:
+            agg: dict[str, float] = defaultdict(float)
+            for ctx in finals:
+                rollouts = ctx.feedback_result["rollouts"]
+                answers = [
+                    r.get("prediction")
+                    for r in (ctx.postprocess_result or {}).get("rollouts", [])
+                ]
+                for key, value in sampling_metrics(
+                    [bool(r["correct"]) for r in rollouts],
+                    answers if len(answers) == len(rollouts) else None,
+                    k=self._k,
+                ).items():
+                    agg[key] += value
+            for key, value in agg.items():
+                metrics[key] = value * 100 / total
+        return metrics

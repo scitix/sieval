@@ -141,8 +141,10 @@ from typing import override
 
 from loguru import logger
 
+from sieval.core.tasks.sampling_metrics import sampling_metrics
 from sieval.community.ugmathbench import (
     VERSIONS,
+    _squash,
     build_prompt,
     extract_predictions,
     judge_answers,
@@ -278,8 +280,16 @@ class UGMathBenchZeroShotGenFixedTask(
         model,
         name: str | None = None,
         precision: float = DEFAULT_PRECISION,
+        k: int = 1,
+        n: int = 1,
     ):
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}."
+            )
+        self._k = k
+        self._n = n
         if precision <= 0:
             raise ValueError(
                 f"precision must be > 0 (got {precision}); it is the relative "
@@ -409,6 +419,8 @@ class UGMathBenchZeroShotGenFixedTask(
             lambda: defaultdict(list)
         )
         n_correct = 0
+        sample_verdicts: list[list[bool]] = []
+        sample_answers: list[list[str | None]] = []
 
         unattributed_finals = 0
         for final in finals:
@@ -430,6 +442,14 @@ class UGMathBenchZeroShotGenFixedTask(
             verdicts = judgement["rollouts"]
             correct = bool(verdicts) and verdicts[0]["correct"]
             n_correct += int(correct)
+            # Sampling metrics are computed ALONGSIDE, never inside, AAcc/EAcc. The
+            # version-level accuracies must keep their first-rollout definition or
+            # EAcc's denominator stops meaning what its warnings say it means.
+            if self._n > 1 and verdicts:
+                sample_verdicts.append([bool(v.get("correct")) for v in verdicts])
+                sample_answers.append(
+                    [_answer_text(final, i) for i in range(len(verdicts))]
+                )
             if problem_id is None:
                 unattributed_finals += 1
                 continue
@@ -522,9 +542,38 @@ class UGMathBenchZeroShotGenFixedTask(
             "unattributed_fails": float(unattributed_fails),
             "unattributed_finals": float(unattributed_finals),
         }
+        # Sampling metrics, only when the run actually drew more than one sample.
+        # Emitting pass@1 == aacc/100 at n=1 would add a column that says nothing and
+        # invites the reader to treat it as independent evidence.
+        if self._n > 1 and sample_verdicts:
+            agg: dict[str, float] = defaultdict(float)
+            for verdicts, answers in zip(sample_verdicts, sample_answers):
+                for key, value in sampling_metrics(
+                    verdicts, answers, k=self._k, normalize=_squash
+                ).items():
+                    agg[key] += value
+            for key, total in agg.items():
+                metrics[key] = total * 100 / len(sample_verdicts)
+
         for subject, problems in sorted(by_subject.items()):
             metrics[f"eacc_{subject.lower()}"] = _effective_accuracy(problems)
         return metrics
+
+
+def _answer_text(final, index: int) -> str | None:
+    """The extracted prediction of one rollout, joined across answer slots.
+
+    maj@k votes on ANSWERS, not verdicts: two rollouts wrong in two different ways
+    must not combine into a majority. Slots are joined with a separator that cannot
+    occur inside a boxed answer.
+    """
+    rollouts = (final.postprocess_result or {}).get('rollouts') or []
+    if index >= len(rollouts):
+        return None
+    pred = rollouts[index].get('prediction')
+    if pred is None:
+        return None
+    return '\u241f'.join(str(x) for x in pred) if isinstance(pred, list) else str(pred)
 
 
 def _identify(ctx) -> tuple[str | None, str | None]:
