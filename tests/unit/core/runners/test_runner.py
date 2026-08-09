@@ -27,6 +27,8 @@ from sieval.core.runners.runner import (
     ResultDirExistsError,
     TaskRunner,
     gate_resume_identity,
+    gate_resume_version,
+    read_run_version,
 )
 from sieval.core.tasks.concurrency import compute_stream_buffer_capacity
 from sieval.core.tasks.consts import TaskAction, TaskStage
@@ -323,6 +325,46 @@ def _write_meta(root: Path, task_block: object) -> Path:
         meta["task"] = task_block
     (root / "meta.json").write_bytes(orjson.dumps(meta))
     return root
+
+
+class TestReadRunVersion:
+    """The single reader of `meta.json`'s version contract — public because the
+    CLI explains a cross-version resume before any runner exists, and two
+    readers would let the explanation drift from the gate."""
+
+    def test_returns_the_recorded_version(self, tmp_path):
+        root = _write_meta(tmp_path / "d", None)
+        assert read_run_version(root) == __version__
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"{ truncated",
+            b'["not", "a", "mapping"]',
+            b"{}",
+            b'{"version": 7}',
+            b'{"version": null}',
+        ],
+        ids=["unparseable", "not-a-mapping", "no-version", "not-a-string", "null"],
+    )
+    def test_unusable_meta_is_none(self, tmp_path, payload):
+        root = tmp_path / "d"
+        root.mkdir()
+        (root / "meta.json").write_bytes(payload)
+        assert read_run_version(root) is None
+
+    def test_absent_file_is_none(self, tmp_path):
+        assert read_run_version(tmp_path / "never-started") is None
+
+    def test_the_gate_fail_closes_on_what_this_returns_none_for(self, tmp_path):
+        """The reader is neutral about a missing version; interpreting it is the
+        gate's decision."""
+        root = tmp_path / "d"
+        root.mkdir()
+        (root / "meta.json").write_bytes(b"{}")
+        assert read_run_version(root) is None
+        with pytest.raises(ResumeVersionError, match="missing, unreadable"):
+            gate_resume_version(root, __version__)
 
 
 class TestResumeIdentityGate:

@@ -5,6 +5,7 @@ dataset operations, and runner config building.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import json
 import re
 import types
 from pathlib import Path
@@ -12,6 +13,7 @@ from types import MappingProxyType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
 
 from sieval.cli.leaderboard.session import (
@@ -23,10 +25,14 @@ from sieval.cli.leaderboard.session import (
     _append_resume_note,
     _apply_endpoint_injection,
     _brief_diff,
+    _cross_version_resume_hint,
+    _describe_order_change,
     _diff_dicts,
+    _diff_key_shape,
     _diff_lines,
     _format_comment_header,
     _reify_cli_overrides,
+    _sort_versions,
     _split_header,
     _strip_header,
     _strip_noncomparable_fields,
@@ -3034,6 +3040,35 @@ class TestDiffDicts:
         out = _diff_dicts({"xs": [1, 2]}, {"xs": [1, 2, 3]})
         assert "list length 2 → 3" in out
 
+    def test_reports_order_instead_of_formatting_only(self):
+        """A reorder has no structural diff, so this used to answer "(whitespace /
+        formatting only)" while its caller aborted because the bytes differ."""
+        out = _diff_dicts({"a": 1, "b": 2}, {"b": 2, "a": 1})
+        assert "formatting only" not in out
+        assert "same keys, different order" in out
+        assert "'b' moved from position 1 to 0" in out
+
+    def test_a_dropped_null_key_is_not_called_a_reorder(self):
+        """The same conflation one step over: calling a removed key "same keys,
+        different order" is as wrong as the message it replaced."""
+        out = _diff_dicts({"role": "full", "scaling": None}, {"role": "full"})
+        assert "formatting only" not in out
+        assert "same keys" not in out
+        assert "keys added or removed" in out
+        assert "removed ['scaling']" in out
+
+    def test_both_kinds_are_reported_together(self):
+        out = _diff_dicts(
+            {"top": {"x": None, "y": 1}, "other": {"a": 1, "b": 2}},
+            {"top": {"y": 1}, "other": {"b": 2, "a": 1}},
+        )
+        assert "keys added or removed" in out
+        assert "same keys, different order" in out
+
+    def test_value_differences_still_win(self):
+        out = _diff_dicts({"a": 1}, {"a": 2})
+        assert out == "Diff:\n  - a: 1 → 2"
+
 
 class TestDiffLines:
     def test_identical_returns_empty(self):
@@ -3042,6 +3077,102 @@ class TestDiffLines:
     def test_nested_leaf_path(self):
         lines = _diff_lines({"a": {"b": 1}}, {"a": {"b": 2}})
         assert lines == ["- a.b: 1 → 2"]
+
+
+class TestDescribeOrderChange:
+    """A reorder is named by the key that moved, not by dumping both sequences."""
+
+    def test_names_the_first_key_that_moved_and_where_it_came_from(self):
+        assert _describe_order_change(["a", "b"], ["b", "a"]) == (
+            "'b' moved from position 1 to 0 (2 keys)"
+        )
+
+    def test_a_realistic_block_stays_readable(self):
+        """Why this helper exists: dumped in full, a 12-key block is one
+        ~500-character line."""
+        keys = [
+            "max_model_len",
+            "gpu_memory_utilization",
+            "tensor_parallel_size",
+            "enable_prefix_caching",
+            "tool_call_parser",
+            "enable_auto_tool_choice",
+            "reasoning_parser",
+            "dtype",
+            "max_num_seqs",
+            "trust_remote_code",
+            "seed",
+            "disable_log_requests",
+        ]
+        moved = [keys[1], keys[0], *keys[2:]]
+        out = _describe_order_change(keys, moved)
+        assert out == "'gpu_memory_utilization' moved from position 1 to 0 (12 keys)"
+        assert len(out) < 100
+
+    def test_identical_sequences_have_nothing_to_name(self):
+        """Callers only ask when the orders differ, but stay total."""
+        assert _describe_order_change(["a"], ["a"]) == "identical order (1 keys)"
+
+
+class TestDiffKeyShape:
+    """A changed key SET (a null-valued key reads as an absent one) and a changed
+    key ORDER both hide behind an empty `_diff_lines`, and differ in kind."""
+
+    def test_same_shape_returns_nothing(self):
+        assert _diff_key_shape({"a": 1, "b": 2}, {"a": 1, "b": 2}) == ([], [])
+
+    def test_root_reorder_reported_as_order(self):
+        presence, order = _diff_key_shape({"a": 1, "b": 2}, {"b": 2, "a": 1})
+        assert presence == []
+        assert order == ["- (root): 'b' moved from position 1 to 0 (2 keys)"]
+
+    def test_nested_reorder_carries_its_path(self):
+        presence, order = _diff_key_shape(
+            {"m": {"p": {"x": 1, "y": 2}}},
+            {"m": {"p": {"y": 2, "x": 1}}},
+        )
+        assert presence == []
+        assert order == ["- m.p: 'y' moved from position 1 to 0 (2 keys)"]
+
+    def test_reorder_inside_a_list_element(self):
+        """The real shape: engine_params sits under assignments[0]."""
+        presence, order = _diff_key_shape(
+            {"models": {"m": {"assignments": [{"engine_params": {"a": 1, "b": 2}}]}}},
+            {"models": {"m": {"assignments": [{"engine_params": {"b": 2, "a": 1}}]}}},
+        )
+        assert presence == []
+        assert order == [
+            "- models.m.assignments[0].engine_params: "
+            "'b' moved from position 1 to 0 (2 keys)"
+        ]
+
+    def test_a_dropped_null_key_is_presence_not_order(self):
+        """`.get()` makes `{'x': None}` and `{}` compare equal leaf-for-leaf, so
+        the difference is only visible as a key set."""
+        assert _diff_lines({"x": None, "y": 1}, {"y": 1}) == []
+        presence, order = _diff_key_shape({"x": None, "y": 1}, {"y": 1})
+        assert order == []
+        assert presence == ["- (root): removed ['x']"]
+
+    def test_added_and_removed_are_both_named(self):
+        presence, order = _diff_key_shape({"a": 1, "b": 2}, {"a": 1, "c": 2})
+        assert order == []
+        assert presence == ["- (root): removed ['b'], added ['c']"]
+
+    def test_a_changed_key_set_is_not_reported_as_a_reorder(self):
+        """A differing key set makes `list(x) != list(y)` trivially true, and
+        calling that an order change says "same keys" about two that differ."""
+        presence, order = _diff_key_shape({"a": 1}, {"b": 1})
+        assert order == []
+        assert presence == ["- (root): removed ['a'], added ['b']"]
+
+    def test_presence_and_order_can_both_be_present(self):
+        presence, order = _diff_key_shape(
+            {"top": {"x": None, "y": 1}, "other": {"a": 1, "b": 2}},
+            {"top": {"y": 1}, "other": {"b": 2, "a": 1}},
+        )
+        assert presence == ["- top: removed ['x']"]
+        assert order == ["- other: 'b' moved from position 1 to 0 (2 keys)"]
 
 
 class TestAppendResumeNote:
@@ -3110,13 +3241,284 @@ class TestBriefDiff:
         assert "not valid YAML" in out
 
     def test_whitespace_only_diff(self):
-        """Structurally identical dicts still trip a body-byte mismatch
-        (e.g. key reorder, trailing whitespace) — diff helper reports
-        that clearly instead of an empty diff block."""
+        """Same structure AND same key order — the difference really is layout.
+
+        Previously this case was illustrated with a key reorder, which conflated
+        two things the caller must tell apart: whitespace is cosmetic, key order
+        is not (the strict comparison is byte-for-byte). See the reorder test
+        below.
+        """
+        existing = "a: 1\nb: 2\n"
+        current = "a:   1\nb: 2\n"
+        out = _brief_diff(existing, current)
+        assert "whitespace / formatting only" in out
+
+    def test_key_reorder_is_named_not_called_formatting(self):
+        """A reorder aborts a byte comparison, so it must be reported as one."""
         existing = "a: 1\nb: 2\n"
         current = "b: 2\na: 1\n"
         out = _brief_diff(existing, current)
-        assert "whitespace / formatting only" in out
+        assert "same keys, different order" in out
+        assert "formatting only" not in out
+
+    def test_a_dropped_null_key_is_named_as_a_removed_key(self):
+        """`scaling: null` is a real field on every role assignment, so a version
+        that stops emitting it lands here — not on the reorder branch."""
+        existing = "role: full\nreplicas: 1\nscaling: null\n"
+        current = "role: full\nreplicas: 1\n"
+        out = _brief_diff(existing, current)
+        assert "keys added or removed" in out
+        assert "removed ['scaling']" in out
+        assert "same keys" not in out
+        assert "formatting only" not in out
+
+
+class TestSortVersions:
+    def test_sorts_by_version_not_by_text(self):
+        """`sorted()` on strings puts 0.10.0 before 0.7.0."""
+        assert _sort_versions({"0.7.0", "0.10.0", "0.9.1"}) == [
+            "0.7.0",
+            "0.9.1",
+            "0.10.0",
+        ]
+
+    def test_unparseable_strings_sort_last_by_text(self):
+        """Rejected for being unparseable, so they reach this list."""
+        assert _sort_versions({"0.7.0", "not-a-version", "0.8.0"}) == [
+            "0.7.0",
+            "0.8.0",
+            "not-a-version",
+        ]
+
+
+class TestCrossVersionResumeHint:
+    """`EvalSession` compares its artifacts before any TaskRunner exists, so
+    `gate_resume_version` cannot pre-empt those aborts — a cross-version resume
+    arrives as an artifact diff. The hint names the version so the user is not
+    left auditing their own invocation.
+    """
+
+    def _write_meta(
+        self, root: Path, task: str, payload: object, *, resumable: bool = True
+    ) -> None:
+        (root / task).mkdir(parents=True, exist_ok=True)
+        (root / task / "meta.json").write_text(json.dumps(payload))
+        if resumable:
+            # The gate's own precondition for calling a dir resumable.
+            (root / task / "manifest.json").write_text("{}")
+
+    @pytest.fixture
+    def released(self, monkeypatch: pytest.MonkeyPatch) -> str:
+        """Pin the current version to a released one.
+
+        A dev/local build rejects every non-identical pair, so without this the
+        COMPATIBLE rung is unreachable and these tests would mean something
+        different on a released install.
+        """
+        monkeypatch.setattr(
+            "sieval.cli.leaderboard.session.__version__", "0.8.0", raising=True
+        )
+        return "0.8.0"
+
+    @pytest.mark.anyio
+    async def test_incompatible_version_is_named(self, tmp_path: Path, released: str):
+        self._write_meta(tmp_path, "arc_easy", {"version": "0.1.0"})
+        out = await _cross_version_resume_hint(anyio.Path(tmp_path))
+        assert "0.1.0" in out
+        assert "not resume-compatible" in out
+        assert released in out
+
+    @pytest.mark.anyio
+    async def test_the_note_does_not_blame_the_invocation(
+        self, tmp_path: Path, released: str
+    ):
+        """An older run and an edited invocation can both be true at once, and on
+        a dev build every non-identical pair is incompatible — so a claim about
+        cause would often be the wrong one."""
+        self._write_meta(tmp_path, "arc_easy", {"version": "0.1.0"})
+        out = await _cross_version_resume_hint(anyio.Path(tmp_path))
+        assert "likely cause" not in out
+        assert "not your invocation" not in out
+        assert "independently of the difference above" in out
+
+    @pytest.mark.anyio
+    async def test_same_series_is_compatible_and_stays_quiet(
+        self, tmp_path: Path, released: str
+    ):
+        """A non-exact but same-series pair resumes fine, so say nothing. Distinct
+        from the exact-match case below: this is the COMPATIBLE rung."""
+        self._write_meta(tmp_path, "arc_easy", {"version": "0.8.2"})
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_exact_version_yields_nothing(self, tmp_path: Path):
+        from sieval import __version__
+
+        self._write_meta(tmp_path, "arc_easy", {"version": __version__})
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_a_dir_the_gate_would_not_read_is_skipped(
+        self, tmp_path: Path, released: str
+    ):
+        """meta.json lands at run START, but a dir is only resumable once
+        manifest.json exists — a task that died before its first flush is never
+        version-gated, so it must not be reported as if it were."""
+        self._write_meta(tmp_path, "arc_easy", {"version": "0.1.0"}, resumable=False)
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_missing_meta_yields_nothing(self, tmp_path: Path, released: str):
+        """Unlike the gate, this is NOT fail-closed: a task that never started
+        has no meta.json, and that is not evidence of a version problem."""
+        (tmp_path / "arc_easy").mkdir()
+        (tmp_path / "arc_easy" / "manifest.json").write_text("{}")
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_unreadable_meta_yields_nothing(self, tmp_path: Path, released: str):
+        """A hint must never mask the caller's own abort."""
+        (tmp_path / "arc_easy").mkdir()
+        (tmp_path / "arc_easy" / "manifest.json").write_text("{}")
+        (tmp_path / "arc_easy" / "meta.json").write_text("{not json")
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_version_less_meta_yields_nothing(
+        self, tmp_path: Path, released: str
+    ):
+        self._write_meta(tmp_path, "arc_easy", {"deterministic": False})
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_non_mapping_meta_yields_nothing(self, tmp_path: Path, released: str):
+        self._write_meta(tmp_path, "arc_easy", ["not", "a", "mapping"])
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_absent_result_dir_yields_nothing(self, tmp_path: Path):
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path / "nope")) == ""
+
+    @pytest.mark.anyio
+    async def test_a_failing_scan_yields_nothing_rather_than_raising(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The caller is mid-`raise`; an OSError from the scan must not replace
+        the abort it was annotating."""
+
+        def _boom(*_args):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "iterdir", _boom)
+        assert await _cross_version_resume_hint(anyio.Path(tmp_path)) == ""
+
+    @pytest.mark.anyio
+    async def test_every_incompatible_version_is_listed_in_version_order(
+        self, tmp_path: Path, released: str
+    ):
+        self._write_meta(tmp_path, "task_a", {"version": "0.10.0"})
+        self._write_meta(tmp_path, "task_b", {"version": "0.2.0"})
+        out = await _cross_version_resume_hint(anyio.Path(tmp_path))
+        assert "0.2.0, 0.10.0" in out
+        assert "none of which is resume-compatible" in out
+
+    @pytest.mark.anyio
+    async def test_strict_abort_carries_both_the_order_diff_and_the_hint(
+        self, tmp_path: Path, released: str
+    ):
+        """End-to-end on the real path: the message a cross-version resume of a
+        reordered plan actually produces."""
+        cfg = _write_yaml_config(tmp_path, "cfg.yaml", "models: {}\n")
+        result_dir = tmp_path / "out"
+        result_dir.mkdir()
+        self._write_meta(result_dir, "arc_easy", {"version": "0.1.0"})
+
+        def _plan(engine_params: dict) -> dict:
+            return {
+                "checkpoint": "/ckpt",
+                "backend": "vllm",
+                "assignments": [
+                    {
+                        "role": "full",
+                        "devices": {"count": 1, "gpu_model": "H100"},
+                        "topology": {"tp": 1, "dp": 1, "pp": 1},
+                        "replicas": 1,
+                        "engine_params": engine_params,
+                        "scaling": None,
+                    }
+                ],
+                "deterministic": False,
+                "seed": 0,
+            }
+
+        before = {"max_model_len": 4096, "tool_call_parser": "hermes", "dtype": "bf16"}
+        after = {"max_model_len": 4096, "dtype": "bf16", "tool_call_parser": "hermes"}
+
+        await EvalSession(
+            config_path=str(cfg),
+            result_dir_override=str(result_dir),
+            infer_plans={"m": _plan(before)},
+            invocation="sieval run cfg.yaml",
+        )._persist_infer_plans()
+
+        resumed = EvalSession(
+            config_path=str(cfg),
+            result_dir_override=str(result_dir),
+            infer_plans={"m": _plan(after)},
+            resume=True,
+            invocation="sieval run cfg.yaml --resume",
+        )
+        with pytest.raises(RuntimeError) as exc:
+            await resumed._persist_infer_plans()
+
+        message = str(exc.value)
+        assert "same keys, different order" in message
+        assert "engine_params" in message
+        assert "'dtype' moved from position 2 to 1" in message
+        assert "0.1.0" in message
+        assert "formatting only" not in message
+
+    @pytest.mark.anyio
+    async def test_strict_abort_names_a_dropped_null_plan_field(
+        self, tmp_path: Path, released: str
+    ):
+        """The other cross-version plan shape: a schema change that stops emitting
+        a `None`-valued field. `scaling` is declared a placeholder, so filling it
+        in or dropping it lands here."""
+        cfg = _write_yaml_config(tmp_path, "cfg.yaml", "models: {}\n")
+        result_dir = tmp_path / "out"
+        result_dir.mkdir()
+        self._write_meta(result_dir, "arc_easy", {"version": "0.1.0"})
+
+        def _plan(*, with_scaling: bool) -> dict:
+            assignment: dict[str, Any] = {"role": "full", "replicas": 1}
+            if with_scaling:
+                assignment["scaling"] = None
+            return {"checkpoint": "/ckpt", "assignments": [assignment]}
+
+        await EvalSession(
+            config_path=str(cfg),
+            result_dir_override=str(result_dir),
+            infer_plans={"m": _plan(with_scaling=True)},
+            invocation="sieval run cfg.yaml",
+        )._persist_infer_plans()
+
+        resumed = EvalSession(
+            config_path=str(cfg),
+            result_dir_override=str(result_dir),
+            infer_plans={"m": _plan(with_scaling=False)},
+            resume=True,
+            invocation="sieval run cfg.yaml --resume",
+        )
+        with pytest.raises(RuntimeError) as exc:
+            await resumed._persist_infer_plans()
+
+        message = str(exc.value)
+        assert "keys added or removed" in message
+        assert "removed ['scaling']" in message
+        # The two labels this must NOT reach for: neither is true here.
+        assert "same keys" not in message
+        assert "formatting only" not in message
 
 
 # ── Tests for env expansion + error-hint wrapping in _setup_datasets ──
