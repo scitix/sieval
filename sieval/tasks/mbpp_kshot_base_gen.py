@@ -20,7 +20,6 @@ from loguru import logger
 
 from sieval.community.mbpp import list_fewshot_samples
 from sieval.core.models import ModelOutput
-from sieval.core.tasks.sampling_metrics import pass_at_k
 from sieval.core.tasks import (
     EvalMode,
     JudgementRecord,
@@ -35,6 +34,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import pass_at_k
 from sieval.datasets import MBPPDatasetSample
 
 DEFAULT_NUM_SHOTS = 3
@@ -285,4 +285,3 @@ class MBPPFewShotBaseGenTask(
     @override
     async def shutdown(self):
         await self._http_client.aclose()
-

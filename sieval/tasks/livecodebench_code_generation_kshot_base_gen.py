@@ -59,7 +59,6 @@ from sieval.community.livecodebench.prompts.code_generation import (
 )
 from sieval.community.livecodebench.utils.extraction_utils import extract_code
 from sieval.core.models import ModelOutput
-from sieval.core.tasks.sampling_metrics import pass_at_k
 from sieval.core.tasks import (
     EvalMode,
     JudgementRecord,
@@ -74,6 +73,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import pass_at_k
 from sieval.datasets import LiveCodeBenchDatasetSample
 
 N_SHOT = 3
@@ -327,4 +327,3 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
     @override
     async def shutdown(self):
         await self._http_client.aclose()
-

@@ -9,7 +9,6 @@ from loguru import logger
 
 from sieval.community.matharena import BOXED_INSTRUCTION, build_prompt, extract_answer
 from sieval.core.models import ModelOutput
-from sieval.core.tasks.sampling_metrics import pass_at_k
 from sieval.core.tasks import (
     EvalMode,
     JudgementRecord,
@@ -23,6 +22,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import pass_at_k
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import SMT2025DatasetSample
 
@@ -186,4 +186,3 @@ class SMT2025ZeroShotGenTask(
         if self._k > 1:
             metrics[f"pass@{self._k}"] = pass_at_k
         return metrics
-
