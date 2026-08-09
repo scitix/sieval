@@ -48,7 +48,7 @@ dependency). Known behavioural deltas versus the reference judge:
   Note the shape of the
   bug — it was invisible to the reference-replay measurement below, because
   replaying a gold as its own answer short-circuits on
-  ``_squash(pred) == _squash(gold)`` and never reaches the symbolic path at
+  ``squash(pred) == squash(gold)`` and never reaches the symbolic path at
   all. **A self-replay canary exercises the fast path and is silent about the
   comparison logic it appears to certify.**
 * No answer-type *inference*: upstream's ``is_equal`` retries every judgement
@@ -499,7 +499,7 @@ _FALSE_WORDS = {"false", "no"}
 _WHITESPACE = re.compile(r"\s+")
 
 
-def _squash(text: str) -> str:
+def squash(text: str) -> str:
     """Whitespace- and decoration-insensitive form, for the cheap equality path."""
     return _WHITESPACE.sub("", text.replace("$", "").replace("\\", "")).lower()
 
@@ -810,7 +810,7 @@ def math_equal(pred: str, gold: str, precision: float = 1e-3) -> bool:
     only verdict it can change is wrong-to-right; it cannot break a comparison
     that already succeeded.
     """
-    if _squash(pred) == _squash(gold):
+    if squash(pred) == squash(gold):
         return True
 
     pred_float, gold_float = _to_float(pred), _to_float(gold)
@@ -865,7 +865,7 @@ def _option_letters(text: str, options: list[str]) -> list[str]:
 def _judge_multiple_choice_single(pred: str, gold: str, options: list[str]) -> bool:
     # Options are usually bare letters, but some problems label choices with
     # expressions ("Q(X)"), so compare the whole answer before touching brackets.
-    if _squash(pred) == _squash(gold):
+    if squash(pred) == squash(gold):
         return True
     target = gold.strip().lower()
     candidate = pred.strip().strip("[]().").strip()
@@ -884,7 +884,7 @@ def _judge_multiple_choice_multiple(pred: str, gold: str, options: list[str]) ->
     # letters, but a problem may label its choices with words, and
     # `_option_letters` only ever matches single characters. Without this the
     # slot would be unwinnable whenever the options are not letters.
-    if _squash(pred) == _squash(gold):
+    if squash(pred) == squash(gold):
         return True
     gold_letters = sorted(_option_letters(gold, options))
     pred_letters = sorted(_option_letters(pred, options))
@@ -968,7 +968,7 @@ def judge_answer(
             return _judge_multiple_choice_multiple(pred, gold, slot_options)
         case "OE":
             # A word or phrase: compare as text, never as mathematics.
-            return _squash(pred) == _squash(gold)
+            return squash(pred) == squash(gold)
         case "OL":
             return _judge_ordered_list(pred, gold, precision)
         case "UOL":

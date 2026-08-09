@@ -101,7 +101,7 @@ right-to-wrong**.
 The zero matters more than the +4.03, and so does the shape of the miss: the
 reference-replay figure below could not see this defect at all, because
 replaying a gold as its own answer short-circuits on
-``_squash(pred) == _squash(gold)`` and never reaches the symbolic path. **A
+``squash(pred) == squash(gold)`` and never reaches the symbolic path. **A
 self-replay canary exercises the fast path and is silent about exactly the
 comparison logic it appears to certify.** Worth remembering beyond this task.
 
@@ -146,6 +146,7 @@ from sieval.community.ugmathbench import (
     build_prompt,
     extract_predictions,
     judge_answers,
+    squash,
 )
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -160,6 +161,12 @@ from sieval.core.tasks import (
     build_prompt_record,
     build_rollout_judgement,
     sieval_task,
+)
+from sieval.core.tasks.metrics import (
+    SCORE_KEY_FIELD,
+    aggregate,
+    count_short,
+    rollout_metrics,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import UGMathBenchDatasetSample
@@ -278,8 +285,16 @@ class UGMathBenchZeroShotGenFixedTask(
         model,
         name: str | None = None,
         precision: float = DEFAULT_PRECISION,
+        k: int = 1,
+        n: int = 1,
     ):
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}."
+            )
+        self._k = k
+        self._n = n
         if precision <= 0:
             raise ValueError(
                 f"precision must be > 0 (got {precision}); it is the relative "
@@ -311,7 +326,9 @@ class UGMathBenchZeroShotGenFixedTask(
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre["prompt"])
+        # `n` is the sampling budget `k` was validated against, so it has to
+        # reach the model (sieval/tasks/CLAUDE.md, "n_shot vs k").
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
@@ -409,6 +426,9 @@ class UGMathBenchZeroShotGenFixedTask(
             lambda: defaultdict(list)
         )
         n_correct = 0
+        # Per *version*, the unit AAcc counts — not per problem, which is EAcc's.
+        per_version: list[dict[str, float]] = []
+        observed_rollouts: list[int] = []
 
         unattributed_finals = 0
         for final in finals:
@@ -430,6 +450,20 @@ class UGMathBenchZeroShotGenFixedTask(
             verdicts = judgement["rollouts"]
             correct = bool(verdicts) and verdicts[0]["correct"]
             n_correct += int(correct)
+            # Computed ALONGSIDE AAcc/EAcc, never inside them: those keep their
+            # first-rollout definition or EAcc's denominator stops meaning what
+            # its warnings say it means.
+            if self._n > 1 and verdicts:
+                observed_rollouts.append(len(verdicts))
+                per_version.append(
+                    rollout_metrics(
+                        [bool(v.get("correct")) for v in verdicts],
+                        [_answer_text(final, i) for i in range(len(verdicts))],
+                        k=self._k,
+                        # So `5^2*7` and `5^2 \cdot 7` are one vote, not two.
+                        normalize=squash,
+                    )
+                )
             if problem_id is None:
                 unattributed_finals += 1
                 continue
@@ -502,8 +536,11 @@ class UGMathBenchZeroShotGenFixedTask(
                 unattributed,
             )
 
-        metrics: dict[str, float] = {
+        metrics: dict[str, float | str] = {
             "score": eacc,
+            # `score` is EAcc, not one of the sampling metrics — say which column
+            # the headline number came from rather than leave it to be inferred.
+            SCORE_KEY_FIELD: "eacc",
             "fails": float(len(fails)),
             "eacc": eacc,
             "aacc": aacc,
@@ -522,9 +559,48 @@ class UGMathBenchZeroShotGenFixedTask(
             "unattributed_fails": float(unattributed_fails),
             "unattributed_finals": float(unattributed_finals),
         }
+        # Only when the run actually drew more than one sample: at n=1 pass@1 is
+        # aacc/100, and a second name for it invites being read as independent
+        # evidence.
+        if self._n > 1 and per_version:
+            # `n_versions` is AAcc's denominator, so a failed version counts as
+            # wrong in both. Averaging over the judged versions alone would bias
+            # these upward over survivors — the defect the EAcc warnings above
+            # describe (RFC #74 F).
+            metrics.update(aggregate(per_version, n_versions))
+            metrics["n"] = float(self._n)
+            metrics["k"] = float(self._k)
+            short = count_short(observed_rollouts, self._n)
+            metrics["n_short"] = float(short)
+            if short:
+                logger.warning(
+                    "{}/{} judged version(s) came back with fewer than the "
+                    "requested n={} rollout(s); they contribute 0 to pass@k and "
+                    "bias every sampling metric downward.",
+                    short,
+                    len(per_version),
+                    self._n,
+                )
+
         for subject, problems in sorted(by_subject.items()):
             metrics[f"eacc_{subject.lower()}"] = _effective_accuracy(problems)
         return metrics
+
+
+def _answer_text(final, index: int) -> str | None:
+    """The extracted prediction of one rollout, joined across answer slots.
+
+    maj@k votes on ANSWERS, not verdicts: two rollouts wrong in two different ways
+    must not combine into a majority. Slots are joined with a separator that cannot
+    occur inside a boxed answer.
+    """
+    rollouts = (final.postprocess_result or {}).get("rollouts") or []
+    if index >= len(rollouts):
+        return None
+    pred = rollouts[index].get("prediction")
+    if pred is None:
+        return None
+    return "\u241f".join(str(x) for x in pred) if isinstance(pred, list) else str(pred)
 
 
 def _identify(ctx) -> tuple[str | None, str | None]:

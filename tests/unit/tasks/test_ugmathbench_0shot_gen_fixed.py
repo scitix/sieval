@@ -358,3 +358,83 @@ async def test_an_unrecoverable_version_is_counted_rather_than_dropped():
 
     assert report["unattributed_finals"] == 3.0
     assert report["eacc"] > report["aacc"]  # the invariant this makes visible
+
+
+# --- n / k sampling wiring -------------------------------------------------
+
+
+class _CapturingChatModel(ChatModel):
+    """Records the merged request kwargs, and honours `n` the way a backend does."""
+
+    def __init__(self):
+        super().__init__(model="mock-chat", api_key="fake")
+        self.last_kwargs: dict[str, object] = {}
+
+    async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
+        _ = prompt
+        self.last_kwargs = {**self._kwargs, **kwargs}
+        requested = self.last_kwargs.get("n", 1)
+        n = requested if isinstance(requested, int) and requested > 0 else 1
+        return _inferred(*[r"\boxed{4}"] * n)
+
+
+@pytest.mark.anyio
+async def test_infer_forwards_n_to_the_model():
+    """Without this, `n=4` enables the sampling metrics over a one-rollout draw."""
+    sample = _sample()
+    dataset = UGMathBenchDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([sample])})
+    )
+    model = _CapturingChatModel()
+    task = UGMathBenchZeroShotGenFixedTask(dataset, model, k=4, n=4)
+
+    pre = await task.preprocess(sample, TaskContext(sample_id=0))
+    out = await task.infer(pre, TaskContext(sample_id=0))
+
+    assert model.last_kwargs.get("n") == 4
+    # and the whole draw survives postprocess, one prediction per rollout
+    post = await task.postprocess(out, TaskContext(sample_id=0))
+    assert len(post["rollouts"]) == 4
+
+
+@pytest.mark.anyio
+async def test_sampling_metrics_use_the_aacc_denominator():
+    """A failed version counts as wrong, as it does for AAcc.
+
+    Averaging over the judged versions alone would bias these upward over
+    survivors -- the defect the EAcc warnings in this module describe.
+    """
+    dataset = UGMathBenchDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([_sample()])})
+    )
+    task = UGMathBenchZeroShotGenFixedTask(
+        dataset, ChatModel(model="mock-chat", api_key="fake"), k=2, n=2
+    )
+
+    def judged(problem_id: str, version: int, verdicts: list[bool]) -> TaskContext:
+        return TaskContext(
+            sample_id=f"{problem_id}-v{version}",
+            postprocess_result=build_prediction_record([["4"]] * len(verdicts)),
+            feedback_result=build_judgement_record(
+                ["4"],
+                [build_rollout_judgement(i, c) for i, c in enumerate(verdicts)],
+                extra={
+                    "problem_id": problem_id,
+                    "version": version,
+                    "subject": "Algebra",
+                },
+            ),
+        ).to_final()
+
+    finals = [judged("p1", v, [True, True]) for v in (1, 2, 3)]
+    fails = [TaskContext(sample_id="p2-v1", raw_sample=_sample("p2", 1))]
+
+    report = await task.report(finals, fails)
+
+    assert report["n"] == 2.0
+    assert report["k"] == 2.0
+    assert report["n_short"] == 0.0
+    # 3 judged and solved over a denominator of 4 -> 75, not the 100 a
+    # survivors-only denominator would report.
+    assert report["pass@1"] == pytest.approx(75.0)
+    assert report["avg@k"] == pytest.approx(75.0)

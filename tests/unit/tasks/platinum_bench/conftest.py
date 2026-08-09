@@ -47,15 +47,25 @@ class CapturingChatModel(ChatModel):
     assert which side wins.
     """
 
-    def __init__(self, text: str = "Answer: 42", **model_kwargs):
+    def __init__(
+        self,
+        text: str = "Answer: 42",
+        texts: list[str] | None = None,
+        **model_kwargs,
+    ):
         super().__init__(model="mock-chat", api_key="fake", **model_kwargs)
         self.last_kwargs: dict[str, object] = {}
-        self._text = text
+        self._texts = list(texts) if texts is not None else [text]
 
     async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
         _ = prompt
         self.last_kwargs = {**self._kwargs, **kwargs}
-        return ModelOutput(model=self.meta(), texts=[self._text])
+        # Honouring `n` is what lets a test tell "the task asked for n" apart
+        # from "the stub happened to hand back a list".
+        requested = self.last_kwargs.get("n", 1)
+        n = requested if isinstance(requested, int) and requested > 0 else 1
+        texts = (self._texts * n)[:n] if len(self._texts) < n else self._texts[:n]
+        return ModelOutput(model=self.meta(), texts=texts)
 
     async def _alogprobs_impl(
         self,
@@ -164,6 +174,7 @@ def make_task[T: PlatinumMathGenTask](
     task_cls: type[T],
     *,
     text: str = "Answer: 42",
+    texts: list[str] | None = None,
     subset: str | None = None,
     model_kwargs: dict[str, object] | None = None,
     **task_kwargs,
@@ -173,6 +184,6 @@ def make_task[T: PlatinumMathGenTask](
     ``model_kwargs`` seeds the model's own request params — the `models:` /
     ``infer_args`` side — so a test can assert what survives the merge.
     """
-    model = CapturingChatModel(text=text, **(model_kwargs or {}))
+    model = CapturingChatModel(text=text, texts=texts, **(model_kwargs or {}))
     dataset = make_dataset(subset if subset is not None else task_cls.subset)
     return task_cls(dataset, model, **task_kwargs), model

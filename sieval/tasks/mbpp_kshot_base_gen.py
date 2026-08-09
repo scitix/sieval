@@ -34,6 +34,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import pass_at_k
 from sieval.datasets import MBPPDatasetSample
 
 DEFAULT_NUM_SHOTS = 3
@@ -260,9 +261,9 @@ class MBPPFewShotBaseGenTask(
             judgement = f.feedback_result
             n_samples = judgement["n_rollouts"]
             correct_num = judgement["n_correct"]
-            pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
+            pass_at_1_total += pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
-                pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
+                pass_at_k_total += pass_at_k(n_samples, correct_num, self._k)
             timeouts += sum(
                 1
                 for r in judgement["rollouts"]
@@ -284,13 +285,3 @@ class MBPPFewShotBaseGenTask(
     @override
     async def shutdown(self):
         await self._http_client.aclose()
-
-    def _pass_at_k(self, n: int, c: int, k: int) -> float:
-        if n < k:
-            return 0.0
-        if c == 0:
-            return 0.0
-        prob_all_wrong = 1.0
-        for i in range(k):
-            prob_all_wrong *= (n - c - i) / (n - i)
-        return 1.0 - prob_all_wrong

@@ -227,11 +227,15 @@ async def test_infer_injects_no_decode_params():
     # so a task-side value silently outranks whatever `models:` / `infer_args`
     # configured — and max_tokens is the one knob this benchmark most needs a
     # caller to turn, since the score is budget-sensitive.
+    #
+    # `n` is the single exception, and not a decoding param: it is the sampling
+    # budget the task validated `k` against, so it has to reach the model or
+    # pass@k is computed over a draw that never happened.
     task, model = make_task(PlatinumGSM8KZeroShotGenTask)
     raw = make_sample()
     pre = await task.preprocess(raw, _ctx(raw_sample=raw))
     await task.infer(pre, _ctx(raw_sample=raw))
-    assert model.last_kwargs == {}
+    assert model.last_kwargs == {"n": 1}
 
 
 @pytest.mark.anyio
@@ -246,7 +250,7 @@ async def test_infer_lets_the_configured_budget_reach_the_request():
     raw = make_sample()
     pre = await task.preprocess(raw, _ctx(raw_sample=raw))
     await task.infer(pre, _ctx(raw_sample=raw))
-    assert model.last_kwargs == {"max_tokens": 32000, "temperature": 0.5}
+    assert model.last_kwargs == {"max_tokens": 32000, "temperature": 0.5, "n": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +410,8 @@ async def test_report_emits_accuracy_and_error_count():
         "fails": 0,
         "accuracy": 50.0,
         "errors": 2,
+        # `score` is upstream's first-rollout accuracy, not a sampling metric.
+        "score_key": "accuracy",
     }
 
 
@@ -421,6 +427,7 @@ async def test_report_counts_fails_as_errors():
         "fails": 1,
         "accuracy": 50.0,
         "errors": 1,
+        "score_key": "accuracy",
     }
 
 
@@ -432,6 +439,7 @@ async def test_report_on_an_empty_run():
         "fails": 0,
         "accuracy": 0.0,
         "errors": 0,
+        "score_key": "accuracy",
     }
 
 
@@ -489,3 +497,39 @@ def test_reference_notes_state_that_the_budget_is_the_callers():
     assert "Infer prereqs" in PLATINUM_REFERENCE_NOTES
     assert "max_tokens=6000" in PLATINUM_REFERENCE_NOTES
     assert "budget-sensitive" in PLATINUM_REFERENCE_NOTES
+
+
+# --- n / k sampling wiring -------------------------------------------------
+#
+# Three regressions that shipped together in the first draft of this feature,
+# none of them visible to a report-key assertion.
+
+
+@pytest.mark.anyio
+async def test_infer_forwards_n_to_the_model():
+    """Otherwise `n=4` enables the sampling metrics over a one-rollout draw."""
+    task, model = make_task(PlatinumGSM8KZeroShotGenTask, k=4, n=4)
+    pre = await task.preprocess(make_sample(), None)
+    await task.infer(pre, None)
+    assert model.last_kwargs.get("n") == 4
+
+
+@pytest.mark.anyio
+async def test_postprocess_keeps_every_rollout():
+    """`texts[0]` would discard n-1 rollouts that were generated and paid for."""
+    task, model = make_task(PlatinumGSM8KZeroShotGenTask, k=4, n=4)
+    out = ModelOutput(
+        model=model.meta(),
+        texts=["Answer: 42", "Answer: 42", "Answer: 42", "Answer: 7"],
+    )
+    post = await task.postprocess(out, None)
+    assert [r["prediction"] for r in post["rollouts"]] == ["42", "42", "42", "7"]
+
+
+@pytest.mark.anyio
+async def test_feedback_grades_every_rollout():
+    task, _ = make_task(PlatinumGSM8KZeroShotGenTask, k=4, n=4)
+    post = build_prediction_record(["42", "42", "7", "7"])
+    raw = make_sample()
+    _, judgement = await task.feedback(post, _ctx(raw_sample=raw))
+    assert [r["correct"] for r in judgement["rollouts"]] == [True, True, False, False]

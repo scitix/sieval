@@ -29,6 +29,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import pass_at_k
 from sieval.datasets import LiveCodeBenchDatasetSample
 
 
@@ -241,9 +242,9 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
             judgement = f.feedback_result
             n_samples = judgement["n_rollouts"]
             correct_num = judgement["n_correct"]
-            pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
+            pass_at_1_total += pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
-                pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
+                pass_at_k_total += pass_at_k(n_samples, correct_num, self._k)
             # Kept as the original substring check rather than switching to the
             # `failure` category, so the counter stays byte-identical across the
             # protocol migration.
@@ -268,15 +269,3 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
     @override
     async def shutdown(self):
         await self._http_client.aclose()
-
-    def _pass_at_k(self, n: int, c: int, k: int) -> float:
-        if n < k:
-            return 0.0
-        if c == 0:
-            return 0.0
-        # Formula: 1 - product_{i=0}^{k-1} (n - c - i) / (n - i)
-        # This calculates the probability that all k samples are wrong
-        prob_all_wrong = 1.0
-        for i in range(k):
-            prob_all_wrong *= (n - c - i) / (n - i)
-        return 1.0 - prob_all_wrong

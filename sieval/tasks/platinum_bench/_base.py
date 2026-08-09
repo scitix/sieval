@@ -54,10 +54,11 @@ Infer prerequisites: set ``max_tokens=6000`` (upstream's
 ``ModelInferenceEngine`` default) — the score is budget-sensitive, because a
 short budget truncates CoT before the ``Answer:`` line and converts correct
 reasoning into parse failures, which this benchmark counts as model errors. The
-task deliberately forwards **no** budget of its own: ``agenerate`` merges
+task deliberately forwards **no** decoding param of its own: ``agenerate`` merges
 ``{**model_kwargs, **task_kwargs}``, so a task-side value would silently outrank
 whatever the caller configured, and the one knob a user most needs to turn here
-would be the one they cannot. Upstream sized 6000 for non-thinking models; on a
+would be the one they cannot. (``n`` is forwarded, but it is the sampling budget
+rather than a decoding param.) Upstream sized 6000 for non-thinking models; on a
 thinking model raise it, since a live run of all five subsets against Qwen3-32B
 spent the whole 6000 inside the reasoning channel on one singleop question and
 returned an empty answer that scores as an error. Read ``errors`` together with
@@ -99,6 +100,8 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 
 from typing import ClassVar, Literal, override
 
+from loguru import logger
+
 from sieval.community.platinum_bench import check_prediction, get_parse_fn
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -110,6 +113,12 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_prompt_record,
     build_rollout_judgement,
+)
+from sieval.core.tasks.metrics import (
+    SCORE_KEY_FIELD,
+    aggregate,
+    count_short,
+    rollout_metrics,
 )
 from sieval.datasets import PlatinumBenchDatasetSample
 
@@ -209,7 +218,9 @@ class PlatinumMathGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     """Base for one PlatinumBench math subset; leaves set :attr:`subset`."""
@@ -225,8 +236,16 @@ class PlatinumMathGenTask(
         model,
         name: str | None = None,
         prompt_variant: TPromptVariant = "cot",
+        k: int = 1,
+        n: int = 1,
     ):
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}."
+            )
+        self._k = k
+        self._n = n
         if prompt_variant not in _PROMPT_VARIANTS:
             raise ValueError(
                 f"prompt_variant must be one of {list(_PROMPT_VARIANTS)}, "
@@ -286,46 +305,55 @@ class PlatinumMathGenTask(
     async def infer(self, pre, ctx):
         # No decoding params: `agenerate` merges `{**model_kwargs, **task_kwargs}`,
         # so anything passed here would silently outrank the caller's config.
-        # `max_tokens` is an infer prerequisite (6000 upstream) — see the module
-        # docstring; the score is budget-sensitive and the budget is the caller's.
-        return await self.model.agenerate(pre["prompt"])
+        # `n` is the exception — the sampling budget `k` was validated against,
+        # so it has to reach the model (sieval/tasks/CLAUDE.md, "n_shot vs k").
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        text = inf.texts[0] if inf.texts else ""
+        # One prediction per rollout: `texts[0]` would discard the rest of a
+        # draw that was already generated and paid for.
+        return build_prediction_record(
+            [self._parse_one(text) for text in inf.texts] or [None]
+        )
+
+    @staticmethod
+    def _parse_one(text: str) -> str | None:
         try:
-            prediction = PARSE_MATH_ANSWER(text)
+            return PARSE_MATH_ANSWER(text)
         except AttributeError:
             # No digit anywhere in the output: upstream's `re.search(...).group()`
             # on None. `None` is the protocol's spelling of "could not extract".
-            prediction = None
-        return build_prediction_record([prediction])
+            return None
 
     @override
     async def feedback(self, post, ctx):
         reference = list(ctx.raw_sample["platinum_target"])
-        # `.get()`, not `[]`: a None prediction is ABSENT once the record
-        # round-trips through disk, which is what the resume path reads.
-        prediction = post["rollouts"][0].get("prediction")
-        if prediction is None:
-            correct = False
-        else:
-            try:
-                correct = check_prediction(
-                    prediction,
-                    reference,
-                    # Unused upstream, but this is the same string it passes.
-                    self._prompt_text(ctx.raw_sample),
-                    self.subset,
-                )
-            except (TypeError, ValueError):
-                # The parse regex can yield a non-float string (e.g. "1.2.3"),
-                # which upstream feeds straight into float() and swallows via its
-                # bare except. Unparseable-as-float is wrong, not an error.
+        judgements = []
+        for index, rollout in enumerate(post["rollouts"]):
+            # `.get()`, not `[]`: a None prediction is ABSENT once the record
+            # round-trips through disk, which is what the resume path reads.
+            prediction = rollout.get("prediction")
+            if prediction is None:
                 correct = False
+            else:
+                try:
+                    correct = check_prediction(
+                        prediction,
+                        reference,
+                        # Unused upstream, but this is the same string it passes.
+                        self._prompt_text(ctx.raw_sample),
+                        self.subset,
+                    )
+                except (TypeError, ValueError):
+                    # The parse regex can yield a non-float string (e.g. "1.2.3"),
+                    # which upstream feeds straight into float() and swallows via its
+                    # bare except. Unparseable-as-float is wrong, not an error.
+                    correct = False
+            judgements.append(build_rollout_judgement(index, correct))
         return True, build_judgement_record(
             reference,
-            [build_rollout_judgement(0, correct)],
+            judgements or [build_rollout_judgement(0, False)],
             extra={"subset": self.subset},
         )
 
@@ -333,16 +361,63 @@ class PlatinumMathGenTask(
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
         if total == 0:
-            return {"score": 0.0, "fails": len(fails), "accuracy": 0.0, "errors": 0}
+            return {
+                "score": 0.0,
+                "fails": len(fails),
+                "accuracy": 0.0,
+                "errors": 0,
+                SCORE_KEY_FIELD: "accuracy",
+            }
+        # `accuracy` and `errors` keep their first-rollout definition so they stay
+        # comparable with upstream's per-dataset tables; the sampling metrics below are
+        # additive and never touch them.
         correct_num = sum(
             1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
         )
         accuracy = 100 * correct_num / total
-        return {
+        metrics: dict[str, float | str] = {
             "score": accuracy,
             "fails": len(fails),
             "accuracy": accuracy,
             # Upstream's headline unit: how many of this subset's questions the
             # model got wrong. Directly comparable to its per-dataset tables.
             "errors": total - correct_num,
+            SCORE_KEY_FIELD: "accuracy",
         }
+        if self._n <= 1:
+            return metrics
+
+        # Averaged over `total`, the denominator `accuracy` already uses, so a
+        # failed sample counts as wrong in both. Declared rather than unified
+        # across tasks, which would change stored numbers (RFC #74 F).
+        per_problem = []
+        observed = []
+        for ctx in finals:
+            rollouts = ctx.feedback_result["rollouts"]
+            observed.append(len(rollouts))
+            answers = [
+                r.get("prediction")
+                for r in (ctx.postprocess_result or {}).get("rollouts", [])
+            ]
+            per_problem.append(
+                rollout_metrics(
+                    [bool(r["correct"]) for r in rollouts],
+                    answers if len(answers) == len(rollouts) else None,
+                    k=self._k,
+                )
+            )
+        metrics.update(aggregate(per_problem, total))
+        metrics["n"] = float(self._n)
+        metrics["k"] = float(self._k)
+        short = count_short(observed, self._n)
+        metrics["n_short"] = float(short)
+        if short:
+            logger.warning(
+                "{}/{} sample(s) came back with fewer than the requested n={} "
+                "rollout(s); they contribute 0 to pass@k and bias every sampling "
+                "metric downward.",
+                short,
+                len(finals),
+                self._n,
+            )
+        return metrics
