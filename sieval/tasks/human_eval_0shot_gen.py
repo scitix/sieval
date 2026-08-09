@@ -22,7 +22,14 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import pass_at_k
+from sieval.core.tasks.metrics import (
+    SCORE_KEY_FIELD,
+    aggregate,
+    budget_metrics,
+    rollout_metrics,
+    rollout_view,
+    zero_metrics,
+)
 from sieval.datasets import HumanEvalDatasetSample
 
 
@@ -47,7 +54,9 @@ class HumanEvalZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -61,6 +70,10 @@ class HumanEvalZeroShotGenTask(
         timeout: float = 3.0,  # official HumanEval per-exec budget (flat, single run)
     ):
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}."
+            )
         self._k = k
         self._n = n
         self._timeout = timeout
@@ -163,35 +176,50 @@ class HumanEvalZeroShotGenTask(
     @override
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
-        if total == 0:
-            return {"score": 0.0, "fails": len(fails)}
-
-        pass_at_1_total = 0.0
-        pass_at_k_total = 0.0
+        per_problem: list[dict[str, float]] = []
+        observed: list[int] = []
         timeouts = 0
         for f in finals:
-            judgement = f.feedback_result
-            n_samples = judgement["n_rollouts"]
-            correct_num = judgement["n_correct"]
-            pass_at_1_total += pass_at_k(n_samples, correct_num, 1)
-            if self._k > 1:
-                pass_at_k_total += pass_at_k(n_samples, correct_num, self._k)
+            correct, _ = rollout_view(f)
+            observed.append(len(correct))
+            # No answers handed over: maj@k votes on ANSWERS, and two correct
+            # programs are not one answer. A majority over programs needs
+            # behavioural clustering, which RFC #74 leaves out of scope for the
+            # code family — so the key is omitted rather than faked.
+            per_problem.append(rollout_metrics(correct, None, k=self._k))
             timeouts += sum(
                 1
-                for r in judgement["rollouts"]
+                for r in f.feedback_result["rollouts"]
                 # A null msg from the evaluator is absent on disk -- default it.
                 if "timeout" in (r["extra"].get("msg") or "").lower()
             )
 
-        pass_at_1 = pass_at_1_total * 100 / total
-        metrics = {
+        # One path, so the empty run reports the same keys as a scored one and
+        # `pass@1` never KeyErrors. `score` is read back out of the shared
+        # aggregation rather than summed beside it — one estimator, one number.
+        # The fallback keys off `per_problem` rather than `total`: a run whose
+        # every sample FAILED has a non-zero denominator and nothing to
+        # aggregate, and needs the full key set too.
+        rolled = (
+            aggregate(per_problem, total)
+            if per_problem
+            # `votes=False` for the same reason no answers go in above: the
+            # empty path must not grow a maj@k column the scored path lacks.
+            else zero_metrics(n=self._n, k=self._k, votes=False)
+        )
+        pass_at_1 = rolled.get("pass@1", 0.0)
+        metrics: dict[str, float | str] = {
             "score": pass_at_1,
             "fails": len(fails),
             "timeouts": timeouts,
             "pass@1": pass_at_1,
+            SCORE_KEY_FIELD: "pass@1",
         }
-        if self._k > 1:
-            metrics[f"pass@{self._k}"] = pass_at_k_total * 100 / total
+        if self._n > 1:
+            # Only where there was a draw to describe. At n=1 `avg@k` restates
+            # `pass@1` and `n_short` is 0 by construction.
+            metrics.update(rolled)
+            metrics.update(budget_metrics(observed, n=self._n, k=self._k))
         return metrics
 
     @override

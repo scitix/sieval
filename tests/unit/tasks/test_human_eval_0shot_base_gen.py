@@ -125,7 +125,7 @@ async def test_postprocess_keeps_raw_completions_like_lm_eval_harness():
 
 @pytest.mark.anyio
 async def test_report_counts_finals_and_fails_like_chat_human_eval_task():
-    task, _, _ = _task(k=2)
+    task, _, _ = _task(k=2, n=2)
     try:
         report = await task.report(
             [
@@ -147,6 +147,7 @@ async def test_report_counts_finals_and_fails_like_chat_human_eval_task():
         assert report["timeouts"] == 1
         assert report["score"] == pytest.approx(100 / 6)
         assert report["pass@1"] == pytest.approx(100 / 6)
-        assert report["pass@2"] == pytest.approx(100 / 3)
+        assert report["pass@k"] == pytest.approx(100 / 3)
+        assert "pass@2" not in report  # the key carries a literal `k`
     finally:
         await task.shutdown()

@@ -100,8 +100,6 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 
 from typing import ClassVar, Literal, override
 
-from loguru import logger
-
 from sieval.community.platinum_bench import check_prediction, get_parse_fn
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -117,8 +115,9 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     aggregate,
-    count_short,
+    budget_metrics,
     rollout_metrics,
+    rollout_view,
 )
 from sieval.datasets import PlatinumBenchDatasetSample
 
@@ -393,31 +392,9 @@ class PlatinumMathGenTask(
         per_problem = []
         observed = []
         for ctx in finals:
-            rollouts = ctx.feedback_result["rollouts"]
-            observed.append(len(rollouts))
-            answers = [
-                r.get("prediction")
-                for r in (ctx.postprocess_result or {}).get("rollouts", [])
-            ]
-            per_problem.append(
-                rollout_metrics(
-                    [bool(r["correct"]) for r in rollouts],
-                    answers if len(answers) == len(rollouts) else None,
-                    k=self._k,
-                )
-            )
+            correct, answers = rollout_view(ctx)
+            observed.append(len(correct))
+            per_problem.append(rollout_metrics(correct, answers, k=self._k))
         metrics.update(aggregate(per_problem, total))
-        metrics["n"] = float(self._n)
-        metrics["k"] = float(self._k)
-        short = count_short(observed, self._n)
-        metrics["n_short"] = float(short)
-        if short:
-            logger.warning(
-                "{}/{} sample(s) came back with fewer than the requested n={} "
-                "rollout(s); they contribute 0 to pass@k and bias every sampling "
-                "metric downward.",
-                short,
-                len(finals),
-                self._n,
-            )
+        metrics.update(budget_metrics(observed, n=self._n, k=self._k))
         return metrics

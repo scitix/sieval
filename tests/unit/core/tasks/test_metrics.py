@@ -7,13 +7,22 @@ votes on ANSWERS so it can disagree with a verdict tally in both directions.
 
 import pytest
 
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.core.tasks.metrics import (
     aggregate,
     avg_at_k,
+    budget_metrics,
     count_short,
     majority_at_k,
     pass_at_k,
     rollout_metrics,
+    rollout_view,
+    zero_metrics,
 )
 
 
@@ -161,3 +170,113 @@ def test_aggregate_drops_partial_keys_rather_than_averaging_them():
 def test_aggregate_degenerate_inputs():
     assert aggregate([], 4) == {}
     assert aggregate([{"pass@1": 1.0}], 0) == {}
+
+
+# --------------------------------------------------------------------------- #
+# zero_metrics -- the key set of a run that scored nothing
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "n,k,want",
+    [
+        # k == n, so maj@k is defined even for a single rollout. Tasks gate the
+        # whole sampling block on n > 1 and never read it there.
+        (1, 1, {"pass@1", "avg@k", "maj@k"}),
+        (4, 1, {"pass@1", "avg@k"}),  # k == 1 < n: pass@k would restate pass@1
+        (4, 2, {"pass@1", "avg@k", "pass@k"}),  # k < n: majority is undefined
+        (4, 4, {"pass@1", "avg@k", "pass@k", "maj@k"}),
+    ],
+)
+def test_zero_metrics_matches_what_a_clean_run_would_report(n, k, want):
+    """The empty path must not invent or drop a column relative to a scored run."""
+    zeros = zero_metrics(n=n, k=k)
+    assert set(zeros) == want
+    assert set(zeros.values()) == {0.0}
+    # Derived from rollout_metrics rather than listed, so the two cannot drift:
+    # a clean all-correct draw at the same budget carries the same keys.
+    assert set(zero_metrics(n=n, k=k)) == set(
+        rollout_metrics([True] * n, ["42"] * n, k=k)
+    )
+
+
+@pytest.mark.parametrize("n,k", [(1, 1), (4, 4)])
+def test_zero_metrics_without_votes_matches_a_task_that_never_votes(n, k):
+    """The code family passes no answers, so it must not grow a maj@k column
+    on the empty path that its scored path never reports."""
+    zeros = zero_metrics(n=n, k=k, votes=False)
+    assert "maj@k" not in zeros
+    assert set(zeros) == set(rollout_metrics([True] * n, None, k=k))
+
+
+# --------------------------------------------------------------------------- #
+# rollout_view -- verdicts and answers of one judged sample
+# --------------------------------------------------------------------------- #
+
+
+def _ctx(judgement, postprocess) -> TaskContext:
+    ctx = TaskContext(sample_id=0, raw_sample={})
+    ctx = ctx.to_preprocessed({"prompt": "p"})
+    ctx = ctx.to_inferred("inf")
+    ctx = ctx.to_postprocessed(postprocess)
+    return ctx.to_feedback(judgement).to_final()
+
+
+def test_rollout_view_pairs_verdicts_with_answers():
+    correct, answers = rollout_view(
+        _ctx(
+            build_judgement_record(
+                "42", [build_rollout_judgement(i, i == 0) for i in range(2)]
+            ),
+            build_prediction_record(["42", "7"]),
+        )
+    )
+    assert correct == [True, False]
+    assert answers == ["42", "7"]
+
+
+def test_rollout_view_keeps_an_unextracted_answer_as_none():
+    """`None` is "could not extract", and it must not vote as an empty string."""
+    _, answers = rollout_view(
+        _ctx(
+            build_judgement_record("42", [build_rollout_judgement(0, False)]),
+            build_prediction_record([None]),
+        )
+    )
+    assert answers == [None]
+
+
+def test_rollout_view_drops_answers_it_cannot_align():
+    """A resumed run without the prediction stage must omit maj@k, not guess it.
+
+    Returning the short list instead would silently vote a 4-rollout draw on
+    whichever rollouts happened to survive.
+    """
+    judgement = build_judgement_record(
+        "42", [build_rollout_judgement(i, True) for i in range(4)]
+    )
+    _, answers = rollout_view(_ctx(judgement, build_prediction_record(["42"])))
+    assert answers is None
+    assert "maj@k" not in rollout_metrics([True] * 4, answers, k=4)
+
+
+def test_rollout_view_survives_a_missing_stage_result():
+    # Nothing judged and nothing extracted still align, so this reports an empty
+    # draw rather than raising on the `None` stage results.
+    assert rollout_view(TaskContext(sample_id=0, raw_sample={})) == ([], [])
+
+
+# --------------------------------------------------------------------------- #
+# budget_metrics -- the sampling budget as report keys
+# --------------------------------------------------------------------------- #
+
+
+def test_budget_metrics_reports_the_budget_and_the_short_draws():
+    assert budget_metrics([4, 4, 2], n=4, k=2) == {"n": 4.0, "k": 2.0, "n_short": 1.0}
+
+
+def test_budget_metrics_reports_zero_short_rather_than_omitting_it():
+    """A missing `n_short` and a zero one read the same to a consumer; only one
+    of them means "checked, and nothing was short"."""
+    assert budget_metrics([4, 4], n=4, k=4) == {"n": 4.0, "k": 4.0, "n_short": 0.0}
+    assert budget_metrics([], n=4, k=4)["n_short"] == 0.0

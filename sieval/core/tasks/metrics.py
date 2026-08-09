@@ -28,6 +28,8 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 import collections
 from collections.abc import Callable, Sequence
 
+from loguru import logger
+
 #: Report key naming the metric ``score`` was taken from.
 SCORE_KEY_FIELD = "score_key"
 
@@ -126,6 +128,51 @@ def rollout_metrics(
     return out
 
 
+def zero_metrics(*, n: int, k: int, votes: bool = True) -> dict[str, float]:
+    """The key set of a clean run at ``n`` / ``k``, valued zero.
+
+    For the path where nothing was scored -- no samples, or every one of them
+    failed. A column that exists only when a run happened to produce samples is
+    worse than one reading 0.0: it turns "everything failed" into a KeyError in
+    whatever reads the report, which is the shape a failed run is least able to
+    afford.
+
+    Derived by running :func:`rollout_metrics` over a draw of *n* wrong,
+    unextracted rollouts rather than by listing the keys, so the empty path
+    cannot drift from the populated one.
+
+    *votes* mirrors whether the caller hands :func:`rollout_metrics` its answers.
+    A task that never does -- the code family, where two correct programs are not
+    one answer -- must not grow a ``maj@k`` column here that its scored path
+    would never report.
+    """
+    return rollout_metrics([False] * n, [None] * n if votes else None, k=k)
+
+
+def rollout_view(final) -> tuple[list[bool], list[str | None] | None]:
+    """One judged sample's per-rollout verdicts and extracted answers.
+
+    The verdicts come from the judgement, the answers from the prediction record
+    -- two stages, so they can disagree on length. When they do, the answers come
+    back as ``None`` rather than as a partial list, which makes
+    :func:`rollout_metrics` omit ``maj@k`` instead of voting on a draw it cannot
+    see whole. That happens for real: a run launched with
+    ``record_each_stage=False`` and then resumed hydrates a judgement without the
+    prediction record that produced it.
+
+    Answers are read with ``.get``, not ``[]``: ``prediction=None`` means "could
+    not extract" and serialization drops the key entirely, so on disk it is
+    absent rather than null (``.claude/rules/records.md``).
+    """
+    verdicts = (final.feedback_result or {}).get("rollouts") or []
+    correct = [bool(v.get("correct")) for v in verdicts]
+    predictions = (final.postprocess_result or {}).get("rollouts") or []
+    if len(predictions) != len(correct):
+        return correct, None
+    answers = [p.get("prediction") for p in predictions]
+    return correct, [None if a is None else str(a) for a in answers]
+
+
 def count_short(observed: Sequence[int], n: int) -> int:
     """Samples that came back with fewer than the *n* rollouts requested.
 
@@ -165,3 +212,32 @@ def aggregate(
         for key, total in totals.items()
         if counts[key] == complete
     }
+
+
+def budget_metrics(
+    observed: Sequence[int], *, n: int, k: int, unit: str = "sample"
+) -> dict[str, float]:
+    """The sampling budget as report keys: ``n``, ``k``, ``n_short``.
+
+    Reported once per run rather than folded into the metric names, which is what
+    lets a key carry a literal ``k``. A run at ``n=4`` and a paper number at
+    ``n=16`` otherwise land in the same column with nothing to tell them apart.
+
+    Emitted together because they are read together -- ``n_short`` is how many
+    ``observed`` draws came back below *n*, and it is meaningless without the *n*
+    it is short of. *unit* names what was counted in the warning, since a task may
+    sample something narrower than a sample (UGMathBench draws per *version*).
+    """
+    metrics = {"n": float(n), "k": float(k)}
+    short = count_short(observed, n)
+    metrics["n_short"] = float(short)
+    if short:
+        logger.warning(
+            "{}/{} {}(s) came back with fewer than the requested n={} rollout(s); "
+            "they contribute 0 to pass@k and bias every sampling metric downward.",
+            short,
+            len(observed),
+            unit,
+            n,
+        )
+    return metrics
