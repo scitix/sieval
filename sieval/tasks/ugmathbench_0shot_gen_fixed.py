@@ -365,11 +365,12 @@ class UGMathBenchZeroShotGenFixedTask(
         golds = raw["answer"]
         rollouts = []
         for rollout in post["rollouts"]:
-            # Grading is synchronous sympy — ~23 ms for a wrong answer, and every
-            # runner in the session shares one event loop, so doing it here would
-            # stall every other task too. `run_cpu_bound` moves it to a worker
-            # process; a process rather than a thread because math-verify's
-            # timeouts are signal-based and it refuses to run threaded at all.
+            # Grading is synchronous sympy — ~35 ms for a wrong answer, which is the
+            # path that runs every parser reading, and every runner in the session
+            # shares one event loop, so doing it here would stall every other task
+            # too. `run_cpu_bound` moves it to a worker process; a process rather
+            # than a thread because math-verify's timeouts are signal-based and it
+            # refuses to run threaded at all.
             try:
                 per_slot = await run_cpu_bound(
                     judge_answers,

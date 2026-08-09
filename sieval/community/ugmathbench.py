@@ -671,7 +671,8 @@ def _parse_latex_strict(text: str) -> list:
     comparison symmetric rather than privileging one side's convention.
 
     Failures are silent by design: this is one more candidate reading, and a string
-    it cannot parse is simply not among them.
+    it cannot parse is simply not among them -- never at the expense of the other
+    readings, which is why the guard below spans the post-parse reads as well.
     """
     import sympy
 
@@ -682,39 +683,57 @@ def _parse_latex_strict(text: str) -> list:
         from sympy.parsing.latex import parse_latex
 
         expr = parse_latex(text)
+        if not isinstance(expr, sympy.Basic):
+            return []
+        # `parse_latex` reads `\\pi` as Symbol('pi'), not the constant, so a prediction
+        # comparing against a sympy-source gold (which DOES yield the constant) differs by
+        # `pi - pi` -- same name, different object, and simplify cannot cancel it. Only `pi`
+        # is mapped: `\\pi` is unambiguous in mathematical notation, whereas `e` and `i` are
+        # ordinary variable names often enough that binding them would invent agreements.
+        # The substitution moves this reading onto the convention the GOLD already uses.
+        pi_symbol = sympy.Symbol("pi")
+        if pi_symbol in expr.free_symbols:
+            expr = expr.subs(pi_symbol, sympy.pi)
     except Exception:
+        # The guard has to cover the reads below the parse, not just the parse itself:
+        # `parse_latex` builds unflattened `evaluate=False` trees, so `free_symbols` and
+        # `subs` recurse over them and raise RecursionError on a deep enough prediction.
+        # An escape here reaches `_sympy_candidates`, which cannot tell which reading
+        # failed and would discard the other two along with this one.
         return []
-    if not isinstance(expr, sympy.Basic):
-        return []
-    # `parse_latex` reads `\\pi` as Symbol('pi'), not the constant, so a prediction
-    # comparing against a sympy-source gold (which DOES yield the constant) differs by
-    # `pi - pi` -- same name, different object, and simplify cannot cancel it. Only `pi`
-    # is mapped: `\\pi` is unambiguous in mathematical notation, whereas `e` and `i` are
-    # ordinary variable names often enough that binding them would invent agreements.
-    # The substitution moves this reading onto the convention the GOLD already uses.
-    pi_symbol = sympy.Symbol("pi")
-    if pi_symbol in expr.free_symbols:
-        expr = expr.subs(pi_symbol, sympy.pi)
     return [expr]
 
 
 def _sympy_candidates(text: str) -> list:
-    """Every plausible sympy reading of *text*, from both parsers.
+    """Every plausible sympy reading of *text*, from all three parsers.
 
-    Both are tried on both sides on purpose: the gold is usually sympy source
+    All three are tried on both sides on purpose: the gold is usually sympy source
     and the prediction usually LaTeX, but neither is guaranteed, and committing
     a parser to a side would manufacture disagreements of its own.
+
+    Each reading is isolated. One parser failing says nothing about the answer and
+    nothing about the other parsers, so it drops only its own candidates: collecting
+    all three under a single guard let a late failure discard readings that had
+    already succeeded, and since the substitution pass can only move a verdict
+    wrong-to-right, losing a candidate can only move one right-to-wrong.
     """
     import sympy
 
     out: list = []
-    try:
-        candidates = _parse_math(text) + _parse_sympy_source(text) + _parse_latex_strict(text)
-    except Exception:
-        return out
-    for item in candidates:
-        if isinstance(item, sympy.Basic) and not any(item == seen for seen in out):
-            out.append(item)
+    for parse in (_parse_math, _parse_sympy_source, _parse_latex_strict):
+        try:
+            candidates = parse(text)
+        except Exception:
+            continue
+        for item in candidates:
+            try:
+                if isinstance(item, sympy.Basic) and not any(item == seen for seen in out):
+                    out.append(item)
+            except Exception:
+                # `==` on two sympy expressions sorts their factors, which recurses over
+                # the same unflattened trees; a candidate that cannot be compared cannot
+                # be deduplicated against the ones already kept either.
+                continue
     return out
 
 
