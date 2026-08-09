@@ -22,14 +22,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import (
-    SCORE_KEY_FIELD,
-    aggregate,
-    budget_metrics,
-    rollout_metrics,
-    rollout_view,
-    zero_metrics,
-)
+from sieval.core.tasks.metrics import SCORE_KEY_FIELD, sampling_report
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import HMMTFeb2025DatasetSample
 
@@ -151,26 +144,17 @@ class HMMTFeb2025ZeroShotGenTask(
     @override
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
-        per_problem: list[dict[str, float]] = []
-        observed: list[int] = []
-        for f in finals:
-            correct, answers = rollout_view(f)
-            observed.append(len(correct))
-            per_problem.append(
-                rollout_metrics(correct, answers, k=self._k, normalize=normalize_vote)
-            )
-        # `pass@1` is the headline, so it is read back out of the shared
-        # aggregation rather than summed beside it — one estimator, one number,
-        # and `score` cannot drift from the column it names. The fallback keys
-        # off `per_problem` rather than `total`, because a run whose every sample
-        # FAILED has a non-zero denominator and nothing to aggregate, and needs
-        # the full key set just as much as a run with no samples at all.
-        rolled = (
-            aggregate(per_problem, total)
-            if per_problem
-            else zero_metrics(n=self._n, k=self._k)
+        rolled = sampling_report(
+            finals,
+            n=self._n,
+            k=self._k,
+            denominator=total,
+            normalize=normalize_vote,
         )
-        pass_at_1 = rolled.get("pass@1", 0.0)
+        # `pass@1` is the headline, so it is read back out of the shared block
+        # rather than summed beside it — one estimator, one number, and `score`
+        # cannot drift from the column it names.
+        pass_at_1 = rolled["pass@1"]
         metrics: dict[str, float | str] = {
             "score": pass_at_1,
             "fails": len(fails),
@@ -178,9 +162,8 @@ class HMMTFeb2025ZeroShotGenTask(
             SCORE_KEY_FIELD: "pass@1",
         }
         if self._n > 1:
-            # Only where there was a draw to describe. At n=1 `avg@k` restates
-            # `pass@1`, `maj@k` restates the one verdict, and `n_short` is 0 by
-            # construction — three names for what `pass@1` already said.
+            # The rest only where there was a draw to describe. At n=1 `avg@k`
+            # restates `pass@1`, `maj@k` restates the one verdict, and `n_short`
+            # is 0 by construction — three names for what `pass@1` already said.
             metrics.update(rolled)
-            metrics.update(budget_metrics(observed, n=self._n, k=self._k))
         return metrics

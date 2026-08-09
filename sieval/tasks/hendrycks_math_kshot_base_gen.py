@@ -52,8 +52,15 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    SCORE_KEY_FIELD,
+    first_rollout_correct,
+    sampling_report,
+)
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import HendrycksMathDatasetSample
+
+from ._math_verify import normalize_vote
 
 N_SHOT = 4
 
@@ -106,7 +113,9 @@ class HendrycksMathFewShotBaseGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -115,9 +124,17 @@ class HendrycksMathFewShotBaseGenTask(
         model,
         name: str | None = None,
         *,
+        k: int = 1,
+        n: int = 1,
         stop: tuple[str, ...] = tuple(STOP_WORDS),
     ):
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}."
+            )
+        self._k = k
+        self._n = n
         self._stop = stop
 
     @override
@@ -130,19 +147,23 @@ class HendrycksMathFewShotBaseGenTask(
 
     @override
     async def infer(self, pre, ctx):
+        # `n` is the sampling budget `k` was validated against, so it has to
+        # reach the model (sieval/tasks/CLAUDE.md, "n_shot vs k").
         if self._stop:
-            return await self.model.agenerate(pre["prompt"], stop=list(self._stop))
-        return await self.model.agenerate(pre["prompt"])
+            return await self.model.agenerate(
+                pre["prompt"], n=self._n, stop=list(self._stop)
+            )
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        text = inf.texts[0] if inf.texts else ""
         # Empty extraction -> None so `extracted` reports the miss; feedback
         # restores "" so the grader sees exactly what it saw pre-migration.
         return build_prediction_record(
             [
                 extract_math_few_shot_cot_answer(ctx.raw_sample["problem"], text, "cot")
                 or None
+                for text in inf.texts
             ]
         )
 
@@ -151,7 +172,16 @@ class HendrycksMathFewShotBaseGenTask(
         reference = extract_math_answer(
             ctx.raw_sample["problem"], ctx.raw_sample["solution"], "cot"
         )
-        prediction = post["rollouts"][0].get("prediction") or ""
+        rollouts = [
+            build_rollout_judgement(
+                rollout["index"], await self._grade(rollout, reference, ctx)
+            )
+            for rollout in post["rollouts"]
+        ]
+        return True, build_judgement_record(reference, rollouts)
+
+    async def _grade(self, rollout, reference, ctx) -> bool:
+        prediction = rollout.get("prediction") or ""
         # `math_equal` runs `parse_latex` + `simplify`: ~11 ms typical, 1.7 s
         # worst case — measured on *reference* data, and `simplify` on arbitrary
         # model output has no ceiling. Reached with `timeout=False`, so nothing
@@ -179,9 +209,7 @@ class HendrycksMathFewShotBaseGenTask(
                 GRADE_TIMEOUT,
             )
             correct = False
-        return True, build_judgement_record(
-            reference, [build_rollout_judgement(0, correct)]
-        )
+        return bool(correct)
 
     @override
     async def report(self, finals, fails):
@@ -189,14 +217,23 @@ class HendrycksMathFewShotBaseGenTask(
         # gsm8k-0shot-gen DeepSeek-Math sibling and DeepSeek's full-set accuracy:
         # a pipeline failure counts as wrong, not as an excluded sample.
         total = len(finals) + len(fails)
-        if total == 0:
-            return {"score": 0.0, "fails": len(fails), "accuracy": 0.0}
-        correct_num = sum(
-            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
-        )
-        accuracy = 100 * correct_num / total
-        return {
+        # `accuracy` keeps its FIRST-ROLLOUT definition so it stays the number
+        # DeepSeek-Math published, which was generated greedily once. The
+        # sampling metrics below are additive and never touch it. At n=1 the two
+        # readings are the same number, so no stored score moves.
+        accuracy = 100 * first_rollout_correct(finals) / total if total else 0.0
+        metrics: dict[str, float | str] = {
             "score": accuracy,
             "fails": len(fails),
             "accuracy": accuracy,
+            SCORE_KEY_FIELD: "accuracy",
         }
+        if self._n <= 1:
+            return metrics
+        return metrics | sampling_report(
+            finals,
+            n=self._n,
+            k=self._k,
+            denominator=total,
+            normalize=normalize_vote,
+        )

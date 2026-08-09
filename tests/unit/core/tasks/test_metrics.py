@@ -18,10 +18,12 @@ from sieval.core.tasks.metrics import (
     avg_at_k,
     budget_metrics,
     count_short,
+    first_rollout_correct,
     majority_at_k,
     pass_at_k,
     rollout_metrics,
     rollout_view,
+    sampling_report,
     zero_metrics,
 )
 
@@ -280,3 +282,109 @@ def test_budget_metrics_reports_zero_short_rather_than_omitting_it():
     of them means "checked, and nothing was short"."""
     assert budget_metrics([4, 4], n=4, k=4) == {"n": 4.0, "k": 4.0, "n_short": 0.0}
     assert budget_metrics([], n=4, k=4)["n_short"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# first_rollout_correct -- the upstream-comparable count
+# --------------------------------------------------------------------------- #
+
+
+def test_first_rollout_correct_ignores_the_rest_of_the_draw():
+    """The published number was one greedy draw, so this must NOT become c/n."""
+    finals = [
+        _ctx(
+            build_judgement_record(
+                "42", [build_rollout_judgement(i, i > 0) for i in range(4)]
+            ),
+            build_prediction_record(["7", "42", "42", "42"]),
+        ),
+        _ctx(
+            build_judgement_record(
+                "42", [build_rollout_judgement(i, True) for i in range(4)]
+            ),
+            build_prediction_record(["42"] * 4),
+        ),
+    ]
+    # 3 of 4 right in the first sample, but its first rollout was wrong.
+    assert first_rollout_correct(finals) == 1
+
+
+def test_first_rollout_correct_survives_a_sample_with_no_judgement():
+    assert first_rollout_correct([TaskContext(sample_id=0, raw_sample={})]) == 0
+
+
+# --------------------------------------------------------------------------- #
+# sampling_report -- the whole n>1 block
+# --------------------------------------------------------------------------- #
+
+
+def test_sampling_report_covers_the_whole_block():
+    finals = [
+        _ctx(
+            build_judgement_record(
+                "42", [build_rollout_judgement(i, i < 2) for i in range(4)]
+            ),
+            build_prediction_record(["42", "42", "7", "8"]),
+        )
+    ]
+    out = sampling_report(finals, n=4, k=4, denominator=1)
+    assert out["pass@1"] == pytest.approx(50.0)
+    assert out["avg@k"] == pytest.approx(50.0)
+    assert out["pass@k"] == pytest.approx(100.0)
+    # Two votes for the correct answer against one each for two wrong ones.
+    assert out["maj@k"] == pytest.approx(100.0)
+    assert (out["n"], out["k"], out["n_short"]) == (4.0, 4.0, 0.0)
+
+
+def test_sampling_report_denominator_is_the_callers_not_len_finals():
+    """A task counting failed samples as wrong passes the wider population."""
+    finals = [
+        _ctx(
+            build_judgement_record("42", [build_rollout_judgement(0, True)]),
+            build_prediction_record(["42"]),
+        )
+    ]
+    assert sampling_report(finals, n=1, k=1, denominator=1)["pass@1"] == 100.0
+    assert sampling_report(finals, n=1, k=1, denominator=2)["pass@1"] == 50.0
+
+
+def test_sampling_report_always_carries_pass_at_1():
+    """A task whose headline IS pass@1 reads it back out at any n, including
+    from a run where every sample failed and there is nothing to aggregate."""
+    for n, k in [(1, 1), (4, 4)]:
+        assert sampling_report([], n=n, k=k, denominator=3)["pass@1"] == 0.0
+
+
+def test_sampling_report_without_votes_never_grows_a_maj_at_k():
+    """The code family, on both the scored and the empty path."""
+    finals = [
+        _ctx(
+            build_judgement_record(
+                "x", [build_rollout_judgement(i, True) for i in range(4)]
+            ),
+            build_prediction_record(["prog"] * 4),
+        )
+    ]
+    assert "maj@k" not in sampling_report(finals, n=4, k=4, denominator=1, votes=False)
+    assert "maj@k" not in sampling_report([], n=4, k=4, denominator=1, votes=False)
+
+
+def test_sampling_report_counts_a_short_draw_and_drops_the_majority():
+    # Two of the four requested rollouts came back. `n_short` says so, and maj@k
+    # is dropped rather than voted on the half that arrived -- a truncated draw
+    # is whatever finished first, not a random subsample.
+    finals = [
+        _ctx(
+            build_judgement_record(
+                "42", [build_rollout_judgement(i, True) for i in range(2)]
+            ),
+            build_prediction_record(["42", "42"]),
+        )
+    ]
+    out = sampling_report(finals, n=4, k=4, denominator=1)
+    assert out["n_short"] == 1.0
+    assert "maj@k" not in out
+    # pass@k needs k of them too, so a short draw scores 0 there -- which is
+    # exactly why n_short has to be in the report and not only in a log line.
+    assert out["pass@k"] == 0.0
+    assert out["pass@1"] == pytest.approx(100.0)

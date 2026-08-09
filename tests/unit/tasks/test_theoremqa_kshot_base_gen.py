@@ -170,7 +170,9 @@ async def test_infer_only_forwards_prompt_coupled_stop():
         TaskContext(sample_id=0, raw_sample={"Question": "What is 2+2?"}),
     )
 
-    assert model.last_kwargs == {"stop": task_module._STOP_TOKENS}
+    # `n` rides along because it is the sampling budget rather than a decoding
+    # param; `stop` is prompt-coupled and everything else stays the caller's.
+    assert model.last_kwargs == {"n": 1, "stop": task_module._STOP_TOKENS}
 
 
 @pytest.mark.anyio

@@ -114,10 +114,8 @@ from sieval.core.tasks import (
 )
 from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
-    aggregate,
-    budget_metrics,
-    rollout_metrics,
-    rollout_view,
+    first_rollout_correct,
+    sampling_report,
 )
 from sieval.datasets import PlatinumBenchDatasetSample
 
@@ -370,9 +368,7 @@ class PlatinumMathGenTask(
         # `accuracy` and `errors` keep their first-rollout definition so they stay
         # comparable with upstream's per-dataset tables; the sampling metrics below are
         # additive and never touch them.
-        correct_num = sum(
-            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
-        )
+        correct_num = first_rollout_correct(finals)
         accuracy = 100 * correct_num / total
         metrics: dict[str, float | str] = {
             "score": accuracy,
@@ -389,12 +385,5 @@ class PlatinumMathGenTask(
         # Averaged over `total`, the denominator `accuracy` already uses, so a
         # failed sample counts as wrong in both. Declared rather than unified
         # across tasks, which would change stored numbers (RFC #74 F).
-        per_problem = []
-        observed = []
-        for ctx in finals:
-            correct, answers = rollout_view(ctx)
-            observed.append(len(correct))
-            per_problem.append(rollout_metrics(correct, answers, k=self._k))
-        metrics.update(aggregate(per_problem, total))
-        metrics.update(budget_metrics(observed, n=self._n, k=self._k))
+        metrics.update(sampling_report(finals, n=self._n, k=self._k, denominator=total))
         return metrics

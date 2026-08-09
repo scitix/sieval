@@ -214,6 +214,74 @@ def aggregate(
     }
 
 
+def first_rollout_correct(finals) -> int:
+    """How many judged samples the FIRST rollout got right.
+
+    The upstream-comparable count for a benchmark whose published number was
+    generated once, greedily. Deliberately NOT ``pass@1``: under ``n > 1`` that
+    is ``c/n`` over the whole draw -- a better estimator of the same quantity,
+    but not the one the paper reports. A task aligned to such a number keeps this
+    as its headline and reports the estimator beside it, which is also why the
+    two must not be quietly merged.
+
+    At ``n = 1`` they are the same number, so adopting a sampling budget never
+    moves a score that was recorded without one.
+    """
+    count = 0
+    for final in finals:
+        rollouts = (final.feedback_result or {}).get("rollouts") or []
+        if rollouts and rollouts[0].get("correct"):
+            count += 1
+    return count
+
+
+def sampling_report(
+    finals,
+    *,
+    n: int,
+    k: int,
+    denominator: int,
+    normalize: Callable[[str], str] | None = None,
+    votes: bool = True,
+    unit: str = "sample",
+) -> dict[str, float]:
+    """Every sampling key a task reports, for one run's judged samples.
+
+    The whole block, not a piece of it: read each sample, estimate per problem,
+    average over *denominator*, then name the budget. Tasks differ in what they
+    call their headline and which population they average over -- so
+    *denominator* is a parameter (RFC #74 F) -- but not in any of the above, and
+    a task assembling it by hand is how two columns stop meaning the same thing.
+
+    ``pass@1`` is ALWAYS present, so a task whose headline is ``pass@1`` can read
+    it back out at any *n* and merge the rest only when there was a draw to
+    describe.
+
+    *votes* off omits ``maj@k`` end to end: the code family has no single answer
+    to vote on (RFC #74, "Out of scope"), and the key must be absent from the
+    empty path too or a failed run grows a column a scored one never had.
+    """
+    per_problem: list[dict[str, float]] = []
+    observed: list[int] = []
+    for final in finals:
+        correct, answers = rollout_view(final)
+        observed.append(len(correct))
+        per_problem.append(
+            rollout_metrics(
+                correct, answers if votes else None, k=k, normalize=normalize
+            )
+        )
+    # `per_problem`, not `denominator`: a run whose every sample FAILED has a
+    # non-zero denominator and nothing to aggregate, and needs the full key set
+    # just as much as a run with no samples at all.
+    rolled = (
+        aggregate(per_problem, denominator)
+        if per_problem
+        else zero_metrics(n=n, k=k, votes=votes)
+    )
+    return rolled | budget_metrics(observed, n=n, k=k, unit=unit)
+
+
 def budget_metrics(
     observed: Sequence[int], *, n: int, k: int, unit: str = "sample"
 ) -> dict[str, float]:

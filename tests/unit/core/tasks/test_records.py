@@ -47,6 +47,36 @@ class TestPredictionRecord:
     def test_no_rollouts_yields_empty_list(self):
         assert build_prediction_record([]) == {"rollouts": []}
 
+    def test_per_rollout_extras_land_on_their_own_rollout(self):
+        # A second extraction RULE over the same response (GSM8K's flexible
+        # match) is per-rollout detail. In the sample-level slot it silently
+        # means "rollout 0's" as soon as n > 1.
+        record = build_prediction_record(
+            ["a", "b"], extras=[{"rule": "strict"}, {"rule": "flexible"}]
+        )
+        assert [r["extra"] for r in record["rollouts"]] == [
+            {"rule": "strict"},
+            {"rule": "flexible"},
+        ]
+        assert "extra" not in record
+
+    def test_an_empty_per_rollout_extra_is_omitted_not_stored(self):
+        record = build_prediction_record(["a", "b"], extras=[None, {}])
+        assert all("extra" not in r for r in record["rollouts"])
+
+    def test_misaligned_extras_are_rejected_rather_than_zipped(self):
+        # Silently truncating would attach rollout 1's detail to nothing and
+        # rollout 2's to rollout 1 -- wrong data, not missing data.
+        with pytest.raises(ValueError, match="one entry per rollout"):
+            build_prediction_record(["a", "b", "c"], extras=[{"rule": "strict"}])
+
+    def test_sample_level_extra_still_works_alongside(self):
+        record = build_prediction_record(
+            ["a"], extras=[{"rule": "strict"}], extra={"subject": "algebra"}
+        )
+        assert record["extra"] == {"subject": "algebra"}
+        assert record["rollouts"][0]["extra"] == {"rule": "strict"}
+
 
 class TestJudgementRecord:
     def test_derives_counts_from_rollouts(self):
