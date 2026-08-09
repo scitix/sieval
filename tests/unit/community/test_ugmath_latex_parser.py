@@ -63,30 +63,22 @@ def test_empty_input_yields_nothing():
 
 def test_prose_reads_as_a_product_of_symbols_and_that_is_safe():
     """`parse_latex` does not reject non-LaTeX; it reads bare letters as symbols, the
-    same behaviour that turns `ln` into l*n.
-
-    That is why this is added as one CANDIDATE reading rather than a replacement: a
-    nonsense reading of one side cannot match a sane reading of the other, because
-    `_same_function` requires the two sides to involve the same set of symbol NAMES and
-    demands several probe points agree. The empirical check is stronger than the
-    argument -- 11,424 recorded rows regraded across two runs, 0 verdicts moved
-    right-to-wrong.
+    same behaviour that turns `ln` into l*n. Safe because this is one CANDIDATE reading:
+    `_same_function` requires both sides to share the same symbol NAMES and several
+    probe points to agree, so a nonsense reading cannot match a sane one. Measured over
+    11,424 recorded rows, 0 verdicts moved right-to-wrong.
     """
     (expr,) = _parse_latex_strict("dog")
     assert expr.free_symbols  # letters became symbols, not an error
-    # how it splits them is a sympy detail and not worth pinning; what must hold is that
-    # the nonsense reading never matches an unrelated gold
+    # how it splits them is a sympy detail; what must hold is that the nonsense
+    # reading never matches an unrelated gold
     assert judge_answers(["dog"], ["13*pi*R^2"], ["EX"]) == [False]
     assert judge_answers([r"\pi"], ["dog"], ["EX"]) == [False]
 
 
 def test_a_post_parse_failure_yields_no_candidate_rather_than_raising(monkeypatch):
-    """`parse_latex` succeeding is not the end of the reading, so neither is the guard.
-
-    It builds unflattened `evaluate=False` trees, so `free_symbols` and `subs` recurse
-    over them and raise RecursionError on a deep enough prediction -- below the parse,
-    where a guard wrapping only the parse would not catch it.
-    """
+    """The reads below the parse recurse too, so a guard wrapping only the parse
+    would miss the RecursionError they raise on a deep enough prediction."""
     import sympy.parsing.latex
 
     class Exploding(sympy.Basic):
@@ -99,14 +91,8 @@ def test_a_post_parse_failure_yields_no_candidate_rather_than_raising(monkeypatc
 
 
 def test_one_readings_failure_does_not_discard_the_others(monkeypatch):
-    """A parser that blows up must cost only its own candidates.
-
-    Collecting all three readings under a single guard let a late failure throw away
-    readings that had already succeeded. That direction matters: the substitution pass
-    runs only after the others have said "not equal", so it can only move a verdict
-    wrong-to-right -- and a lost candidate can therefore only move one right-to-wrong,
-    which is the class this change exists to shrink.
-    """
+    """A parser that blows up must cost only its own candidates: a lost candidate can
+    only move a verdict right-to-wrong, the class this change exists to shrink."""
 
     def explode(_text):
         raise RecursionError("maximum recursion depth exceeded")
@@ -119,8 +105,8 @@ def test_one_readings_failure_does_not_discard_the_others(monkeypatch):
 
 
 def test_an_uncomparable_candidate_does_not_evict_the_kept_ones(monkeypatch):
-    """Dedup compares with `==`, which sorts factors and recurses over those same
-    unflattened trees. A candidate that cannot be compared is dropped on its own."""
+    """Dedup compares with `==`, which recurses too; an uncomparable candidate is
+    dropped on its own."""
 
     class Uncomparable(sympy.Basic):
         def __eq__(self, other):

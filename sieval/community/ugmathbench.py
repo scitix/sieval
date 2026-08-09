@@ -661,18 +661,13 @@ def _parse_latex_strict(text: str) -> list:
     Neither existing parser can do that. ``_parse_math`` goes through
     ``math_verify``, whose LaTeX reader lower-cases every symbol, so a gold naming
     ``R`` never matches a prediction that also wrote ``R``; ``_parse_sympy_source``
-    preserves case but cannot read LaTeX at all. The prediction is almost always
-    LaTeX -- mathematics is written that way everywhere outside code -- and the gold
-    is sympy source, so the two sides were being read by two parsers that disagree
-    about what a symbol is.
+    preserves case but cannot read LaTeX at all. Predictions are almost always LaTeX
+    and golds are sympy source, so the two sides were read by two parsers that
+    disagree about what a symbol is.
 
-    ``sympy.parsing.latex.parse_latex`` closes that gap, and because
-    :func:`_sympy_candidates` feeds every parser BOTH sides, adding it here keeps the
-    comparison symmetric rather than privileging one side's convention.
-
-    Failures are silent by design: this is one more candidate reading, and a string
-    it cannot parse is simply not among them -- never at the expense of the other
-    readings, which is why the guard below spans the post-parse reads as well.
+    :func:`_sympy_candidates` feeds every parser BOTH sides, so this stays one more
+    candidate reading rather than a replacement; a string it cannot read is simply
+    not among them.
     """
     import sympy
 
@@ -685,21 +680,17 @@ def _parse_latex_strict(text: str) -> list:
         expr = parse_latex(text)
         if not isinstance(expr, sympy.Basic):
             return []
-        # `parse_latex` reads `\\pi` as Symbol('pi'), not the constant, so a prediction
-        # comparing against a sympy-source gold (which DOES yield the constant) differs by
-        # `pi - pi` -- same name, different object, and simplify cannot cancel it. Only `pi`
-        # is mapped: `\\pi` is unambiguous in mathematical notation, whereas `e` and `i` are
-        # ordinary variable names often enough that binding them would invent agreements.
-        # The substitution moves this reading onto the convention the GOLD already uses.
+        # `parse_latex` reads `\\pi` as Symbol('pi'), not the constant, so it differs
+        # from a sympy-source gold by `pi - pi`: same name, different object, which
+        # `simplify` cannot cancel. Only `pi` -- `e` and `i` are ordinary variable
+        # names often enough that binding them would invent agreements.
         pi_symbol = sympy.Symbol("pi")
         if pi_symbol in expr.free_symbols:
             expr = expr.subs(pi_symbol, sympy.pi)
     except Exception:
-        # The guard has to cover the reads below the parse, not just the parse itself:
-        # `parse_latex` builds unflattened `evaluate=False` trees, so `free_symbols` and
-        # `subs` recurse over them and raise RecursionError on a deep enough prediction.
-        # An escape here reaches `_sympy_candidates`, which cannot tell which reading
-        # failed and would discard the other two along with this one.
+        # Spans the post-parse reads, not just the parse: `parse_latex` builds
+        # unflattened `evaluate=False` trees, so `free_symbols` and `subs` recurse over
+        # them and raise RecursionError on a deep enough prediction.
         return []
     return [expr]
 
@@ -711,11 +702,10 @@ def _sympy_candidates(text: str) -> list:
     and the prediction usually LaTeX, but neither is guaranteed, and committing
     a parser to a side would manufacture disagreements of its own.
 
-    Each reading is isolated. One parser failing says nothing about the answer and
-    nothing about the other parsers, so it drops only its own candidates: collecting
-    all three under a single guard let a late failure discard readings that had
-    already succeeded, and since the substitution pass can only move a verdict
-    wrong-to-right, losing a candidate can only move one right-to-wrong.
+    Each reading is isolated, so a failing parser drops only its own candidates. One
+    shared guard would let a late failure discard readings that had already succeeded
+    -- and since the substitution pass runs only after the others have said "not
+    equal", a lost candidate can only move a verdict right-to-wrong.
     """
     import sympy
 
@@ -730,9 +720,7 @@ def _sympy_candidates(text: str) -> list:
                 if isinstance(item, sympy.Basic) and not any(item == seen for seen in out):
                     out.append(item)
             except Exception:
-                # `==` on two sympy expressions sorts their factors, which recurses over
-                # the same unflattened trees; a candidate that cannot be compared cannot
-                # be deduplicated against the ones already kept either.
+                # `==` sorts factors and recurses over those same trees.
                 continue
     return out
 
