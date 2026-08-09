@@ -9,6 +9,7 @@ from loguru import logger
 
 from sieval.community.matharena import AIME_INSTRUCTION, build_prompt, extract_answer
 from sieval.core.models import ModelOutput
+from sieval.core.tasks.sampling_metrics import pass_at_k
 from sieval.core.tasks import (
     EvalMode,
     JudgementRecord,
@@ -142,9 +143,9 @@ class AIME2026ZeroShotGenTask(
             if n_samples < self._k:
                 short += 1
             correct_num = judgement["n_correct"]
-            pass_at_1_total += self._pass_at_k(n_samples, correct_num, 1)
+            pass_at_1_total += pass_at_k(n_samples, correct_num, 1)
             if self._k > 1:
-                pass_at_k_total += self._pass_at_k(n_samples, correct_num, self._k)
+                pass_at_k_total += pass_at_k(n_samples, correct_num, self._k)
 
         if short:
             logger.warning(
@@ -172,16 +173,3 @@ class AIME2026ZeroShotGenTask(
             metrics[f"pass@{self._k}"] = pass_at_k
         return metrics
 
-    def _pass_at_k(self, n: int, c: int, k: int) -> float:
-        if n < k:
-            # Unreachable by config (__init__ rejects k > n); only a model that
-            # returned fewer choices than requested lands here, and report() warns.
-            return 0.0
-        if c == 0:
-            return 0.0
-        # Formula: 1 - product_{i=0}^{k-1} (n - c - i) / (n - i)
-        # This calculates the probability that all k samples are wrong
-        prob_all_wrong = 1.0
-        for i in range(k):
-            prob_all_wrong *= (n - c - i) / (n - i)
-        return 1.0 - prob_all_wrong
