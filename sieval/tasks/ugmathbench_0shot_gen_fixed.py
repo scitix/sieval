@@ -228,11 +228,14 @@ DEFAULT_PRECISION = 1e-3
             "nothing about extraction on real model prose. LIVE HEAD-TO-HEAD "
             "(the stronger measurement, and the one that promoted this task): "
             "over a full 15,183-version run, upstream's judge re-graded the same "
-            "stored responses and agreed on 95.51% of samples, disagreeing 591 "
-            "to 91 in this task's favour; upstream scores EAcc 35.55 where this "
-            "task scores 38.49, and the residual misses are 0.60% of samples "
-            "(LaTeX interval notation, absolute-value bars, a `y = ` prefix on "
-            "an EX answer). Note that the replay figure could NOT see the "
+            "stored responses; the two agree on the large majority of samples, "
+            "the disagreements run several-to-one in this task's favour, and it "
+            "scores above upstream on identical responses. The residual misses "
+            "are LaTeX interval notation, absolute-value bars, and a `y = ` "
+            "prefix on an EX answer. Figures are deliberately not quoted here: "
+            "the grader has changed since that audit (the case-preserving LaTeX "
+            "reading), so any number carried over would describe a comparison "
+            "that no longer runs. Note that the replay figure could NOT see the "
             "largest defect the live run found — replaying a gold as its own "
             "answer short-circuits on string equality and never reaches the "
             "symbolic path. GUARDS: since the parsed text is model output, three "
@@ -258,12 +261,14 @@ DEFAULT_PRECISION = 1e-3
     ),
     # Promoted on the first live run (Qwen3-30B-A3B, all 15,183 versions,
     # fails 0). (1) extracted=False 0.21%, (2) 0 fails, (4) audited against
-    # upstream's judge as an independent instrument: 95.51% agreement,
-    # disagreement 591-to-91 in this grader's favour, 12/12 of the risky
-    # direction genuinely correct, residual misses 0.60% of samples. The defect
-    # that run exposed -- math_verify.parse LaTeX-parsing the dataset's
-    # plain-sympy gold, `sin` -> s*i*n -- is fixed, worth EAcc 34.46 -> 38.49
-    # with 0 regressions. (3) is explained rather than met: the remaining gap
+    # upstream's judge as an independent instrument: agreement on the large
+    # majority of samples, disagreement several-to-one in this grader's favour,
+    # every sample in the risky direction genuinely correct. The defect that run
+    # exposed -- math_verify.parse LaTeX-parsing the dataset's plain-sympy gold,
+    # `sin` -> s*i*n -- is fixed, with 0 regressions. Scores are not quoted: the
+    # grader has changed since (the case-preserving LaTeX reading), so a number
+    # carried over would describe a comparison that no longer runs.
+    # (3) is explained rather than met: the remaining gap
     # to sibling benchmarks is the BENCHMARK's last-box rule, reproduced
     # faithfully, and this task scores above upstream's own verifier on
     # identical responses. The module docstring records all of it.
@@ -365,11 +370,11 @@ class UGMathBenchZeroShotGenFixedTask(
         golds = raw["answer"]
         rollouts = []
         for rollout in post["rollouts"]:
-            # Grading is synchronous sympy — ~23 ms for a wrong answer, and every
-            # runner in the session shares one event loop, so doing it here would
-            # stall every other task too. `run_cpu_bound` moves it to a worker
-            # process; a process rather than a thread because math-verify's
-            # timeouts are signal-based and it refuses to run threaded at all.
+            # Grading is synchronous sympy — ~35 ms for a wrong answer (the path that
+            # runs every parser reading), and every runner shares one event loop, so
+            # doing it here would stall every other task. `run_cpu_bound` moves it to
+            # a worker process; a process not a thread because math-verify's timeouts
+            # are signal-based and it refuses to run threaded at all.
             try:
                 per_slot = await run_cpu_bound(
                     judge_answers,

@@ -29,7 +29,9 @@ dependency). Known behavioural deltas versus the reference judge:
 
 * Symbolic equivalence starts from ``math-verify``'s parse/verify rather than
   upstream's bespoke ``parse_latex`` + ``simplify`` chain, and is more permissive
-  on LaTeX shapes upstream's normalizer never learned. Numeric slots keep
+  on LaTeX shapes upstream's normalizer never learned. ``parse_latex`` is still
+  read from — as one candidate among several (see the parser note below), not as
+  the chain upstream drives the comparison with. Numeric slots keep
   upstream's *relative* tolerance as a second chance, since ``math-verify``
   compares floats at fixed decimal rounding. Where it used to be *stricter* than
   upstream — no numeric sampling of free symbols — it no longer is:
@@ -41,10 +43,12 @@ dependency). Known behavioural deltas versus the reference judge:
   unescaped ``sin`` is the product s*i*n while ``pi`` is p*i — so the stored
   ``7*sin(pi*x/5)+1`` becomes ``7*s*i*n*(i*p*x)/5 + 1`` and cannot match the
   model's ``7\\sin(\\frac{\\pi}{5}x)+1`` by any route except exact string
-  equality. :func:`_parse_sympy_source` supplies the second reading.
+  equality. :func:`_parse_sympy_source` supplies a second reading, and
+  :func:`_parse_latex_strict` a third — case-preserving LaTeX, which neither of
+  the other two can produce.
   The first live run measured what this had been costing: **716 of 15,183
-  samples** were graded wrong purely for it (EAcc 34.46 -> 38.49, AAcc 40.87 ->
-  45.59, CAcc 48.07 -> 53.53, with **zero** verdicts moving right-to-wrong).
+  samples** were graded wrong purely for it, with **zero** verdicts moving
+  right-to-wrong.
   Note the shape of the
   bug — it was invisible to the reference-replay measurement below, because
   replaying a gold as its own answer short-circuits on
@@ -655,23 +659,73 @@ def _source_transformations():
     )
 
 
-def _sympy_candidates(text: str) -> list:
-    """Every plausible sympy reading of *text*, from both parsers.
+def _parse_latex_strict(text: str) -> list:
+    """A third reading: LaTeX, with symbol case PRESERVED.
 
-    Both are tried on both sides on purpose: the gold is usually sympy source
+    Neither existing parser can do that. ``_parse_math`` goes through
+    ``math_verify``, whose LaTeX reader lower-cases every symbol, so a gold naming
+    ``R`` never matches a prediction that also wrote ``R``; ``_parse_sympy_source``
+    preserves case but cannot read LaTeX at all. Predictions are almost always LaTeX
+    and golds are sympy source, so the two sides were read by two parsers that
+    disagree about what a symbol is.
+
+    :func:`_sympy_candidates` feeds every parser BOTH sides, so this stays one more
+    candidate reading rather than a replacement; a string it cannot read is simply
+    not among them.
+    """
+    import sympy
+
+    text = (text or "").strip()
+    if not text:
+        return []
+    try:
+        from sympy.parsing.latex import parse_latex
+
+        expr = parse_latex(text)
+        if not isinstance(expr, sympy.Basic):
+            return []
+        # `parse_latex` reads `\\pi` as Symbol('pi'), not the constant, so it differs
+        # from a sympy-source gold by `pi - pi`: same name, different object, which
+        # `simplify` cannot cancel. Only `pi` -- `e` and `i` are ordinary variable
+        # names often enough that binding them would invent agreements.
+        pi_symbol = sympy.Symbol("pi")
+        if pi_symbol in expr.free_symbols:
+            expr = expr.subs(pi_symbol, sympy.pi)
+    except Exception:
+        # Spans the post-parse reads, not just the parse: `parse_latex` builds
+        # unflattened `evaluate=False` trees, so `free_symbols` and `subs` recurse over
+        # them and raise RecursionError on a deep enough prediction.
+        return []
+    return [expr]
+
+
+def _sympy_candidates(text: str) -> list:
+    """Every plausible sympy reading of *text*, from all three parsers.
+
+    All three are tried on both sides on purpose: the gold is usually sympy source
     and the prediction usually LaTeX, but neither is guaranteed, and committing
     a parser to a side would manufacture disagreements of its own.
+
+    Each reading is isolated, so a failing parser drops only its own candidates. One
+    shared guard would let a late failure discard readings that had already succeeded
+    -- and since the substitution pass runs only after the others have said "not
+    equal", a lost candidate can only move a verdict right-to-wrong.
     """
     import sympy
 
     out: list = []
-    try:
-        candidates = _parse_math(text) + _parse_sympy_source(text)
-    except Exception:
-        return out
-    for item in candidates:
-        if isinstance(item, sympy.Basic) and not any(item == seen for seen in out):
-            out.append(item)
+    for parse in (_parse_math, _parse_sympy_source, _parse_latex_strict):
+        try:
+            candidates = parse(text)
+        except Exception:
+            continue
+        for item in candidates:
+            try:
+                if isinstance(item, sympy.Basic) and not any(item == seen for seen in out):
+                    out.append(item)
+            except Exception:
+                # `==` sorts factors and recurses over those same trees.
+                continue
     return out
 
 
