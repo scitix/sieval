@@ -501,19 +501,13 @@ def test_reference_notes_state_that_the_budget_is_the_callers():
 
 # --- n / k sampling wiring -------------------------------------------------
 #
-# Three regressions that all shipped together in the first draft of this
-# feature, and none of which a report-key assertion can see: `n` never reaching
-# the model, `postprocess` capping the draw at one rollout, and `pass@k` then
-# reading a hard 0.0 alongside a 100.0 accuracy.
+# Three regressions that shipped together in the first draft of this feature,
+# none of them visible to a report-key assertion.
 
 
 @pytest.mark.anyio
 async def test_infer_forwards_n_to_the_model():
-    """`n` is the budget `k` was validated against, so it has to reach the model.
-
-    Without it the task accepts `n=4`, switches on the sampling metrics, and then
-    scores them over the single rollout the backend actually returned.
-    """
+    """Otherwise `n=4` enables the sampling metrics over a one-rollout draw."""
     task, model = make_task(PlatinumGSM8KZeroShotGenTask, k=4, n=4)
     pre = await task.preprocess(make_sample(), None)
     await task.infer(pre, None)

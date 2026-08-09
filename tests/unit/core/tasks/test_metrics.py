@@ -117,7 +117,6 @@ def test_majority_only_when_k_equals_n():
     """Sub-sampling k < n would need an estimator or a seed (RFC #74 D.2)."""
     four = ([True, True, False, False], ["a", "a", "b", "c"])
     assert "maj@k" in rollout_metrics(*four, k=4)
-    # k < n: the label would claim a budget the vote did not use
     assert "maj@k" not in rollout_metrics(*four, k=2)
     assert "maj@k" not in rollout_metrics(*four, k=1)
 
@@ -144,7 +143,6 @@ def test_count_short():
 def test_aggregate_uses_the_given_denominator():
     """Failures count as wrong, so the denominator is the task's, not len()."""
     per_problem = [{"pass@1": 1.0}, {"pass@1": 1.0}]
-    # two solved out of four attempted (two failed before judgement)
     assert aggregate(per_problem, 4) == {"pass@1": 50.0}
     assert aggregate(per_problem, 2) == {"pass@1": 100.0}
 

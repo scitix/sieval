@@ -399,10 +399,10 @@ async def test_infer_forwards_n_to_the_model():
 
 @pytest.mark.anyio
 async def test_sampling_metrics_use_the_aacc_denominator():
-    """A failed version counts as wrong here, exactly as it does for AAcc.
+    """A failed version counts as wrong, as it does for AAcc.
 
-    Averaging over only the judged versions would bias these upward over
-    survivors -- the same defect the EAcc warnings in this module describe.
+    Averaging over the judged versions alone would bias these upward over
+    survivors -- the defect the EAcc warnings in this module describe.
     """
     dataset = UGMathBenchDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([_sample()])})
@@ -434,7 +434,7 @@ async def test_sampling_metrics_use_the_aacc_denominator():
     assert report["n"] == 2.0
     assert report["k"] == 2.0
     assert report["n_short"] == 0.0
-    # 3 judged, all solved, over a denominator of 4 (3 finals + 1 fail) -> 75,
-    # not the 100 a survivors-only denominator would report.
+    # 3 judged and solved over a denominator of 4 -> 75, not the 100 a
+    # survivors-only denominator would report.
     assert report["pass@1"] == pytest.approx(75.0)
     assert report["avg@k"] == pytest.approx(75.0)

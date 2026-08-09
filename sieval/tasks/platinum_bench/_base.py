@@ -57,10 +57,8 @@ reasoning into parse failures, which this benchmark counts as model errors. The
 task deliberately forwards **no** decoding param of its own: ``agenerate`` merges
 ``{**model_kwargs, **task_kwargs}``, so a task-side value would silently outrank
 whatever the caller configured, and the one knob a user most needs to turn here
-would be the one they cannot. The sole exception is ``n``, which is not a
-decoding param but the sampling budget this task validates ``k`` against — it
-has to reach the model, or ``pass@k`` is computed over a draw that never
-happened. Upstream sized 6000 for non-thinking models; on a
+would be the one they cannot. (``n`` is forwarded, but it is the sampling budget
+rather than a decoding param.) Upstream sized 6000 for non-thinking models; on a
 thinking model raise it, since a live run of all five subsets against Qwen3-32B
 spent the whole 6000 inside the reasoning channel on one singleop question and
 returned an empty answer that scores as an error. Read ``errors`` together with
@@ -307,19 +305,14 @@ class PlatinumMathGenTask(
     async def infer(self, pre, ctx):
         # No decoding params: `agenerate` merges `{**model_kwargs, **task_kwargs}`,
         # so anything passed here would silently outrank the caller's config.
-        # `max_tokens` is an infer prerequisite (6000 upstream) — see the module
-        # docstring; the score is budget-sensitive and the budget is the caller's.
-        #
-        # `n` is the exception: it is the sampling budget this task validated
-        # `k` against, so it has to reach the model or `pass@k` is computed over
-        # a draw that never happened (sieval/tasks/CLAUDE.md, "n_shot vs k").
+        # `n` is the exception — the sampling budget `k` was validated against,
+        # so it has to reach the model (sieval/tasks/CLAUDE.md, "n_shot vs k").
         return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        # One prediction per rollout. Reading only `texts[0]` would cap every
-        # sample at a single rollout, so `n > 1` would be generated and paid for
-        # and then discarded before `feedback` ever saw it.
+        # One prediction per rollout: `texts[0]` would discard the rest of a
+        # draw that was already generated and paid for.
         return build_prediction_record(
             [self._parse_one(text) for text in inf.texts] or [None]
         )
@@ -336,8 +329,6 @@ class PlatinumMathGenTask(
     @override
     async def feedback(self, post, ctx):
         reference = list(ctx.raw_sample["platinum_target"])
-        # `.get()`, not `[]`: a None prediction is ABSENT once the record
-        # round-trips through disk, which is what the resume path reads.
         judgements = []
         for index, rollout in enumerate(post["rollouts"]):
             # `.get()`, not `[]`: a None prediction is ABSENT once the record
@@ -391,17 +382,14 @@ class PlatinumMathGenTask(
             # Upstream's headline unit: how many of this subset's questions the
             # model got wrong. Directly comparable to its per-dataset tables.
             "errors": total - correct_num,
-            # `score` is upstream's first-rollout accuracy, NOT one of the
-            # sampling metrics — say so rather than leave a reader to infer it.
             SCORE_KEY_FIELD: "accuracy",
         }
         if self._n <= 1:
             return metrics
 
-        # The sampling metrics are averaged over `total`, the same denominator
-        # `accuracy` uses, so a failed sample counts as wrong in both. Upstream's
-        # convention for this benchmark; declared here rather than unified across
-        # tasks, which would change stored numbers (RFC #74 F).
+        # Averaged over `total`, the denominator `accuracy` already uses, so a
+        # failed sample counts as wrong in both. Declared rather than unified
+        # across tasks, which would change stored numbers (RFC #74 F).
         per_problem = []
         observed = []
         for ctx in finals:
@@ -421,9 +409,6 @@ class PlatinumMathGenTask(
         metrics.update(aggregate(per_problem, total))
         metrics["n"] = float(self._n)
         metrics["k"] = float(self._k)
-        # Samples the model returned short on. These score 0 for pass@k and drag
-        # every sampling metric down, so the count belongs in the report rather
-        # than in a log line nobody reads back.
         short = count_short(observed, self._n)
         metrics["n_short"] = float(short)
         if short:

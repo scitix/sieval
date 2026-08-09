@@ -60,9 +60,8 @@ class CapturingChatModel(ChatModel):
     async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
         _ = prompt
         self.last_kwargs = {**self._kwargs, **kwargs}
-        # A real backend returns `n` choices. Honouring `n` here is what lets a
-        # test tell "the task asked for n" apart from "the task asked for one
-        # and the stub happened to hand back a list".
+        # Honouring `n` is what lets a test tell "the task asked for n" apart
+        # from "the stub happened to hand back a list".
         requested = self.last_kwargs.get("n", 1)
         n = requested if isinstance(requested, int) and requested > 0 else 1
         texts = (self._texts * n)[:n] if len(self._texts) < n else self._texts[:n]

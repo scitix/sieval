@@ -327,8 +327,7 @@ class UGMathBenchZeroShotGenFixedTask(
     @override
     async def infer(self, pre, ctx):
         # `n` is the sampling budget `k` was validated against, so it has to
-        # reach the model — otherwise `pass@k` is computed over a draw that never
-        # happened (sieval/tasks/CLAUDE.md, "n_shot vs k").
+        # reach the model (sieval/tasks/CLAUDE.md, "n_shot vs k").
         return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
@@ -427,10 +426,7 @@ class UGMathBenchZeroShotGenFixedTask(
             lambda: defaultdict(list)
         )
         n_correct = 0
-        # Per *version* — UGMathBench draws n rollouts per version, and a
-        # version is the unit AAcc counts, so the sampling metrics are
-        # version-level too. EAcc is problem-level; the two are not the same
-        # denominator and the report says which is which.
+        # Per *version*, the unit AAcc counts — not per problem, which is EAcc's.
         per_version: list[dict[str, float]] = []
         observed_rollouts: list[int] = []
 
@@ -454,9 +450,9 @@ class UGMathBenchZeroShotGenFixedTask(
             verdicts = judgement["rollouts"]
             correct = bool(verdicts) and verdicts[0]["correct"]
             n_correct += int(correct)
-            # Sampling metrics are computed ALONGSIDE, never inside, AAcc/EAcc. The
-            # version-level accuracies must keep their first-rollout definition or
-            # EAcc's denominator stops meaning what its warnings say it means.
+            # Computed ALONGSIDE AAcc/EAcc, never inside them: those keep their
+            # first-rollout definition or EAcc's denominator stops meaning what
+            # its warnings say it means.
             if self._n > 1 and verdicts:
                 observed_rollouts.append(len(verdicts))
                 per_version.append(
@@ -464,8 +460,7 @@ class UGMathBenchZeroShotGenFixedTask(
                         [bool(v.get("correct")) for v in verdicts],
                         [_answer_text(final, i) for i in range(len(verdicts))],
                         k=self._k,
-                        # `squash` so `5^2*7` and `5^2 \cdot 7` are one vote
-                        # rather than two, which would split a real majority.
+                        # So `5^2*7` and `5^2 \cdot 7` are one vote, not two.
                         normalize=squash,
                     )
                 )
@@ -564,14 +559,14 @@ class UGMathBenchZeroShotGenFixedTask(
             "unattributed_fails": float(unattributed_fails),
             "unattributed_finals": float(unattributed_finals),
         }
-        # Sampling metrics, only when the run actually drew more than one sample.
-        # Emitting pass@1 == aacc/100 at n=1 would add a column that says nothing and
-        # invites the reader to treat it as independent evidence.
+        # Only when the run actually drew more than one sample: at n=1 pass@1 is
+        # aacc/100, and a second name for it invites being read as independent
+        # evidence.
         if self._n > 1 and per_version:
-            # `n_versions`, the same denominator AAcc uses, so a failed version
-            # counts as wrong in both. Averaging over only the judged versions
-            # would bias these upward exactly the way the EAcc warnings above
-            # describe — over survivors rather than over the set (RFC #74 F).
+            # `n_versions` is AAcc's denominator, so a failed version counts as
+            # wrong in both. Averaging over the judged versions alone would bias
+            # these upward over survivors — the defect the EAcc warnings above
+            # describe (RFC #74 F).
             metrics.update(aggregate(per_version, n_versions))
             metrics["n"] = float(self._n)
             metrics["k"] = float(self._k)
