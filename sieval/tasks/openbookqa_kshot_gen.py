@@ -53,6 +53,13 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+    first_rollout_correct,
+    warn_unscored_rollouts,
+)
 from sieval.datasets import OpenBookQADatasetSample
 
 DEFAULT_N_SHOT = 0
@@ -164,30 +171,43 @@ class OpenBookQAFewShotGenTask(
 
     @override
     async def postprocess(self, inf, ctx):
-        # n=1, only one choice. No option found -> None, so `extracted` reports
-        # the miss; "" and None both fail the letter comparison below.
+        # Every choice the model returned, not `texts[0]`: this task has no
+        # sampling budget of its own, but a model-level `n` still reaches it,
+        # and a draw that was paid for should not be dropped on the floor.
+        # No option found -> None, so `extracted` reports the miss; "" and None
+        # both fail the letter comparison below.
         return build_prediction_record(
-            [first_option_postprocess(inf.texts[0], OBQA_OPTIONS) or None]
+            [first_option_postprocess(text, OBQA_OPTIONS) or None for text in inf.texts]
         )
 
     @override
     async def feedback(self, post, ctx):
         answer = ctx.raw_sample["answerKey"]
-        prediction = post["rollouts"][0].get("prediction")
-        return True, build_judgement_record(
-            answer, [build_rollout_judgement(0, prediction == answer)]
-        )
+        rollouts = [
+            build_rollout_judgement(
+                rollout["index"], rollout.get("prediction") == answer
+            )
+            for rollout in post["rollouts"]
+        ]
+        return True, build_judgement_record(answer, rollouts)
 
     @override
     async def report(self, finals, fails):
-        correct = sum(
-            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
-        )
+        # The FIRST rollout's verdict: this benchmark publishes a single-draw
+        # number, so scoring the whole draw would restate it.
+        warn_unscored_rollouts(finals, knob="tasks.openbookqa_kshot_gen.args")
+        correct = first_rollout_correct(finals)
         accuracy = 100 * correct / len(finals) if finals else 0.0
         # `score` is the headline; `accuracy` names the metric behind it
         # (% of finalized samples whose extracted letter equals answerKey),
         # mirroring how gsm8k/drop surface their metric alongside `score`.
-        return {"score": accuracy, "fails": len(fails), "accuracy": accuracy}
+        return {
+            "score": accuracy,
+            "fails": len(fails),
+            "accuracy": accuracy,
+            SCORE_KEY_FIELD: "accuracy",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
+        }
 
     def _retrieve_fewshot(self) -> list[OpenBookQADatasetSample]:
         if self.n_shot <= 0:

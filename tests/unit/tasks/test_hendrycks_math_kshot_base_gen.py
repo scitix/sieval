@@ -247,4 +247,5 @@ async def test_report_empty_is_zero():
         "fails": 0,
         "accuracy": 0.0,
         "score_key": "accuracy",
+        "denominator_policy": "requested",
     }

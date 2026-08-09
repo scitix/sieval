@@ -53,6 +53,8 @@ from sieval.core.tasks import (
     sieval_task,
 )
 from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     first_rollout_correct,
     sampling_report,
@@ -227,6 +229,7 @@ class HendrycksMathFewShotBaseGenTask(
             "fails": len(fails),
             "accuracy": accuracy,
             SCORE_KEY_FIELD: "accuracy",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
         if self._n <= 1:
             return metrics

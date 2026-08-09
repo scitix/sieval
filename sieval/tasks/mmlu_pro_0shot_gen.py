@@ -17,6 +17,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+    warn_unscored_rollouts,
+)
 from sieval.datasets import MMLUProDatasetSample
 
 
@@ -71,28 +77,42 @@ class MMLUProZeroShotGenTask(
 
     @override
     async def postprocess(self, inf, ctx):
-        match = re.search(
-            r"(?i)ANSWER\s*:\s*([A-P])", inf.texts[0]
-        )  # n=1, only one choice
-        return build_prediction_record([match.group(1) if match else None])
+        # Every choice the model returned, not `texts[0]`: this task has no
+        # sampling budget of its own, but a model-level `n` still reaches it,
+        # and a draw that was paid for should not be dropped on the floor.
+        predictions = []
+        for text in inf.texts:
+            match = re.search(r"(?i)ANSWER\s*:\s*([A-P])", text)
+            predictions.append(match.group(1) if match else None)
+        return build_prediction_record(predictions)
 
     @override
     async def feedback(self, post, ctx):
         answer = ctx.raw_sample["answer"]
         category = ctx.raw_sample["category"]
-        prediction = post["rollouts"][0].get("prediction")
+        rollouts = [
+            build_rollout_judgement(
+                rollout["index"], rollout.get("prediction") == answer
+            )
+            for rollout in post["rollouts"]
+        ]
         return True, build_judgement_record(
             answer,
-            [build_rollout_judgement(0, prediction == answer)],
+            rollouts,
             extra={"category": category},
         )
 
     @override
     async def report(self, finals, fails):
+        # The FIRST rollout's verdict, per category and overall: this benchmark
+        # publishes a single-draw number, so scoring the whole draw would
+        # restate it.
+        warn_unscored_rollouts(finals, knob="tasks.mmlu_pro_0shot_gen.args")
         correct_num = 0
         category_metrics = defaultdict(lambda: {"correct": 0, "total": 0})
         for ctx in finals:
-            correct = ctx.feedback_result["rollouts"][0]["correct"]
+            verdicts = (ctx.feedback_result or {}).get("rollouts") or []
+            correct = bool(verdicts) and verdicts[0]["correct"]
             category = ctx.feedback_result["extra"]["category"]
             if correct:
                 correct_num += 1
@@ -109,4 +129,6 @@ class MMLUProZeroShotGenTask(
             )
             results[f"score_{category}"] = category_score
         results["fails"] = len(fails)
+        results[SCORE_KEY_FIELD] = "score"
+        results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
         return results

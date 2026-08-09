@@ -39,7 +39,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import SCORE_KEY_FIELD, sampling_report
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+    sampling_report,
+)
 from sieval.datasets import GSM8KDatasetSample
 
 from ._math_verify import normalize_vote
@@ -265,6 +270,7 @@ class GSM8KFewShotBaseGenTask(
             "exact_match": exact_match,
             "flexible_exact_match": flexible_exact_match,
             SCORE_KEY_FIELD: "exact_match",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         }
         if self._n <= 1:
             return metrics

@@ -163,6 +163,8 @@ from sieval.core.tasks import (
     sieval_task,
 )
 from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     aggregate,
     budget_metrics,
@@ -546,6 +548,7 @@ class UGMathBenchZeroShotGenFixedTask(
             # `score` is EAcc, not one of the sampling metrics — say which column
             # the headline number came from rather than leave it to be inferred.
             SCORE_KEY_FIELD: "eacc",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             "fails": float(len(fails)),
             "eacc": eacc,
             "aacc": aacc,

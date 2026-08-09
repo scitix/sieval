@@ -33,6 +33,21 @@ from loguru import logger
 #: Report key naming the metric ``score`` was taken from.
 SCORE_KEY_FIELD = "score_key"
 
+#: Report key naming the POPULATION the headline is averaged over. Two values,
+#: because reports split exactly two ways and the divergence is upstream-driven
+#: rather than accidental (RFC #74 F): unifying them would change ``score`` for
+#: eight tasks and break comparability with every stored number, so the
+#: convention is made explicit instead.
+DENOMINATOR_FIELD = "denominator_policy"
+
+#: Every sample the run asked for -- ``finals + fails`` -- so a pipeline failure
+#: counts as wrong. DeepSeek's full-set accuracy convention.
+DENOMINATOR_REQUESTED = "requested"
+
+#: Only the samples that produced a verdict; failures are excluded from the
+#: denominator rather than counted against the model.
+DENOMINATOR_JUDGED = "judged"
+
 
 def pass_at_k(n: int, c: int, k: int) -> float:
     """Unbiased pass@k for *c* correct out of *n* samples.
@@ -49,6 +64,26 @@ def pass_at_k(n: int, c: int, k: int) -> float:
     for i in range(k):
         prob_all_wrong *= (n - c - i) / (n - i)
     return 1.0 - prob_all_wrong
+
+
+def pass_pow_k(n: int, c: int, k: int) -> float:
+    """Unbiased ``pass^k``: all ``k`` of a random ``k``-subset correct.
+
+    ``C(c, k) / C(n, k)``, the same hypergeometric family as :func:`pass_at_k`
+    and its opposite direction. ``pass@k`` is an upper bound, so a model whose
+    sampling variance grew can score HIGHER on it while being worse to ship;
+    this is the one that falls when that happens, which is why a delivery check
+    reads the pair rather than either alone (RFC #74, motivation 2).
+
+    Same ``n < k`` guard: a short draw scores 0 here too, and ``n_short`` is what
+    distinguishes that from a model that genuinely could not repeat itself.
+    """
+    if n <= 0 or n < k or k <= 0 or c < k:
+        return 0.0
+    probability = 1.0
+    for i in range(k):
+        probability *= (c - i) / (n - i)
+    return probability
 
 
 def avg_at_k(correct: Sequence[bool]) -> float:
@@ -123,6 +158,9 @@ def rollout_metrics(
     out = {"pass@1": pass_at_k(n, c, 1), "avg@k": avg_at_k(correct)}
     if k > 1:
         out["pass@k"] = pass_at_k(n, c, k)
+        # Reported only beside `pass@k`: at k=1 the two collapse onto `pass@1`
+        # and three names for one number is not three pieces of evidence.
+        out["pass^k"] = pass_pow_k(n, c, k)
     if answers is not None and k == n:
         out["maj@k"] = majority_at_k(correct, answers, normalize=normalize)
     return out
@@ -171,6 +209,57 @@ def rollout_view(final) -> tuple[list[bool], list[str | None] | None]:
         return correct, None
     answers = [p.get("prediction") for p in predictions]
     return correct, [None if a is None else str(a) for a in answers]
+
+
+def warn_unscored_rollouts(finals, *, knob: str) -> int:
+    """Count -- and complain about -- draws the headline does not score.
+
+    A task with no sampling budget of its own still RECEIVES one: ``agenerate``
+    merges ``{**model_kwargs, **kwargs}``, so ``n`` set on the model reaches a
+    task that passes none, and the extra choices are generated and paid for.
+    Grading and recording them is strictly better than discarding them at
+    ``inf.texts[0]``, but the headline still scores the first alone -- these
+    benchmarks publish a single-draw number -- so the gap has to be said out
+    loud rather than left to whoever reconciles the token bill.
+
+    Late by design: this is a report-time count, not a per-sample warning, which
+    would fire once per row. Raising instead would be wrong -- one model config
+    legitimately serves a sampling math task and a single-draw MCQ task in the
+    same run.
+    """
+    extra = sum(
+        max(0, len((final.feedback_result or {}).get("rollouts") or []) - 1)
+        for final in finals
+    )
+    if extra:
+        logger.warning(
+            "{} rollout(s) beyond the first were graded and recorded but do NOT "
+            "reach this task's headline, which scores one draw per sample. They "
+            "were generated and billed: set `n` per task ({}) rather than on the "
+            "model if you did not mean to sample here.",
+            extra,
+            knob,
+        )
+    return extra
+
+
+def count_unextracted(finals) -> int:
+    """Rollouts whose answer could not be recovered from the response.
+
+    Separates MODEL error from PARSER error: a run whose score dropped because
+    the extractor stopped matching looks identical, in every other key, to one
+    whose model got worse. Counted per rollout rather than per sample, since one
+    bad draw in four is a different fact from four (RFC #74 C).
+
+    ``extracted`` is the durable flag -- ``prediction=None`` is dropped by
+    serialization, so on disk the key is absent rather than null.
+    """
+    return sum(
+        1
+        for final in finals
+        for rollout in (final.postprocess_result or {}).get("rollouts") or []
+        if not rollout.get("extracted")
+    )
 
 
 def count_short(observed: Sequence[int], n: int) -> int:
@@ -279,7 +368,8 @@ def sampling_report(
         if per_problem
         else zero_metrics(n=n, k=k, votes=votes)
     )
-    return rolled | budget_metrics(observed, n=n, k=k, unit=unit)
+    health = {"n_unextracted": float(count_unextracted(finals))}
+    return rolled | budget_metrics(observed, n=n, k=k, unit=unit) | health
 
 
 def budget_metrics(

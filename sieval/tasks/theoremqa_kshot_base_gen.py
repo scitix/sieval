@@ -85,6 +85,8 @@ from sieval.core.tasks import (
     sieval_task,
 )
 from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     first_rollout_correct,
     sampling_report,
@@ -984,6 +986,7 @@ class TheoremQAKShotBaseGenTask(
             "fails": len(fails),
             "empty": empty,
             SCORE_KEY_FIELD: "accuracy",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         }
         if self._n <= 1:
             return metrics

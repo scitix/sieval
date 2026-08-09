@@ -113,6 +113,8 @@ from sieval.core.tasks import (
     build_rollout_judgement,
 )
 from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     first_rollout_correct,
     sampling_report,
@@ -364,6 +366,7 @@ class PlatinumMathGenTask(
                 "accuracy": 0.0,
                 "errors": 0,
                 SCORE_KEY_FIELD: "accuracy",
+                DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             }
         # `accuracy` and `errors` keep their first-rollout definition so they stay
         # comparable with upstream's per-dataset tables; the sampling metrics below are
@@ -378,6 +381,7 @@ class PlatinumMathGenTask(
             # model got wrong. Directly comparable to its per-dataset tables.
             "errors": total - correct_num,
             SCORE_KEY_FIELD: "accuracy",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
         if self._n <= 1:
             return metrics

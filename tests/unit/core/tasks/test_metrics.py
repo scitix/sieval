@@ -18,12 +18,15 @@ from sieval.core.tasks.metrics import (
     avg_at_k,
     budget_metrics,
     count_short,
+    count_unextracted,
     first_rollout_correct,
     majority_at_k,
     pass_at_k,
+    pass_pow_k,
     rollout_metrics,
     rollout_view,
     sampling_report,
+    warn_unscored_rollouts,
     zero_metrics,
 )
 
@@ -54,6 +57,39 @@ def test_pass_at_1_equals_avg():
 def test_pass_at_k_monotone_in_k():
     for k in range(1, 4):
         assert pass_at_k(4, 2, k) <= pass_at_k(4, 2, k + 1)
+
+
+@pytest.mark.parametrize(
+    "n,c,k,want",
+    [
+        (4, 4, 4, 1.0),  # every draw correct -> certain
+        (4, 3, 4, 0.0),  # one wrong anywhere -> impossible
+        (4, 2, 2, (2 / 4) * (1 / 3)),
+        (4, 2, 1, 0.5),  # k=1 collapses onto pass@1
+        (4, 0, 1, 0.0),
+        (2, 2, 4, 0.0),  # k > n is unreachable by config; must not raise
+    ],
+)
+def test_pass_pow_k(n, c, k, want):
+    assert pass_pow_k(n, c, k) == pytest.approx(want)
+
+
+def test_pass_pow_k_is_the_opposite_direction_from_pass_at_k():
+    """The pair is the point: `pass@k` rises with sampling variance and this
+    falls, so a model that got less reliable cannot flatter both at once."""
+    tight = pass_at_k(4, 4, 2), pass_pow_k(4, 4, 2)  # unanimous
+    loose = pass_at_k(4, 2, 2), pass_pow_k(4, 2, 2)  # same mean, wider spread
+    assert loose[0] < tight[0]
+    assert loose[1] < tight[1]
+    # And within one draw, the optimistic bound is never below the pessimistic.
+    for c in range(5):
+        assert pass_pow_k(4, c, 2) <= pass_at_k(4, c, 2)
+
+
+def test_pass_pow_k_monotone_down_in_k():
+    """More rollouts required, never easier to satisfy."""
+    for k in range(1, 4):
+        assert pass_pow_k(4, 3, k) >= pass_pow_k(4, 3, k + 1)
 
 
 def test_majority_needs_answers_not_verdicts():
@@ -102,7 +138,7 @@ def test_majority_rejects_mismatched_lengths():
 def test_keys_are_literal_not_interpolated():
     """The budget lives in the n/k report fields, never in a column name."""
     keys = set(rollout_metrics([True, False, False, False], ["a", "b", "c", "d"], k=4))
-    assert keys == {"pass@1", "avg@k", "pass@k", "maj@k"}
+    assert keys == {"pass@1", "avg@k", "pass@k", "pass^k", "maj@k"}
     # nothing spells the value of k
     assert not any("4" in key for key in keys)
 
@@ -113,6 +149,7 @@ def test_rollout_metrics_omits_what_it_cannot_compute():
         "pass@1",
         "avg@k",
         "pass@k",
+        "pass^k",
     }
     # k == 1 -> no pass@k duplicate of pass@1
     assert set(rollout_metrics([True], None, k=1)) == {"pass@1", "avg@k"}
@@ -120,6 +157,7 @@ def test_rollout_metrics_omits_what_it_cannot_compute():
         "pass@1",
         "avg@k",
         "pass@k",
+        "pass^k",
         "maj@k",
     }
 
@@ -186,8 +224,10 @@ def test_aggregate_degenerate_inputs():
         # whole sampling block on n > 1 and never read it there.
         (1, 1, {"pass@1", "avg@k", "maj@k"}),
         (4, 1, {"pass@1", "avg@k"}),  # k == 1 < n: pass@k would restate pass@1
-        (4, 2, {"pass@1", "avg@k", "pass@k"}),  # k < n: majority is undefined
-        (4, 4, {"pass@1", "avg@k", "pass@k", "maj@k"}),
+        # k < n: majority is undefined, but both directions of the
+        # k-sample estimator are.
+        (4, 2, {"pass@1", "avg@k", "pass@k", "pass^k"}),
+        (4, 4, {"pass@1", "avg@k", "pass@k", "pass^k", "maj@k"}),
     ],
 )
 def test_zero_metrics_matches_what_a_clean_run_would_report(n, k, want):
@@ -367,6 +407,62 @@ def test_sampling_report_without_votes_never_grows_a_maj_at_k():
     ]
     assert "maj@k" not in sampling_report(finals, n=4, k=4, denominator=1, votes=False)
     assert "maj@k" not in sampling_report([], n=4, k=4, denominator=1, votes=False)
+
+
+def test_count_unextracted_separates_parser_error_from_model_error():
+    # Two samples, one bad draw each: the count is over ROLLOUTS, because one
+    # miss in four is a different fact from four, and a run whose extractor
+    # stopped matching looks identical in every other key to one whose model
+    # got worse.
+    finals = [
+        _ctx(
+            build_judgement_record(
+                "42", [build_rollout_judgement(i, False) for i in range(2)]
+            ),
+            build_prediction_record(["42", None]),
+        ),
+        _ctx(
+            build_judgement_record(
+                "42", [build_rollout_judgement(i, False) for i in range(2)]
+            ),
+            build_prediction_record([None, None]),
+        ),
+    ]
+    assert count_unextracted(finals) == 3
+    assert sampling_report(finals, n=2, k=2, denominator=2)["n_unextracted"] == 3.0
+
+
+def test_count_unextracted_is_zero_when_everything_parsed():
+    finals = [
+        _ctx(
+            build_judgement_record("42", [build_rollout_judgement(0, True)]),
+            build_prediction_record(["42"]),
+        )
+    ]
+    assert count_unextracted(finals) == 0
+    # Reported as 0.0 rather than omitted: absent and zero read the same to a
+    # consumer, and only one of them means "checked".
+    assert sampling_report(finals, n=1, k=1, denominator=1)["n_unextracted"] == 0.0
+
+
+def test_warn_unscored_rollouts_counts_the_draws_the_headline_ignores():
+    # A task with no `n` knob still receives one from the model config. The
+    # extra draws are graded and stored; the headline scores the first alone.
+    finals = [
+        _ctx(
+            build_judgement_record(
+                "A", [build_rollout_judgement(i, True) for i in range(4)]
+            ),
+            build_prediction_record(["A"] * 4),
+        ),
+        _ctx(
+            build_judgement_record("A", [build_rollout_judgement(0, True)]),
+            build_prediction_record(["A"]),
+        ),
+    ]
+    assert warn_unscored_rollouts(finals, knob="tasks.x.args") == 3
+    assert warn_unscored_rollouts(finals[1:], knob="tasks.x.args") == 0
+    assert warn_unscored_rollouts([], knob="tasks.x.args") == 0
 
 
 def test_sampling_report_counts_a_short_draw_and_drops_the_majority():

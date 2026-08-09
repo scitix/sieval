@@ -41,7 +41,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import SCORE_KEY_FIELD, sampling_report
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    sampling_report,
+)
 from sieval.datasets import HumanEvalDatasetSample
 
 STOP_SEQUENCES = ("\nclass", "\ndef", "\n#", "\nif", "\nprint")
@@ -230,6 +235,7 @@ class HumanEvalZeroShotBaseGenTask(
             "timeouts": timeouts,
             "pass@1": pass_at_1,
             SCORE_KEY_FIELD: "pass@1",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
         if self._n > 1:
             # The rest only where there was a draw to describe. At n=1 `avg@k`

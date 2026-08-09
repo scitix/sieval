@@ -19,7 +19,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import SCORE_KEY_FIELD, sampling_report
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    sampling_report,
+)
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import MATH500DatasetSample
 
@@ -136,6 +141,7 @@ class MATH500ZeroShotGenTask(
             "fails": len(fails),
             "pass@1": pass_at_1,
             SCORE_KEY_FIELD: "pass@1",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
         if self._n > 1:
             # The rest only where there was a draw to describe. At n=1 `avg@k`

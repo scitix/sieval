@@ -208,12 +208,17 @@ class TestMathPassAtKReports:
             "fails": 0,
             "pass@1": 0.0,
             "score_key": "pass@1",
+            "denominator_policy": "requested",
             "avg@k": 0.0,
             "pass@k": 0.0,
+            # The reliability direction: `pass@k` is an upper bound and this is
+            # its opposite, so a run reporting only the first flatters variance.
+            "pass^k": 0.0,
             "maj@k": 0.0,
             "n": 2.0,
             "k": 2.0,
             "n_short": 0.0,
+            "n_unextracted": 0.0,
         }
 
     async def test_every_sample_failing_keeps_the_full_key_set(
@@ -334,6 +339,7 @@ class TestLiveCodeBenchReport:
             "timeouts": 0,
             "pass@1": 0.0,
             "score_key": "pass@1",
+            "denominator_policy": "requested",
         }
 
 
