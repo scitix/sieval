@@ -11,10 +11,18 @@ One entry point, so the numbers stay comparable across tasks:
 ``pass@k``
     Solved at least once in ``k`` draws -- an upper bound, so higher sampling
     variance can raise it while making a model worse to ship.
+``pass^k``
+    All ``k`` correct -- the reliability direction, and the one that FALLS when
+    sampling variance grows. Read as a pair with ``pass@k``, never alone.
 ``maj@k``
-    Self-consistency: is the modal ANSWER correct? Not derivable from verdicts
-    alone -- right twice with one answer and wrong twice with two different ones
-    is a majority WIN that a verdict tally sees as 2/4.
+    Is the modal ANSWER correct? Not derivable from verdicts alone -- right
+    twice with one answer and wrong twice with two different ones is a majority
+    WIN that a verdict tally sees as 2/4.
+``self_consistency``
+    What share of the draw agreed on that modal answer. Continuous where
+    ``maj@k`` is thresholded, and correctness-blind: it is the only key here
+    that moves when a model's answer distribution widens without its mean
+    changing, which is the delivery defect this family exists to catch.
 
 Keys carry a literal ``k``, never its value, so a leaderboard column does not
 change identity when the budget does. The budget is reported once, as the ``n``
@@ -136,6 +144,44 @@ def majority_at_k(
     return 1.0 if winner_is_correct else 0.0
 
 
+def self_consistency(
+    answers: Sequence[str | None],
+    *,
+    normalize: Callable[[str], str] | None = None,
+) -> float:
+    """Share of the draw that landed in the modal ANSWER cluster.
+
+    The dispersion metric ``maj@k`` cannot be: ``maj@k`` is thresholded, so a
+    model answering 4/4 the same way and one answering 3/4 both score 1.0 while
+    the second is measurably less stable. That gap is the degradation this
+    exists to catch -- a converted or requantized model whose mean is unchanged
+    but whose answer distribution widened leaves ``accuracy`` and ``maj@k``
+    alone and moves only this.
+
+    CORRECTNESS-BLIND on purpose: a model that is consistently wrong scores 1.0.
+    Read it beside a correctness key, never instead of one.
+
+    The denominator is the WHOLE draw, not the answers that voted, so a rollout
+    whose answer could not be extracted drags it down. That is the conservative
+    reading -- an unextracted rollout is not evidence of stability -- and it is
+    why :func:`count_unextracted` is reported next to it: together they say
+    whether a low score is the model or the parser.
+    """
+    if not answers:
+        return 0.0
+    norm = normalize or (lambda x: x)
+    votes: collections.Counter[str] = collections.Counter()
+    for answer in answers:
+        if answer is None:
+            continue
+        vote = norm(str(answer)).strip()
+        if vote:
+            votes[vote] += 1
+    if not votes:
+        return 0.0
+    return votes.most_common(1)[0][1] / len(answers)
+
+
 def rollout_metrics(
     correct: Sequence[bool],
     answers: Sequence[str | None] | None = None,
@@ -161,8 +207,12 @@ def rollout_metrics(
         # Reported only beside `pass@k`: at k=1 the two collapse onto `pass@1`
         # and three names for one number is not three pieces of evidence.
         out["pass^k"] = pass_pow_k(n, c, k)
-    if answers is not None and k == n:
-        out["maj@k"] = majority_at_k(correct, answers, normalize=normalize)
+    if answers is not None:
+        # No `k == n` gate, unlike maj@k: this is a property of the draw that
+        # arrived, not of the budget a majority would be taken over.
+        out["self_consistency"] = self_consistency(answers, normalize=normalize)
+        if k == n:
+            out["maj@k"] = majority_at_k(correct, answers, normalize=normalize)
     return out
 
 

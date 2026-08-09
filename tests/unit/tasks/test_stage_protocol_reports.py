@@ -215,6 +215,9 @@ class TestMathPassAtKReports:
             # its opposite, so a run reporting only the first flatters variance.
             "pass^k": 0.0,
             "maj@k": 0.0,
+            # Dispersion, correctness-blind: the one key that moves when a
+            # model's answers widen without its mean changing.
+            "self_consistency": 0.0,
             "n": 2.0,
             "k": 2.0,
             "n_short": 0.0,

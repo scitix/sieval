@@ -26,6 +26,7 @@ from sieval.core.tasks.metrics import (
     rollout_metrics,
     rollout_view,
     sampling_report,
+    self_consistency,
     warn_unscored_rollouts,
     zero_metrics,
 )
@@ -135,10 +136,62 @@ def test_majority_rejects_mismatched_lengths():
     assert majority_at_k([True, True], ["a"]) == 0.0
 
 
+def test_self_consistency_is_continuous_where_majority_is_thresholded():
+    # The whole reason it is a separate key: both draws have a correct modal
+    # answer, so maj@k cannot tell them apart -- and the second model is
+    # measurably less stable.
+    unanimous = ["a", "a", "a", "a"]
+    split = ["a", "a", "a", "b"]
+    assert majority_at_k([True] * 4, unanimous) == 1.0
+    assert majority_at_k([True, True, True, False], split) == 1.0
+    assert self_consistency(unanimous) == 1.0
+    assert self_consistency(split) == 0.75
+
+
+def test_self_consistency_is_correctness_blind():
+    """A consistently WRONG model scores 1.0 -- read it beside a correctness
+    key, never instead of one."""
+    assert self_consistency(["b", "b", "b", "b"]) == 1.0
+    assert majority_at_k([False] * 4, ["b", "b", "b", "b"]) == 0.0
+
+
+def test_self_consistency_counts_unextracted_against_the_draw():
+    # Denominator is the whole draw, not the answers that voted: two agreeing
+    # answers out of four rollouts is not the same evidence of stability as
+    # four agreeing ones, whatever happened to the other two.
+    assert self_consistency(["a", "a", None, None]) == 0.5
+    assert self_consistency([None, None, None, None]) == 0.0
+    assert self_consistency(["", "", "a", "a"]) == 0.5
+    assert self_consistency([]) == 0.0
+
+
+def test_self_consistency_uses_the_normalizer():
+    # Same clustering as maj@k, so the two cannot disagree about what one
+    # answer is.
+    args = ["1/2", "0.5", "9", "8"]
+    assert self_consistency(args) == 0.25
+    assert self_consistency(args, normalize=lambda s: {"1/2": "0.5"}.get(s, s)) == 0.5
+
+
+def test_self_consistency_needs_no_k_equals_n_gate():
+    """It describes the draw that arrived, not the budget a majority is over --
+    so unlike maj@k it survives k < n."""
+    four = ([True, True, False, False], ["a", "a", "b", "c"])
+    assert "maj@k" not in rollout_metrics(*four, k=2)
+    assert rollout_metrics(*four, k=2)["self_consistency"] == 0.5
+
+
 def test_keys_are_literal_not_interpolated():
     """The budget lives in the n/k report fields, never in a column name."""
     keys = set(rollout_metrics([True, False, False, False], ["a", "b", "c", "d"], k=4))
-    assert keys == {"pass@1", "avg@k", "pass@k", "pass^k", "maj@k"}
+    assert keys == {
+        "pass@1",
+        "avg@k",
+        "pass@k",
+        "pass^k",
+        "maj@k",
+        "self_consistency",
+    }
     # nothing spells the value of k
     assert not any("4" in key for key in keys)
 
@@ -159,6 +212,7 @@ def test_rollout_metrics_omits_what_it_cannot_compute():
         "pass@k",
         "pass^k",
         "maj@k",
+        "self_consistency",
     }
 
 
@@ -222,12 +276,29 @@ def test_aggregate_degenerate_inputs():
     [
         # k == n, so maj@k is defined even for a single rollout. Tasks gate the
         # whole sampling block on n > 1 and never read it there.
-        (1, 1, {"pass@1", "avg@k", "maj@k"}),
-        (4, 1, {"pass@1", "avg@k"}),  # k == 1 < n: pass@k would restate pass@1
+        (1, 1, {"pass@1", "avg@k", "maj@k", "self_consistency"}),
+        # k == 1 < n: pass@k would restate pass@1. `self_consistency`
+        # is not gated on k at all -- it describes the draw.
+        (4, 1, {"pass@1", "avg@k", "self_consistency"}),
         # k < n: majority is undefined, but both directions of the
         # k-sample estimator are.
-        (4, 2, {"pass@1", "avg@k", "pass@k", "pass^k"}),
-        (4, 4, {"pass@1", "avg@k", "pass@k", "pass^k", "maj@k"}),
+        (
+            4,
+            2,
+            {"pass@1", "avg@k", "pass@k", "pass^k", "self_consistency"},
+        ),
+        (
+            4,
+            4,
+            {
+                "pass@1",
+                "avg@k",
+                "pass@k",
+                "pass^k",
+                "maj@k",
+                "self_consistency",
+            },
+        ),
     ],
 )
 def test_zero_metrics_matches_what_a_clean_run_would_report(n, k, want):
