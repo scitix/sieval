@@ -655,6 +655,49 @@ def _source_transformations():
     )
 
 
+def _parse_latex_strict(text: str) -> list:
+    """A third reading: LaTeX, with symbol case PRESERVED.
+
+    Neither existing parser can do that. ``_parse_math`` goes through
+    ``math_verify``, whose LaTeX reader lower-cases every symbol, so a gold naming
+    ``R`` never matches a prediction that also wrote ``R``; ``_parse_sympy_source``
+    preserves case but cannot read LaTeX at all. The prediction is almost always
+    LaTeX -- mathematics is written that way everywhere outside code -- and the gold
+    is sympy source, so the two sides were being read by two parsers that disagree
+    about what a symbol is.
+
+    ``sympy.parsing.latex.parse_latex`` closes that gap, and because
+    :func:`_sympy_candidates` feeds every parser BOTH sides, adding it here keeps the
+    comparison symmetric rather than privileging one side's convention.
+
+    Failures are silent by design: this is one more candidate reading, and a string
+    it cannot parse is simply not among them.
+    """
+    import sympy
+
+    text = (text or "").strip()
+    if not text:
+        return []
+    try:
+        from sympy.parsing.latex import parse_latex
+
+        expr = parse_latex(text)
+    except Exception:
+        return []
+    if not isinstance(expr, sympy.Basic):
+        return []
+    # `parse_latex` reads `\\pi` as Symbol('pi'), not the constant, so a prediction
+    # comparing against a sympy-source gold (which DOES yield the constant) differs by
+    # `pi - pi` -- same name, different object, and simplify cannot cancel it. Only `pi`
+    # is mapped: `\\pi` is unambiguous in mathematical notation, whereas `e` and `i` are
+    # ordinary variable names often enough that binding them would invent agreements.
+    # The substitution moves this reading onto the convention the GOLD already uses.
+    pi_symbol = sympy.Symbol("pi")
+    if pi_symbol in expr.free_symbols:
+        expr = expr.subs(pi_symbol, sympy.pi)
+    return [expr]
+
+
 def _sympy_candidates(text: str) -> list:
     """Every plausible sympy reading of *text*, from both parsers.
 
@@ -666,7 +709,7 @@ def _sympy_candidates(text: str) -> list:
 
     out: list = []
     try:
-        candidates = _parse_math(text) + _parse_sympy_source(text)
+        candidates = _parse_math(text) + _parse_sympy_source(text) + _parse_latex_strict(text)
     except Exception:
         return out
     for item in candidates:
