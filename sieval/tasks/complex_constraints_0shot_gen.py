@@ -23,6 +23,14 @@ unpinned degree of freedom in the comparison itself, not merely an unpinned
 version of a known one: a run matching the candidate model exactly may still not
 be comparing like with like.
 
+Measured, that freedom turns out to be **a capability floor rather than a choice
+between equals**, and it does not close the gap to the board: three capable
+judges across two vendors put the same candidate at **51.6–53.3** against Table
+1's **38.7**, agreeing with each other to within their own repeat noise. So this
+port's authored rubric grades *more leniently* than whatever produced the
+leaderboard, and the residual is an open question rather than a knob — one more
+reason the task ships ``experimental``. See the grader notes below.
+
 The judge is supplied via the ``grader`` task arg (a model-config dict, or a
 pre-built Model, on its own ``api_base``/``api_key``). As with sieval's other
 LLM-graded tasks, correctness depends on a grader model whose version sieval
@@ -41,7 +49,18 @@ moved the headline over **20.0–29.3**, left **22 of 75 prompts flipping betwee
 pass and fail**, and left **14.8% of the 1,559 criteria undecided** across four
 runs. A stronger judge was far steadier (99.5% per-criterion self-agreement
 against 91.9%). Repeat the grading and report a spread whenever the grader
-samples; a lone number is a draw, not a measurement.
+samples; a lone number is a draw, not a measurement. ``temperature: 0`` is
+necessary but not sufficient — measured at it, one judge repeated *exactly*
+(three runs, identical headline, zero task-pass flips) while another still
+spanned 2.7 points, so check repeatability for the grader you actually use.
+
+**Choose the grader by capability, not by name or price.** Four judges across two
+vendors on one identical set of responses: three capable ones (a frontier model
+and two Gemini tiers) landed within 51.6–53.3 and agreed with *each other* on
+98.8–99.0% of criteria — about how well any one of them agrees with itself on a
+repeat — while a mini-tier judge sat ~27 points low, and one-way: it alone fails
+~141 criteria against ~35 in the other direction. Cheap is not the problem; being
+below the floor is. A flash-tier judge matched a pro-tier one to 1.3 points.
 
 Give the grader enough ``max_tokens`` for one verdict line per criterion — up to
 40, *after* whatever reasoning it emits first. A grader truncated mid-block
@@ -68,6 +87,9 @@ Deviations / by-design behavior worth knowing:
   satisfied** — an unreadable verdict must never inflate a score — but counted
   separately as ``n_unparsed`` (per rollout, and pooled in the report), so judge
   format drift stays distinguishable from a model that failed the rubric.
+* The template and parser are **not tuned to one judge family**: across four
+  judges from two vendors, 13 gradings of 1,559 criteria each, every verdict
+  parsed — ``n_unparsed`` was 0 every time, with no change to the template.
 * **The grader prompt is hardened in two port-authored ways**, both scoring-
   relevant and neither upstream behavior: its format example reads ``<verdict>``
   rather than a literal PASS/FAIL alternation, and the parser rejects an
@@ -182,19 +204,31 @@ from sieval.datasets import ComplexConstraintsDatasetSample
             "by GPT-5-mini during ComplexConstraints training and CoreCraft "
             "training') and never says what graded the leaderboard, so the judge "
             "is an unpinned degree of freedom in the comparison itself, and it "
-            "is a LARGE one — measured 2026-08-10 by re-grading identical "
-            "responses with two judges, changing nothing else: the headline "
-            "moved 25.67 -> 51.56 (means of 3-4 repeats), straddling Table 1's "
-            "38.7. The shift is one-way (net +105 of 1,559 verdicts) where "
-            "run-to-run noise is symmetric (net +14), and it concentrates on "
-            "criteria 1.8x longer than average that enumerate an exclusion list "
-            "to cross-check against the response — this template tells the judge "
-            "to fail what it cannot verify, so a weaker judge's errors are "
-            "necessarily one-way false FAILs. Two judges agreeing on HOW MANY "
-            "criteria pass (dense micro 76.72 vs 76.78) still differed 2.3x on "
-            "the headline, because they disagreed on WHICH: an all-or-nothing "
-            "metric is reproducible only with the EXACT judge, not an equally "
-            "strict one. What DOES reproduce is the ordering: with the stronger "
+            "is really a CAPABILITY FLOOR rather than a choice of identity — "
+            "measured 2026-08-10 by re-grading identical responses with four "
+            "judges across two vendors, changing nothing else. Three capable "
+            "judges (a frontier model and two Gemini tiers) landed on 51.6-53.3 "
+            "and agreed with EACH OTHER on 98.8-99.0% of the 1,559 criteria, "
+            "which is about how well any one of them agrees with itself on a "
+            "repeat (99.5-99.9%); their disagreements are symmetric, i.e. noise. "
+            "A mini-tier judge was the lone outlier at 25.67, ~27 points low "
+            "against all three, and its deficit is ONE-WAY (~141 criteria it "
+            "alone fails against ~35 the other way) where run-to-run noise is "
+            "symmetric. Those one-way losses concentrate on criteria 1.8x longer "
+            "than average that enumerate an exclusion list to cross-check "
+            "against the response — this template tells the judge to fail what "
+            "it cannot verify, so a judge below the floor produces one-way false "
+            "FAILs by construction. Two judges agreeing on HOW MANY criteria "
+            "pass (dense micro 76.72 vs 76.78) still differed 2.3x on the "
+            "headline because they disagreed on WHICH: an all-or-nothing metric "
+            "punishes a sub-floor grader hard. PICK THE GRADER BY CAPABILITY, "
+            "NOT BY NAME OR PRICE: a cheap flash-tier model matched a pro-tier "
+            "one to 1.3 points, while a mini-tier one was 27 off. NOTE THE "
+            "CONSENSUS SITS ABOVE THE BOARD: 51.6-53.3 against Table 1's 38.7 "
+            "for the same candidate, so this port's authored rubric grades more "
+            "leniently than whatever produced the leaderboard, and that ~13-point "
+            "residual is NOT explained by judge choice among capable judges — it "
+            "is open. What DOES reproduce is the ordering: with a capable "
             "judge three models spanning the board ranked 51.56 > 18.33 > 5.78 "
             "against Table 1's 38.7 > 26.7 > 4.9 — same order, adjacent gaps "
             "32.3 and 11.7 points even at worst case; the weaker judge could not "
@@ -206,7 +240,11 @@ from sieval.datasets import ComplexConstraintsDatasetSample
             "gateway fixes temperature at 1 for its whole gpt-5.x family) the "
             "same judge on the same responses spanned 20.0-29.3 over four runs, "
             "with 22/75 prompts flipping and 14.8% of criteria undecided, so "
-            "repeat the grading and report a spread. Per-criterion verdicts and "
+            "repeat the grading and report a spread. temperature=0 is NECESSARY "
+            "BUT NOT SUFFICIENT: at it, one judge repeated exactly (three runs, "
+            "identical 52.00, zero task-pass flips) while another still spanned "
+            "2.67 — so verify repeatability per grader instead of assuming it. "
+            "Per-criterion verdicts and "
             "the judge's full ModelOutput (extra.grader_output) are persisted "
             "per rollout, the reply being the only evidence of a verdict a "
             "re-grade need not reproduce. REPEATS: the leaderboard states no "
