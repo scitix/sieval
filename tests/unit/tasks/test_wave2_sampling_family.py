@@ -1,22 +1,12 @@
 """Shared sampling contract for the four accuracy-headline math tasks.
 
-GSM8K (chat and few-shot base), Hendrycks MATH and TheoremQA report an
-``accuracy``-style headline rather than ``pass@1``, and each was single-draw by
-construction: ``postprocess`` read ``inf.texts[0]``, ``feedback`` graded
-``rollouts[0]``, and there was no ``k`` / ``n`` knob at all. RFC #74 calls that
-wave 2; item E is what it needs first.
+GSM8K (chat and few-shot base), Hendrycks MATH and TheoremQA (RFC #74 wave 2).
+Two cross-task decisions no per-task file can assert:
 
-Two things are asserted here that no per-task file can, because they are
-cross-task decisions:
-
-1. **The whole draw is kept and graded.** A task that still caps at rollout 0
-   passes every one of its own tests and silently pays for ``n`` generations to
-   score one.
-2. **The headline stays FIRST-ROLLOUT under n > 1.** These benchmarks publish a
-   greedy single-draw number, so ``accuracy`` must keep meaning that; ``pass@1``
-   (``c/n``, the better estimator of the same quantity) is reported beside it,
-   never merged into it. At n=1 the two coincide, which is what makes adopting a
-   budget non-breaking.
+1. **The whole draw is kept and graded.** A task still capping at rollout 0
+   passes all of its own tests while paying for ``n`` generations to score one.
+2. **The headline stays FIRST-ROLLOUT under n > 1**, because these publish a
+   greedy single-draw number. ``pass@1`` sits beside it, never merged in.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -37,10 +27,8 @@ from sieval.tasks.gsm8k_0shot_gen import GSM8KZeroShotGenTask
 from sieval.tasks.gsm8k_kshot_base_gen import GSM8KFewShotBaseGenTask
 from sieval.tasks.hendrycks_math_kshot_base_gen import HendrycksMathFewShotBaseGenTask
 
-#: Four rollouts: the FIRST is wrong, the other three agree on the gold. Chosen
-#: so every metric this file cares about takes a different value -- accuracy 0,
-#: pass@1 75, pass@k 100, maj@k 100 -- and a task that collapses any two of them
-#: cannot pass.
+#: Four rollouts, the FIRST wrong: accuracy 0, pass@1 75, pass@k 100, maj@k 100
+#: all differ, so a task collapsing any two of them cannot pass.
 FOUR_DRAWS_FIRST_WRONG = 4
 
 
@@ -200,9 +188,8 @@ def test_k_equal_to_n_is_accepted(case):
 @pytest.mark.parametrize("case", CASES, ids=IDS)
 @pytest.mark.anyio
 async def test_infer_forwards_the_sampling_budget(case):
-    # `n` on the model is merged as `{**model_kwargs, **task_kwargs}`, so a task
-    # that does not pass it lets a model-level `n` through to a postprocess that
-    # keeps one draw -- paid for, discarded, and silent.
+    # `agenerate` merges `{**model_kwargs, **kwargs}`, so a task that does not
+    # pass `n` lets a model-level one through and then discards the draws.
     task, model, raw = case.task(k=4, n=4)
     pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
     await task.infer(pre, TaskContext(sample_id=0, raw_sample=raw))
@@ -231,9 +218,8 @@ async def test_the_whole_draw_is_extracted_and_graded(case):
 @pytest.mark.parametrize("case", CASES, ids=IDS)
 @pytest.mark.anyio
 async def test_headline_stays_first_rollout_while_pass_at_1_averages(case):
-    # The alignment decision, pinned: `accuracy` is what the paper published --
-    # one greedy draw -- and `pass@1` is c/n over the whole draw. Merging them
-    # would silently restate every published-number comparison.
+    # `accuracy` is what the paper published (one greedy draw); `pass@1` is c/n
+    # over the whole draw. Merging them restates every published comparison.
     texts = [case.wrong] + [case.gold] * 3
     task, _, raw = case.task(k=4, n=4, texts=texts)
     ctx = TaskContext(sample_id=0, raw_sample=raw)
@@ -264,8 +250,7 @@ async def test_headline_stays_first_rollout_while_pass_at_1_averages(case):
 @pytest.mark.parametrize("case", CASES, ids=IDS)
 @pytest.mark.anyio
 async def test_n_equals_one_reports_no_sampling_block(case):
-    # The non-breaking property: at the default budget the report gains exactly
-    # `score_key` and nothing else, so a stored row keeps every column it had.
+    # At the default budget a stored row keeps every column it had.
     task, _, raw = case.task(k=1, n=1)
     report = await task.report([], [])
     assert report["score_key"] in report

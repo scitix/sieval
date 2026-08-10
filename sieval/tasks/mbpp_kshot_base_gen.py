@@ -265,16 +265,12 @@ class MBPPFewShotBaseGenTask(
             # A null msg from the evaluator is absent on disk -- default it.
             if "timeout" in (r["extra"].get("msg") or "").lower()
         )
-        # `votes=False`: maj@k votes on ANSWERS, and two correct programs are not
-        # one answer. A majority over programs needs behavioural clustering,
-        # which RFC #74 leaves out of scope for the code family — so the key is
-        # omitted, on the empty path too, rather than faked.
+        # `votes=False`: two correct programs are not one answer, so there is
+        # nothing well-defined to take a majority over (RFC #74).
         rolled = sampling_report(
             finals, n=self._n, k=self._k, denominator=total, votes=False
         )
-        # One path, so the empty run reports the same keys as a scored one and
-        # `pass@1` never KeyErrors. `score` is read back out of the shared block
-        # rather than summed beside it — one estimator, one number.
+        # Read back out of the shared block, so `score` cannot drift from it.
         pass_at_1 = rolled["pass@1"]
         metrics: dict[str, float | str] = {
             "score": pass_at_1,
@@ -285,8 +281,7 @@ class MBPPFewShotBaseGenTask(
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
         if self._n > 1:
-            # The rest only where there was a draw to describe. At n=1 `avg@k`
-            # restates `pass@1` and `n_short` is 0 by construction.
+            # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)
         return metrics
 

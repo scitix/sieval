@@ -1,15 +1,11 @@
 """Shared contract for the pass@k code tasks.
 
-The five code-execution tasks (HumanEval x2, MBPP, LiveCodeBench x2) take the
-same ``k`` / ``n`` pair as the math family and report the same sampling metrics
-from it, minus ``maj@k`` — a majority over *programs* would need behavioural
-clustering, which RFC #74 leaves out of scope. What is asserted here is the part
-they must not diverge on: ``k <= n``, and the key set that follows from it.
+HumanEval x2, MBPP, LiveCodeBench x2: same ``k`` / ``n`` pair as the math
+family, same metrics minus ``maj@k`` (two correct programs are not one answer).
 
-Four of the five reached this file without the ``k > n`` guard at all, where
-``pass@k`` came out a confident 0.0 (``pass_at_k`` returns 0.0 when ``n < k``)
-next to a real ``pass@1``. Asserting it once, over all five, is what stops that
-recurring in the next one added.
+Four of the five arrived without the ``k > n`` guard, where ``pass@k`` came out
+a confident 0.0 beside a real ``pass@1``. Asserting it once over all five is
+what stops that recurring in the next task added.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -130,8 +126,7 @@ def _build(task_cls, dataset_factory, model_factory, **kwargs):
 
 @pytest.mark.parametrize(("task_cls", "dataset", "model"), FAMILY, ids=IDS)
 def test_k_greater_than_n_is_rejected(task_cls, dataset, model):
-    # Without the guard this constructs fine and every pass@k comes out 0.0 --
-    # a confidently wrong column next to a real pass@1, not an error.
+    # Without the guard this constructs fine and pass@k comes out 0.0.
     with pytest.raises(ValueError, match=r"(?i)pass@2|k must be <= n"):
         _build(task_cls, dataset, model, k=2, n=1)
 
@@ -145,9 +140,7 @@ def test_k_equal_to_n_is_accepted(task_cls, dataset, model):
 @pytest.mark.parametrize(("task_cls", "dataset", "model"), FAMILY, ids=IDS)
 @pytest.mark.anyio
 async def test_report_omits_maj_at_k_for_programs(task_cls, dataset, model):
-    # Two correct programs are not one answer, so there is nothing well-defined
-    # to vote on. The key is absent rather than 0.0, which would read as "the
-    # majority was wrong".
+    # Absent rather than 0.0, which would read as "the majority was wrong".
     task = _build(task_cls, dataset, model, k=4, n=4)
     try:
         report = await task.report([], [])
@@ -179,8 +172,7 @@ async def test_pass_at_k_column_carries_a_literal_k(task_cls, dataset, model):
     finally:
         await task.shutdown()
 
-    # n=2, c=1 -> pass@1 = 0.5, pass@2 = 1.0. The column is named `pass@k`, not
-    # `pass@2`, so it keeps its identity when the budget changes.
+    # n=2, c=1. The column is `pass@k`, not `pass@2`.
     assert report["pass@1"] == pytest.approx(50.0)
     assert report["pass@k"] == pytest.approx(100.0)
     assert "pass@2" not in report

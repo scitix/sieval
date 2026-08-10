@@ -158,9 +158,7 @@ class SMT2025ZeroShotGenTask(
             denominator=total,
             normalize=normalize_vote,
         )
-        # `pass@1` is the headline, so it is read back out of the shared block
-        # rather than summed beside it — one estimator, one number, and `score`
-        # cannot drift from the column it names.
+        # Read back out of the shared block, so `score` cannot drift from it.
         pass_at_1 = rolled["pass@1"]
         metrics: dict[str, float | str] = {
             "score": pass_at_1,
@@ -170,8 +168,6 @@ class SMT2025ZeroShotGenTask(
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
         if self._n > 1:
-            # The rest only where there was a draw to describe. At n=1 `avg@k`
-            # restates `pass@1`, `maj@k` restates the one verdict, and `n_short`
-            # is 0 by construction — three names for what `pass@1` already said.
+            # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)
         return metrics

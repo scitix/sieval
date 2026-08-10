@@ -386,8 +386,7 @@ class PlatinumMathGenTask(
         if self._n <= 1:
             return metrics
 
-        # Averaged over `total`, the denominator `accuracy` already uses, so a
-        # failed sample counts as wrong in both. Declared rather than unified
-        # across tasks, which would change stored numbers (RFC #74 F).
+        # Over `total`, the denominator `accuracy` uses, so a failed sample
+        # counts as wrong in both.
         metrics.update(sampling_report(finals, n=self._n, k=self._k, denominator=total))
         return metrics

@@ -230,10 +230,8 @@ class GSM8KZeroShotGenTask(
         # math-0shot-gen family and DeepSeek's full-set accuracy: a pipeline
         # failure counts as wrong, not as an excluded sample.
         total = len(finals) + len(fails)
-        # `accuracy` keeps its FIRST-ROLLOUT definition so it stays the number
-        # DeepSeek-Math published, which was generated greedily once. The
-        # sampling metrics below are additive and never touch it. At n=1 the two
-        # readings are the same number, so no stored score moves.
+        # First-rollout, because that is what DeepSeek-Math published (one
+        # greedy draw). The sampling metrics below never touch it.
         accuracy = 100 * first_rollout_correct(finals) / total if total else 0.0
         metrics: dict[str, float | str] = {
             "score": accuracy,

@@ -201,12 +201,10 @@ class GSM8KFewShotBaseGenTask(
 
     @override
     async def postprocess(self, inf, ctx):
-        # The strict extraction is the headline prediction; the flexible one is a
-        # second extraction RULE over the same response, not a second rollout, so
-        # it rides in that rollout's `extra` next to how each was obtained.
-        # PER-ROLLOUT, not sample-level: both are facts about one response, and
-        # in the sample-level slot they would silently mean "rollout 0's" the
-        # moment n > 1.
+        # The flexible match is a second extraction RULE over the same
+        # response, not a second rollout. PER-ROLLOUT because it is a fact
+        # about one response: in the sample-level slot it would silently mean
+        # "rollout 0's" the moment n > 1.
         predictions: list = []
         extras: list[dict | None] = []
         for text in inf.texts:
@@ -256,10 +254,8 @@ class GSM8KFewShotBaseGenTask(
     @override
     async def report(self, finals, fails):
         count = len(finals)
-        # Both metrics keep their FIRST-ROLLOUT definition so they stay the
-        # lm-eval-harness numbers this port reproduces, which were greedy and
-        # single-draw. The sampling metrics below are additive and never touch
-        # them; at n=1 the two readings coincide, so no stored score moves.
+        # First-rollout, because that is what lm-eval-harness published (one
+        # greedy draw). The sampling metrics below never touch them.
         correct_num = _named(finals, "exact_match")
         flexible_correct_num = _named(finals, "flexible_exact_match")
         exact_match = 100 * correct_num / count if count else 0.0
@@ -274,13 +270,10 @@ class GSM8KFewShotBaseGenTask(
         }
         if self._n <= 1:
             return metrics
-        # The sampling family rides on `correct`, which is derived from the
-        # strict `exact_match` -- so pass@k / avg@k / maj@k describe the HEADLINE
-        # metric only. `flexible_exact_match` is a second extraction rule over
-        # the same response, and a family for it would need its own verdict axis.
-        #
-        # Averaged over `len(finals)`: this task excludes failed samples, where
-        # its DeepSeek-Math siblings count them wrong (RFC #74 F).
+        # The sampling family rides on `correct`, derived from the strict
+        # `exact_match`, so it describes the HEADLINE metric only --
+        # `flexible_exact_match` would need its own verdict axis.
+        # Over `len(finals)`: this task excludes failed samples.
         return metrics | sampling_report(
             finals,
             n=self._n,

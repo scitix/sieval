@@ -1,18 +1,13 @@
 """Shared contract for the four single-draw MCQ tasks.
 
 GPQA-Diamond, MMLU, MMLU-Pro and OpenBookQA publish a greedy single-draw
-accuracy, so none of them takes a ``k`` / ``n`` knob and none should: RFC #74's
-wave 3 is deliberately not implemented. What they must NOT do is what they used
-to -- read ``inf.texts[0]`` and ``rollouts[0]`` and drop the rest on the floor.
+accuracy, so none takes a ``k`` / ``n`` knob (RFC #74 wave 3 is deliberately not
+implemented). What they must not do is read ``inf.texts[0]`` / ``rollouts[0]``
+and drop the rest: ``agenerate`` merges ``{**model_kwargs, **kwargs}``, so a
+model-level ``n`` reaches them and those draws were billed then discarded.
 
-That mattered because a task without its own budget still receives one:
-``agenerate`` merges ``{**model_kwargs, **kwargs}``, so ``n`` set on the *model*
-reaches a task that passes none, and the extra choices were generated, billed,
-and then discarded before anything could record them.
-
-The fix keeps both halves honest: every draw is extracted, graded and written to
-disk, while the headline still scores the first alone, because scoring the whole
-draw would restate the published number.
+Both halves are asserted: every draw is extracted, graded and stored, and the
+headline still scores the first alone.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -136,8 +131,7 @@ async def _letters(task, raw, template):
 
 @pytest.mark.parametrize("factory", [c[0] for c in CASES], ids=IDS)
 def test_takes_no_sampling_knob(factory):
-    # Wave 3 is deliberately unimplemented: these publish a single-draw number,
-    # so a `k` here would promise a pass@k the headline does not compute.
+    # A `k` here would promise a pass@k the headline does not compute.
     task_cls, dataset, _ = factory()
     with pytest.raises(TypeError):
         task_cls(dataset, _StubChatModel(["x"]), k=2, n=2)
@@ -146,7 +140,6 @@ def test_takes_no_sampling_knob(factory):
 @pytest.mark.parametrize(("factory", "template"), CASES, ids=IDS)
 @pytest.mark.anyio
 async def test_every_rollout_is_extracted_and_graded(factory, template):
-    # The defect: `inf.texts[0]` in postprocess and `rollouts[0]` in feedback.
     # Four choices arrive (a model-level `n`), so four must land on disk.
     task_cls, dataset, raw = factory()
     task = task_cls(dataset, _StubChatModel(["x"]))
@@ -169,8 +162,7 @@ async def test_every_rollout_is_extracted_and_graded(factory, template):
 @pytest.mark.parametrize(("factory", "template"), CASES, ids=IDS)
 @pytest.mark.anyio
 async def test_headline_scores_the_first_draw_only(factory, template):
-    # Three of four rollouts correct, but the FIRST is wrong. The published
-    # number is one greedy draw, so the headline must read 0, not 75.
+    # Three of four correct, but the FIRST is wrong: the headline reads 0.
     task_cls, dataset, raw = factory()
     task = task_cls(dataset, _StubChatModel(["x"]))
     pre, right, wrong = await _letters(task, raw, template)
@@ -201,9 +193,8 @@ async def test_headline_scores_the_first_draw_only(factory, template):
 @pytest.mark.parametrize("factory", [c[0] for c in CASES], ids=IDS)
 @pytest.mark.anyio
 async def test_report_declares_which_population_it_averages_over(factory):
-    # All four exclude failed samples from the denominator, where the
-    # DeepSeek-Math family counts them wrong. Same key, different value -- which
-    # is the whole reason the policy is recorded rather than unified.
+    # All four exclude failed samples, where the DeepSeek-Math family counts
+    # them wrong -- the reason the policy is recorded rather than unified.
     task_cls, dataset, _ = factory()
     task = task_cls(dataset, _StubChatModel(["x"]))
     report = await task.report([], [])

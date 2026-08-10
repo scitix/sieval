@@ -964,14 +964,9 @@ class TheoremQAKShotBaseGenTask(
     @override
     async def report(self, finals, fails) -> dict[str, float | str]:
         count = len(finals)
-        # `accuracy` and `empty` keep their FIRST-ROLLOUT definition so they stay
-        # the numbers this port was validated against, which were generated once.
-        # The sampling metrics below are additive and never touch them. At n=1
-        # the two readings coincide, so no stored score moves.
-        #
+        # First-rollout, because that is what this port was validated against.
         # `empty` reads the same population as the old `pred == ""` check:
-        # postprocess maps exactly that empty extraction to None, which is what
-        # `extracted: false` means.
+        # postprocess maps that empty extraction to None, i.e. extracted=False.
         empty = sum(
             1
             for ctx in finals
@@ -990,10 +985,8 @@ class TheoremQAKShotBaseGenTask(
         }
         if self._n <= 1:
             return metrics
-        # Averaged over `len(finals)`, the denominator `accuracy` already uses:
-        # this task excludes failed samples where its DeepSeek-Math siblings
-        # count them wrong. Declared rather than unified, which would change
-        # stored numbers (RFC #74 F).
+        # Over `len(finals)`, the denominator `accuracy` uses: this task
+        # excludes failed samples where its siblings count them wrong.
         return metrics | sampling_report(
             finals,
             n=self._n,
