@@ -26,6 +26,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    health_metrics,
     sampling_report,
 )
 from sieval.datasets import HumanEvalDatasetSample
@@ -199,7 +200,9 @@ class HumanEvalZeroShotGenTask(
         if self._n > 1:
             # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)
-        return metrics
+        # Outside the gate: extraction health is a fact about the parser, not
+        # about the draw, and n=1 is where a stopped extractor hides longest.
+        return metrics | health_metrics(finals)
 
     @override
     async def shutdown(self):

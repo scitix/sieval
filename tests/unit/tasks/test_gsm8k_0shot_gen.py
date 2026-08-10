@@ -228,6 +228,7 @@ async def test_report_accuracy():
         "accuracy": 50.0,
         "score_key": "accuracy",
         "denominator_policy": "requested",
+        "n_unextracted": 0.0,
     }
 
 
@@ -241,6 +242,7 @@ async def test_report_empty_finals():
         "accuracy": 0.0,
         "score_key": "accuracy",
         "denominator_policy": "requested",
+        "n_unextracted": 0.0,
     }
 
 
@@ -267,6 +269,7 @@ async def test_report_counts_fails_in_denominator():
         "accuracy": 50.0,
         "score_key": "accuracy",
         "denominator_policy": "requested",
+        "n_unextracted": 0.0,
     }
 
 

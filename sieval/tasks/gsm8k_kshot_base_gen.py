@@ -43,6 +43,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    health_metrics,
     sampling_report,
 )
 from sieval.datasets import GSM8KDatasetSample
@@ -268,6 +269,9 @@ class GSM8KFewShotBaseGenTask(
             SCORE_KEY_FIELD: "exact_match",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         }
+        # Outside the gate: extraction health is a fact about the parser,
+        # not the draw, and n=1 is where a stopped extractor hides longest.
+        metrics |= health_metrics(finals)
         if self._n <= 1:
             return metrics
         # The sampling family rides on `correct`, derived from the strict

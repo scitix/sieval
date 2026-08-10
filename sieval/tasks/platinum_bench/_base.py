@@ -117,6 +117,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     first_rollout_correct,
+    health_metrics,
     sampling_report,
 )
 from sieval.datasets import PlatinumBenchDatasetSample
@@ -367,7 +368,7 @@ class PlatinumMathGenTask(
                 "errors": 0,
                 SCORE_KEY_FIELD: "accuracy",
                 DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-            }
+            } | health_metrics(finals)
         # `accuracy` and `errors` keep their first-rollout definition so they stay
         # comparable with upstream's per-dataset tables; the sampling metrics below are
         # additive and never touch them.
@@ -383,6 +384,9 @@ class PlatinumMathGenTask(
             SCORE_KEY_FIELD: "accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        # Outside the gate: extraction health is a fact about the parser, not
+        # about the draw, and n=1 is where a stopped extractor hides longest.
+        metrics |= health_metrics(finals)
         if self._n <= 1:
             return metrics
 

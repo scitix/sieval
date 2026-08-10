@@ -248,4 +248,5 @@ async def test_report_empty_is_zero():
         "accuracy": 0.0,
         "score_key": "accuracy",
         "denominator_policy": "requested",
+        "n_unextracted": 0.0,
     }

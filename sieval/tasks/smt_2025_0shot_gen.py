@@ -26,6 +26,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    health_metrics,
     sampling_report,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
@@ -170,4 +171,6 @@ class SMT2025ZeroShotGenTask(
         if self._n > 1:
             # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)
-        return metrics
+        # Outside the gate: extraction health is a fact about the parser, not
+        # about the draw, and n=1 is where a stopped extractor hides longest.
+        return metrics | health_metrics(finals)

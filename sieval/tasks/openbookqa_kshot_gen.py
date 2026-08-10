@@ -58,6 +58,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     first_rollout_correct,
+    health_metrics,
     warn_unscored_rollouts,
 )
 from sieval.datasets import OpenBookQADatasetSample
@@ -107,7 +108,9 @@ class OpenBookQAFewShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -195,7 +198,7 @@ class OpenBookQAFewShotGenTask(
     async def report(self, finals, fails):
         # The FIRST rollout's verdict: this benchmark publishes a single-draw
         # number, so scoring the whole draw would restate it.
-        warn_unscored_rollouts(finals, knob="tasks.openbookqa_kshot_gen.args")
+        warn_unscored_rollouts(finals, task="openbookqa_kshot_gen")
         correct = first_rollout_correct(finals)
         accuracy = 100 * correct / len(finals) if finals else 0.0
         # `score` is the headline; `accuracy` names the metric behind it
@@ -207,7 +210,7 @@ class OpenBookQAFewShotGenTask(
             "accuracy": accuracy,
             SCORE_KEY_FIELD: "accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
-        }
+        } | health_metrics(finals)
 
     def _retrieve_fewshot(self) -> list[OpenBookQADatasetSample]:
         if self.n_shot <= 0:

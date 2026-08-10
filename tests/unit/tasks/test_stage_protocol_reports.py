@@ -160,7 +160,7 @@ class TestMathPassAtKReports:
         report = await _task(cls, _k=1, _n=2).report(finals, [])
         assert report["score"] == pytest.approx(75.0)
         assert report["pass@1"] == pytest.approx(75.0)
-        assert report["avg@k"] == pytest.approx(75.0)
+        assert report["avg@n"] == pytest.approx(75.0)
         # k == 1, so pass@k would restate pass@1 exactly and is omitted.
         assert "pass@k" not in report
         assert report["fails"] == 0
@@ -209,7 +209,8 @@ class TestMathPassAtKReports:
             "pass@1": 0.0,
             "score_key": "pass@1",
             "denominator_policy": "requested",
-            "avg@k": 0.0,
+            "n_unextracted": 0.0,
+            "avg@n": 0.0,
             "pass@k": 0.0,
             # The reliability direction: `pass@k` is an upper bound and this is
             # its opposite, so a run reporting only the first flatters variance.
@@ -221,7 +222,6 @@ class TestMathPassAtKReports:
             "n": 2.0,
             "k": 2.0,
             "n_short": 0.0,
-            "n_unextracted": 0.0,
         }
 
     async def test_every_sample_failing_keeps_the_full_key_set(
@@ -233,7 +233,7 @@ class TestMathPassAtKReports:
         report = await _task(cls, _k=2, _n=2).report([], [_final(None), _final(None)])
         assert report["fails"] == 2
         assert report["score"] == 0.0
-        sampling = {"pass@1", "avg@k", "pass@k", "maj@k", "n", "k", "n_short"}
+        sampling = {"pass@1", "avg@n", "pass@k", "maj@k", "n", "k", "n_short"}
         assert sampling <= set(report)
 
     async def test_maj_at_k_votes_on_answers_not_verdicts(
@@ -343,6 +343,7 @@ class TestLiveCodeBenchReport:
             "pass@1": 0.0,
             "score_key": "pass@1",
             "denominator_policy": "requested",
+            "n_unextracted": 0.0,
         }
 
 

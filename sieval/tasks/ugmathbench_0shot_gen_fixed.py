@@ -168,6 +168,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     aggregate,
     budget_metrics,
+    health_metrics,
     rollout_metrics,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
@@ -581,6 +582,10 @@ class UGMathBenchZeroShotGenFixedTask(
                     observed_rollouts, n=self._n, k=self._k, unit="judged version"
                 )
             )
+
+        # Outside the n>1 gate: extraction health is a fact about the parser, not
+        # about the draw, and n=1 is where a stopped extractor hides longest.
+        metrics |= health_metrics(finals)
 
         for subject, problems in sorted(by_subject.items()):
             metrics[f"eacc_{subject.lower()}"] = _effective_accuracy(problems)

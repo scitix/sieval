@@ -388,7 +388,7 @@ async def test_sampling_metrics_describe_the_whole_draw(case):
     _, _, report = await _score(case, [wrong, right, right, right], k=DRAW, n=DRAW)
 
     assert report["pass@1"] == pytest.approx(75.0)
-    assert report["avg@k"] == pytest.approx(75.0)
+    assert report["avg@n"] == pytest.approx(75.0)
     assert report["pass@k"] == pytest.approx(100.0)
     assert report["maj@k"] == pytest.approx(100.0)
     assert (report["n"], report["k"], report["n_short"]) == (4.0, 4.0, 0.0)
@@ -401,7 +401,7 @@ async def test_no_sampling_block_at_the_default_budget(case):
     task, _ = case.build(["x"], k=1, n=1)
     report = await task.report([], [])
     assert report["score_key"] in report
-    assert not {"avg@k", "pass@k", "maj@k", "n", "k", "n_short"} & set(report)
+    assert not {"avg@n", "pass@k", "maj@k", "n", "k", "n_short"} & set(report)
 
 
 @pytest.mark.parametrize("case", SINGLE_DRAW, ids=SINGLE_DRAW_IDS)
@@ -410,7 +410,7 @@ async def test_no_sampling_metrics_without_a_budget(case):
     # Four rollouts graded, none scored into the headline.
     _, _, right, wrong = await case.responses()
     _, _, report = await _score(case, [wrong, right, right, right])
-    assert not {"pass@1", "avg@k", "pass@k", "maj@k", "n", "k"} & set(report)
+    assert not {"pass@1", "avg@n", "pass@k", "maj@k", "n", "k"} & set(report)
 
 
 # --------------------------------------------------------------------------- #

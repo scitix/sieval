@@ -6,6 +6,7 @@ votes on ANSWERS so it can disagree with a verdict tally in both directions.
 """
 
 import pytest
+from loguru import logger
 
 from sieval.core.tasks import (
     TaskContext,
@@ -15,11 +16,12 @@ from sieval.core.tasks import (
 )
 from sieval.core.tasks.metrics import (
     aggregate,
-    avg_at_k,
+    avg_at_n,
     budget_metrics,
     count_short,
     count_unextracted,
     first_rollout_correct,
+    health_metrics,
     majority_at_k,
     pass_at_k,
     pass_pow_k,
@@ -52,7 +54,7 @@ def test_pass_at_k(n, c, k, want):
 def test_pass_at_1_equals_avg():
     for c in range(5):
         verdicts = [True] * c + [False] * (4 - c)
-        assert pass_at_k(4, c, 1) == pytest.approx(avg_at_k(verdicts))
+        assert pass_at_k(4, c, 1) == pytest.approx(avg_at_n(verdicts))
 
 
 def test_pass_at_k_monotone_in_k():
@@ -85,6 +87,21 @@ def test_pass_pow_k_is_the_opposite_direction_from_pass_at_k():
     # And within one draw, the optimistic bound is never below the pessimistic.
     for c in range(5):
         assert pass_pow_k(4, c, 2) <= pass_at_k(4, c, 2)
+
+
+def test_rollout_metrics_wires_pass_pow_k_not_a_second_pass_at_k():
+    """The KEY existing proves nothing -- `pass^k` has to carry the opposite
+    direction at the call site, or the pair the docs tell readers to compare is
+    two names for one number and nothing fails."""
+    # 2 of 4 correct: the draw where the two estimators are furthest apart.
+    out = rollout_metrics([True, True, False, False], k=2)
+    assert out["pass@k"] == pytest.approx(pass_at_k(4, 2, 2))
+    assert out["pass^k"] == pytest.approx(pass_pow_k(4, 2, 2))
+    assert out["pass^k"] < out["pass@k"]
+    # Unanimity is the one place they meet; a mutant aliasing them survives a
+    # test that only ever looks here.
+    tight = rollout_metrics([True] * 4, k=2)
+    assert tight["pass^k"] == tight["pass@k"] == pytest.approx(1.0)
 
 
 def test_pass_pow_k_monotone_down_in_k():
@@ -186,7 +203,7 @@ def test_keys_are_literal_not_interpolated():
     keys = set(rollout_metrics([True, False, False, False], ["a", "b", "c", "d"], k=4))
     assert keys == {
         "pass@1",
-        "avg@k",
+        "avg@n",
         "pass@k",
         "pass^k",
         "maj@k",
@@ -200,15 +217,15 @@ def test_rollout_metrics_omits_what_it_cannot_compute():
     # no answers -> no maj@k, rather than a 0.0 indistinguishable from a real 0.0
     assert set(rollout_metrics([True, False], None, k=2)) == {
         "pass@1",
-        "avg@k",
+        "avg@n",
         "pass@k",
         "pass^k",
     }
     # k == 1 -> no pass@k duplicate of pass@1
-    assert set(rollout_metrics([True], None, k=1)) == {"pass@1", "avg@k"}
+    assert set(rollout_metrics([True], None, k=1)) == {"pass@1", "avg@n"}
     assert set(rollout_metrics([True, False], ["a", "b"], k=2)) == {
         "pass@1",
-        "avg@k",
+        "avg@n",
         "pass@k",
         "pass^k",
         "maj@k",
@@ -224,23 +241,32 @@ def test_majority_only_when_k_equals_n():
     assert "maj@k" not in rollout_metrics(*four, k=1)
 
 
-def test_majority_rejects_a_draw_that_truncated_to_exactly_k():
-    """The requested budget, not the observed one, decides.
+def test_majority_rejects_a_sub_sample_of_the_budget_not_a_short_draw():
+    """The gate is on the BUDGET (`k == requested`), never on what arrived.
 
-    Configured `n=4, k=2`, a sample whose draw came back with only 2 rollouts
-    used to look identical to a complete 2-rollout draw and got a `maj@k` --
-    while a CLEAN 4-rollout draw at the same config correctly did not. Inverted,
-    and the worse direction: a truncated draw is whatever finished first, not a
-    random 2 of 4, so it is precisely the one not to vote on.
+    `k < n` has no definition -- "which 2 of the 4" needs a seed -- so it is
+    refused whatever the draw did. A draw that came back SHORT still votes: the
+    arrived count is run health, reported as `n_short`, and withholding a column
+    for it is a policy no other key here applies.
     """
     short = ([True, True], ["a", "a"])
+    full = ([True] * 4, ["a"] * 4)
+    # k=2 does not cover the n=4 budget -- refused either way, which is what
+    # keeps a draw truncated to exactly k from looking like a complete one.
     assert "maj@k" not in rollout_metrics(*short, k=2, n_requested=4)
-    # The clean draw at the same config is still (correctly) excluded, since
-    # k=2 does not cover the budget.
-    assert "maj@k" not in rollout_metrics([True] * 4, ["a"] * 4, k=2, n_requested=4)
-    # And the ordinary k == n case is untouched.
-    assert "maj@k" in rollout_metrics([True] * 4, ["a"] * 4, k=4, n_requested=4)
-    assert "maj@k" not in rollout_metrics(*short, k=4, n_requested=4)
+    assert "maj@k" not in rollout_metrics(*full, k=2, n_requested=4)
+    # k == n: the ordinary case, and the short draw now votes with it.
+    assert "maj@k" in rollout_metrics(*full, k=4, n_requested=4)
+    assert "maj@k" in rollout_metrics(*short, k=4, n_requested=4)
+
+
+def test_majority_and_self_consistency_agree_on_what_is_votable():
+    """Same answers, same normalizer -- so they cannot disagree on whether a
+    draw is fit to cluster. Gating one on arrival and not the other is how a
+    report ends up with two answers to one question."""
+    for observed in (1, 2, 3, 4):
+        out = rollout_metrics([True] * observed, ["a"] * observed, k=4, n_requested=4)
+        assert ("maj@k" in out) == ("self_consistency" in out)
 
 
 def test_majority_falls_back_to_the_observed_count():
@@ -270,12 +296,12 @@ def test_sampling_report_does_not_vote_on_a_truncated_draw():
 def test_avg_and_pass_at_1_both_reported_though_equal():
     """Equal arithmetic, different questions -- neither key subsumes the other."""
     metrics = rollout_metrics([True, False, False, False], k=2)
-    assert metrics["pass@1"] == metrics["avg@k"]
-    assert "pass@1" in metrics and "avg@k" in metrics
+    assert metrics["pass@1"] == metrics["avg@n"]
+    assert "pass@1" in metrics and "avg@n" in metrics
 
 
 def test_empty_input_is_zero_not_an_error():
-    assert avg_at_k([]) == 0.0
+    assert avg_at_n([]) == 0.0
     assert majority_at_k([], []) == 0.0
     assert rollout_metrics([], None, k=1)["pass@1"] == 0.0
 
@@ -319,23 +345,23 @@ def test_aggregate_degenerate_inputs():
     [
         # k == n, so maj@k is defined even for a single rollout. Tasks gate the
         # whole sampling block on n > 1 and never read it there.
-        (1, 1, {"pass@1", "avg@k", "maj@k", "self_consistency"}),
+        (1, 1, {"pass@1", "avg@n", "maj@k", "self_consistency"}),
         # k == 1 < n: pass@k would restate pass@1. `self_consistency`
         # is not gated on k at all -- it describes the draw.
-        (4, 1, {"pass@1", "avg@k", "self_consistency"}),
+        (4, 1, {"pass@1", "avg@n", "self_consistency"}),
         # k < n: majority is undefined, but both directions of the
         # k-sample estimator are.
         (
             4,
             2,
-            {"pass@1", "avg@k", "pass@k", "pass^k", "self_consistency"},
+            {"pass@1", "avg@n", "pass@k", "pass^k", "self_consistency"},
         ),
         (
             4,
             4,
             {
                 "pass@1",
-                "avg@k",
+                "avg@n",
                 "pass@k",
                 "pass^k",
                 "maj@k",
@@ -483,7 +509,7 @@ def test_sampling_report_covers_the_whole_block():
     ]
     out = sampling_report(finals, n=4, k=4, denominator=1)
     assert out["pass@1"] == pytest.approx(50.0)
-    assert out["avg@k"] == pytest.approx(50.0)
+    assert out["avg@n"] == pytest.approx(50.0)
     assert out["pass@k"] == pytest.approx(100.0)
     # Two votes for the correct answer against one each for two wrong ones.
     assert out["maj@k"] == pytest.approx(100.0)
@@ -543,7 +569,9 @@ def test_count_unextracted_separates_parser_error_from_model_error():
         ),
     ]
     assert count_unextracted(finals) == 3
-    assert sampling_report(finals, n=2, k=2, denominator=2)["n_unextracted"] == 3.0
+    assert health_metrics(finals)["n_unextracted"] == 3.0
+    # NOT part of the sampling block: it measures the parser, not the draw.
+    assert "n_unextracted" not in sampling_report(finals, n=2, k=2, denominator=2)
 
 
 def test_count_unextracted_is_zero_when_everything_parsed():
@@ -555,8 +583,9 @@ def test_count_unextracted_is_zero_when_everything_parsed():
     ]
     assert count_unextracted(finals) == 0
     # Reported as 0.0 rather than omitted: absent and zero read the same to a
-    # consumer, and only one of them means "checked".
-    assert sampling_report(finals, n=1, k=1, denominator=1)["n_unextracted"] == 0.0
+    # consumer, and only one of them means "checked". At n=1 too -- the default
+    # budget is where a silently-stopped extractor survives longest.
+    assert health_metrics(finals)["n_unextracted"] == 0.0
 
 
 def test_warn_unscored_rollouts_counts_the_draws_the_headline_ignores():
@@ -574,15 +603,45 @@ def test_warn_unscored_rollouts_counts_the_draws_the_headline_ignores():
             build_prediction_record(["A"]),
         ),
     ]
-    assert warn_unscored_rollouts(finals, knob="tasks.x.args") == 3
-    assert warn_unscored_rollouts(finals[1:], knob="tasks.x.args") == 0
-    assert warn_unscored_rollouts([], knob="tasks.x.args") == 0
+    assert warn_unscored_rollouts(finals, task="x") == 3
+    assert warn_unscored_rollouts(finals[1:], task="x") == 0
+    assert warn_unscored_rollouts([], task="x") == 0
 
 
-def test_sampling_report_counts_a_short_draw_and_drops_the_majority():
-    # Two of the four requested rollouts came back. `n_short` says so, and maj@k
-    # is dropped rather than voted on the half that arrived -- a truncated draw
-    # is whatever finished first, not a random subsample.
+def test_warn_unscored_rollouts_actually_warns_and_names_the_model_config():
+    """The return value has no production consumer -- every caller discards it,
+    so the log line IS the behaviour. It must also point somewhere real: these
+    tasks take no `n`, so telling the reader to set one per task is advice that
+    raises TypeError."""
+    finals = [
+        _ctx(
+            build_judgement_record(
+                "A", [build_rollout_judgement(i, True) for i in range(4)]
+            ),
+            build_prediction_record(["A"] * 4),
+        )
+    ]
+    emitted: list[str] = []
+    handle = logger.add(lambda message: emitted.append(message), level="WARNING")
+    try:
+        warn_unscored_rollouts(finals, task="mmlu_0shot_gen")
+        assert emitted, "no warning was emitted"
+        text = "".join(emitted)
+        assert "mmlu_0shot_gen" in text
+        assert "MODEL config" in text
+        # Never route the reader to a task arg that does not exist.
+        assert "per task" not in text
+        emitted.clear()
+        warn_unscored_rollouts(finals[:0], task="mmlu_0shot_gen")
+        assert not emitted, "warned with nothing to warn about"
+    finally:
+        logger.remove(handle)
+
+
+def test_sampling_report_counts_a_short_draw_without_dropping_the_majority():
+    # Two of the four requested rollouts came back. `n_short` says so, and the
+    # two that arrived still vote -- one truncated sample must not remove a
+    # column from every other sample in the run.
     finals = [
         _ctx(
             build_judgement_record(
@@ -593,8 +652,32 @@ def test_sampling_report_counts_a_short_draw_and_drops_the_majority():
     ]
     out = sampling_report(finals, n=4, k=4, denominator=1)
     assert out["n_short"] == 1.0
-    assert "maj@k" not in out
-    # pass@k needs k of them too, so a short draw scores 0 there -- which is
-    # exactly why n_short has to be in the report and not only in a log line.
+    assert out["maj@k"] == pytest.approx(100.0)
+    # pass@k needs k of them, so a short draw scores 0 there -- which is exactly
+    # why n_short has to be in the report and not only in a log line.
     assert out["pass@k"] == 0.0
     assert out["pass@1"] == pytest.approx(100.0)
+
+
+def test_one_short_draw_does_not_cost_the_run_its_majority_column():
+    """The regression this gate split exists to prevent: 500 clean samples plus
+    a single truncated one used to report NO `maj@k` at all, while a run where
+    every sample failed still reported one."""
+    clean = [
+        _ctx(
+            build_judgement_record(
+                "42", [build_rollout_judgement(i, True) for i in range(4)]
+            ),
+            build_prediction_record(["42"] * 4),
+        )
+        for _ in range(500)
+    ]
+    short = _ctx(
+        build_judgement_record(
+            "42", [build_rollout_judgement(i, True) for i in range(3)]
+        ),
+        build_prediction_record(["42"] * 3),
+    )
+    out = sampling_report([*clean, short], n=4, k=4, denominator=501)
+    assert out["n_short"] == 1.0
+    assert out["maj@k"] == pytest.approx(100.0)

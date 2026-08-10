@@ -59,6 +59,7 @@ AI-Generated Code - GPT-5.5 (OpenAI)
 """
 
 import ast
+import asyncio
 import contextlib
 import math
 import operator
@@ -89,6 +90,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     first_rollout_correct,
+    health_metrics,
     sampling_report,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
@@ -900,9 +902,12 @@ class TheoremQAKShotBaseGenTask(
         # — no prediction to grade — and splitting them would add a second
         # counter that is zero on every run where the grader keeps up. The
         # warning in `_extract` is what distinguishes them when it matters.
-        return build_prediction_record(
-            [await self._extract(text, ctx) or None for text in inf.texts]
+        # Concurrent for the same reason as `feedback`: extraction is offloaded
+        # and bounded per rollout, so awaiting in turn multiplies the ceiling.
+        extracted = await asyncio.gather(
+            *(self._extract(text, ctx) for text in inf.texts)
         )
+        return build_prediction_record([text or None for text in extracted])
 
     async def _extract(self, text: str, ctx) -> str:
         # Extraction runs latex2sympy over model output, which is synchronous
@@ -928,12 +933,18 @@ class TheoremQAKShotBaseGenTask(
     @override
     async def feedback(self, post, ctx):
         answer, groundtruth_num = _groundtruth_args(ctx.raw_sample)
-        rollouts = [
-            build_rollout_judgement(
-                rollout["index"],
-                await self._grade(rollout, answer, groundtruth_num, ctx),
+        # Concurrent, not sequential: each grade is an offloaded CPU-bound call
+        # with its own GRADE_TIMEOUT, so awaiting them in turn makes a sample's
+        # worst case n x the timeout instead of one.
+        verdicts = await asyncio.gather(
+            *(
+                self._grade(rollout, answer, groundtruth_num, ctx)
+                for rollout in post["rollouts"]
             )
-            for rollout in post["rollouts"]
+        )
+        rollouts = [
+            build_rollout_judgement(rollout["index"], verdict)
+            for rollout, verdict in zip(post["rollouts"], verdicts, strict=True)
         ]
         return True, build_judgement_record(answer, rollouts)
 
@@ -983,6 +994,9 @@ class TheoremQAKShotBaseGenTask(
             SCORE_KEY_FIELD: "accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         }
+        # Outside the gate: extraction health is a fact about the parser,
+        # not the draw, and n=1 is where a stopped extractor hides longest.
+        metrics |= health_metrics(finals)
         if self._n <= 1:
             return metrics
         # Over `len(finals)`, the denominator `accuracy` uses: this task

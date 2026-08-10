@@ -72,8 +72,19 @@ def pass_pow_k(n: int, c: int, k: int) -> float:
     return probability
 
 
-def avg_at_k(correct: Sequence[bool]) -> float:
-    """Mean verdict over the draw. Equals :func:`pass_at_k` at ``k=1``."""
+def avg_at_n(correct: Sequence[bool]) -> float:
+    """Mean verdict over the WHOLE draw -- ``n``, not ``k``.
+
+    Spelled ``@n`` because it takes no ``k`` and does not vary with one: at
+    ``n=4, k=2`` this averages four verdicts, where :func:`pass_at_k` estimates
+    over two. Same suffix on two keys meaning two different things is how a
+    reader concludes the pair is redundant.
+
+    It coincides with ``pass@1`` on every boolean draw, and the two are still
+    both reported, because they answer different questions: ``pass@1`` ESTIMATES
+    the success rate of one draw, this MEASURES the mean of the draw that was
+    paid for. They separate the moment a verdict stops being a bool.
+    """
     return (sum(1 for x in correct if x) / len(correct)) if correct else 0.0
 
 
@@ -161,41 +172,45 @@ def rollout_metrics(
     normalize: Callable[[str], str] | None = None,
     n_requested: int | None = None,
 ) -> dict[str, float]:
-    """Per-problem ``pass@1`` / ``avg@k`` / ``pass@k`` / ``pass^k`` / ``maj@k``.
+    """Per-problem ``pass@1`` / ``avg@n`` / ``pass@k`` / ``pass^k`` / ``maj@k``.
 
     A key is OMITTED rather than set to 0.0 when it cannot be computed, since a
     0.0 for lack of input is indistinguishable from a real one:
 
     * ``pass@k`` and ``pass^k`` when ``k <= 1`` -- they would restate ``pass@1``.
-    * ``maj@k`` without answers, or unless ``k`` covers the WHOLE requested draw
-      and the whole requested draw arrived. Majority is defined over the whole
-      draw, and sub-sampling it would need an estimator or a seed (RFC #74 D.2).
+    * ``maj@k`` without answers, or when ``k`` does not cover the whole REQUESTED
+      draw. Majority is defined over the whole draw, and sub-sampling it would
+      need an estimator or a seed (RFC #74 D.2).
+
+    The gate is on the BUDGET, not on what arrived. A draw that came back short
+    still votes: the count is run health, which every other key here treats as
+    "compute it, annotate it with ``n_short``" rather than as grounds to withhold
+    a column. ``self_consistency`` clusters the very same answers with the very
+    same normalizer, so gating one on arrival and not the other would give two
+    answers about whether one draw is fit to cluster.
 
     *n_requested* is the budget that was ASKED for, which is not always what came
     back. Without it the two are indistinguishable and a draw that truncated to
-    exactly ``k`` looks like a complete one -- inverted, since a truncated draw
-    is whatever finished first rather than a random ``k`` of ``n``. It defaults
-    to the observed count, which is the right reading for a caller that already
+    exactly ``k`` looks like a full-budget one -- inverted, since ``k < n`` means
+    the caller asked for a sub-sample majority that has no definition. It
+    defaults to the observed count, the right reading for a caller that already
     knows the draw is complete (:func:`zero_metrics` synthesizes one).
     """
     n = len(correct)
     requested = n if n_requested is None else n_requested
     c = sum(1 for x in correct if x)
-    out = {"pass@1": pass_at_k(n, c, 1), "avg@k": avg_at_k(correct)}
+    out = {"pass@1": pass_at_k(n, c, 1), "avg@n": avg_at_n(correct)}
     if k > 1:
         out["pass@k"] = pass_at_k(n, c, k)
         # Reported only beside `pass@k`: at k=1 the two collapse onto `pass@1`
         # and three names for one number is not three pieces of evidence.
         out["pass^k"] = pass_pow_k(n, c, k)
     if answers is not None:
-        # No budget gate at all, unlike maj@k: this is a property of the draw
-        # that arrived, not of the budget a majority would be taken over.
         out["self_consistency"] = self_consistency(answers, normalize=normalize)
-        # Both halves are load-bearing. `k == requested` rejects a majority over
-        # a sub-sample of the budget; `n == requested` rejects one over a draw
-        # that came back short -- and a short draw is whatever finished first,
-        # not a random subset, so it is the worse of the two to vote on.
-        if k == requested == n:
+        # Rejects a majority over a SUB-SAMPLE of the budget: at k=2, n=4 there
+        # is no answer to "which 2", and picking needs a seed. Deliberately not
+        # also gated on the arrived count -- see the docstring.
+        if k == requested:
             out["maj@k"] = majority_at_k(correct, answers, normalize=normalize)
     return out
 
@@ -237,7 +252,7 @@ def rollout_view(final) -> tuple[list[bool], list[str | None] | None]:
     return correct, [None if a is None else str(a) for a in answers]
 
 
-def warn_unscored_rollouts(finals, *, knob: str) -> int:
+def warn_unscored_rollouts(finals, *, task: str) -> int:
     """Count -- and complain about -- draws the headline does not score.
 
     A task with no budget of its own still RECEIVES one: ``agenerate`` merges
@@ -249,6 +264,10 @@ def warn_unscored_rollouts(finals, *, knob: str) -> int:
     Report-time rather than per-sample, which would fire once per row. Raising
     would be wrong: one model config legitimately serves a sampling math task
     and a single-draw MCQ task in the same run.
+
+    The remedy names the MODEL config, which is the only place this ``n`` can
+    have come from -- every task that emits this warning publishes a single-draw
+    number and therefore takes no ``n`` argument to move it to.
     """
     extra = sum(
         max(0, len((final.feedback_result or {}).get("rollouts") or []) - 1)
@@ -257,11 +276,13 @@ def warn_unscored_rollouts(finals, *, knob: str) -> int:
     if extra:
         logger.warning(
             "{} rollout(s) beyond the first were graded and recorded but do NOT "
-            "reach this task's headline, which scores one draw per sample. They "
-            "were generated and billed: set `n` per task ({}) rather than on the "
-            "model if you did not mean to sample here.",
+            "reach {}'s headline, which scores one draw per sample. They were "
+            "generated and billed: this task publishes a single-draw number and "
+            "takes no `n` of its own, so drop `n` from the MODEL config (or "
+            "point this task at a model that does not set it) if you did not "
+            "mean to sample here.",
             extra,
-            knob,
+            task,
         )
     return extra
 
@@ -388,8 +409,21 @@ def sampling_report(
         if per_problem
         else zero_metrics(n=n, k=k, votes=votes)
     )
-    health = {"n_unextracted": float(count_unextracted(finals))}
-    return rolled | budget_metrics(observed, n=n, k=k, unit=unit) | health
+    return rolled | budget_metrics(observed, n=n, k=k, unit=unit)
+
+
+def health_metrics(finals) -> dict[str, float]:
+    """Extraction health, reported at EVERY budget -- including ``n = 1``.
+
+    Deliberately not part of :func:`sampling_report`: ``n_unextracted`` measures
+    the parser, not the draw, so gating it behind ``n > 1`` would withhold it
+    from the default configuration -- the one where a silently-stopped extractor
+    survives longest, because there is no second rollout to disagree with.
+
+    Its own function rather than a key inside the sampling block, so a task with
+    no sampling budget at all (the MCQ four) can still report it.
+    """
+    return {"n_unextracted": float(count_unextracted(finals))}
 
 
 def budget_metrics(
@@ -408,7 +442,12 @@ def budget_metrics(
     metrics = {"n": float(n), "k": float(k)}
     short = count_short(observed, n)
     metrics["n_short"] = float(short)
-    if short:
+    # Only warn about a BUDGET that came up short. At n=1 "short" means zero
+    # rollouts -- a pipeline failure, already visible as a sample that scored
+    # nothing, and not a fact about sampling. Warning there would also fire for
+    # only half the family, since the tasks whose headline is not `pass@1` skip
+    # this block entirely at n=1.
+    if short and n > 1:
         logger.warning(
             "{}/{} {}(s) came back with fewer than the requested n={} rollout(s); "
             "they contribute 0 to pass@k and bias every sampling metric downward.",

@@ -27,6 +27,7 @@ top_p=1, max_gen_toks=1024.
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
+import asyncio
 from typing import override
 
 from loguru import logger
@@ -57,6 +58,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     first_rollout_correct,
+    health_metrics,
     sampling_report,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
@@ -174,11 +176,15 @@ class HendrycksMathFewShotBaseGenTask(
         reference = extract_math_answer(
             ctx.raw_sample["problem"], ctx.raw_sample["solution"], "cot"
         )
+        # Concurrent, not sequential: each grade is an offloaded CPU-bound call
+        # with its own GRADE_TIMEOUT, so awaiting them in turn makes a sample's
+        # worst case n x the timeout instead of one.
+        verdicts = await asyncio.gather(
+            *(self._grade(rollout, reference, ctx) for rollout in post["rollouts"])
+        )
         rollouts = [
-            build_rollout_judgement(
-                rollout["index"], await self._grade(rollout, reference, ctx)
-            )
-            for rollout in post["rollouts"]
+            build_rollout_judgement(rollout["index"], verdict)
+            for rollout, verdict in zip(post["rollouts"], verdicts, strict=True)
         ]
         return True, build_judgement_record(reference, rollouts)
 
@@ -229,6 +235,9 @@ class HendrycksMathFewShotBaseGenTask(
             SCORE_KEY_FIELD: "accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        # Outside the gate: extraction health is a fact about the parser,
+        # not the draw, and n=1 is where a stopped extractor hides longest.
+        metrics |= health_metrics(finals)
         if self._n <= 1:
             return metrics
         return metrics | sampling_report(

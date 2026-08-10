@@ -183,6 +183,7 @@ async def test_report_empty_returns_zero_with_populated_schema():
         "pass@1": 0.0,
         "score_key": "pass@1",
         "denominator_policy": "requested",
+        "n_unextracted": 0.0,
     }
 
 

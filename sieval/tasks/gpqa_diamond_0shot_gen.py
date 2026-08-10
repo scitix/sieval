@@ -25,6 +25,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     first_rollout_correct,
+    health_metrics,
     warn_unscored_rollouts,
 )
 from sieval.datasets import GPQADiamondDatasetSample
@@ -51,7 +52,9 @@ class GPQADiamondZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     """GPQA-Diamond 0-shot chat generation with shuffled answer choices.
@@ -140,7 +143,7 @@ class GPQADiamondZeroShotGenTask(
         # The FIRST rollout's verdict. Not `n_correct`: that reads an int as a
         # bool, and would silently become pass@n. This benchmark publishes a
         # single-draw number, so scoring the whole draw would restate it.
-        warn_unscored_rollouts(finals, knob="tasks.gpqa_diamond_0shot_gen.args")
+        warn_unscored_rollouts(finals, task="gpqa_diamond_0shot_gen")
         count = first_rollout_correct(finals)
         score = 100 * count / len(finals) if finals else 0.0
         return {
@@ -148,4 +151,4 @@ class GPQADiamondZeroShotGenTask(
             "fails": len(fails),
             SCORE_KEY_FIELD: "score",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
-        }
+        } | health_metrics(finals)

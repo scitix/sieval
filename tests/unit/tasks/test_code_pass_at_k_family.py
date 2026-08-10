@@ -147,7 +147,7 @@ async def test_report_omits_maj_at_k_for_programs(task_cls, dataset, model):
     finally:
         await task.shutdown()
 
-    assert {"pass@1", "avg@k", "pass@k", "n", "k", "n_short"} <= set(report)
+    assert {"pass@1", "avg@n", "pass@k", "n", "k", "n_short"} <= set(report)
     assert "maj@k" not in report
     assert report["score_key"] == "pass@1"
 

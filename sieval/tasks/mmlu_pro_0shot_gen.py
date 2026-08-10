@@ -21,6 +21,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    health_metrics,
     warn_unscored_rollouts,
 )
 from sieval.datasets import MMLUProDatasetSample
@@ -47,7 +48,9 @@ class MMLUProZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     @override
@@ -107,20 +110,23 @@ class MMLUProZeroShotGenTask(
         # The FIRST rollout's verdict, per category and overall: this benchmark
         # publishes a single-draw number, so scoring the whole draw would
         # restate it.
-        warn_unscored_rollouts(finals, knob="tasks.mmlu_pro_0shot_gen.args")
+        warn_unscored_rollouts(finals, task="mmlu_pro_0shot_gen")
         correct_num = 0
         category_metrics = defaultdict(lambda: {"correct": 0, "total": 0})
         for ctx in finals:
-            verdicts = (ctx.feedback_result or {}).get("rollouts") or []
+            # One `or {}` for both reads, or the guard on the first is a promise
+            # the second breaks two lines later.
+            judgement = ctx.feedback_result or {}
+            verdicts = judgement.get("rollouts") or []
             correct = bool(verdicts) and verdicts[0]["correct"]
-            category = ctx.feedback_result["extra"]["category"]
+            category = (judgement.get("extra") or {}).get("category", "other")
             if correct:
                 correct_num += 1
                 category_metrics[category]["correct"] += 1
             category_metrics[category]["total"] += 1
 
         score = 100 * correct_num / len(finals) if finals else 0.0
-        results = {"score": score}
+        results: dict[str, float | str] = {"score": score}
         for category, metrics in category_metrics.items():
             category_score = (
                 100 * metrics["correct"] / metrics["total"]
@@ -131,4 +137,4 @@ class MMLUProZeroShotGenTask(
         results["fails"] = len(fails)
         results[SCORE_KEY_FIELD] = "score"
         results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
-        return results
+        return results | health_metrics(finals)

@@ -149,11 +149,11 @@ async def test_report_key_set_is_identical_when_empty(task_cls, dataset_cls, fie
     if k > 1:
         # The budget lives in the `n`/`k` fields, never in the key, so the
         # leaderboard column keeps its identity when the budget changes.
-        assert {"avg@k", "pass@k", "maj@k", "n", "k", "n_short"} <= set(empty)
+        assert {"avg@n", "pass@k", "maj@k", "n", "k", "n_short"} <= set(empty)
         assert f"pass@{k}" not in empty
     else:
         # n == 1: nothing was drawn, so there is no draw to describe.
-        assert not {"avg@k", "pass@k", "maj@k", "n", "k", "n_short"} & set(empty)
+        assert not {"avg@n", "pass@k", "maj@k", "n", "k", "n_short"} & set(empty)
 
 
 @pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)

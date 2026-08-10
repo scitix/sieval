@@ -46,17 +46,30 @@ reporting a `pass@k` of `0.0`.
 | Key | Meaning | Appears when |
 | --- | --- | --- |
 | `pass@1` | Unbiased single-draw success rate, `c/n`. **Not** the first rollout's verdict. | always |
-| `avg@k` | Mean verdict over the draw. Numerically equal to `pass@1`. | always |
+| `avg@n` | Mean verdict over the whole draw. | always |
 | `pass@k` | Solved **at least once** in `k` draws. | `k > 1` |
 | `pass^k` | **All** `k` draws correct. | `k > 1` |
 | `maj@k` | Is the modal **answer** correct? | see below |
 | `self_consistency` | Share of the draw that agreed on that modal answer. | the task votes on answers |
 | `n`, `k` | The budget the numbers above were measured at. | always |
 | `n_short` | Samples that came back with fewer than `n` rollouts. | always |
-| `n_unextracted` | **Rollouts** whose answer could not be recovered. | always |
 
-Rates are percentages (0–100) over the task's declared denominator; `n`, `k`,
-`n_short` and `n_unextracted` are counts.
+Rates are percentages (0–100) over the task's declared denominator; `n`, `k` and
+`n_short` are counts.
+
+**`avg@n` is spelled `@n`, not `@k`, on purpose.** It takes no `k` and does not
+move with one: at `n=4, k=2` it averages four verdicts where `pass@k` estimates
+over two. It coincides with `pass@1` on every boolean draw, and both are still
+reported, because they answer different questions — `pass@1` *estimates* the
+success rate of a single draw, `avg@n` *measures* the mean of the draw that was
+actually paid for. They separate as soon as a verdict stops being a bool.
+
+`n_unextracted` — **rollouts** whose answer could not be recovered — is reported
+at **every** budget, `n = 1` included, and by the single-draw tasks below that
+have no `n` at all. It measures the parser, not the draw: gating it behind
+`n > 1` would withhold it from the default configuration, which is exactly where
+a silently-stopped extractor survives longest, because there is no second
+rollout to disagree with.
 
 ### Pairs that must be read together
 
@@ -86,18 +99,23 @@ so a non-zero `n_short` makes every figure above a lower bound.
 
 ### Why `maj@k` can be missing
 
-It needs all three:
+It needs both:
 
 1. **The task votes on answers.** The code family (HumanEval, MBPP,
    LiveCodeBench) does not — two correct programs are not one answer.
-2. **`k == n`.** Sub-sampling would need an unbiased estimator or a seed, and a
-   seed in the metric layer is a new source of irreproducibility.
-3. **The draw arrived complete.** A truncated draw is whatever finished first,
-   not a random subset.
+2. **`k == n`.** A majority over a *sub-sample* of the budget has no definition:
+   at `k=2, n=4` there is no answer to "which two", and picking would need a
+   seed, which in the metric layer is a new source of irreproducibility.
 
-If *any* sample fails one, the key is dropped for the **whole run** — averaging
-over the samples that had it would turn a deliberate omission back into the `0.0`
-it was avoiding.
+Both are properties of the **configuration**, so `maj@k` is present or absent for
+a whole run by construction — it does not appear and disappear with run health.
+
+A draw that came back **short still votes**. The arrived count is run health, and
+every other key here treats that the same way: compute it, and annotate it with
+`n_short`. `self_consistency` clusters the very same answers with the very same
+normalizer, so withholding one and not the other would be two answers to the
+question of whether a single draw is fit to cluster. A short draw does bias
+`maj@k` — like everything else in the table, read it against `n_short`.
 
 `maj@k` is a **lower bound**, not an estimate: votes cluster on *strings* (after
 the task's own gold canonicalizer) while the grader compares *symbolically*, so
@@ -117,7 +135,9 @@ non-breaking for a stored score.
 
 The MCQ four take **no** `n`/`k` argument, but still grade and record every
 rollout that arrives (a model-level `n` reaches them); `report()` warns once with
-the count it did not score.
+the count it did not score. Because they take no budget of their own, the remedy
+that warning names is the **model** config — there is no task-side `n` to move it
+to.
 
 ## Task-specific keys
 
@@ -134,5 +154,6 @@ nothing else, so older runs stay readable and comparable on the headline. They
 are **not** backfilled — metrics are computed inline at report time, so a stored
 `report.json` remains a function of the run that produced it.
 
-The one migration is the `pass@<k>` → `pass@k` rename: a dashboard keyed on the
-literal `pass@4` needs updating, and should read the budget from `n` / `k`.
+Two migrations: the `pass@<k>` → `pass@k` rename, where a dashboard keyed on the
+literal `pass@4` needs updating and should read the budget from `n` / `k`; and
+`avg@k` → `avg@n`, which renames a column without changing its value.
