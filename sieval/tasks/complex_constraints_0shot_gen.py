@@ -27,9 +27,21 @@ The judge is supplied via the ``grader`` task arg (a model-config dict, or a
 pre-built Model, on its own ``api_base``/``api_key``). As with sieval's other
 LLM-graded tasks, correctness depends on a grader model whose version sieval
 cannot pin the way it pins a Hub revision, so for reproducibility pin the grader
-model and set ``temperature: 0``; each rollout's per-criterion verdicts and the
-judge's whole ``ModelOutput`` (``extra.grader_output``: reply, reasoning, usage,
-finish reasons, model id) are persisted — see :meth:`feedback`.
+model and set ``temperature: 0`` *where the endpoint honours it*; each rollout's
+per-criterion verdicts and the judge's whole ``ModelOutput``
+(``extra.grader_output``: reply, reasoning, usage, finish reasons, model id) are
+persisted — see :meth:`feedback`.
+
+**A sampling judge makes a single run indicative only, and this task cannot
+average that away**: grading is one judge call per rollout, and ``n`` repeats the
+*candidate*, not the judge. Measured on a gateway that fixes ``temperature`` at 1
+for its whole ``gpt-5.x`` family (so ``temperature: 0`` above is unavailable
+there): re-grading one identical set of 75 responses with one identical judge
+moved the headline over **20.0–29.3**, left **22 of 75 prompts flipping between
+pass and fail**, and left **14.8% of the 1,559 criteria undecided** across four
+runs. A stronger judge was far steadier (99.5% per-criterion self-agreement
+against 91.9%). Repeat the grading and report a spread whenever the grader
+samples; a lone number is a draw, not a measurement.
 
 Give the grader enough ``max_tokens`` for one verdict line per criterion — up to
 40, *after* whatever reasoning it emits first. A grader truncated mid-block
@@ -37,6 +49,13 @@ leaves the tail unparsed, which is counted (``n_unparsed``) and scored
 not-satisfied, so it biases the score **down**. Nothing flags it automatically:
 the ``truncated_output`` anomaly rule reads the candidate model's finish reasons,
 never the grader's, so ``n_unparsed`` is the signal to watch.
+
+Budget the **candidate**'s tokens the same way, for the same reason in reverse: a
+reasoning candidate can spend the whole allowance thinking and return empty
+content, which scores zero criteria. Observed on one reasoning model at
+``max_tokens: 16000`` — 15 of 75 prompts came back empty (``finish_reason
+"length"``), about 20 points off that arm. Here the ``truncated_output`` rule
+*does* fire, and ``n_unextracted`` counts them, so watch both.
 
 Deviations / by-design behavior worth knowing:
 
@@ -68,12 +87,17 @@ Reproduction decoding: ``n`` (repeats) is a **task arg** — set it in
 ``tasks.<name>.args.n``. The paper's leaderboard does not state a repeat count,
 so the port defaults to ``n=1``; ``infer`` forwards ``n`` as a call-time kwarg to
 ``agenerate``, and call-time wins over model config, so setting ``n`` on the
-model is silently overridden by the task default. Comparison target is the public
+model is silently overridden by the task default. Note that some gateways fix
+``n`` at 1 for whole model families (the same ones that fix ``temperature``), on
+which ``n=1`` is the only reachable setting. Comparison target is the public
 leaderboard the paper's Table 1 snapshots
 (https://surgehq.ai/benchmarks/complex-constraints) — snapshot 2026-06-03: Gemini
 3.1 Pro 40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %. The live board
 moves and the paper pins no version of it, so align against the snapshot recorded
-here rather than against whatever the URL reads on the day.
+here rather than against whatever the URL reads on the day; as of 2026-08-10 it
+reads 43.7 / 44.4 / 34.2 and has begun splitting rows by reasoning effort
+(GPT-5.5 default 44.4, High 48.9, xHigh 49.5), which Table 1's rows do not state
+— so record the effort a comparison run used.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -157,16 +181,40 @@ from sieval.datasets import ComplexConstraintsDatasetSample
             "GPT-5-mini as the per-criterion judge for TRAINING only ('produced "
             "by GPT-5-mini during ComplexConstraints training and CoreCraft "
             "training') and never says what graded the leaderboard, so the judge "
-            "is an unpinned degree of freedom in the comparison itself. "
+            "is an unpinned degree of freedom in the comparison itself, and it "
+            "is a LARGE one — measured 2026-08-10 by re-grading identical "
+            "responses with two judges, changing nothing else: the headline "
+            "moved 25.67 -> 51.56 (means of 3-4 repeats), straddling Table 1's "
+            "38.7. The shift is one-way (net +105 of 1,559 verdicts) where "
+            "run-to-run noise is symmetric (net +14), and it concentrates on "
+            "criteria 1.8x longer than average that enumerate an exclusion list "
+            "to cross-check against the response — this template tells the judge "
+            "to fail what it cannot verify, so a weaker judge's errors are "
+            "necessarily one-way false FAILs. Two judges agreeing on HOW MANY "
+            "criteria pass (dense micro 76.72 vs 76.78) still differed 2.3x on "
+            "the headline, because they disagreed on WHICH: an all-or-nothing "
+            "metric is reproducible only with the EXACT judge, not an equally "
+            "strict one. What DOES reproduce is the ordering: with the stronger "
+            "judge three models spanning the board ranked 51.56 > 18.33 > 5.78 "
+            "against Table 1's 38.7 > 26.7 > 4.9 — same order, adjacent gaps "
+            "32.3 and 11.7 points even at worst case; the weaker judge could not "
+            "separate the bottom pair at all. Prefer rank agreement over a "
+            "single-point score match when reporting alignment here. "
             "REPRODUCIBILITY: scores depend on the grader endpoint's model "
             "version (not pinnable like a Hub revision) — pin the grader model + "
-            "temperature=0; per-criterion verdicts and the judge's full "
-            "ModelOutput (extra.grader_output) are persisted per rollout, the "
-            "reply being the only evidence of a verdict a re-grade need not "
-            "reproduce. REPEATS: the leaderboard states no repeat count, so the "
-            "port defaults to n=1; `n` is a task arg (tasks.<name>.args.n), NOT "
-            "a model arg — infer forwards it call-time and call-time wins. "
-            "NOT YET VALIDATED against the Table 1 leaderboard "
+            "temperature=0 where the endpoint honours it; where it does not (one "
+            "gateway fixes temperature at 1 for its whole gpt-5.x family) the "
+            "same judge on the same responses spanned 20.0-29.3 over four runs, "
+            "with 22/75 prompts flipping and 14.8% of criteria undecided, so "
+            "repeat the grading and report a spread. Per-criterion verdicts and "
+            "the judge's full ModelOutput (extra.grader_output) are persisted "
+            "per rollout, the reply being the only evidence of a verdict a "
+            "re-grade need not reproduce. REPEATS: the leaderboard states no "
+            "repeat count, so the port defaults to n=1; `n` is a task arg "
+            "(tasks.<name>.args.n), NOT a model arg — infer forwards it "
+            "call-time and call-time wins, and it repeats the CANDIDATE, not the "
+            "judge, so it cannot average out grader sampling. "
+            "NOT ALIGNED TO A SINGLE-POINT SCORE against the Table 1 leaderboard "
             "(https://surgehq.ai/benchmarks/complex-constraints; the live board "
             "moves, so align against this snapshot, 2026-06-03: Gemini 3.1 Pro "
             "40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %)."
