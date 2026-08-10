@@ -72,6 +72,17 @@ Deviations from upstream @ f9d3013:
   container carries no per-question verdicts at all, so there is nothing to
   preserve and :func:`parse_judgement` fails the row exactly as upstream does.
 
+  This is the port's only behavioural divergence from upstream, and when it
+  fires it moves **``micro_pass_rate`` alone**: the stringified answer joins the
+  pooled denominator (as a non-pass, since ``"true"`` does not contain ``yes``)
+  where upstream's failed row contributes nothing. ``overall_pass_rate`` -- the
+  headline, and the rate the paper reports -- and the per-sample
+  ``rubric_level_pass_rate`` are identical either way, because both sides score
+  such a row as not-satisfied. Differentially tested against upstream on all
+  1,645 rows: 0 divergences on every other reply shape, and this shape did not
+  occur once in 1,644 live gradings, since a grader emitting JSON answers the
+  rubric questions with strings.
+
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
