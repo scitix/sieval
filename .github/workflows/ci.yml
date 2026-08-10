@@ -12,7 +12,9 @@ concurrency:
 
 env:
   PYTHON_DEFAULT: "3.12"
-  INSTALL_GROUPS: "-G drop -G ifeval -G math -G scicode -G test -G dev"  # light, no torch
+  # light, no torch. `iheval` is a superset of `ifeval` plus rouge-score, so it
+  # adds ~one wheel and keeps the reimplemented IHEval graders under test.
+  INSTALL_GROUPS: "-G drop -G ifeval -G iheval -G math -G scicode -G test -G dev"
 
 jobs:
   changes:
