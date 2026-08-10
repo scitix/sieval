@@ -89,6 +89,9 @@ from sieval.datasets import AdvancedIFDatasetSample
             "overall pass rate (share of samples the grader marked "
             "SATISFIED_ALL_REQUIREMENTS=yes), the number the paper reports; "
             "micro_pass_rate is the co-published rubric-level rate. "
+            "macro_pass_rate is sieval's, NOT published: it averages the "
+            "per-sample rubric rate (equal weight per sample, where micro "
+            "weighs every rubric equally). "
             "LICENSING: upstream ships judge.py under CC-BY-NC-4.0, "
             "incompatible with sieval's Apache-2.0 tree, so the prompts are "
             "NOT vendored -- the operator stages a checkout and points "
@@ -267,13 +270,19 @@ class AdvancedIFZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
-        """Pool the two published rates overall and per aspect.
+        """Pool the two published rates -- plus the macro -- overall and per aspect.
 
         Reads the persisted verdicts rather than ``raw_sample``, so the report
         survives a resume. Pipeline failures (exhausted retries) never produced
         a gradeable answer; each failed sample's requested rollouts count as
         non-passes so the headline spans the full requested set, matching
         upstream's denominator (which likewise includes rows its judge failed).
+
+        ``macro_pass_rate`` is sieval's, not published: it averages the
+        per-sample ``rubric_level_pass_rate`` this task already records per
+        rollout, which otherwise stops at the shard data and never reaches
+        ``report.json``. It weighs every sample equally where the published
+        micro rate weighs every rubric equally.
         """
         by_benchmark: dict[str, list[dict]] = {}
         verdicts: list[dict] = []
@@ -282,10 +291,12 @@ class AdvancedIFZeroShotGenTask(
             benchmark_name = judgement.get("extra", {}).get("benchmark_name", "unknown")
             for rollout in judgement.get("rollouts", []):
                 extra = rollout.get("extra", {})
+                metrics = rollout.get("metrics", {})
                 verdict = {
                     "satisfied_all": rollout["correct"],
                     "n_checks": extra.get("n_checks", 0),
                     "n_checks_passed": extra.get("n_checks_passed", 0),
+                    "rubric_pass_rate": metrics.get("rubric_level_pass_rate", 0.0),
                 }
                 verdicts.append(verdict)
                 by_benchmark.setdefault(benchmark_name, []).append(verdict)
@@ -294,15 +305,21 @@ class AdvancedIFZeroShotGenTask(
         # A failed sample has no verdict to attribute to an aspect, so it lands
         # in the overall rates only; the per-aspect rates below cover graded
         # rollouts, and `fails` reports the shortfall.
-        failed = [{"satisfied_all": False, "n_checks": 0, "n_checks_passed": 0}] * (
-            self._n * len(fails)
-        )
+        failed = [
+            {
+                "satisfied_all": False,
+                "n_checks": 0,
+                "n_checks_passed": 0,
+                "rubric_pass_rate": 0.0,
+            }
+        ] * (self._n * len(fails))
 
         overall = aggregate_metrics(verdicts + failed)
         results: dict[str, float] = {
             "score": overall["overall_pass_rate"],
             "overall_pass_rate": overall["overall_pass_rate"],
             "micro_pass_rate": overall["micro_pass_rate"],
+            "macro_pass_rate": overall["macro_pass_rate"],
             "n_rubric_checks": overall["n_rubric_checks"],
             "n_graded": float(n_graded),
             "fails": len(fails),
@@ -311,5 +328,6 @@ class AdvancedIFZeroShotGenTask(
             aspect = aggregate_metrics(group)
             results[f"{benchmark_name}_pass_rate"] = aspect["overall_pass_rate"]
             results[f"{benchmark_name}_micro_pass_rate"] = aspect["micro_pass_rate"]
+            results[f"{benchmark_name}_macro_pass_rate"] = aspect["macro_pass_rate"]
             results[f"{benchmark_name}_n_graded"] = aspect["n_samples"]
         return results

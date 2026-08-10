@@ -129,12 +129,25 @@ def test_parse_judgement_reads_checks_and_declaration():
     assert judgement.satisfied_all
 
 
-@pytest.mark.parametrize("declared", ["Yes", "yes", "YES", " yes "])
+@pytest.mark.parametrize("declared", ["Yes", "yes", "YES"])
 def test_parse_judgement_declaration_is_case_insensitive(declared):
     """Upstream's own few-shot examples answer "Yes"/"No", not "YES"/"NO"."""
     judgement = parse_judgement(_reply({}, declared))
     assert judgement is not None
     assert judgement.satisfied_all
+
+
+@pytest.mark.parametrize("declared", [" yes ", "yes.", "Yes, all requirements met"])
+def test_parse_judgement_declaration_is_otherwise_exact(declared):
+    """Upstream compares ``.lower() == "yes"`` -- no strip, no substring test.
+
+    Padding or trailing prose therefore does *not* declare a pass; matching
+    upstream matters more than being forgiving, because this flag alone decides
+    the headline metric.
+    """
+    judgement = parse_judgement(_reply({"question_1": "Yes"}, declared))
+    assert judgement is not None
+    assert not judgement.satisfied_all
 
 
 def test_parse_judgement_defaults_missing_declaration_to_not_satisfied():
@@ -151,15 +164,65 @@ def test_parse_judgement_recovers_fenced_json():
     assert judgement.rubrics_check == {"question_1": "Yes"}
 
 
+def test_parse_judgement_recovers_json_after_prose_containing_braces():
+    """A greedy ``{.*}`` match would start at ``{each}`` and decode nothing.
+
+    A grader that narrates before answering is exactly the kind that ignores
+    ``response_format``, so this is the case the fallback exists for.
+    """
+    reply = (
+        f"I checked {{each}} rubric in turn.\n{_reply({'question_1': 'Yes'}, 'Yes')}"
+    )
+    judgement = parse_judgement(reply)
+    assert judgement is not None
+    assert judgement.rubrics_check == {"question_1": "Yes"}
+    assert judgement.satisfied_all
+
+
+def test_parse_judgement_prefers_the_object_carrying_the_schema_keys():
+    """An earlier decodable object must not shadow the real verdict."""
+    reply = (
+        'Recall the schema shape: {"note": "one key per question"}\n'
+        f"{_reply({'question_1': 'Yes', 'question_2': 'No'}, 'No')}"
+    )
+    judgement = parse_judgement(reply)
+    assert judgement is not None
+    assert judgement.rubrics_check == {"question_1": "Yes", "question_2": "No"}
+
+
 def test_parse_judgement_returns_none_without_json():
     assert parse_judgement("I could not evaluate this.") is None
     assert parse_judgement("") is None
+    # Braces that never decode are not JSON either.
+    assert parse_judgement("I checked {each} rubric.") is None
 
 
 def test_parse_judgement_stringifies_non_string_answers():
     judgement = parse_judgement(_reply({"question_1": ["Yes"]}, "No"))
     assert judgement is not None
     assert judgement.rubrics_check == {"question_1": "['Yes']"}
+
+
+def test_parse_judgement_fails_the_row_on_a_non_mapping_rubrics_check():
+    """Upstream's ``.items()`` raises there, so the row fails rather than empties.
+
+    Emptying it would leave the declaration alone deciding the headline: a
+    malformed reply claiming SATISFIED_ALL_REQUIREMENTS=YES would score a pass
+    with zero rubric checks behind it.
+    """
+    for checks in (["Yes", "No"], "Yes", 1):
+        reply = json.dumps(
+            {"rubrics_check": checks, "SATISFIED_ALL_REQUIREMENTS": "YES"}
+        )
+        assert parse_judgement(reply) is None
+
+
+def test_parse_judgement_still_reads_a_missing_rubrics_check():
+    """A *missing* key defaults to ``{}`` on both sides -- only non-mapping fails."""
+    judgement = parse_judgement(json.dumps({"SATISFIED_ALL_REQUIREMENTS": "Yes"}))
+    assert judgement is not None
+    assert judgement.rubrics_check == {}
+    assert judgement.satisfied_all
 
 
 # --- counting: the two rates do not share a denominator ---
@@ -207,11 +270,16 @@ def test_the_two_denominators_disagree_when_the_grader_under_answers():
 # --- aggregation ---
 
 
-def _verdict(satisfied: bool, n_checks: int, n_passed: int) -> dict:
+def _verdict(
+    satisfied: bool, n_checks: int, n_passed: int, rate: float | None = None
+) -> dict:
     return {
         "satisfied_all": satisfied,
         "n_checks": n_checks,
         "n_checks_passed": n_passed,
+        "rubric_pass_rate": (n_passed / n_checks if n_checks else 0.0)
+        if rate is None
+        else rate,
     }
 
 
@@ -225,18 +293,31 @@ def test_aggregate_metrics_pools_both_rates():
     assert metrics["n_rubric_checks"] == 10.0
 
 
+def test_aggregate_metrics_macro_weighs_samples_not_rubrics():
+    """The two rates disagree whenever rubric counts differ across samples."""
+    # 1/1 on a one-rubric sample, 1/9 on a nine-rubric one.
+    metrics = aggregate_metrics([_verdict(True, 1, 1), _verdict(False, 9, 1)])
+    # Micro pools rubrics: 2 of 10.
+    assert metrics["micro_pass_rate"] == pytest.approx(20.0)
+    # Macro pools samples: (100% + 11.1%) / 2.
+    assert metrics["macro_pass_rate"] == pytest.approx((1.0 + 1 / 9) / 2 * 100)
+
+
 def test_aggregate_metrics_counts_ungradeable_rollouts_against_the_pass_rate_only():
     """Upstream's failed-row path: in the pass-rate denominator, out of micro."""
     metrics = aggregate_metrics([_verdict(True, 2, 2), _verdict(False, 0, 0)])
     assert metrics["overall_pass_rate"] == pytest.approx(50.0)
     # The failed row contributes no rubrics, so micro stays 100%.
     assert metrics["micro_pass_rate"] == pytest.approx(100.0)
+    # The macro rate does count it -- as a 0.0 sample, not as an absent one.
+    assert metrics["macro_pass_rate"] == pytest.approx(50.0)
 
 
 def test_aggregate_metrics_handles_an_empty_set():
     metrics = aggregate_metrics([])
     assert metrics["overall_pass_rate"] == 0.0
     assert metrics["micro_pass_rate"] == 0.0
+    assert metrics["macro_pass_rate"] == 0.0
 
 
 # --- loading the upstream prompts (never vendored: CC-BY-NC-4.0) ---

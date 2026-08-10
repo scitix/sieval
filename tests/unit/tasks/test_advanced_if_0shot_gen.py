@@ -259,13 +259,15 @@ async def test_feedback_treats_an_unparseable_reply_as_a_failed_row():
 
 
 def _final(benchmark_name: str, satisfied: bool, n_checks: int, n_passed: int):
+    rate = n_passed / n_checks if n_checks else 0.0
     judgement = build_judgement_record(
         None,
         [
             build_rollout_judgement(
                 0,
                 satisfied,
-                score=n_passed / n_checks if n_checks else 0.0,
+                score=rate,
+                metrics={"satisfied_all": satisfied, "rubric_level_pass_rate": rate},
                 extra={"n_checks": n_checks, "n_checks_passed": n_passed},
             )
         ],
@@ -286,9 +288,26 @@ async def test_report_pools_both_published_rates():
     assert report["score"] == pytest.approx(50.0)
     assert report["overall_pass_rate"] == pytest.approx(50.0)
     assert report["micro_pass_rate"] == pytest.approx(75.0)
+    assert report["macro_pass_rate"] == pytest.approx(75.0)
     assert report["n_graded"] == 2.0
     assert report["n_rubric_checks"] == 8.0
     assert report["fails"] == 0
+
+
+@pytest.mark.anyio
+async def test_report_macro_rate_reaches_the_report():
+    """The per-rollout rubric rate is pooled, not left in the shard data.
+
+    Equal rubric counts make micro == macro, so the two are separated with
+    samples of different widths.
+    """
+    task, _ = _task()
+    report = await task.report(
+        [_final(COMPLEX, True, 1, 1), _final(COMPLEX, False, 9, 1)], []
+    )
+
+    assert report["micro_pass_rate"] == pytest.approx(20.0)
+    assert report["macro_pass_rate"] == pytest.approx((1.0 + 1 / 9) / 2 * 100)
 
 
 @pytest.mark.anyio
@@ -305,6 +324,7 @@ async def test_report_breaks_down_by_aspect():
     assert report[f"{COMPLEX}_n_graded"] == 1.0
     assert report[f"{STEERABILITY}_pass_rate"] == pytest.approx(0.0)
     assert report[f"{STEERABILITY}_micro_pass_rate"] == pytest.approx(25.0)
+    assert report[f"{STEERABILITY}_macro_pass_rate"] == pytest.approx(25.0)
     assert report[f"{STEERABILITY}_n_graded"] == 2.0
 
 
@@ -318,6 +338,8 @@ async def test_report_counts_pipeline_failures_as_non_passes():
     assert report["overall_pass_rate"] == pytest.approx(50.0)
     # A failure contributes no rubrics, so the micro rate is unaffected.
     assert report["micro_pass_rate"] == pytest.approx(100.0)
+    # The macro rate does see it, as a 0.0 sample.
+    assert report["macro_pass_rate"] == pytest.approx(50.0)
     assert report["n_graded"] == 1.0
     assert report["fails"] == 1
     # It has no aspect to attribute to, so the breakdown covers graded rollouts.

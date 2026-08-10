@@ -54,14 +54,23 @@ Deviations from upstream @ f9d3013:
 * **Reply parsing.** Upstream guarantees JSON by passing
   ``response_format={"type": "json_object"}`` to the OpenAI client. sieval
   reaches the grader through the generic ``ChatModel``, and not every endpoint
-  honours that flag, so :func:`parse_judgement` falls back to extracting the
-  outermost JSON object (optionally fenced) before giving up. Without it a
-  grader that fences its JSON would score zero everywhere -- a harness artifact,
-  not a property of the model under test.
+  honours that flag, so :func:`parse_judgement` falls back to the first JSON
+  object in the reply carrying a schema key -- which recovers a fenced or
+  prose-wrapped verdict, including one introduced by prose that itself contains
+  braces. Without it a grader that fences its JSON would score zero everywhere
+  -- a harness artifact, not a property of the model under test. The endpoints
+  most likely to need this fallback are exactly the ones that ignore
+  ``response_format``, which is why recovering the object is deliberately the
+  *only* leniency taken: a reply that decodes but carries no usable
+  ``rubrics_check`` still fails the row.
 * **Non-string rubric answers** are stringified rather than raising. Upstream
   calls ``.lower()`` directly, so a non-string answer aborts the row into its
   ``except Exception`` path; stringifying keeps the row gradeable and, for the
-  schema-conforming string answers upstream expects, is identical.
+  schema-conforming string answers upstream expects, is identical. A
+  *non-mapping* ``rubrics_check`` is not forgiven the same way: a stringified
+  answer still carries the grader's verdict text, whereas a non-mapping
+  container carries no per-question verdicts at all, so there is nothing to
+  preserve and :func:`parse_judgement` fails the row exactly as upstream does.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -70,8 +79,8 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -87,6 +96,9 @@ UPSTREAM_JUDGE_SHA256 = (
 SRC_ENV_VAR = "SIEVAL_ADVANCED_IF_SRC"
 """Environment variable pointing at the operator's upstream checkout."""
 
+UPSTREAM_MODULE_NAME = "advanced_if_upstream_judge"
+""":mod:`sys.modules` name for the operator's ``judge.py``, outside ``sieval.*``."""
+
 # Upstream's literal, verbatim. The released dataset spells the same aspect
 # `system_steerability_v2`, so this never matches it -- see the module docstring.
 SYSTEM_STEER_BENCHMARK = "if_system_steerability_oss"
@@ -94,7 +106,10 @@ SYSTEM_STEER_BENCHMARK = "if_system_steerability_oss"
 RELEASED_SYSTEM_STEER_BENCHMARK = "system_steerability_v2"
 """What the released dataset calls the aspect :data:`SYSTEM_STEER_BENCHMARK` misses."""
 
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+# Upstream's reply-schema keys, verbatim. `_recover_json_object` sniffs for them
+# and `parse_judgement` reads them, so the two must agree on the spelling.
+_CHECKS_KEY = "rubrics_check"
+_DECLARATION_KEY = "SATISFIED_ALL_REQUIREMENTS"
 
 _MISSING_SOURCE_HINT = (
     f"AdvancedIF's judge prompts are CC-BY-NC-4.0 and are not redistributed "
@@ -175,7 +190,11 @@ def load_judge_prompts() -> JudgePrompts:
             f"  git -C {path.parent} checkout {UPSTREAM_COMMIT}"
         )
 
-    spec = importlib.util.spec_from_file_location("sieval._advanced_if_upstream", path)
+    # Deliberately not a `sieval.*` name: the module is upstream's file, not
+    # ours, and importing it must not make it addressable as part of this
+    # package. Registering it at all is what `exec_module` documents, so the
+    # module can resolve itself while executing.
+    spec = importlib.util.spec_from_file_location(UPSTREAM_MODULE_NAME, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot load AdvancedIF judge module from {path}.")
     module = importlib.util.module_from_spec(spec)
@@ -299,8 +318,45 @@ def _loads_json_object(reply: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _iter_json_objects(text: str) -> Iterator[dict]:
+    """Decode a JSON object at each ``{`` in *text*, skipping the ones that fail.
+
+    ``raw_decode`` stops at the end of the value it parsed, so trailing prose
+    (or a closing code fence) does not matter and no brace counting is needed.
+    """
+    decoder = json.JSONDecoder()
+    start = text.find("{")
+    while start != -1:
+        try:
+            parsed, _ = decoder.raw_decode(text, start)
+        except ValueError:
+            pass
+        else:
+            if isinstance(parsed, dict):
+                yield parsed
+        start = text.find("{", start + 1)
+
+
+def _recover_json_object(reply: str) -> dict | None:
+    """The first JSON object in *reply* that looks like a grader verdict.
+
+    Every ``{`` is tried in turn, so prose that itself contains braces ("I
+    checked {each} rubric") no longer swallows the real object the way a greedy
+    ``{.*}`` match did. A candidate carrying one of the schema keys wins
+    outright; otherwise the first decodable object stands, which is what a
+    grader that answered with a bare object gives.
+    """
+    fallback: dict | None = None
+    for candidate in _iter_json_objects(reply):
+        if _CHECKS_KEY in candidate or _DECLARATION_KEY in candidate:
+            return candidate
+        if fallback is None:
+            fallback = candidate
+    return fallback
+
+
 def parse_judgement(reply: str) -> Judgement | None:
-    """Parse a grader reply, or ``None`` when it yields no JSON object.
+    """Parse a grader reply, or ``None`` when it yields no usable verdict.
 
     ``None`` is the analogue of upstream's ``JudgeResult(success=False)``: the
     sample counts against the overall pass rate but contributes no rubrics to
@@ -309,21 +365,27 @@ def parse_judgement(reply: str) -> Judgement | None:
     parsed = _loads_json_object(reply)
     if parsed is None:
         # Fenced or prose-wrapped JSON -- see the parsing deviation above.
-        match = _JSON_OBJECT_RE.search(reply)
-        parsed = _loads_json_object(match.group(0)) if match else None
+        parsed = _recover_json_object(reply)
     if parsed is None:
         return None
 
-    raw_checks = parsed.get("rubrics_check", {})
+    raw_checks = parsed.get(_CHECKS_KEY, {})
     if not isinstance(raw_checks, dict):
-        raw_checks = {}
+        # Upstream iterates `rubrics_check.items()` unguarded, so a non-mapping
+        # raises inside `_calc_rubric_level_pass_rate` and the row lands in its
+        # `except Exception` path -- a *failed* row, not an empty one. Treating
+        # it as empty here would instead let the declaration alone score a pass.
+        # A *missing* key defaults to `{}` on both sides.
+        return None
     # Upstream defaults a missing declaration to "NO" and compares
-    # case-insensitively -- its own few-shot examples answer "Yes"/"No", not
-    # "YES"/"NO", so a case-sensitive check would fail every passing sample.
-    declared = parsed.get("SATISFIED_ALL_REQUIREMENTS", "NO")
+    # `.lower() == "yes"` -- case-insensitive but otherwise exact. Its own
+    # few-shot examples answer "Yes"/"No", not "YES"/"NO", so a case-sensitive
+    # check would fail every passing sample; it does not strip, so neither does
+    # this.
+    declared = parsed.get(_DECLARATION_KEY, "NO")
     return Judgement(
         rubrics_check={str(k): str(v) for k, v in raw_checks.items()},
-        satisfied_all=str(declared).strip().lower() == "yes",
+        satisfied_all=str(declared).lower() == "yes",
     )
 
 
@@ -370,19 +432,26 @@ def count_all_checks(rubrics_check: dict[str, str]) -> tuple[int, int]:
 
 
 def aggregate_metrics(verdicts: list[dict]) -> dict[str, float]:
-    """Pool per-rollout verdicts into the two published rates.
+    """Pool per-rollout verdicts into the two published rates, plus the macro.
 
-    Each entry carries ``satisfied_all``, ``n_checks`` and ``n_checks_passed``
-    (a rollout the grader failed to produce a verdict for contributes only to
-    the denominator of the pass rate, matching upstream).
+    Each entry carries ``satisfied_all``, ``n_checks``, ``n_checks_passed`` and
+    ``rubric_pass_rate`` (a rollout the grader failed to produce a verdict for
+    contributes only to the denominator of the pass rate, matching upstream).
+
+    ``macro_pass_rate`` averages the per-sample ``rubric_level_pass_rate``, so
+    every sample weighs the same regardless of how many rubrics it carries.
+    Upstream publishes only the micro rate; the macro is sieval's, reported
+    because it is the one of the two a per-sample reader can reconstruct.
     """
     total = len(verdicts)
     passed = sum(1 for v in verdicts if v["satisfied_all"])
     checks = sum(v["n_checks"] for v in verdicts)
     checks_passed = sum(v["n_checks_passed"] for v in verdicts)
+    macro = sum(v["rubric_pass_rate"] for v in verdicts)
     return {
         "overall_pass_rate": passed / total * 100 if total else 0.0,
         "micro_pass_rate": checks_passed / checks * 100 if checks else 0.0,
+        "macro_pass_rate": macro / total * 100 if total else 0.0,
         "n_samples": float(total),
         "n_rubric_checks": float(checks),
     }
