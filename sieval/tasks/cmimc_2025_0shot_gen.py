@@ -22,11 +22,17 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import pass_at_k
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    health_metrics,
+    sampling_report,
+)
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import CMIMC2025DatasetSample
 
-from ._math_verify import verify_answer
+from ._math_verify import normalize_vote, verify_answer
 
 
 @sieval_task(
@@ -78,7 +84,9 @@ class CMIMC2025ZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ],
 ):
     def __init__(self, dataset, model, name: str | None = None, k: int = 1, n: int = 1):
@@ -147,45 +155,25 @@ class CMIMC2025ZeroShotGenTask(
     @override
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
-        if total == 0:
-            # Same key set as the populated path, so `pass@1` never KeyErrors.
-            return self._metrics(0.0, 0.0, len(fails))
-
-        pass_at_1_total = 0.0
-        pass_at_k_total = 0.0
-        short = 0
-        for f in finals:
-            judgement = f.feedback_result
-            n_samples = judgement["n_rollouts"]
-            if n_samples < self._k:
-                short += 1
-            correct_num = judgement["n_correct"]
-            pass_at_1_total += pass_at_k(n_samples, correct_num, 1)
-            if self._k > 1:
-                pass_at_k_total += pass_at_k(n_samples, correct_num, self._k)
-
-        if short:
-            logger.warning(
-                "{}/{} sample(s) returned fewer than k={} choices (model produced "
-                "fewer than the requested n={}) and contribute 0 to pass@{}.",
-                short,
-                len(finals),
-                self._k,
-                self._n,
-                self._k,
-            )
-
-        return self._metrics(
-            pass_at_1_total * 100 / total,
-            pass_at_k_total * 100 / total,
-            len(fails),
+        rolled = sampling_report(
+            finals,
+            n=self._n,
+            k=self._k,
+            denominator=total,
+            normalize=normalize_vote,
         )
-
-    def _metrics(
-        self, pass_at_1: float, pass_at_k: float, fails: int
-    ) -> dict[str, float]:
-        # Single source of truth for the report key set — both branches route here.
-        metrics = {"score": pass_at_1, "fails": fails, "pass@1": pass_at_1}
-        if self._k > 1:
-            metrics[f"pass@{self._k}"] = pass_at_k
-        return metrics
+        # Read back out of the shared block, so `score` cannot drift from it.
+        pass_at_1 = rolled["pass@1"]
+        metrics: dict[str, float | str] = {
+            "score": pass_at_1,
+            "fails": len(fails),
+            "pass@1": pass_at_1,
+            SCORE_KEY_FIELD: "pass@1",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+        }
+        if self._n > 1:
+            # At n=1 the rest only restates `pass@1`.
+            metrics.update(rolled)
+        # Outside the gate: extraction health is a fact about the parser, not
+        # about the draw, and n=1 is where a stopped extractor hides longest.
+        return metrics | health_metrics(finals)

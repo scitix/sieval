@@ -1,9 +1,12 @@
 """Shared contract for the pass@k math tasks.
 
-These thirteen task modules are clones of one another in ``__init__``, ``report``
-and ``_pass_at_k``. Asserting the contract once, over all of them, is what stops
-a fix landing in one file and silently drifting in the other twelve — the failure
-mode that produced the ``k > n`` and report-key-set bugs in the first place.
+These thirteen task modules are clones of one another in ``__init__`` and
+``report``. Asserting the contract once, over all of them, is what stops a fix
+landing in one file and silently drifting in the other twelve — the failure mode
+that produced the ``k > n`` and report-key-set bugs in the first place. The
+estimators themselves now live in :mod:`sieval.core.tasks.metrics` and are tested
+there; what is asserted here is that every member routes through them and reports
+the same keys.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -16,6 +19,7 @@ from sieval.core.models import ChatModel, ModelOutput
 from sieval.core.tasks import (
     TaskContext,
     build_judgement_record,
+    build_prediction_record,
     build_rollout_judgement,
 )
 from sieval.datasets.aime_2024 import AIME2024Dataset
@@ -123,9 +127,18 @@ def test_k_equal_to_n_is_accepted(task_cls, dataset_cls, field):
 async def test_report_key_set_is_identical_when_empty(task_cls, dataset_cls, field, k):
     task = _build(task_cls, dataset_cls, field, k=k, n=k)
     raw = _sample(field)
-    feedback = _feedback(k)
     populated = await task.report(
-        [TaskContext(sample_id=0, raw_sample=raw, feedback_result=feedback)], []
+        [
+            TaskContext(
+                sample_id=0,
+                raw_sample=raw,
+                feedback_result=_feedback(k),
+                # A CLEAN run: predictions present, so `maj@k` is computable and
+                # the populated key set is the widest one this budget produces.
+                postprocess_result=build_prediction_record([ANSWER] * k),
+            )
+        ],
+        [],
     )
     empty = await task.report([], [])
 
@@ -133,8 +146,75 @@ async def test_report_key_set_is_identical_when_empty(task_cls, dataset_cls, fie
     # those keys hit a KeyError only on fully-failed runs.
     assert set(empty) == set(populated)
     assert "pass@1" in empty
-    if k > 1:  # for k == 1 the pass@k key *is* pass@1
-        assert f"pass@{k}" in empty
+    if k > 1:
+        # The budget lives in the `n`/`k` fields, never in the key, so the
+        # leaderboard column keeps its identity when the budget changes.
+        assert {"avg@n", "pass@k", "maj@k", "n", "k", "n_short"} <= set(empty)
+        assert f"pass@{k}" not in empty
+    else:
+        # n == 1: nothing was drawn, so there is no draw to describe.
+        assert not {"avg@n", "pass@k", "maj@k", "n", "k", "n_short"} & set(empty)
+
+
+@pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)
+@pytest.mark.anyio
+async def test_maj_at_k_clusters_equivalent_latex_into_one_vote(
+    task_cls, dataset_cls, field
+):
+    # Votes are clustered on the canonicalizer this family already applies to
+    # its golds, so `\dfrac{1}{2}` and `\frac{1}{2}` are one answer. Without it
+    # they split 2-2 with `1/3`, and a tie is not a majority -- maj@k would read
+    # 0.0 for a model that gave the same answer three times out of four.
+    task = _build(task_cls, dataset_cls, field, k=4, n=4)
+    raw = _sample(field)
+    populated = await task.report(
+        [
+            TaskContext(
+                sample_id=0,
+                raw_sample=raw,
+                feedback_result=build_judgement_record(
+                    r"\frac{1}{2}",
+                    [build_rollout_judgement(i, i != 3) for i in range(4)],
+                ),
+                postprocess_result=build_prediction_record(
+                    [
+                        r"\frac{1}{2}",
+                        r"\dfrac{1}{2}",
+                        r"\left(\frac{1}{2}\right)",
+                        "1/3",
+                    ]
+                ),
+            )
+        ],
+        [],
+    )
+    assert populated["pass@1"] == pytest.approx(75.0)
+    assert populated["maj@k"] == pytest.approx(100.0)
+
+
+@pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)
+@pytest.mark.anyio
+async def test_report_survives_an_answer_that_breaks_the_canonicalizer(
+    task_cls, dataset_cls, field
+):
+    # `strip_string` indexes into what it is repairing, so a bare trailing
+    # `\frac` or `\sqrt` raises IndexError -- fine on curated golds, but these
+    # are raw model answers arriving at the end of a scored run. An unclustered
+    # vote costs one cluster; an exception costs the whole report.
+    task = _build(task_cls, dataset_cls, field, k=2, n=2)
+    raw = _sample(field)
+    report = await task.report(
+        [
+            TaskContext(
+                sample_id=0,
+                raw_sample=raw,
+                feedback_result=_feedback(2),
+                postprocess_result=build_prediction_record(["\\frac", "\\sqrt"]),
+            )
+        ],
+        [],
+    )
+    assert report["pass@1"] == pytest.approx(100.0)
 
 
 @pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)

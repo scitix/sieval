@@ -160,7 +160,9 @@ class TestMathPassAtKReports:
         report = await _task(cls, _k=1, _n=2).report(finals, [])
         assert report["score"] == pytest.approx(75.0)
         assert report["pass@1"] == pytest.approx(75.0)
-        assert "pass@2" not in report
+        assert report["avg@n"] == pytest.approx(75.0)
+        # k == 1, so pass@k would restate pass@1 exactly and is omitted.
+        assert "pass@k" not in report
         assert report["fails"] == 0
 
     async def test_pass_at_k_uses_the_unbiased_estimator(self, module_name, class_name):
@@ -179,7 +181,11 @@ class TestMathPassAtKReports:
         ]
         report = await _task(cls, _k=2, _n=2).report(finals, [])
         assert report["pass@1"] == pytest.approx(50.0)
-        assert report["pass@2"] == pytest.approx(100.0)
+        # The key carries a literal `k`; the budget it was measured at is the
+        # `n` / `k` pair, so the column keeps its name when the budget changes.
+        assert report["pass@k"] == pytest.approx(100.0)
+        assert "pass@2" not in report
+        assert (report["n"], report["k"]) == (2.0, 2.0)
 
     async def test_fails_dilute_the_score(self, module_name, class_name):
         cls = self._load(module_name, class_name)
@@ -194,7 +200,79 @@ class TestMathPassAtKReports:
     async def test_empty_run_keeps_the_full_key_set(self, module_name, class_name):
         cls = self._load(module_name, class_name)
         report = await _task(cls, _k=2, _n=2).report([], [])
-        assert report == {"score": 0.0, "fails": 0, "pass@1": 0.0, "pass@2": 0.0}
+        # Every key a clean n=2/k=2 run would carry, at zero -- a column that
+        # exists only when samples survived turns "everything failed" into a
+        # KeyError in whatever reads the report.
+        assert report == {
+            "score": 0.0,
+            "fails": 0,
+            "pass@1": 0.0,
+            "score_key": "pass@1",
+            "denominator_policy": "requested",
+            "n_unextracted": 0.0,
+            "avg@n": 0.0,
+            "pass@k": 0.0,
+            # The reliability direction: `pass@k` is an upper bound and this is
+            # its opposite, so a run reporting only the first flatters variance.
+            "pass^k": 0.0,
+            "maj@k": 0.0,
+            # Dispersion, correctness-blind: the one key that moves when a
+            # model's answers widen without its mean changing.
+            "self_consistency": 0.0,
+            "n": 2.0,
+            "k": 2.0,
+            "n_short": 0.0,
+        }
+
+    async def test_every_sample_failing_keeps_the_full_key_set(
+        self, module_name, class_name
+    ):
+        cls = self._load(module_name, class_name)
+        # Non-zero denominator, nothing to aggregate: the branch that keys off
+        # `total` instead of `per_problem` drops every sampling key here.
+        report = await _task(cls, _k=2, _n=2).report([], [_final(None), _final(None)])
+        assert report["fails"] == 2
+        assert report["score"] == 0.0
+        sampling = {"pass@1", "avg@n", "pass@k", "maj@k", "n", "k", "n_short"}
+        assert sampling <= set(report)
+
+    async def test_maj_at_k_votes_on_answers_not_verdicts(
+        self, module_name, class_name
+    ):
+        cls = self._load(module_name, class_name)
+        # Right twice with ONE answer, wrong twice with two DIFFERENT ones: the
+        # modal answer is the correct one, so the majority wins where a verdict
+        # tally sees only 2/4. That gap is the whole reason maj@k is not
+        # derivable from pass@1 and pass@k.
+        finals = [
+            _final(
+                build_judgement_record(
+                    "42", [build_rollout_judgement(i, i < 2) for i in range(4)]
+                ),
+                postprocess=build_prediction_record(["42", "42", "7", "8"]),
+            )
+        ]
+        report = await _task(cls, _k=4, _n=4).report(finals, [])
+        assert report["pass@1"] == pytest.approx(50.0)
+        assert report["maj@k"] == pytest.approx(100.0)
+
+    async def test_maj_at_k_is_dropped_when_a_sample_has_no_predictions(
+        self, module_name, class_name
+    ):
+        cls = self._load(module_name, class_name)
+        # A resumed run recorded without the prediction stage cannot vote. The
+        # key is omitted rather than counted 0.0, which would read as "the
+        # majority was wrong" instead of "the majority is unknown".
+        judgement = build_judgement_record(
+            "42", [build_rollout_judgement(i, True) for i in range(4)]
+        )
+        finals = [
+            _final(judgement, postprocess=build_prediction_record(["42"] * 4)),
+            _final(judgement, postprocess={"rollouts": []}),
+        ]
+        report = await _task(cls, _k=4, _n=4).report(finals, [])
+        assert report["pass@1"] == pytest.approx(100.0)
+        assert "maj@k" not in report
 
 
 @pytest.mark.anyio
@@ -256,7 +334,17 @@ class TestLiveCodeBenchReport:
         )
 
         report = await _task(Cls, _k=1, _n=1).report([], [])
-        assert report == {"score": 0.0, "fails": 0}
+        # Previously `{"score", "fails"}` only: `pass@1` and `timeouts` appeared
+        # on the scored path and vanished on the empty one.
+        assert report == {
+            "score": 0.0,
+            "fails": 0,
+            "timeouts": 0,
+            "pass@1": 0.0,
+            "score_key": "pass@1",
+            "denominator_policy": "requested",
+            "n_unextracted": 0.0,
+        }
 
 
 @pytest.mark.anyio

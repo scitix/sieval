@@ -8,6 +8,17 @@
 
 **Convention:** `tests/unit/` mirrors `sieval/` — e.g. `sieval/core/runners/foo.py` → `tests/unit/core/runners/test_foo.py`. Scripts with non-trivial logic (`scripts/*.py`) go in `tests/unit/scripts/`. Non-`sieval/` top-level artifact dirs get their own sibling under `tests/` that mirrors them directly — e.g. `leaderboards/alignment/<tr-slug>/<stage>.md` → `tests/leaderboards/test_*.py`.
 
+The mirror is **directory-level**; four file layouts are in use within a directory:
+
+| Layout | When | Example |
+| --- | --- | --- |
+| `test_<module>.py` | Default: one file per source module. | `core/tasks/test_saver.py` |
+| `<module>/test_<topic>.py` | One large module split by topic. | `core/tasks/loader/` for `loader.py` |
+| `test_<subject>_family.py` | One contract over near-identical modules, where a fix landing in one and drifting in the others is the failure mode. | `tasks/test_sampling_family.py` (8 tasks, one sampling contract) |
+| `test_<concern>.py` | A concern belonging to no single module. | `test_lazy_exports.py`, `cli/test_shortcut_parity.py` |
+
+Prefer a per-module file whenever one will do; a family file that merely *collects* unrelated tests is the anti-pattern. Not machine-checked — three of the four layouts are legitimate, so placement is a review concern.
+
 ```text
 tests/
 ├── conftest.py                  # Shared mock infrastructure (all layers)

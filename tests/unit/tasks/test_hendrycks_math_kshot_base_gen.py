@@ -103,7 +103,9 @@ async def test_infer_forwards_deepseek_stop_only():
     await task.infer(
         {"prompt": "prompt"}, TaskContext(sample_id=0, raw_sample=_sample())
     )
-    assert model.last_kwargs == {"stop": ["\nProblem:"]}
+    # `n` rides along because it is the sampling budget rather than a decoding
+    # param; `stop` is prompt-coupled and everything else stays the caller's.
+    assert model.last_kwargs == {"n": 1, "stop": ["\nProblem:"]}
     assert "temperature" not in model.last_kwargs
     assert "max_tokens" not in model.last_kwargs
 
@@ -240,4 +242,11 @@ async def test_report_counts_fails_as_wrong():
 async def test_report_empty_is_zero():
     task, _ = _task()
     report = await task.report([], [])
-    assert report == {"score": 0.0, "fails": 0, "accuracy": 0.0}
+    assert report == {
+        "score": 0.0,
+        "fails": 0,
+        "accuracy": 0.0,
+        "score_key": "accuracy",
+        "denominator_policy": "requested",
+        "n_unextracted": 0.0,
+    }

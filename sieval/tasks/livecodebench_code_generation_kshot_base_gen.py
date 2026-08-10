@@ -73,7 +73,13 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import pass_at_k
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    health_metrics,
+    sampling_report,
+)
 from sieval.datasets import LiveCodeBenchDatasetSample
 
 N_SHOT = 3
@@ -116,7 +122,9 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -142,6 +150,10 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}."
+            )
         self.n_shot = n_shot
         self._k = k
         self._n = n
@@ -293,36 +305,34 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
     @override
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
-        if total == 0:
-            return {"score": 0.0, "fails": len(fails)}
-
-        pass_at_1_total = 0.0
-        pass_at_k_total = 0.0
-        timeouts = 0
-        for f in finals:
-            judgement = f.feedback_result
-            n_samples = judgement["n_rollouts"]
-            correct_num = judgement["n_correct"]
-            pass_at_1_total += pass_at_k(n_samples, correct_num, 1)
-            if self._k > 1:
-                pass_at_k_total += pass_at_k(n_samples, correct_num, self._k)
-            timeouts += sum(
-                1
-                for r in judgement["rollouts"]
-                # A null msg from the evaluator is absent on disk -- default it.
-                if "timeout" in (r["extra"].get("msg") or "").lower()
-            )
-
-        pass_at_1 = pass_at_1_total * 100 / total
-        metrics = {
+        timeouts = sum(
+            1
+            for f in finals
+            for r in f.feedback_result["rollouts"]
+            # A null msg from the evaluator is absent on disk -- default it.
+            if "timeout" in (r["extra"].get("msg") or "").lower()
+        )
+        # `votes=False`: two correct programs are not one answer, so there is
+        # nothing well-defined to take a majority over (RFC #74).
+        rolled = sampling_report(
+            finals, n=self._n, k=self._k, denominator=total, votes=False
+        )
+        # Read back out of the shared block, so `score` cannot drift from it.
+        pass_at_1 = rolled["pass@1"]
+        metrics: dict[str, float | str] = {
             "score": pass_at_1,
             "fails": len(fails),
             "timeouts": timeouts,
             "pass@1": pass_at_1,
+            SCORE_KEY_FIELD: "pass@1",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
-        if self._k > 1:
-            metrics[f"pass@{self._k}"] = pass_at_k_total * 100 / total
-        return metrics
+        if self._n > 1:
+            # At n=1 the rest only restates `pass@1`.
+            metrics.update(rolled)
+        # Outside the gate: extraction health is a fact about the parser, not
+        # about the draw, and n=1 is where a stopped extractor hides longest.
+        return metrics | health_metrics(finals)
 
     @override
     async def shutdown(self):

@@ -412,6 +412,9 @@ async def test_report_emits_accuracy_and_error_count():
         "errors": 2,
         # `score` is upstream's first-rollout accuracy, not a sampling metric.
         "score_key": "accuracy",
+        # ... over every sample the run asked for, failures included.
+        "denominator_policy": "requested",
+        "n_unextracted": 0.0,
     }
 
 
@@ -428,6 +431,8 @@ async def test_report_counts_fails_as_errors():
         "accuracy": 50.0,
         "errors": 1,
         "score_key": "accuracy",
+        "denominator_policy": "requested",
+        "n_unextracted": 0.0,
     }
 
 
@@ -440,6 +445,8 @@ async def test_report_on_an_empty_run():
         "accuracy": 0.0,
         "errors": 0,
         "score_key": "accuracy",
+        "denominator_policy": "requested",
+        "n_unextracted": 0.0,
     }
 
 

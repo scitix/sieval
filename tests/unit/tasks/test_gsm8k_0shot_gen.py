@@ -222,14 +222,28 @@ async def test_report_accuracy():
         ),
     ]
     report = await task.report(finals, [])
-    assert report == {"score": 50.0, "fails": 0, "accuracy": 50.0}
+    assert report == {
+        "score": 50.0,
+        "fails": 0,
+        "accuracy": 50.0,
+        "score_key": "accuracy",
+        "denominator_policy": "requested",
+        "n_unextracted": 0.0,
+    }
 
 
 @pytest.mark.anyio
 async def test_report_empty_finals():
     task, _ = _task("x")
     report = await task.report([], [])
-    assert report == {"score": 0.0, "fails": 0, "accuracy": 0.0}
+    assert report == {
+        "score": 0.0,
+        "fails": 0,
+        "accuracy": 0.0,
+        "score_key": "accuracy",
+        "denominator_policy": "requested",
+        "n_unextracted": 0.0,
+    }
 
 
 @pytest.mark.anyio
@@ -249,7 +263,14 @@ async def test_report_counts_fails_in_denominator():
     ]
     fails = [TaskContext(sample_id=1, raw_sample=raw)]
     report = await task.report(finals, fails)
-    assert report == {"score": 50.0, "fails": 1, "accuracy": 50.0}
+    assert report == {
+        "score": 50.0,
+        "fails": 1,
+        "accuracy": 50.0,
+        "score_key": "accuracy",
+        "denominator_policy": "requested",
+        "n_unextracted": 0.0,
+    }
 
 
 @pytest.mark.anyio
@@ -259,5 +280,9 @@ async def test_infer_injects_no_decode_params():
         _sample(), TaskContext(sample_id=0, raw_sample=_sample())
     )
     await task.infer(pre, TaskContext(sample_id=0, raw_sample=_sample()))
-    for forbidden in ("temperature", "top_p", "max_tokens", "n", "stop"):
+    # `n` is the sampling budget, not a decoding param: it MUST reach the model,
+    # or `k` is validated against a budget nothing requested. Everything else
+    # stays the caller's to configure.
+    assert model.last_kwargs == {"n": 1}
+    for forbidden in ("temperature", "top_p", "max_tokens", "stop"):
         assert forbidden not in model.last_kwargs

@@ -59,6 +59,7 @@ AI-Generated Code - GPT-5.5 (OpenAI)
 """
 
 import ast
+import asyncio
 import contextlib
 import math
 import operator
@@ -84,8 +85,18 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+    first_rollout_correct,
+    health_metrics,
+    sampling_report,
+)
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import TheoremQADatasetSample
+
+from ._math_verify import normalize_vote
 
 
 def _load_latex2sympy():
@@ -835,13 +846,28 @@ class TheoremQAKShotBaseGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
-        self, dataset, model, name: str | None = None, *, n_shot: int | None = None
+        self,
+        dataset,
+        model,
+        name: str | None = None,
+        *,
+        n_shot: int | None = None,
+        k: int = 1,
+        n: int = 1,
     ):
         super().__init__(dataset=dataset, model=model, name=name)
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}."
+            )
+        self._k = k
+        self._n = n
         self.n_shot = _normalize_n_shot(n_shot)
         self._prompt_no_input: str | None = None
         self._prompt_prefix: str | None = None
@@ -860,11 +886,30 @@ class TheoremQAKShotBaseGenTask(
 
     @override
     async def infer(self, pre, ctx):
-        return await self.model.agenerate(pre["prompt"], stop=_STOP_TOKENS)
+        # `n` is the sampling budget `k` was validated against, so it has to
+        # reach the model (sieval/tasks/CLAUDE.md, "n_shot vs k").
+        return await self.model.agenerate(pre["prompt"], n=self._n, stop=_STOP_TOKENS)
 
     @override
     async def postprocess(self, inf, ctx):
-        text = inf.texts[0] if inf.texts else ""
+        # answer_clean returns "" when nothing was extracted; None is the
+        # protocol's spelling, and report()'s `empty` counter reads `extracted`
+        # instead of comparing against "".
+        #
+        # A timed-out extraction lands in that same counter, so `empty` means
+        # "no answer came out of extraction", not "the model wrote nothing".
+        # Deliberate: the two are the same fact for every consumer of the metric
+        # — no prediction to grade — and splitting them would add a second
+        # counter that is zero on every run where the grader keeps up. The
+        # warning in `_extract` is what distinguishes them when it matters.
+        # Concurrent for the same reason as `feedback`: extraction is offloaded
+        # and bounded per rollout, so awaiting in turn multiplies the ceiling.
+        extracted = await asyncio.gather(
+            *(self._extract(text, ctx) for text in inf.texts)
+        )
+        return build_prediction_record([text or None for text in extracted])
+
+    async def _extract(self, text: str, ctx) -> str:
         # Extraction runs latex2sympy over model output, which is synchronous
         # and has no bound of its own, and every runner in the session shares
         # one event loop — so doing it here would stall every other task. A
@@ -872,7 +917,7 @@ class TheoremQAKShotBaseGenTask(
         # `run_cpu_bound` documents: a thread cannot be given up on, so one
         # unparseable answer would hold its slot for the rest of the run.
         try:
-            extracted = await run_cpu_bound(
+            return await run_cpu_bound(
                 answer_clean, _DIRECT_ANSWER_TRIGGERS, text, timeout=GRADE_TIMEOUT
             )
         except TimeoutError:
@@ -883,24 +928,29 @@ class TheoremQAKShotBaseGenTask(
                 ctx.sample_id,
                 GRADE_TIMEOUT,
             )
-            extracted = ""
-        # answer_clean returns "" when nothing was extracted; None is the
-        # protocol's spelling, and report()'s `empty` counter now reads
-        # `extracted` instead of comparing against "".
-        #
-        # A timed-out extraction lands in that same counter, so `empty` means
-        # "no answer came out of extraction", not "the model wrote nothing".
-        # Deliberate: the two are the same fact for every consumer of the metric
-        # — no prediction to grade — and splitting them would add a second
-        # counter that is zero on every run where the grader keeps up. The
-        # warning above is what distinguishes them when it matters.
-        return build_prediction_record([extracted or None])
+            return ""
 
     @override
     async def feedback(self, post, ctx):
         answer, groundtruth_num = _groundtruth_args(ctx.raw_sample)
+        # Concurrent, not sequential: each grade is an offloaded CPU-bound call
+        # with its own GRADE_TIMEOUT, so awaiting them in turn makes a sample's
+        # worst case n x the timeout instead of one.
+        verdicts = await asyncio.gather(
+            *(
+                self._grade(rollout, answer, groundtruth_num, ctx)
+                for rollout in post["rollouts"]
+            )
+        )
+        rollouts = [
+            build_rollout_judgement(rollout["index"], verdict)
+            for rollout, verdict in zip(post["rollouts"], verdicts, strict=True)
+        ]
+        return True, build_judgement_record(answer, rollouts)
+
+    async def _grade(self, rollout, answer, groundtruth_num, ctx) -> bool:
         # `or ""` restores exactly what the comparator saw pre-migration.
-        prediction = post["rollouts"][0].get("prediction") or ""
+        prediction = rollout.get("prediction") or ""
         # Offloaded on the same grounds as postprocess: the comparator reaches
         # latex2sympy through number_it.
         try:
@@ -920,39 +970,44 @@ class TheoremQAKShotBaseGenTask(
                 GRADE_TIMEOUT,
             )
             correct = False
-        return True, build_judgement_record(
-            answer,
-            [build_rollout_judgement(0, correct)],
-        )
+        return bool(correct)
 
     @override
-    async def report(self, finals, fails) -> dict[str, float]:
+    async def report(self, finals, fails) -> dict[str, float | str]:
         count = len(finals)
-        if count == 0:
-            return {
-                "score": 0.0,
-                "accuracy": 0.0,
-                "fails": len(fails),
-                "empty": 0,
-            }
-
-        correct = sum(
-            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
-        )
-        # Same population as the old `pred == ""` check: postprocess maps exactly
-        # that empty extraction to None, which is what `extracted: false` means.
+        # First-rollout, because that is what this port was validated against.
+        # `empty` reads the same population as the old `pred == ""` check:
+        # postprocess maps that empty extraction to None, i.e. extracted=False.
         empty = sum(
             1
             for ctx in finals
-            if not ctx.postprocess_result["rollouts"][0]["extracted"]
+            if not ((ctx.postprocess_result or {}).get("rollouts") or [{}])[0].get(
+                "extracted"
+            )
         )
-        accuracy = 100 * correct / count
-        return {
+        accuracy = 100 * first_rollout_correct(finals) / count if count else 0.0
+        metrics: dict[str, float | str] = {
             "score": accuracy,
             "accuracy": accuracy,
             "fails": len(fails),
             "empty": empty,
+            SCORE_KEY_FIELD: "accuracy",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         }
+        # Outside the gate: extraction health is a fact about the parser,
+        # not the draw, and n=1 is where a stopped extractor hides longest.
+        metrics |= health_metrics(finals)
+        if self._n <= 1:
+            return metrics
+        # Over `len(finals)`, the denominator `accuracy` uses: this task
+        # excludes failed samples where its siblings count them wrong.
+        return metrics | sampling_report(
+            finals,
+            n=self._n,
+            k=self._k,
+            denominator=count,
+            normalize=normalize_vote,
+        )
 
     def _build_prompt_parts(self) -> tuple[str, str]:
         used_examples = list(_THEOREMQA_EXAMPLES[: self.n_shot])

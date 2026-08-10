@@ -437,4 +437,4 @@ async def test_sampling_metrics_use_the_aacc_denominator():
     # 3 judged and solved over a denominator of 4 -> 75, not the 100 a
     # survivors-only denominator would report.
     assert report["pass@1"] == pytest.approx(75.0)
-    assert report["avg@k"] == pytest.approx(75.0)
+    assert report["avg@n"] == pytest.approx(75.0)

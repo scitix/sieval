@@ -163,9 +163,12 @@ from sieval.core.tasks import (
     sieval_task,
 )
 from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     aggregate,
-    count_short,
+    budget_metrics,
+    health_metrics,
     rollout_metrics,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
@@ -546,6 +549,7 @@ class UGMathBenchZeroShotGenFixedTask(
             # `score` is EAcc, not one of the sampling metrics — say which column
             # the headline number came from rather than leave it to be inferred.
             SCORE_KEY_FIELD: "eacc",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             "fails": float(len(fails)),
             "eacc": eacc,
             "aacc": aacc,
@@ -573,19 +577,15 @@ class UGMathBenchZeroShotGenFixedTask(
             # these upward over survivors — the defect the EAcc warnings above
             # describe (RFC #74 F).
             metrics.update(aggregate(per_version, n_versions))
-            metrics["n"] = float(self._n)
-            metrics["k"] = float(self._k)
-            short = count_short(observed_rollouts, self._n)
-            metrics["n_short"] = float(short)
-            if short:
-                logger.warning(
-                    "{}/{} judged version(s) came back with fewer than the "
-                    "requested n={} rollout(s); they contribute 0 to pass@k and "
-                    "bias every sampling metric downward.",
-                    short,
-                    len(per_version),
-                    self._n,
+            metrics.update(
+                budget_metrics(
+                    observed_rollouts, n=self._n, k=self._k, unit="judged version"
                 )
+            )
+
+        # Outside the n>1 gate: extraction health is a fact about the parser, not
+        # about the draw, and n=1 is where a stopped extractor hides longest.
+        metrics |= health_metrics(finals)
 
         for subject, problems in sorted(by_subject.items()):
             metrics[f"eacc_{subject.lower()}"] = _effective_accuracy(problems)

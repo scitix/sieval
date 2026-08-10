@@ -226,7 +226,7 @@ async def test_invalid_init_args_raise():
 
 @pytest.mark.anyio
 async def test_report_pass_at_1_and_pass_at_k():
-    task, _ = _task(k=2)
+    task, _ = _task(k=2, n=2)
     try:
         # one sample, two generations, one correct -> pass@1 = 0.5, pass@2 = 1.0
         feedback = _judgement((True, "ok"), (False, "wrong answer"))
@@ -238,7 +238,8 @@ async def test_report_pass_at_1_and_pass_at_k():
         await task.shutdown()
 
     assert report["pass@1"] == 50.0
-    assert report["pass@2"] == 100.0
+    assert report["pass@k"] == 100.0
+    assert "pass@2" not in report  # the key carries a literal `k`
     assert report["score"] == report["pass@1"]
     assert report["fails"] == 0
 

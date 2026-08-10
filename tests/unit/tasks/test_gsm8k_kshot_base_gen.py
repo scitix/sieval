@@ -79,7 +79,9 @@ async def test_infer_only_forwards_prompt_coupled_stop():
         {"prompt": "prompt"}, TaskContext(sample_id=0, raw_sample=_sample())
     )
 
-    assert model.last_kwargs == {"stop": list(STOP_SEQUENCES)}
+    # `n` rides along because it is the sampling budget rather than a decoding
+    # param; `stop` is prompt-coupled and everything else stays the caller's.
+    assert model.last_kwargs == {"n": 1, "stop": list(STOP_SEQUENCES)}
 
 
 @pytest.mark.anyio

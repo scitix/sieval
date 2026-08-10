@@ -20,6 +20,14 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+    first_rollout_correct,
+    health_metrics,
+    warn_unscored_rollouts,
+)
 from sieval.datasets import GPQADiamondDatasetSample
 
 
@@ -44,7 +52,9 @@ class GPQADiamondZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     """GPQA-Diamond 0-shot chat generation with shuffled answer choices.
@@ -100,30 +110,45 @@ class GPQADiamondZeroShotGenTask(
 
     @override
     async def postprocess(self, inf, ctx):
-        match = re.search(
-            ANSWER_PATTERN_MULTICHOICE, inf.texts[0]
-        )  # n=1, only one choice
-        return build_prediction_record([match.group(1) if match else None])
+        # Every choice the model returned, not `texts[0]`: this task has no
+        # sampling budget of its own, but a model-level `n` still reaches it,
+        # and a draw that was paid for should not be dropped on the floor.
+        predictions = []
+        for text in inf.texts:
+            match = re.search(ANSWER_PATTERN_MULTICHOICE, text)
+            predictions.append(match.group(1) if match else None)
+        return build_prediction_record(predictions)
 
     @override
     async def feedback(self, post, ctx):
         reference = ctx.preprocess_result["reference"]
-        prediction = post["rollouts"][0].get("prediction")
+        rollouts = [
+            build_rollout_judgement(
+                rollout["index"], rollout.get("prediction") == reference
+            )
+            for rollout in post["rollouts"]
+        ]
+        first = post["rollouts"][0].get("prediction") if post["rollouts"] else None
         return True, build_judgement_record(
             reference,
-            [build_rollout_judgement(0, prediction == reference)],
+            rollouts,
             # `chars` measures the extracted letter, not the model's answer, so
             # it is always 0 or 1 and nothing reads it. Kept to keep this a pure
             # refactor; drop it once someone confirms no external consumer.
-            extra={"chars": len(prediction or "")},
+            extra={"chars": len(first or "")},
         )
 
     @override
     async def report(self, finals, fails):
-        # The single rollout's verdict, matching mmlu_pro. Not `n_correct`: that
-        # reads an int as a bool, and would silently become pass@n under n>1.
-        count = sum(
-            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
-        )
+        # The FIRST rollout's verdict. Not `n_correct`: that reads an int as a
+        # bool, and would silently become pass@n. This benchmark publishes a
+        # single-draw number, so scoring the whole draw would restate it.
+        warn_unscored_rollouts(finals, task="gpqa_diamond_0shot_gen")
+        count = first_rollout_correct(finals)
         score = 100 * count / len(finals) if finals else 0.0
-        return {"score": score, "fails": len(fails)}
+        return {
+            "score": score,
+            "fails": len(fails),
+            SCORE_KEY_FIELD: "score",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
+        } | health_metrics(finals)

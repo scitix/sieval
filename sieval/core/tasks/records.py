@@ -173,17 +173,36 @@ def build_prompt_record(
 def build_prediction_record(
     predictions: Sequence[JSONValue | None],
     *,
+    extras: Sequence[dict | None] | None = None,
     extra: dict | None = None,
 ) -> PredictionRecord:
     """Build a :class:`PredictionRecord` from one extracted value per rollout.
 
     ``extracted`` is derived per rollout as ``prediction is not None``, so tasks
     must use ``None`` -- not ``""`` or ``-1`` -- for "could not extract".
+
+    *extras* is one detail dict PER ROLLOUT and must be the same length as
+    *predictions*; *extra* is one for the whole sample. A second extraction rule
+    over the same response (GSM8K's flexible match) is per-rollout detail: put it
+    in the sample-level slot and it silently means "rollout 0's" the moment
+    ``n > 1``, which is a wrong answer rather than a missing one.
     """
-    rollouts: list[RolloutPrediction] = [
-        {"index": index, "prediction": prediction, "extracted": prediction is not None}
-        for index, prediction in enumerate(predictions)
-    ]
+    if extras is not None and len(extras) != len(predictions):
+        raise ValueError(
+            f"extras must carry one entry per rollout: got {len(extras)} for "
+            f"{len(predictions)} prediction(s)."
+        )
+    rollouts: list[RolloutPrediction] = []
+    for index, prediction in enumerate(predictions):
+        rollout: RolloutPrediction = {
+            "index": index,
+            "prediction": prediction,
+            "extracted": prediction is not None,
+        }
+        per_rollout = extras[index] if extras is not None else None
+        if per_rollout:
+            rollout["extra"] = per_rollout
+        rollouts.append(rollout)
     record: PredictionRecord = {"rollouts": rollouts}
     if extra:
         record["extra"] = extra

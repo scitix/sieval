@@ -39,7 +39,16 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+    health_metrics,
+    sampling_report,
+)
 from sieval.datasets import GSM8KDatasetSample
+
+from ._math_verify import normalize_vote
 
 N_SHOT = 8
 DEFAULT_FEWSHOT_SEED = 1234
@@ -89,6 +98,20 @@ def _extract_flexible_match(text: str) -> tuple[str, str]:
     return "", "none"
 
 
+def _named(finals, metric: str) -> int:
+    """How many judged samples the FIRST rollout got right on *metric*.
+
+    Reads the sample-level `metrics` block, which `feedback` fills from rollout 0
+    -- the axis lm-eval-harness measured. Tolerant of a missing block so a run
+    interrupted mid-feedback reports a number rather than a KeyError.
+    """
+    return sum(
+        1
+        for ctx in finals
+        if ((ctx.feedback_result or {}).get("metrics") or {}).get(metric)
+    )
+
+
 @sieval_task(
     name="gsm8k_kshot_base_gen",
     display_name="GSM8K (few-shot, base generative)",
@@ -120,7 +143,9 @@ class GSM8KFewShotBaseGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -132,11 +157,19 @@ class GSM8KFewShotBaseGenTask(
         n_shot: int = N_SHOT,
         fewshot_split: str = "train",
         fewshot_seed: int = DEFAULT_FEWSHOT_SEED,
+        k: int = 1,
+        n: int = 1,
         stop: tuple[str, ...] = STOP_SEQUENCES,
     ):
         if n_shot < 0:
             raise ValueError(f"n_shot must be >= 0, got {n_shot}")
+        if k > n:
+            raise ValueError(
+                f"pass@{k} needs at least {k} sample(s) per problem, got n={n}."
+            )
         super().__init__(dataset=dataset, model=model, name=name)
+        self._k = k
+        self._n = n
         self.n_shot = n_shot
         self._fewshot_split = fewshot_split
         self._fewshot_seed = fewshot_seed
@@ -159,26 +192,34 @@ class GSM8KFewShotBaseGenTask(
     async def infer(self, pre, ctx):
         # Keep `stop` out of the kwargs when unset so it can't clobber the
         # model's configured stop via the `{**self._kwargs, **kwargs}` merge.
+        # `n` always goes: it is the sampling budget `k` was validated against
+        # (sieval/tasks/CLAUDE.md, "n_shot vs k").
         if self._stop:
-            return await self.model.agenerate(pre["prompt"], stop=list(self._stop))
-        return await self.model.agenerate(pre["prompt"])
+            return await self.model.agenerate(
+                pre["prompt"], n=self._n, stop=list(self._stop)
+            )
+        return await self.model.agenerate(pre["prompt"], n=self._n)
 
     @override
     async def postprocess(self, inf, ctx):
-        text = inf.texts[0] if inf.texts else ""
-        answer, extraction_method = _extract_answer(text)
-        flexible_answer, flexible_extraction_method = _extract_flexible_match(text)
-        # The strict extraction is the headline prediction; the flexible one is a
-        # second extraction RULE over the same response, not a second rollout, so
-        # it rides in `extra` next to how each was obtained.
-        return build_prediction_record(
-            [answer or None],
-            extra={
-                "flexible_prediction": flexible_answer,
-                "extraction_method": extraction_method,
-                "flexible_extraction_method": flexible_extraction_method,
-            },
-        )
+        # The flexible match is a second extraction RULE over the same
+        # response, not a second rollout. PER-ROLLOUT because it is a fact
+        # about one response: in the sample-level slot it would silently mean
+        # "rollout 0's" the moment n > 1.
+        predictions: list = []
+        extras: list[dict | None] = []
+        for text in inf.texts:
+            answer, extraction_method = _extract_answer(text)
+            flexible_answer, flexible_extraction_method = _extract_flexible_match(text)
+            predictions.append(answer or None)
+            extras.append(
+                {
+                    "flexible_prediction": flexible_answer,
+                    "extraction_method": extraction_method,
+                    "flexible_extraction_method": flexible_extraction_method,
+                }
+            )
+        return build_prediction_record(predictions, extras=extras)
 
     @override
     async def feedback(self, post, ctx):
@@ -186,49 +227,64 @@ class GSM8KFewShotBaseGenTask(
         # Strict and flexible extraction are co-equal published metrics over one
         # response, so both are named in `metrics`; `correct` is DERIVED from the
         # strict one (the headline `exact_match`) so the two cannot drift.
-        prediction = post["rollouts"][0].get("prediction") or ""
-        metrics: dict[str, bool | float] = {
-            "exact_match": prediction == answer,
-            "flexible_exact_match": post["extra"]["flexible_prediction"] == answer,
-        }
-        return True, build_judgement_record(
-            answer,
-            [build_rollout_judgement(0, bool(metrics["exact_match"]), metrics=metrics)],
-            metrics=metrics,
-            extra={
-                "extraction_method": post["extra"]["extraction_method"],
-                "flexible_extraction_method": post["extra"][
-                    "flexible_extraction_method"
-                ],
-            },
-        )
+        rollouts = []
+        for rollout in post["rollouts"]:
+            extra = rollout.get("extra") or {}
+            metrics: dict[str, bool | float] = {
+                "exact_match": (rollout.get("prediction") or "") == answer,
+                "flexible_exact_match": extra.get("flexible_prediction") == answer,
+            }
+            rollouts.append(
+                build_rollout_judgement(
+                    rollout["index"],
+                    bool(metrics["exact_match"]),
+                    metrics=metrics,
+                    extra={
+                        "extraction_method": extra.get("extraction_method"),
+                        "flexible_extraction_method": extra.get(
+                            "flexible_extraction_method"
+                        ),
+                    },
+                )
+            )
+        # Sample-level `metrics` stays the FIRST rollout's, which is the axis the
+        # lm-eval-harness numbers this port reproduces were measured on.
+        first = dict(rollouts[0]["metrics"]) if rollouts else {}
+        return True, build_judgement_record(answer, rollouts, metrics=first or None)
 
     @override
     async def report(self, finals, fails):
         count = len(finals)
-        if count == 0:
-            return {
-                "score": 0.0,
-                "fails": len(fails),
-                "exact_match": 0.0,
-                "flexible_exact_match": 0.0,
-            }
-        correct_num = sum(
-            1 for ctx in finals if ctx.feedback_result["metrics"]["exact_match"]
-        )
-        flexible_correct_num = sum(
-            1
-            for ctx in finals
-            if ctx.feedback_result["metrics"]["flexible_exact_match"]
-        )
-        exact_match = 100 * correct_num / count
-        flexible_exact_match = 100 * flexible_correct_num / count
-        return {
+        # First-rollout, because that is what lm-eval-harness published (one
+        # greedy draw). The sampling metrics below never touch them.
+        correct_num = _named(finals, "exact_match")
+        flexible_correct_num = _named(finals, "flexible_exact_match")
+        exact_match = 100 * correct_num / count if count else 0.0
+        flexible_exact_match = 100 * flexible_correct_num / count if count else 0.0
+        metrics: dict[str, float | str] = {
             "score": exact_match,
             "fails": len(fails),
             "exact_match": exact_match,
             "flexible_exact_match": flexible_exact_match,
+            SCORE_KEY_FIELD: "exact_match",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         }
+        # Outside the gate: extraction health is a fact about the parser,
+        # not the draw, and n=1 is where a stopped extractor hides longest.
+        metrics |= health_metrics(finals)
+        if self._n <= 1:
+            return metrics
+        # The sampling family rides on `correct`, derived from the strict
+        # `exact_match`, so it describes the HEADLINE metric only --
+        # `flexible_exact_match` would need its own verdict axis.
+        # Over `len(finals)`: this task excludes failed samples.
+        return metrics | sampling_report(
+            finals,
+            n=self._n,
+            k=self._k,
+            denominator=count,
+            normalize=normalize_vote,
+        )
 
     def _get_fewshot_examples(self) -> list[GSM8KDatasetSample]:
         if self._fewshot_examples is None:

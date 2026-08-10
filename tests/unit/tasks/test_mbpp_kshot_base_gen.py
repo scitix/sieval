@@ -147,7 +147,7 @@ async def test_report_pass_at_1_counts_fails_in_denominator():
     # 1 correct out of 3 total (2 finals + 1 fail) = 33.33...
     assert report["score"] == pytest.approx(100 / 3)
     assert report["pass@1"] == pytest.approx(100 / 3)
-    assert "pass@2" not in report
+    assert "pass@k" not in report  # k == 1: it would restate pass@1
 
 
 @pytest.mark.anyio
@@ -163,7 +163,8 @@ async def test_report_pass_at_k_and_timeouts():
 
     assert report["score"] == pytest.approx(50.0)
     assert report["pass@1"] == pytest.approx(50.0)
-    assert report["pass@2"] == pytest.approx(100.0)
+    assert report["pass@k"] == pytest.approx(100.0)
+    assert "pass@2" not in report  # the key carries a literal `k`
     assert report["timeouts"] == 1
 
 
@@ -175,7 +176,15 @@ async def test_report_empty_returns_zero_with_populated_schema():
 
     # Empty branch must emit the same keys as the populated path (zeros), so
     # downstream consumers see a stable schema.
-    assert report == {"score": 0.0, "fails": 0, "timeouts": 0, "pass@1": 0.0}
+    assert report == {
+        "score": 0.0,
+        "fails": 0,
+        "timeouts": 0,
+        "pass@1": 0.0,
+        "score_key": "pass@1",
+        "denominator_policy": "requested",
+        "n_unextracted": 0.0,
+    }
 
 
 @pytest.mark.anyio
