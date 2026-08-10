@@ -29,7 +29,7 @@ def test_build_grader_prompt_carries_prompt_response_and_count():
     # The count is interpolated in both places the template asks for it, so a
     # judge told to grade "3 criteria" cannot be handed a different rubric size.
     assert "Grade all 3 criteria" in prompt
-    assert "3: <PASS|FAIL>" in prompt
+    assert "3: <verdict>" in prompt
 
 
 # --- verdict parsing ---
@@ -88,6 +88,52 @@ def test_parse_verdicts_ignores_mid_sentence_prose():
         None,
         None,
     ]
+
+
+# --- verdict parsing: the echoed-instruction hazard ---
+#
+# The one misparse that would inflate a score rather than depress it, and inflate
+# it invisibly: a parsed verdict is by definition not counted in `n_unparsed`, so
+# the drift counter reads 0 while every criterion scores a pass. Both halves of
+# the guard are pinned here -- the parser rejecting an alternation, and the
+# template not containing one for a judge to echo in the first place.
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "1: <PASS|FAIL>",
+        "1: PASS|FAIL",
+        "1: **<PASS|FAIL>**",
+        "1: <FAIL|PASS>",
+    ],
+)
+def test_parse_verdicts_rejects_an_alternation_as_a_verdict(line: str):
+    # A judge restating its instructions has reported nothing. Scoring this as a
+    # pass is worse than scoring it unparsed, because unparsed is counted.
+    assert parse_verdicts(line, 1) == [None]
+
+
+def test_parse_verdicts_still_reads_a_bracketed_single_verdict():
+    # The guard must reject the ALTERNATION, not the angle brackets -- a judge
+    # that fills the placeholder in as "<PASS>" has answered.
+    assert parse_verdicts("1: <PASS>\n2: <FAIL>", 2) == [True, False]
+
+
+def test_template_does_not_self_parse():
+    # The likeliest thing a confused or length-truncated judge emits verbatim is
+    # the format it was just asked for. So no substring of the prompt may read as
+    # a verdict: if it did, an echoed instruction -- or a reply cut off right
+    # after restating the format -- would score a full rubric.
+    prompt = build_grader_prompt("do the thing", "here you go", ["a", "b", "c"])
+    assert parse_verdicts(prompt, 3) == [None, None, None]
+
+
+def test_parse_verdicts_truncated_block_leaves_the_tail_unparsed():
+    # A grader cut off mid-block is the safe direction: the tail is counted and
+    # scored not-satisfied, biasing DOWN. Pinned so the guard above is not
+    # mistaken for covering truncation generally.
+    assert parse_verdicts("1: PASS\n2: PASS\n3:", 3) == [True, True, None]
 
 
 # --- aggregation ---

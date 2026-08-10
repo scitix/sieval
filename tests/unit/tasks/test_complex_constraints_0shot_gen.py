@@ -3,6 +3,8 @@
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+from dataclasses import replace
+
 import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -370,3 +372,22 @@ async def test_report_empty_is_zero():
     report = await task.report([], fails=[])
     assert report["score"] == 0.0
     assert report["n_graded"] == 0
+
+
+@pytest.mark.anyio
+async def test_report_separates_an_empty_response_from_a_failed_rubric():
+    # Two rollouts scoring 0/3, reached two different ways: one the judge graded
+    # and failed, one that never had a response to grade. `n_graded` counts both,
+    # so without `n_unextracted` the report cannot tell them apart -- and "the
+    # model returned nothing" and "the model failed every criterion" want
+    # different responses from whoever reads the run.
+    task, _, _ = _task()
+    graded_and_failed = _final(0, 0, 3)
+    empty_response = replace(
+        _final(1, 0, 3), postprocess_result=build_prediction_record([None])
+    )
+    report = await task.report([graded_and_failed, empty_response], fails=[])
+
+    assert report["task_pass_rate"] == pytest.approx(0.0)
+    assert report["n_graded"] == 2
+    assert report["n_unextracted"] == 1

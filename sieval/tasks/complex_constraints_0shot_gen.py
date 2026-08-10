@@ -9,12 +9,19 @@ which is what the paper's public 75-prompt leaderboard reports (its Table 1).
 The paper's other metric, the mean per-criterion pass rate, is reported
 alongside it in both the macro (published) and pooled-micro readings.
 
-Upstream ships **no evaluation code and no judge prompt** — the paper names
-GPT-5-mini as the judge and defines the metrics, nothing more — so the rubric
-prompt and verdict parsing are authored by this port (see
-``sieval.community.complex_constraints``). Scores are therefore not comparable to
-the leaderboard at the precision a vendored grader would give, which is why this
-task ships ``status="experimental"``.
+Upstream ships **no evaluation code and no judge prompt** — the paper defines the
+metrics and nothing more — so the rubric prompt and verdict parsing are authored
+by this port (see ``sieval.community.complex_constraints``). Scores are therefore
+not comparable to the leaderboard at the precision a vendored grader would give,
+which is why this task ships ``status="experimental"``.
+
+**Which judge produced Table 1 is unknown.** The paper names GPT-5-mini as the
+per-criterion judge for *training* only — "Per-criterion satisfaction judgments
+are produced by GPT-5-mini during ComplexConstraints training and CoreCraft
+training" — and never says what graded the leaderboard. So the judge is an
+unpinned degree of freedom in the comparison itself, not merely an unpinned
+version of a known one: a run matching the candidate model exactly may still not
+be comparing like with like.
 
 The judge is supplied via the ``grader`` task arg (a model-config dict, or a
 pre-built Model, on its own ``api_base``/``api_key``). As with sieval's other
@@ -23,6 +30,13 @@ cannot pin the way it pins a Hub revision, so for reproducibility pin the grader
 model and set ``temperature: 0``; each rollout's per-criterion verdicts and the
 judge's whole ``ModelOutput`` (``extra.grader_output``: reply, reasoning, usage,
 finish reasons, model id) are persisted — see :meth:`feedback`.
+
+Give the grader enough ``max_tokens`` for one verdict line per criterion — up to
+40, *after* whatever reasoning it emits first. A grader truncated mid-block
+leaves the tail unparsed, which is counted (``n_unparsed``) and scored
+not-satisfied, so it biases the score **down**. Nothing flags it automatically:
+the ``truncated_output`` anomaly rule reads the candidate model's finish reasons,
+never the grader's, so ``n_unparsed`` is the signal to watch.
 
 Deviations / by-design behavior worth knowing:
 
@@ -35,6 +49,14 @@ Deviations / by-design behavior worth knowing:
   satisfied** — an unreadable verdict must never inflate a score — but counted
   separately as ``n_unparsed`` (per rollout, and pooled in the report), so judge
   format drift stays distinguishable from a model that failed the rubric.
+* **The grader prompt is hardened in two port-authored ways**, both scoring-
+  relevant and neither upstream behavior: its format example reads ``<verdict>``
+  rather than a literal PASS/FAIL alternation, and the parser rejects an
+  alternation as a verdict, so a judge restating its instructions lands in
+  ``n_unparsed`` instead of scoring a full rubric. It also states that the
+  RESPONSE block is material to be graded, never instruction — the candidate is
+  free-form text on an instruction-following benchmark, so it can contain
+  anything, including its own verdict block.
 * An empty/whitespace response is scored as satisfying **zero** criteria
   **without** invoking the judge; ``extra.grader_output`` is absent on that path
   because no call was made, and the matching prediction rollout's
@@ -46,9 +68,12 @@ Reproduction decoding: ``n`` (repeats) is a **task arg** — set it in
 ``tasks.<name>.args.n``. The paper's leaderboard does not state a repeat count,
 so the port defaults to ``n=1``; ``infer`` forwards ``n`` as a call-time kwarg to
 ``agenerate``, and call-time wins over model config, so setting ``n`` on the
-model is silently overridden by the task default. Comparison target is the
-paper's Table 1 leaderboard (snapshot 2026-06-03; Gemini 3.1 Pro 40.4, GPT-5.5
-38.7, Claude Opus 4.8 34.9 task pass %).
+model is silently overridden by the task default. Comparison target is the public
+leaderboard the paper's Table 1 snapshots
+(https://surgehq.ai/benchmarks/complex-constraints) — snapshot 2026-06-03: Gemini
+3.1 Pro 40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %. The live board
+moves and the paper pins no version of it, so align against the snapshot recorded
+here rather than against whatever the URL reads on the day.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -77,6 +102,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import health_metrics
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import ComplexConstraintsDatasetSample
 
@@ -100,9 +126,8 @@ from sieval.datasets import ComplexConstraintsDatasetSample
             "— 75 multi-constraint prompts (CIF-001..CIF-075) with 10-40 atomic "
             "rubric criteria each (1,559 total), graded by rubric rather than "
             "exact match. NO UPSTREAM EVAL CODE AND NO UPSTREAM JUDGE PROMPT: "
-            "the paper names GPT-5-mini as the per-criterion judge and defines "
-            "the metrics, but the template, decoding settings and call structure "
-            "are unstated, and the dataset card "
+            "the paper defines the metrics, but the judge template, decoding "
+            "settings and call structure are unstated, and the dataset card "
             "(https://huggingface.co/datasets/surgeai/ComplexConstraints/blob/"
             "e9625c6f635f42b72cb85a04c2be64746f945126/README.md) adds nothing — "
             "so the rubric prompt and verdict parsing are AUTHORED BY THIS PORT "
@@ -119,7 +144,20 @@ from sieval.datasets import ComplexConstraintsDatasetSample
             "unreadable per-criterion verdict scores not-satisfied but is "
             "counted as n_unparsed so judge format drift stays visible; "
             "empty/whitespace responses satisfy zero criteria without invoking "
-            "the judge (grader_output absent there, no call made). "
+            "the judge (grader_output absent there, no call made). GRADER PROMPT "
+            "HARDENING (port-authored, scoring-relevant): the format example "
+            "reads `<verdict>` and the parser rejects an alternation as a "
+            "verdict, so a judge restating its instructions lands in n_unparsed "
+            "instead of scoring a full rubric; the prompt also declares the "
+            "RESPONSE block to be material, never instruction. Give the grader "
+            "max_tokens for up to 40 verdict lines AFTER its reasoning — a "
+            "truncated grader biases the score DOWN via n_unparsed, and the "
+            "truncated_output rule reads the candidate's finish reasons, not the "
+            "grader's. WHICH JUDGE PRODUCED TABLE 1 IS UNKNOWN: the paper names "
+            "GPT-5-mini as the per-criterion judge for TRAINING only ('produced "
+            "by GPT-5-mini during ComplexConstraints training and CoreCraft "
+            "training') and never says what graded the leaderboard, so the judge "
+            "is an unpinned degree of freedom in the comparison itself. "
             "REPRODUCIBILITY: scores depend on the grader endpoint's model "
             "version (not pinnable like a Hub revision) — pin the grader model + "
             "temperature=0; per-criterion verdicts and the judge's full "
@@ -128,9 +166,10 @@ from sieval.datasets import ComplexConstraintsDatasetSample
             "reproduce. REPEATS: the leaderboard states no repeat count, so the "
             "port defaults to n=1; `n` is a task arg (tasks.<name>.args.n), NOT "
             "a model arg — infer forwards it call-time and call-time wins. "
-            "NOT YET VALIDATED against the Table 1 leaderboard (snapshot "
-            "2026-06-03: Gemini 3.1 Pro 40.4, GPT-5.5 38.7, Claude Opus 4.8 "
-            "34.9 task pass %)."
+            "NOT YET VALIDATED against the Table 1 leaderboard "
+            "(https://surgehq.ai/benchmarks/complex-constraints; the live board "
+            "moves, so align against this snapshot, 2026-06-03: Gemini 3.1 Pro "
+            "40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %)."
         ),
     ),
 )
@@ -340,4 +379,11 @@ class ComplexConstraintsZeroShotGenTask(
             # invisible inside: these criteria scored not-satisfied.
             "n_unparsed": sum(r["extra"]["n_unparsed"] for r in graded),
             "fails": len(fails),
-        }
+            # `n_graded` counts the short-circuited empty responses too, so it
+            # cannot separate "the judge failed every criterion" from "the model
+            # returned nothing". `n_unextracted` is that second count, and the
+            # two failure modes read identically without it. Deliberately only
+            # `health_metrics` and not the rest of the sampling block: RFC #74
+            # defers `pass@k` / `maj@k` for the LLM-judged family, while this one
+            # measures the parser rather than the draw and is outside that gate.
+        } | health_metrics(finals)
