@@ -57,19 +57,16 @@ reporting a `pass@k` of `0.0`.
 Rates are percentages (0–100) over the task's declared denominator; `n`, `k` and
 `n_short` are counts.
 
-**`avg@n` is spelled `@n`, not `@k`, on purpose.** It takes no `k` and does not
-move with one: at `n=4, k=2` it averages four verdicts where `pass@k` estimates
+**`avg@n` is spelled `@n`, not `@k`, on purpose:** it takes no `k` and does not
+move with one — at `n=4, k=2` it averages four verdicts where `pass@k` estimates
 over two. It coincides with `pass@1` on every boolean draw, and both are still
-reported, because they answer different questions — `pass@1` *estimates* the
-success rate of a single draw, `avg@n` *measures* the mean of the draw that was
-actually paid for. They separate as soon as a verdict stops being a bool.
+reported: `pass@1` *estimates* a single draw's success rate, `avg@n` *measures*
+the draw that was paid for. They separate once a verdict stops being a bool.
 
 `n_unextracted` — **rollouts** whose answer could not be recovered — is reported
 at **every** budget, `n = 1` included, and by the single-draw tasks below that
-have no `n` at all. It measures the parser, not the draw: gating it behind
-`n > 1` would withhold it from the default configuration, which is exactly where
-a silently-stopped extractor survives longest, because there is no second
-rollout to disagree with.
+have no `n` at all. It measures the parser, not the draw, and `n = 1` is where a
+silently-stopped extractor survives longest: no second rollout to disagree with.
 
 ### Pairs that must be read together
 
@@ -114,11 +111,11 @@ Both are properties of the **configuration**, so `maj@k` is present or absent fo
 a whole run by construction — it does not appear and disappear with run health.
 
 A draw that came back **short still votes**. The arrived count is run health, and
-every other key here treats that the same way: compute it, and annotate it with
-`n_short`. `self_consistency` clusters the very same answers with the very same
-normalizer, so withholding one and not the other would be two answers to the
-question of whether a single draw is fit to cluster. A short draw does move
-`maj@k` — like everything else in the table, read it against `n_short`.
+every other key treats that the same way: compute it, annotate it with `n_short`.
+`self_consistency` clusters the very same answers with the very same normalizer,
+so withholding one and not the other would be two answers to whether a single
+draw is fit to cluster. A short draw does move `maj@k`; read it against
+`n_short`.
 
 `maj@k` is a **lower bound**, not an estimate: votes cluster on *strings* (after
 the task's own gold canonicalizer) while the grader compares *symbolically*, so
@@ -136,11 +133,10 @@ first-rollout definition even under `n > 1`, with `pass@1` beside it rather than
 merged in. At `n = 1` the two coincide, which is what makes adopting a budget
 non-breaking for a stored score.
 
-The MCQ four take **no** `n`/`k` argument, but still grade and record every
+The MCQ four take **no** `n`/`k` argument but still grade and record every
 rollout that arrives (a model-level `n` reaches them); `report()` warns once with
-the count it did not score. Because they take no budget of their own, the remedy
-that warning names is the **model** config — there is no task-side `n` to move it
-to.
+the count it did not score. Having no budget of their own, the remedy that
+warning names is the **model** config — there is no task-side `n` to move it to.
 
 ## Task-specific keys
 
