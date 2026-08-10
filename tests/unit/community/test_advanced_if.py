@@ -203,6 +203,26 @@ def test_parse_judgement_stringifies_non_string_answers():
     assert judgement.rubrics_check == {"question_1": "['Yes']"}
 
 
+def test_a_non_string_answer_with_a_yes_declaration_moves_the_headline():
+    """The stringify deviation is not confined to ``micro_pass_rate``.
+
+    Upstream's ``.lower()`` raises on the non-string answer, so its ``evaluate``
+    returns ``success=False`` and the row is a NON-pass. Stringifying keeps the
+    row gradeable, and the YES declaration then scores it a PASS -- so with a YES
+    declaration this deviation moves ``overall_pass_rate``, the headline, and not
+    only the pooled rubric rate. With NO it moves the pooled rate alone, which is
+    the case the test above covers.
+    """
+    judgement = parse_judgement(_reply({"question_1": True}, "Yes"))
+    assert judgement is not None
+    assert judgement.rubrics_check == {"question_1": "True"}
+    # The row survives, and the declaration carries it to a pass.
+    assert judgement.satisfied_all
+    # "True" does not contain "yes", so the answer itself still counts as a fail:
+    # a passing row with a failing rubric, which upstream never produces.
+    assert count_all_checks(judgement.rubrics_check) == (1, 0)
+
+
 def test_parse_judgement_fails_the_row_on_a_non_mapping_rubrics_check():
     """Upstream's ``.items()`` raises there, so the row fails rather than empties.
 
@@ -413,3 +433,62 @@ def test_released_system_steer_rows_compose_the_if_prompt():
         RELEASED_SYSTEM_STEER_BENCHMARK, messages, "answer", ["r1"]
     )
     assert composed.startswith("IF|")
+
+
+def test_a_schema_template_does_not_parse_as_a_verdict():
+    """A stated reply *schema* must not be mistaken for a reply.
+
+    Both judge prompts end by stating the schema, with ``...`` and prose inside
+    the braces, so nothing there decodes. That is what keeps the plain
+    user-instruction judge -- the only one the released data reaches -- clear of
+    the echo path in the test below: it states the schema but carries no complete
+    verdict. Shaped like upstream's block rather than copied from it, since the
+    prompts are CC-BY-NC-4.0 and not redistributed here.
+    """
+    template = (
+        "{\n"
+        '    "rubrics_check": {\n'
+        '        "question_1": "answer to question 1 in the rubrics",\n'
+        "        ...\n"
+        "    },\n"
+        '    "SATISFIED_ALL_REQUIREMENTS": "YES" if it passes. "NO" otherwise.\n'
+        "}"
+    )
+    assert parse_judgement(template) is None
+
+
+def test_a_few_shot_verdict_makes_the_steer_prompt_parse_as_a_reply(monkeypatch):
+    """Scanning every ``{`` makes the system-steer prompt self-parse.
+
+    Upstream's ``STEER_FEW_SHOT_EXAMPLES`` embeds four *complete* verdict JSONs,
+    so the composed steer prompt is itself a parseable grader reply: a grader that
+    echoes its prompt is scored on the example's answers instead of failing the
+    row, and those answers reach ``micro_pass_rate``. Dormant on the released
+    data -- :func:`is_system_steer` never fires, so this prompt is never composed
+    -- but a routing ``_fixed`` variant has to harden ``_recover_json_object``
+    first. Pinned so that fix cannot land without meeting this.
+    """
+    example_verdict = _reply({"question_1": "Yes", "question_2": "No"}, "No")
+    monkeypatch.setattr(
+        advanced_if,
+        "load_judge_prompts",
+        lambda: JudgePrompts(
+            judge_prompt="IF|{full_conversation}|{user_prompt_last_turn}"
+            "|{response_text}|{rubrics_text}",
+            system_steer_judge_prompt=(
+                "STEER {few_shot_examples} {system_prompt} "
+                "{user_prompt_last_turn} {response_text} {rubrics_text}"
+            ),
+            steer_few_shot_examples=f"Example 0:\n{example_verdict}",
+        ),
+    )
+    composed = compose_judge_prompt(
+        SYSTEM_STEER_BENCHMARK,
+        [{"role": "system", "content": "sys"}, {"role": "user", "content": "u1"}],
+        "the answer",
+        ["r1", "r2"],
+    )
+    echoed = parse_judgement(composed)
+    assert echoed is not None
+    # The verdict recovered is the few-shot example's, not any grader's.
+    assert echoed.rubrics_check == {"question_1": "Yes", "question_2": "No"}

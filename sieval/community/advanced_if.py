@@ -1,87 +1,69 @@
 # Upstream: https://github.com/facebookresearch/AdvancedIF/blob/f9d30137c4139d4d9af260ae28108b5afae828c0/judge.py
 #
-# The judge prompts are deliberately NOT vendored. Every file in the upstream
-# repository is CC-BY-NC-4.0, which cannot be redistributed inside sieval's
-# Apache-2.0 tree. The operator stages their own checkout and points
-# SIEVAL_ADVANCED_IF_SRC at it; this module loads the prompts from there at
-# eval time and contributes only sieval-authored scoring code. That mirrors how
-# the benchmark data is handled -- also CC-BY-NC-4.0, also never vendored -- so
-# running AdvancedIF requires accepting the upstream terms either way.
+# The judge prompts are deliberately NOT vendored: every file upstream is
+# CC-BY-NC-4.0, which cannot be redistributed inside sieval's Apache-2.0 tree.
+# The operator stages their own checkout and points SIEVAL_ADVANCED_IF_SRC at it;
+# this module loads the prompts from there and contributes only sieval-authored
+# scoring code. The benchmark data carries the same terms and is likewise only
+# referenced, so running AdvancedIF accepts the upstream terms either way.
 """AdvancedIF rubric-judge assets and scoring kernel.
 
 AdvancedIF (Meta, arXiv:2511.10507) scores a response against expert-written
 rubrics: a grader LLM answers every rubric question yes/no and declares whether
-the response satisfied all of them. This module holds
+the response satisfied all of them.
 
-* :func:`load_judge_prompts` -- the upstream prompt templates, read from the
-  operator's own checkout (see the note above) and digest-checked against the
-  pinned commit;
-* :func:`compose_judge_prompt` -- prompt assembly, including the conversation
-  rendering and the user/system-turn extraction upstream performs;
-* :func:`parse_judgement` -- grader reply -> rubric verdicts;
-* the counting helpers the two published rates are pooled from.
-
-Two published rates, and they do **not** share a denominator -- upstream
-computes them in different places and they disagree whenever the grader emits a
-number of answers that differs from the rubric count:
+**The two published rates do not share a denominator** -- upstream computes them
+in different places, so they disagree whenever the grader answers a different
+number of questions than there are rubrics:
 
 * per-sample ``rubric_level_pass_rate`` (``judge._calc_rubric_level_pass_rate``)
-  divides in-range passes by ``len(rubrics)``, the count the *data* carries, and
-  skips answer keys that index past it;
-* the aggregate ``micro_pass_rate`` (``processor._calculate_stats``) pools over
-  every key the *grader* emitted, with no range check at all.
+  divides in-range passes by ``len(rubrics)``, the count the *data* carries;
+* aggregate ``micro_pass_rate`` (``processor._calculate_stats``) pools every key
+  the *grader* emitted, with no range check.
 
-:func:`count_in_range_passes` and :func:`count_all_checks` keep the two separate
-so each pooled metric matches its own upstream definition.
+:func:`count_in_range_passes` and :func:`count_all_checks` keep them separate so
+each pooled metric matches its own upstream definition.
 
-**Upstream defect, reproduced deliberately.** Upstream selects the
-system-steerability judge on ``benchmark_name == "if_system_steerability_oss"``
--- a value the released dataset never contains, since it ships
-``system_steerability_v2``. On the public data that judge is therefore
-unreachable, and all 507 system-prompt rows are graded by the plain
-user-instruction judge against rubrics written for the system prompt. The same
-stale spelling makes the CLI's ``--task`` choices match zero rows, while
-``processor.process_file``'s own docstring gives ``system_steerability_v2`` as
-its example -- so the ``if_*_oss`` literals, not the dataset, are what went
-stale. :func:`is_system_steer` keeps upstream's comparison verbatim anyway:
-the unqualified task name tracks upstream including its defects, so a run can
-be compared against a published number without first asking which routing it
-used. Correcting the routing changes scores on a third of the benchmark and so
-belongs in a ``_fixed`` variant carrying a measured delta, not here.
+**Upstream defect, reproduced deliberately.** Upstream routes to the
+system-steerability judge on ``benchmark_name == "if_system_steerability_oss"``,
+a value the released dataset never contains (it ships
+``system_steerability_v2``), so all 507 system-prompt rows go to the plain
+user-instruction judge and the CLI's ``--task`` choices match zero rows --
+``processor.process_file``'s own docstring uses the released spelling, so the
+``if_*_oss`` literals are what went stale. :func:`is_system_steer` keeps the
+comparison verbatim: the unqualified task name tracks upstream, defects included.
+Correcting it is **measured at +0.00** on the SS pass rate (507 rows, same
+responses and grader) while flipping 13.8% of individual verdicts, so no
+``_fixed`` variant ships -- it would matter only for per-sample analysis.
 
-Deviations from upstream @ f9d3013:
+Deviations from upstream @ f9d3013, both in grader-reply handling:
 
-* **Reply parsing.** Upstream guarantees JSON by passing
-  ``response_format={"type": "json_object"}`` to the OpenAI client. sieval
-  reaches the grader through the generic ``ChatModel``, and not every endpoint
-  honours that flag, so :func:`parse_judgement` falls back to the first JSON
-  object in the reply carrying a schema key -- which recovers a fenced or
-  prose-wrapped verdict, including one introduced by prose that itself contains
-  braces. Without it a grader that fences its JSON would score zero everywhere
-  -- a harness artifact, not a property of the model under test. The endpoints
-  most likely to need this fallback are exactly the ones that ignore
-  ``response_format``, which is why recovering the object is deliberately the
-  *only* leniency taken: a reply that decodes but carries no usable
-  ``rubrics_check`` still fails the row.
-* **Non-string rubric answers** are stringified rather than raising. Upstream
-  calls ``.lower()`` directly, so a non-string answer aborts the row into its
-  ``except Exception`` path; stringifying keeps the row gradeable and, for the
-  schema-conforming string answers upstream expects, is identical. A
-  *non-mapping* ``rubrics_check`` is not forgiven the same way: a stringified
-  answer still carries the grader's verdict text, whereas a non-mapping
-  container carries no per-question verdicts at all, so there is nothing to
-  preserve and :func:`parse_judgement` fails the row exactly as upstream does.
+* **Reply parsing.** Upstream guarantees JSON with
+  ``response_format={"type": "json_object"}``, which sieval cannot force on an
+  arbitrary ``ChatModel`` endpoint, so :func:`parse_judgement` falls back to the
+  first JSON object in the reply carrying a schema key -- otherwise a grader that
+  fences its JSON scores zero everywhere, a harness artifact rather than a
+  property of the model under test. That recovery is the *only* leniency: a reply
+  that decodes but carries no usable ``rubrics_check`` still fails the row. Its
+  latent cost is documented on :func:`_recover_json_object`.
+* **Non-string rubric answers** are stringified rather than raising, which keeps
+  the row gradeable where upstream's bare ``.lower()`` aborts it into ``except
+  Exception``. A *non-mapping* ``rubrics_check`` is not forgiven the same way --
+  it carries no per-question verdicts to preserve, so the row fails as upstream's
+  does.
 
-  This is the port's only behavioural divergence from upstream, and when it
-  fires it moves **``micro_pass_rate`` alone**: the stringified answer joins the
-  pooled denominator (as a non-pass, since ``"true"`` does not contain ``yes``)
-  where upstream's failed row contributes nothing. ``overall_pass_rate`` -- the
-  headline, and the rate the paper reports -- and the per-sample
-  ``rubric_level_pass_rate`` are identical either way, because both sides score
-  such a row as not-satisfied. Differentially tested against upstream on all
-  1,645 rows: 0 divergences on every other reply shape, and this shape did not
-  occur once in 1,644 live gradings, since a grader emitting JSON answers the
-  rubric questions with strings.
+  What this moves depends on the declaration: with NO, ``micro_pass_rate`` alone
+  (the stringified answer joins the pooled denominator, where upstream's failed
+  row contributes nothing); with **YES it also moves the headline**, since
+  upstream fails the whole row while this port honours the declaration and scores
+  a pass. Differentially tested against upstream on all 1,645 rows -- 0
+  divergences on every other reply shape, and this one never fired in 1,644 live
+  gradings, a grader emitting JSON answering with strings.
+
+  A non-string *declaration* parts ways too, but only from a crash: upstream's
+  ``evaluate`` succeeds and ``_calculate_stats`` then raises on ``bool.lower()``,
+  losing the whole aggregation, where ``str(declared).lower()`` scores the row
+  not-satisfied.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -184,11 +166,10 @@ def _judge_source_path() -> Path:
 def load_judge_prompts() -> JudgePrompts:
     """Load the upstream prompt templates from the operator's checkout.
 
-    The file is digest-checked against :data:`UPSTREAM_JUDGE_SHA256` before it
-    is imported, so a score is always attributable to a known prompt revision.
-    A mismatch is fatal by design -- these prompts *are* the benchmark, and
-    silently grading against a drifted revision would make runs incomparable.
-    Recovery is to check out :data:`UPSTREAM_COMMIT`.
+    Digest-checked against :data:`UPSTREAM_JUDGE_SHA256` *before* the import, so
+    only the pinned bytes ever execute and a score is always attributable to a
+    known prompt revision. A mismatch is fatal by design -- these prompts *are*
+    the benchmark. Recovery is to check out :data:`UPSTREAM_COMMIT`.
     """
     path = _judge_source_path()
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -201,10 +182,9 @@ def load_judge_prompts() -> JudgePrompts:
             f"  git -C {path.parent} checkout {UPSTREAM_COMMIT}"
         )
 
-    # Deliberately not a `sieval.*` name: the module is upstream's file, not
-    # ours, and importing it must not make it addressable as part of this
-    # package. Registering it at all is what `exec_module` documents, so the
-    # module can resolve itself while executing.
+    # Deliberately not a `sieval.*` name: this is upstream's file, and importing
+    # it must not make it addressable as part of this package. Registering it in
+    # `sys.modules` at all is what `exec_module` documents.
     spec = importlib.util.spec_from_file_location(UPSTREAM_MODULE_NAME, path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot load AdvancedIF judge module from {path}.")
@@ -356,6 +336,19 @@ def _recover_json_object(reply: str) -> dict | None:
     ``{.*}`` match did. A candidate carrying one of the schema keys wins
     outright; otherwise the first decodable object stands, which is what a
     grader that answered with a bare object gives.
+
+    Two known costs of scanning, neither currently reachable in a run:
+
+    * The system-steer judge prompt embeds four complete verdict JSONs in its
+      few-shot block, so **that prompt parses as a reply here** -- a grader that
+      echoes its prompt is scored on the example's answers instead of failing the
+      row, and those answers pool into ``micro_pass_rate``. Dormant on the
+      released data, where :func:`is_system_steer` never fires and that prompt is
+      never composed; a routing ``_fixed`` variant has to harden this first.
+    * The *first* schema-carrying object wins, so a grader that drafts a verdict
+      and then revises it is scored on the draft. Preferring the last one is the
+      better reading, but it would move stored runs whose replies went through
+      this fallback, so it owes its own measured delta rather than a quiet flip.
     """
     fallback: dict | None = None
     for candidate in _iter_json_objects(reply):
@@ -382,17 +375,14 @@ def parse_judgement(reply: str) -> Judgement | None:
 
     raw_checks = parsed.get(_CHECKS_KEY, {})
     if not isinstance(raw_checks, dict):
-        # Upstream iterates `rubrics_check.items()` unguarded, so a non-mapping
-        # raises inside `_calc_rubric_level_pass_rate` and the row lands in its
-        # `except Exception` path -- a *failed* row, not an empty one. Treating
-        # it as empty here would instead let the declaration alone score a pass.
-        # A *missing* key defaults to `{}` on both sides.
+        # Upstream iterates `.items()` unguarded, so a non-mapping raises and the
+        # row lands in its `except Exception` path -- a *failed* row, not an empty
+        # one. Emptying it here would let the declaration alone score a pass. A
+        # *missing* key defaults to `{}` on both sides.
         return None
     # Upstream defaults a missing declaration to "NO" and compares
-    # `.lower() == "yes"` -- case-insensitive but otherwise exact. Its own
-    # few-shot examples answer "Yes"/"No", not "YES"/"NO", so a case-sensitive
-    # check would fail every passing sample; it does not strip, so neither does
-    # this.
+    # `.lower() == "yes"`: case-insensitive (its few-shot examples answer
+    # "Yes"/"No") but neither stripped nor substring-matched, so neither is this.
     declared = parsed.get(_DECLARATION_KEY, "NO")
     return Judgement(
         rubrics_check={str(k): str(v) for k, v in raw_checks.items()},
@@ -446,13 +436,12 @@ def aggregate_metrics(verdicts: list[dict]) -> dict[str, float]:
     """Pool per-rollout verdicts into the two published rates, plus the macro.
 
     Each entry carries ``satisfied_all``, ``n_checks``, ``n_checks_passed`` and
-    ``rubric_pass_rate`` (a rollout the grader failed to produce a verdict for
-    contributes only to the denominator of the pass rate, matching upstream).
+    ``rubric_pass_rate``; an ungradeable rollout reaches only the pass-rate
+    denominator, matching upstream.
 
-    ``macro_pass_rate`` averages the per-sample ``rubric_level_pass_rate``, so
-    every sample weighs the same regardless of how many rubrics it carries.
-    Upstream publishes only the micro rate; the macro is sieval's, reported
-    because it is the one of the two a per-sample reader can reconstruct.
+    ``macro_pass_rate`` is sieval's, not published: it averages the per-sample
+    rate, weighing every sample equally where micro weighs every rubric equally,
+    and is the one of the two a per-sample reader can reconstruct.
     """
     total = len(verdicts)
     passed = sum(1 for v in verdicts if v["satisfied_all"])
