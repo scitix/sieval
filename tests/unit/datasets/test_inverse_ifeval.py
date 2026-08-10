@@ -50,8 +50,9 @@ def test_load_mirrors_the_single_split_to_test(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_load_pins_the_json_data_file(monkeypatch: pytest.MonkeyPatch):
-    # The repo also ships a CSV snapshot; auto-detection would glob both and
-    # either collide on schema or double the row count.
+    # The repo ships a second, differently-dated CSV snapshot. Auto-detection
+    # happens to resolve to the JSON today, so this pins the choice rather than
+    # leaving which snapshot gets evaluated to extension precedence.
     captured: dict[str, object] = {}
     _patch_load(monkeypatch, [_row()], captured)
 

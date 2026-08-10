@@ -9,10 +9,14 @@ judge assets**: ``judge_system_prompt`` (one of four, selected per type) and
 loader only guarantees the columns are there.
 
 The Hub repo publishes no split and two data files — ``Inverse_IFEval_Dataset.json``
-and a ``_0908.csv`` snapshot. ``data_files`` pins the JSON explicitly: left to
-auto-detection, HF would glob both and the two schemas would either collide or
-silently double the row count. The resulting single split is mirrored to
-``test``.
+and a differently-dated ``_0908.csv`` snapshot — so ``data_files`` names the JSON
+explicitly. Measured, not assumed: auto-detection does *not* break, it silently
+resolves to the JSON anyway (verified on the staged revision, 1,012 rows, correct
+columns). The pin is there because that outcome rests on HF's undocumented
+file-extension precedence choosing between two snapshots of the benchmark — if
+that order changed, or upstream dropped the JSON, the eval would quietly move to
+the other snapshot with nothing in the report to show it. The single resulting
+split is mirrored to ``test``.
 
 ``language`` (default ``None`` = both) is a sieval addition — upstream ships one
 file and reports the two languages as separate tables. It filters at load time,
@@ -40,7 +44,8 @@ from sieval.core.utils.hf import apply_eval_split, ensure_dataset_dict
 # Pin the Hub revision for reproducibility (`main` at integration time).
 INVERSE_IFEVAL_REVISION = "35f1da157640526e62b7685b682d748fa55ccfd0"
 
-# The repo also carries a CSV snapshot; pin the JSON the card documents.
+# The repo also carries a `_0908.csv` snapshot; name the JSON the card documents
+# rather than let extension precedence pick between the two (docstring).
 INVERSE_IFEVAL_DATA_FILE = "Inverse_IFEval_Dataset.json"
 
 
