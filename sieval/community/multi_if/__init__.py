@@ -24,9 +24,15 @@ mixed-script text). Seeding it would change the grader, which belongs in a
 ``_fixed`` task variant with a measured score delta rather than under the
 faithful name. The import site carries the full note.
 
-Infra: scoring needs the NLTK ``punkt`` tokenizer (via
-``nltk.data.load("nltk:tokenizers/punkt/english.pickle")``) exactly as the
-IFEval sibling does, and does not download it. Offline runs must pre-stage it.
+Infra: scoring needs NLTK's **punkt_tab** data, and reaches it from two places --
+``count_sentences`` (behind ``length_constraints:number_sentences``) via
+``nltk.data.load("nltk:tokenizers/punkt/english.pickle")``, and
+``nltk.word_tokenize`` (behind ``change_case:capital_word_frequency``). The first
+path is named after the legacy ``punkt`` package but nltk >= 3.9 resolves it
+through ``punkt_tab`` too, so staging ``punkt`` alone satisfies neither call and
+staging ``punkt_tab`` alone satisfies both. Nothing here downloads it -- the task
+in ``sieval/tasks/multi_if_0shot_gen.py`` ensures it once before grading starts,
+which keeps these vendored files free of anything upstream does not have.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """

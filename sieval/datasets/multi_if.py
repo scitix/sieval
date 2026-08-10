@@ -141,6 +141,15 @@ class MultiIFDataset(Dataset[MultiIFDatasetSample]):
                 # skip, which would silently splice turn 3 onto turn 1.
                 break
             turns.append(turn)
+        if not turns:
+            # Every row of the pinned revision has at least two turns, so an empty
+            # conversation means the CSV is not the one this loader pins. Fail
+            # here rather than letting the task raise IndexError on `turns[0]`.
+            raise ValueError(
+                f"Multi-IF row {str(row['key'])!r} has no first turn; expected "
+                f"'turn_1_prompt' to be a JSON chat message, got "
+                f"{str(row['turn_1_prompt'])!r}."
+            )
         return {
             "key": row["key"],
             "language": row["language"],

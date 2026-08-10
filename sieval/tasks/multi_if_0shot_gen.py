@@ -29,13 +29,24 @@ Deviations from the official Multi-IF evaluation:
 - ``score`` is the mean of the three turns' all-language overalls. Upstream
   emits one report per turn and never reduces them to a single number, but a
   task needs one headline; every component is in the report.
+- A turn whose request fails outright ends the walk instead of failing the whole
+  conversation. The turns already answered keep their verdicts; the unreached
+  ones are *absent*, not zero, so an infrastructure failure cannot read as a
+  model that stopped following instructions. Upstream keeps the earlier turns
+  too, for free, by running one pass per turn.
+  ``turn_{t}_prompts_number`` therefore counts the conversations that actually
+  reached turn *t* -- identical to upstream's count on a clean run, and honest
+  about a degraded one.
+- ``n`` is pinned to 1 per turn, so a configured ``n > 1`` is ignored rather
+  than honoured: a second sample would fork the conversation, and every later
+  turn would then have to be answered once per branch.
 
 Two upstream defects are tracked rather than repaired, because the unqualified
 name must measure what upstream measures. Both make the score nondeterministic:
 
 - Two conversations (6 of 13,447 turn-cells, 0.04%) carry kwargs the checker
   rejects -- ``keywords:letter_frequency`` with ``letter="#"``, and
-  ``keywords:frequency`` with no ``keyword``. On a rejected value
+  ``keywords:frequency`` with an empty ``keyword``. On a rejected value
   ``build_description`` falls back to ``random.choice`` over the alphabet and
   grades the response against a letter nobody asked for, freshly drawn per call.
 - ``langdetect`` is unseeded, so detection -- which selects the word- and
@@ -47,12 +58,17 @@ all eight languages and all 56 two-turn rows: 3,098 strict/loose follow-lists
 and every per-language ``overall`` agree exactly, once those two conversations
 are set aside. They cannot agree with anything, upstream included.
 
+Infra: grading needs NLTK's ``punkt_tab`` data (see ``_ensure_punkt_tab``),
+which this task downloads once if it is absent. Pre-stage it for offline runs.
+
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import json
+from functools import cache
 from typing import override
 
+from loguru import logger
 from openai.types.chat import ChatCompletionMessageParam
 
 from sieval.core.models import ModelOutput
@@ -79,6 +95,48 @@ _GRADES = ("strict", "loose")
 # The pooled cell every published Multi-IF number is quoted against; kept
 # distinct from the CSV's own `language` values, which are English names.
 _ALL_LANGUAGES = "all_languages"
+
+
+@cache
+def _download_punkt_tab_once() -> None:
+    import nltk
+
+    nltk.download("punkt_tab", quiet=True)
+
+
+def _ensure_punkt_tab() -> None:
+    """Make NLTK's ``punkt_tab`` data available before any grading happens.
+
+    Two checkers reach NLTK, and between them they cover 926 of the 4,501
+    conversations: ``length_constraints:number_sentences`` loads the sentence
+    tokenizer, and ``change_case:capital_word_frequency`` calls
+    ``nltk.word_tokenize``. Both resolve through **punkt_tab** on nltk >= 3.9 --
+    including the ``nltk:tokenizers/punkt/english.pickle`` path, whose name still
+    says ``punkt``. Staging the legacy ``punkt`` package alone satisfies neither.
+
+    Without it a fifth of the set dies one ``LookupError`` at a time, deep inside
+    the grader, and because that fails the whole conversation it also shortens
+    every *earlier* turn's denominator -- a wrong score rather than a loud stop.
+
+    Lives here, not in ``sieval/community/multi_if/``, for two reasons: the
+    vendored checkers stay byte-identical to upstream, and a helper with a single
+    caller belongs in its caller's module. The IFBench sibling ensures the same
+    resource the same way.
+    """
+    import nltk
+
+    try:
+        nltk.data.find("tokenizers/punkt_tab")
+        return
+    except LookupError:
+        pass
+    # At most one download attempt per process: an offline run must not spend a
+    # network timeout per sample discovering the same absence 4,501 times.
+    _download_punkt_tab_once()
+    # Re-check instead of trusting the download's return value, so a run that
+    # cannot get the resource stops here naming it, rather than surfacing later
+    # as an opaque per-sample failure.
+    nltk.data.find("tokenizers/punkt_tab")
 
 
 @sieval_task(
@@ -112,7 +170,7 @@ _ALL_LANGUAGES = "all_languages"
             "conversations across all 8 languages (3,098 follow-lists, all "
             "per-language overalls) — except for two conversations upstream "
             "cannot grade reproducibly itself: kwargs it rejects "
-            "(letter='#'; missing keyword) send build_description to an unseeded "
+            "(letter='#'; empty keyword) send build_description to an unseeded "
             "random.choice. langdetect is likewise unseeded upstream, and picks "
             "the counting algorithm behind every length constraint. Both defects "
             "are tracked, not repaired, per the unqualified-name rule; fixing "
@@ -162,7 +220,7 @@ class MultiIFZeroShotGenTask(
         messages: list[ChatCompletionMessageParam] = list(pre["prompt"])
         outputs: list[ModelOutput] = []
 
-        for turn in turns:
+        for index, turn in enumerate(turns, start=1):
             if outputs:
                 previous = outputs[-1]
                 # An aborted or filtered response has no choices. Feed the empty
@@ -176,9 +234,31 @@ class MultiIFZeroShotGenTask(
                     }
                 )
                 messages.append({"role": "user", "content": turn["prompt"]})
-            # n=1 per turn: a second sample would fork the conversation, and
-            # every later turn would have to be answered once per branch.
-            outputs.append(await self.model.agenerate(messages, n=1))
+            try:
+                # n=1 per turn: a second sample would fork the conversation, and
+                # every later turn would have to be answered once per branch.
+                outputs.append(await self.model.agenerate(messages, n=1))
+            except Exception as exc:
+                if not outputs:
+                    # Nothing was answered, so there is nothing to salvage: fail
+                    # the sample exactly as a single-turn task's would.
+                    raise
+                # A request that never came back ends the walk. Failing the whole
+                # conversation instead would delete the turns that *did* answer
+                # from their own denominators as well, moving turn 1 and turn 2's
+                # published numbers because turn 3's request timed out. Broad on
+                # purpose -- any failure that reaches here has already exhausted
+                # `max_retries` -- and never silent: the warning names the turn.
+                logger.warning(
+                    "Multi-IF conversation {} failed at turn {} of {}; keeping "
+                    "the {} turn(s) already answered and ending the walk: {}",
+                    ctx.raw_sample["key"],
+                    index,
+                    len(turns),
+                    len(outputs),
+                    exc,
+                )
+                break
 
         # Returned bare so the runner sums token usage across all turns into the
         # stage meta -- it special-cases `list[ModelOutput]` for exactly this.
@@ -198,11 +278,31 @@ class MultiIFZeroShotGenTask(
         ]
         # `None` only when no turn produced anything, so `extracted` stays a real
         # signal -- a partly-blank conversation is a real answer that scores
-        # badly. This is also what keeps the empty-postprocess anomaly rule
-        # meaningful here, since the rules that read `infer` unwrap a single
+        # badly. This is also what keeps `detect_extraction_failure` meaningful
+        # here: it is the rule that reads `extracted`, and it is the only one left
+        # watching this task, since the rules that read `infer` unwrap a single
         # ModelOutput and skip a list.
         any_text = any(text.strip() for text in texts)
-        return build_prediction_record([responses if any_text else None])
+        return build_prediction_record(
+            [responses if any_text else None],
+            extra={
+                # How many turns were answered -- which `prediction` cannot carry,
+                # because it collapses to `None` when every turn came back blank.
+                # A walk cut short by a failed request and a conversation that
+                # answered every turn with "" are different facts, and only this
+                # tells them apart once the record is on disk.
+                "n_answered": len(texts),
+                # Per-turn finish reasons. Recorded because the generic truncation
+                # rule (`detect_truncated_output`) unwraps a *single* ModelOutput
+                # and skips a list, so it never fires for a multi-turn task -- and
+                # a three-turn conversation dragging its own history along is the
+                # likeliest shape here to hit `max_tokens`. Keeping them on disk
+                # means the signal is inspectable even while the rule is blind.
+                # `or []`: the field is optional on ModelOutput, so a backend that
+                # does not report one leaves it None rather than empty.
+                "finish_reasons": [list(output.finish_reasons or []) for output in inf],
+            },
+        )
 
     @override
     async def feedback(self, post, ctx):
@@ -213,15 +313,23 @@ class MultiIFZeroShotGenTask(
             gen_acc_strict,
         )
 
+        _ensure_punkt_tab()
+
         graders = {"strict": gen_acc_strict, "loose": gen_acc_loose}
         raw = ctx.raw_sample
         turns = raw["turns"]
         responses = post["rollouts"][0].get("prediction") or []
         by_turn = {r["turn"]: r["response"] for r in responses}
+        # Grade only the turns that were reached. On a clean run that is all of
+        # them; a walk ended early by a failed request leaves the rest ungraded
+        # rather than scoring them zero, so the missing answer does not read as a
+        # model that stopped following instructions.
+        n_answered = int(post.get("extra", {}).get("n_answered", len(turns)))
+        graded = turns[:n_answered]
 
         metrics: dict[str, bool | float] = {}
         detail: dict[str, dict] = {}
-        for index, turn in enumerate(turns, start=1):
+        for index, turn in enumerate(graded, start=1):
             instruction_ids = list(turn["instruction_id_list"])
             payload = {
                 "response": by_turn.get(index, ""),
@@ -244,16 +352,21 @@ class MultiIFZeroShotGenTask(
 
         # Derived from `metrics`, not recomputed, so the headline cannot disagree
         # with the set. `correct` is the strictest reading the benchmark offers:
-        # every constraint honoured in every turn.
-        correct = all(
+        # every constraint honoured in every turn -- which a conversation that
+        # never reached its last turn cannot claim, however well the rest scored.
+        correct = n_answered >= len(turns) and all(
             bool(metrics[f"turn_{index}_strict_follow_all"])
-            for index in range(1, len(turns) + 1)
+            for index in range(1, len(graded) + 1)
         )
+        # Averaged over the turns that were graded, matching how `report` pools:
+        # an unreached turn is absent from the denominator, not a zero in it.
         score = sum(
             float(metrics[f"turn_{index}_strict_instruction_level"])
-            for index in range(1, len(turns) + 1)
-        ) / len(turns)
+            for index in range(1, len(graded) + 1)
+        ) / len(graded)
         return True, build_judgement_record(
+            # Ground truth is the whole sample's constraint set, so it lists every
+            # turn the dataset ships -- including any the walk did not reach.
             [list(turn["instruction_id_list"]) for turn in turns],
             [build_rollout_judgement(0, correct, score=score, metrics=metrics)],
             score=score,
@@ -262,6 +375,9 @@ class MultiIFZeroShotGenTask(
                 "key": raw["key"],
                 "language": raw["language"],
                 "n_turns": len(turns),
+                # What `report` counts turns by. Equal to `n_turns` on a clean
+                # run; lower only where the walk ended early.
+                "n_answered": len(graded),
                 **detail,
             },
         )
@@ -275,12 +391,16 @@ class MultiIFZeroShotGenTask(
         # key order does not depend on which sample finished first.
         languages = sorted({str(j["extra"]["language"]) for j in judgements})
         turn_overalls: list[float] = []
+        # Read off the run instead of hardcoded, so the turn count lives only
+        # where the dataset reshapes the CSV into a `turns` list.
+        max_turns = max((int(j["extra"]["n_answered"]) for j in judgements), default=0)
 
-        for turn in (1, 2, 3):
-            # Only conversations that *have* this turn count toward it -- 56 rows
-            # have no third turn, and upstream skips them rather than scoring
-            # them zero.
-            present = [j for j in judgements if j["extra"]["n_turns"] >= turn]
+        for turn in range(1, max_turns + 1):
+            # Only conversations that answered this turn count toward it -- 56
+            # rows ship no third turn and upstream skips them rather than scoring
+            # them zero, and a walk ended early by a failed request stops here for
+            # the same reason.
+            present = [j for j in judgements if int(j["extra"]["n_answered"]) >= turn]
             if not present:
                 continue
             results[f"turn_{turn}_prompts_number"] = len(present)
