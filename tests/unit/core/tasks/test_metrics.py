@@ -224,6 +224,49 @@ def test_majority_only_when_k_equals_n():
     assert "maj@k" not in rollout_metrics(*four, k=1)
 
 
+def test_majority_rejects_a_draw_that_truncated_to_exactly_k():
+    """The requested budget, not the observed one, decides.
+
+    Configured `n=4, k=2`, a sample whose draw came back with only 2 rollouts
+    used to look identical to a complete 2-rollout draw and got a `maj@k` --
+    while a CLEAN 4-rollout draw at the same config correctly did not. Inverted,
+    and the worse direction: a truncated draw is whatever finished first, not a
+    random 2 of 4, so it is precisely the one not to vote on.
+    """
+    short = ([True, True], ["a", "a"])
+    assert "maj@k" not in rollout_metrics(*short, k=2, n_requested=4)
+    # The clean draw at the same config is still (correctly) excluded, since
+    # k=2 does not cover the budget.
+    assert "maj@k" not in rollout_metrics([True] * 4, ["a"] * 4, k=2, n_requested=4)
+    # And the ordinary k == n case is untouched.
+    assert "maj@k" in rollout_metrics([True] * 4, ["a"] * 4, k=4, n_requested=4)
+    assert "maj@k" not in rollout_metrics(*short, k=4, n_requested=4)
+
+
+def test_majority_falls_back_to_the_observed_count():
+    """Without `n_requested` the draw is assumed complete -- which is what
+    `zero_metrics` needs, since it synthesizes a full one."""
+    four = ([True, True, False, False], ["a", "a", "b", "c"])
+    assert "maj@k" in rollout_metrics(*four, k=4)
+    assert "maj@k" in rollout_metrics(*four, k=4, n_requested=4)
+
+
+def test_sampling_report_does_not_vote_on_a_truncated_draw():
+    # The same edge through the production entry point: every sample came back
+    # two rollouts short of the requested four.
+    finals = [
+        _ctx(
+            build_judgement_record(
+                "42", [build_rollout_judgement(i, True) for i in range(2)]
+            ),
+            build_prediction_record(["42", "42"]),
+        )
+    ]
+    out = sampling_report(finals, n=4, k=2, denominator=1)
+    assert out["n_short"] == 1.0
+    assert "maj@k" not in out
+
+
 def test_avg_and_pass_at_1_both_reported_though_equal():
     """Equal arithmetic, different questions -- neither key subsumes the other."""
     metrics = rollout_metrics([True, False, False, False], k=2)

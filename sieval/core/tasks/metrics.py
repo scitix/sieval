@@ -188,18 +188,27 @@ def rollout_metrics(
     k: int = 1,
     *,
     normalize: Callable[[str], str] | None = None,
+    n_requested: int | None = None,
 ) -> dict[str, float]:
-    """Per-problem ``pass@1`` / ``avg@k`` / ``pass@k`` / ``maj@k``.
+    """Per-problem ``pass@1`` / ``avg@k`` / ``pass@k`` / ``pass^k`` / ``maj@k``.
 
     A key is OMITTED rather than set to 0.0 when it cannot be computed, since a
     0.0 for lack of input is indistinguishable from a real one:
 
-    * ``pass@k`` when ``k <= 1`` -- it would restate ``pass@1`` exactly.
-    * ``maj@k`` without answers, or when ``k != len(correct)``: majority is
-      defined over the whole draw, and sub-sampling it would need an estimator
-      or a seed (RFC #74 D.2).
+    * ``pass@k`` and ``pass^k`` when ``k <= 1`` -- they would restate ``pass@1``.
+    * ``maj@k`` without answers, or unless ``k`` covers the WHOLE requested draw
+      and the whole requested draw arrived. Majority is defined over the whole
+      draw, and sub-sampling it would need an estimator or a seed (RFC #74 D.2).
+
+    *n_requested* is the budget that was ASKED for, which is not always what came
+    back. Without it the two are indistinguishable and a draw that truncated to
+    exactly ``k`` looks like a complete one -- inverted, since a truncated draw
+    is whatever finished first rather than a random ``k`` of ``n``. It defaults
+    to the observed count, which is the right reading for a caller that already
+    knows the draw is complete (:func:`zero_metrics` synthesizes one).
     """
     n = len(correct)
+    requested = n if n_requested is None else n_requested
     c = sum(1 for x in correct if x)
     out = {"pass@1": pass_at_k(n, c, 1), "avg@k": avg_at_k(correct)}
     if k > 1:
@@ -208,10 +217,14 @@ def rollout_metrics(
         # and three names for one number is not three pieces of evidence.
         out["pass^k"] = pass_pow_k(n, c, k)
     if answers is not None:
-        # No `k == n` gate, unlike maj@k: this is a property of the draw that
-        # arrived, not of the budget a majority would be taken over.
+        # No budget gate at all, unlike maj@k: this is a property of the draw
+        # that arrived, not of the budget a majority would be taken over.
         out["self_consistency"] = self_consistency(answers, normalize=normalize)
-        if k == n:
+        # Both halves are load-bearing. `k == requested` rejects a majority over
+        # a sub-sample of the budget; `n == requested` rejects one over a draw
+        # that came back short -- and a short draw is whatever finished first,
+        # not a random subset, so it is the worse of the two to vote on.
+        if k == requested == n:
             out["maj@k"] = majority_at_k(correct, answers, normalize=normalize)
     return out
 
@@ -407,7 +420,13 @@ def sampling_report(
         observed.append(len(correct))
         per_problem.append(
             rollout_metrics(
-                correct, answers if votes else None, k=k, normalize=normalize
+                correct,
+                answers if votes else None,
+                k=k,
+                normalize=normalize,
+                # The budget that was asked for. A sample that came back short
+                # must not be voted on as though it were the whole draw.
+                n_requested=n,
             )
         )
     # `per_problem`, not `denominator`: a run whose every sample FAILED has a
