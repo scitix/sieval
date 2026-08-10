@@ -17,6 +17,7 @@ from sieval.core.tasks.anomaly import (
     _DETECTION_RULES,
     AnomalyReport,
     TaskAnomalyDetector,
+    _model_outputs,
     _rule_applies,
     _unwrap_result,
     detect_empty_infer_gen,
@@ -66,6 +67,25 @@ class TestUnwrapResult:
         assert _unwrap_result(tso) == "answer"
 
 
+class TestModelOutputs:
+    """A multi-turn `infer` returns `list[ModelOutput]`; rules must still see it."""
+
+    def test_shapes(self, sample_model_meta):
+        one = ModelOutput(model=sample_model_meta, texts=["a"])
+        two = ModelOutput(model=sample_model_meta, texts=["b"])
+        cases = [
+            (one, (one,), "single"),
+            ([one, two], (one, two), "list_of_outputs"),
+            ([], (), "empty_list"),
+            ("not_an_output", (), "wrong_type"),
+            ([one, "mixed"], (), "mixed_list_is_not_a_multi_call_stage"),
+            ({"rollouts": []}, (), "prediction_record"),
+            (None, (), "none"),
+        ]
+        for result, expected, case_name in cases:
+            assert _model_outputs(result) == expected, case_name
+
+
 class TestDetectEmptyInferGen:
     def test_variants(self, sample_model_meta):
         wrapped_empty = TaskStageOutput(
@@ -78,6 +98,24 @@ class TestDetectEmptyInferGen:
             ("some_string", set(), "non_model_output"),
             (wrapped_empty, {0}, "wrapped_empty"),
             (None, set(), "none"),
+        ]
+        for infer_result, expected, case_name in cases:
+            ctx = _make_final_ctx(infer_result=infer_result)
+            assert detect_empty_infer_gen(ctx) == expected, case_name
+
+    def test_multi_turn_reports_a_single_empty_call(self, sample_model_meta):
+        """One dead turn out of three is the same signal as a dead single call.
+
+        Before rules read a list, this returned an empty set -- indistinguishable
+        from "nothing was wrong".
+        """
+        answered = ModelOutput(model=sample_model_meta, texts=["ok"])
+        blank = ModelOutput(model=sample_model_meta, texts=[])
+        cases = [
+            ([answered, answered, answered], set(), "every_turn_answered"),
+            ([answered, blank, answered], {0}, "middle_turn_empty"),
+            ([blank, blank, blank], {0}, "every_turn_empty"),
+            ([answered, answered], set(), "two_turn_conversation"),
         ]
         for infer_result, expected, case_name in cases:
             ctx = _make_final_ctx(infer_result=infer_result)
@@ -141,6 +179,48 @@ class TestDetectTruncatedOutput:
             finish_reasons=["max_tokens", "length"],
         )
         ctx = _make_final_ctx(infer_result=output)
+        assert detect_truncated_output(ctx) == {0, 1}
+
+    def test_multi_turn_reports_whichever_turn_hit_the_cap(self, sample_model_meta):
+        """A conversation carrying its own history is the likeliest to truncate.
+
+        Before rules read a list this returned an empty set for every turn, so the
+        signal was simply absent for multi-turn tasks.
+        """
+
+        def turn(reason):
+            return ModelOutput(
+                model=sample_model_meta, texts=["x"], finish_reasons=[reason]
+            )
+
+        cases = [
+            ([turn("stop"), turn("stop")], set(), "nothing_truncated"),
+            ([turn("stop"), turn("length"), turn("stop")], {0}, "middle_turn"),
+            ([turn("stop"), turn("stop"), turn("max_tokens")], {0}, "last_turn"),
+            ([turn("content_filter"), turn("stop")], {0}, "filtered_first_turn"),
+        ]
+        for infer_result, expected, case_name in cases:
+            ctx = _make_final_ctx(infer_result=infer_result)
+            assert detect_truncated_output(ctx) == expected, case_name
+
+    def test_multi_turn_keeps_rollout_indices_not_turn_indices(self, sample_model_meta):
+        """`len(indices)` counts rollouts, so the turn dimension must not leak in.
+
+        Two turns, n=2 each, truncated at *different* rollout positions: the union
+        is over rollout index, so this is {0, 1} -- not {0, 1, 2} (three turns) and
+        not {1} (last turn wins).
+        """
+        first = ModelOutput(
+            model=sample_model_meta,
+            texts=["a", "b"],
+            finish_reasons=["length", "stop"],
+        )
+        second = ModelOutput(
+            model=sample_model_meta,
+            texts=["c", "d"],
+            finish_reasons=["stop", "length"],
+        )
+        ctx = _make_final_ctx(infer_result=[first, second])
         assert detect_truncated_output(ctx) == {0, 1}
 
 

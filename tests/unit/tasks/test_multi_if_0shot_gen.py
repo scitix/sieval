@@ -311,8 +311,8 @@ def test_postprocess_reports_no_extraction_only_when_every_turn_is_blank():
 
 
 def test_postprocess_records_each_turn_finish_reason():
-    # `detect_truncated_output` skips a list of ModelOutputs, so this record is
-    # the only place a truncated turn is visible.
+    # `detect_truncated_output` flags the rollout but not which turn caused it --
+    # its indices are rollout positions. This record is where the turn is visible.
     task = _task()
     outputs = [
         _StubOutput("fine", finish_reasons=("stop",)),

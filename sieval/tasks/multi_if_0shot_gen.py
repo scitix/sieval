@@ -277,11 +277,8 @@ class MultiIFZeroShotGenTask(
             for index, text in enumerate(texts, start=1)
         ]
         # `None` only when no turn produced anything, so `extracted` stays a real
-        # signal -- a partly-blank conversation is a real answer that scores
-        # badly. This is also what keeps `detect_extraction_failure` meaningful
-        # here: it is the rule that reads `extracted`, and it is the only one left
-        # watching this task, since the rules that read `infer` unwrap a single
-        # ModelOutput and skip a list.
+        # signal -- a partly-blank conversation is a real answer that scores badly,
+        # and that is what `detect_extraction_failure` reads.
         any_text = any(text.strip() for text in texts)
         return build_prediction_record(
             [responses if any_text else None],
@@ -292,12 +289,12 @@ class MultiIFZeroShotGenTask(
                 # answered every turn with "" are different facts, and only this
                 # tells them apart once the record is on disk.
                 "n_answered": len(texts),
-                # Per-turn finish reasons. Recorded because the generic truncation
-                # rule (`detect_truncated_output`) unwraps a *single* ModelOutput
-                # and skips a list, so it never fires for a multi-turn task -- and
-                # a three-turn conversation dragging its own history along is the
-                # likeliest shape here to hit `max_tokens`. Keeping them on disk
-                # means the signal is inspectable even while the rule is blind.
+                # Per-turn finish reasons. `detect_truncated_output` now reads a
+                # list, so it does flag the rollout -- but it reports *that* the
+                # conversation truncated, not *where*, since its indices are rollout
+                # positions. A three-turn sample dragging its own history along is
+                # the likeliest shape here to hit `max_tokens`, so which turn did it
+                # is worth having on disk next to the verdict.
                 # `or []`: the field is optional on ModelOutput, so a backend that
                 # does not report one leaves it None rather than empty.
                 "finish_reasons": [list(output.finish_reasons or []) for output in inf],
