@@ -49,6 +49,16 @@ ifeval = [
   "nltk>=3.9.2",
   "immutabledict>=4.2.2",
 ]
+# iheval: the ifeval set (its rule-following cells run IFEval's own checkers)
+# plus rouge-score, which backs the translation metric (ROUGE-L F1) and the
+# safety metric's system-prompt-leak check (ROUGE-1 recall).
+iheval = [
+  "absl-py>=2.3.1",
+  "immutabledict>=4.2.2",
+  "langdetect>=1.0.9",
+  "nltk>=3.9.2",
+  "rouge-score>=0.1.2",
+]
 multi-if = [
   # Multi-IF vendors its own multilingual fork of the IFEval checkers, so this
   # group is deliberately not `ifeval`'s: no absl/immutabledict (the fork uses

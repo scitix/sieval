@@ -94,6 +94,9 @@ from .ifbench_0shot_gen import (
 from .ifeval_0shot_gen import (
     IFEvalZeroShotGenTask,
 )
+from .iheval_0shot_gen import (
+    IHEvalZeroShotGenTask,
+)
 from .imo_answer_bench_0shot_gen import (
     IMOAnswerBenchZeroShotGenTask,
 )
@@ -199,6 +202,7 @@ __all__ = [
     "HumanEvalZeroShotGenTask",
     "IFBenchZeroShotGenTask",
     "IFEvalZeroShotGenTask",
+    "IHEvalZeroShotGenTask",
     "IMOAnswerBenchZeroShotGenTask",
     "InverseIFEvalZeroShotGenTask",
     "LiveCodeBenchCodeGenerationFewShotBaseGenTask",

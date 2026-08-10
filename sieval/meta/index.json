@@ -595,6 +595,31 @@
       "checksums": {}
     },
     {
+      "name": "iheval",
+      "display_name": "IHEval",
+      "description": "Instruction hierarchy — 9 tasks under aligned and conflicting inputs.",
+      "source": [
+        "hf:zhihz0535/IHEval@89d71d7b9522740e0d1c871752fd3cdbcee13131"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "english",
+        "chinese",
+        "spanish",
+        "open-ended",
+        "safety",
+        "tool-use"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-ND-4.0",
+      "checksums": {}
+    },
+    {
       "name": "imo_answer_bench",
       "display_name": "IMO-AnswerBench",
       "description": "IMO-Bench AnswerBench (Google DeepMind) — 400 short-answer olympiad problems.",
@@ -1677,6 +1702,30 @@
       },
       "status": "stable",
       "reference_kind": "value"
+    },
+    {
+      "name": "iheval_0shot_gen",
+      "display_name": "IHEval (0-shot, generative)",
+      "description": "Instruction hierarchy — 9 tasks under aligned/conflicting inputs.",
+      "dataset": "iheval",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "chinese",
+        "spanish",
+        "open-ended",
+        "safety",
+        "tool-use"
+      ],
+      "deps_group": "iheval",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "ytyz1307zzh/IHEval",
+        "url": "https://github.com/ytyz1307zzh/IHEval/tree/726a62924c3050045954df94347d53fe2bd1090d/src",
+        "notes": "Prompt assembly reproduces run_model.py + call_api.py (system, then conversation history, then the user turn, then a prefilled assistant tool_call and its tool return). Scoring reproduces record_scores.py, calc_reference_score.py, calc_mix_reference_score.py and average_final_score.py, including their 2-decimal per-sample rounding.\nRule-following runs upstream IFEval's own checkers, vendored from google-research (Apache-2.0); IHEval carries a byte-equivalent copy of the same code. Upstream keys responses by prompt text in a dict, which is equivalent to per-sample grading here: no rule-following cell has a duplicate instruction (checked over all 10 cells).\nThe other six graders are an independent implementation, because IHEval is CC-BY-NC-ND-4.0 and its harness cannot be vendored into an Apache-2.0 distribution. Checked against upstream's functions run as a local instrument over the pinned data: 35,520 comparisons across all six graders, both strict and loose, over gold answers and 16 response perturbations each -- 0 value mismatches. The 724 differences are all one documented case: a reply whose JSON 'language' value is not a string raises AttributeError upstream and scores False here (see sieval.community.iheval).\nAggregation was replayed end to end: 18,998 synthetic responses (one per row, all 47 cells) scored by this task's report() and by upstream's own unmodified record_scores / calc_reference_score / calc_mix_reference_score / average_final_score. All 47 cell averages, all 27 subtask x setting rows and all 3 overall aggregates agree exactly (max |delta| 0.0).\nREPRODUCIBILITY CAVEAT, upstream's and not this port's: 20 rule-following rows (2 per cell, ids carrying letter='#' or '!') give IFEval's LetterFrequencyChecker a kwarg it rejects, so it falls back to an unseeded random.choice over the alphabet. Those rows return a different verdict on every grading -- measured at 20/20 flips over 40 repeat gradings of one sample -- in upstream's harness exactly as much as here, and they move a cell average by up to ~0.03 points. The exact-match replay above was run with those 20 kwargs patched in BOTH pipelines so the comparison measured the aggregation; unpatched, 45 of 47 cells still matched exactly.\nStatus experimental: no full live run has been scored yet, so the numbers this task produces have not been compared against a published row."
+      },
+      "status": "experimental"
     },
     {
       "name": "imo_answer_bench_0shot_gen",

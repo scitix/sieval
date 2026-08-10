@@ -109,6 +109,10 @@ from .ifeval import (
     IFEvalDataset,
     IFEvalDatasetSample,
 )
+from .iheval import (
+    IHEvalDataset,
+    IHEvalDatasetSample,
+)
 from .imo_answer_bench import (
     IMOAnswerBenchDataset,
     IMOAnswerBenchDatasetSample,
@@ -237,6 +241,8 @@ __all__ = [
     "IFBenchDatasetSample",
     "IFEvalDataset",
     "IFEvalDatasetSample",
+    "IHEvalDataset",
+    "IHEvalDatasetSample",
     "IMOAnswerBenchDataset",
     "IMOAnswerBenchDatasetSample",
     "InverseIFEvalDataset",
