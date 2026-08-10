@@ -94,8 +94,11 @@ changing**. It is **correctness-blind** — a consistently *wrong* model scores 
 so an unparseable rollout drags `self_consistency` down. Low `self_consistency`
 with `n_unextracted` near zero is the model; with a high one it is the parser.
 
-**`n_short` with everything.** A short sample scores 0 for `pass@k` and `pass^k`,
-so a non-zero `n_short` makes every figure above a lower bound.
+**`n_short` with everything.** A short sample scores 0 for `pass@k` and `pass^k`
+— the `n < k` guard — so a non-zero `n_short` makes **those two** a lower bound.
+The rest are not floored, only noisier: `pass@1`, `avg@n`, `maj@k` and
+`self_consistency` are computed over what arrived, so a short draw moves them in
+either direction.
 
 ### Why `maj@k` can be missing
 
@@ -114,7 +117,7 @@ A draw that came back **short still votes**. The arrived count is run health, an
 every other key here treats that the same way: compute it, and annotate it with
 `n_short`. `self_consistency` clusters the very same answers with the very same
 normalizer, so withholding one and not the other would be two answers to the
-question of whether a single draw is fit to cluster. A short draw does bias
+question of whether a single draw is fit to cluster. A short draw does move
 `maj@k` — like everything else in the table, read it against `n_short`.
 
 `maj@k` is a **lower bound**, not an estimate: votes cluster on *strings* (after
