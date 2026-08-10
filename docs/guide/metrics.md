@@ -71,22 +71,18 @@ the opposite direction and falls when that happens:
 
 Same benchmark, halved reliability: `pass@k` fell 17 points, `pass^k` fell 83.
 
-**`maj@k` with `self_consistency`.** `maj@k` is thresholded — 4/4 agreeing and
-3/4 agreeing both score 1.0 when the modal answer is right. `self_consistency` is
-continuous (`75` for the second), so it is the only key that moves when a
-converted or requantized model's answer distribution **widens without its mean
-changing**. It is **correctness-blind**: a consistently *wrong* model scores 100,
-so read it beside a correctness key, never instead of one.
+**`maj@k` with `self_consistency`.** `maj@k` is thresholded — 4/4 and 3/4
+agreeing both score 1.0. `self_consistency` is continuous (`75` for the second),
+so it alone moves when an answer distribution **widens without its mean
+changing**. It is **correctness-blind** — a consistently *wrong* model scores 100
+— so read it beside a correctness key, never instead of one.
 
-**`self_consistency` with `n_unextracted`.** `self_consistency`'s denominator is
-the whole draw, so an unparseable rollout drags it down — which conflates model
-instability with extractor failure. A low `self_consistency` with
-`n_unextracted` near zero is the model; the same figure with a high
-`n_unextracted` is the parser.
+**`self_consistency` with `n_unextracted`.** The denominator is the whole draw,
+so an unparseable rollout drags `self_consistency` down. Low `self_consistency`
+with `n_unextracted` near zero is the model; with a high one it is the parser.
 
-**`n_short` with everything.** A short sample scores 0 for `pass@k` and `pass^k`
-and biases every sampling metric downward, so a non-zero `n_short` makes the
-numbers above lower bounds rather than measurements.
+**`n_short` with everything.** A short sample scores 0 for `pass@k` and `pass^k`,
+so a non-zero `n_short` makes every figure above a lower bound.
 
 ### Why `maj@k` can be missing
 
@@ -99,30 +95,29 @@ It needs all three:
 3. **The draw arrived complete.** A truncated draw is whatever finished first,
    not a random subset.
 
-If *any* sample fails a condition the key is dropped for the **whole run** rather
-than averaged over the samples that had it — otherwise a deliberate omission
-would reappear as the `0.0` it was avoiding.
+If *any* sample fails one, the key is dropped for the **whole run** — averaging
+over the samples that had it would turn a deliberate omission back into the `0.0`
+it was avoiding.
 
-`maj@k` is also a **lower bound**, not an estimate: votes cluster on *strings*
-(after the canonicalizer the task applies to its golds) while the grader compares
-*symbolically*. So `\dfrac{1}{2}` and `1/2` become one vote, but `0.5` and
-`\frac{1}{2}` still split. The bias is downward — a real majority can be missed,
-a false one cannot be manufactured. The same clustering backs
-`self_consistency`, so the two never disagree about what counts as one answer.
+`maj@k` is a **lower bound**, not an estimate: votes cluster on *strings* (after
+the task's own gold canonicalizer) while the grader compares *symbolically*, so
+`\dfrac{1}{2}` and `1/2` become one vote but `0.5` and `\frac{1}{2}` still split.
+A real majority can be missed; a false one cannot be manufactured.
+`self_consistency` uses the same clustering.
 
 ## Single-draw tasks
 
 The MCQ tasks (`gpqa_diamond_0shot_gen`, `mmlu_0shot_gen`, `mmlu_pro_0shot_gen`,
 `openbookqa_kshot_gen`) and the accuracy-headline math tasks (`gsm8k_*`,
 `hendrycks_math_kshot_base_gen`, `theoremqa_kshot_base_gen`, PlatinumBench)
-publish a **greedy single-draw** number upstream. Their headline therefore keeps
-its first-rollout definition even under `n > 1`, with `pass@1` reported *beside*
-it rather than merged into it. At `n = 1` the two coincide, which is what makes
-adopting a budget non-breaking for a stored score.
+publish a **greedy single-draw** number upstream, so their headline keeps its
+first-rollout definition even under `n > 1`, with `pass@1` beside it rather than
+merged in. At `n = 1` the two coincide, which is what makes adopting a budget
+non-breaking for a stored score.
 
-The MCQ four take **no** `n`/`k` argument. They still grade and record every
-rollout the model returns — a model-level `n` reaches them — but the headline
-scores the first alone, and `report()` warns once with the count it did not score.
+The MCQ four take **no** `n`/`k` argument, but still grade and record every
+rollout that arrives (a model-level `n` reaches them); `report()` warns once with
+the count it did not score.
 
 ## Task-specific keys
 
@@ -135,10 +130,9 @@ unit), `timeouts` (the code family), `exact_match` / `flexible_exact_match`
 ## Reading a report across versions
 
 Adding a key is non-destructive: `sieval leaderboard report` reads `score` and
-nothing else, so a run recorded before these keys existed stays readable and
-comparable on the headline. Old runs are **not** backfilled — the sampling
-metrics are computed inline at report time, so a stored `report.json` remains a
-function of the run that produced it.
+nothing else, so older runs stay readable and comparable on the headline. They
+are **not** backfilled — metrics are computed inline at report time, so a stored
+`report.json` remains a function of the run that produced it.
 
 The one migration is the `pass@<k>` → `pass@k` rename: a dashboard keyed on the
-literal `pass@4` needs updating, and should take the budget from `n` / `k`.
+literal `pass@4` needs updating, and should read the budget from `n` / `k`.

@@ -8,18 +8,16 @@
 
 **Convention:** `tests/unit/` mirrors `sieval/` — e.g. `sieval/core/runners/foo.py` → `tests/unit/core/runners/test_foo.py`. Scripts with non-trivial logic (`scripts/*.py`) go in `tests/unit/scripts/`. Non-`sieval/` top-level artifact dirs get their own sibling under `tests/` that mirrors them directly — e.g. `leaderboards/alignment/<tr-slug>/<stage>.md` → `tests/leaderboards/test_*.py`.
 
-The mirror is **directory-level**. Within a directory, four file layouts are in use:
+The mirror is **directory-level**; four file layouts are in use within a directory:
 
 | Layout | When | Example |
 | --- | --- | --- |
-| `test_<module>.py` | The default: one file per source module. | `core/tasks/test_saver.py` |
+| `test_<module>.py` | Default: one file per source module. | `core/tasks/test_saver.py` |
 | `<module>/test_<topic>.py` | One large module split by topic. | `core/tasks/loader/` for `loader.py` |
-| `test_<subject>_family.py` | One contract asserted **once** over sibling modules that are clones of each other. | `tasks/test_sampling_family.py` |
-| `test_<concern>.py` | A cross-cutting concern that belongs to no single module. | `test_lazy_exports.py`, `test_module_isolation.py`, `cli/test_shortcut_parity.py` |
+| `test_<subject>_family.py` | One contract over near-identical modules, where a fix landing in one and drifting in the others is the failure mode. | `tasks/test_sampling_family.py` (8 tasks, one sampling contract) |
+| `test_<concern>.py` | A concern belonging to no single module. | `test_lazy_exports.py`, `cli/test_shortcut_parity.py` |
 
-A **family** file needs a reason a per-module file cannot cover, and the reason is always the same shape: the modules are near-identical, so a fix landing in one and drifting in the others is the failure mode. `tasks/test_math_pass_at_k_family.py` covers thirteen such clones; `tasks/test_sampling_family.py` covers eight tasks across two RFC #74 waves that share one sampling contract. Prefer a per-module file whenever one will do — a family file that merely *collects* unrelated tests is the anti-pattern.
-
-None of this is machine-checked. A directory-level enforcer is possible and a file-level one is not, since the last three layouts are all legitimate — so placement is a review concern, not a preflight one.
+Prefer a per-module file whenever one will do; a family file that merely *collects* unrelated tests is the anti-pattern. Not machine-checked — three of the four layouts are legitimate, so placement is a review concern.
 
 ```text
 tests/

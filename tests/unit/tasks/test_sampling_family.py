@@ -1,22 +1,13 @@
-"""One sampling contract, over every task whose headline is a single draw.
+"""One sampling contract, over eight tasks whose headline is a single draw.
 
-Eight tasks in two groups that look unrelated and are not:
-
-* **RFC #74 wave 2** — GSM8K (chat and few-shot base), Hendrycks MATH,
-  TheoremQA. These now TAKE a ``k`` / ``n`` budget.
-* **RFC #74 wave 3** — GPQA-Diamond, MMLU, MMLU-Pro, OpenBookQA. These
-  deliberately REFUSE one.
-
-Either way the same two clauses have to hold, and neither is assertable from a
-per-task file:
+Wave 2 (GSM8K x2, Hendrycks MATH, TheoremQA) TAKES a ``k`` / ``n`` budget;
+wave 3 (GPQA-Diamond, MMLU, MMLU-Pro, OpenBookQA) deliberately REFUSES one.
+Either way two clauses hold, and neither is assertable per-task:
 
 1. **No draw is discarded.** ``agenerate`` merges ``{**model_kwargs, **kwargs}``,
-   so a model-level ``n`` reaches even a task that passes none of its own. Every
-   rollout that arrives is extracted, graded and written to disk — the old
-   ``inf.texts[0]`` / ``rollouts[0]`` pair billed for them and dropped them.
-2. **The headline still scores the FIRST draw**, because all eight publish a
-   greedy single-draw number. ``pass@1`` (``c/n``) sits beside it where a budget
-   exists, never merged into it.
+   so a model-level ``n`` reaches even a task passing none of its own.
+2. **The headline scores the FIRST draw** — all eight publish a greedy
+   single-draw number, with ``pass@1`` beside it where a budget exists.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -36,10 +27,10 @@ DRAW = 4
 
 
 class _StubMixin:
-    """Return the configured texts, capped at whatever ``n`` the task asked for.
+    """Configured texts, capped at whatever ``n`` the task asked for.
 
-    A task with its own budget caps the draw; one without takes what the MODEL
-    was configured for, which is the case clause 1 exists for.
+    A task without its own budget takes what the MODEL was configured for --
+    the case clause 1 exists for.
     """
 
     _texts: list[str]
@@ -178,9 +169,8 @@ class _Case:
         #: Does the task take its own `k` / `n`? Wave 2 yes, wave 3 no.
         self.samples = samples
         self.denominator = denominator
-        #: Either a fixed (right, wrong) response pair, or a letter template --
-        #: GPQA shuffles its options behind a seeded RNG, so its gold letter has
-        #: to be read off the prompt record rather than assumed.
+        #: A fixed (right, wrong) pair, or a letter template. GPQA shuffles its
+        #: options behind a seeded RNG, so its gold is read off the prompt.
         self._fixed, self._letters = fixed, letters
         self._kwargs = kwargs or {}
 
@@ -324,8 +314,7 @@ async def _score(case, texts, *, k=None, n=None):
 
 @pytest.mark.parametrize("case", SAMPLING, ids=SAMPLING_IDS)
 def test_k_greater_than_n_is_rejected(case):
-    # Without the guard this constructs fine and pass@k comes out a confident
-    # 0.0 (the `n < k` guard in pass_at_k) beside a real pass@1.
+    # Without the guard this constructs fine and pass@k comes out 0.0.
     with pytest.raises(ValueError, match=r"pass@2"):
         case.build(["x"], k=2, n=1)
 
@@ -348,8 +337,7 @@ def test_a_sampling_knob_is_refused(case):
 @pytest.mark.parametrize("case", SAMPLING, ids=SAMPLING_IDS)
 @pytest.mark.anyio
 async def test_infer_forwards_the_sampling_budget(case):
-    # `agenerate` merges `{**model_kwargs, **kwargs}`, so a task that does not
-    # pass `n` lets a model-level one through and then discards the draws.
+    # Or a model-level `n` gets through and its draws are discarded.
     pre, raw, _, _ = await case.responses()
     task, _ = case.build(["x"], k=DRAW, n=DRAW)
     await task.infer(pre, TaskContext(sample_id=0, raw_sample=raw))
@@ -364,8 +352,7 @@ async def test_infer_forwards_the_sampling_budget(case):
 @pytest.mark.parametrize("case", CASES, ids=IDS)
 @pytest.mark.anyio
 async def test_every_rollout_is_extracted_and_graded(case):
-    # `inf.texts[0]` in postprocess or `rollouts[0]` in feedback -- either one
-    # alone leaves this at a length of 1.
+    # `inf.texts[0]` or `rollouts[0]` alone leaves this at a length of 1.
     _, _, right, wrong = await case.responses()
     budget = {"k": DRAW, "n": DRAW} if case.samples else {}
     post, judgement, _ = await _score(case, [right, wrong, right, wrong], **budget)
@@ -383,8 +370,7 @@ async def test_every_rollout_is_extracted_and_graded(case):
 @pytest.mark.parametrize("case", CASES, ids=IDS)
 @pytest.mark.anyio
 async def test_headline_scores_the_first_draw_only(case):
-    # Three of four correct, but the FIRST is wrong. All eight publish a greedy
-    # single-draw number, so the headline reads 0 -- not 75.
+    # Three of four correct, but the FIRST is wrong: the headline reads 0.
     _, _, right, wrong = await case.responses()
     budget = {"k": DRAW, "n": DRAW} if case.samples else {}
     _, judgement, report = await _score(case, [wrong, right, right, right], **budget)
@@ -397,8 +383,7 @@ async def test_headline_scores_the_first_draw_only(case):
 @pytest.mark.parametrize("case", SAMPLING, ids=SAMPLING_IDS)
 @pytest.mark.anyio
 async def test_sampling_metrics_describe_the_whole_draw(case):
-    # The same run the headline reads 0 on. `pass@1` is c/n over all four, and
-    # merging the two would restate every published-number comparison.
+    # Same run, where the headline reads 0: `pass@1` is c/n over all four.
     _, _, right, wrong = await case.responses()
     _, _, report = await _score(case, [wrong, right, right, right], k=DRAW, n=DRAW)
 
@@ -422,8 +407,7 @@ async def test_no_sampling_block_at_the_default_budget(case):
 @pytest.mark.parametrize("case", SINGLE_DRAW, ids=SINGLE_DRAW_IDS)
 @pytest.mark.anyio
 async def test_no_sampling_metrics_without_a_budget(case):
-    # The extra draws are recorded, not scored, so no sampling key appears even
-    # though four rollouts were graded.
+    # Four rollouts graded, none scored into the headline.
     _, _, right, wrong = await case.responses()
     _, _, report = await _score(case, [wrong, right, right, right])
     assert not {"pass@1", "avg@k", "pass@k", "maj@k", "n", "k"} & set(report)
@@ -437,8 +421,7 @@ async def test_no_sampling_metrics_without_a_budget(case):
 @pytest.mark.parametrize("case", CASES, ids=IDS)
 @pytest.mark.anyio
 async def test_report_declares_which_population_it_averages_over(case):
-    # Same key, two values across these eight -- which is the whole reason the
-    # policy is recorded rather than unified (RFC #74 F).
+    # Two values across these eight -- why it is recorded, not unified.
     task, _ = case.build(["x"], k=1, n=1)
     report = await task.report([], [])
     assert report["denominator_policy"] == case.denominator
