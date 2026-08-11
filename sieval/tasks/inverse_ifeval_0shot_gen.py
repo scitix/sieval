@@ -110,7 +110,10 @@ from sieval.datasets import InverseIFEvalDataset, InverseIFEvalDatasetSample
             "REPEAT PROTOCOL: that same 1/(6n) quantization implies the "
             "published cells average SIX rollouts per sample; the paper states "
             "no repeat count. This task defaults to n=1 — pass `n: 6` to match "
-            "what the tables imply. "
+            "what the tables imply, and budget for it: grading is one judge call "
+            "per rollout, issued serially within a sample (the judged family's "
+            "shape), so n=6 costs six judge round-trips per sample rather than "
+            "one. "
             "JUDGE: the paper uses a per-type 'adaptive judge matrix' (a "
             "different judge model per instruction type) but names none of its "
             "models, and states no decoding params for the evaluated models "
@@ -281,6 +284,18 @@ class InverseIFEvalZeroShotGenTask(
         # sieval.community.inverse_ifeval), and failures count as incorrect the
         # way the paper scores an unanswered sample. `votes=False`: a majority
         # vote over free-form prose has no definition here.
+        #
+        # The rest of the LLM-judged family (`hle`, `simpleqa_verified`,
+        # `browsecomp`, `aa_lcr`, `complex_constraints`, `advanced_if`) reports
+        # `health_metrics` alone, because RFC #74 defers `pass@k` / `maj@k` for
+        # judged tasks. This one opts IN, on that RFC's own three grounds rather
+        # than against them: the verdict is a single binary 0/1, so "pass" needs
+        # no defining (unlike simpleqa's three-way grade); no clustering is
+        # involved, which is what `votes=False` says; and the grader cost the
+        # RFC weighs is one this benchmark's protocol asks for regardless --
+        # the paper's cell quantization implies n=6, so a run that matches it
+        # pays for the draw whether or not the block is reported. Withholding
+        # the block there would hide the spread of a draw already taken.
         rolled = sampling_report(
             finals, n=self._n, k=self._k, denominator=total, votes=False
         )
@@ -308,7 +323,10 @@ class InverseIFEvalZeroShotGenTask(
             # missing denominator.
             "judge_unparsed": judge_unparsed,
             # Which subset was evaluated, so a single-language run is
-            # distinguishable from a full one in the report alone.
+            # distinguishable from a full one in the report alone. It names the
+            # dataset's `language` ARG, not the rows that survived: a run
+            # narrowed by `operations:` filtering instead still reads "both", and
+            # it is the per-language breakdowns that disambiguate that one.
             "language": self._language_subset(),
             SCORE_KEY_FIELD: "pass@1",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
