@@ -146,6 +146,29 @@ async def test_feedback_scores_against_solution_via_eval_math():
 
 
 @pytest.mark.anyio
+async def test_an_unextractable_gold_is_recorded_as_none_not_an_empty_list():
+    """`[]` on disk reads as a gold that is legitimately empty.
+
+    This task declares `reference_kind="value"`, so an unusable gold has to
+    arrive as `None` for `missing_reference` to see it — the discipline cmmlu and
+    mmmlu follow. Only the *record* is normalized: `eval_math` raises
+    `NotImplementedError` on a non-list, non-str answer, so the grade still sees
+    the list and a failed gold stays a wrong answer rather than a failed sample.
+    """
+    task, _ = _task()
+    raw = _sample(solution="No boxed answer anywhere in this solution.")
+
+    finalize, fb = await task.feedback(
+        build_prediction_record([["16"]]), TaskContext(sample_id=0, raw_sample=raw)
+    )
+
+    assert finalize is True
+    assert fb["reference"] is None
+    # Graded, not failed: the sample is scored wrong rather than raising.
+    assert fb["rollouts"][0]["correct"] is False
+
+
+@pytest.mark.anyio
 async def test_grading_is_bounded_in_a_worker_process(monkeypatch):
     """The mechanism, not the verdict — a thread offload scores identically, so
     reverting to `anyio.to_thread.run_sync` keeps every other test in this file

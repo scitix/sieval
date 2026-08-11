@@ -187,7 +187,14 @@ class HendrycksMathFewShotBaseGenTask(
             build_rollout_judgement(rollout["index"], verdict)
             for rollout, verdict in zip(post["rollouts"], verdicts, strict=True)
         ]
-        return True, build_judgement_record(reference, rollouts)
+        # `or None` at the record boundary only, never at the grading one:
+        # `extract_math_answer` returns `[]` when the gold cannot be extracted,
+        # and `[]` on disk reads as a gold that is legitimately empty — the same
+        # trap `""` was for cmmlu/mmmlu, and invisible to `missing_reference`.
+        # `eval_math` cannot take `None` (`is_correct` raises NotImplementedError
+        # on a non-list, non-str answer), so the grade keeps seeing the list and
+        # a failed gold stays a wrong answer rather than becoming a failed sample.
+        return True, build_judgement_record(reference or None, rollouts)
 
     async def _grade(self, rollout, reference, ctx) -> bool:
         prediction = rollout.get("prediction") or ""
