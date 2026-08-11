@@ -1506,7 +1506,8 @@
         "url": "https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
         "notes": "Protocol borrowed from the sibling `gsm8k_0shot_gen`, so the two form a prompt-exact pair: user turn = question + \"Please reason step by step, and put your final answer within \\boxed{}.\", chat template applied by the serving backend; extract_answer(exhaust=False) (= extract_last_single_answer) and is_correct/math_equal (= eval_last_single_answer) are vendored byte-for-byte in sieval.community.deepseek_math. Gold is GSM1k's `answer` verbatim (already the bare final answer, so no '####' split). Scale AI published GSM1k at 5-shot raw completion only (see gsm1k_kshot_base_gen) — no published number matches this 0-shot chat protocol, so read the GSM8K - GSM1k diff, not the absolute score. Repeats: 1 rollout, greedy at temperature 0."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "gsm1k_kshot_base_gen",
@@ -1528,7 +1529,8 @@
         "url": "https://github.com/scaleapi/gsm1k_eval/blob/39294c6f31855aca8255b6174b22fc3a6311be0b/lm_eval/tasks/gsm1k/gsm1k_scale.yaml",
         "notes": "Scale's own lm-evaluation-harness fork task `gsm1k`: prompt \"Question: {q}\\nAnswer:\" with 5 GSM8k-train exemplars, one `flexible-extract` filter (last numeric match) and `exact_match` with regexes_to_ignore [',', '$', '(?s).*#### ', '.$'] + ignore_case. Upstream resamples the 5 exemplars per question and raises max generation length from 256 to 1000 tokens; this task fixes one exemplar set (documented in the module docstring) and leaves max_tokens to the model layer, where 1000 matches upstream. Repeats: upstream runs `repeats: 1`, greedy at temperature 0 — match it with n=1 and temperature=0. Upstream also tokenizes with add_bos_token=False, so the published column has no leading BOS; a backend that prepends one (sglang does for Llama-3 and Mistral, not for Yi) moves the paired diff by ~1.2 points. GSM1k is a paired benchmark: read it as a diff against GSM8K on the same extraction rule, not as a standalone score."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "gsm8k_0shot_gen",

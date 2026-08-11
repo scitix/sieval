@@ -219,9 +219,14 @@ async def test_report_on_empty_set_reports_zero_for_both_rules():
 
     report = await task.report([], [])
 
+    # The declarations ride on the empty report too: a zero-sample run still has
+    # to say which key the headline was copied from and how it counted failures,
+    # or on disk it is indistinguishable from a report that declared neither.
     assert report == {
         "score": 0.0,
         "fails": 0,
         "flexible_exact_match": 0.0,
         "strict_exact_match": 0.0,
+        "score_key": "flexible_exact_match",
+        "denominator_policy": "requested",
     }

@@ -122,4 +122,12 @@ async def test_report_on_empty_set_reports_zero():
 
     report = await task.report([], [])
 
-    assert report == {"score": 0.0, "fails": 0, "accuracy": 0.0}
+    # The declarations ride on the empty report too, and `requested` here has to
+    # match `gsm8k_0shot_gen`'s, or the paired diff is a denominator artifact.
+    assert report == {
+        "score": 0.0,
+        "fails": 0,
+        "accuracy": 0.0,
+        "score_key": "accuracy",
+        "denominator_policy": "requested",
+    }

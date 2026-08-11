@@ -81,6 +81,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets import GSM1KDatasetSample
 
 # Verbatim from run_subset_parallel.py::markup_question (language="en",
@@ -129,7 +134,7 @@ class GSM1KZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        dict[str, float | str],
     ]
 ):
     @override
@@ -171,10 +176,18 @@ class GSM1KZeroShotGenTask(
         # `gsm8k_0shot_gen` so both sides of the paired diff count a pipeline
         # failure as wrong rather than excluding it.
         total = len(finals) + len(fails)
-        if total == 0:
-            return {"score": 0.0, "fails": len(fails), "accuracy": 0.0}
         correct_num = sum(
             1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
         )
-        accuracy = 100 * correct_num / total
-        return {"score": accuracy, "fails": len(fails), "accuracy": accuracy}
+        accuracy = 100 * correct_num / total if total else 0.0
+        metrics: dict[str, float | str] = {
+            "score": accuracy,
+            "fails": len(fails),
+            "accuracy": accuracy,
+            SCORE_KEY_FIELD: "accuracy",
+            # REQUESTED on *both* halves of this pair (see `gsm8k_0shot_gen`), so
+            # the diff cannot be a denominator artifact — the one thing a paired
+            # benchmark must not leave ambiguous on disk.
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+        }
+        return metrics

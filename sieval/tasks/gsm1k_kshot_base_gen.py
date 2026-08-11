@@ -67,9 +67,11 @@ Deviations from Scale's harness (documented, not silent):
   byte-identical with `datasets` 4.4.1): running that sibling at those settings
   gives the same prompt prefix, so the pair can be run prompt-controlled.
 * **`report()` divides by `len(finals) + len(fails)`** — a pipeline failure scores
-  wrong rather than being excluded, the convention across this repo's tasks. Note
-  `gsm8k_kshot_base_gen` divides by `len(finals)` instead, so a paired diff must
-  be read with both `fails` counts in view; the two rules agree when `fails == 0`.
+  wrong rather than being excluded, the convention across this repo's tasks, and
+  declared on disk as `denominator_policy: requested`. Note
+  `gsm8k_kshot_base_gen` divides by `len(finals)` (`judged`) instead, so a paired
+  diff must be read with both `fails` counts in view; the two agree when
+  `fails == 0`.
 
 Comparison targets — the paper's Table 1 "Standard Prompt", GSM8k → GSM1k
 (5-shot, temperature 0), **read from v4**: Meta-Llama-3-8B-Instruct 0.752 → 0.690
@@ -160,6 +162,11 @@ from sieval.core.tasks import (
     build_prompt_record,
     build_rollout_judgement,
     sieval_task,
+)
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
 )
 from sieval.datasets import GSM1KDatasetSample
 
@@ -304,7 +311,7 @@ class GSM1KFewShotBaseGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -383,15 +390,9 @@ class GSM1KFewShotBaseGenTask(
     @override
     async def report(self, finals, fails):
         # Accuracy over the full requested set: a pipeline failure counts as
-        # wrong, not as an excluded sample.
+        # wrong, not as an excluded sample. One return rather than an empty-set
+        # early exit, so the two declarations below cannot drift between branches.
         total = len(finals) + len(fails)
-        if total == 0:
-            return {
-                "score": 0.0,
-                "fails": len(fails),
-                "flexible_exact_match": 0.0,
-                "strict_exact_match": 0.0,
-            }
         flexible = (
             100
             * sum(
@@ -400,6 +401,8 @@ class GSM1KFewShotBaseGenTask(
                 if ctx.feedback_result["metrics"]["flexible_exact_match"]
             )
             / total
+            if total
+            else 0.0
         )
         strict = (
             100
@@ -409,10 +412,23 @@ class GSM1KFewShotBaseGenTask(
                 if ctx.feedback_result["metrics"]["strict_exact_match"]
             )
             / total
+            if total
+            else 0.0
         )
-        return {
+        metrics: dict[str, float | str] = {
             "score": flexible,
             "fails": len(fails),
             "flexible_exact_match": flexible,
             "strict_exact_match": strict,
+            # Which rule the headline came from, recorded on disk. This task
+            # deliberately spells neither rule bare `exact_match`, so without this
+            # a reader of the report cannot tell whether `score` is the flexible or
+            # the strict column — and diffing the wrong one against GSM8K reads an
+            # extraction gap as a memorization gap.
+            SCORE_KEY_FIELD: "flexible_exact_match",
+            # REQUESTED: the denominator is finals + fails. `gsm8k_kshot_base_gen`
+            # divides by `len(finals)` (JUDGED), so a paired diff must be read with
+            # both policies in view; they agree only when fails == 0.
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        return metrics
