@@ -79,6 +79,7 @@ from sieval.datasets import InverseIFEvalDataset, InverseIFEvalDatasetSample
     n_shot=0,
     tags=("chinese", "english", "open-ended"),
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="m-a-p/Inverse_IFEval",
         url="https://huggingface.co/datasets/m-a-p/Inverse_IFEval/blob/35f1da157640526e62b7685b682d748fa55ccfd0/README.md",

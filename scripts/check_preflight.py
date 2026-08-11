@@ -2022,7 +2022,7 @@ class PreflightRunner:
         Three places, in order, because the repo builds the record in three
         shapes and demanding it at the class body would exempt two of them:
 
-        1. the class itself -- 44 of 53 tasks;
+        1. the class itself -- 46 of 55 tasks;
         2. a helper the class calls, defined here or imported from a sibling
            inside ``sieval/tasks/`` -- ``arc/``'s four leaves share
            ``_base.arc_judgement_record``;
