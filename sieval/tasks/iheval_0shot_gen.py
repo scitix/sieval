@@ -131,12 +131,9 @@ _REFERENCE_SEPARATOR = {"verb-extract": ", ", "translation": "\n"}
 # in the glued string. Applied in order, and both can fire.
 _REFERENCE_PREFIXES = ("español:", "Verbs:")
 
-# The instruction rows a composed `reference` cell needs in order to be scored
-# the way upstream scores it: their responses are the prefixes every data row is
-# glued behind. Lose one -- a sliced run, or one failed inference among these two
-# or four rows -- and the cell is still scored, from fewer components, which
-# changes what it measures rather than its denominator. report() counts such
-# cells so the degradation is on the record instead of hiding in the average.
+# The instruction rows a composed `reference` cell needs to be scored the way
+# upstream scores it: their responses are the prefixes every data row is glued
+# behind. Missing one degrades the cell -- see `_reference_average`.
 _REFERENCE_INSTRUCTION_IDS = {
     "translation": frozenset({"strong_user_instruction", "weak_user_instruction"}),
     "verb-extract": frozenset({"strong_user_instruction", "weak_user_instruction"}),
@@ -555,11 +552,8 @@ class IHEvalZeroShotGenTask(
         for (subtask, setting, variant), average in sorted(cell_averages.items()):
             results[f"cell_{subtask}_{setting}_{variant}"] = average * 100
 
-        # A composed reference cell missing an instruction row scored fewer
-        # components than upstream did (see _REFERENCE_INSTRUCTION_IDS), so it is
-        # no longer comparable with a published row. Always emit the count, so
-        # that 0 is a positive statement rather than an absent key; name the cells
-        # only when there are some.
+        # A degraded cell (see `_reference_average`) is not comparable with a
+        # published row, so it is counted rather than left to the average.
         degraded = sorted(
             f"{subtask}_{setting}_{variant}"
             for (subtask, setting, variant), contexts in cells.items()
@@ -605,13 +599,10 @@ class IHEvalZeroShotGenTask(
                     results[f"abs_diff_{setting}"] = mean(deltas) * 100
 
         # The conflict aggregate is the headline: reference and aligned are the
-        # controls that make it interpretable, not competing answers.
-        #
-        # A run that filtered the conflict setting away (`filter` on `setting` is
-        # a supported dataset op) has no headline to report, so it reports none:
-        # a 0.0 default would read as a measured zero, and `score_key` would name
-        # a key this report never wrote. The per-setting aggregates are still all
-        # there for whatever slice did run.
+        # controls that make it interpretable, not competing answers. A slice with
+        # no conflict rows reports no headline at all, rather than a 0.0 that
+        # would read as a measured zero under a `score_key` naming a key this
+        # report never wrote.
         if "score_conflict" in results:
             results["score"] = results["score_conflict"]
             results[SCORE_KEY_FIELD] = "score_conflict"
@@ -709,13 +700,11 @@ def _reference_average(
     and loose. Six means, averaged.
 
     Falls back to whichever components survive when an instruction row is absent
-    -- both data-only ones when neither is there. Two ways that happens: a run
-    slices the dataset, or a single inference fails, since each cell hangs its
-    prefixes on exactly two rows (four for ``get-webpage``). Upstream raises
-    instead, so the fallback is this port's; it keeps a run scoreable, but the
-    cell measures a shorter span than the published one and drifts upward by
-    roughly a quarter of a point. ``report()`` counts the affected cells under
-    ``reference_cells_degraded`` rather than letting the average absorb it.
+    -- both data-only ones when neither is. A sliced run does that, and so does a
+    single failed inference, since each cell hangs its prefixes on two rows (four
+    for ``get-webpage``). Upstream raises instead; staying scoreable costs a cell
+    that measures a shorter span and drifts upward ~0.25 points, which ``report()``
+    counts under ``reference_cells_degraded``.
     """
     from sieval.community.iheval import eval_translation, eval_verb_extract
 
