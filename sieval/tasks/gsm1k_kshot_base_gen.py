@@ -38,11 +38,26 @@ Deviations from Scale's harness (documented, not silent):
   "five random examples from GSM8k to use as n-shot examples, which vary for each
   new question"; `_GSM8K_FEWSHOT_EXAMPLES` is one fixed set of 5, so every sample
   in a run shares one prompt prefix. This is the house pattern (`n_shot`
-  exemplars sampled once, as in `gsm8k_kshot_base_gen`), and for a paired
-  GSM8K/GSM1k read it is the stronger design: holding the prefix fixed keeps
-  exemplar variance out of the diff, which is what upstream's single shared
-  prompt is reaching for. It does move absolute scores relative to upstream's
+  exemplars sampled once, as in `gsm8k_kshot_base_gen`), and it is also *forced*:
+  upstream's own YAML declares `fewshot_split: train` over
+  `ScaleAI/gsm1k_public_50`, but the released `ScaleAI/gsm1k` is `test`-only, so
+  there is no split to draw exemplars from and no worked solutions to draw.
+  Holding the prefix fixed keeps exemplar variance out of the diff **when the
+  exemplar effect is common-mode across the two question sets** — measured on
+  Llama-3-8B-Instruct, re-drawing the 5 moves both absolutes the same way (−4.02
+  GSM8k, −4.73 GSM1k) and the diff by only 0.71. On Mistral-7B-Instruct-v0.2 the
+  absolutes move in *opposite* directions (−1.06, +0.59) and the diff moves 1.65,
+  i.e. more than either half. So treat the cancellation as a property of the
+  model, not of this design. It also moves absolute scores relative to upstream's
   published column.
+* **Implementing upstream's protocol does not fix that, and was tested.** Drawing
+  5 fresh exemplars per question moved Mistral's diff to 5.34 — *further* from its
+  published 0.009 than this fixed set's 4.40 — while putting Llama-3's GSM8k half
+  within 0.54 of the published column. Exemplar protocol is a variance term, not
+  the bias term. (It is also not expressible here: `Task.__init__` takes one
+  dataset and `TaskMeta.dataset` is a single frozen FK, so a `gsm1k`-keyed task
+  cannot reach `openai/gsm8k`'s train split — the reason exemplars are vendored
+  at all.)
 * **Exemplar provenance.** The 5 pairs are rows of `openai/gsm8k` train (revision
   `740312add88f781978c0658806c59bc2815b9866`, MIT) — GSM8k train is where
   upstream's exemplars come from too, and GSM1k has no train split and ships no
@@ -56,14 +71,45 @@ Deviations from Scale's harness (documented, not silent):
   `gsm8k_kshot_base_gen` divides by `len(finals)` instead, so a paired diff must
   be read with both `fails` counts in view; the two rules agree when `fails == 0`.
 
-Comparison targets — the paper's Table 1, GSM8k → GSM1k (5-shot, temperature 0):
-Meta-Llama-3-8B-Instruct 0.752 → 0.690 (diff 0.062), Meta-Llama-3-70B-Instruct
-0.914 → 0.900 (0.014), Mistral-7B-Instruct-v0.2 0.428 → 0.419 (0.009), phi-2
-0.566 → 0.504 (0.063). Instruct checkpoints appear in a base-model task because
-upstream applies **no** chat template: its `lm_eval` invocation passes no
-`--apply_chat_template`, so every model was prompted with this raw 5-shot
-completion. The **diff** is the measurement; treat a single absolute column as
-alignment evidence only after checking `fails` and the exemplar deviation above.
+Comparison targets — the paper's Table 1 "Standard Prompt", GSM8k → GSM1k
+(5-shot, temperature 0), **read from v4**: Meta-Llama-3-8B-Instruct 0.752 → 0.690
+(diff 0.062), Meta-Llama-3-70B-Instruct 0.914 → 0.900 (0.014),
+Mistral-7B-Instruct-v0.2 0.428 → 0.419 (0.009), phi-2 0.566 → 0.504 (0.063),
+Yi-6B-Chat 0.437 → 0.357 (0.080, the largest in the table). The version matters:
+v3 published different values for three of those rows (Mistral 0.027, phi-2
+0.074, Llama-3-70B 0.020), so the paper moved its own diff by up to 0.018 — which
+is also the tightest non-arbitrary tolerance available for judging this port.
+Instruct checkpoints appear in a base-model task because upstream applies **no**
+chat template: its `lm_eval` invocation passes no `--apply_chat_template`, so
+every model was prompted with this raw 5-shot completion. The **diff** is the
+measurement; treat a single absolute column as alignment evidence only after
+checking `fails` and the exemplar deviation above.
+
+Measured against those targets (2026-08-11, sglang, greedy, `max_tokens=1000`,
+**no leading BOS**, `flexible_exact_match` on both halves, n=1319/1205,
+`fails=0`):
+
+    model                      GSM8k   GSM1k    diff   published
+    Meta-Llama-3-8B-Instruct   77.71   71.70    6.01   6.2
+    Yi-6B-Chat                 42.91   37.26    5.65   8.0
+    Mistral-7B-Instruct-v0.2   45.64   41.24    4.40   0.9
+
+Two limits that run established, both about protocol sensitivity rather than this
+port's arithmetic, and both reasons `status` is still `experimental`:
+
+1. **A near-zero published gap does not reproduce.** Across four exemplar/BOS
+   protocols, Mistral's measured diff spans 1.86–5.34 — roughly 6× the 0.009 it
+   should reproduce. Under the convention that best fits Llama-3, its two-
+   proportion Z is 2.23 (p=0.026) where the paper reports 0.469 (p=0.319). So
+   this task can say "shows a large gap, roughly this large"; it cannot yet
+   certify a model as *un*-overfit.
+2. **The residual is localized to the GSM1k half, not the pipeline.** Under
+   upstream's own per-question exemplar protocol the GSM8k halves land +0.54
+   (Llama-3) and +2.54 (Mistral) — same sign — while the GSM1k halves land +3.03
+   and −1.90, *opposite* signs. A systematic cause would push both the same way.
+   Reproducing the GSM8k column to 0.54 validates prompt, extraction, scoring and
+   serving end-to-end, which leaves open whether the 2025-03 `ScaleAI/gsm1k`
+   release is the same 1205 problems the 2024 paper scored.
 
 Repro decoding (model-layer assets — set via `models:` / `infer_args`, not here):
 greedy `temperature=0`, and `max_tokens=1000` — upstream's one deliberate change
@@ -71,13 +117,28 @@ to lm-eval's defaults was raising the generation cap "from 256 to 1000" so chain
 of thought are not truncated. This task forwards only the stop sequences, which
 are coupled to the prompt format.
 
+**Tokenization is a repro asset too, and an easy one to miss.** Upstream is
+lm-eval's vLLM path, which tokenizes with `add_bos_token=False` (force-enabled
+only for gemma), so the published column carries **no leading BOS**. A serving
+backend handed the prompt as a *string* may prepend one: measured on sglang, it
+does for Meta-Llama-3-8B-Instruct (12 → 13 tokens) and Mistral-7B-Instruct-v0.2
+(15 → 16) but not for Yi-6B-Chat (14 → 14), i.e. the mismatch is per-tokenizer,
+not per-server. That one token is worth 1.2 points of paired diff on Llama-3
+(4.81 with, 6.01 without) and 2.91 points of GSM1k accuracy on Yi. On a benchmark
+whose entire output is a 1–8 point gap, pin the convention before comparing to
+the published column — and do not compare runs whose models disagree about it,
+since a mixed-convention set can reproduce a published *ordering* as an artifact.
+
 `status="experimental"`: faithful to upstream's declared protocol by
-construction, but the fixed-exemplar deviation changes every prompt and no run
-has yet been checked against the published column.
+construction, and now checked against the published column — the primary anchor
+reproduces (6.01 vs 6.2) but the near-zero row does not, and the protocol spread
+above is wider than the value it has to reproduce. Not "unvalidated"; validated,
+with a stated limit.
 
 References:
 
-* Paper: <https://arxiv.org/abs/2405.00332>
+* Paper (v4 — the revision the targets above are read from):
+  <https://arxiv.org/abs/2405.00332v4>
 * Task config: <https://github.com/scaleapi/gsm1k_eval/blob/39294c6f31855aca8255b6174b22fc3a6311be0b/lm_eval/tasks/gsm1k/gsm1k_scale.yaml>
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
@@ -227,9 +288,12 @@ def _extract_flexible_answer(text: str) -> str:
             "fixes one exemplar set (documented in the module docstring) and "
             "leaves max_tokens to the model layer, where 1000 matches "
             "upstream. Repeats: upstream runs `repeats: 1`, greedy at "
-            "temperature 0 — match it with n=1 and temperature=0. GSM1k is a "
-            "paired benchmark: read it as a diff against GSM8K on the same "
-            "extraction rule, not as a standalone score."
+            "temperature 0 — match it with n=1 and temperature=0. Upstream also "
+            "tokenizes with add_bos_token=False, so the published column has no "
+            "leading BOS; a backend that prepends one (sglang does for Llama-3 "
+            "and Mistral, not for Yi) moves the paired diff by ~1.2 points. "
+            "GSM1k is a paired benchmark: read it as a diff against GSM8K on "
+            "the same extraction rule, not as a standalone score."
         ),
     ),
 )

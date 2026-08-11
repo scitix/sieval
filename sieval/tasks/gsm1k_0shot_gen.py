@@ -30,6 +30,16 @@ vary. The GSM8K − GSM1k **diff** is the measurement, and it is the quantity GS
 exists to produce (the paper's Table 1 is a diff column first, an accuracy column
 second). A single absolute number here aligns with nothing external.
 
+The **diff** does have one external reference point, though. The paper's Table 2
+"Alternative Prompt" is itself a second-regime column: for
+Meta-Llama-3-8B-Instruct it reports 0.023 against Table 1's 0.062, i.e. a
+non-standard prompt roughly halves the measured gap. Measured here on that model
+(2026-08-11, greedy, `max_tokens=1024`, `fails=0`): GSM8K 71.57 → GSM1k 68.63,
+diff **2.94** — the same halving, from a different non-standard regime. The two
+protocols are not the same, so this is corroboration rather than alignment; what
+it establishes is that the pairing lands inside the paper's own second-regime
+range instead of somewhere unexplained.
+
 Deviation from the sibling it mirrors: the gold needs no `answer.split("####")`
 step, because GSM1k's `answer` field already *is* the bare final answer — see
 `sieval/datasets/gsm1k.py`. Both tasks divide `report()` by
@@ -37,9 +47,10 @@ step, because GSM1k's `answer` field already *is* the bare final answer — see
 of the diff.
 
 `status="experimental"`: the extraction/scoring layer is the sibling's, verbatim
-and already exercised, but this pairing has not yet been validated by a run, and
-unlike the sibling it has no published column to be validated *against* — only
-its own diff.
+and already exercised, and the pairing has now been run end-to-end (see the diff
+above). It stays experimental because, unlike the sibling, it has no published
+column of its own to be validated *against* — only a second-regime diff that
+corroborates rather than aligns.
 
 Repro decoding (model-layer assets — set via `models:` / `infer_args`, not in
 this code): greedy `temperature=0`, `top_p=1.0`, `max_tokens=1024`, stop = the
@@ -47,7 +58,8 @@ model's EOS only, matching `gsm8k_0shot_gen` so the pair stays comparable.
 
 References:
 
-* GSM1k paper: <https://arxiv.org/abs/2405.00332>
+* GSM1k paper (v4 — the revision Tables 1 and 2 are read from):
+  <https://arxiv.org/abs/2405.00332v4>
 * Protocol source: <https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation>
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)

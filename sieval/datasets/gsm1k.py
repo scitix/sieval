@@ -25,6 +25,17 @@ while the full set was still withheld — appears verbatim in this snapshot's
 `test` split with an identical answer (50/50 found, 0 answer mismatches). The row
 count also matches the paper exactly: "GSM1k consists of 1205 problems".
 
+**What that does not establish**, and it matters when reading a paired diff
+against the paper's own column: whether this 2025 release is the *same* 1205
+problems the 2024 paper scored. The 50 published rows and the count both match,
+but item-level identity with the withheld set behind Table 1 cannot be checked
+from here. A live run gives that question weight — under upstream's own exemplar
+protocol the GSM8k halves land within +0.54 and +2.54 of Table 1 while the GSM1k
+halves land +3.03 and −1.90, i.e. the validated-pipeline half agrees and the
+GSM1k half disagrees in *opposite directions* per model. Contamination is not the
+explanation: every checkpoint involved predates this release, so none could have
+trained on it. See `gsm1k_kshot_base_gen`'s docstring for the numbers.
+
 Schema, measured at the pinned revision: `question` and `answer` are both
 strings and need no cast — no cast needed, upstream ships this dtype. All 1205
 answers are bare integers (1-6 characters, every one matching `-?[0-9]+`), with
@@ -38,7 +49,9 @@ There is a `test` split and nothing else — no train set, so nothing to hold ou
 
 References:
 
-* Paper: <https://arxiv.org/abs/2405.00332>
+* Paper (v4 — the revision the task docstrings' targets are read from; v3
+  published different Table 1 values for several rows):
+  <https://arxiv.org/abs/2405.00332v4>
 * Eval harness + public 50-example sample: <https://github.com/scaleapi/gsm1k_eval>
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
