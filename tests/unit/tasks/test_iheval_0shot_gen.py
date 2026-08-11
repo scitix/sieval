@@ -96,6 +96,18 @@ async def _judge(task: IHEvalZeroShotGenTask, row: dict, response: str) -> TaskC
     )
 
 
+def _num(report: dict, key: str) -> float:
+    """A numeric report value, narrowed.
+
+    report() is typed ``dict[str, float | str]`` because it also declares
+    ``score_key`` / ``denominator_policy``, so a bare ``report[key] < x`` is a
+    comparison against ``str`` as far as the type checker is concerned.
+    """
+    value = report[key]
+    assert isinstance(value, int | float), (key, value)
+    return float(value)
+
+
 def _verdict(ctx: TaskContext) -> dict:
     """The judgement on a context built by :func:`_judge` (never None there)."""
     record = ctx.feedback_result
@@ -367,8 +379,10 @@ class TestReport:
 
         report = await task.report(finals, [object()])
 
-        assert report[SCORE_KEY_FIELD] == "score_conflict"
-        assert report[report[SCORE_KEY_FIELD]] == report["score"]
+        headline_key = report[SCORE_KEY_FIELD]
+        assert headline_key == "score_conflict"
+        assert isinstance(headline_key, str)
+        assert report[headline_key] == report["score"]
         assert report[DENOMINATOR_FIELD] == DENOMINATOR_JUDGED
         # The fail did not enter the average, which is what JUDGED asserts.
         assert report["fails"] == 1
@@ -507,7 +521,7 @@ class TestReport:
             for r, p in zip(rows, ["xxxx", "xxxx", "hola"], strict=True)
         ]
         bad = await task.report(finals_bad, [])
-        assert bad["cell_translation_reference_default"] < 100.0
+        assert _num(bad, "cell_translation_reference_default") < 100.0
         assert _verdict(finals_bad[2])["metrics"]["strict_score"] == 1.0
 
     @pytest.mark.anyio
