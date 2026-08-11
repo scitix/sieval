@@ -75,6 +75,7 @@ IMO_ANSWER_BENCH_INSTRUCTION = (
     deps_group="math",
     model_type="chat",
     status="stable",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="IMO-Bench AnswerBench (Google DeepMind, arXiv 2511.01846) + eth-sri/matharena",  # noqa: E501
         url="https://github.com/google-deepmind/superhuman/tree/96fa6c4cc3a9bb7450ee7b6773b659d3a030dace/imobench",  # noqa: E501

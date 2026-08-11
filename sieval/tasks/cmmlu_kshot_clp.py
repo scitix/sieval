@@ -260,6 +260,7 @@ CMMLU_CATEGORY_SUBJECTS = {
     n_shot=DEFAULT_N_SHOT,
     tags=("chinese", "multiple-choice", "base-model"),
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="cmmlu",
         url="https://github.com/haonan-li/CMMLU/blob/d6e7b716d8ac694f38969a6c0407437d1fded799/src/qwen2.py",

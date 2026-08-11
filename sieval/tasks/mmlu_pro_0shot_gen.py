@@ -35,6 +35,7 @@ from sieval.datasets import MMLUProDatasetSample
     n_shot=0,
     tags=("english", "multiple-choice"),
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="opencompass",
         url="https://github.com/open-compass/opencompass/blob/568572803ab108eb0e2ae73b770d965b7de078de/opencompass/configs/datasets/mmlu_pro/mmlu_pro_0shot_cot_gen_08c1de.py",

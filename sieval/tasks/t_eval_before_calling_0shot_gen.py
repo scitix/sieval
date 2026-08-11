@@ -34,6 +34,7 @@ from sieval.datasets import TEvalBeforeCallingDatasetSample
     tags=("chinese", "english", "open-ended"),
     deps_group="t-eval",
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="open-compass/T-Eval",
         url="https://github.com/open-compass/T-Eval/tree/58f22406404d7e2a4f36856a19c7f4dc28a0a5f0/teval",

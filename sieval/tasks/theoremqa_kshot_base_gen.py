@@ -784,6 +784,7 @@ def _normalize_n_shot(n_shot: int | None) -> int:
     tags=("english", "open-ended", "theorem-driven"),
     deps_group="math",
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="TIGER-AI-Lab/TheoremQA",
         url=_THEOREMQA_RUN_URL,

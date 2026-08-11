@@ -189,6 +189,7 @@ DEFAULT_PRECISION = 1e-3
     tags=("english", "open-ended"),
     deps_group="math",
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="UGMathBench",
         url="https://github.com/YangLabHKUST/UGMathBench/blob/df47bfa639bfb89bdb0220036a7b2f216e72b0b3/eval_rule.py",

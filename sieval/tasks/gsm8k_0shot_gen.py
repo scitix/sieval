@@ -99,6 +99,7 @@ def _gold_answer(answer: str) -> str:
     tags=("english", "math-word-problems", "open-ended"),
     deps_group="math",
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="deepseek-ai/DeepSeek-Math",
         url=(

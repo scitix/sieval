@@ -96,6 +96,7 @@ def _format_example(sample: MMLUDatasetSample, *, include_answer: bool) -> str:
     n_shot=DEFAULT_N_SHOT,
     tags=("english", "multiple-choice", "base-model"),
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="hendrycks/test",
         url=(

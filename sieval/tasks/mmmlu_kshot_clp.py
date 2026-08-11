@@ -160,6 +160,7 @@ def _add_metric(
     n_shot=DEFAULT_N_SHOT,
     tags=("multilingual", "multiple-choice"),
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="lm-evaluation-harness + hendrycks/test",
         url=(

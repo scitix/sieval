@@ -147,6 +147,7 @@ CEVAL_CATEGORY_SUBJECTS = {
     n_shot=5,
     tags=("chinese", "multiple-choice"),
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="ceval",
         url="https://raw.githubusercontent.com/hkust-nlp/ceval/cba65ae93bcf189149ced9f66ae0c958201faed9/code/evaluator_series/evaluators/llama.py",

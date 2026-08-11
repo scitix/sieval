@@ -64,6 +64,7 @@ _GRADES = ("strict", "loose")
     tags=("english", "open-ended"),
     deps_group="ifbench",
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="allenai/IFBench",
         url="https://github.com/allenai/IFBench/blob/1091c4c3de6c1f6ed12c012ed68f11ea450b0117/evaluation_lib.py",

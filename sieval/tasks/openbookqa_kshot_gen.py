@@ -90,6 +90,7 @@ def _format_question(sample: OpenBookQADatasetSample) -> str:
     n_shot=DEFAULT_N_SHOT,
     tags=("english", "science", "multiple-choice"),
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="opencompass",
         url="https://github.com/open-compass/opencompass/blob/5767b74899806c0c37efdc5529ffea01e7340e48/opencompass/configs/datasets/obqa/obqa_gen_9069e4.py",

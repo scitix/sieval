@@ -62,6 +62,7 @@ from sieval.datasets import SimpleQAVerifiedDatasetSample
     tags=("english", "factuality", "open-ended"),
     model_type="chat",
     status="stable",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="simpleqa-verified",
         url="https://arxiv.org/abs/2509.07968",

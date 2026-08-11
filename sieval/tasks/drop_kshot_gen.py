@@ -36,6 +36,7 @@ _FEWSHOT_SEED = 42
     tags=("english", "open-ended"),
     deps_group="drop",
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="simple-evals",
         url="https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/drop_eval.py",

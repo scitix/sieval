@@ -78,6 +78,7 @@ N_SHOT = 4
     tags=("english", "open-ended", "base-model"),
     deps_group="math",
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="DeepSeek-Math",
         url="https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
