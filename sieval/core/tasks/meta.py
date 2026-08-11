@@ -69,6 +69,15 @@ Status = Literal["stable", "experimental", "deprecated"]
 #: of strings); ``"procedure"`` is something to *run* — a test suite, a rubric —
 #: which a record describes in ``extra`` rather than faking a value for.
 #:
+#: The criterion is operational, not aesthetic: what makes a task ``"value"`` is
+#: that it records a reference *at all*, not that the reference looks scalar.
+#: IFEval is where the two readings part — its reference is the list of
+#: instruction ids its checkers run, which describes a procedure, yet it is
+#: recorded and compared against, so it is a ``"value"`` and the rule that
+#: reports a missing one covers it. Reserve ``"procedure"`` for a task that
+#: records no reference by design: it switches ``missing_reference`` off for
+#: every sample of that task.
+#:
 #: Unrelated to ``cli.leaderboard.card.ReferenceKind`` (``tr`` |
 #: ``user-defined``), which classifies where a published reference *score* came
 #: from. Same word, different layer: this one is about the ground truth a task
