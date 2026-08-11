@@ -57,6 +57,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets import AGIEvalDatasetSample
 
 # Upstream sends this on BOTH calls: it lives in
@@ -139,7 +144,9 @@ class AGIEvalZeroShotGenTask(
         list[ModelOutput],
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key` / `denominator_policy`,
+        # which name a column and a population rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     """AGIEval zero-shot: answer, extract, score — routed per subset."""
@@ -260,7 +267,10 @@ class AGIEvalZeroShotGenTask(
         }
         overall = sum(subset_acc.values()) / len(subset_acc) if subset_acc else 0.0
 
-        metrics: dict[str, float] = {"score": overall, "fails": float(len(fails))}
+        metrics: dict[str, float | str] = {
+            "score": overall,
+            "fails": float(len(fails)),
+        }
         # Canonical subset order, so two runs' reports line up key for key.
         for subset in SUBSETS:
             if subset in subset_acc:
@@ -270,4 +280,8 @@ class AGIEvalZeroShotGenTask(
                 metrics[f"macro_{group_name}"] = sum(
                     subset_acc[subset] for subset in group
                 ) / len(group)
+        metrics[SCORE_KEY_FIELD] = "score"
+        # Infra failures land in `fails` and are excluded from every per-subset
+        # accuracy, so the headline is averaged over the samples that were judged.
+        metrics[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
         return metrics

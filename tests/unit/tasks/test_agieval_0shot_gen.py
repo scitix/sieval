@@ -23,6 +23,11 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets.agieval import AGIEvalDataset, AGIEvalDatasetSample
 from sieval.tasks.agieval_0shot_gen import AGIEvalZeroShotGenTask
 
@@ -274,3 +279,14 @@ async def test_report_on_an_all_failed_run_is_zero_not_a_crash():
 
     assert metrics["score"] == 0.0
     assert metrics["fails"] == 2.0
+
+
+@pytest.mark.anyio
+async def test_report_declares_which_key_the_headline_came_from():
+    task = _task()
+    metrics = await task.report([_final("sat-math", True)], [])
+
+    assert metrics[SCORE_KEY_FIELD] == "score"
+    # Failures live in `fails` and are absent from every per-subset accuracy, so
+    # the headline is averaged over the judged samples, not the requested ones.
+    assert metrics[DENOMINATOR_FIELD] == DENOMINATOR_JUDGED
