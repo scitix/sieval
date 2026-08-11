@@ -43,9 +43,11 @@ Deviations from upstream @ f9d3013, both in grader-reply handling:
   arbitrary ``ChatModel`` endpoint, so :func:`parse_judgement` falls back to the
   first JSON object in the reply carrying a schema key -- otherwise a grader that
   fences its JSON scores zero everywhere, a harness artifact rather than a
-  property of the model under test. That recovery is the *only* leniency: a reply
-  that decodes but carries no usable ``rubrics_check`` still fails the row. Its
-  latent cost is documented on :func:`_recover_json_object`.
+  property of the model under test. The same scan also recovers a verdict wrapped
+  in a JSON *array*, which upstream fails the row on (its ``.get`` runs against
+  the list). That recovery is the *only* leniency: a reply that decodes but
+  carries no usable ``rubrics_check`` still fails the row. What the scan costs is
+  documented on :func:`_recover_json_object`.
 * **Non-string rubric answers** are stringified rather than raising, which keeps
   the row gradeable where upstream's bare ``.lower()`` aborts it into ``except
   Exception``. A *non-mapping* ``rubrics_check`` is not forgiven the same way --
@@ -337,14 +339,18 @@ def _recover_json_object(reply: str) -> dict | None:
     outright; otherwise the first decodable object stands, which is what a
     grader that answered with a bare object gives.
 
-    Two known costs of scanning, neither currently reachable in a run:
+    Two known costs of scanning, both reachable in a run:
 
-    * The system-steer judge prompt embeds four complete verdict JSONs in its
-      few-shot block, so **that prompt parses as a reply here** -- a grader that
-      echoes its prompt is scored on the example's answers instead of failing the
-      row, and those answers pool into ``micro_pass_rate``. Dormant on the
-      released data, where :func:`is_system_steer` never fires and that prompt is
-      never composed; a routing ``_fixed`` variant has to harden this first.
+    * **A judge prompt can parse as a reply here**, so a grader that echoes its
+      prompt is scored on the verdict its *prompt* carried instead of failing the
+      row, and those answers pool into ``micro_pass_rate``. Two sources, and the
+      live one is the plain IF prompt every released row composes: the candidate's
+      response is interpolated into it verbatim, so any response quoting a verdict
+      object puts a complete one there. The system-steer prompt carries four of
+      its own in its few-shot block, dormant only because :func:`is_system_steer`
+      never fires on the released data -- a routing ``_fixed`` variant has to
+      harden this first, but it is not what gates the hazard. The echoing grader
+      is the whole precondition; the released data is not a guard.
     * The *first* schema-carrying object wins, so a grader that drafts a verdict
       and then revises it is scored on the draft. Preferring the last one is the
       better reading, but it would move stored runs whose replies went through
@@ -435,23 +441,30 @@ def count_all_checks(rubrics_check: dict[str, str]) -> tuple[int, int]:
 def aggregate_metrics(verdicts: list[dict]) -> dict[str, float]:
     """Pool per-rollout verdicts into the two published rates, plus the macro.
 
-    Each entry carries ``satisfied_all``, ``n_checks``, ``n_checks_passed`` and
-    ``rubric_pass_rate``; an ungradeable rollout reaches only the pass-rate
-    denominator, matching upstream.
+    Each entry carries ``satisfied_all``, ``n_checks``, ``n_checks_passed``,
+    ``rubric_pass_rate`` and ``judge_unparsed``; an ungradeable rollout reaches
+    only the pass-rate denominator, matching upstream.
 
     ``macro_pass_rate`` is sieval's, not published: it averages the per-sample
     rate, weighing every sample equally where micro weighs every rubric equally,
     and is the one of the two a per-sample reader can reconstruct.
+
+    ``n_judge_unparsed`` is a diagnostic, not a metric: every rate above scores an
+    unparseable grader reply exactly as it scores a response that missed every
+    rubric, so it is the only number that separates a broken grader from a
+    failing model.
     """
     total = len(verdicts)
     passed = sum(1 for v in verdicts if v["satisfied_all"])
     checks = sum(v["n_checks"] for v in verdicts)
     checks_passed = sum(v["n_checks_passed"] for v in verdicts)
     macro = sum(v["rubric_pass_rate"] for v in verdicts)
+    unparsed = sum(1 for v in verdicts if v["judge_unparsed"])
     return {
         "overall_pass_rate": passed / total * 100 if total else 0.0,
         "micro_pass_rate": checks_passed / checks * 100 if checks else 0.0,
         "macro_pass_rate": macro / total * 100 if total else 0.0,
         "n_samples": float(total),
         "n_rubric_checks": float(checks),
+        "n_judge_unparsed": float(unparsed),
     }

@@ -44,6 +44,7 @@ from sieval.community.advanced_if import (
     compose_judge_prompt,
     count_all_checks,
     count_in_range_passes,
+    load_judge_prompts,
     parse_conversation,
     parse_judgement,
     parse_rubrics,
@@ -116,9 +117,11 @@ from sieval.datasets import AdvancedIFDatasetSample
             "DEVIATIONS (two, both in grader-reply handling): (1) a fenced/"
             "prose-wrapped JSON verdict is recovered, since sieval cannot force "
             "response_format on an arbitrary endpoint and a fenced reply would "
-            "otherwise score zero everywhere; (2) a non-string rubric answer is "
-            "stringified instead of failing the row -- with the declaration NO "
-            "that moves micro_pass_rate alone, with YES it also moves the "
+            "otherwise score zero everywhere -- the same scan also recovers a "
+            "verdict wrapped in a JSON array, which upstream fails the row on; "
+            "(2) a non-string rubric answer is stringified instead of failing "
+            "the row -- with the declaration NO that moves micro_pass_rate "
+            "alone, with YES it also moves the "
             "headline (upstream fails the row, this port honours the "
             "declaration). (1) does fire in practice, on endpoints that drop "
             "response_format; (2) never fired in 1,644 live gradings. "
@@ -190,6 +193,12 @@ class AdvancedIFZeroShotGenTask(
         super().__init__(dataset=dataset, model=model, name=name)
         self._n = n
         self._grader = self._build_grader(grader)
+        # Validate the checkout here, not at the first grade. Discovered in
+        # feedback() it costs a whole generation pass to learn: every grade then
+        # raises, and a wholly failed grading stage still reports 0.0 -- the
+        # floor that reads as a score. `@cache`d, so this is one read per run,
+        # and construction already fails without a grader anyway.
+        load_judge_prompts()
 
     @staticmethod
     def _build_grader(grader: Mapping | Model | None) -> Model:
@@ -323,6 +332,12 @@ class AdvancedIFZeroShotGenTask(
 
         ``macro_pass_rate`` is sieval's, not published -- it lifts the per-sample
         rate to ``report.json``, where it would otherwise stop at the shard data.
+
+        ``n_judge_unparsed`` is lifted for the same reason, and matters more:
+        every metric here treats an unparseable grader reply exactly like a
+        response that missed every rubric, so without the count a broken grader
+        and a bad model are the same number. Reported per aspect too, since a
+        grader tends to break format on the long multi-turn rows first.
         """
         by_benchmark: dict[str, list[dict]] = {}
         verdicts: list[dict] = []
@@ -331,12 +346,19 @@ class AdvancedIFZeroShotGenTask(
             benchmark_name = judgement.get("extra", {}).get("benchmark_name", "unknown")
             for rollout in judgement.get("rollouts", []):
                 extra = rollout.get("extra", {})
-                metrics = rollout.get("metrics", {})
                 verdict = {
                     "satisfied_all": rollout["correct"],
                     "n_checks": extra.get("n_checks", 0),
                     "n_checks_passed": extra.get("n_checks_passed", 0),
-                    "rubric_pass_rate": metrics.get("rubric_level_pass_rate", 0.0),
+                    # `score` is the same number `metrics` carries under
+                    # `rubric_level_pass_rate`, and feedback() always writes it,
+                    # so it is read without a default: a rename cannot silently
+                    # report a macro rate of zero.
+                    "rubric_pass_rate": rollout["score"],
+                    # Absent means an older record, not a broken grade -- default
+                    # to parsed so the diagnostic under-reports rather than
+                    # inventing failures.
+                    "judge_unparsed": not extra.get("judge_parsed", True),
                 }
                 verdicts.append(verdict)
                 by_benchmark.setdefault(benchmark_name, []).append(verdict)
@@ -351,6 +373,9 @@ class AdvancedIFZeroShotGenTask(
                 "n_checks": 0,
                 "n_checks_passed": 0,
                 "rubric_pass_rate": 0.0,
+                # Not a grader-parse failure: no grade was ever attempted. It is
+                # `fails` that reports these.
+                "judge_unparsed": False,
             }
         ] * (self._n * len(fails))
 
@@ -361,6 +386,7 @@ class AdvancedIFZeroShotGenTask(
             "micro_pass_rate": overall["micro_pass_rate"],
             "macro_pass_rate": overall["macro_pass_rate"],
             "n_rubric_checks": overall["n_rubric_checks"],
+            "n_judge_unparsed": overall["n_judge_unparsed"],
             "n_graded": float(n_graded),
             "fails": len(fails),
         }
@@ -369,5 +395,6 @@ class AdvancedIFZeroShotGenTask(
             results[f"{benchmark_name}_pass_rate"] = aspect["overall_pass_rate"]
             results[f"{benchmark_name}_micro_pass_rate"] = aspect["micro_pass_rate"]
             results[f"{benchmark_name}_macro_pass_rate"] = aspect["macro_pass_rate"]
+            results[f"{benchmark_name}_n_judge_unparsed"] = aspect["n_judge_unparsed"]
             results[f"{benchmark_name}_n_graded"] = aspect["n_samples"]
         return results

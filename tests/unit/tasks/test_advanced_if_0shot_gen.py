@@ -13,6 +13,7 @@ import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
+from sieval.community import advanced_if as community_advanced_if
 from sieval.core.models import ModelOutput
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import (
@@ -97,8 +98,12 @@ async def _run_to_feedback(task, sample):
 
 
 @pytest.fixture(autouse=True)
-def stub_compose(monkeypatch):
-    """Stand in for the non-redistributable judge prompt assembly."""
+def stub_upstream_prompts(monkeypatch):
+    """Stand in for the non-redistributable judge prompts and their assembly.
+
+    ``load_judge_prompts`` is stubbed as well as the assembly because
+    construction validates the checkout, which no test machine has staged.
+    """
     monkeypatch.setattr(
         advanced_if_0shot_gen,
         "compose_judge_prompt",
@@ -106,6 +111,7 @@ def stub_compose(monkeypatch):
             f"JUDGE[{benchmark_name}] resp={response} rubrics={len(rubrics)}"
         ),
     )
+    monkeypatch.setattr(advanced_if_0shot_gen, "load_judge_prompts", lambda: None)
 
 
 # --- grader is mandatory; rubric grading is the only scorer AdvancedIF has ---
@@ -114,6 +120,26 @@ def stub_compose(monkeypatch):
 def test_build_grader_requires_config():
     with pytest.raises(ValueError, match="requires an LLM grader"):
         AdvancedIFZeroShotGenTask._build_grader(None)
+
+
+def test_construction_fails_without_the_upstream_checkout(monkeypatch):
+    """The prompts are validated at construction, not at the first grade.
+
+    Left to ``feedback``, a missing or drifted checkout costs a whole generation
+    pass to discover: every grade raises, every sample fails, and the run still
+    reports 0.0 -- a floor that reads as a score. The real loader runs here, so
+    the check cannot be satisfied by a stub that never touches the environment.
+    """
+    monkeypatch.setattr(
+        advanced_if_0shot_gen,
+        "load_judge_prompts",
+        community_advanced_if.load_judge_prompts,
+    )
+    monkeypatch.delenv("SIEVAL_ADVANCED_IF_SRC", raising=False)
+    community_advanced_if.load_judge_prompts.cache_clear()
+
+    with pytest.raises(RuntimeError, match="SIEVAL_ADVANCED_IF_SRC"):
+        _task()
 
 
 def test_build_grader_accepts_mapping_and_model():
@@ -258,7 +284,13 @@ async def test_feedback_treats_an_unparseable_reply_as_a_failed_row():
 # --- report ---
 
 
-def _final(benchmark_name: str, satisfied: bool, n_checks: int, n_passed: int):
+def _final(
+    benchmark_name: str,
+    satisfied: bool,
+    n_checks: int,
+    n_passed: int,
+    judge_parsed: bool = True,
+):
     rate = n_passed / n_checks if n_checks else 0.0
     judgement = build_judgement_record(
         None,
@@ -268,7 +300,11 @@ def _final(benchmark_name: str, satisfied: bool, n_checks: int, n_passed: int):
                 satisfied,
                 score=rate,
                 metrics={"satisfied_all": satisfied, "rubric_level_pass_rate": rate},
-                extra={"n_checks": n_checks, "n_checks_passed": n_passed},
+                extra={
+                    "n_checks": n_checks,
+                    "n_checks_passed": n_passed,
+                    "judge_parsed": judge_parsed,
+                },
             )
         ],
         extra={"benchmark_name": benchmark_name, "n_rubrics": n_checks},
@@ -291,6 +327,7 @@ async def test_report_pools_both_published_rates():
     assert report["macro_pass_rate"] == pytest.approx(75.0)
     assert report["n_graded"] == 2.0
     assert report["n_rubric_checks"] == 8.0
+    assert report["n_judge_unparsed"] == 0.0
     assert report["fails"] == 0
 
 
@@ -329,6 +366,35 @@ async def test_report_breaks_down_by_aspect():
 
 
 @pytest.mark.anyio
+async def test_report_separates_a_broken_grader_from_a_failing_model():
+    """Two runs with identical rates, one of them graded by a broken grader.
+
+    Every rate scores an unparseable reply exactly as it scores a response that
+    missed every rubric, so no pass rate tells the two apart -- overall or per
+    aspect, and a grader tends to break format on the long rows first.
+    """
+    task, _ = _task()
+    failing_model = await task.report(
+        [_final(COMPLEX, False, 2, 0), _final(STEERABILITY, False, 2, 0)], []
+    )
+    broken_grader = await task.report(
+        [
+            _final(COMPLEX, False, 0, 0, judge_parsed=False),
+            _final(STEERABILITY, False, 0, 0, judge_parsed=False),
+        ],
+        [],
+    )
+
+    assert failing_model["score"] == broken_grader["score"] == 0.0
+    assert failing_model["macro_pass_rate"] == broken_grader["macro_pass_rate"] == 0.0
+    assert failing_model["micro_pass_rate"] == broken_grader["micro_pass_rate"] == 0.0
+    assert failing_model["n_judge_unparsed"] == 0.0
+    assert broken_grader["n_judge_unparsed"] == 2.0
+    assert broken_grader[f"{COMPLEX}_n_judge_unparsed"] == 1.0
+    assert broken_grader[f"{STEERABILITY}_n_judge_unparsed"] == 1.0
+
+
+@pytest.mark.anyio
 async def test_report_counts_pipeline_failures_as_non_passes():
     """A sample that never produced an answer still spans the requested set."""
     task, _ = _task()
@@ -342,5 +408,7 @@ async def test_report_counts_pipeline_failures_as_non_passes():
     assert report["macro_pass_rate"] == pytest.approx(50.0)
     assert report["n_graded"] == 1.0
     assert report["fails"] == 1
+    # A sample that never reached the grader is not a grader-parse failure.
+    assert report["n_judge_unparsed"] == 0.0
     # It has no aspect to attribute to, so the breakdown covers graded rollouts.
     assert report[f"{COMPLEX}_n_graded"] == 1.0
