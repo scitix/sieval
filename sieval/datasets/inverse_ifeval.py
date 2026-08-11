@@ -10,19 +10,18 @@ loader only guarantees the columns are there.
 
 The Hub repo publishes no split and two data files — ``Inverse_IFEval_Dataset.json``
 and a differently-dated ``_0908.csv`` snapshot — so ``data_files`` names the JSON
-explicitly. Measured, not assumed: auto-detection does *not* break, it silently
-resolves to the JSON anyway (verified on the staged revision, 1,012 rows, correct
-columns). The pin is there because that outcome rests on HF's undocumented
-file-extension precedence choosing between two snapshots of the benchmark — if
-that order changed, or upstream dropped the JSON, the eval would quietly move to
-the other snapshot with nothing in the report to show it. The single resulting
-split is mirrored to ``test``.
+explicitly. Measured, not assumed: auto-detection does *not* break, it resolves to
+the JSON anyway (verified on the staged revision: 1,012 rows, correct columns).
+The pin is there because that outcome rests on HF's undocumented file-extension
+precedence choosing between two snapshots — if that order changed, or upstream
+dropped the JSON, the eval would quietly move to the other one with nothing in the
+report to show it. The single resulting split is mirrored to ``test``.
 
 ``language`` (default ``None`` = both) is a sieval addition — upstream ships one
 file and reports the two languages as separate tables. It filters at load time,
 before any ``operations:`` sampling, so a sampling budget covers exactly the set
-that gets graded. Leaving it unset is the useful default: the task reports
-per-language breakdowns anyway, so one full run reproduces both paper tables.
+that gets graded. Unset is the useful default: the task reports per-language
+breakdowns anyway, so one full run reproduces both paper tables.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -148,7 +147,7 @@ class InverseIFEvalDataset(Dataset[InverseIFEvalDatasetSample]):
                 raise ValueError(
                     f"Inverse IFEval split {split!r} is missing required "
                     f"column(s): {', '.join(missing)}. The pinned revision "
-                    "carries all six, so this is upstream schema drift — the "
-                    "judge system prompt and template are per-sample DATA here, "
-                    "not task constants, so grading cannot proceed without them."
+                    "carries all six, so this is upstream schema drift — and the "
+                    "judge prompt is per-sample DATA here, not a task constant, "
+                    "so grading cannot proceed without it."
                 )

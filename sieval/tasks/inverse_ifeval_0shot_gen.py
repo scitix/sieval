@@ -7,34 +7,30 @@ format tidily), and an **LLM judge** scores the response 0 or 1 against the
 sample's ``response_reference``. Headline metric is the pass rate x100.
 
 Unusually, the judge prompt is DATA, not a task constant: every row ships its own
-``judge_system_prompt`` (one of four, chosen per instruction type) and
-``judge_prompt_template`` (one of three). This task renders them verbatim rather
-than substituting a prompt of its own — upstream publishes no evaluation harness,
-so those shipped strings are the only reference implementation there is. Two
-consequences worth knowing:
+``judge_system_prompt`` (one of four, by instruction type) and
+``judge_prompt_template`` (one of three), rendered verbatim — upstream publishes
+no evaluation harness, so those shipped strings are the only reference
+implementation there is. Two consequences:
 
 * Five of the eight types use a template with no ``{prompt}`` slot, so their
-  judge never sees the question — it compares the response against the reference
-  requirements alone. That is upstream's design, preserved.
+  judge never sees the question, only the response against the reference
+  requirements. Upstream's design, preserved.
 * The judge is instructed in Chinese for English samples too; the templates are
   language-independent by construction.
 
 The candidate gets no system prompt: the dataset supplies none, and inventing one
-would change what the counter-intuitive instruction is competing against.
+would change what the counter-intuitive instruction competes against.
 
 Grader is a REAL LLM supplied via the ``grader`` task arg on its own
-``api_base``/``api_key``. Correctness depends on the judge endpoint's model
-version (not pinnable like a Hub revision) — pin the grader model and set
-``temperature: 0``; each rollout's ``answer_score``, ``judge_parsed`` and the
-judge's whole ``ModelOutput`` (``extra.grader_output``: reply, reasoning, usage,
-finish reasons, model id) are persisted on the judgement record. The paper
-reports a per-type "adaptive judge matrix" — a different judge model per
-instruction type, chosen for agreement with human labels — but names none of
-them, so a single grader is used and any comparison must cite its own judge.
+``api_base``/``api_key``. A judge endpoint's model version is not pinnable like a
+Hub revision, so pin the grader model and set ``temperature: 0``; each rollout
+persists ``answer_score``, ``judge_parsed`` and the judge's whole ``ModelOutput``
+(``extra.grader_output``). The paper's per-type "adaptive judge matrix" names none
+of its models, so a single grader is used and any comparison must cite it.
 
-Decoding is model-layer, set via ``models:`` / ``infer_args`` — never here. The
-paper states no temperature, token budget, or repeat count for the evaluated
-models; ``reference_impl.notes`` records what its published tables imply.
+Decoding is model-layer, via ``models:`` / ``infer_args`` — never here. The paper
+states no temperature, token budget or repeat count; ``reference_impl.notes``
+records what its tables imply.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -87,56 +83,51 @@ from sieval.datasets import InverseIFEvalDataset, InverseIFEvalDatasetSample
         source="m-a-p/Inverse_IFEval",
         url="https://huggingface.co/datasets/m-a-p/Inverse_IFEval/blob/35f1da157640526e62b7685b682d748fa55ccfd0/README.md",
         notes=(
-            "Upstream publishes the dataset ONLY — no evaluation harness — so "
+            "Upstream publishes the dataset ONLY — no evaluation harness, so "
             "there is no grader to vendor. The judge system prompt and prompt "
             "template are per-sample columns, rendered verbatim; the 0/1 rubric "
             'and the `【JSON】` / {"answer_score": N} reply contract are stated '
             "inside those shipped prompts. "
-            "METRIC: the paper defines neither the aggregation nor the scale, so "
-            "both were recovered from its Tables 2/3 (22 models x 2 languages): "
-            "the Overall is a POOLED mean of per-sample 0/1 verdicts x100, "
-            "reconstructed from each row's eight per-type cells to a mean "
-            "absolute error of 0.002 (max 0.01 = the tables' own rounding) over "
-            "all 44 rows, where an unweighted macro-average misses by 1.4 mean / "
-            "4.4 max. Reported here as `pass@1` over the requested denominator, "
-            "which is that pooled mean. "
-            "COLUMN LABELS: the paper's `CC` and `CCF` columns are SWAPPED "
-            "relative to the expansion of its own type list — every cell is a "
-            "multiple of 1/(6n), which fixes `CC` to n=41 (Counter-Conventional "
-            "Formatting) and `CCF` to n=99 (Code without Comments); the pooled "
-            "reconstruction only lands under that reading. See "
+            "METRIC (recovered from Tables 2/3, 22 models x 2 languages, which "
+            "state neither aggregation nor scale): Overall is a POOLED mean of "
+            "per-sample 0/1 verdicts x100, reconstructed from each row's eight "
+            "per-type cells to a mean absolute error of 0.002 (max 0.01 = the "
+            "tables' own rounding) over all 44 rows; an unweighted macro-average "
+            "misses by 1.4 mean / 4.4 max. Reported as `pass@1` over the "
+            "requested denominator, which IS that pooled mean. "
+            "COLUMN LABELS: the paper's `CC` and `CCF` are SWAPPED relative to "
+            "the expansion of its own type list — every cell is a multiple of "
+            "1/(6n), fixing `CC` to n=41 (Counter-Conventional Formatting) and "
+            "`CCF` to n=99 (Code without Comments), the only reading the pooled "
+            "reconstruction lands under. See "
             "sieval.community.inverse_ifeval.PAPER_COLUMNS before comparing a "
             "per-type number. "
-            "REPEAT PROTOCOL: that same 1/(6n) quantization implies the "
-            "published cells average SIX rollouts per sample; the paper states "
-            "no repeat count. This task defaults to n=1 — pass `n: 6` to match "
-            "what the tables imply, and budget for it: grading is one judge call "
-            "per rollout, issued serially within a sample (the judged family's "
-            "shape), so n=6 costs six judge round-trips per sample rather than "
-            "one. "
-            "JUDGE: the paper uses a per-type 'adaptive judge matrix' (a "
-            "different judge model per instruction type) but names none of its "
-            "models, and states no decoding params for the evaluated models "
-            "either. A single grader is used instead, so published numbers are "
-            "NOT reproducible as published; cite the grader alongside any "
-            "comparison. Reference points (English / Chinese Overall): o3-high "
-            "75.66 / 76.52, GPT-5-high 73.72 / 76.02, Qwen3-32B 47.04 / 49.28, "
-            "Qwen3-30B-A3B-Instruct 30.43 / 31.42. "
-            "HOW MUCH THE JUDGE MATTERS, measured on this port: "
-            "Qwen3-30B-A3B-Instruct-2507 (temp 0.7 / top_p 0.8 / top_k 20, n=1, "
-            "all 1,012) scores 33.00 / 33.60 graded by gpt-oss-120b at "
-            "temperature 0 — against a published 30.43 / 31.42, with a binomial "
-            "SE of +-2.1 per language. Re-grading those SAME responses with "
-            "Qwen3-30B-A3B-thinking gives 42.29 / 39.92 at 84.3% per-sample "
-            "agreement. The grader alone moves the headline ~7.8 points, three "
-            "times the residual against the published figure, which is what "
-            "`experimental` is recording."
+            "REPEAT PROTOCOL: that same quantization implies SIX rollouts per "
+            "sample; the paper states no repeat count. Defaults to n=1 — pass "
+            "`n: 6` to match, and budget for it: grading is one judge call per "
+            "rollout, serial within a sample, so n=6 costs six judge round-trips "
+            "per sample. "
+            "JUDGE: the paper's per-type 'adaptive judge matrix' names none of "
+            "its models and states no decoding params for the evaluated models, "
+            "so a single grader is used and published numbers are NOT "
+            "reproducible as published — cite it with any comparison. "
+            "Reference points (English / Chinese "
+            "Overall): o3-high 75.66 / 76.52, GPT-5-high 73.72 / 76.02, "
+            "Qwen3-32B 47.04 / 49.28, Qwen3-30B-A3B-Instruct 30.43 / 31.42. "
+            "MEASURED on this port: Qwen3-30B-A3B-Instruct-2507 (temp 0.7 / "
+            "top_p 0.8 / top_k 20, n=1, all 1,012) scores 33.00 / 33.60 graded "
+            "by gpt-oss-120b at temperature 0, against a published 30.43 / 31.42 "
+            "with a binomial SE of +-2.1 per language. Re-grading those SAME "
+            "responses with Qwen3-30B-A3B-thinking gives 42.29 / 39.92 at 84.3% "
+            "per-sample agreement: the grader alone moves the headline ~7.8 "
+            "points, three times the residual against the published figure. That "
+            "is what `experimental` records."
         ),
     ),
-    # Faithful port of everything upstream published, but the published numbers
-    # cannot be reproduced: the judge matrix, the candidate decoding params and
-    # the repeat count are all withheld, and the metric had to be recovered from
-    # the result tables rather than read from a spec.
+    # Faithful to everything upstream published, but the published numbers cannot
+    # be reproduced: the judge matrix, the candidate decoding params and the
+    # repeat count are all withheld, and the metric had to be recovered from the
+    # result tables rather than read from a spec.
     status="experimental",
 )
 class InverseIFEvalZeroShotGenTask(
@@ -227,11 +218,10 @@ class InverseIFEvalZeroShotGenTask(
         than dropped — the rubric has no third state, and the persisted reply is
         what separates judge format drift from a real 0.
 
-        The grader's whole ``ModelOutput`` is persisted flattened, not
-        hand-picked, so no field is silently lost and grading stays auditable
-        without a re-run — a grader model version is not pinnable like a Hub
-        revision, which makes the reply the only durable evidence of a verdict.
-        ``add_type=False`` keeps it a plain dict so the judgement record does not
+        The grader's whole ``ModelOutput`` is persisted flattened rather than
+        hand-picked: a grader model version is not pinnable like a Hub revision,
+        which makes the reply the only durable evidence of a verdict.
+        ``add_type=False`` keeps it a plain dict, so the judgement record does not
         nest a typed record object.
         """
         raw = ctx.raw_sample
@@ -285,17 +275,14 @@ class InverseIFEvalZeroShotGenTask(
         # way the paper scores an unanswered sample. `votes=False`: a majority
         # vote over free-form prose has no definition here.
         #
-        # The rest of the LLM-judged family (`hle`, `simpleqa_verified`,
-        # `browsecomp`, `aa_lcr`, `complex_constraints`, `advanced_if`) reports
-        # `health_metrics` alone, because RFC #74 defers `pass@k` / `maj@k` for
-        # judged tasks. This one opts IN, on that RFC's own three grounds rather
-        # than against them: the verdict is a single binary 0/1, so "pass" needs
-        # no defining (unlike simpleqa's three-way grade); no clustering is
-        # involved, which is what `votes=False` says; and the grader cost the
-        # RFC weighs is one this benchmark's protocol asks for regardless --
-        # the paper's cell quantization implies n=6, so a run that matches it
-        # pays for the draw whether or not the block is reported. Withholding
-        # the block there would hide the spread of a draw already taken.
+        # The other six LLM-judged tasks report `health_metrics` alone, since
+        # RFC #74 defers `pass@k` / `maj@k` for the judged family. This one opts
+        # IN, on that RFC's own three grounds rather than against them: the
+        # verdict is a single binary 0/1, so "pass" needs no defining (unlike
+        # simpleqa's three-way grade); no clustering is involved (`votes=False`);
+        # and the grader cost it weighs is one this protocol asks for anyway,
+        # since the paper's cell quantization implies n=6. Withholding the block
+        # would hide the spread of a draw already paid for.
         rolled = sampling_report(
             finals, n=self._n, k=self._k, denominator=total, votes=False
         )

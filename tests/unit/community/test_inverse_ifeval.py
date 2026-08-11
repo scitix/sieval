@@ -105,12 +105,10 @@ def test_truncated_fence_still_yields_the_verdict():
 
 # --- no fallback may reach back into an echoed example ---
 #
-# The three below are the same defect in three disguises: the echo is FENCED (as
-# every shipped example is) and scores 1, while the judge's own verdict is not
-# fenced, not closed, or not parseable. A resolution order that prefers a fence
-# over its position reads all three as a PASS. Anchoring on the last `【JSON】`
-# is what separates them; each case is asserted on its own because each takes a
-# different branch out of that anchor.
+# One defect in three disguises: the echo is FENCED (as every shipped example is)
+# and scores 1, while the judge's own verdict is not fenced, not closed, or not
+# parseable. Preferring a fence over its position reads all three as a PASS.
+# Asserted separately because each takes a different branch out of the anchor.
 
 
 def test_an_echoed_example_does_not_outrank_an_unfenced_verdict():
