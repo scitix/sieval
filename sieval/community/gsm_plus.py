@@ -1,5 +1,26 @@
 # Adapted from GSM-Plus (Li et al., ACL 2024), pinned commit:
 # https://github.com/qtli/GSM-Plus/blob/3474129ec12fcd3e8ac08cb037aca1928efca98c/scripts/utils/extract_ans.py
+#
+# LICENSE: NONE STATED UPSTREAM — recorded because there is nothing to attribute,
+# which is itself the fact a reader needs. Verified at the pinned commit: no
+# LICENSE / COPYING / NOTICE file and no SPDX metadata anywhere in the tree, no
+# license statement in the README, and the GitHub API reports `"license": null`
+# for qtli/GSM-Plus. Absence is not a grant: by default the code repo is
+# all-rights-reserved, so the ~80 lines of GSM-Plus-original logic here
+# (`extract_gold_ans`, `extract_pred_ans`'s cot branch, `check_sympy_equivalence`,
+# `extract_pred_ans_none` + `_NONE_PATTERNS`) are vendored into an Apache-2.0 tree
+# WITHOUT a redistribution grant. That question is open, not answered — compare
+# the two neighbours that resolved it the other way and vendored nothing:
+# `advanced_if` (CC-BY-NC-4.0) and `iheval` (CC-BY-NC-ND-4.0).
+#
+# Provenance of the rest, which carries permissive terms independently:
+#   - SUBSTITUTIONS / REMOVED_EXPRESSIONS / normalize_final_answer — Minerva
+#     (Lewkowycz et al.), per upstream's own attribution comment below, and also
+#     shipped in EleutherAI/lm-evaluation-harness under Apache-2.0.
+#   - delete_extra_zero — MetaMath lineage (MIT).
+#
+# The *dataset* is licensed separately and clearly (CC-BY-SA-4.0, per the
+# `qintongli/GSM-Plus` HF card) and is referenced, not redistributed.
 """
 GSM-Plus answer extraction and answer equivalence (zero-shot CoT protocol).
 

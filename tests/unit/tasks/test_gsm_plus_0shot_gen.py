@@ -20,6 +20,11 @@ from sieval.core.tasks import (
     build_judgement_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets.gsm_plus import GSMPlusDataset, GSMPlusDatasetSample
 from sieval.tasks.gsm_plus_0shot_gen import (
     SYSTEM_INSTRUCTION,
@@ -251,6 +256,26 @@ async def test_feedback_credits_recognized_unanswerable():
     assert fb["rollouts"][0]["correct"] is True
 
 
+@pytest.mark.anyio
+async def test_feedback_reads_a_record_whose_prediction_key_was_omitted():
+    # `prediction` is NotRequired, so a None prediction is DROPPED on write. The
+    # fresh path carries the key with a None value; the resumed path reads the
+    # record back from disk without it. Both must score the same, and neither may
+    # raise -- this is the routine `critical thinking` case where the response
+    # held no refusal phrase, 487 of 10552 on a real run.
+    task, _ = _task()
+    raw = _sample(perturbation_type="critical thinking", answer="None")
+    ctx = TaskContext(sample_id=0, raw_sample=raw)
+
+    as_persisted = {"rollouts": [{"index": 0, "extracted": False}]}
+    fresh = {"rollouts": [{"index": 0, "prediction": None, "extracted": False}]}
+
+    _, from_disk = await task.feedback(as_persisted, ctx)
+    _, in_memory = await task.feedback(fresh, ctx)
+    assert from_disk == in_memory
+    assert from_disk["rollouts"][0]["correct"] is False
+
+
 # --- report: overall, per-perturbation, wo_critical_thinking ---
 
 
@@ -298,11 +323,16 @@ async def test_report_breaks_down_by_perturbation_type():
 async def test_report_empty_finals():
     task, _ = _task()
     report = await task.report([], [])
+    # The two declarations are present on the empty-run path too: a report that
+    # says nothing about its own denominator is exactly as unreadable at 0 samples
+    # as at 10552.
     assert report == {
         "score": 0.0,
         "accuracy": 0.0,
         "score_wo_critical_thinking": 0.0,
         "fails": 0,
+        SCORE_KEY_FIELD: "accuracy",
+        DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
     }
 
 

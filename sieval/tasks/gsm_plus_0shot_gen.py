@@ -54,8 +54,63 @@ That gap, this port vs. the paper's published GPT-3.5-Turbo CoT numbers:
 20 of the 25 land on ``integer-decimal-fraction conversion``, which is what makes
 the delta explainable rather than mysterious: that perturbation exists precisely
 to rewrite integers as decimals and fractions, so it is where string equality and
-symbolic equality disagree most. ``status="experimental"`` until a live run
-reproduces a published model's full 8-cell table within a stated band.
+symbolic equality disagree most.
+
+The same reduction holds on a **second** published 0-shot model, which is what
+makes it an explanation rather than a fitted excuse: replaying
+``results/gpt4.json`` (10552 items, after mapping its v0 perturbation labels —
+``necessary constraint removal`` is ``critical thinking``, the ``ncr`` of
+``gsmplus_wo_ncr``) reproduces ``gold`` and ``pred`` on 10552/10552 and the
+verdict on 10537/10552 (99.86%). All 15 diffs are again one-directional and
+again genuinely-equal pairs, 11 of them on ``integer-decimal-fraction
+conversion``; overall 85.72 vs published 85.58, and 6 of 8 cells land exactly.
+
+**Why ``status="experimental"`` remains, and what it is no longer for.** It is
+now there for **one** reason only: upstream's code repo states no license (see
+``sieval.community.gsm_plus``'s header), so the redistribution question is open.
+It is *not* for the protocol and no longer for the absence of a live run:
+
+* A published-magnitude anchor is unreachable by construction, not by
+  omission. Upstream has two inference paths, and only ``gpt-3.5-turbo`` and
+  ``gpt4`` — 2 of its 28 published rows — came from the 0-shot chat path ported
+  here; the other 26 came from ``general_model_inference.py``, an **n-shot raw
+  completion** path (``gsm8k_nshot_prompt``, no chat template). A 0-shot score
+  is not a defect against an 8-shot row.
+* What does transfer is the **shape**: ``critical thinking`` is the lowest of the
+  eight cells in **26 of 26** published rows carrying all of them. Two live runs
+  reproduce it — ``google/gemma-3-27b-it`` over the full 10552 (overall 84.11,
+  excl. critical thinking 87.11, ``critical thinking`` 63.08, rank 1/8) and
+  ``openai/gpt-oss-120b`` over ``testmini`` (80.83 / 85.57 / 47.67, rank 1/8).
+  Spearman rho against the GPT-4 row is +0.976 for both, and GPT-4 is the closest
+  of all 26 published rows to each — one of the two rows this very protocol
+  produced.
+* Scoring was also differentially checked on live text, which no stored dump can
+  cover: every rollout of those runs plus two controls (13,752 generations) was
+  re-scored by upstream's unmodified ``extract_ans.py``
+  (``test_answer(prompt_type="cot", mv=1)``), agreeing on ``gold``, ``pred`` and
+  verdict on 13752/13752.
+
+**The ``critical thinking`` cell is format-gated, and that is upstream's design,
+ported deliberately.** ``extract_pred_ans_none`` scores any response with no
+``####`` marker as ``"None"`` — i.e. correct — so an empty response, a
+``\\boxed{}`` answer, or a plain-prose number all score correct on those rows,
+while the same text is graded normally on the other seven perturbations. Measured
+share of that cell's credit that was *earned* by a refusal phrase rather than
+*granted* by the missing marker: 80.9% on the gemma run (673 earned / 159
+granted), but only 1.4% on gpt-oss-120b, whose visible ``content`` is close to a
+bare answer. A right-looking shape therefore does not establish that this cell
+measured refusal — read it together with the earned/granted split.
+
+**The repro decoding below is only valid for a non-reasoning model.** A reasoning
+model spends ``max_tokens=512`` on hidden reasoning and returns empty content,
+which the format gate then scores *correct* on ``critical thinking`` and wrong
+everywhere else — inverting the benchmark exactly where the paper's headline
+sits. Measured on a paired control (same model, same 400 items, only
+``max_tokens`` differing): at 512 ``critical thinking`` is 92.00 and the *easiest*
+of the eight cells (rank 8/8, Spearman rho +0.000 vs GPT-4); at 4096 it is 64.00
+and the hardest (rank 1/8), while all seven numeric cells rise. Six of the ten
+models reachable over this environment's OpenAI-protocol gateway return empty
+content at 512, so this is the common case, not a corner.
 
 Other deviations from upstream (documented, not silent):
 
@@ -104,6 +159,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets import GSMPlusDatasetSample
 
 # Verbatim from prompt_template.py::cot_prompt_map_func, which returns
@@ -139,6 +199,7 @@ def _metric_key(perturbation_type: str) -> str:
     deps_group="math",
     model_type="chat",
     status="experimental",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="qtli/GSM-Plus",
         url=(
@@ -152,17 +213,43 @@ def _metric_key(perturbation_type: str) -> str:
             "extraction dispatches on perturbation_type (extract_pred_ans_none "
             'for `critical thinking`, whose gold is the string "None"); '
             "normalize_final_answer + check_sympy_equivalence scoring. All "
-            "vendored in sieval.community.gsm_plus. Replaying upstream's stored "
+            "vendored in sieval.community.gsm_plus. UPSTREAM CODE STATES NO "
+            "LICENSE (no LICENSE/NOTICE/SPDX at the pinned commit, GitHub API "
+            "reports license: null); absence is not a grant, so the "
+            "redistribution question is open -- see the header of "
+            "sieval.community.gsm_plus. The dataset is separately CC-BY-SA-4.0 "
+            "and is referenced, not redistributed. Replaying upstream's stored "
             "GPT-3.5-Turbo CoT predictions reproduces its gold/pred on "
             "10552/10552 items and its verdict on 10527/10552 (99.76%); the 25 "
             "diffs are all genuinely-equal fraction/decimal pairs that upstream "
             "scored wrong because it pins sympy without the ANTLR runtime "
             "parse_latex needs, so its bare `except:` fell back to string "
             "equality (published 61.19 overall -> 61.43 here; the "
-            "integer-decimal-fraction cell moves most, 62.32 -> 63.84). "
-            "Single-rollout only: upstream's cot_sc majority-votes 5 samples at "
-            "temperature 0.7 (test_answer mv=5). Upstream decoding for this "
-            "path: temperature 0, top_p 1, max_tokens 512, no stop."
+            "integer-decimal-fraction cell moves most, 62.32 -> 63.84). The same "
+            "reduction fits the second published 0-shot row: results/gpt4.json "
+            "(v0 labels mapped) reproduces gold/pred 10552/10552 and verdict "
+            "10537/10552 (99.86%), 85.58 -> 85.72, 6 of 8 cells exact. Only 2 of "
+            "upstream's 28 published rows came from this 0-shot chat path (the "
+            "other 26 are n-shot raw completions via general_model_inference.py), "
+            "so magnitudes are not comparable across models; the transferable "
+            "anchor is the shape -- critical thinking is the lowest cell in 26 of "
+            "26 published rows, and two live runs reproduce it (gemma-3-27b-it "
+            "full 10552: 84.11 overall / 63.08 critical thinking; gpt-oss-120b "
+            "testmini: 80.83 / 47.67; Spearman rho +0.976 vs the GPT-4 row for "
+            "both). Live scoring differential vs upstream's unmodified "
+            "extract_ans.py: 13752/13752 on gold, pred and verdict. NOTE the "
+            "critical-thinking cell is format-gated -- extract_pred_ans_none "
+            "scores any response with no '####' marker as correct, so an empty "
+            "response scores correct there; 80.9% of that cell was refusal-earned "
+            "on the gemma run but only 1.4% on gpt-oss-120b. Single-rollout only: "
+            "upstream's cot_sc majority-votes 5 samples at temperature 0.7 "
+            "(test_answer mv=5). Upstream decoding for this path: temperature 0, "
+            "top_p 1, max_tokens 512, no stop -- valid for a NON-REASONING model "
+            "only: a reasoning model spends 512 on hidden reasoning and returns "
+            "empty content, which the format gate scores correct on critical "
+            "thinking and wrong elsewhere (paired control, only max_tokens "
+            "differing: critical thinking 92.00 at 512 vs 64.00 at 4096, rank "
+            "8/8 -> 1/8, all seven numeric cells rising)."
         ),
     ),
 )
@@ -173,7 +260,9 @@ class GSMPlusZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     @override
@@ -205,8 +294,13 @@ class GSMPlusZeroShotGenTask(
     async def feedback(self, post, ctx):
         gold = extract_gold_ans(ctx.raw_sample["solution"])
         perturbation_type = ctx.raw_sample["perturbation_type"]
-        # `or ""` restores exactly what upstream's test_answer compares against.
-        prediction = post["rollouts"][0]["prediction"] or ""
+        # `.get` because `prediction` is NotRequired and omitted on write when it
+        # was None, so indexing it works on the fresh path and raises KeyError on
+        # the resumed one. That case is routine here, not exotic: it is every
+        # `critical thinking` row whose response carried no refusal phrase — 487
+        # of 10552 on a real gemma-3-27b-it run. `or ""` then restores exactly
+        # what upstream's test_answer compares against.
+        prediction = post["rollouts"][0].get("prediction") or ""
         correct = is_equivalent(gold, prediction)
         return True, build_judgement_record(
             gold,
@@ -239,7 +333,14 @@ class GSMPlusZeroShotGenTask(
 
         total = len(finals) + len(fails)
         accuracy = 100 * correct_num / total if total else 0.0
-        report: dict[str, float] = {"score": accuracy, "accuracy": accuracy}
+        report: dict[str, float | str] = {
+            "score": accuracy,
+            "accuracy": accuracy,
+            SCORE_KEY_FIELD: "accuracy",
+            # `requested`, per the denominator comment above: a pipeline failure
+            # is counted as wrong rather than excluded.
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+        }
 
         wo_correct = sum(c for t, (c, _) in per_type.items() if t != CRITICAL_THINKING)
         wo_total = sum(n for t, (_, n) in per_type.items() if t != CRITICAL_THINKING)
