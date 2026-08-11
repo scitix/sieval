@@ -170,4 +170,9 @@ class TestLooseCandidates:
         assert candidates[2] == "*middle*\nlast"
         assert candidates[3] == "first\n*middle*"
         assert candidates[4] == "*middle*"
+        # 5 and 6 are the emphasis-stripped readings of 2 and 3. Callers take a
+        # max, so a wrong entry here loses a candidate silently rather than
+        # reordering anything -- which is why every index is pinned.
+        assert candidates[5] == "middle\nlast"
+        assert candidates[6] == "first\nmiddle"
         assert candidates[7] == "middle"
