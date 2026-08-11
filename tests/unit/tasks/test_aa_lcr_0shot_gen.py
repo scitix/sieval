@@ -305,6 +305,40 @@ async def test_report_fails_weighted_by_n():
     assert report["accuracy"] == pytest.approx(50.0)
 
 
+@pytest.mark.anyio
+async def test_report_separates_an_empty_response_from_a_wrong_answer():
+    # Two rollouts graded INCORRECT, reached two different ways: one the grader
+    # read and failed, one that had no answer to grade. Both land in `n_graded`
+    # and in `incorrect`, so only `n_unextracted` tells them apart -- which is
+    # what the module docstring's `extracted: false` promises a reader.
+    task, _ = _task()
+    finals = [
+        TaskContext(
+            sample_id=0,
+            postprocess_result=build_prediction_record(["Falling"]),
+            feedback_result=build_judgement_record(
+                "",
+                [build_rollout_judgement(0, False, extra={"grade": "INCORRECT"})],
+                extra={"question_id": 0},
+            ),
+        ),
+        TaskContext(
+            sample_id=1,
+            postprocess_result=build_prediction_record([None]),
+            feedback_result=build_judgement_record(
+                "",
+                [build_rollout_judgement(0, False, extra={"grade": "INCORRECT"})],
+                extra={"question_id": 1},
+            ),
+        ),
+    ]
+    report = await task.report(finals, fails=[])
+
+    assert report["n_graded"] == 2
+    assert report["incorrect"] == pytest.approx(100.0)
+    assert report["n_unextracted"] == 1
+
+
 def test_report_empty_is_zero():
     # aggregate_metrics is the pure kernel report() delegates to.
     m = aggregate_metrics([])
