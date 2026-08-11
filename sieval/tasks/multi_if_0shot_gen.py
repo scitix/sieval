@@ -58,6 +58,24 @@ all eight languages and all 56 two-turn rows: 3,098 strict/loose follow-lists
 and every per-language ``overall`` agree exactly, once those two conversations
 are set aside. They cannot agree with anything, upstream included.
 
+Verified again on two full live runs, by re-grading their own responses with
+upstream's graders: 128,258 per-constraint comparisons, 15 disagreements
+(0.012%), every one at a langdetect-routed checker or at the rejected-kwargs
+row -- none at a deterministic one. Re-grading identical responses three times
+moves ``score`` by 0.012, against the +-0.4 that conversation sampling
+contributes, which is the quantitative case for tracking those two defects
+rather than repairing them.
+
+What remains open is a *published* number, and the obstacle is the anchor. The
+only servable model with a first-party Multi-IF figure is Qwen3-32B (Qwen3
+Technical Report, arXiv:2505.09388: 73.0 thinking / 70.7 non-thinking). Full
+runs at that report's own sampling knobs land at 78.97 and 78.73, and no single
+reduction closes both figures -- turn-3-only comes nearest yet inverts the
+published ordering, while the report's own Table 11 puts OpenAI-o1 at 48.8
+where the Multi-IF paper puts o1-preview at 78.9. ``reference_impl.notes``
+carries the numbers; ``status`` stays ``experimental`` until an anchor with a
+stated protocol exists.
+
 Infra: grading needs NLTK's ``punkt_tab`` data (see ``_ensure_punkt_tab``),
 which this task downloads once if it is absent. Pre-stage it for offline runs.
 
@@ -151,11 +169,16 @@ def _ensure_punkt_tab() -> None:
     tags=("multilingual", "multi-turn", "open-ended"),
     deps_group="multi-if",
     model_type="chat",
-    # The grader and aggregation are verified against upstream's own evaluator
-    # (see the module docstring), but no live run has reproduced a published
-    # number yet -- Multi-IF publishes paper scores only, not the per-model
-    # inference dumps that let MathArena and PlatinumBench ports claim `stable`
-    # by replay. Faithful by construction until a run lands within a stated band.
+    # The grader and aggregation are verified exactly against upstream's own
+    # evaluator, now on two full live runs as well as offline (see the module
+    # docstring). What is still unreproduced is a *published number*, and the
+    # reason is no longer "nobody has tried": the one first-party anchor that
+    # exists for a servable model cannot be reproduced under any single
+    # reduction, and is internally inconsistent with Multi-IF's own paper. That
+    # is a property of the anchor, not of this port -- but `stable` claims a
+    # reproduction, so it stays out of reach until an anchor with a stated
+    # protocol (or a replayable inference dump, as MathArena and PlatinumBench
+    # have) turns up. See `reference_impl.notes` for the measurements.
     status="experimental",
     reference_impl=ReferenceImpl(
         source="facebookresearch/Multi-IF",
@@ -166,15 +189,44 @@ def _ensure_punkt_tab() -> None:
             "NOT interchangeable with it. Upstream drives one pass per turn "
             "(--steps 1 2 3), one sample per turn; this task walks all three in "
             "one pass. Upstream reports fractions, this task percentages. "
-            "Grading matches upstream's metrics_gen exactly — verified on 535 "
-            "conversations across all 8 languages (3,098 follow-lists, all "
-            "per-language overalls) — except for two conversations upstream "
-            "cannot grade reproducibly itself: kwargs it rejects "
-            "(letter='#'; empty keyword) send build_description to an unseeded "
-            "random.choice. langdetect is likewise unseeded upstream, and picks "
-            "the counting algorithm behind every length constraint. Both defects "
-            "are tracked, not repaired, per the unqualified-name rule; fixing "
-            "either needs a `_fixed` variant with a measured delta."
+            "Grading matches upstream's metrics_gen exactly, checked twice: "
+            "offline on 535 conversations across all 8 languages (3,098 "
+            "follow-lists), and on two full live runs by re-grading their own "
+            "responses with upstream's graders — 128,258 per-constraint "
+            "comparisons, 15 disagreements (0.012%), every one of them at a "
+            "langdetect-routed checker (change_case:english_capital x10, "
+            "length_constraints:number_sentences/number_words x1 each) or at the "
+            "rejected-kwargs row (keywords:letter_frequency x3). Zero "
+            "disagreements at any deterministic checker; re-derived per-language "
+            "cells agree to 6e-02, `score` to 0.003. "
+            "The two defects upstream cannot grade reproducibly itself: kwargs it "
+            "rejects (letter='#' in 1122:18:en; empty keyword in 2616:4:zh — 6 of "
+            "13,447 turn-cells) send build_description to an unseeded "
+            "random.choice, and langdetect is likewise unseeded and picks the "
+            "counting algorithm behind every length constraint. Measured cost of "
+            "both, re-grading identical responses 3x on the full set: 12 of "
+            "26,894 turn-cells flip and `score` spans 0.012 — two orders of "
+            "magnitude under the +-0.4 sd that conversation sampling contributes. "
+            "Tracked, not repaired, per the unqualified-name rule; fixing either "
+            "needs a `_fixed` variant with a measured delta. "
+            "PUBLISHED-NUMBER RESIDUAL (open). The only servable model carrying a "
+            "first-party Multi-IF figure is Qwen3-32B: Qwen3 Technical Report "
+            "(arXiv:2505.09388) Table 13 Thinking 73.0, Table 14 Non-thinking "
+            "70.7. Full 4,501-conversation runs at that report's own sampling "
+            "knobs, 0 failures, denominators 4501/4501/4445, give `score` 78.73 "
+            "(non-thinking) and 78.97 (thinking) — +8.03 and +5.97. No single "
+            "reduction closes both: turn-3-only is nearest (71.38, +0.68; 71.23, "
+            "-1.77) and is mechanically plausible because upstream emits one "
+            "report per turn, so an integrator running --steps 3 would publish "
+            "exactly that cell — but it contradicts the published ordering, since "
+            "the two arms here are statistically indistinguishable (0.24 apart, "
+            "bootstrap sd 0.4) where the report has Thinking +2.3. Upstream's own "
+            "driver default max_new_tokens=1024 accounts for part of the level: a "
+            "paired 600-conversation arm at that cap truncates 12.23% of "
+            "turn-cells and loses 2.66 points, about a third of the gap. That the "
+            "anchor is not the benchmark's protocol is visible in the report "
+            "itself — its Table 11 gives OpenAI-o1 48.8 where the Multi-IF paper "
+            "gives o1-preview 78.9 (three-turn average) and 70.7 (turn 3)."
         ),
     ),
 )
