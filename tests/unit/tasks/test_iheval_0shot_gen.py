@@ -167,13 +167,35 @@ class TestPreprocess:
             "tool",
         ]
         call = record["prompt"][2]["tool_calls"][0]
-        assert call["id"] == "call_1"
         assert call["type"] == "function"
         # Arguments are serialized, matching upstream's OpenAI conversion.
         assert call["function"]["arguments"] == '{"channel": "general"}'
         result = record["prompt"][3]
-        assert result["tool_call_id"] == "call_1"
         assert result["content"] == "- Patricia\n- Jack"
+        # The call and its result must agree, whatever the id is.
+        assert result["tool_call_id"] == call["id"]
+
+    @pytest.mark.anyio
+    async def test_tool_call_id_is_nine_alphanumeric_chars_not_the_dataset_id(self):
+        """Mistral's chat template rejects anything else, and it is not cosmetic.
+
+        The dataset ships ids like "call_dx6NRJIZOLS2GS7HtIFxVpyG"; a server
+        applying Mistral's template answers HTTP 400 "Tool call IDs should be
+        alphanumeric strings with length 9!" for every one of the 2,520
+        tool-bearing rows -- 2 of the 9 subtasks the headline averages. Upstream's
+        own vLLM path hardcodes a conforming id for this reason. Asserting the
+        *shape* rather than the literal keeps the reason in the test.
+        """
+        row = _row(subtask="slack-user", setting="conflict", answer="Jack", tool=_TOOL)
+        record = await _task([row]).preprocess(row, _ctx(row))
+
+        # The prefilled pair is always the last two turns, with or without a
+        # system message, so index from the end.
+        call_id = record["prompt"][-2]["tool_calls"][0]["id"]
+        assert call_id != _TOOL["call"]["id"], "the dataset id would be rejected"
+        assert len(call_id) == 9, call_id
+        assert call_id.isalnum(), call_id
+        assert record["prompt"][-1]["tool_call_id"] == call_id
 
     @pytest.mark.anyio
     async def test_tool_definition_marks_every_parameter_required(self):

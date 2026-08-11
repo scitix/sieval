@@ -115,6 +115,22 @@ _REFERENCE_SEPARATOR = {"verb-extract": ", ", "translation": "\n"}
 # in the glued string. Applied in order, and both can fire.
 _REFERENCE_PREFIXES = ("español:", "Verbs:")
 
+# The id correlating the prefilled tool call with its return. Upstream has two
+# values for this, because it has two inference paths: call_api.py forwards the
+# dataset's own id (e.g. "call_dx6NRJIZOLS2GS7HtIFxVpyG", 29 chars) and
+# run_vllm_model.py hardcodes this one, with the comment `# "id" is for Mistral`.
+#
+# Its value is upstream's, and the choice between them is not cosmetic. Mistral's
+# chat template *enforces* 9-character alphanumeric ids, so a server applying that
+# template rejects the dataset id outright -- measured: HTTP 400 "Tool call IDs
+# should be alphanumeric strings with length 9!" on all 2,520 tool rows, i.e. 2 of
+# the 9 subtasks the headline averages, for a whole model family. call_api.py never
+# hit this because it is GPT-only (its extract_output raises NotImplementedError
+# for any non-gpt model); a protocol-generic task does, so it takes the id every
+# consumer accepts. Nothing grades this token: no evaluator in
+# sieval.community.iheval or upstream's src/ reads it.
+_TOOL_CALL_ID = "9Ae3bDc2F"
+
 # Upstream rounds every continuous per-sample score to 2 decimals on its way to
 # eval_results.json, and pools from the rounded values.
 _SAMPLE_DIGITS = 2
@@ -161,6 +177,9 @@ def _openai_tool(tool: dict) -> tuple[list[dict], dict, dict]:
     model is never asked to invoke anything; it is shown a completed call and
     asked to answer from its result. Parameters are all required, matching
     upstream's conversion.
+
+    The one place this does not follow ``call_api.py`` is the call id: see
+    :data:`_TOOL_CALL_ID`.
     """
     definition = tool["definition"]
     call = tool["call"]
@@ -183,7 +202,7 @@ def _openai_tool(tool: dict) -> tuple[list[dict], dict, dict]:
         "role": "assistant",
         "tool_calls": [
             {
-                "id": call["id"],
+                "id": _TOOL_CALL_ID,
                 "type": "function",
                 "function": {
                     "name": call["name"],
@@ -194,7 +213,7 @@ def _openai_tool(tool: dict) -> tuple[list[dict], dict, dict]:
     }
     return_message = {
         "role": "tool",
-        "tool_call_id": returned["id"],
+        "tool_call_id": _TOOL_CALL_ID,
         "name": returned["name"],
         "content": returned["content"],
     }
