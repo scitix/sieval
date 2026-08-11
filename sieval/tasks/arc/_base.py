@@ -24,6 +24,11 @@ from sieval.core.tasks import (
     build_prompt_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.core.utils.ppl import total_logprob
 
 DEFAULT_FEWSHOT_SEED = 1234
@@ -221,9 +226,22 @@ def arc_judgement_record(
 def arc_report(
     finals,
     fails,
-) -> dict[str, float]:
+) -> dict[str, float | str]:
+    """The shared report for all four ARC tasks, declarations included.
+
+    Both PPL and CLP leaves delegate here, so the declarations live here too --
+    four copies of ``score_key`` is how two of them would come to disagree.
+    """
     correct_num = sum(
         1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
     )
     acc = 100 * correct_num / len(finals) if finals else 0.0
-    return {"score": acc, "acc": acc, "fails": len(fails)}
+    return {
+        "score": acc,
+        "acc": acc,
+        "fails": len(fails),
+        SCORE_KEY_FIELD: "acc",
+        # `len(finals)`: a pipeline failure is reported in `fails`, not scored as
+        # a wrong choice -- the MCQ-family convention (mmlu / cmmlu / openbookqa).
+        DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
+    }

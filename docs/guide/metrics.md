@@ -26,6 +26,17 @@ upstream-convention-driven, and unifying it would change `score` for eight tasks
 — so it is declared rather than resolved. Two tasks are directly comparable only
 when this field agrees; when `fails` is 0 the two coincide.
 
+Both keys are enforced rather than conventional:
+`scripts/check_preflight.py --check check_report_declarations` fails a task whose
+`report()` omits either, whose policy is a word other than the two above, or
+whose `score_key` names a column the report does not contain — nothing reads
+`score_key` at run time, so that last one would otherwise go unnoticed.
+
+One task is the documented exception, and only to the `score` half:
+`t_eval_before_calling_0shot_gen` publishes one rate per axis and no headline, so
+it emits neither `score` nor `score_key` — there is nothing for the latter to
+name. It still declares `denominator_policy`.
+
 ## Sampling metrics
 
 These appear **only when the task ran with `n > 1`**. At `n = 1` there is no draw

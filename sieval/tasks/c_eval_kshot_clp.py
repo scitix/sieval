@@ -58,6 +58,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.core.utils.ppl import choice_scores_from_top_logprobs
 from sieval.datasets import CEvalDatasetSample
 
@@ -169,7 +174,9 @@ class CEvalFewShotCLPTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     """C-Eval few-shot next-token logprob evaluation for base models."""
@@ -318,10 +325,12 @@ class CEvalFewShotCLPTask(
         }
         overall = sum(subject_acc.values()) / len(subject_acc) if subject_acc else 0.0
 
-        metrics: dict[str, float] = {
+        metrics: dict[str, float | str] = {
             "score": overall,
             "fails": float(len(fails)),
             "overall": overall,
+            SCORE_KEY_FIELD: "overall",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         }
         # Only report categories with evaluated subjects, so a subject-subset
         # run omits absent categories instead of a misleading 0.0.

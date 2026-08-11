@@ -16,6 +16,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets import DROPDatasetSample
 
 _FEWSHOT_SPLIT = "train"
@@ -44,7 +49,9 @@ class DROPFewShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -168,4 +175,15 @@ class DROPFewShotGenTask(
         total_f1 = sum(ctx.feedback_result["metrics"]["f1"] for ctx in finals)
         avg_em = total_em / count * 100 if count > 0 else 0
         avg_f1 = total_f1 / count if count > 0 else 0
-        return {"score": avg_f1, "fails": len(fails), "em": avg_em, "f1": avg_f1}
+        # `em` and `f1` are co-equal partial-credit metrics; `score_key` records
+        # which of the two the headline was taken from. The denominator is the
+        # judged set — a pipeline failure is reported in `fails`, not averaged in
+        # as an F1 of zero.
+        return {
+            "score": avg_f1,
+            "fails": len(fails),
+            "em": avg_em,
+            "f1": avg_f1,
+            SCORE_KEY_FIELD: "f1",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
+        }

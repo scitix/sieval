@@ -40,6 +40,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets.ruler import RulerDatasetSample, len_tag, thinking_prefill
 
 _QA_SUBTASKS: frozenset[str] = frozenset({"qa_squad", "qa_hotpotqa"})
@@ -117,7 +122,10 @@ class RulerZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one. `int` matches what `report` already returns
+        # (`fails`), which this slot had drifted from.
+        dict[str, float | int | str],
     ]
 ):
     async def preprocess(self, raw, ctx):  # noqa: ARG002
@@ -248,7 +256,7 @@ class RulerZeroShotGenTask(
             },
         )
 
-    async def report(self, finals: list, fails: list) -> dict[str, float | int]:
+    async def report(self, finals: list, fails: list) -> dict[str, float | int | str]:
         # Cell scores still go through the VENDORED string_match_* functions on the
         # whole cell, unchanged. The per-sample `score` on each judgement is the
         # decomposed term of the same formula, recorded for inspectability, but it
@@ -286,7 +294,17 @@ class RulerZeroShotGenTask(
             sum(length_means.values()) / len(length_means) if length_means else 0.0
         )
 
-        result: dict[str, float | int] = {"score": overall, "fails": len(fails)}
+        # The headline is a macro over context lengths, so no single `score_*`
+        # breakdown key is its source — `score` names itself. The denominator is
+        # the judged set: a cell is scored over the samples that reached it, and a
+        # pipeline failure is reported in `fails` rather than folded into a cell as
+        # a zero-scoring sample.
+        result: dict[str, float | int | str] = {
+            "score": overall,
+            "fails": len(fails),
+            SCORE_KEY_FIELD: "score",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
+        }
         for ctx_len, mean_score in sorted(length_means.items()):
             result[f"score_{len_tag(ctx_len)}"] = mean_score
         for (ctx_len, subtask), score in sorted(cell_scores.items()):

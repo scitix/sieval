@@ -98,6 +98,36 @@ each and are unaffected. In prose, `k-shot` (the file-naming genre) and `top-k`
 - Subpackage shared base module: file named `_base.py` (private module), classes inside without underscore prefix (package-internal public API, e.g. `from ._base import XxxTask`).
 - General code-quality + layer rules live in `.claude/rules/tasks.md`.
 
+## Report Declarations
+
+Every `report()` says two things about its own headline, using the fields in
+`sieval.core.tasks.metrics`:
+
+- **`score_key`** — which key `score` was copied from (`accuracy`, `f1`,
+  `pass@1`, `acc_norm`, …); a headline with no aliased twin names itself
+  (`mmlu_kshot_clp`, `ruler`). It must name a key the same report writes:
+  nothing reads the field at run time, so a column that is not there goes
+  unnoticed. Required whenever the report emits a `score`. A task
+  publishing one rate per axis and no headline omits both — picking an axis to
+  crown would invent a ranking upstream does not make
+  (`t_eval_before_calling_0shot_gen` is the only case).
+- **`denominator_policy`** — `DENOMINATOR_REQUESTED` (`finals + fails`, so a
+  pipeline failure counts as wrong) or `DENOMINATOR_JUDGED` (`finals` only,
+  failures excluded). Those two words are the vocabulary; a third reads as a
+  policy rather than as the typo it is.
+
+The denominator split is upstream-convention-driven and deliberately **not**
+unified — unifying it would move `score` for eight tasks — and that is exactly
+what makes declaring it load-bearing: two numbers in one leaderboard column are
+comparable only when the field agrees. Neither key is inferable from the values,
+and both are additive, so a bare report scores correctly and stays silent about
+what it measured.
+
+Machine-checked over every class defining `report` under `sieval/tasks/`:
+`check_preflight.py --check check_report_declarations`. A `report` that is a
+single `return helper(...)` is judged on the helper, so a shared report
+(`arc/_base.py`) declares once on behalf of all its leaves rather than four times.
+
 ## Stage-Output Protocol (opt-in)
 
 The record vocabulary and its traps live in `.claude/rules/records.md`, scoped to

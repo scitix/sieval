@@ -73,6 +73,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.core.utils.meta import build_stage_meta
 from sieval.datasets import MMMLUDatasetSample
 
@@ -185,7 +190,9 @@ class MMMLUKShotClpTask(
         TaskStageOutput[OfficialScores],
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     """Full MMMLU evaluation with weighted locale/category/subject reporting."""
@@ -352,14 +359,23 @@ class MMMLUKShotClpTask(
                 JudgementRecord,
             ]
         ],
-    ) -> dict[str, float]:
+    ) -> dict[str, float | str]:
         # Infra failures (e.g. transient ReadError) are reported separately and
         # excluded from the denominator, matching cmmlu_kshot_base_gen /
         # theoremqa: a scored-but-degenerate sample stays a final and counts as
         # wrong, but an unscored infra fail must not depress accuracy.
         total = len(finals)
         if total == 0:
-            return {"score": 0.0, "score_mmmlu": 0.0, "fails": float(len(fails))}
+            # The declarations belong on this path too: a run that scored nothing
+            # still reports which population it would have averaged over, so an
+            # empty report is not silently less readable than a full one.
+            return {
+                "score": 0.0,
+                "score_mmmlu": 0.0,
+                "fails": float(len(fails)),
+                SCORE_KEY_FIELD: "score_mmmlu",
+                DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
+            }
 
         metric_counts: dict[str, _MetricCounts] = {}
         correct_total = 0
@@ -386,10 +402,12 @@ class MMMLUKShotClpTask(
             )
 
         score = correct_total * 100 / total
-        metrics: dict[str, float] = {
+        metrics: dict[str, float | str] = {
             "score": score,
             "score_mmmlu": score,
             "fails": float(len(fails)),
+            SCORE_KEY_FIELD: "score_mmmlu",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         }
         for key, counts in sorted(metric_counts.items()):
             metrics[key] = _metric_score(counts)

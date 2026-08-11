@@ -76,7 +76,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import health_metrics
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    health_metrics,
+)
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import HLEDataset, HLEDatasetSample
 
@@ -285,6 +290,8 @@ class HLEZeroShotGenTask(
             "fails": len(fails),
             "judge_unparsed": judge_unparsed,
             "subset": "text_only" if self._text_only else "full",
+            SCORE_KEY_FIELD: "accuracy",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             # `judge_unparsed` counts the GRADER failing to answer; `n_unextracted`
             # counts the candidate producing nothing to grade. Both grade
             # incorrect, and without the second one they are indistinguishable in

@@ -73,6 +73,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+)
 from sieval.core.utils.ppl import total_logprob
 from sieval.datasets import HellaSwagDatasetSample
 
@@ -169,7 +174,9 @@ class HellaSwagFewShotPPLTask(
         list[ModelOutput],
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -275,7 +282,16 @@ class HellaSwagFewShotPPLTask(
         # deliberate choice, moot here since fails=0.) A regression test locks it.
         total = len(finals) + len(fails)
         if total == 0:
-            return {"score": 0.0, "acc": 0.0, "acc_norm": 0.0, "fails": 0}
+            # Declared on this path too: which population the headline would have
+            # been averaged over is a property of the task, not of the run.
+            return {
+                "score": 0.0,
+                "acc": 0.0,
+                "acc_norm": 0.0,
+                "fails": 0,
+                SCORE_KEY_FIELD: "acc_norm",
+                DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+            }
         acc_num = sum(1 for ctx in finals if ctx.feedback_result["metrics"]["acc"])
         acc_norm_num = sum(
             1 for ctx in finals if ctx.feedback_result["metrics"]["acc_norm"]
@@ -287,6 +303,11 @@ class HellaSwagFewShotPPLTask(
             "acc": acc,
             "acc_norm": acc_norm,
             "fails": len(fails),
+            # `acc` and `acc_norm` are co-equal (lm-eval reports both); the
+            # headline is the length-normalised one, and `score_key` is what says
+            # so without a reader having to know the family convention.
+            SCORE_KEY_FIELD: "acc_norm",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
 
     def _build_fewshot_prefix(self) -> str:

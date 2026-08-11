@@ -6,6 +6,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 
 import contextlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,8 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from check_preflight import (  # noqa: E402  # type: ignore[unresolved-import]  # scripts/ added to sys.path at runtime
+    _DENOMINATOR_CONSTANTS,
+    _DENOMINATOR_VALUES,
     _TASK_FILE_PATTERN,
     CheckResult,
     PreflightRunner,
@@ -127,12 +130,13 @@ class TestPreflightRunner:
     """Runner orchestration."""
 
     def test_all_checks_listed(self):
-        assert len(PreflightRunner.ALL_CHECKS) == 12
+        assert len(PreflightRunner.ALL_CHECKS) == 13
         assert "check_links" in PreflightRunner.ALL_CHECKS
         assert "check_examples" in PreflightRunner.ALL_CHECKS
         assert "check_meta_index_sync" in PreflightRunner.ALL_CHECKS
         assert "check_version" in PreflightRunner.ALL_CHECKS
         assert "check_task_shot_knobs" in PreflightRunner.ALL_CHECKS
+        assert "check_report_declarations" in PreflightRunner.ALL_CHECKS
         assert "check_record_key_access" in PreflightRunner.ALL_CHECKS
         assert "check_mutmut_config" in PreflightRunner.ALL_CHECKS
 
@@ -2166,6 +2170,405 @@ class TestCheckTaskShotKnobs:
         """Integration: the shipped tasks satisfy all three rules."""
         results = PreflightRunner().check_task_shot_knobs()
         assert [r.status for r in results] == ["PASS"]
+
+
+class TestCheckReportDeclarations:
+    """The guard on `score_key` / `denominator_policy` in every task report."""
+
+    #: Stand-in for `sieval/core/tasks/metrics.py`, reduced to the shape rule 4
+    #: must follow: `sampling_report` reaches `pass@k` only through a call and a
+    #: `|`, so reading one body sees none of its keys.
+    _METRICS = (
+        "def health_metrics(finals):\n"
+        "    return {'n_unextracted': 0.0}\n"
+        "def rollout_metrics(correct, k=1):\n"
+        "    return {f'pass@{k}': 1.0, 'avg@n': 1.0}\n"
+        "def budget_metrics(k=1):\n"
+        "    return {'n': 1.0, 'k': 1.0}\n"
+        "def sampling_report(correct, k=1):\n"
+        "    return rollout_metrics(correct, k=k) | budget_metrics(k=k)\n"
+    )
+
+    def _run(
+        self,
+        tmp_path: Path,
+        source: str,
+        *,
+        metrics: str | None = None,
+        **extra: str,
+    ) -> CheckResult:
+        tasks_dir = tmp_path / "sieval" / "tasks"
+        tasks_dir.mkdir(parents=True)
+        (tasks_dir / "__init__.py").write_text("")
+        (tasks_dir / "demo_0shot_gen.py").write_text(source)
+        if metrics is not None:
+            core_tasks = tmp_path / "sieval" / "core" / "tasks"
+            core_tasks.mkdir(parents=True)
+            (core_tasks / "metrics.py").write_text(metrics)
+        # Kwarg name -> sibling module: `_base` becomes `_base.py` next to the
+        # subject, which is the `arc/` layout the delegation rule exists for.
+        for rel, text in extra.items():
+            path = tasks_dir / f"{rel}.py"
+            path.write_text(text)
+        results = PreflightRunner(project_root=tmp_path).check_report_declarations()
+        assert len(results) == 1
+        return results[0]
+
+    # --- rule 1: denominator_policy is declared ------------------------------
+
+    def test_both_declared_passes(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'accuracy': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'accuracy',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,\n"
+            "        }\n",
+        )
+        assert r.status == "PASS"
+        assert "all 1 task report(s)" in r.message
+
+    def test_missing_denominator_fails(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {'score': 1.0, 'accuracy': 1.0, "
+            "SCORE_KEY_FIELD: 'accuracy'}\n",
+        )
+        assert r.status == "FAIL"
+        assert "declares no 'denominator_policy'" in r.details[0]
+
+    def test_string_literals_accepted(self, tmp_path: Path):
+        """The constants are the idiom, but the report is JSON — literals count."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'acc': 1.0,\n"
+            "            'score_key': 'acc',\n"
+            "            'denominator_policy': 'judged',\n"
+            "        }\n",
+        )
+        assert r.status == "PASS"
+
+    # --- rule 2: score_key required only where a `score` is emitted ----------
+
+    def test_score_without_score_key_fails(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {'score': 1.0, DENOMINATOR_FIELD: DENOMINATOR_JUDGED}\n",
+        )
+        assert r.status == "FAIL"
+        assert "emits 'score' but no 'score_key'" in r.details[0]
+
+    def test_no_headline_needs_no_score_key(self, tmp_path: Path):
+        """The `t_eval_before_calling` shape: per-axis rates, no headline."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'thought': 1.0,\n"
+            "            'name': 1.0,\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+        )
+        assert r.status == "PASS"
+
+    def test_reading_a_score_key_is_not_emitting_one(self, tmp_path: Path):
+        """`rollout['score']` reads a verdict; it does not publish a headline."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        rate = sum(r['score'] for r in finals)\n"
+            "        return {'rate': rate, DENOMINATOR_FIELD: DENOMINATOR_JUDGED}\n",
+        )
+        assert r.status == "PASS"
+
+    def test_subscript_assignment_counts_as_emitting(self, tmp_path: Path):
+        """`results['score'] = ...` is the ifeval shape — a write, so rule 2 binds."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        results = {DENOMINATOR_FIELD: DENOMINATOR_JUDGED}\n"
+            "        results['score'] = 1.0\n"
+            "        return results\n",
+        )
+        assert r.status == "FAIL"
+        assert "emits 'score' but no 'score_key'" in r.details[0]
+
+    # --- rule 3: the policy is one of the two ------------------------------
+
+    def test_freeform_policy_fails(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'acc': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'acc',\n"
+            "            DENOMINATOR_FIELD: 'attempted',\n"
+            "        }\n",
+        )
+        assert r.status == "FAIL"
+        assert "denominator_policy is 'attempted'" in r.details[0]
+
+    def test_freeform_policy_via_subscript_fails(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        out = {'score': 1.0, 'acc': 1.0, SCORE_KEY_FIELD: 'acc'}\n"
+            "        out[DENOMINATOR_FIELD] = 'per_instruction'\n"
+            "        return out\n",
+        )
+        assert r.status == "FAIL"
+        assert "denominator_policy is 'per_instruction'" in r.details[0]
+
+    # --- delegation: the `arc/` layout --------------------------------------
+
+    def test_declaration_in_the_shared_helper_passes(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "from ._base import demo_report\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return demo_report(finals, fails)\n",
+            _base="def demo_report(finals, fails):\n"
+            "    return {\n"
+            "        'score': 1.0,\n"
+            "        'acc': 1.0,\n"
+            "        SCORE_KEY_FIELD: 'acc',\n"
+            "        DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "    }\n",
+        )
+        assert r.status == "PASS"
+
+    def test_delegation_to_a_bare_helper_still_fails(self, tmp_path: Path):
+        """Following the call must not become a blanket exemption."""
+        r = self._run(
+            tmp_path,
+            "from ._base import demo_report\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return demo_report(finals, fails)\n",
+            _base="def demo_report(finals, fails):\n    return {'score': 1.0}\n",
+        )
+        assert r.status == "FAIL"
+        assert len(r.details) == 2
+        assert any("declares no 'denominator_policy'" in d for d in r.details)
+        assert any("emits 'score' but no 'score_key'" in d for d in r.details)
+
+    def test_absolute_import_delegation_resolves(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "from sieval.tasks.shared import demo_report\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return demo_report(finals, fails)\n",
+            shared="def demo_report(finals, fails):\n"
+            "    return {\n"
+            "        'score': 1.0,\n"
+            "        'acc': 1.0,\n"
+            "        SCORE_KEY_FIELD: 'acc',\n"
+            "        DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "    }\n",
+        )
+        assert r.status == "PASS"
+
+    # --- scope ---------------------------------------------------------------
+
+    def test_module_without_report_is_not_checked(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True\n",
+        )
+        assert r.status == "PASS"
+        assert "all 0 task report(s)" in r.message
+
+    def test_unparsable_module_reported_not_raised(self, tmp_path: Path):
+        r = self._run(tmp_path, "class Broken(:\n")
+        assert r.status == "FAIL"
+        assert "could not parse" in r.details[0]
+
+    def test_no_task_modules_skips(self, tmp_path: Path):
+        results = PreflightRunner(project_root=tmp_path).check_report_declarations()
+        assert len(results) == 1
+        assert results[0].status == "SKIP"
+
+    # --- rule 4: score_key names a column the report actually writes ---------
+
+    def test_score_key_naming_an_absent_column_fails(self, tmp_path: Path):
+        """The copy-paste defect: a sibling's key name on a report without it."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'acc': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'exact_match',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+        )
+        assert r.status == "FAIL"
+        assert "score_key names 'exact_match'" in r.details[0]
+
+    def test_score_key_matching_an_fstring_key_passes(self, tmp_path: Path):
+        """The ifeval shape: the headline key is built in a loop, not written flat."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        results = {DENOMINATOR_FIELD: DENOMINATOR_JUDGED}\n"
+            "        for grade in ('strict', 'loose'):\n"
+            "            results[f'{grade}_prompt_level_accuracy'] = 1.0\n"
+            "        results['score'] = results['strict_prompt_level_accuracy']\n"
+            "        results[SCORE_KEY_FIELD] = 'strict_prompt_level_accuracy'\n"
+            "        return results\n",
+        )
+        assert r.status == "PASS"
+
+    def test_score_key_outside_the_fstring_pattern_fails(self, tmp_path: Path):
+        """The pattern constrains — it is not a blanket pass for the loop's shape."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        results = {'score': 1.0, DENOMINATOR_FIELD: DENOMINATOR_JUDGED}\n"
+            "        for grade in ('strict', 'loose'):\n"
+            "            results[f'{grade}_prompt_level_accuracy'] = 1.0\n"
+            "        results[SCORE_KEY_FIELD] = 'strict_prompt_level_rate'\n"
+            "        return results\n",
+        )
+        assert r.status == "FAIL"
+        assert "score_key names 'strict_prompt_level_rate'" in r.details[0]
+
+    def test_score_key_from_a_merged_helper_passes(self, tmp_path: Path):
+        """`pass@1` is legitimate when the report merges the helper emitting it.
+
+        Reachable only transitively: `sampling_report` returns
+        `rollout_metrics(...) | budget_metrics(...)`, naming no key in its body.
+        """
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        metrics = {\n"
+            "            'score': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'pass@1',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,\n"
+            "        }\n"
+            "        rolled = sampling_report([True], k=1)\n"
+            "        metrics.update(rolled)\n"
+            "        return metrics\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+
+    def test_score_key_absent_from_the_merged_helper_fails(self, tmp_path: Path):
+        """Merging widens to THAT helper's keys, not to all of `metrics.py`.
+
+        `health_metrics` emits only `n_unextracted`, so `pass@1` still dangles —
+        the reason a merge is traced to a name, not blanket-exempted.
+        """
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'pass@1',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,\n"
+            "        } | health_metrics(finals)\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "FAIL"
+        assert "score_key names 'pass@1'" in r.details[0]
+
+    def test_untraceable_key_source_skips_the_rule(self, tmp_path: Path):
+        """A `**` spread of an expression: no module to go read, so stay silent."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            **self._axes(finals),\n"
+            "            'score': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'whatever_axis',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+        )
+        assert r.status == "PASS"
+
+    def test_score_key_in_the_shared_helper_is_resolved_there(self, tmp_path: Path):
+        """Delegation carries rule 4 too, so one bad key reports for every leaf."""
+        r = self._run(
+            tmp_path,
+            "from ._base import demo_report\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return demo_report(finals, fails)\n",
+            _base="def demo_report(finals, fails):\n"
+            "    return {\n"
+            "        'score': 1.0,\n"
+            "        'acc': 1.0,\n"
+            "        SCORE_KEY_FIELD: 'accuracy',\n"
+            "        DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "    }\n",
+        )
+        assert r.status == "FAIL"
+        assert "score_key names 'accuracy'" in r.details[0]
+
+    def test_real_tasks_pass(self):
+        """Integration: every shipped report declares both fields."""
+        results = PreflightRunner().check_report_declarations()
+        assert [r.status for r in results] == ["PASS"]
+
+    def test_real_tasks_resolve_their_score_key(self):
+        """Rule 4 has real coverage, not just fixtures.
+
+        A rule skipping every shipped report would still pass
+        `test_real_tasks_pass`, so pin the count it resolved. A DROP means a
+        report grew a key source rule 4 cannot follow.
+        """
+        (result,) = PreflightRunner().check_report_declarations()
+        match = re.search(r"\((\d+) score_key", result.message)
+        assert match is not None, result.message
+        assert int(match.group(1)) >= 47
+
+    def test_vocabulary_matches_the_metrics_module(self):
+        """Rule 3's vocabulary is `metrics.py`'s, not a second copy of it.
+
+        The checker hard-codes the policy names so it stays AST-only. That makes
+        it a duplicate, and a duplicate that falls behind would reject a policy
+        the module legitimately added — so the two are pinned equal here rather
+        than left to agree by luck.
+        """
+        from sieval.core.tasks import metrics
+
+        defined = {
+            name: value
+            for name, value in vars(metrics).items()
+            if name.startswith("DENOMINATOR_") and name != "DENOMINATOR_FIELD"
+        }
+        assert set(defined) == set(_DENOMINATOR_CONSTANTS)
+        assert set(defined.values()) == set(_DENOMINATOR_VALUES)
+        assert metrics.SCORE_KEY_FIELD == "score_key"
+        assert metrics.DENOMINATOR_FIELD == "denominator_policy"
 
 
 class TestCheckRecordKeyAccess:

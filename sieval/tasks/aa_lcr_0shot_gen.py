@@ -77,7 +77,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import health_metrics
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    health_metrics,
+)
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import AALCRDatasetSample
 
@@ -136,7 +141,9 @@ class AALCRZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -263,6 +270,8 @@ class AALCRZeroShotGenTask(
             "incorrect": m["is_incorrect"] * 100,
             "n_graded": len(graded),
             "fails": len(fails),
+            SCORE_KEY_FIELD: "accuracy",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             # The module docstring leans on `extracted: false` to tell an empty
             # response apart from one the grader failed; without the count in the
             # report that distinction lives only in the shards. Deliberately only

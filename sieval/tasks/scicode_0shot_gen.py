@@ -66,6 +66,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+)
 from sieval.core.types import JSONValue
 from sieval.core.utils.meta import build_stage_meta
 from sieval.datasets import SciCodeDatasetSample
@@ -202,7 +207,9 @@ class SciCodeZeroShotGenTask(
         TaskStageOutput[list[StepCode]],
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -525,7 +532,14 @@ class SciCodeZeroShotGenTask(
     async def report(self, finals, fails):
         total_problems = len(finals) + len(fails)
         if total_problems == 0:
-            return {"score": 0.0, "fails": len(fails)}
+            # Declared on this path too: which population the headline would have
+            # been averaged over is a property of the task, not of the run.
+            return {
+                "score": 0.0,
+                "fails": len(fails),
+                SCORE_KEY_FIELD: "main_problem_accuracy",
+                DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+            }
 
         correct_steps = 0
         total_steps = 0
@@ -607,6 +621,12 @@ class SciCodeZeroShotGenTask(
             "memory_errors": memory_errors,
             "import_errors": import_errors,
             "fails": len(fails),
+            # Main- and sub-problem accuracy are co-equal published rates over
+            # different units (problems vs steps); `score_key` says which one the
+            # headline is. `requested`: a problem that failed the pipeline counts
+            # against `total_problems` rather than being excluded.
+            SCORE_KEY_FIELD: "main_problem_accuracy",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
 
     @override

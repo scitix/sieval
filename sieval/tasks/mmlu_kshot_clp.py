@@ -58,6 +58,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.core.utils.ppl import choice_scores_from_top_logprobs
 from sieval.datasets import MMLUDatasetSample
 
@@ -121,7 +126,9 @@ class MMLUFewShotCLPTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -263,7 +270,14 @@ class MMLUFewShotCLPTask(
         # finalized set; infra failures are reported separately (``fails``), not
         # scored wrong.
         score = 100 * correct_num / len(finals) if finals else 0.0
-        results = {"score": score}
+        # `score` is the headline and has no aliased twin here, so `score_key`
+        # names it directly — the per-category `score_<category>` keys are
+        # breakdowns, not candidates for the headline.
+        results: dict[str, float | str] = {
+            "score": score,
+            SCORE_KEY_FIELD: "score",
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
+        }
         for category, metrics in category_metrics.items():
             results[f"score_{category}"] = (
                 100 * metrics["correct"] / metrics["total"]

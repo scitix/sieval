@@ -292,7 +292,17 @@ async def test_fewshot_scoring_unaffected_by_prefix():
 async def test_report_handles_empty_finals():
     task, _ = _make_task(n_shot=0)
     report = await task.report([], [TaskContext(sample_id=0)])
-    assert report == {"score": 0.0, "acc": 0.0, "acc_norm": 0.0, "fails": 1}
+    # The declarations are on the empty path too: which column the headline would
+    # have come from and which population it is over are properties of the task,
+    # not of whether this run scored anything.
+    assert report == {
+        "score": 0.0,
+        "acc": 0.0,
+        "acc_norm": 0.0,
+        "fails": 1,
+        "score_key": "acc_norm",
+        "denominator_policy": "requested",
+    }
 
 
 @pytest.mark.anyio
