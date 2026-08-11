@@ -29,9 +29,8 @@ when this field agrees; when `fails` is 0 the two coincide.
 Both keys are enforced rather than conventional:
 `scripts/check_preflight.py --check check_report_declarations` fails a task whose
 `report()` omits either, whose policy is a word other than the two above, or
-whose `score_key` names a column the report does not contain — presence is not
-truth, and since nothing reads `score_key` at run time a headline pointing at a
-missing column would otherwise survive every test.
+whose `score_key` names a column the report does not contain — nothing reads
+`score_key` at run time, so that last one would otherwise go unnoticed.
 
 One task is the documented exception, and only to the `score` half:
 `t_eval_before_calling_0shot_gen` publishes one rate per axis and no headline, so

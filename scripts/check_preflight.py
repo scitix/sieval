@@ -412,11 +412,9 @@ def _computes_pass_at_k(cls: ast.ClassDef) -> bool:
 _DENOMINATOR_CONSTANTS = frozenset({"DENOMINATOR_REQUESTED", "DENOMINATOR_JUDGED"})
 _DENOMINATOR_VALUES = frozenset({"requested", "judged"})
 
-#: The declaration fields themselves, as the constant names tasks spell them
-#: with. Used as dict KEYS (``{SCORE_KEY_FIELD: "acc"}``), so a scan that only
-#: understands string-literal keys reads them as computed and gives up on the
-#: whole report — which would make the declarations hide the very rule that
-#: checks them.
+#: The declaration fields as tasks spell them. They appear as dict KEYS
+#: (``{SCORE_KEY_FIELD: "acc"}``), so a scan that only understands string-literal
+#: keys reads them as computed and gives up on the very reports it is checking.
 _DECLARATION_CONSTANTS = frozenset({"SCORE_KEY_FIELD", "DENOMINATOR_FIELD"})
 
 
@@ -467,11 +465,9 @@ def _names_read(fn: ast.AST) -> set[str]:
 def _dict_key_patterns(fn: ast.AST) -> set[str]:
     """Regexes for the keys *fn* writes through an f-string.
 
-    ``results[f"{grade}_prompt_level_accuracy"]`` is a real key the report
-    publishes; :func:`_dict_keys_written` cannot name it, but the literal parts
-    still constrain it enough to tell ``strict_prompt_level_accuracy`` (a key
-    this loop does produce) from ``accuracy`` (one it does not). Without this
-    the ifeval/ifbench shape would have to be exempted wholesale.
+    The literal parts of ``results[f"{grade}_prompt_level_accuracy"]`` still tell
+    a key that loop produces from one it does not — enough to check the
+    ifeval/ifbench shape rather than exempt it.
     """
     patterns: set[str] = set()
 
@@ -503,8 +499,8 @@ def _dict_key_patterns(fn: ast.AST) -> set[str]:
 def _names_a_key_statically(key: ast.expr | None) -> bool:
     """Whether *key* pins a dict key at parse time — literally or as a pattern.
 
-    A ``None`` key is a ``**`` spread. A :class:`ast.Name` is accepted only for
-    the declaration fields themselves, which every report spells as constants.
+    ``None`` is a ``**`` spread. A :class:`ast.Name` counts only for the
+    declaration fields, which every report spells as constants.
     """
     return (
         isinstance(key, ast.JoinedStr)
@@ -514,26 +510,20 @@ def _names_a_key_statically(key: ast.expr | None) -> bool:
 
 
 def _merged_sources(fn: ast.AST) -> set[str] | None:
-    """The helpers *fn* folds whole dicts in from, by name.
+    """The ``metrics.py`` helpers *fn* folds whole dicts in from, by name.
 
-    ``metrics | health_metrics(finals)``, ``metrics |= sampling_report(...)`` and
-    ``metrics.update(rolled)`` are the three spellings in the tree, and they are
-    how ``pass@1`` / ``n_unextracted`` reach a report at all. The merged keys are
-    invisible here but not unknowable — they come from
-    ``sieval/core/tasks/metrics.py``, which :func:`_metrics_helper_keys` reads.
+    Three spellings in the tree: ``| health_metrics(finals)``,
+    ``|= sampling_report(...)``, ``metrics.update(rolled)``. Naming the helper
+    rather than just noting that a merge happened is what keeps rule 4 sharp —
+    widening to every key ``metrics.py`` can emit would accept
+    ``score_key: "pass@1"`` on a task that never computed one.
 
-    Naming the helper rather than just flagging that a merge happened is what
-    keeps the rule sharp: widening to every key ``metrics.py`` can emit would
-    accept ``score_key: "pass@1"`` on a task that never computed one, and
-    ``pass@1`` is exactly the value most likely to be copied in by mistake.
-
-    Returns ``None`` when a merge cannot be traced to a name — the caller then has
-    to fall back to the whole module. Deliberately narrow about ``|``:
-    ``dict[str, float | str]`` is a type annotation living in the same tree, so
-    only a call operand counts as a merge.
+    ``None`` when a merge cannot be traced to a name, which widens it anyway.
+    Narrow about ``|`` on purpose: ``dict[str, float | str]`` is a type
+    annotation in the same tree, so only a call operand counts as a merge.
     """
-    # `rolled = sampling_report(...)` then `metrics.update(rolled)` -- one hop of
-    # local dataflow, which is the only shape the tree actually uses.
+    # `rolled = sampling_report(...)` then `metrics.update(rolled)` -- one hop,
+    # the only shape the tree uses.
     produced_by: dict[str, str] = {}
     for node in ast.walk(fn):
         if (
@@ -580,9 +570,9 @@ def _merged_sources(fn: ast.AST) -> set[str] | None:
 def _has_unknowable_key(fn: ast.AST) -> bool:
     """Whether *fn* writes a key nothing static can name — not even a pattern.
 
-    A ``**`` spread of an expression, or a key computed as a bare variable. Unlike
-    a merge there is no module to go read, so a rule that fires on a key being
-    ABSENT must stay silent rather than report a column the report does write.
+    A ``**`` spread of an expression, or a key computed from a variable. Unlike a
+    merge there is no module to go read, so rule 4 stays silent rather than
+    report a column the report does write.
     """
     for node in ast.walk(fn):
         if isinstance(node, ast.Dict):
@@ -603,15 +593,11 @@ def _metrics_helper_keys(
 ) -> tuple[set[str], set[str]]:
     """Report keys the named ``metrics.py`` helpers can produce.
 
-    Read from the module rather than restated, because the point of merging a
-    shared estimator in is that it owns its key names: ``pass@k`` is written
-    ``f"pass@{k}"`` there, so the answer is literals AND patterns.
-
-    Transitive within the module: ``sampling_report`` returns
-    ``rolled | budget_metrics(...)`` and gets its ``pass@k`` from
-    ``rollout_metrics``, so reading one body names only a third of its keys.
-    *roots* of ``None`` means a merge the caller could not trace, and widens this
-    to every key the module can emit.
+    Read from the module, not restated here: it owns its key names, and writes
+    ``pass@k`` as ``f"pass@{k}"`` — hence literals AND patterns. Transitive,
+    because ``sampling_report`` returns ``rolled | budget_metrics(...)`` and gets
+    ``pass@k`` from ``rollout_metrics``, so one body names few of its keys.
+    *roots* of ``None`` (an untraceable merge) widens this to the whole module.
     """
     if tree is None:
         return set(), set()
@@ -643,11 +629,10 @@ def _metrics_helper_keys(
 def _declared_field_values(fn: ast.AST, constant: str, literal: str) -> list[ast.expr]:
     """Every value *fn* assigns to the *constant* / *literal* report field.
 
-    One scanner for both declarations: ``score_key`` and ``denominator_policy``
-    are written the same two ways — as a key in a dict literal, or as a subscript
-    assignment — so a change to how a declaration is spelled has to reach both.
-    Returned as expression nodes; what counts as an acceptable VALUE differs per
-    field and belongs with the rule, not here.
+    One scanner for both declarations, which are written the same two ways — a
+    dict-literal key or a subscript assignment — so a change to how a declaration
+    is spelled reaches both. Returned as nodes: what counts as an acceptable
+    VALUE differs per field and belongs with the rule.
     """
     found: list[ast.expr] = []
 
@@ -672,7 +657,7 @@ def _policy_text(value: ast.expr) -> str:
     """A declared policy as source-ish text, so the caller can vet the word.
 
     A constant name (``DENOMINATOR_JUDGED``) or a string literal; anything else
-    is unparsed, which reads back as the expression it is.
+    unparses back to the expression it is.
     """
     if isinstance(value, ast.Name):
         return value.id
@@ -1769,45 +1754,38 @@ class PreflightRunner:
     def check_report_declarations(self) -> list[CheckResult]:
         """Verify every task report says which column and which population it is.
 
-        Two numbers in one leaderboard column are comparable only when they were
-        averaged over the same population, and ``report.json`` splits two ways:
+        Two numbers in one leaderboard column are comparable only when averaged
+        over the same population, and ``report.json`` splits two ways:
         ``requested`` counts a pipeline failure as wrong, ``judged`` excludes it.
-        The split is upstream-convention-driven and deliberately *not* unified
-        (RFC #74 F) — which makes declaring it the whole mechanism. An undeclared
-        report is one whose reader has to open the source to learn what its number
-        is over, and `docs/guide/metrics.md` lists both keys under "always
-        present", so an undeclared report also makes the documentation false.
+        The split is upstream-driven and deliberately *not* unified (RFC #74 F),
+        which makes declaring it the whole mechanism.
 
-        Nothing else catches it: the keys are additive, so a report missing them
+        Nothing else catches an omission: the keys are additive, so a bare report
         is valid JSON, scores correctly, and passes every test that reads
-        ``report["score"]``. That is how 21 of 49 report-bearing modules stayed
-        bare after the fields shipped, and how a benchmark added later landed
-        bare too.
+        ``report["score"]``. That is how 21 of 49 modules stayed bare after the
+        fields shipped.
 
         Four rules, AST-only so a task whose optional deps are absent is still
         covered:
 
         1. a class defining ``report`` declares ``denominator_policy``;
         2. it declares ``score_key`` too — but only if that report writes a
-           ``score`` key. ``t_eval_before_calling`` publishes one rate per axis
-           and no headline, and pointing ``score_key`` at an arbitrary axis would
-           invent a ranking upstream does not make;
-        3. the declared policy is one of the two ``metrics.py`` defines. A
-           free-form third value is a word only its author knows the meaning of,
-           and it would read as a policy rather than as a typo;
-        4. the declared ``score_key`` names a key the same report writes. Rules 1
-           and 2 buy presence, not truth: a task copied from a sibling keeps the
-           sibling's key name, and since NOTHING reads ``score_key`` at runtime a
-           headline pointing at a column that is not there survives every test
-           and every run. A key merged in from ``metrics.py`` counts, traced to
-           the helper that emits it (:func:`_merged_sources`); the rule is
-           skipped, not guessed, only for a key nothing static can name
-           (:func:`_has_unknowable_key`).
+           ``score``. ``t_eval_before_calling`` publishes one rate per axis and no
+           headline, and crowning an arbitrary axis would invent a ranking
+           upstream does not make;
+        3. the policy is one of the two ``metrics.py`` defines; a free-form third
+           value reads as a policy rather than as the typo it is;
+        4. the ``score_key`` names a key the same report writes. Rules 1-2 buy
+           presence, not truth — nothing reads ``score_key`` at run time, so a
+           headline pointing at a missing column survives every test and every
+           run. A key merged in from ``metrics.py`` counts, traced to the helper
+           that emits it (:func:`_merged_sources`); skipped, not guessed, only
+           for a key nothing static can name (:func:`_has_unknowable_key`).
 
         A ``report`` that is a single ``return helper(...)`` is judged on the
-        helper, resolved through the module's own imports — ``arc/`` has four leaf
-        tasks sharing one ``arc_report``, and demanding the keys at a site that
-        does not build the dict would force four copies to drift apart.
+        helper, resolved through the module's own imports — ``arc/``'s four leaves
+        share one ``arc_report``, and demanding the keys at a site that does not
+        build the dict would force four copies to drift apart.
         """
         py_files = [
             f
@@ -1911,9 +1889,8 @@ class PreflightRunner:
                             "vocabulary is DENOMINATOR_REQUESTED / "
                             "DENOMINATOR_JUDGED (metrics.py)"
                         )
-                # Skipped only for a key nothing static can name; a MERGE is not
-                # a reason to give up, since the merged keys come from a module
-                # this check reads.
+                # A merge is not a reason to give up -- those keys come from a
+                # module this check reads.
                 if not unknowable:
                     verified += sum(
                         isinstance(v, ast.Constant) and isinstance(v.value, str)

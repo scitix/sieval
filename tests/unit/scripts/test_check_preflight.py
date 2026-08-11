@@ -2176,8 +2176,8 @@ class TestCheckReportDeclarations:
     """The guard on `score_key` / `denominator_policy` in every task report."""
 
     #: Stand-in for `sieval/core/tasks/metrics.py`, reduced to the shape rule 4
-    #: has to follow: `sampling_report` reaches `pass@k` only through a call and
-    #: a `|`, so a checker that reads one body sees none of its keys.
+    #: must follow: `sampling_report` reaches `pass@k` only through a call and a
+    #: `|`, so reading one body sees none of its keys.
     _METRICS = (
         "def health_metrics(finals):\n"
         "    return {'n_unextracted': 0.0}\n"
@@ -2458,11 +2458,10 @@ class TestCheckReportDeclarations:
         assert "score_key names 'strict_prompt_level_rate'" in r.details[0]
 
     def test_score_key_from_a_merged_helper_passes(self, tmp_path: Path):
-        """`pass@1` is legitimate when the report merges the helper that emits it.
+        """`pass@1` is legitimate when the report merges the helper emitting it.
 
-        Only reachable transitively: `sampling_report` returns
-        `rollout_metrics(...) | budget_metrics(...)`, so its own body names no
-        key at all.
+        Reachable only transitively: `sampling_report` returns
+        `rollout_metrics(...) | budget_metrics(...)`, naming no key in its body.
         """
         r = self._run(
             tmp_path,
@@ -2483,9 +2482,8 @@ class TestCheckReportDeclarations:
     def test_score_key_absent_from_the_merged_helper_fails(self, tmp_path: Path):
         """Merging widens to THAT helper's keys, not to all of `metrics.py`.
 
-        `health_metrics` emits only `n_unextracted`, so `pass@1` is still a
-        dangling reference here — which is the whole reason the merge is traced
-        to a name rather than treated as a blanket exemption.
+        `health_metrics` emits only `n_unextracted`, so `pass@1` still dangles —
+        the reason a merge is traced to a name, not blanket-exempted.
         """
         r = self._run(
             tmp_path,
@@ -2543,10 +2541,9 @@ class TestCheckReportDeclarations:
     def test_real_tasks_resolve_their_score_key(self):
         """Rule 4 has real coverage, not just fixtures.
 
-        A rule that silently skipped every shipped report would still pass
-        `test_real_tasks_pass`, so pin the count it actually resolved. Bump this
-        with the task count; a DROP means a report grew a key source rule 4
-        cannot follow.
+        A rule skipping every shipped report would still pass
+        `test_real_tasks_pass`, so pin the count it resolved. A DROP means a
+        report grew a key source rule 4 cannot follow.
         """
         (result,) = PreflightRunner().check_report_declarations()
         match = re.search(r"\((\d+) score_key", result.message)
