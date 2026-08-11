@@ -226,7 +226,11 @@ class AGIEvalZeroShotGenTask(
         raw = ctx.raw_sample
         subset = raw["subset"]
         reference = raw["label"] if raw["label"] else raw["answer"]
-        prediction = post["rollouts"][0]["prediction"]
+        # `.get`, not `[...]`: `prediction` is NotRequired and post_process returns
+        # None whenever extraction fails — routine on the cloze subsets — so the key
+        # is absent from the record on disk and indexing it raises KeyError on
+        # resume, never on a fresh run.
+        prediction = post["rollouts"][0].get("prediction")
         correct = evaluate_single_sample(subset, prediction, reference)
         return True, build_judgement_record(
             reference,

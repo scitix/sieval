@@ -147,6 +147,31 @@ async def test_infer_carries_an_empty_first_stage_reply_into_stage_two():
     )
 
 
+@pytest.mark.anyio
+async def test_feedback_survives_a_record_whose_prediction_was_dropped():
+    """A resumed run reads records back from disk, where `prediction` is absent.
+
+    `post_process` returns None whenever extraction fails — routine on the cloze
+    subsets — and `prediction` is NotRequired, so serialization drops the key.
+    Indexing it made resume raise KeyError on exactly the samples a fresh run
+    scored 0, so the bug could not show up in a single clean pass.
+    """
+    task = _task()
+    sample = _sample("gaokao-mathcloze", options=[], label=None, answer="2")
+    ctx = TaskContext(sample_id=0, raw_sample=sample)
+
+    record = build_prediction_record([None])
+    # What a round trip through JSON leaves behind.
+    for rollout in record["rollouts"]:
+        rollout.pop("prediction", None)
+    assert "prediction" not in record["rollouts"][0]
+
+    finalize, fb = await task.feedback(record, ctx)
+
+    assert finalize is True
+    assert fb["rollouts"][0]["correct"] is False
+
+
 def test_extractor_arg_rejects_a_non_model():
     with pytest.raises(ValueError, match="model-config dict or a Model"):
         _task(extractor=42)
