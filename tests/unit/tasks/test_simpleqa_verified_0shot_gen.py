@@ -330,6 +330,28 @@ async def test_report_fails_weighted_by_n():
     assert report["not_attempted"] == pytest.approx(50.0)
 
 
+@pytest.mark.anyio
+async def test_report_separates_an_empty_response_from_a_hedged_one():
+    # NOT_ATTEMPTED is the autorater's reading of an answer, and a blank response
+    # -- which it never saw a claim in -- grades the same way. The rate cannot
+    # say which happened; `n_unextracted` can, and "the model returned nothing"
+    # is a delivery-side fact, not a factuality result.
+    task, _ = _task()
+    finals = [
+        TaskContext(
+            sample_id=i,
+            postprocess_result=build_prediction_record([prediction]),
+            feedback_result=_graded("NOT_ATTEMPTED"),
+        )
+        for i, prediction in enumerate(["I am not sure.", None])
+    ]
+    report = await task.report(finals, fails=[])
+
+    assert report["n_graded"] == 2
+    assert report["not_attempted"] == pytest.approx(100.0)
+    assert report["n_unextracted"] == 1
+
+
 def test_report_empty_is_zero():
     # aggregate_metrics is the pure kernel report() delegates to.
     m = aggregate_metrics([])

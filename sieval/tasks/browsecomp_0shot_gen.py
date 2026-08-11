@@ -54,6 +54,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import health_metrics
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import BrowseCompDatasetSample
 
@@ -224,4 +225,10 @@ class BrowseCompZeroShotGenTask(
             "incorrect": m["is_incorrect"] * 100,
             "n_graded": len(graded),
             "fails": len(fails),
-        }
+            # There is no NOT_ATTEMPTED bucket here, so an empty response scores
+            # INCORRECT alongside a wrong answer; this is the count that tells
+            # them apart. Deliberately only `health_metrics` and not the rest of
+            # the sampling block: RFC #74 defers `pass@k` / `maj@k` for the
+            # LLM-judged family, while this one measures extraction rather than
+            # the draw and is outside that gate.
+        } | health_metrics(finals)

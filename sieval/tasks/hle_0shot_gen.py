@@ -76,6 +76,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import health_metrics
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import HLEDataset, HLEDatasetSample
 
@@ -284,4 +285,11 @@ class HLEZeroShotGenTask(
             "fails": len(fails),
             "judge_unparsed": judge_unparsed,
             "subset": "text_only" if self._text_only else "full",
-        }
+            # `judge_unparsed` counts the GRADER failing to answer; `n_unextracted`
+            # counts the candidate producing nothing to grade. Both grade
+            # incorrect, and without the second one they are indistinguishable in
+            # the report. Deliberately only `health_metrics` and not the rest of
+            # the sampling block: RFC #74 defers `pass@k` / `maj@k` for the
+            # LLM-judged family, while this one measures extraction rather than
+            # the draw and is outside that gate.
+        } | health_metrics(finals)

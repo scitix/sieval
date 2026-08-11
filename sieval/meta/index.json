@@ -306,6 +306,28 @@
       }
     },
     {
+      "name": "complex_constraints",
+      "display_name": "ComplexConstraints",
+      "description": "75 multi-constraint prompts with 1,559 rubric criteria (Surge AI).",
+      "source": [
+        "hf:surgeai/ComplexConstraints@e9625c6f635f42b72cb85a04c2be64746f945126"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "english",
+        "instruction-following",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-4.0",
+      "checksums": {}
+    },
+    {
       "name": "drop",
       "display_name": "DROP",
       "description": "Discrete Reasoning Over Paragraphs — reading-comprehension benchmark.",
@@ -1269,6 +1291,27 @@
         "notes": "Mirrors the official qwen2.py base path (eval, not eval_instruct): non-CoT CMMLU prompt, same-subject dev shots, one-call next-token A/B/C/D scoring, and subject-level macro report. Runtime n_shot is configurable. Uses API top_logprobs as an OpenAI-compatible substitute for the official raw-logits choice argmax (equivalent while all four option tokens are in top-k). Scoring requires all of A/B/C/D in the top-k and fails the sample otherwise, so partial coverage is loud; faithful reproduction needs a top-k that always includes them (default logprobs=100; on vLLM start with --max-logprobs 100, default 20; SGLang serves 100 by default). The validated Qwen2.5-72B 5-shot run with logprobs=100 had the full A/B/C/D set across all 11,582 samples. Runner failures are reported separately and excluded from the score denominator. Target: 89.5 (Qwen2.5-72B Base, 5-shot, DeepSeek-V3 base-model table) as a cross-check only — DeepSeek's perplexity method is underspecified (letter vs. text unstated; appendix template lists single-letter OPTIONS) and is not the reproduced method. The official CMMLU leaderboard's 85.67 is the Instruct model, not this base target."
       },
       "status": "stable"
+    },
+    {
+      "name": "complex_constraints_0shot_gen",
+      "display_name": "ComplexConstraints (0-shot, generative)",
+      "description": "Multi-constraint instruction following; rubric graded by an LLM judge.",
+      "dataset": "complex_constraints",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "instruction-following",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "complex-constraints",
+        "url": "https://arxiv.org/abs/2606.09118",
+        "notes": "Generative port of ComplexConstraints (Surge AI, arXiv:2606.09118) — 75 multi-constraint prompts (CIF-001..CIF-075) with 10-40 atomic rubric criteria each (1,559 total), graded by rubric rather than exact match. NO UPSTREAM EVAL CODE AND NO UPSTREAM JUDGE PROMPT: the paper defines the metrics, but the judge template, decoding settings and call structure are unstated, so the rubric prompt and verdict parsing are AUTHORED BY THIS PORT (sieval.community.complex_constraints) — hence status=experimental. METRICS: headline = task pass rate (response satisfies EVERY criterion), the metric the paper's leaderboard reports (Table 1); also criterion_pass_rate_macro (the paper's 'mean per-criterion pass rate', Table 3) and _micro (pooled), which differ because criteria counts vary 10-40 per prompt. GRADING: one judge call per rollout, verdicts as an indexed PASS/FAIL list; an unreadable verdict scores not-satisfied but is counted as n_unparsed; empty responses satisfy zero criteria without invoking the judge. Give the grader max_tokens for up to 40 verdict lines AFTER its reasoning — a truncated grader biases the score DOWN. ALIGNMENT (measured 2026-08-10, 25 gradings; details in the module docstring): the ORDERING reproduces exactly — three models spanning the board rank 51.56 > 18.33 > 5.78 against Table 1's 38.7 > 26.7 > 4.9, adjacent gaps 32.3 and 11.7 points even at worst case — but magnitudes sit ~13 points HIGH, and that residual is NOT judge choice: three capable judges across two vendors land on 51.6-53.3 and agree with each other about as well as each agrees with itself, so all of them sit ABOVE the board and this port's authored rubric grades more leniently than whatever produced it. Open; prefer rank agreement over a single-point score match. THE JUDGE IS A CAPABILITY FLOOR, NOT A NAME OR A PRICE: a flash-tier judge matched a pro-tier one to 1.3 points while a mini-tier one sat ~27 low and ONE-WAY — this template says fail what you cannot verify, so a sub-floor judge produces one-way false FAILs by construction. REPRODUCIBILITY: pin the grader model and set temperature=0 where the endpoint honours it — necessary but NOT sufficient (at t=0 one judge repeated exactly, another still spanned 2.67); where it is not honoured (one gateway fixes temperature=1 across its gpt-5.x family) the same judge on the same responses spanned 20.0-29.3 over four runs, so repeat the grading and report a spread. `n` is a task arg (tasks.<name>.args.n), not a model arg, and repeats the CANDIDATE, not the judge. Per-rollout verdicts and the judge's full ModelOutput (extra.grader_output) are persisted. Leaderboard snapshot 2026-06-03 (https://surgehq.ai/benchmarks/complex-constraints; the live board moves): Gemini 3.1 Pro 40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %."
+      },
+      "status": "experimental"
     },
     {
       "name": "drop_kshot_gen",

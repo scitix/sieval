@@ -255,6 +255,35 @@ async def test_report_fails_weighted_by_n():
     assert report["accuracy"] == pytest.approx(50.0)
 
 
+@pytest.mark.anyio
+async def test_report_separates_an_empty_response_from_a_wrong_answer():
+    # BrowseComp has no NOT_ATTEMPTED bucket, so a blank response and a wrong
+    # answer both score INCORRECT and both land in `n_graded`. Only
+    # `n_unextracted` separates "the model returned nothing" from "the model got
+    # it wrong", and those want different responses from whoever reads the run.
+    task, _ = _task()
+    finals = [
+        TaskContext(
+            sample_id=i,
+            postprocess_result=build_prediction_record([prediction]),
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        0, False, extra={"grade": "INCORRECT", "confidence": 100}
+                    )
+                ],
+            ),
+        )
+        for i, prediction in enumerate(["Christopher Marlowe", None])
+    ]
+    report = await task.report(finals, fails=[])
+
+    assert report["n_graded"] == 2
+    assert report["incorrect"] == pytest.approx(100.0)
+    assert report["n_unextracted"] == 1
+
+
 def test_aggregate_and_parse_kernels():
     assert aggregate_metrics([])["accuracy"] == 0.0
     assert parse_grade("correct: yes") == "CORRECT"

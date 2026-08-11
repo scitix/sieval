@@ -77,6 +77,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import health_metrics
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import AALCRDatasetSample
 
@@ -262,4 +263,10 @@ class AALCRZeroShotGenTask(
             "incorrect": m["is_incorrect"] * 100,
             "n_graded": len(graded),
             "fails": len(fails),
-        }
+            # The module docstring leans on `extracted: false` to tell an empty
+            # response apart from one the grader failed; without the count in the
+            # report that distinction lives only in the shards. Deliberately only
+            # `health_metrics` and not the rest of the sampling block: RFC #74
+            # defers `pass@k` / `maj@k` for the LLM-judged family, while this one
+            # measures extraction rather than the draw and is outside that gate.
+        } | health_metrics(finals)

@@ -326,6 +326,46 @@ async def test_report_empty_is_zero():
 
 
 @pytest.mark.anyio
+async def test_report_separates_an_unparsed_judge_from_an_empty_response():
+    # Two counts for two different actors: `judge_unparsed` is the GRADER failing
+    # to answer, `n_unextracted` is the candidate producing nothing to grade.
+    # Both end up incorrect, and with only the first the report cannot say which
+    # side of the pipeline went quiet.
+    task, _, _ = _task()  # n=1
+    finals = [
+        TaskContext(
+            sample_id=0,
+            postprocess_result=build_prediction_record(["Answer: 5"]),
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        0, False, extra={"confidence": 90, "judge_parsed": True}
+                    )
+                ],
+            ),
+        ),
+        TaskContext(
+            sample_id=1,
+            postprocess_result=build_prediction_record([None]),
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        0, False, extra={"confidence": 100, "judge_parsed": True}
+                    )
+                ],
+            ),
+        ),
+    ]
+    report = await task.report(finals, [])
+
+    assert report["judge_unparsed"] == 0
+    assert report["n_unextracted"] == 1
+    assert report["accuracy"] == pytest.approx(0.0)
+
+
+@pytest.mark.anyio
 async def test_report_subset_reflects_full_set():
     # `subset` must distinguish a full-set run from the text-only default.
     task, _, _ = _task(text_only=False)

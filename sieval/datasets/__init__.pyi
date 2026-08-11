@@ -57,6 +57,10 @@ from .cmmlu import (
     CMMLUDataset,
     CMMLUDatasetSample,
 )
+from .complex_constraints import (
+    ComplexConstraintsDataset,
+    ComplexConstraintsDatasetSample,
+)
 from .drop import (
     DROPDataset,
     DROPDatasetSample,
@@ -199,6 +203,8 @@ __all__ = [
     "CMIMC2025DatasetSample",
     "CMMLUDataset",
     "CMMLUDatasetSample",
+    "ComplexConstraintsDataset",
+    "ComplexConstraintsDatasetSample",
     "DROPDataset",
     "DROPDatasetSample",
     "GPQADiamondDataset",

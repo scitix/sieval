@@ -43,6 +43,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import health_metrics
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import SimpleQAVerifiedDatasetSample
 
@@ -226,4 +227,11 @@ class SimpleQAVerifiedZeroShotGenTask(
             "not_attempted": m["is_not_attempted"] * 100,
             "n_graded": len(graded),
             "fails": len(fails),
-        }
+            # `not_attempted` is the autorater's reading of the answer; a blank
+            # response the autorater never saw a claim in lands there too, so the
+            # rate alone cannot say whether the model hedged or returned nothing.
+            # Deliberately only `health_metrics` and not the rest of the sampling
+            # block: RFC #74 defers `pass@k` / `maj@k` for the LLM-judged family,
+            # while this one measures extraction rather than the draw and is
+            # outside that gate.
+        } | health_metrics(finals)

@@ -49,6 +49,9 @@ from .cmimc_2025_0shot_gen import (
 from .cmmlu_kshot_clp import (
     CMMLUFewShotClpTask,
 )
+from .complex_constraints_0shot_gen import (
+    ComplexConstraintsZeroShotGenTask,
+)
 from .drop_kshot_gen import (
     DROPFewShotGenTask,
 )
@@ -175,6 +178,7 @@ __all__ = [
     "CEvalFewShotCLPTask",
     "CMIMC2025ZeroShotGenTask",
     "CMMLUFewShotClpTask",
+    "ComplexConstraintsZeroShotGenTask",
     "DROPFewShotGenTask",
     "GPQADiamondZeroShotGenTask",
     "GSM8KFewShotBaseGenTask",
