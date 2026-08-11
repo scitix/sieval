@@ -78,6 +78,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets import IHEvalDatasetSample
 
 # The nine subtasks, in the paper's reporting order. Names are unique across
@@ -259,7 +264,7 @@ class IHEvalZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        dict[str, float | str],
     ]
 ):
     def __init__(self, dataset, model, name: str | None = None):
@@ -417,7 +422,7 @@ class IHEvalZeroShotGenTask(
         )
 
     @override
-    async def report(self, finals: list, fails: list) -> dict[str, float]:
+    async def report(self, finals: list, fails: list) -> dict[str, float | str]:
         cells: dict[tuple[str, str, str], list] = defaultdict(list)
         for ctx in finals:
             raw = ctx.raw_sample
@@ -433,7 +438,7 @@ class IHEvalZeroShotGenTask(
         for (subtask, setting, _), average in cell_averages.items():
             by_setting[setting][subtask].append(average)
 
-        results: dict[str, float] = {"fails": len(fails)}
+        results: dict[str, float | str] = {"fails": len(fails)}
         subtask_scores: dict[str, dict[str, float]] = defaultdict(dict)
         for setting, per_subtask in by_setting.items():
             for subtask, averages in per_subtask.items():
@@ -481,6 +486,13 @@ class IHEvalZeroShotGenTask(
         # The conflict aggregate is the headline: reference and aligned are the
         # controls that make it interpretable, not competing answers.
         results["score"] = results.get("score_conflict", 0.0)
+        results[SCORE_KEY_FIELD] = "score_conflict"
+        # JUDGED, not REQUESTED: every average above is built from `finals` only,
+        # so a row that never produced a response is absent from its cell rather
+        # than scored zero, and `fails` carries the count separately. A model
+        # whose tool rows the server rejects therefore reports a tool-use cell
+        # over the rows that ran -- or omits the cell when none did.
+        results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
         return results
 
     def _cell_average(self, key: tuple[str, str, str], contexts: list) -> float:

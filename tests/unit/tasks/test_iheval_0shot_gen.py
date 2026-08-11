@@ -18,6 +18,11 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import TaskContext, build_prediction_record
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets.iheval import IHEvalDataset
 from sieval.tasks.iheval_0shot_gen import IHEvalZeroShotGenTask
 
@@ -322,6 +327,30 @@ class TestReport:
         # The headline is conflict, not an average of the three.
         assert report["score"] == 0.0
         assert report["fails"] == 0
+
+    @pytest.mark.anyio
+    async def test_report_declares_where_the_headline_came_from(self):
+        """score_key must name a column the report actually writes, and the
+        denominator must say JUDGED.
+
+        JUDGED because every average is built from `finals` only: a row whose
+        inference failed is absent from its cell rather than scored zero, and
+        `fails` carries the count. Declaring REQUESTED here would claim failures
+        were counted as wrong, which would silently misread any run where a
+        server rejected part of the set.
+        """
+        rows = [_row(subtask="slack-user", setting="conflict", answer="Jack")]
+        task = _task(rows)
+        finals = [await _judge(task, rows[0], "Jack")]
+
+        report = await task.report(finals, [object()])
+
+        assert report[SCORE_KEY_FIELD] == "score_conflict"
+        assert report[report[SCORE_KEY_FIELD]] == report["score"]
+        assert report[DENOMINATOR_FIELD] == DENOMINATOR_JUDGED
+        # The fail did not enter the average, which is what JUDGED asserts.
+        assert report["fails"] == 1
+        assert report["score_conflict"] == 100.0
 
     @pytest.mark.anyio
     async def test_variants_of_one_setting_weigh_equally(self):
