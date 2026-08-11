@@ -247,7 +247,9 @@ class MultiIFZeroShotGenTask(
         list[ModelOutput],
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key` and `denominator_policy`,
+        # which name a column and a population rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     @override
@@ -444,7 +446,7 @@ class MultiIFZeroShotGenTask(
     @override
     async def report(self, finals, fails):
         judgements = [f.feedback_result for f in finals]
-        results: dict[str, float] = {"fails": len(fails)}
+        results: dict[str, float | str] = {"fails": len(fails)}
 
         # Every language present, plus the pooled cell. Sorted so the report's
         # key order does not depend on which sample finished first.
