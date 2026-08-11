@@ -246,6 +246,7 @@ class TestTaskRunMeta:
             "n_shot": 0,
             "tags": ["english", "open-ended"],
             "status": "stable",
+            "reference_kind": "value",
         }
         with_task: TaskRunMeta = {
             "version": "0.1.0",

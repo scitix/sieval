@@ -310,10 +310,14 @@ class MMMLUKShotClpTask(
         raw = ctx.raw_sample
         prediction = post["rollouts"][0].get("prediction")
         if raw is None:
-            # No sample to grade against. The empty grouping keys are what the
-            # pre-migration shape recorded, and report() maps them to "unknown".
+            # No sample to grade against, so the reference is genuinely unknown:
+            # `None` rather than the `""` the pre-migration shape recorded, so
+            # `missing_reference` sees it (this task declares
+            # `reference_kind="value"`, and `""` reads as a legitimately empty
+            # gold). The empty *grouping* keys stay as they were -- report() maps
+            # those to "unknown" and depends on them being present.
             return True, build_judgement_record(
-                "",
+                None,
                 [build_rollout_judgement(0, False)],
                 extra={"subject": "", "category": "", "locale": ""},
             )

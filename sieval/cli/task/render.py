@@ -81,6 +81,7 @@ def render_task_show(
         "model_type": t.model_type,
         "deps_group": t.deps_group,
         "status": t.status,
+        "reference_kind": t.reference_kind,
         "reference_impl": (
             {
                 "source": t.reference_impl.source,

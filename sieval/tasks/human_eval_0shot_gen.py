@@ -40,6 +40,7 @@ from sieval.datasets import HumanEvalDatasetSample
     n_shot=0,
     tags=("english", "python", "code-exec"),
     model_type="chat",
+    reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="simple-evals",
         url="https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/humaneval_eval.py",

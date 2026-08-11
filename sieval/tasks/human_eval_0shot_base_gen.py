@@ -61,6 +61,7 @@ STOP_SEQUENCES = ("\nclass", "\ndef", "\n#", "\nif", "\nprint")
     n_shot=0,
     tags=("english", "python", "code-exec", "base-model"),
     model_type="gen",
+    reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="lm-evaluation-harness",
         url=(

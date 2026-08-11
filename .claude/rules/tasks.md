@@ -44,6 +44,7 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
 - Record the upstream **repeat/sampling protocol** in `reference_impl.notes` when it differs from this task's default `n` (matharena's runner default `--n 4`; simple-evals' `n_repeats`), and say how to match it. Nothing enforces this — it needs upstream knowledge.
 - The PostToolUse hooks in `.claude/settings.json` regenerate stubs + `meta/index.json` on a Write/Edit under `sieval/tasks/` or `sieval/datasets/`, in the checkout that owns the file. They do not fire for `sed -i`, `git apply`, or a rebase, so `--check` both sync scripts before committing: CI fails on a stale `meta/index.json`, and stub drift has no enforcer at all.
 - ruff and ty run from the same hooks but only report — run the full `ruff check` / `ty check` before committing.
+- Declare `reference_kind="procedure"` on `@sieval_task` when the ground truth is a test suite or a rubric rather than a value; the default `"value"` is right for everything else. Enforced against the `build_judgement_record` call sites by `check_preflight.py --check check_reference_kind`; rationale in `sieval/tasks/CLAUDE.md` §"Task Metadata: `@sieval_task`".
 - `report()` must declare `score_key` (whenever it emits a `score`) and `denominator_policy` (`DENOMINATOR_REQUESTED` / `DENOMINATOR_JUDGED`) from `sieval.core.tasks.metrics` — on **every** return path, empty-run guards included, and `score_key` must name a key that report actually writes (a merged `metrics.py` key counts). Enforced by `check_preflight.py --check check_report_declarations`; rationale in `sieval/tasks/CLAUDE.md` §"Report Declarations".
 - Run `python scripts/check_preflight.py --check check_tasks` to verify naming, tags, and imports
 
@@ -54,7 +55,7 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
 
 ## Tags — Anomaly Detection
 
-- New tasks: use `@sieval_task(...)` — `cls.tags` is synthesized from `eval_mode` + `n_shot`; do not set manually. See `sieval/tasks/CLAUDE.md` §"Task Metadata: `@sieval_task`".
+- New tasks: use `@sieval_task(...)` — `cls.tags` is synthesized from `eval_mode` + `n_shot` + `reference_kind`; do not set manually. See `sieval/tasks/CLAUDE.md` §"Task Metadata: `@sieval_task`".
 - Legacy (unmigrated) tasks still declare `tags: ClassVar[set[str]]` with vocabulary `gen / ppl / base / zero_shot / few_shot / llm_judge`.
 
 ## Data Flow — Async & Concurrency

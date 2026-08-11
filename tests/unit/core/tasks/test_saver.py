@@ -22,6 +22,7 @@ _IDENTITY: TaskRunIdentity = {
     "n_shot": 0,
     "tags": ["english", "open-ended"],
     "status": "stable",
+    "reference_kind": "value",
 }
 
 

@@ -256,6 +256,7 @@ class TestE2ERunMetaTaskIdentity:
             "n_shot": 2,
             "tags": ["english", "multiple-choice"],
             "status": "experimental",
+            "reference_kind": "value",
         }
         assert task.name != meta["task"]["name"]
         assert meta["version"] == __version__
@@ -303,6 +304,7 @@ _IDENT: TaskRunIdentity = {
     "n_shot": 0,
     "tags": [],
     "status": "stable",
+    "reference_kind": "value",
 }
 # Same block, different registered name — the only field the gate compares.
 _OTHER: TaskRunIdentity = {
@@ -313,6 +315,7 @@ _OTHER: TaskRunIdentity = {
     "n_shot": 0,
     "tags": [],
     "status": "stable",
+    "reference_kind": "value",
 }
 
 

@@ -47,6 +47,7 @@ from sieval.datasets import LiveCodeBenchDatasetSample
     n_shot=0,
     tags=("english", "python", "code-exec"),
     model_type="chat",
+    reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="livecodebench",
         url="https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",

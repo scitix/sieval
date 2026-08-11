@@ -76,13 +76,17 @@ def test_pilot_tasks_retain_protocol_tags_and_model_type():
     from sieval.tasks.drop_kshot_gen import DROPFewShotGenTask
     from sieval.tasks.mmlu_0shot_gen import MMLUZeroShotGenTask
 
-    assert AIME2024ZeroShotGenTask.tags == frozenset({"gen", "zero_shot"})
+    assert AIME2024ZeroShotGenTask.tags == frozenset(
+        {"gen", "zero_shot", "value_reference"}
+    )
     assert AIME2024ZeroShotGenTask.model_type == "chat"
 
-    assert DROPFewShotGenTask.tags == frozenset({"gen", "few_shot"})
+    assert DROPFewShotGenTask.tags == frozenset({"gen", "few_shot", "value_reference"})
     assert DROPFewShotGenTask.model_type == "chat"
 
-    assert MMLUZeroShotGenTask.tags == frozenset({"gen", "zero_shot"})
+    assert MMLUZeroShotGenTask.tags == frozenset(
+        {"gen", "zero_shot", "value_reference"}
+    )
     assert MMLUZeroShotGenTask.model_type == "chat"
 
 

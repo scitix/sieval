@@ -429,9 +429,14 @@ class CMMLUFewShotClpTask(
         raw = ctx.raw_sample
         if raw is None:
             # No sample to compare against: the verdict is wrong-by-default, and
-            # the reference is genuinely unknown rather than a procedure. Kept as
-            # the pre-migration behaviour (which recorded answer="").
-            return True, build_judgement_record("", [build_rollout_judgement(0, False)])
+            # the reference is genuinely unknown rather than a procedure. `None`,
+            # not the `answer=""` the pre-migration shape recorded: this task
+            # declares `reference_kind="value"`, so an absent reference is what
+            # `missing_reference` reports, while `""` would be read as a gold that
+            # is legitimately the empty string and pass silently.
+            return True, build_judgement_record(
+                None, [build_rollout_judgement(0, False)]
+            )
         answer = raw["answer"]
         # `subject` rides along so a judgement row on disk is self-describing;
         # report() still groups by raw_sample (see there).

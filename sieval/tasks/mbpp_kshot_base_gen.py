@@ -55,6 +55,7 @@ STOP_SEQUENCES = ("[DONE]",)
     n_shot=DEFAULT_NUM_SHOTS,
     tags=("english", "python", "code-exec", "base-model"),
     model_type="gen",
+    reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="lm-evaluation-harness",
         url="https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/mbpp/mbpp.yaml",

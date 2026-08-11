@@ -231,8 +231,11 @@ _UNGATED_RECORD_KEYS = frozenset(
         # a procedure (a test suite, a rubric), which is fixed per task. Shares
         # `prediction`'s shape on JudgementRecord, but the one `[]` read (ruler's
         # report) consumes it as an iterable, so `.get()` would swap KeyError for
-        # `list(None)` TypeError — `extra`'s trap again. What it needs is a
-        # durable signal of *which* absence this is: scitix/sieval#71.
+        # `list(None)` TypeError — `extra`'s trap again. Gating it was never the
+        # fix; what it needed was a durable signal of *which* absence this is, and
+        # that is now `TaskMeta.reference_kind` (declared per task, enforced by
+        # `check_reference_kind`) plus the `missing_reference` anomaly rule for the
+        # per-sample case.
         "reference",
     }
 )
@@ -719,6 +722,82 @@ def _function_named(tree: ast.Module, name: str) -> ast.AST | None:
     return None
 
 
+def _class_named(tree: ast.Module, name: str) -> ast.ClassDef | None:
+    """The ``ClassDef`` named *name* anywhere in *tree*, or None."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return node
+    return None
+
+
+def _call_name(node: ast.Call) -> str | None:
+    """The bare name a call targets: ``f()`` -> ``f``, ``m.f()`` -> ``f``."""
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def _called_names(scope: ast.AST) -> set[str]:
+    """Every bare name called anywhere in *scope*."""
+    return {
+        name
+        for node in ast.walk(scope)
+        if isinstance(node, ast.Call) and (name := _call_name(node)) is not None
+    }
+
+
+#: The record builder whose first argument declares the ground truth.
+_JUDGEMENT_BUILDER = "build_judgement_record"
+
+
+def _judgement_references(scope: ast.AST) -> list[ast.expr]:
+    """The ``reference`` argument of each ``build_judgement_record`` call in *scope*.
+
+    Positional first, since that is the builder's signature; the keyword form is
+    read the same way so a call written either way agrees. A call passing neither
+    is skipped rather than guessed -- it does not type-check, and treating a
+    missing argument as a declaration would report a syntax problem as a
+    mis-declaration.
+    """
+    found: list[ast.expr] = []
+    for node in ast.walk(scope):
+        if not isinstance(node, ast.Call) or _call_name(node) != _JUDGEMENT_BUILDER:
+            continue
+        keyword = next(
+            (kw.value for kw in node.keywords if kw.arg == "reference"), None
+        )
+        arg = keyword if keyword is not None else (node.args[0] if node.args else None)
+        if arg is not None:
+            found.append(arg)
+    return found
+
+
+def _declared_reference_kind(cls: ast.ClassDef) -> str | None:
+    """*cls*'s declared ``reference_kind``, or None if it is not a task at all.
+
+    Returns the default ``"value"`` for a decorated class that declares nothing,
+    which is exactly what the decorator does -- so an omission is checked rather
+    than skipped. A non-literal value reads as unknown and skips the class.
+    """
+    for decorator in cls.decorator_list:
+        if not isinstance(decorator, ast.Call):
+            continue
+        if _call_name(decorator) != "sieval_task":
+            continue
+        for kw in decorator.keywords:
+            if kw.arg != "reference_kind":
+                continue
+            # Only a string literal is readable; a name or an f-string reads as
+            # unknown, which skips the class rather than inventing a verdict.
+            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                return kw.value.value
+            return None
+        return "value"
+    return None
+
+
 @dataclasses.dataclass
 class LockDrift:
     """Version changes to already-locked packages, split by justification."""
@@ -893,6 +972,7 @@ class PreflightRunner:
         "check_task_shot_knobs",
         "check_report_declarations",
         "check_record_key_access",
+        "check_reference_kind",
         "check_datasets",
         "check_imports",
         "check_examples",
@@ -1932,6 +2012,185 @@ class PreflightRunner:
                 "key the report writes)",
             )
         ]
+
+    def _judgement_references_for(
+        self, cls: ast.ClassDef, tree: ast.Module, path: Path, violations: list[str]
+    ) -> tuple[list[ast.expr], str]:
+        """*cls*'s ``build_judgement_record`` reference args, and where they came from.
+
+        Three places, in order, because the repo builds the record in three
+        shapes and demanding it at the class body would exempt two of them:
+
+        1. the class itself -- 44 of 53 tasks;
+        2. a helper the class calls, defined here or imported from a sibling
+           inside ``sieval/tasks/`` -- ``arc/``'s four leaves share
+           ``_base.arc_judgement_record``;
+        3. a base class resolved the same way -- ``platinum_bench``'s five leaves
+           inherit ``feedback`` and define none of their own.
+
+        One level each, not a transitive walk: that covers every task today, and
+        a deeper chain reports as unresolved (the caller counts it) rather than
+        passing quietly.
+
+        Each tier accumulates every call site it can see before the next is
+        tried, rather than stopping at the first hit. A task whose two branches
+        build the record two ways is the case that matters (``ugmathbench``), and
+        stopping early would read one branch as the whole story.
+        """
+        found = _judgement_references(cls)
+        if found:
+            return found, "class"
+
+        called = _called_names(cls)
+        for node in tree.body:
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in called
+            ):
+                found += _judgement_references(node)
+        for name in sorted(called):
+            target = _resolve_intra_package(tree, name, path, self.project_root)
+            if target is None or not target.is_file():
+                continue
+            shared = self._parse_task_module(target, violations)
+            if shared is None:
+                continue
+            fn = _function_named(shared, name)
+            if fn is not None:
+                found += _judgement_references(fn)
+        if found:
+            return found, "helper"
+
+        for base in cls.bases:
+            if not isinstance(base, ast.Name):
+                continue
+            target = _resolve_intra_package(tree, base.id, path, self.project_root)
+            if target is None or not target.is_file():
+                continue
+            shared = self._parse_task_module(target, violations)
+            if shared is None:
+                continue
+            parent = _class_named(shared, base.id)
+            if parent is not None:
+                found += _judgement_references(parent)
+        if found:
+            return found, "base"
+
+        return [], "unresolved"
+
+    def check_reference_kind(self) -> list[CheckResult]:
+        """Every task's declared ``reference_kind`` must match how it judges.
+
+        ``TaskMeta.reference_kind`` is what tells a stored judgement carrying no
+        ``reference`` apart from one whose gold went missing, and it is the tag the
+        ``missing_reference`` anomaly rule routes on. That makes a wrong
+        declaration silent in both directions, and silent the expensive way:
+
+        * declared ``value``, judges with ``build_judgement_record(None, ...)`` --
+          the rule fires on *every* sample of the task, so a whole benchmark reads
+          as defective;
+        * declared ``procedure``, judges with a real gold -- the rule never runs,
+          so the genuinely-missing golds it exists to catch go unreported.
+
+        Neither shows up anywhere else: the field is additive with a default, so an
+        undeclared task is valid Python, scores identically, and passes every test.
+        That is the same failure mode ``check_report_declarations`` exists for.
+
+        The verdict is read off the call sites, not the docstrings: a task whose
+        every ``build_judgement_record`` passes a literal ``None`` is a
+        ``procedure``, and one with any other reference expression is a ``value``.
+        A task with *both* (``ugmathbench_0shot_gen_fixed`` judges a
+        missing-``raw_sample`` with ``None`` and everything else with its gold) is
+        a ``value`` -- that ``None`` branch is precisely the anomaly, so reading it
+        as a procedure declaration would silence the report on the one task known
+        to need it.
+
+        AST-only, like ``check_report_declarations``, so a task whose optional deps
+        are absent is still covered.
+        """
+        py_files = [
+            f
+            for f in self._git_tracked_files(".py")
+            if str(f.relative_to(self.project_root)).startswith("sieval/tasks/")
+            and f.name != "__init__.py"
+        ]
+        if not py_files:
+            return [CheckResult("SKIP", "check_reference_kind", "no task modules")]
+
+        violations: list[str] = []
+        unresolved: list[str] = []
+        checked = 0
+        for py_file in py_files:
+            rel = py_file.relative_to(self.project_root)
+            tree = self._parse_task_module(py_file, violations)
+            if tree is None:
+                continue
+
+            for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+                declared = _declared_reference_kind(cls)
+                if declared is None:
+                    continue  # not a registered task, or a non-literal declaration
+                references, via = self._judgement_references_for(
+                    cls, tree, py_file, violations
+                )
+                if not references:
+                    unresolved.append(f"{rel}:{cls.lineno} {cls.name}")
+                    continue
+                checked += 1
+                inferred = (
+                    "procedure"
+                    if all(
+                        isinstance(r, ast.Constant) and r.value is None
+                        for r in references
+                    )
+                    else "value"
+                )
+                if inferred != declared:
+                    detail = (
+                        "passes a literal None as the reference"
+                        if inferred == "procedure"
+                        else "passes a real reference"
+                    )
+                    violations.append(
+                        f"{rel}:{cls.lineno} {cls.name}: declares "
+                        f"reference_kind={declared!r} but {detail} in all "
+                        f"{len(references)} build_judgement_record call(s) "
+                        f"(found via {via}) -- declare {inferred!r}, or change how "
+                        "the record is built"
+                    )
+
+        results: list[CheckResult] = []
+        if violations:
+            results.append(
+                CheckResult(
+                    "FAIL",
+                    "check_reference_kind",
+                    f"{len(violations)} task(s) mis-declare reference_kind",
+                    violations,
+                )
+            )
+        # A WARN, not a pass: the check is only as good as its reach, and a task
+        # it cannot read is a task the anomaly rule may be mis-routed on.
+        if unresolved:
+            results.append(
+                CheckResult(
+                    "WARN",
+                    "check_reference_kind",
+                    f"{len(unresolved)} task(s) build no judgement record this "
+                    "check can reach; reference_kind unverified",
+                    unresolved,
+                )
+            )
+        if not violations:
+            results.append(
+                CheckResult(
+                    "PASS",
+                    "check_reference_kind",
+                    f"all {checked} task(s) declare a reference_kind matching how "
+                    "they build their judgement record",
+                )
+            )
+        return results
 
     def _parse_task_module(
         self, path: Path, violations: list[str]
