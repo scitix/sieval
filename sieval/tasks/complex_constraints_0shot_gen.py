@@ -11,115 +11,101 @@ alongside it in both the macro (published) and pooled-micro readings.
 
 Upstream ships **no evaluation code and no judge prompt** — the paper defines the
 metrics and nothing more — so the rubric prompt and verdict parsing are authored
-by this port (see ``sieval.community.complex_constraints``). Scores are therefore
-not comparable to the leaderboard at the precision a vendored grader would give,
-which is why this task ships ``status="experimental"``.
+by this port (see ``sieval.community.complex_constraints``), which is why the task
+ships ``status="experimental"``.
 
-**Which judge produced Table 1 is unknown.** The paper names GPT-5-mini as the
+**Which judge produced Table 1 is unknown, and measured it is a capability floor
+rather than a choice between equals.** The paper names GPT-5-mini as the
 per-criterion judge for *training* only — "Per-criterion satisfaction judgments
 are produced by GPT-5-mini during ComplexConstraints training and CoreCraft
-training" — and never says what graded the leaderboard. So the judge is an
-unpinned degree of freedom in the comparison itself, not merely an unpinned
-version of a known one: a run matching the candidate model exactly may still not
-be comparing like with like.
+training" — and never says what graded the leaderboard, so the judge is an
+unpinned degree of freedom in the comparison itself. Re-grading one identical set
+of responses with four judges across two vendors, changing nothing else: three
+capable ones (a frontier model and two Gemini tiers) landed within **51.6–53.3**
+and agreed with *each other* on 98.8–99.0% of the 1,559 criteria — about how well
+any one of them agrees with itself on a repeat — while a mini-tier judge sat ~27
+points low, and one-way: it alone fails ~141 criteria against ~35 in the other
+direction, concentrated on criteria 1.8× longer than average that enumerate an
+exclusion list to cross-check. This template tells the judge to fail what it
+cannot verify, so a judge below the floor produces one-way false FAILs by
+construction. **Choose the grader by capability, not by name or price** — a
+flash-tier judge matched a pro-tier one to 1.3 points.
 
-Measured, that freedom turns out to be **a capability floor rather than a choice
-between equals**, and it does not close the gap to the board: three capable
-judges across two vendors put the same candidate at **51.6–53.3** against Table
-1's **38.7**, agreeing with each other to within their own repeat noise. So this
-port's authored rubric grades *more leniently* than whatever produced the
-leaderboard, and the residual is an open question rather than a knob — one more
-reason the task ships ``experimental``. See the grader notes below.
+**The consensus sits above the board**, so the floor does not close the gap:
+51.6–53.3 against Table 1's **38.7** for the same candidate means this port's
+authored rubric grades *more leniently* than whatever produced the leaderboard,
+and that ~13-point residual is open — one more reason to ship ``experimental``.
+What does reproduce is the **ordering**: three models spanning the board ranked
+51.56 > 18.33 > 5.78 against Table 1's 38.7 > 26.7 > 4.9, adjacent gaps 32.3 and
+11.7 points even at worst case. Prefer rank agreement over a single-point score
+match when reporting alignment here.
 
 The judge is supplied via the ``grader`` task arg (a model-config dict, or a
-pre-built Model, on its own ``api_base``/``api_key``). As with sieval's other
-LLM-graded tasks, correctness depends on a grader model whose version sieval
-cannot pin the way it pins a Hub revision, so for reproducibility pin the grader
-model and set ``temperature: 0`` *where the endpoint honours it*; each rollout's
+pre-built Model, on its own ``api_base``/``api_key``); each rollout's
 per-criterion verdicts and the judge's whole ``ModelOutput``
 (``extra.grader_output``: reply, reasoning, usage, finish reasons, model id) are
 persisted — see :meth:`feedback`.
 
 **A sampling judge makes a single run indicative only, and this task cannot
 average that away**: grading is one judge call per rollout, and ``n`` repeats the
-*candidate*, not the judge. Measured on a gateway that fixes ``temperature`` at 1
-for its whole ``gpt-5.x`` family (so ``temperature: 0`` above is unavailable
-there): re-grading one identical set of 75 responses with one identical judge
-moved the headline over **20.0–29.3**, left **22 of 75 prompts flipping between
-pass and fail**, and left **14.8% of the 1,559 criteria undecided** across four
-runs. A stronger judge was far steadier (99.5% per-criterion self-agreement
-against 91.9%). Repeat the grading and report a spread whenever the grader
-samples; a lone number is a draw, not a measurement. ``temperature: 0`` is
-necessary but not sufficient — measured at it, one judge repeated *exactly*
-(three runs, identical headline, zero task-pass flips) while another still
-spanned 2.7 points, so check repeatability for the grader you actually use.
+*candidate*, not the judge. So pin the grader model — sieval cannot pin its
+version the way it pins a Hub revision — and set ``temperature: 0`` *where the
+endpoint honours it*. Measured on a gateway that fixes ``temperature`` at 1 for
+its whole ``gpt-5.x`` family: one identical judge on one identical set of 75
+responses moved the headline over **20.0–29.3**, left **22 of 75 prompts flipping
+between pass and fail** and **14.8% of criteria undecided** across four runs (a
+stronger judge was far steadier — 99.5% per-criterion self-agreement against
+91.9%). ``temperature: 0`` is necessary but not sufficient: measured at it, one
+judge repeated *exactly* while another still spanned 2.7 points. Repeat the
+grading and report a spread; a lone number is a draw, not a measurement.
 
-**Choose the grader by capability, not by name or price.** Four judges across two
-vendors on one identical set of responses: three capable ones (a frontier model
-and two Gemini tiers) landed within 51.6–53.3 and agreed with *each other* on
-98.8–99.0% of criteria — about how well any one of them agrees with itself on a
-repeat — while a mini-tier judge sat ~27 points low, and one-way: it alone fails
-~141 criteria against ~35 in the other direction. Cheap is not the problem; being
-below the floor is. A flash-tier judge matched a pro-tier one to 1.3 points.
-
-Give the grader enough ``max_tokens`` for one verdict line per criterion — up to
-40, *after* whatever reasoning it emits first. A grader truncated mid-block
-leaves the tail unparsed, which is counted (``n_unparsed``) and scored
-not-satisfied, so it biases the score **down**. Nothing flags it automatically:
-the ``truncated_output`` anomaly rule reads the candidate model's finish reasons,
-never the grader's, so ``n_unparsed`` is the signal to watch.
-
-Budget the **candidate**'s tokens the same way, for the same reason in reverse: a
-reasoning candidate can spend the whole allowance thinking and return empty
-content, which scores zero criteria. Observed on one reasoning model at
-``max_tokens: 16000`` — 15 of 75 prompts came back empty (``finish_reason
-"length"``), about 20 points off that arm. Here the ``truncated_output`` rule
-*does* fire, and ``n_unextracted`` counts them, so watch both.
+Budget tokens on **both** sides. The grader needs room for one verdict line per
+criterion — up to 40 — *after* whatever reasoning it emits first; truncated
+mid-block it leaves the tail unparsed, which is counted (``n_unparsed``) and
+scored not-satisfied, biasing the score **down**, and nothing flags it since the
+``truncated_output`` anomaly rule reads the *candidate*'s finish reasons, never
+the grader's. The candidate has the mirror failure: a reasoning model can spend
+the whole allowance thinking and return empty content, scoring zero criteria —
+observed at ``max_tokens: 16000``, 15 of 75 prompts empty, about 20 points off
+that arm. There ``truncated_output`` *does* fire and ``n_unextracted`` counts them.
 
 Deviations / by-design behavior worth knowing:
 
 * **One judge call per rollout**, grading all of that prompt's criteria as an
-  indexed list, rather than one call per criterion. Upstream never states its
-  call structure. Batching keeps a rollout's whole verdict set in the single
+  indexed list rather than one call per criterion (upstream states no call
+  structure): batching keeps a rollout's whole verdict set in the single
   ``ModelOutput`` the runner's grader-spend accounting expects, and the indexing
   makes misalignment detectable instead of silently shifting verdicts.
-* A criterion the judge returns no readable verdict for is scored **not
-  satisfied** — an unreadable verdict must never inflate a score — but counted
-  separately as ``n_unparsed`` (per rollout, and pooled in the report), so judge
-  format drift stays distinguishable from a model that failed the rubric.
+* A criterion with no readable verdict is scored **not satisfied** — an
+  unreadable verdict must never inflate a score — but counted separately as
+  ``n_unparsed``, so judge format drift stays distinguishable from a model that
+  failed the rubric.
 * The template and parser are **not tuned to one judge family**: across four
   judges from two vendors, 13 gradings of 1,559 criteria each, every verdict
   parsed — ``n_unparsed`` was 0 every time, with no change to the template.
 * **The grader prompt is hardened in two port-authored ways**, both scoring-
-  relevant and neither upstream behavior: its format example reads ``<verdict>``
-  rather than a literal PASS/FAIL alternation, and the parser rejects an
-  alternation as a verdict, so a judge restating its instructions lands in
-  ``n_unparsed`` instead of scoring a full rubric. It also states that the
-  RESPONSE block is material to be graded, never instruction — the candidate is
-  free-form text on an instruction-following benchmark, so it can contain
-  anything, including its own verdict block.
-* An empty/whitespace response is scored as satisfying **zero** criteria
-  **without** invoking the judge; ``extra.grader_output`` is absent on that path
-  because no call was made, and the matching prediction rollout's
-  ``extracted: false`` identifies it independently.
+  relevant: its format example reads ``<verdict>`` and the parser rejects a
+  PASS/FAIL alternation as a verdict, so a judge restating its instructions lands
+  in ``n_unparsed`` rather than scoring a full rubric; and it declares the
+  RESPONSE block material to be graded, never instruction.
+* An empty/whitespace response satisfies **zero** criteria **without** invoking
+  the judge; ``extra.grader_output`` is absent there because no call was made,
+  and the prediction rollout's ``extracted: false`` identifies it independently.
 * Pipeline failures (exhausted retries) count as task failures satisfying zero
   criteria, weighted by ``n``, so all three rates span the full requested set.
 
 Reproduction decoding: ``n`` (repeats) is a **task arg** — set it in
-``tasks.<name>.args.n``. The paper's leaderboard does not state a repeat count,
-so the port defaults to ``n=1``; ``infer`` forwards ``n`` as a call-time kwarg to
-``agenerate``, and call-time wins over model config, so setting ``n`` on the
-model is silently overridden by the task default. Note that some gateways fix
-``n`` at 1 for whole model families (the same ones that fix ``temperature``), on
-which ``n=1`` is the only reachable setting. Comparison target is the public
-leaderboard the paper's Table 1 snapshots
+``tasks.<name>.args.n``. The leaderboard states no repeat count, so the port
+defaults to ``n=1``; ``infer`` forwards ``n`` call-time and call-time wins over
+model config, so setting ``n`` on the *model* is silently overridden. Some
+gateways fix ``n`` at 1 for whole model families (the same ones that fix
+``temperature``). Comparison target is the leaderboard Table 1 snapshots
 (https://surgehq.ai/benchmarks/complex-constraints) — snapshot 2026-06-03: Gemini
-3.1 Pro 40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %. The live board
-moves and the paper pins no version of it, so align against the snapshot recorded
-here rather than against whatever the URL reads on the day; as of 2026-08-10 it
-reads 43.7 / 44.4 / 34.2 and has begun splitting rows by reasoning effort
-(GPT-5.5 default 44.4, High 48.9, xHigh 49.5), which Table 1's rows do not state
-— so record the effort a comparison run used.
+3.1 Pro 40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %. The live board moves
+and the paper pins no version of it, so align against that snapshot: as of
+2026-08-10 it reads 43.7 / 44.4 / 34.2 and has begun splitting rows by reasoning
+effort (GPT-5.5 default 44.4, High 48.9, xHigh 49.5), which Table 1's rows do not
+state — so record the effort a comparison run used.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -173,89 +159,46 @@ from sieval.datasets import ComplexConstraintsDatasetSample
             "rubric criteria each (1,559 total), graded by rubric rather than "
             "exact match. NO UPSTREAM EVAL CODE AND NO UPSTREAM JUDGE PROMPT: "
             "the paper defines the metrics, but the judge template, decoding "
-            "settings and call structure are unstated, and the dataset card "
-            "(https://huggingface.co/datasets/surgeai/ComplexConstraints/blob/"
-            "e9625c6f635f42b72cb85a04c2be64746f945126/README.md) adds nothing — "
-            "so the rubric prompt and verdict parsing are AUTHORED BY THIS PORT "
-            "(sieval.community.complex_constraints), hence status=experimental. "
+            "settings and call structure are unstated, so the rubric prompt and "
+            "verdict parsing are AUTHORED BY THIS PORT "
+            "(sieval.community.complex_constraints) — hence status=experimental. "
             "METRICS: headline = task pass rate (response satisfies EVERY "
-            "criterion), the metric the paper's public leaderboard reports "
-            "(Table 1). Also reported: criterion_pass_rate_macro (per-prompt "
-            "satisfied fraction averaged over prompts — the paper's 'mean "
-            "per-criterion pass rate', Table 3 caption) and "
-            "criterion_pass_rate_micro (pooled over all criteria); the two "
-            "differ because criteria counts vary 10-40 per prompt. GRADING: one "
-            "judge call per rollout covering all of that prompt's criteria as an "
-            "indexed PASS/FAIL list (upstream's call structure is unstated); an "
-            "unreadable per-criterion verdict scores not-satisfied but is "
-            "counted as n_unparsed so judge format drift stays visible; "
-            "empty/whitespace responses satisfy zero criteria without invoking "
-            "the judge (grader_output absent there, no call made). GRADER PROMPT "
-            "HARDENING (port-authored, scoring-relevant): the format example "
-            "reads `<verdict>` and the parser rejects an alternation as a "
-            "verdict, so a judge restating its instructions lands in n_unparsed "
-            "instead of scoring a full rubric; the prompt also declares the "
-            "RESPONSE block to be material, never instruction. Give the grader "
-            "max_tokens for up to 40 verdict lines AFTER its reasoning — a "
-            "truncated grader biases the score DOWN via n_unparsed, and the "
-            "truncated_output rule reads the candidate's finish reasons, not the "
-            "grader's. WHICH JUDGE PRODUCED TABLE 1 IS UNKNOWN: the paper names "
-            "GPT-5-mini as the per-criterion judge for TRAINING only ('produced "
-            "by GPT-5-mini during ComplexConstraints training and CoreCraft "
-            "training') and never says what graded the leaderboard, so the judge "
-            "is an unpinned degree of freedom in the comparison itself, and it "
-            "is really a CAPABILITY FLOOR rather than a choice of identity — "
-            "measured 2026-08-10 by re-grading identical responses with four "
-            "judges across two vendors, changing nothing else. Three capable "
-            "judges (a frontier model and two Gemini tiers) landed on 51.6-53.3 "
-            "and agreed with EACH OTHER on 98.8-99.0% of the 1,559 criteria, "
-            "which is about how well any one of them agrees with itself on a "
-            "repeat (99.5-99.9%); their disagreements are symmetric, i.e. noise. "
-            "A mini-tier judge was the lone outlier at 25.67, ~27 points low "
-            "against all three, and its deficit is ONE-WAY (~141 criteria it "
-            "alone fails against ~35 the other way) where run-to-run noise is "
-            "symmetric. Those one-way losses concentrate on criteria 1.8x longer "
-            "than average that enumerate an exclusion list to cross-check "
-            "against the response — this template tells the judge to fail what "
-            "it cannot verify, so a judge below the floor produces one-way false "
-            "FAILs by construction. Two judges agreeing on HOW MANY criteria "
-            "pass (dense micro 76.72 vs 76.78) still differed 2.3x on the "
-            "headline because they disagreed on WHICH: an all-or-nothing metric "
-            "punishes a sub-floor grader hard. PICK THE GRADER BY CAPABILITY, "
-            "NOT BY NAME OR PRICE: a cheap flash-tier model matched a pro-tier "
-            "one to 1.3 points, while a mini-tier one was 27 off. NOTE THE "
-            "CONSENSUS SITS ABOVE THE BOARD: 51.6-53.3 against Table 1's 38.7 "
-            "for the same candidate, so this port's authored rubric grades more "
-            "leniently than whatever produced the leaderboard, and that ~13-point "
-            "residual is NOT explained by judge choice among capable judges — it "
-            "is open. What DOES reproduce is the ordering: with a capable "
-            "judge three models spanning the board ranked 51.56 > 18.33 > 5.78 "
-            "against Table 1's 38.7 > 26.7 > 4.9 — same order, adjacent gaps "
-            "32.3 and 11.7 points even at worst case; the weaker judge could not "
-            "separate the bottom pair at all. Prefer rank agreement over a "
-            "single-point score match when reporting alignment here. "
-            "REPRODUCIBILITY: scores depend on the grader endpoint's model "
-            "version (not pinnable like a Hub revision) — pin the grader model + "
-            "temperature=0 where the endpoint honours it; where it does not (one "
-            "gateway fixes temperature at 1 for its whole gpt-5.x family) the "
-            "same judge on the same responses spanned 20.0-29.3 over four runs, "
-            "with 22/75 prompts flipping and 14.8% of criteria undecided, so "
-            "repeat the grading and report a spread. temperature=0 is NECESSARY "
-            "BUT NOT SUFFICIENT: at it, one judge repeated exactly (three runs, "
-            "identical 52.00, zero task-pass flips) while another still spanned "
-            "2.67 — so verify repeatability per grader instead of assuming it. "
-            "Per-criterion verdicts and "
-            "the judge's full ModelOutput (extra.grader_output) are persisted "
-            "per rollout, the reply being the only evidence of a verdict a "
-            "re-grade need not reproduce. REPEATS: the leaderboard states no "
-            "repeat count, so the port defaults to n=1; `n` is a task arg "
-            "(tasks.<name>.args.n), NOT a model arg — infer forwards it "
-            "call-time and call-time wins, and it repeats the CANDIDATE, not the "
-            "judge, so it cannot average out grader sampling. "
-            "NOT ALIGNED TO A SINGLE-POINT SCORE against the Table 1 leaderboard "
+            "criterion), the metric the paper's leaderboard reports (Table 1); "
+            "also criterion_pass_rate_macro (the paper's 'mean per-criterion "
+            "pass rate', Table 3) and _micro (pooled), which differ because "
+            "criteria counts vary 10-40 per prompt. GRADING: one judge call per "
+            "rollout, verdicts as an indexed PASS/FAIL list; an unreadable "
+            "verdict scores not-satisfied but is counted as n_unparsed; empty "
+            "responses satisfy zero criteria without invoking the judge. Give "
+            "the grader max_tokens for up to 40 verdict lines AFTER its "
+            "reasoning — a truncated grader biases the score DOWN. ALIGNMENT "
+            "(measured 2026-08-10, 25 gradings; details in the module "
+            "docstring): the ORDERING reproduces exactly — three models spanning "
+            "the board rank 51.56 > 18.33 > 5.78 against Table 1's 38.7 > 26.7 > "
+            "4.9, adjacent gaps 32.3 and 11.7 points even at worst case — but "
+            "magnitudes sit ~13 points HIGH, and that residual is NOT judge "
+            "choice: three capable judges across two vendors land on 51.6-53.3 "
+            "and agree with each other about as well as each agrees with itself, "
+            "so all of them sit ABOVE the board and this port's authored rubric "
+            "grades more leniently than whatever produced it. Open; prefer rank "
+            "agreement over a single-point score match. THE JUDGE IS A "
+            "CAPABILITY FLOOR, NOT A NAME OR A PRICE: a flash-tier judge matched "
+            "a pro-tier one to 1.3 points while a mini-tier one sat ~27 low and "
+            "ONE-WAY — this template says fail what you cannot verify, so a "
+            "sub-floor judge produces one-way false FAILs by construction. "
+            "REPRODUCIBILITY: pin the grader model and set temperature=0 where "
+            "the endpoint honours it — necessary but NOT sufficient (at t=0 one "
+            "judge repeated exactly, another still spanned 2.67); where it is "
+            "not honoured (one gateway fixes temperature=1 across its gpt-5.x "
+            "family) the same judge on the same responses spanned 20.0-29.3 over "
+            "four runs, so repeat the grading and report a spread. `n` is a task "
+            "arg (tasks.<name>.args.n), not a model arg, and repeats the "
+            "CANDIDATE, not the judge. Per-rollout verdicts and the judge's full "
+            "ModelOutput (extra.grader_output) are persisted. Leaderboard "
+            "snapshot 2026-06-03 "
             "(https://surgehq.ai/benchmarks/complex-constraints; the live board "
-            "moves, so align against this snapshot, 2026-06-03: Gemini 3.1 Pro "
-            "40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %)."
+            "moves): Gemini 3.1 Pro 40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 "
+            "task pass %."
         ),
     ),
 )

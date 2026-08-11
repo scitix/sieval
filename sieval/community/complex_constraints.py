@@ -2,22 +2,17 @@
 
 ComplexConstraints (Mehta et al., 2026, arXiv:2606.09118) is a 75-prompt
 instruction-following benchmark. Each prompt ships 10-40 *atomic* rubric criteria
-(1,559 in total) describing what a correct response must satisfy; criteria are
-graded by rubric -- human or LLM-as-a-judge -- never by exact match.
+(1,559 in total); criteria are graded by rubric -- human or LLM-as-a-judge --
+never by exact match.
 
-Upstream publishes **no evaluation code and no judge prompt**. The paper defines
+Upstream publishes **no evaluation code and no judge prompt**: the paper defines
 the metrics, but the judge template, its decoding settings, and the call structure
 are all unstated, and the dataset card adds nothing. So ``GRADER_TEMPLATE`` and
-:func:`parse_verdicts` below are **authored by this port**, not reproduced from
-upstream -- which is why ``sieval.tasks.complex_constraints_0shot_gen`` ships
-``status="experimental"``. Contrast ``sieval.community.aa_lcr``, whose templates
-at least come from the upstream dataset card verbatim.
-
+:func:`parse_verdicts` below are **authored by this port**, which is why
+``sieval.tasks.complex_constraints_0shot_gen`` ships ``status="experimental"``.
 GPT-5-mini is named as the per-criterion judge for the paper's *training* runs
-only ("produced by GPT-5-mini during ComplexConstraints training and CoreCraft
-training"); which judge produced the Table 1 leaderboard is never stated. So the
-judge is an unpinned degree of freedom in the comparison itself, and picking one
-here is a choice this port makes, not a setting it inherits.
+only; which judge produced the Table 1 leaderboard is never stated, so the judge
+is an unpinned degree of freedom in the comparison itself.
 
 Two published metrics, both computed by :func:`aggregate_metrics`:
 
@@ -27,23 +22,14 @@ Two published metrics, both computed by :func:`aggregate_metrics`:
 * **mean per-criterion pass rate** -- "the fraction of rubric criteria satisfied,
   averaged across tasks" (its Table 3 caption), i.e. a **macro** average over
   prompts. Criteria counts vary 10-40, so the pooled (**micro**) rate is a
-  genuinely different number; both are reported and named, and the macro one is
-  the published one.
+  genuinely different number; both are reported and named.
 
-Grading is **one judge call per rollout**, covering all of that prompt's criteria,
-with the verdicts emitted as an indexed list. Upstream never says whether it
-grades one criterion per call; batching keeps a rollout's whole verdict set in a
-single persisted ``ModelOutput`` -- which is also what the runner's grader-spend
+Grading is **one judge call per rollout**, covering all of that prompt's criteria
+as an indexed verdict list. Batching keeps a rollout's whole verdict set in a
+single persisted ``ModelOutput`` -- which is what the runner's grader-spend
 accounting expects, since it reads exactly one output per rollout -- and the
 indexing makes misalignment detectable: an index the judge never emits is
 recorded as unparsed rather than silently shifting its neighbours' verdicts.
-
-Both the template and the parser are hardened against **the judge echoing its own
-instructions**, which is the one misread that would inflate a score instead of
-depressing one -- and inflate it invisibly, since a verdict that parses is by
-definition absent from the unparsed count. ``GRADER_TEMPLATE`` keeps the
-parseable spelling out of the prompt; :data:`_VERDICT_RE` carries the general
-rule, since a template that names no verdict word tells the judge nothing.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -126,22 +112,17 @@ def build_grader_prompt(prompt: str, response: str, criteria: Sequence[str]) -> 
 # emphasis, then the verdict. Anchored to line starts so prose that merely
 # mentions a number cannot register as a verdict.
 #
-# The trailing `(?![^\n]*\b(?:PASS|FAIL)\b)` rejects a line that names BOTH
-# verdict words: that is a judge restating the format it was handed, not a
-# judgement. Without it the leading `[^\w\n]*` swallows the "<" of
-# "1: <PASS|FAIL>" and the line reads as a pass, so an echoed spec scores a full
-# rubric with `n_unparsed == 0` -- score inflation with the drift counter
-# reporting nothing, which is the one misread whose direction is up.
-#
-# Written over the PAIR rather than over a list of separators, because the
-# spelling varies and every one of them inflates identically: "<PASS|FAIL>",
-# "PASS/FAIL", "PASS, FAIL", "PASS or FAIL", "<PASS> or <FAIL>". Unlike the
-# "<PASS|FAIL>" case, GRADER_TEMPLATE cannot be made free of this shape -- a
-# judge has to be told both words it may answer with -- so here the parser is
-# the only available guard, not the second of two. The cost is that a verdict
-# trailing a rationale that names the other word ("1: FAIL (would PASS if it
-# listed X)") reads as unparsed; that is counted and scored not-satisfied, i.e.
-# the safe direction.
+# The trailing lookahead rejects a line naming BOTH verdict words: that is a judge
+# restating the format it was handed, not a judgement. Without it the leading
+# `[^\w\n]*` swallows the "<" of "1: <PASS|FAIL>" and the line reads as a pass, so
+# an echoed spec scores a full rubric with `n_unparsed == 0` -- inflation with the
+# drift counter reporting nothing, the one misread whose direction is up. Written
+# over the PAIR rather than a list of separators, since every spelling inflates
+# identically ("PASS/FAIL", "PASS or FAIL", "<PASS> or <FAIL>"). GRADER_TEMPLATE
+# can keep the shape out of the prompt; a judge has to be told both words it may
+# answer with, so here the parser is the only available guard. The cost is that a
+# verdict trailing a rationale that names the other word ("1: FAIL (would PASS if
+# it listed X)") reads as unparsed -- counted, and scored not-satisfied.
 _VERDICT_RE = re.compile(
     r"^[^\w\n]*(?:criterion\s*)?(\d{1,3})\s*[:.)\-]\s*[^\w\n]*(PASS|FAIL)\b"
     r"(?![^\n]*\b(?:PASS|FAIL)\b)",
@@ -156,25 +137,19 @@ def parse_verdicts(reply: str, n_criteria: int) -> list[bool | None]:
     satisfied), or ``None`` for a criterion the judge never returned a readable
     verdict for. ``None`` is deliberately distinct from ``False`` -- the caller
     scores it as not-satisfied (an unreadable verdict must not inflate a score)
-    but records the count separately, so judge format drift stays visible
-    instead of masquerading as a model that failed the rubric.
+    but records the count separately, so judge format drift stays visible instead
+    of masquerading as a model that failed the rubric. Nothing else in the pipeline
+    would catch it: the ``truncated_output`` anomaly rule reads the *candidate*
+    model's finish reasons, never the grader's.
 
     The **last** verdict for an index wins: the judge is asked to put the verdict
     block at the end, so a reasoning judge's earlier tentative pass over the
     criteria must not override its final answer. Indices outside ``1..n_criteria``
     are ignored rather than clamped -- a hallucinated "41: PASS" is not evidence
-    about criterion 41 of a 40-criterion rubric.
-
-    A line naming **both** verdict words is not a verdict: "1: <PASS|FAIL>",
-    "1: PASS/FAIL" and "1: PASS or FAIL" all read as ``None``, not as a pass.
-    That shape is what a judge restating its instructions emits, and it is the
-    one unreadable reply whose misreading would inflate rather than depress a
-    score -- and inflate it invisibly, since a parsed verdict is by definition
-    not counted in ``n_unparsed``. Nothing else in the pipeline would catch it:
-    the ``truncated_output`` anomaly rule reads the *candidate* model's finish
-    reasons, never the grader's. A real verdict whose trailing rationale happens
-    to name the other word is unparsed for the same reason, which costs a
-    readable verdict but errs toward not-satisfied rather than toward a pass.
+    about criterion 41 of a 40-criterion rubric. A line naming **both** verdict
+    words ("1: <PASS|FAIL>", "1: PASS/FAIL") is an echoed instruction rather than
+    a judgement and reads as ``None``; see :data:`_VERDICT_RE` for why that case
+    is the one worth guarding.
     """
     verdicts: list[bool | None] = [None] * n_criteria
     for index_text, verdict in _VERDICT_RE.findall(reply):
