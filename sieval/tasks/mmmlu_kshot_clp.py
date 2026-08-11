@@ -160,6 +160,7 @@ def _add_metric(
     n_shot=DEFAULT_N_SHOT,
     tags=("multilingual", "multiple-choice"),
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="lm-evaluation-harness + hendrycks/test",
         url=(
@@ -310,12 +311,16 @@ class MMMLUKShotClpTask(
         raw = ctx.raw_sample
         prediction = post["rollouts"][0].get("prediction")
         if raw is None:
-            # No sample to grade against. The empty grouping keys are what the
-            # pre-migration shape recorded, and report() maps them to "unknown".
-            return True, build_judgement_record(
-                "",
-                [build_rollout_judgement(0, False)],
-                extra={"subject": "", "category": "", "locale": ""},
+            # No sample to grade against, so there is no verdict to record. This
+            # task declares DENOMINATOR_JUDGED, so failing keeps the sample out of
+            # the denominator rather than charging a missing row to the model.
+            #
+            # Retriable on purpose; see the twin in `cmmlu_kshot_clp` for why this
+            # is a plain raise and not `NonRetriableSampleError`.
+            raise ValueError(
+                f"sample {ctx.sample_id!r}: no raw sample to grade against — "
+                "`raw_sample` was not recoverable from the dataset, so the "
+                "reference is unknown and no verdict can be recorded"
             )
         probs = ctx.infer_result.value["probs"] if ctx.infer_result else {}
         answer = raw["Answer"]

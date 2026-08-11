@@ -61,6 +61,7 @@ _QA_SUBTASKS: frozenset[str] = frozenset({"qa_squad", "qa_hotpotqa"})
     tags=("english", "open-ended", "long-context"),
     deps_group="ruler",
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="NVIDIA/RULER",
         url="https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",

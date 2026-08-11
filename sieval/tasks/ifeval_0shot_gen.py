@@ -39,6 +39,7 @@ _GRADES = ("strict", "loose")
     tags=("english", "open-ended"),
     deps_group="ifeval",
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="google-research/instruction_following_eval",
         url="https://github.com/google-research/google-research/blob/f97f6adab57bd3065b24169bcfc559dc34d0db84/instruction_following_eval/evaluation_lib.py",

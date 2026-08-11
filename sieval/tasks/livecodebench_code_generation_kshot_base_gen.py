@@ -97,6 +97,7 @@ STOP_SEQUENCES = ("###",)
     n_shot=N_SHOT,
     tags=("english", "python", "code-exec", "base-model"),
     model_type="gen",
+    reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="livecodebench",
         url="https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",

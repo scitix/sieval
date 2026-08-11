@@ -155,6 +155,7 @@ from sieval.datasets import ComplexConstraintsDatasetSample
     tags=("english", "instruction-following", "open-ended"),
     model_type="chat",
     status="experimental",
+    reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="complex-constraints",
         url="https://arxiv.org/abs/2606.09118",

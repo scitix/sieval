@@ -13,6 +13,7 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.core.models import ModelMeta, ModelOutput
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import (
+    TaskAction,
     TaskContext,
     build_judgement_record,
     build_prediction_record,
@@ -143,12 +144,17 @@ async def test_feedback_grades_every_slot_and_records_grouping_keys():
 
 
 @pytest.mark.anyio
-async def test_feedback_without_a_raw_sample_is_wrong_not_a_crash():
-    final, judgement = await _task().feedback(
-        build_prediction_record([["1"]]), TaskContext(sample_id=0, raw_sample=None)
-    )
-    assert final is True
-    assert judgement["n_correct"] == 0
+async def test_feedback_without_a_raw_sample_fails_the_sample():
+    """No gold to compare against means no verdict, not a wrong-by-default one.
+
+    Failing costs neither metric: AAcc counts versions as
+    `len(finals) + len(fails)`, and EAcc keeps the problem's place through
+    report()'s failed-sample loop.
+    """
+    with pytest.raises(ValueError, match="no raw sample to grade against"):
+        await _task().feedback(
+            build_prediction_record([["1"]]), TaskContext(sample_id=0, raw_sample=None)
+        )
 
 
 @pytest.mark.anyio
@@ -322,21 +328,36 @@ async def test_a_judged_version_without_grouping_keys_is_recovered_from_the_prom
 
 
 @pytest.mark.anyio
-async def test_feedback_without_a_raw_sample_still_names_its_problem():
-    ctx = TaskContext(
-        sample_id="p9-v2",
-        raw_sample=None,
-        preprocess_result=build_prompt_record(
-            [{"role": "user", "content": "q"}],
-            reference=["1"],
-            extra={"problem_id": "p9", "version": 2, "subject": "Algebra"},
-        ),
-    )
+async def test_a_failed_version_still_names_its_problem_from_the_prompt_record():
+    """Where the lost-`raw_sample` guarantee lives now that feedback raises.
 
-    _, judgement = await _task().feedback(build_prediction_record([["1"]]), ctx)
+    The branch that used to hand-build a wrong-by-default judgement did this by
+    calling `_identify` itself. report()'s failed-sample loop calls the same
+    `_identify`, so the problem keeps its place in the EAcc denominator — the
+    invariant is unchanged, one code path lighter. Without it, all three versions
+    of `p9` would leave `by_problem` while staying in AAcc's denominator, biasing
+    EAcc upward.
+    """
+    good = _all_versions("p1", [True, True, True])
+    lost = [
+        TaskContext(
+            sample_id=f"p9-v{version}",
+            raw_sample=None,
+            preprocess_result=build_prompt_record(
+                [{"role": "user", "content": "q"}],
+                reference=["1"],
+                extra={"problem_id": "p9", "version": version, "subject": "Algebra"},
+            ),
+        ).to_failed(TaskAction.FEEDBACK, "exception::ValueError", "no raw sample")
+        for version in (1, 2, 3)
+    ]
 
-    assert judgement["extra"]["problem_id"] == "p9"
-    assert judgement["rollouts"][0]["correct"] is False
+    report = await _task().report(good, lost)
+
+    # p9 held its place: two problems, and only p1 is correct in every version.
+    assert report["n_problems"] == 2
+    assert report["eacc"] == 50.0
+    assert report["unattributed_fails"] == 0.0
 
 
 @pytest.mark.anyio

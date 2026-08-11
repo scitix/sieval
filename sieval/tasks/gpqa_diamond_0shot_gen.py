@@ -39,6 +39,7 @@ from sieval.datasets import GPQADiamondDatasetSample
     n_shot=0,
     tags=("english", "multiple-choice", "graduate-level"),
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="simple-evals",
         url="https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/gpqa_eval.py",

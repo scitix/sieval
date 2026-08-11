@@ -73,6 +73,7 @@ from sieval.datasets import BrowseCompDatasetSample
     tags=("english", "browsing", "deep-research", "open-ended"),
     model_type="chat",
     status="experimental",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="browsecomp",
         url="https://arxiv.org/abs/2504.12516",

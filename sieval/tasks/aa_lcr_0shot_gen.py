@@ -96,6 +96,7 @@ from sieval.datasets import AALCRDatasetSample
     tags=("english", "long-context", "reasoning", "open-ended"),
     model_type="chat",
     status="experimental",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="aa-lcr",
         url="https://huggingface.co/datasets/ArtificialAnalysis/AA-LCR/blob/bdae010bbce259820c0e34c1d7cce210d966fb75/README.md",

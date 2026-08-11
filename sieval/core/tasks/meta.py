@@ -12,7 +12,7 @@ disk — their only compatibility marker is the sieval `version` alongside.
 
 Frozen fields on TaskMeta:
     name, display_name, description, dataset (FK str), eval_mode, n_shot,
-    deps_group, status.
+    deps_group, status, reference_kind.
 
 Not frozen (may change within schema_version=1):
     tags values, model_type enum membership, reference_impl.notes,
@@ -21,6 +21,7 @@ Not frozen (may change within schema_version=1):
 Frozen enum values:
     EvalMode: gen, ppl, clp.
     Status: stable, experimental, deprecated.
+    ReferenceKind: value, procedure.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
@@ -62,6 +63,31 @@ class ReferenceImpl:
 
 Status = Literal["stable", "experimental", "deprecated"]
 
+#: What *form* a task's ground truth takes, and therefore why
+#: :attr:`~sieval.core.tasks.records.JudgementRecord.reference` may be absent on
+#: disk. ``"value"`` is something to compare against (a letter, a number, a set
+#: of strings); ``"procedure"`` is something to *run* — a test suite, a rubric —
+#: which a record describes in ``extra`` rather than faking a value for.
+#:
+#: The criterion is operational, not aesthetic: what makes a task ``"value"`` is
+#: that it records a reference *at all*, not that the reference looks scalar.
+#: IFEval is where the two readings part — its reference is the list of
+#: instruction ids its checkers run, which describes a procedure, yet it is
+#: recorded and compared against, so it is a ``"value"``. Reserve ``"procedure"``
+#: for a task that records no reference by design.
+#:
+#: Purely descriptive: nothing branches on it. It is what lets an archived run's
+#: ``meta.json`` say why its judgements carry no ``reference`` once the installed
+#: registry has moved on — a *missing* gold is not this field's business, because
+#: a value-reference task with no gold to compare against fails the sample rather
+#: than recording a judgement without one.
+#:
+#: Unrelated to ``cli.leaderboard.card.ReferenceKind`` (``tr`` |
+#: ``user-defined``), which classifies where a published reference *score* came
+#: from. Same word, different layer: this one is about the ground truth a task
+#: compares against.
+ReferenceKind = Literal["value", "procedure"]
+
 
 @dataclass(frozen=True, slots=True)
 class TaskMeta:
@@ -79,6 +105,7 @@ class TaskMeta:
     model_type: Literal["chat", "gen"] | None = None
     reference_impl: ReferenceImpl | None = None
     status: Status = "stable"
+    reference_kind: ReferenceKind = "value"
 
 
 TASK_REGISTRY: dict[str, TaskMeta] = {}
@@ -104,6 +131,10 @@ _PINNED_URL_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 _MAX_DESCRIPTION_LEN = 100
 
+#: Runtime mirror of :data:`ReferenceKind`, because a ``Literal``'s members are
+#: not iterable at run time and the value has to be checked at decoration time.
+_REFERENCE_KINDS: frozenset[str] = frozenset({"value", "procedure"})
+
 
 def _validate(
     name: str,
@@ -111,6 +142,7 @@ def _validate(
     description: str,
     n_shot: int,
     reference_impl: ReferenceImpl | None,
+    reference_kind: ReferenceKind,
 ) -> None:
     if not name:
         raise ValueError("name must be non-empty")
@@ -124,6 +156,16 @@ def _validate(
         )
     if n_shot < 0:
         raise ValueError(f"n_shot must be >= 0 (got {n_shot})")
+    # Checked at decoration time, unlike `status`, because a typo here fails
+    # *silently*: nothing reads the value at run time, so a misspelled kind
+    # simply travels into `meta/index.json` and every run's `meta.json` and
+    # misdescribes the ground truth of an archived run, which is the one
+    # question the field exists to answer.
+    if reference_kind not in _REFERENCE_KINDS:
+        raise ValueError(
+            f"reference_kind must be one of "
+            f"{sorted(_REFERENCE_KINDS)!r} (got {reference_kind!r})"
+        )
 
     if reference_impl is not None:
         url = reference_impl.url
@@ -149,6 +191,7 @@ def sieval_task[T: type[Task]](
     model_type: Literal["chat", "gen"] | None = None,
     reference_impl: ReferenceImpl | None = None,
     status: Status = "stable",
+    reference_kind: ReferenceKind = "value",
 ) -> Callable[[T], T]:
     """Decorate a Task subclass to register its TaskMeta.
 
@@ -158,10 +201,15 @@ def sieval_task[T: type[Task]](
     and looking up the corresponding `@sieval_dataset`-decorated class.
 
     Also sets two runtime-facing class attrs: `cls.tags` (protocol set
-    synthesized from `eval_mode` + `n_shot`, consumed by anomaly routing
-    — distinct from the descriptive `tags` argument stored on
+    synthesized from `eval_mode` + `n_shot`, consumed by anomaly routing —
+    distinct from the descriptive `tags` argument stored on
     `_sieval_task_meta`) and `cls.model_type`. Raises ValueError at import
     time for duplicate `name`.
+
+    `reference_kind` declares what form the task's ground truth takes. It is a
+    task-level constant, so it lives here rather than on every judgement record
+    — storing it per sample would repeat one fact 164 times for HumanEval. It is
+    recorded, not routed on: no rule consumes it, so it mints no protocol tag.
     """
     _validate(
         name=name,
@@ -169,6 +217,7 @@ def sieval_task[T: type[Task]](
         description=description,
         n_shot=n_shot,
         reference_impl=reference_impl,
+        reference_kind=reference_kind,
     )
 
     protocol_tags: frozenset[str] = frozenset(
@@ -217,6 +266,7 @@ def sieval_task[T: type[Task]](
             model_type=model_type,
             reference_impl=reference_impl,
             status=status,
+            reference_kind=reference_kind,
         )
         setattr(cls, _TASK_META_ATTR, meta)
         cls.tags = protocol_tags
@@ -256,6 +306,14 @@ def get_task_run_identity(task: Task) -> TaskRunIdentity | None:
     frozen within `schema_version=1` and changes often), `description` and
     `deps_group` (properties of the task, not the run).
 
+    `reference_kind` is in for the same reason `eval_mode` is, and it is worth
+    stating because it is otherwise a task-level constant like the two excluded
+    above: both tell a reader *how to read the shards*. Without it, a stored run
+    whose judgements carry no `reference` cannot say whether the ground truth was
+    a procedure or the gold went missing — the registry could answer, but only
+    the installed one, and a `meta.json` is written once and never rewritten
+    while the registry moves on.
+
     `tags` is the descriptive `TaskMeta.tags`, *not* the `cls.tags` protocol
     set the decorator synthesizes for anomaly routing — and it is the one
     persisted field whose *values* are not frozen within `schema_version=1`
@@ -287,6 +345,7 @@ def get_task_run_identity(task: Task) -> TaskRunIdentity | None:
         "n_shot": task.n_shot,
         "tags": list(meta.tags),
         "status": meta.status,
+        "reference_kind": meta.reference_kind,
     }
 
 
@@ -396,6 +455,7 @@ def task_meta_to_dict(meta: TaskMeta) -> dict[str, Any]:
             else None
         ),
         "status": meta.status,
+        "reference_kind": meta.reference_kind,
     }
 
 
@@ -427,4 +487,5 @@ def task_meta_from_dict(payload: dict[str, Any]) -> TaskMeta:
         model_type=payload.get("model_type"),
         reference_impl=reference_impl,
         status=payload.get("status", "stable"),
+        reference_kind=payload.get("reference_kind", "value"),
     )

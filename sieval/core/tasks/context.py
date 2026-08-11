@@ -15,14 +15,20 @@ class TaskRunIdentity(TypedDict):
 
     A deliberate subset of ``TaskMeta`` — see
     :func:`sieval.core.tasks.meta.get_task_run_identity` for what is left out
-    and why. Fields are JSON-shaped (``eval_mode`` / ``status`` as plain
-    ``str``) so this module needs no ``meta`` import: ``meta`` imports
-    ``task``, which imports this module.
+    and why. Fields are JSON-shaped (``eval_mode`` / ``status`` /
+    ``reference_kind`` as plain ``str``) so this module needs no ``meta``
+    import: ``meta`` imports ``task``, which imports this module.
 
     Every field but ``n_shot`` is the task's declaration, identical to its
     ``sieval/meta/index.json`` row. ``n_shot`` is the run's, so it may
     disagree with that row: the catalog says what the task advertises, this
     says what the run did.
+
+    ``reference_kind`` (``"value"`` | ``"procedure"``) says what form the ground
+    truth takes, and so why a judgement in these shards may carry no
+    ``reference``. It is absent on a run written before the field shipped; read
+    it with a ``"value"`` default, which is what every task declared implicitly
+    until then.
     """
 
     name: str
@@ -32,6 +38,7 @@ class TaskRunIdentity(TypedDict):
     n_shot: int
     tags: list[str]
     status: str
+    reference_kind: str
 
 
 class TaskRunMeta(TypedDict):

@@ -71,6 +71,7 @@ N_SHOT = 25
     tags=("english", "science", "multiple-choice", "base-model"),
     model_type="gen",
     status="experimental",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="lm-evaluation-harness",
         url=(

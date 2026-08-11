@@ -195,6 +195,22 @@ async def test_infer_postprocess_and_feedback_use_top_logprobs():
 
 
 @pytest.mark.anyio
+async def test_feedback_without_a_raw_sample_fails_the_sample():
+    """No gold means no verdict, not a wrong-by-default one.
+
+    Twin of the cmmlu case: DENOMINATOR_JUDGED, so failing keeps the sample out
+    of the denominator rather than counting it wrong.
+    """
+    task = _task([_sample(i) for i in range(3)], n_shot=0)
+
+    with pytest.raises(ValueError, match="no raw sample to grade against"):
+        await task.feedback(
+            build_prediction_record(["B"]),
+            TaskContext(sample_id=3, raw_sample=None),
+        )
+
+
+@pytest.mark.anyio
 async def test_report_returns_weighted_overall_locale_category_and_subject_scores():
     task = _task([_sample(i) for i in range(3)], n_shot=2)
     finals: list[_FinalCtx] = [

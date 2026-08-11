@@ -11,6 +11,7 @@ from sieval.community.deepseek_math import eval_math
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import (
+    NonRetriableSampleError,
     TaskContext,
     build_judgement_record,
     build_prediction_record,
@@ -143,6 +144,51 @@ async def test_feedback_scores_against_solution_via_eval_math():
     assert correct_fb["rollouts"][0]["correct"] is True
     assert correct_fb["reference"] == ["16"]
     assert wrong_fb["rollouts"][0]["correct"] is False
+
+
+@pytest.mark.anyio
+async def test_an_unextractable_gold_fails_the_sample():
+    """A missing gold is our defect, so it must not be scored at all.
+
+    With no reference there is no verdict the sample could carry — `correct`
+    either way is an artifact of how the miss is handled, not evidence about the
+    model. The runner turns this into a `FAILED` sample, and
+    `NonRetriableSampleError` is what keeps a resume from rolling it back to
+    re-infer a miss that is deterministic in the row's `solution`. Scoring it
+    wrong instead would charge our extraction miss to the model, silently.
+    """
+    task, _ = _task()
+    raw = _sample(solution="No boxed answer anywhere in this solution.")
+
+    with pytest.raises(
+        NonRetriableSampleError, match="no reference answer could be extracted"
+    ):
+        await task.feedback(
+            build_prediction_record([["16"]]), TaskContext(sample_id=7, raw_sample=raw)
+        )
+
+
+@pytest.mark.anyio
+async def test_a_missing_prediction_scores_wrong_rather_than_failing():
+    """The opposite absence, and the opposite response.
+
+    A prediction that would not extract is the model failing to answer, which is
+    a wrong answer — `extracted` records the miss and `extraction_failure`
+    reports it. It must not reach `fails`, which reads as an infrastructure
+    failure. Regression guard for `or ""`: against this task's *list* reference
+    that fell through `is_correct` to upstream's bare `raise
+    NotImplementedError`, failing the sample with an empty message.
+    """
+    task, _ = _task()
+    raw = _sample(solution="Therefore $\\boxed{16}$.")
+
+    finalize, fb = await task.feedback(
+        build_prediction_record([None]), TaskContext(sample_id=0, raw_sample=raw)
+    )
+
+    assert finalize is True
+    assert fb["reference"] == ["16"]
+    assert fb["rollouts"][0]["correct"] is False
 
 
 @pytest.mark.anyio

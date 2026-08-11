@@ -1023,7 +1023,8 @@
         "url": "https://huggingface.co/datasets/ArtificialAnalysis/AA-LCR/blob/bdae010bbce259820c0e34c1d7cce210d966fb75/README.md",
         "notes": "Generative port of Artificial Analysis Long Context Reasoning (AA-LCR): 100 hard reasoning questions over 234 documents across 30 document sets (avg ~99k input tokens/set). No upstream eval code — the input prompt and the binary CORRECT/INCORRECT equality-checker prompt are the dataset card's own snippets (reproduced verbatim in sieval.community.aa_lcr, HF revision bdae010bbce259820c0e34c1d7cce210d966fb75). Headline metric = accuracy over the full set (pipeline failures counted INCORRECT). Grader is a REAL LLM (official checker: Qwen3 235B A22B 2507 Non-reasoning) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: unlike deterministic-grader tasks, scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample grade, grader model id, and the checker's full ModelOutput (extra.grader_output) are persisted — the reply being the only evidence of a verdict a re-grade need not reproduce, and (parse_grade sends anything unreadable to INCORRECT) the only way to tell format drift from a real negative. Documents are prompted in data_source_filenames order (loader-guaranteed), per the card. DEVIATION (the port's only score-affecting one): empty/whitespace candidates are graded INCORRECT without invoking the checker — the checker returns CORRECT on an empty candidate, which would inflate accuracy (grader_output absent there, no call made). REPEATS: AA-LCR uses n=3 (pass@1 aggregated across attempts); `n` is a task arg (tasks.<name>.args.n), NOT a model arg — infer forwards it call-time and call-time wins, so setting `n` on the model is overridden by the task default n=1. VALIDATION: reproduced gpt-oss-120b / gpt-oss-20b (reasoning=high) within ~2-3 pts of the AA public leaderboard (official 50.7 / 30.7), grader Qwen3-235B-A22B-Instruct-2507 at temperature 0, n=3."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "advanced_if_0shot_gen",
@@ -1043,7 +1044,8 @@
         "url": "https://github.com/facebookresearch/AdvancedIF/blob/f9d30137c4139d4d9af260ae28108b5afae828c0/judge.py",
         "notes": "Port of AdvancedIF (Meta, arXiv:2511.10507), 1,645 prompts across complex_if_single_turn_v5 (402), system_steerability_v2 (507) and carried_context_multi_turn_eval_v5 (736). Headline score is the overall pass rate (share of samples the grader marked SATISFIED_ALL_REQUIREMENTS=yes), the number the paper reports; micro_pass_rate is the co-published rubric-level rate; macro_pass_rate is sieval's, NOT published, averaging the per-sample rate so every sample weighs the same. LICENSING: upstream ships judge.py under CC-BY-NC-4.0, incompatible with sieval's Apache-2.0 tree, so the prompts are NOT vendored -- the operator stages a checkout and points SIEVAL_ADVANCED_IF_SRC at it, digest-checked against commit f9d30137c4139d4d9af260ae28108b5afae828c0 (which also makes them byte-exact by construction). The dataset is CC-BY-NC-4.0 too, so running this benchmark accepts those terms either way. UPSTREAM DEFECT (reproduced, not corrected): upstream routes to the system-steerability judge on benchmark_name == 'if_system_steerability_oss', a value the released dataset never contains (it ships 'system_steerability_v2'), so all 507 system-prompt rows are graded by the plain user-instruction judge and the CLI's --task choices match zero rows; processor.process_file's own docstring uses the released spelling, so the if_*_oss literals are what went stale. Kept verbatim so the unqualified name tracks upstream. Correcting it is MEASURED at +0.00 on the SS pass rate (507 rows, same responses and grader, judge prompt 5,893 -> 31,598 chars) while flipping 13.8% of individual verdicts, so no _fixed variant ships -- it would matter only for per-sample analysis. DEVIATIONS (two, both in grader-reply handling): (1) a fenced/prose-wrapped JSON verdict is recovered, since sieval cannot force response_format on an arbitrary endpoint and a fenced reply would otherwise score zero everywhere -- the same scan also recovers a verdict wrapped in a JSON array, which upstream fails the row on; (2) a non-string rubric answer is stringified instead of failing the row -- with the declaration NO that moves micro_pass_rate alone, with YES it also moves the headline (upstream fails the row, this port honours the declaration). (1) does fire in practice, on endpoints that drop response_format; (2) never fired in 1,644 live gradings. GRADER is a REAL LLM (upstream: o3-mini-2025-01-31, max_completion_tokens=32768, response_format=json_object) supplied via the `grader` task arg; pin it, as its version is not pinnable the way a Hub revision is. Send NO temperature: upstream stores self.temperature but _call_openai_api never passes it, and a reasoning-model grader rejects an explicit value outright ('temperature, top_p and n are fixed at 1'), o3-mini included -- setting it fails every grader call, and a wholly failed grading stage still reports score 0.0, which reads as a score rather than a floor. Give the grader a real thinking budget: at one endpoint's default effort the same grader emitted 0-char reasoning and ~97 output tokens for up to 20 rubrics and scored 17 points lower than itself at high effort. Its full ModelOutput and per-rubric answers are persisted under the judgement record's `extra`. VALIDATION: the port is verified against upstream, but NO published number is reproducible. Verified model-free -- judge prompts byte-identical to upstream's own _compose_prompt on all 1,645 rows for both judge classes; per-row verdicts identical to upstream's real evaluate() on 21,385 (row, reply) pairs across 13 reply shapes; pooled rates exact on every schema-conforming shape; paper Table 1 reproduced from these loaders (counts 402/736/507, avg criteria 7.44/6.08/9.81, avg turns 1.00/7.69/11.21). NOT reproducible -- the paper's judge and every model it evaluates (GPT-5, GPT-4.1, Gemini 2.5/3 Pro, Claude 4 Sonnet, Llama 4 Maverick) are legacy or retired, and judge choice alone spans ~29 points because the headline is all-or-nothing over ~7.6 rubrics: raising judge effort moved per-rubric micro only 87.2->91.8 but all-pass 48.0->65.1, a 3.4x amplification. Judge instability on identical rows: 86.6% per-sample self-agreement (same judge, same config), 69.1% across effort settings, 61.8% across families. The best available judge put gpt-5.1 at macro 76.7 against the paper's GPT-5 77.9, but with per-aspect errors of +5.1/+0.1/-8.8 that merely cancel -- not agreement, and must not be quoted as such. Upstream releases no calibration set (its Table 4 human labels are unpublished), so a replacement judge cannot be checked against human agreement first; pin and report the judge beside every score so runs stay comparable to each other."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "procedure"
     },
     {
       "name": "aime_2024_0shot_gen",
@@ -1063,7 +1065,8 @@
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
         "notes": "Math postprocess + ANSWER_PATTERN extraction aligned with simple-evals."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "aime_2025_0shot_gen",
@@ -1083,7 +1086,8 @@
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
         "notes": "Math postprocess + ANSWER_PATTERN extraction aligned with simple-evals."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "aime_2026_0shot_gen",
@@ -1103,7 +1107,8 @@
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/aime/aime_2026.yaml",
         "notes": "MathArena-aligned: boxed prompt + 0-999 integer hint, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "apex_2025_0shot_gen",
@@ -1123,7 +1128,8 @@
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/apex/apex_2025.yaml",
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: set n=16 to compare against matharena.ai — NOT the family's usual 4. Apex publishes at a higher repeat count than the rest of the suite (over apex_2025_outputs: 35 of 46 scored models at 16 runs/problem, 10 at 8, one at 4), which is how a 12-problem set gets a usable score. Pass it as `tasks.<name>.args.n`; this task still defaults to n=1, setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. SMALL N: 12 problems, so one problem moves the score by 8.3 points — read it alongside a full-size sibling, not on its own. OVERLAP: 3 of the 12 are byte-identical to smt_2025 problems 8, 42 and 43, so a run covering both datasets scores those twice; those are the only three, reconciled against every `source` string. apex_shortlist_2025 is an easier-band sibling (~50% vs this set's ~5%), NOT a superset — the two share no problem. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — 25 of 46 models on matharena.ai's Apex table (3,830/7,717 rollouts) match it and the rest carry a leading `Please reason step by step, and `, so the published table mixes two prompts in roughly equal parts. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. VALIDATED: replaying MathArena/apex_2025_outputs (7,717 rollouts) reproduces upstream's `correct` on 99.9% — the highest of any ported MathArena competition."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "apex_shortlist_2025_0shot_gen",
@@ -1143,7 +1149,8 @@
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/apex/shortlist_2025.yaml",
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. SYMBOLIC GOLDS: problems 8, 12, 14 and 39 answer in a free variable (n-1, n(n-1)/2, 2n(n-1), 4N^3+9N^2+6N+1), so they lean on math-verify's symbolic equivalence where the rest of the set needs only numeric — and the non-strict last-integer fallback can never satisfy them (upstream is `strict_parsing: false` here too, so the fallback itself is parity). OVERLAP: 5 of the 47 duplicate sibling datasets, so a run covering them scores those twice — 29 = brumo_2025 problem 30 and 27/28 = hmmt_feb_2025 problems 19/20 byte-for-byte, plus 25/26 = aime_2025 problems 14/15, which match only after normalization (same statement and gold; that loader mirrors opencompass/AIME2025, which re-typesets). Reconciled against every `source` string: the two it attributes to the HMMT 2025 team round are NOT duplicates, because hmmt_feb_2025 carries the individual rounds only. Not a superset of apex_2025 either — the two share no problem. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — 30 of 42 models on matharena.ai's shortlist table (4,813/9,659 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. VALIDATED: replaying MathArena/apex_shortlist_outputs (9,659 rollouts) reproduces upstream's `correct` on 99.4%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; 43 of the 62 residual disagreements would close if sieval vendored upstream's normalize_string (it deliberately does not) — this set's expression-valued golds invite `X = <expr>` and prose-wrapped boxes, which the integer-answer AIME/HMMT sets almost never produce."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "arc_challenge_kshot_clp",
@@ -1165,7 +1172,8 @@
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/arc/arc_challenge.yaml",
         "notes": "Shares the ARC-Challenge split/dataset/revision with lm-evaluation-harness. Uses the 'options' MCQ format (arXiv 2412.17758): options listed A/B/C/... in the prompt, answer is the option letter, scored by one-call next-token top_logprobs argmax (the clp protocol; mirrors cmmlu_kshot_base_gen). Requires all option letters in the top-k and fails the sample otherwise (default logprobs=100; SGLang serves 100, on vLLM use --max-logprobs 100). Comparison target: Qwen2.5-72B-Base ARC-Challenge 25-shot EM = 94.5, from the DeepSeek-V3 report's Table 3 (Qwen2.5-72B-Base column; DeepSeek switched separation->options after V1, and the ppl sibling reproduces the separation number, e.g. the Qwen2.5 report's ~72.4)."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "arc_challenge_kshot_ppl",
@@ -1187,7 +1195,8 @@
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/arc/arc_challenge.yaml",
         "notes": "Shares the ARC-Challenge split/dataset/revision with lm-evaluation-harness, but scores in the SEPARATION regime (Qwen2.5-report style), not upstream acc/acc_norm: each option's full TEXT is scored as the continuation of 'Question: {q}\\nAnswer:' and normalized UNCONDITIONALLY (Brown et al. 2020) as logP(opt|context) - logP(opt|'Answer:'), argmax = prediction. This is the ppl protocol (one inference per option; full answer text), not the single-letter clp method. Requires the sglang server launched with --disable-radix-cache (SglangGenModel fails loud on a cache hit that truncates echoed logprobs). Comparison target — the SEPARATION regime (arXiv 2412.17758): Qwen2.5-72B-Base ARC-Challenge 25-shot ≈ 72.4 (Qwen2.5 report). The 94.5 options/letter figure is the clp sibling, not this task."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "arc_easy_kshot_clp",
@@ -1209,7 +1218,8 @@
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/arc/arc_easy.yaml",
         "notes": "Shares the ARC-Easy split/dataset/revision with lm-evaluation-harness. Uses the 'options' MCQ format (arXiv 2412.17758): options listed A/B/C/... in the prompt, answer is the option letter, scored by one-call next-token top_logprobs argmax (the clp protocol; mirrors cmmlu_kshot_base_gen). Requires all option letters in the top-k and fails the sample otherwise (default logprobs=100; SGLang serves 100, on vLLM use --max-logprobs 100). Comparison target: Qwen2.5-72B-Base ARC-Easy 25-shot EM = 98.4, from the DeepSeek-V3 report's Table 3 (Qwen2.5-72B-Base column; DeepSeek switched separation->options after V1, and the ppl sibling reproduces the separation number)."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "arc_easy_kshot_ppl",
@@ -1231,7 +1241,8 @@
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/arc/arc_easy.yaml",
         "notes": "Shares the ARC-Easy split/dataset/revision with lm-evaluation-harness, but scores in the SEPARATION regime (Qwen2.5-report style), not upstream acc/acc_norm: each option's full TEXT is scored as the continuation of 'Question: {q}\\nAnswer:' and normalized UNCONDITIONALLY (Brown et al. 2020) as logP(opt|context) - logP(opt|'Answer:'), argmax = prediction. This is the ppl protocol (one inference per option; full answer text), not the single-letter clp method. Requires the sglang server launched with --disable-radix-cache (SglangGenModel fails loud on a cache hit that truncates echoed logprobs). Comparison target — the SEPARATION regime (arXiv 2412.17758), Qwen2.5-report style. The 98.4 options/letter figure is the clp sibling, not this task."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "browsecomp_0shot_gen",
@@ -1253,7 +1264,8 @@
         "url": "https://arxiv.org/abs/2504.12516",
         "notes": "Generative port of BrowseComp (OpenAI, arXiv:2504.12516) — 1,266 hard live-web questions with short verifiable answers. QUERY_TEMPLATE and GRADER_TEMPLATE (HLE-derived yes/no autorater) are verbatim from openai/simple-evals@652c89d0 browsecomp_eval.py; grade parsing matches upstream except it reads the yes/no capture group (upstream compares its whole match to bare 'yes', a latent bug). Headline metric = accuracy. Grader is a REAL LLM (official autorater: gpt-4.1-2025-04-14) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample grade/confidence and the autorater's full ModelOutput (extra.grader_output: reply, reasoning, usage, finish_reasons, model id) are persisted — the reply being the only evidence of a verdict a re-grade need not reproduce, and (parse_grade defaults to INCORRECT) the only way to tell format drift from a real negative; finish_reasons separates a reasoning grader that spent its budget thinking from an empty API response. BrowseComp requires browsing: closed-book models score near-zero — validated at 0.316% (4/1266) for gemma-3-27b-it with the gpt-4.1 autorater — so a meaningful score needs a browsing-capable model/scaffold."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "brumo_2025_0shot_gen",
@@ -1273,7 +1285,8 @@
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/brumo/brumo_2025.yaml",
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. LIST GOLDS: problem 23's gold is a comma-separated list, and upstream joins every box on the final line whenever the gold holds a comma; this task derives that `list_answer` flag as grader.py does, so multi-box answers score identically. Wiring it moved 28 of 5,280 brumo_2025_outputs rollouts, all on problem 23, every one toward upstream's verdict. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 44 models on matharena.ai's BRUMO table (600/5,280 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect, and it is small: a paired A/B (gpt-oss-120b, reasoning_effort=high, n=4, one gateway/session, only the instruction differing) put the older prefix 0.8 pp ahead — 90.8 vs 90.0, 4 of 30 problems moving, two each way, t=0.37 — below this set's own sampling noise, so it explains no delta on its own. VALIDATED: replaying MathArena/brumo_2025_outputs (5,280 rollouts) reproduces upstream's `correct` on 98.8%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; residual is un-vendored normalize_string plus math-verify-vs-sympy."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "c_eval_kshot_clp",
@@ -1293,7 +1306,8 @@
         "url": "https://raw.githubusercontent.com/hkust-nlp/ceval/cba65ae93bcf189149ced9f66ae0c958201faed9/code/evaluator_series/evaluators/llama.py",
         "notes": "Mirrors the non-CoT LLaMA evaluator: per-subject few-shot header with the English subject key, dev exemplars, and next-token A/B/C/D argmax via one-call top_logprobs (equivalent to the reference's softmax(logits[A,B,C,D]) while all four option tokens are in top-k; requires them present and fails otherwise). Faithful reproduction needs a top-k covering A/B/C/D (default logprobs=100; vLLM --max-logprobs 100, default 20; SGLang serves 100). Eval split is the released test set (reference scored val). Score is the macro-average over the 52 subjects (C-Eval paper Table 3), unlike lm-eval ceval-valid which micro-averages (weight_by_size). Comparison target: DeepSeek-V3 Table 3, C-Eval 5-shot 89.2 (Qwen2.5-72B-Base); the validated Qwen2.5-72B-Base 5-shot run on the test split scores 90.19 (macro)."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "cmimc_2025_0shot_gen",
@@ -1313,7 +1327,8 @@
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/cmimc/cmimc_2025.yaml",
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. PROMPT: the only ported competition whose upstream `instruction` goes beyond the plain boxed line — it also dictates a trailing `### Final answer` section, so this task uses matharena.CMIMC_INSTRUCTION rather than the shared BOXED_INSTRUCTION. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 4 of 35 models on matharena.ai's CMIMC table (640/5,600 rollouts) match it; the rest carry a leading `Please reason step by step, and `, and 1,088 rollouts predate the `### Final answer` section entirely, the widest prompt spread of any ported competition. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. VALIDATED: replaying MathArena/cmimc_2025_outputs (5,600 rollouts) reproduces upstream's `correct` on 99.1%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; 31 of the 51 residual disagreements would close if sieval vendored upstream's normalize_string (it deliberately does not)."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "cmmlu_kshot_clp",
@@ -1334,7 +1349,8 @@
         "url": "https://github.com/haonan-li/CMMLU/blob/d6e7b716d8ac694f38969a6c0407437d1fded799/src/qwen2.py",
         "notes": "Mirrors the official qwen2.py base path (eval, not eval_instruct): non-CoT CMMLU prompt, same-subject dev shots, one-call next-token A/B/C/D scoring, and subject-level macro report. Runtime n_shot is configurable. Uses API top_logprobs as an OpenAI-compatible substitute for the official raw-logits choice argmax (equivalent while all four option tokens are in top-k). Scoring requires all of A/B/C/D in the top-k and fails the sample otherwise, so partial coverage is loud; faithful reproduction needs a top-k that always includes them (default logprobs=100; on vLLM start with --max-logprobs 100, default 20; SGLang serves 100 by default). The validated Qwen2.5-72B 5-shot run with logprobs=100 had the full A/B/C/D set across all 11,582 samples. Runner failures are reported separately and excluded from the score denominator. Target: 89.5 (Qwen2.5-72B Base, 5-shot, DeepSeek-V3 base-model table) as a cross-check only — DeepSeek's perplexity method is underspecified (letter vs. text unstated; appendix template lists single-letter OPTIONS) and is not the reproduced method. The official CMMLU leaderboard's 85.67 is the Instruct model, not this base target."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "complex_constraints_0shot_gen",
@@ -1355,7 +1371,8 @@
         "url": "https://arxiv.org/abs/2606.09118",
         "notes": "Generative port of ComplexConstraints (Surge AI, arXiv:2606.09118) — 75 multi-constraint prompts (CIF-001..CIF-075) with 10-40 atomic rubric criteria each (1,559 total), graded by rubric rather than exact match. NO UPSTREAM EVAL CODE AND NO UPSTREAM JUDGE PROMPT: the paper defines the metrics, but the judge template, decoding settings and call structure are unstated, so the rubric prompt and verdict parsing are AUTHORED BY THIS PORT (sieval.community.complex_constraints) — hence status=experimental. METRICS: headline = task pass rate (response satisfies EVERY criterion), the metric the paper's leaderboard reports (Table 1); also criterion_pass_rate_macro (the paper's 'mean per-criterion pass rate', Table 3) and _micro (pooled), which differ because criteria counts vary 10-40 per prompt. GRADING: one judge call per rollout, verdicts as an indexed PASS/FAIL list; an unreadable verdict scores not-satisfied but is counted as n_unparsed; empty responses satisfy zero criteria without invoking the judge. Give the grader max_tokens for up to 40 verdict lines AFTER its reasoning — a truncated grader biases the score DOWN. ALIGNMENT (measured 2026-08-10, 25 gradings; details in the module docstring): the ORDERING reproduces exactly — three models spanning the board rank 51.56 > 18.33 > 5.78 against Table 1's 38.7 > 26.7 > 4.9, adjacent gaps 32.3 and 11.7 points even at worst case — but magnitudes sit ~13 points HIGH, and that residual is NOT judge choice: three capable judges across two vendors land on 51.6-53.3 and agree with each other about as well as each agrees with itself, so all of them sit ABOVE the board and this port's authored rubric grades more leniently than whatever produced it. Open; prefer rank agreement over a single-point score match. THE JUDGE IS A CAPABILITY FLOOR, NOT A NAME OR A PRICE: a flash-tier judge matched a pro-tier one to 1.3 points while a mini-tier one sat ~27 low and ONE-WAY — this template says fail what you cannot verify, so a sub-floor judge produces one-way false FAILs by construction. REPRODUCIBILITY: pin the grader model and set temperature=0 where the endpoint honours it — necessary but NOT sufficient (at t=0 one judge repeated exactly, another still spanned 2.67); where it is not honoured (one gateway fixes temperature=1 across its gpt-5.x family) the same judge on the same responses spanned 20.0-29.3 over four runs, so repeat the grading and report a spread. `n` is a task arg (tasks.<name>.args.n), not a model arg, and repeats the CANDIDATE, not the judge. Per-rollout verdicts and the judge's full ModelOutput (extra.grader_output) are persisted. Leaderboard snapshot 2026-06-03 (https://surgehq.ai/benchmarks/complex-constraints; the live board moves): Gemini 3.1 Pro 40.4, GPT-5.5 38.7, Claude Opus 4.8 34.9 task pass %."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "procedure"
     },
     {
       "name": "drop_kshot_gen",
@@ -1375,7 +1392,8 @@
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/drop_eval.py",
         "notes": "drop_metric vendored from simple-evals; prompt templates are sieval-local."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "gpqa_diamond_0shot_gen",
@@ -1396,7 +1414,8 @@
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/gpqa_eval.py",
         "notes": "Permutation + seed logic aligned with simple-evals."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "gsm8k_0shot_gen",
@@ -1417,7 +1436,8 @@
         "url": "https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
         "notes": "gsm8k-test zero-shot CoT protocol: user turn = question + \"Please reason step by step, and put your final answer within \\boxed{}.\", chat template applied by the serving backend; extract_answer(exhaust=False) (= extract_last_single_answer) and is_correct/math_equal (= eval_last_single_answer) scoring are vendored byte-for-byte in sieval.community.deepseek_math, with ONE divergence, taken for execution safety rather than as a repair: upstream's symbolic_equal hands model output to a bare parse_expr and, when parsing fails, to N as raw text -- both sympify with a namespace carrying __builtins__, so an answer of __import__('os').system(...) runs while the sample still grades wrong (not simplify(a-b), which raises TypeError first). Here the parse is guarded and an unparseable answer refuses the comparison instead. MEASURED DIVERGENCE: ZERO -- replaying this benchmark's full 1319-sample stored run (deepseek-llm-7b-chat) through upstream's reading and this one gives identical verdicts on every sample, 63.3813 either way, and 63.3055 either way with parse_latex disabled (the case that forces every comparison down the guarded path). The exponent pre-parse also declines a right-nested ** tower and an exponent above 10000, which upstream evaluates; parse_latex reads those spellings first, so the zero covers them too. Gold derived from openai/gsm8k like process_gsm8k_test (answer.split('####')[-1], commas removed). NOTE ON parse_latex: sympy 1.14's LaTeX grammar needs antlr4-python3-runtime 4.11.0, pinned in the [math] extra. Without it parse_latex raises into upstream's bare except and the symbolic path silently never runs -- worth 0.08 pp here and 1.24 pp on MATH, so an environment missing it scores lower for a reason no log reports."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "gsm8k_kshot_base_gen",
@@ -1439,7 +1459,8 @@
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/gsm8k/gsm8k.yaml",
         "notes": "Uses lm-eval-harness strict-match extraction, aligned with the original GSM8K dataset.py #### answer delimiter. Also reports lm-eval-harness flexible-extract as a secondary metric, not as the original GSM8K official metric. Default n_shot=8 follows the DeepSeek-V3 Table 3 comparison target (Qwen2.5-72B-Base GSM8K 8-shot EM = 88.3); DeepSeek-V3 does not specify strict vs flexible extraction."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "hellaswag_kshot_ppl",
@@ -1460,7 +1481,8 @@
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/hellaswag/hellaswag.yaml",
         "notes": "multiple_choice log-likelihood; acc + acc_norm (character-length normalized, reported as score). Few-shot exemplars (n_shot, default 10) sampled from train, rendered 'query gold_ending' and joined by blank lines per lm-eval; n_shot=0 is 0-shot. Continuation log-probs read via echoed alogprobs; context/continuation split by char offset (no tokenizer at this layer). Infra requirement: echo scoring reads the prompt's input logprobs, so the serving backend's prefix caching must be disabled (cached positions are not recomputed -> truncated logprobs); the backend layer owns the specific flag."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "hendrycks_math_kshot_base_gen",
@@ -1481,7 +1503,8 @@
         "url": "https://github.com/deepseek-ai/DeepSeek-Math/tree/b8b0f8ce093d80bf8e9a641e44142f06d092c305/evaluation",
         "notes": "math-cot-test path: MinervaMathPrompt 4-shot, extract_math_few_shot_cot_answer (list-valued) + eval_math/math_equal, vendored in sieval.community.deepseek_math with ONE divergence, taken for execution safety rather than as a repair: upstream's symbolic_equal hands model output to a bare parse_expr and, when parsing fails, to N as raw text -- both sympify with a namespace carrying __builtins__, so an answer of __import__('os').system(...) runs while the sample still grades wrong (not simplify(a-b), which raises TypeError first). Here the parse is guarded and an unparseable answer refuses the comparison instead. MEASURED DIVERGENCE: ZERO -- replaying the full 5000-sample stored run (Qwen2.5-72B) through upstream's reading and this one gives identical verdicts on every sample, 61.2600 either way, and 60.0200 either way with parse_latex disabled -- the adversarial case, since it sends every comparison down the guarded path (1622 of 5000 fall through to the refusal). The exponent pre-parse also declines a right-nested ** tower and an exponent above 10000, which upstream evaluates; parse_latex reads those spellings first, so the zero covers them too. NOTE ON parse_latex: sympy 1.14's LaTeX grammar needs antlr4-python3-runtime 4.11.0, pinned in the [math] extra. Without it parse_latex raises into upstream's bare except and the symbolic path silently never runs, costing 1.24 pp (61.26 -> 60.02) on this benchmark with no signal in any log -- the two figures above are the same run measured with and without it."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "hle_0shot_gen",
@@ -1502,7 +1525,8 @@
         "url": "https://github.com/centerforaisafety/hle/tree/26dca2e253b405105b4c3d8c2f5af06f86f90c66/hle_eval",
         "notes": "Generative port of Humanity's Last Exam (Center for AI Safety). SYSTEM_PROMPT and JUDGE_PROMPT are vendored byte-for-byte; the judge runs through sieval's ChatModel (text) rather than upstream's beta.chat.completions.parse structured output, and its correct/confidence fields are parsed from the reply. Metrics mirror upstream dump_metrics: accuracy, a 95% Wald confidence interval, and calibration error (calib_err, p=2, beta=100). Subset selection is a sieval addition living on HLEDataset (datasets.hle.args.text_only, default true — the full text+image set needs a vision-capable candidate + judge); text-only numbers are the asterisked variant in reports, the full set the unmarked headline, and report() echoes which subset was graded. Grader is a REAL LLM (upstream default o3-mini-2025-01-31) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: scores depend on the judge endpoint's model version (not pinnable like a Hub revision) — pin the grader model; the per-sample correct/confidence and the judge's full ModelOutput (extra.grader_output: reply, reasoning, usage, finish_reasons, model id) are persisted — the reply being the only evidence of a verdict a re-run need not reproduce, and what separates format drift from a matcher gap behind the judge_unparsed count; finish_reasons separates a reasoning judge that spent its whole budget thinking from an empty API response. VALIDATION: gpt-oss-20b scored 12.14 / 3.61 (reasoning=high / low, judge GPT-5.2, text-only, no tools) vs the gpt-oss model card (arXiv:2508.10925) 10.9 / 4.2 — within <3pp."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "hmmt_feb_2025_0shot_gen",
@@ -1522,7 +1546,8 @@
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2025.yaml",
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. LIST GOLDS: problem 10's gold is a comma-separated list of two roots, and upstream joins every box on the final line whenever the gold holds a comma; this task derives that `list_answer` flag as grader.py does. Wiring it moved 16 of 7,680 hmmt_feb_2025_outputs rollouts, all on problem 10, every one toward upstream's verdict, lifting replay agreement from 99.4% to 99.6%. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 64 models on matharena.ai's HMMT Feb 2025 table (600/7,680 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "hmmt_feb_2026_0shot_gen",
@@ -1542,7 +1567,8 @@
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_feb_2026.yaml",
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "hmmt_nov_2025_0shot_gen",
@@ -1562,7 +1588,8 @@
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/hmmt/hmmt_nov_2025.yaml",
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 22 models on matharena.ai's HMMT Nov 2025 table (600/2,640 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect, the live gemini-3-flash-preview delta below included; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. VALIDATED against official MathArena: replaying its published 2,640 outputs (22 models x 30 problems x 4 runs) through this task's grading path agrees with the upstream grader on 99.51% and reproduces 16/22 model scores exactly; Gemini 3 Flash is 93.33% three ways (published, upstream grader, sieval grader). A live sieval run of gemini-3-flash-preview scored 95.00% vs the published 93.33% — sampling variance, not a grading difference: both graders agree on 120/120 of sieval's own outputs."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "human_eval_0shot_base_gen",
@@ -1584,7 +1611,8 @@
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/humaneval/humaneval.yaml",
         "notes": "Aligned with lm-evaluation-harness humaneval.yaml prompt, stop sequences, max_gen_toks, zero-shot setting, repeats=1, and raw completion filtering; code execution is handled by the SiEval code-eval API. No single canonical Qwen2.5-72B-Base target exists: DeepSeek-V3 Table 3 reports 53.0 and the Qwen2.5 technical report self-reports 59.1 (no published eval config). This task reproduces lm-eval-harness, so its score is expected to land between those references rather than match Qwen's self-report."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "procedure"
     },
     {
       "name": "human_eval_0shot_gen",
@@ -1605,7 +1633,8 @@
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/humaneval_eval.py",
         "notes": "Prompt style follows simple-evals HumanEval; QUERY_TEMPLATE is sieval-local."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "procedure"
     },
     {
       "name": "ifbench_0shot_gen",
@@ -1625,7 +1654,8 @@
         "url": "https://github.com/allenai/IFBench/blob/1091c4c3de6c1f6ed12c012ed68f11ea450b0117/evaluation_lib.py",
         "notes": "evaluation_lib + instructions registry/checkers vendored from AllenAI IFBench. Headline score is prompt-level loose accuracy, the metric the IFBench paper reports. Comparison target: Qwen3-32B = 37.3 (AllenAI README leaderboard). The authors' hyperparameters in allenai/IFBench#5 use greedy temperature=0, which does not reproduce the score on this thinking model; reproduced with Qwen3's recommended sampling (temperature=0.6, top_p=0.95, top_k=20, max_tokens=38912). As that sampling is non-greedy the score is a stochastic band with 37.3 at the top edge, not a deterministic value."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "ifeval_0shot_gen",
@@ -1645,7 +1675,8 @@
         "url": "https://github.com/google-research/google-research/blob/f97f6adab57bd3065b24169bcfc559dc34d0db84/instruction_following_eval/evaluation_lib.py",
         "notes": "evaluation_lib + instructions_registry vendored from google-research."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "imo_answer_bench_0shot_gen",
@@ -1665,7 +1696,8 @@
         "url": "https://github.com/google-deepmind/superhuman/tree/96fa6c4cc3a9bb7450ee7b6773b659d3a030dace/imobench",
         "notes": "Non-strict GENERATIVE port of IMO-Bench AnswerBench (Google DeepMind). Authoritative source: google-deepmind/superhuman (imobench/) + imobench.github.io + arXiv 2511.01846. Deviations from upstream:\n1. Harness: upstream is agentic (answer via an `answer` tool call); this is generative — last-\\boxed{} extraction (matharena extractor).\n2. Prompt: upstream is the bare 'Please reason step by step.'; we append 'Put your final answer within \\boxed{}.' + a blank-line separator.\n3. Data: official answerbench_v2.csv (v2, released 2026-02-12, pinned by commit + sha256), which fixed ambiguous statements / incorrect answers; the old answerbench.csv (v1) is deprecated and NOT used. Two v2 rows carry known upstream spreadsheet artifacts, kept VERBATIM (faithful to the checksummed official CSV): imo-bench-algebra-036 (gold corrupted to the Category 'Algebra') and imo-bench-geometry-004 (gold Excel-autoformatted to the date serial '45752'); both grade wrong for ~any model (score impact <=0.5%).\n4. Grader: a DELIBERATE deviation from official. The official AnswerBench grader is an LLM autograder (AnswerAutoGrader, Gemini 2.5 Pro; arXiv 2511.01846 §2.3/§5.1) and the paper rejects symbolic/SymPy matching as too narrow; the official imobench/ ships DATA ONLY (no grader code). With no runnable official grader, we vendor EnvCommons/IMO-Bench@66b014f1's deterministic verify_math_answer (its OpenReward re-impl; the 'No LLM graders / math_verify' wording is EnvCommons's README, not the paper). A deterministic grader fits sieval's reproducibility contract (an LLM grader would not) and is strictly MORE conservative — it cannot grade prose / infinite-set / functional-family answers, so sieval UNDER-counts vs the official autograder (see 'Out of scope' below). verify_math_answer / parse_answer are behaviorally identical to the pinned EnvCommons source (imports made lazy per sieval discipline), unchanged pin->HEAD.\nGrading path: a parsing-layer normalize_answer reconstructs the clean answer an agent would submit, then math_verify (symmetric $-wrap, HMMT-aligned) does all equivalence — commutativity / factoring / set-equality; no bespoke matching.\nNumber: DeepSeek-V4-Pro pass@1 on v2 = 317/400 = 79.25% (real sieval eval through this task's code path, max_tokens=131072, 0 truncation, 0 unrecovered failures — 15 transient scitix upstream stream errors were recovered via --resume; the 2 corrupted-gold rows above count wrong). Historical: a v1 offline re-grade gave 76.75% — kept for reference only, NOT code-path-reproducible and computed against the deprecated v1 golds.\nOut of scope (needs upstream's agentic answer-tool channel or an LLM judge, not parsing): prose answers ('all odd primes'), infinite sets, quantified functional families — a few genuinely-correct such answers stay ungraded. \\boxed{} conflates format-compliance with math ability; the fidelity fix is a function-calling submission channel reproducing upstream's answer tool. Infer prereqs: large max_tokens (~131072) + generous client read-timeout (300s+); the score is budget-sensitive."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "inverse_ifeval_0shot_gen",
@@ -1686,7 +1718,8 @@
         "url": "https://huggingface.co/datasets/m-a-p/Inverse_IFEval/blob/35f1da157640526e62b7685b682d748fa55ccfd0/README.md",
         "notes": "Upstream publishes the dataset ONLY — no evaluation harness, so there is no grader to vendor. The judge system prompt and prompt template are per-sample columns, rendered verbatim; the 0/1 rubric and the `【JSON】` / {\"answer_score\": N} reply contract are stated inside those shipped prompts. METRIC (recovered from Tables 2/3, 22 models x 2 languages, which state neither aggregation nor scale): Overall is a POOLED mean of per-sample 0/1 verdicts x100, reconstructed from each row's eight per-type cells to a mean absolute error of 0.002 (max 0.01 = the tables' own rounding) over all 44 rows; an unweighted macro-average misses by 1.4 mean / 4.4 max. Reported as `pass@1` over the requested denominator, which IS that pooled mean. COLUMN LABELS: the paper's `CC` and `CCF` are SWAPPED relative to the expansion of its own type list — every cell is a multiple of 1/(6n), fixing `CC` to n=41 (Counter-Conventional Formatting) and `CCF` to n=99 (Code without Comments), the only reading the pooled reconstruction lands under. See sieval.community.inverse_ifeval.PAPER_COLUMNS before comparing a per-type number. REPEAT PROTOCOL: that same quantization implies SIX rollouts per sample; the paper states no repeat count. Defaults to n=1 — pass `n: 6` to match, and budget for it: grading is one judge call per rollout, serial within a sample, so n=6 costs six judge round-trips per sample. JUDGE: the paper's per-type 'adaptive judge matrix' names none of its models and states no decoding params for the evaluated models, so a single grader is used and published numbers are NOT reproducible as published — cite it with any comparison. Reference points (English / Chinese Overall): o3-high 75.66 / 76.52, GPT-5-high 73.72 / 76.02, Qwen3-32B 47.04 / 49.28, Qwen3-30B-A3B-Instruct 30.43 / 31.42. MEASURED on this port: Qwen3-30B-A3B-Instruct-2507 (temp 0.7 / top_p 0.8 / top_k 20, n=1, all 1,012) scores 33.00 / 33.60 graded by gpt-oss-120b at temperature 0, against a published 30.43 / 31.42 with a binomial SE of +-2.1 per language. Re-grading those SAME responses with Qwen3-30B-A3B-thinking gives 42.29 / 39.92 at 84.3% per-sample agreement: the grader alone moves the headline ~7.8 points, three times the residual against the published figure. That is what `experimental` records."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "livecodebench_code_generation_0shot_gen",
@@ -1707,7 +1740,8 @@
         "url": "https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
         "notes": "Prompt templates and extract_code vendored from lcb_runner/{prompts,utils}. Grading budget matches upstream: 6s per test case (codegen_metrics(..., timeout=6)), via `timeout_per_case`. Runs from before that rule landed used one whole-suite wall and are NOT comparable -- re-grading 90 recorded rollouts cost 2.22 pp."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "procedure"
     },
     {
       "name": "livecodebench_code_generation_kshot_base_gen",
@@ -1729,7 +1763,8 @@
         "url": "https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/prompts/code_generation.py",
         "notes": "Base-model few-shot template vendored from lcb_runner/prompts.get_base_model_question_template_answer and extract_code(lmstyle='GenericBase') from lcb_runner/utils. Default n_shot=3 and stop=('###',) follow DeepSeek-V3 Table 3 'LiveCodeBench-Base (Pass@1), 3-shot' and upstream's runner default. Upstream ships only 2 few-shot examples per pool, so the 3rd example is sieval-authored. Recommended problem window 2024-08-01..2024-11-01 is configured via dataset YAML args (version_tag/start_date/end_date). Grading budget matches upstream: each test case gets its own 6s, tunable via `timeout_per_case`. Runs recorded before that rule landed used one whole-suite wall instead and are NOT comparable."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "procedure"
     },
     {
       "name": "math_500_0shot_gen",
@@ -1749,7 +1784,8 @@
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
         "notes": "Math postprocess aligned with simple-evals. REPEATS: simple-evals' MathEval defaults to n_repeats=16, its CLI `math` entry passes 10, while this task defaults to n=1 — set n=10 (or 16) to match, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. pass@1 over n samples equals its mean over n repeats. k>n is rejected at construction. Scope: those upstream defaults are for the full math_test split; MATH-500 is simple-evals' math_500_test."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "mbpp_kshot_base_gen",
@@ -1771,7 +1807,8 @@
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/blob/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/mbpp/mbpp.yaml",
         "notes": "Prompt, [DONE] stop token, and default task_id 2/3/4 few-shot samples mirror lm-eval MBPP; n_shot (few-shot count) is configurable via YAML task args. Greedy generation (temperature=0, top_p=1, max_tokens=1024). Published Qwen2.5-72B-Base MBPP 3-shot Pass@1 is 76.0 (Qwen3 report, Table 3) and 72.6 (DeepSeek-V3 report, Table 3); DeepSeek-V3 leaves its MBPP protocol unspecified, so the gap to the Qwen-aligned number is a protocol difference, not an implementation error."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "procedure"
     },
     {
       "name": "mmlu_0shot_gen",
@@ -1791,7 +1828,8 @@
         "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/mmlu_eval.py",
         "notes": "0-shot generative MMLU with letter extraction; scoring aligned with simple-evals, data loaded from cais/mmlu (same 14042-item test set)."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "mmlu_kshot_clp",
@@ -1812,7 +1850,8 @@
         "url": "https://github.com/hendrycks/test/blob/4450500f923c49f1fb1dd3d99108a0bd9717b660/evaluate_flan.py",
         "notes": "Next-token A/B/C/D scoring via one alogprobs(echo=False) call, argmax over the option tokens in top_logprobs; equivalent to the reference softmax over the restricted letter logits (OpenCompass clp). Few-shot = first n_shot dev examples per subject in dataset order. Requires all of A/B/C/D in the top-k and fails the sample otherwise (default logprobs=100; vLLM needs --max-logprobs 100, default 20; SGLang serves 100). Micro-average score over the finalized set (infra failures reported separately, not scored wrong) + per-category via subject2category, matching evaluate_flan weighted_acc and the CLP siblings cmmlu/mmmlu. No client-side 2048-token truncation. Validated: Qwen2.5-72B base, 5-shot, 14042/14042, score 86.11 (target 85.0), 0 fails, deterministic across two runs."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "mmlu_pro_0shot_gen",
@@ -1832,7 +1871,8 @@
         "url": "https://github.com/open-compass/opencompass/blob/568572803ab108eb0e2ae73b770d965b7de078de/opencompass/configs/datasets/mmlu_pro/mmlu_pro_0shot_cot_gen_08c1de.py",
         "notes": "QUERY_TEMPLATE / CHOICES adapted from opencompass 0-shot CoT config."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "mmmlu_kshot_clp",
@@ -1852,7 +1892,8 @@
         "url": "https://github.com/EleutherAI/lm-evaluation-harness/tree/1dd931087362abba74e0375c8c631295559f48b2/lm_eval/tasks/openai-mmmlu",
         "notes": "MMMLU locale/category/subject organization and size-weighted (micro) aggregation from lm-evaluation-harness; Hendrycks evaluate.py completion scoring via a single alogprobs call that reads the next token's top-logprobs over the space-prefixed option tokens ' A'/' B'/' C'/' D' (a missing option is filled with -100 per Hendrycks, not failed loudly; empirically ~0.009% of samples). Because the -100 fill is silent, faithful reproduction needs a server top-k that returns all four option tokens: SGLang serves 100 by default; on vLLM start with --max-logprobs 100 (default 20). Validated on Qwen2.5-72B (sglang): full 14-locale 5-shot = 76.13, zh_cn = 82.43. Those runs used the pre-rename PPL/base_gen packaging at an out-of-tree SHA; the scoring mechanism (single alogprobs call) is identical to this clp task, so the numbers carry over."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "multi_if_0shot_gen",
@@ -1873,7 +1914,8 @@
         "url": "https://github.com/facebookresearch/Multi-IF/blob/1cdb53ed18499ad729e0766e5d3099dd5344406f/metrics.py",
         "notes": "Multi-IF's own multilingual fork of the IFEval checkers is vendored (sieval.community.multi_if); the google-research IFEval sibling is NOT interchangeable with it. Upstream drives one pass per turn (--steps 1 2 3), one sample per turn; this task walks all three in one pass. Upstream reports fractions, this task percentages. Grading matches upstream's metrics_gen exactly, checked twice: offline on 535 conversations across all 8 languages (3,098 follow-lists), and on two full live runs by re-grading their own responses with upstream's graders — 128,258 per-constraint comparisons, 15 disagreements (0.012%), every one of them at a langdetect-routed checker (change_case:english_capital x10, length_constraints:number_sentences/number_words x1 each) or at the rejected-kwargs row (keywords:letter_frequency x3). Zero disagreements at any deterministic checker; re-derived per-language cells agree to 6e-02, `score` to 0.003. The two defects upstream cannot grade reproducibly itself: kwargs it rejects (letter='#' in 1122:18:en; empty keyword in 2616:4:zh — 6 of 13,447 turn-cells) send build_description to an unseeded random.choice, and langdetect is likewise unseeded and picks the counting algorithm behind every length constraint. Measured cost of both, re-grading identical responses 3x on the full set: 12 of 26,894 turn-cells flip and `score` spans 0.012 — two orders of magnitude under the +-0.4 sd that conversation sampling contributes. Tracked, not repaired, per the unqualified-name rule; fixing either needs a `_fixed` variant with a measured delta. PUBLISHED-NUMBER RESIDUAL (open). The only servable model carrying a first-party Multi-IF figure is Qwen3-32B: Qwen3 Technical Report (arXiv:2505.09388) Table 13 Thinking 73.0, Table 14 Non-thinking 70.7. Full 4,501-conversation runs at that report's own sampling knobs, 0 failures, denominators 4501/4501/4445, give `score` 78.73 (non-thinking) and 78.97 (thinking) — +8.03 and +5.97. No single reduction closes both: turn-3-only is nearest (71.38, +0.68; 71.23, -1.77) and is mechanically plausible because upstream emits one report per turn, so an integrator running --steps 3 would publish exactly that cell — but it contradicts the published ordering, since the two arms here are statistically indistinguishable (0.24 apart, bootstrap sd 0.4) where the report has Thinking +2.3. Upstream's own driver default max_new_tokens=1024 accounts for part of the level: a paired 600-conversation arm at that cap truncates 12.23% of turn-cells and loses 2.66 points, about a third of the gap. That the anchor is not the benchmark's protocol is visible in the report itself — its Table 11 gives OpenAI-o1 48.8 where the Multi-IF paper gives o1-preview 78.9 (three-turn average) and 70.7 (turn 3)."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "value"
     },
     {
       "name": "openbookqa_kshot_gen",
@@ -1894,7 +1936,8 @@
         "url": "https://github.com/open-compass/opencompass/blob/5767b74899806c0c37efdc5529ffea01e7340e48/opencompass/configs/datasets/obqa/obqa_gen_9069e4.py",
         "notes": "Prompt template (main variant) and first_option_postprocess vendored from OpenCompass. At n_shot=0 the prompt and extraction match the upstream 0-shot config; n_shot>0 is a sieval extension (fixed first n_shot train rows)."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "platinum_gsm8k_0shot_gen",
@@ -1915,7 +1958,8 @@
         "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
         "notes": "Subset 'gsm8k' of madrylab/platinum-bench: 268 rows kept of 300 (32 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list, which also decided an o1-only prompt rewrite; all three upstream prompts are reachable explicitly as cot / no_cot / no_cot_o1. A parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed; the o1/o3 snapshots ran at temperature=1. Not greedy, so upstream runs are not bit-reproducible either. Infer prereqs: set max_tokens=6000 (upstream's default) — the score is budget-sensitive, since a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. The task forwards no budget of its own on purpose: agenerate merges {**model_kwargs, **task_kwargs}, so a task-side value would silently outrank the one you configured. That budget was sized for non-thinking models: on a thinking model raise it, since a live Qwen3-32B run spent all 6000 in the reasoning channel on one question and scored the empty answer as an error. anomalies.json flags exactly that case as truncated_output, which is what separates it from a wrong answer. Validated: all 120 math error counts of the paper's Table 3 (24 models x 5 subsets) reproduce exactly, by replaying upstream's own published inferences (madrylab/platinum-bench-paper-cache) through this pipeline against madrylab/platinum-bench-paper-version. Reproduce a published row with prompt_variant=cot at temperature 0.5, except: no_cot for DeepSeek-R1 and Gemini Thinking; no_cot at temperature 1 for o1-mini and o3-mini; no_cot_o1 at temperature 1 for o1-2024-12-17 and o1-preview. The pinned revision is the current madrylab/platinum-bench, which rejects 15 more math rows than the paper version (968 -> 953), so its scores are near but not equal to the paper's and upstream publishes no table for it. The replay stubs the model layer, so it was also run live end-to-end (all 5 subsets, 953 questions, Qwen3-32B over an OpenAI-protocol endpoint): 0 pipeline failures, 6 errors, 5 of them genuine wrong answers. Qwen3-32B has no published row, so alignment also ran two models that do, each over the paper version's 968 questions at temperature 0.5, one sample. Upstream served both of its open-weight rows through DeepInfra (its model factory routes Llama-3.3-70B-Instruct and Qwen2.5-72B-Instruct there), so those runs pin that provider with allow_fallbacks=false: an aggregator otherwise routes across providers that quantize differently, and quantization changes completions. Qwen2.5-72B-Instruct scored 0/0/0/4/4 = 8 against Table 3's 0/0/0/4/7 = 11; Llama-3.3-70B-Instruct scored 1/0/0/6/9 = 16 against 0/0/0/7/7 = 14 there and 0/0/0/8/7 = 15 on a bf16 endpoint, which brackets the serving-precision effect. Each lands within 0.7 of sigma_D = sqrt(paper + live), the spread of a difference of two unseeded draws — the published count is a single sample too, so exact equality is not achievable and repeats would not sharpen the comparison. Three of the five cells publish 0 errors, so agreeing there is close to automatic; svamp and gsm8k carry the signal. What separates sampling noise from a scoring difference is which questions were missed: 9 of 15, 9 of 16 and 7 of 8 live misses are misses in upstream's own completions, and the rest move in both directions (live-only and paper-only both non-zero), which is the signature of resampling rather than of a one-sided scoring change. All three runs had 0 pipeline failures, and every miss finished on a stop token with a parseable integer, so none is a truncation or parse artifact. The replay is what pins scoring fidelity; these runs pin the live path."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "platinum_multiarith_0shot_gen",
@@ -1936,7 +1980,8 @@
         "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
         "notes": "Subset 'multiarith' of madrylab/platinum-bench: 170 rows kept of 174 (4 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list, which also decided an o1-only prompt rewrite; all three upstream prompts are reachable explicitly as cot / no_cot / no_cot_o1. A parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed; the o1/o3 snapshots ran at temperature=1. Not greedy, so upstream runs are not bit-reproducible either. Infer prereqs: set max_tokens=6000 (upstream's default) — the score is budget-sensitive, since a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. The task forwards no budget of its own on purpose: agenerate merges {**model_kwargs, **task_kwargs}, so a task-side value would silently outrank the one you configured. That budget was sized for non-thinking models: on a thinking model raise it, since a live Qwen3-32B run spent all 6000 in the reasoning channel on one question and scored the empty answer as an error. anomalies.json flags exactly that case as truncated_output, which is what separates it from a wrong answer. Validated: all 120 math error counts of the paper's Table 3 (24 models x 5 subsets) reproduce exactly, by replaying upstream's own published inferences (madrylab/platinum-bench-paper-cache) through this pipeline against madrylab/platinum-bench-paper-version. Reproduce a published row with prompt_variant=cot at temperature 0.5, except: no_cot for DeepSeek-R1 and Gemini Thinking; no_cot at temperature 1 for o1-mini and o3-mini; no_cot_o1 at temperature 1 for o1-2024-12-17 and o1-preview. The pinned revision is the current madrylab/platinum-bench, which rejects 15 more math rows than the paper version (968 -> 953), so its scores are near but not equal to the paper's and upstream publishes no table for it. The replay stubs the model layer, so it was also run live end-to-end (all 5 subsets, 953 questions, Qwen3-32B over an OpenAI-protocol endpoint): 0 pipeline failures, 6 errors, 5 of them genuine wrong answers. Qwen3-32B has no published row, so alignment also ran two models that do, each over the paper version's 968 questions at temperature 0.5, one sample. Upstream served both of its open-weight rows through DeepInfra (its model factory routes Llama-3.3-70B-Instruct and Qwen2.5-72B-Instruct there), so those runs pin that provider with allow_fallbacks=false: an aggregator otherwise routes across providers that quantize differently, and quantization changes completions. Qwen2.5-72B-Instruct scored 0/0/0/4/4 = 8 against Table 3's 0/0/0/4/7 = 11; Llama-3.3-70B-Instruct scored 1/0/0/6/9 = 16 against 0/0/0/7/7 = 14 there and 0/0/0/8/7 = 15 on a bf16 endpoint, which brackets the serving-precision effect. Each lands within 0.7 of sigma_D = sqrt(paper + live), the spread of a difference of two unseeded draws — the published count is a single sample too, so exact equality is not achievable and repeats would not sharpen the comparison. Three of the five cells publish 0 errors, so agreeing there is close to automatic; svamp and gsm8k carry the signal. What separates sampling noise from a scoring difference is which questions were missed: 9 of 15, 9 of 16 and 7 of 8 live misses are misses in upstream's own completions, and the rest move in both directions (live-only and paper-only both non-zero), which is the signature of resampling rather than of a one-sided scoring change. All three runs had 0 pipeline failures, and every miss finished on a stop token with a parseable integer, so none is a truncation or parse artifact. The replay is what pins scoring fidelity; these runs pin the live path."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "platinum_singleop_0shot_gen",
@@ -1957,7 +2002,8 @@
         "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
         "notes": "Subset 'singleop' of madrylab/platinum-bench: 150 rows kept of 159 (9 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list, which also decided an o1-only prompt rewrite; all three upstream prompts are reachable explicitly as cot / no_cot / no_cot_o1. A parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed; the o1/o3 snapshots ran at temperature=1. Not greedy, so upstream runs are not bit-reproducible either. Infer prereqs: set max_tokens=6000 (upstream's default) — the score is budget-sensitive, since a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. The task forwards no budget of its own on purpose: agenerate merges {**model_kwargs, **task_kwargs}, so a task-side value would silently outrank the one you configured. That budget was sized for non-thinking models: on a thinking model raise it, since a live Qwen3-32B run spent all 6000 in the reasoning channel on one question and scored the empty answer as an error. anomalies.json flags exactly that case as truncated_output, which is what separates it from a wrong answer. Validated: all 120 math error counts of the paper's Table 3 (24 models x 5 subsets) reproduce exactly, by replaying upstream's own published inferences (madrylab/platinum-bench-paper-cache) through this pipeline against madrylab/platinum-bench-paper-version. Reproduce a published row with prompt_variant=cot at temperature 0.5, except: no_cot for DeepSeek-R1 and Gemini Thinking; no_cot at temperature 1 for o1-mini and o3-mini; no_cot_o1 at temperature 1 for o1-2024-12-17 and o1-preview. The pinned revision is the current madrylab/platinum-bench, which rejects 15 more math rows than the paper version (968 -> 953), so its scores are near but not equal to the paper's and upstream publishes no table for it. The replay stubs the model layer, so it was also run live end-to-end (all 5 subsets, 953 questions, Qwen3-32B over an OpenAI-protocol endpoint): 0 pipeline failures, 6 errors, 5 of them genuine wrong answers. Qwen3-32B has no published row, so alignment also ran two models that do, each over the paper version's 968 questions at temperature 0.5, one sample. Upstream served both of its open-weight rows through DeepInfra (its model factory routes Llama-3.3-70B-Instruct and Qwen2.5-72B-Instruct there), so those runs pin that provider with allow_fallbacks=false: an aggregator otherwise routes across providers that quantize differently, and quantization changes completions. Qwen2.5-72B-Instruct scored 0/0/0/4/4 = 8 against Table 3's 0/0/0/4/7 = 11; Llama-3.3-70B-Instruct scored 1/0/0/6/9 = 16 against 0/0/0/7/7 = 14 there and 0/0/0/8/7 = 15 on a bf16 endpoint, which brackets the serving-precision effect. Each lands within 0.7 of sigma_D = sqrt(paper + live), the spread of a difference of two unseeded draws — the published count is a single sample too, so exact equality is not achievable and repeats would not sharpen the comparison. Three of the five cells publish 0 errors, so agreeing there is close to automatic; svamp and gsm8k carry the signal. What separates sampling noise from a scoring difference is which questions were missed: 9 of 15, 9 of 16 and 7 of 8 live misses are misses in upstream's own completions, and the rest move in both directions (live-only and paper-only both non-zero), which is the signature of resampling rather than of a one-sided scoring change. All three runs had 0 pipeline failures, and every miss finished on a stop token with a parseable integer, so none is a truncation or parse artifact. The replay is what pins scoring fidelity; these runs pin the live path."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "platinum_singleq_0shot_gen",
@@ -1978,7 +2024,8 @@
         "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
         "notes": "Subset 'singleq' of madrylab/platinum-bench: 100 rows kept of 109 (9 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list, which also decided an o1-only prompt rewrite; all three upstream prompts are reachable explicitly as cot / no_cot / no_cot_o1. A parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed; the o1/o3 snapshots ran at temperature=1. Not greedy, so upstream runs are not bit-reproducible either. Infer prereqs: set max_tokens=6000 (upstream's default) — the score is budget-sensitive, since a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. The task forwards no budget of its own on purpose: agenerate merges {**model_kwargs, **task_kwargs}, so a task-side value would silently outrank the one you configured. That budget was sized for non-thinking models: on a thinking model raise it, since a live Qwen3-32B run spent all 6000 in the reasoning channel on one question and scored the empty answer as an error. anomalies.json flags exactly that case as truncated_output, which is what separates it from a wrong answer. Validated: all 120 math error counts of the paper's Table 3 (24 models x 5 subsets) reproduce exactly, by replaying upstream's own published inferences (madrylab/platinum-bench-paper-cache) through this pipeline against madrylab/platinum-bench-paper-version. Reproduce a published row with prompt_variant=cot at temperature 0.5, except: no_cot for DeepSeek-R1 and Gemini Thinking; no_cot at temperature 1 for o1-mini and o3-mini; no_cot_o1 at temperature 1 for o1-2024-12-17 and o1-preview. The pinned revision is the current madrylab/platinum-bench, which rejects 15 more math rows than the paper version (968 -> 953), so its scores are near but not equal to the paper's and upstream publishes no table for it. The replay stubs the model layer, so it was also run live end-to-end (all 5 subsets, 953 questions, Qwen3-32B over an OpenAI-protocol endpoint): 0 pipeline failures, 6 errors, 5 of them genuine wrong answers. Qwen3-32B has no published row, so alignment also ran two models that do, each over the paper version's 968 questions at temperature 0.5, one sample. Upstream served both of its open-weight rows through DeepInfra (its model factory routes Llama-3.3-70B-Instruct and Qwen2.5-72B-Instruct there), so those runs pin that provider with allow_fallbacks=false: an aggregator otherwise routes across providers that quantize differently, and quantization changes completions. Qwen2.5-72B-Instruct scored 0/0/0/4/4 = 8 against Table 3's 0/0/0/4/7 = 11; Llama-3.3-70B-Instruct scored 1/0/0/6/9 = 16 against 0/0/0/7/7 = 14 there and 0/0/0/8/7 = 15 on a bf16 endpoint, which brackets the serving-precision effect. Each lands within 0.7 of sigma_D = sqrt(paper + live), the spread of a difference of two unseeded draws — the published count is a single sample too, so exact equality is not achievable and repeats would not sharpen the comparison. Three of the five cells publish 0 errors, so agreeing there is close to automatic; svamp and gsm8k carry the signal. What separates sampling noise from a scoring difference is which questions were missed: 9 of 15, 9 of 16 and 7 of 8 live misses are misses in upstream's own completions, and the rest move in both directions (live-only and paper-only both non-zero), which is the signature of resampling rather than of a one-sided scoring change. All three runs had 0 pipeline failures, and every miss finished on a stop token with a parseable integer, so none is a truncation or parse artifact. The replay is what pins scoring fidelity; these runs pin the live path."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "platinum_svamp_0shot_gen",
@@ -1999,7 +2046,8 @@
         "url": "https://github.com/MadryLab/platinum-benchmarks/blob/8fd2f82e63c49ea1cca4266f4dded82b7ddbcb55/src/utils.py",
         "notes": "Subset 'svamp' of madrylab/platinum-bench: 265 rows kept of 300 (35 rejected). Prompt comes from the row, not from this code: upstream get_prompt() picks between the data's platinum_prompt (CoT) and platinum_prompt_no_cot columns and sends it as one user turn. Extraction (get_parse_fn('math')) and scoring (check_prediction, i.e. exact float equality on platinum_target[0]) are vendored byte-faithfully in sieval.community.platinum_bench. Rows with cleaning_status='rejected' are dropped, matching the published leaderboard. Deviations: prompt_variant (task arg, default cot) replaces upstream's hardcoded reasoning-model name list, which also decided an o1-only prompt rewrite; all three upstream prompts are reachable explicitly as cot / no_cot / no_cot_o1. A parse failure is recorded as prediction=None/correct=False instead of upstream's swallowed AttributeError. Repro decoding (model-layer assets — set via models: / infer_args, not in this code): temperature=0.5, one sample per question, no seed; the o1/o3 snapshots ran at temperature=1. Not greedy, so upstream runs are not bit-reproducible either. Infer prereqs: set max_tokens=6000 (upstream's default) — the score is budget-sensitive, since a smaller budget truncates CoT before the 'Answer:' line and turns correct reasoning into parse errors. The task forwards no budget of its own on purpose: agenerate merges {**model_kwargs, **task_kwargs}, so a task-side value would silently outrank the one you configured. That budget was sized for non-thinking models: on a thinking model raise it, since a live Qwen3-32B run spent all 6000 in the reasoning channel on one question and scored the empty answer as an error. anomalies.json flags exactly that case as truncated_output, which is what separates it from a wrong answer. Validated: all 120 math error counts of the paper's Table 3 (24 models x 5 subsets) reproduce exactly, by replaying upstream's own published inferences (madrylab/platinum-bench-paper-cache) through this pipeline against madrylab/platinum-bench-paper-version. Reproduce a published row with prompt_variant=cot at temperature 0.5, except: no_cot for DeepSeek-R1 and Gemini Thinking; no_cot at temperature 1 for o1-mini and o3-mini; no_cot_o1 at temperature 1 for o1-2024-12-17 and o1-preview. The pinned revision is the current madrylab/platinum-bench, which rejects 15 more math rows than the paper version (968 -> 953), so its scores are near but not equal to the paper's and upstream publishes no table for it. The replay stubs the model layer, so it was also run live end-to-end (all 5 subsets, 953 questions, Qwen3-32B over an OpenAI-protocol endpoint): 0 pipeline failures, 6 errors, 5 of them genuine wrong answers. Qwen3-32B has no published row, so alignment also ran two models that do, each over the paper version's 968 questions at temperature 0.5, one sample. Upstream served both of its open-weight rows through DeepInfra (its model factory routes Llama-3.3-70B-Instruct and Qwen2.5-72B-Instruct there), so those runs pin that provider with allow_fallbacks=false: an aggregator otherwise routes across providers that quantize differently, and quantization changes completions. Qwen2.5-72B-Instruct scored 0/0/0/4/4 = 8 against Table 3's 0/0/0/4/7 = 11; Llama-3.3-70B-Instruct scored 1/0/0/6/9 = 16 against 0/0/0/7/7 = 14 there and 0/0/0/8/7 = 15 on a bf16 endpoint, which brackets the serving-precision effect. Each lands within 0.7 of sigma_D = sqrt(paper + live), the spread of a difference of two unseeded draws — the published count is a single sample too, so exact equality is not achievable and repeats would not sharpen the comparison. Three of the five cells publish 0 errors, so agreeing there is close to automatic; svamp and gsm8k carry the signal. What separates sampling noise from a scoring difference is which questions were missed: 9 of 15, 9 of 16 and 7 of 8 live misses are misses in upstream's own completions, and the rest move in both directions (live-only and paper-only both non-zero), which is the signature of resampling rather than of a one-sided scoring change. All three runs had 0 pipeline failures, and every miss finished on a stop token with a parseable integer, so none is a truncation or parse artifact. The replay is what pins scoring fidelity; these runs pin the live path."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "ruler_0shot_gen",
@@ -2020,7 +2068,8 @@
         "url": "https://github.com/NVIDIA/RULER/blob/ab17b7853df4e0a30b78cd5d2b463ac7dff6ee13/scripts/eval/synthetic/constants.py",
         "notes": "Scoring mirrors RULER's string_match_all (recall) and string_match_part (QA), vendored in community/ruler/eval. Verified byte-exact against NVIDIA/RULER at ab17b78 and reproduces published recall on a Qwen3-8B run (repro table in the PR). Generation is capped per subtask to upstream's tokens_to_generate (via the sample's gen_budget, see infer()), and HotpotQA document ordering matches upstream's sorted(set()). Remaining divergences, each score-neutral:\n1. Paul Graham essay corpus: the BYO generator concatenates essays in the pinned URL-list order, while upstream groups them repo-then-html (glob order within each group), so the full-corpus bytes differ. NIAH/VT needles and QA answers don't depend on filler-text content or order, so recall is unchanged.\n2. HotpotQA (_read_hotpotqa in datasets/ruler/_qa.py) is sourced from the HF mirror (hotpotqa/hotpot_qa), not upstream's derived json, and questions are taken in the HF dataset's native row order and sliced to the first N. Per-index question selection can therefore differ from upstream even though document ordering (sorted(set()), used for distractor indexing) matches. Scoring is unaffected: each sample's answer is looked up from its own question, not from upstream's index.\nSeparately, a real divergence with material score impact — not the harmless cap-reproduction it might look like. CWE's 124-token answer budget (120 upstream base + 4 Qwen3 <think> tag overhead) is upstream's own tokens_to_generate=120, inherited byte-exact; sieval did not shrink it. But upstream calibrated 120 against its own terse, non-thinking answers — it has no thinking mode, so it never tested this budget against thinking-mode's more verbose output. A 10-item markdown list needs roughly 150 tokens, so the answer gets cut off mid-list (finish_reason=length) before naming the top-10. Measured truncation rate and recall split by completed vs truncated, across six thinking runs (n=500 each):\n  length:            4k     8k    16k    32k    64k   128k\n  truncated/500:    469    482    484    468    437    363\n  recall completed: 100.0  88.9   95.6   82.8   55.9   13.0\n  recall truncated:  83.1  68.3   53.8   56.9   42.9   14.4\nniah_single_1 and vt truncate 0/500 on these same runs, so this is CWE-specific verbosity, not a general thinking-mode issue. At 4k-64k, completed recall stays far above truncated recall — real budget starvation. At 128k the gap closes (13.0 vs 14.4) — that length is genuinely capability-limited, not truncation-limited.\nScore impact: replacing 4k-64k CWE scores with their completed-only recall (i.e. as if untruncated) moves the thinking-mode mean from 86.86 to ~88.3 — the gap from the 84.4 reference widens from +2.91% to ~+4.6%, outside the <3% band this PR otherwise holds to. Stated plainly, not as expected behavior. Whether to give the answer a larger budget (breaking byte-exact alignment with upstream's 120) is a separate decision; this note exists so the tradeoff is visible."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "scicode_0shot_gen",
@@ -2041,7 +2090,8 @@
         "url": "https://github.com/scicode-bench/SciCode/tree/69a8cfc829fe8788a426ce8b5de6292366dce7ef/eval/scripts",
         "notes": "Vendored from upstream eval/scripts into community/scicode: prompt templates, code/h5 parsers, comparison helpers, and the 3 non-generated gold steps (13.6/62.1/76.3, inlined in _gold_steps.py). special_step_mode selects gold injection and is SCORE-RELEVANT: 'verbatim' (default) injects the whole gold block; 'extract' byte-matches upstream gencode_json.py, whose get_function_from_code matches the header's def before class and so silently drops the class wrapper for 13.6/62.1 (open upstream bugs #59/#49), leaving every dependent step to fail with NameError and making problems 13/62 structurally unsolvable. Use 'extract' when comparing against public leaderboard numbers (produced with that behavior). Calibration (Qwen2-72B, committed code, T=0 greedy, full test split, self-dependency): official expected values apply only to 'extract'. Observed extract main accuracy matches the official figures (1.5 without background, paper Table 2; 4.6 with background, Table 3). Observed main/sub pairs are extract no-background 1.5/13.9, verbatim no-background 1.5/13.9, extract with-background 4.6/24.0, and verbatim with-background 4.6/25.0; verbatim has no official expected value. Without background, the two modes have identical pass/fail outcomes because Qwen's affected downstream code is wrong even after the missing classes are restored. With background, verbatim rescues 13.14/62.2/62.4 (+3), as it does on a stronger model (gpt-5.6), increasing the sub-step count from 69/288 to 72/288; main remains 3/65 because neither affected problem is fully solved. In an earlier calibration, an unrelated byte-identical program for stochastic step 14.2 flipped verdict between paired runs. Its unseeded Monte Carlo test provides evidence of an observed ±1-problem (about 1.5 point) execution-side main-accuracy jitter. In this committed rerun, 14.2 passes in both modes and does not contribute to their difference. Compatibility/parity adaptations and other deviations from upstream: (1) problems 2/28 import scipy.integrate.simps, removed in SciPy 1.14 (open upstream issue #2); a conditional legacy-compatible wrapper restores that API for any program referencing simps. That is wider than problems 2/28: problems 12/57 declare a scipy.integrate module handle and the model calls integrate.simps(...) through it, which raises AttributeError rather than ImportError, so import_errors=0 does not prove those steps ran. Both routes are covered. Replaying every newly covered step of the four-way calibration turned 13-14 environment failures per run into the model's own errors and produced no additional pass, so the wrapper leaves all four Qwen scores unchanged; a stronger model would otherwise lose up to 13/288 sub-steps and all of problem 12, which is 0/14 without it. simps is the only removed API any problem declares (checked across both splits), but the sandbox otherwise runs its own pinned SciPy rather than the pre-1.14 one behind the official numbers, so model-generated code reaching for another retired API fails here though it would pass upstream; the prompt constraining models to the declared dependencies bounds that exposure. Steps the wrapper un-blocks execute for real instead of failing instantly, so problem 12 adds substantial wall clock (12.14 alone exceeds the 1800 s step timeout); the timeouts counter surfaces this; (2) numeric h5 targets are read eval-side and inlined into the sandbox program (upstream reads test_data.h5 in-subprocess); (3) execution runs on a remote code-eval service over HTTP, not an in-process subprocess — the service caps sandbox memory (1 GB default) while upstream subprocesses are uncapped, so memory-heavy numeric steps could OOM here yet pass upstream; (4) pipeline failures count as unsolved problems in BOTH accuracies -- a failed problem's tested steps are recovered from its raw sample and stay in the sub-problem denominator scoring zero, so a full test split keeps the fixed 288-step denominator the official sub-problem figures are computed over rather than shrinking to whichever steps happened to run; the unevaluated_steps counter reports how many never executed. Reproducing official numbers requires greedy decoding (temperature=0) in the model config; with_background defaults to False (the official headline mode). The code-eval service image must provide the sandbox scientific stack including sympy, which the vendored comparison shim injects — see the evaluator's requirements/scicode.txt."
       },
-      "status": "experimental"
+      "status": "experimental",
+      "reference_kind": "procedure"
     },
     {
       "name": "simpleqa_verified_0shot_gen",
@@ -2062,7 +2112,8 @@
         "url": "https://arxiv.org/abs/2509.07968",
         "notes": "Generative port of SimpleQA Verified (Google DeepMind, arXiv:2509.07968) — a 1,000-prompt curated subset of OpenAI SimpleQA. The autorater prompt is the paper's updated prompt (Appendix A); grade parsing (A/B/C -> CORRECT/INCORRECT/NOT_ATTEMPTED, default C) and the F1 aggregation mirror openai/simple-evals@5e623c2b simpleqa_eval.py. Headline metric = F1 (harmonic mean of overall-correct and correct-given-attempted; official Gemini 2.5 Pro = 55.6). Grader is a REAL LLM (official autorater: gpt-4.1-2025-04-14) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: unlike deterministic-grader tasks, scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample parsed grade and the grader's full ModelOutput (grader_output: reply, reasoning, usage, finish_reasons, model id) are persisted under the judgement record's `extra` — the reply being the only evidence of a verdict a re-grade need not reproduce, and (parse_grade defaults to NOT_ATTEMPTED) the only way to tell format drift from a real abstention; finish_reasons separates a reasoning autorater that spent its budget thinking from an empty API response. VALIDATION: google/gemma-4-31B-it scored F1 9.95 (n=1000, grader openai/gpt-4.1 via OpenRouter), within the official 10.7±2.1 band. Official numbers (Gemini 2.5 Pro 55.6; the band above) are from the DeepMind SimpleQA Verified leaderboard: https://www.kaggle.com/benchmarks/deepmind/simpleqa-verified"
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "smt_2025_0shot_gen",
@@ -2082,7 +2133,8 @@
         "url": "https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/smt/smt_2025.yaml",
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. LIST GOLDS: problem 32's gold is a comma-separated list, and upstream joins every box on the final line whenever the gold holds a comma; this task derives that `list_answer` flag as grader.py does. Wiring it moved 0 of 10,875 smt_2025_outputs rollouts — every model that answered problem 32 boxed the whole list, so the flag is parity insurance here, not a fix. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 43 models on matharena.ai's SMT table (1,060/10,875 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. OVERLAP: apex_2025 re-uses problems 8, 42 and 43 verbatim. VALIDATED: replaying MathArena/smt_2025_outputs (10,875 rollouts) reproduces upstream's `correct` on 99.1%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; residual is un-vendored normalize_string plus math-verify-vs-sympy."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "t_eval_before_calling_0shot_gen",
@@ -2103,7 +2155,8 @@
         "url": "https://github.com/open-compass/T-Eval/tree/58f22406404d7e2a4f36856a19c7f4dc28a0a5f0/teval",
         "notes": "ResponseDataSample (schema.py) + format_load (utils/format_load.py) vendored."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "theoremqa_kshot_base_gen",
@@ -2124,7 +2177,8 @@
         "url": "https://github.com/TIGER-AI-Lab/TheoremQA/blob/acfc9686aa9b49f3c8f189364a9a9ee9c53da039/run.py",
         "notes": "Prompt follows official short-form examples by default; n_shot can select any prefix of the built-in examples. answer_clean and numeric matching follow official utils.py/number_utils.py, with ONE deliberate SAFETY divergence, taken for execution safety rather than as a repair. UPSTREAM EXECUTES MODEL OUTPUT: number_utils.py turns an extracted answer into a number with a bare eval(num), which is arbitrary code execution driven by the model under test. This task evaluates the same expressions with an AST walk over an allowlist (safe_eval, in this module) that executes nothing. BOUNDS: node count; integer-power and shift size; sequence repetition; and the first argument to factorial, math.comb and math.perm, which are reached through an allowlist so that math.factorial(n) and factorial(n) carry the same ceiling. MEASURED DIVERGENCE: ZERO. Replaying a stored 800-sample run (Qwen2.5-72B, 5-shot, greedy) through upstream's bare eval and through this walk reaches 706 expressions across the three call sites; 586 evaluate to an identical value, 120 fail under both, and 0 are refused here but evaluated by upstream. Task accuracy is 44.625 under both readings, and no sample's verdict differs. None of the bounds in force at that replay (node count, integer-power size, factorial argument) was reached by any of the 706; the sequence-repetition and math-spelled ceilings were added in review afterwards, and each sits orders of magnitude above the shapes this benchmark's answers are written in. Fidelity was preserved wherever safety did not object WITHIN the numeric subset the three call sites reach: set displays and bitwise operators are supported purely because upstream computes them, and the builtins that upstream's eval exposed (abs/round/pow/min/max/sum/int/float/complex/divmod/len) are available again -- an earlier mitigation, eval with __builtins__ cleared, was BOTH escapable (clearing builtins does not stop attribute traversal; the catch_warnings route reaches a live open) AND silently lost those names to a NameError. Outside that subset the dialect is narrower than eval's: comparisons, boolean and conditional expressions, dict displays, subscripts and string literals are refused, and only the string literal is refused for a safety reason. REPRODUCED DEFECT: latex2sympy folds a list answer such as [0, 0] into the set {0}, and evaluating that set cements the corruption; refusing set displays instead would score +2 of 800 samples correct (44.625 -> 44.875) with no verdict moving right-to-wrong. That is a grader repair, not a safety measure, so it is NOT taken here and the _fixed name is left uncoined for a delta this size. GRADING: extraction and comparison both reach latex2sympy, which is synchronous and unbounded, so both run in a worker process (sieval/core/utils/offload.py) rather than on the event loop the session shares."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     },
     {
       "name": "ugmathbench_0shot_gen_fixed",
@@ -2144,7 +2198,8 @@
         "url": "https://github.com/YangLabHKUST/UGMathBench/blob/df47bfa639bfb89bdb0220036a7b2f216e72b0b3/eval_rule.py",
         "notes": "Prompt and metric definitions mirror upstream's `raw` template and `eval_file` (aacc / eacc / cacc / Delta / RE). The grader does NOT, and cannot: upstream's `judge_rule.py` is GPL-3.0 and would not ship in an Apache-2.0 distribution, so answer comparison is an independent math-verify-based implementation of the same 10 answer types. The `_fixed` variant therefore does not reproduce the paper's numbers, and the unqualified name stays vacant rather than reserved. MEASURED DIVERGENCE: upstream's judge was run as a local instrument (GPL-3.0 restricts distribution, not use; nothing is vendored) over all 15,183 pinned rows, each row's own reference replayed back as a boxed answer. Upstream accepts its own reference on 14,616 rows (96.27%), this task on 15,160 (99.85%); the 552 rows that disagree span 192 of 5,061 problems — an EAcc ceiling difference of 3.79 pp, about 5x the 0.70 pp binomial standard error. 548 of the 552 are rows upstream rejects its OWN reference on, so the gap is repair, not drift; only 4 go the other way (a UOL reference whose top-level commas sit outside any bracket). Dominant cause: upstream normalizes the prediction and the reference by different passes — its extraction-time normalize_answer rewrites sqrt(x) into sqrt{(}x) on the prediction only, which a plain-sympy reference never survives. Contributing: a TF slot whose reference is not a boolean (9 of 1665; upstream asserts it is and swallows the AssertionError into a False, so no answer wins), a zero-valued numeric reference, the declared answer type deciding the rule where upstream's `is_equal` retries every method until one accepts, and three deliberate differences in where commas are split (9 rows): `<` and `>` are the relational operators here, not brackets, so counting them as brackets — which upstream does — swallows the comma after them and the row comes out a slot short (6 rows); the bracket depth clamps at zero instead of going negative, where upstream loses every remaining slot after one unmatched closer (3 rows); and `{}` counts as a bracket, which costs 0 rows on the references but keeps a comma inside a LaTeX group in the model's answer from splitting a slot in two. All enumerated in sieval/community/ugmathbench.py. The figure bounds the GRADER, not a model's score: it is a replay of stored references, so it says nothing about extraction on real model prose. LIVE HEAD-TO-HEAD (the stronger measurement, and the one that promoted this task): over a full 15,183-version run, upstream's judge re-graded the same stored responses; the two agree on the large majority of samples, the disagreements run several-to-one in this task's favour, and it scores above upstream on identical responses. The residual misses are LaTeX interval notation, absolute-value bars, and a `y = ` prefix on an EX answer. Figures are deliberately not quoted here: the grader has changed since that audit (the case-preserving LaTeX reading), so any number carried over would describe a comparison that no longer runs. Note that the replay figure could NOT see the largest defect the live run found — replaying a gold as its own answer short-circuits on string equality and never reaches the symbolic path. GUARDS: since the parsed text is model output, three shapes are refused rather than evaluated — the parse namespace has its builtins removed; an answer containing a quote is refused outright, because a quoted string handed to any callable (eval, sympify, S, N, or any name at all, since auto_symbol makes unknown names callable) is re-sympified with sympy's own default namespace and gets the builtins back; and an answer requiring unbounded arithmetic (a power tower) is screened out by an unevaluated pre-parse. All three grade the answer wrong, and none is reachable by any pinned reference — the largest exponent is three digits and not one of the 42,064 gold slots contains a quote. SAMPLING: upstream generates greedily, one sample per version (temperature 0, max_tokens 2048), and this task issues one rollout per version to match; set temperature via the model config. Upstream also offers a model-as-judge variant (eval_marj.py) which it now recommends over the rule-based path — not implemented here. METRICS: `relative_delta` is upstream's RE scaled by 100 — upstream prints the bare ratio (0.1667) where this reports 16.67; do not compare the two directly."
       },
-      "status": "stable"
+      "status": "stable",
+      "reference_kind": "value"
     }
   ]
 }

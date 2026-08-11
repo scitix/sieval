@@ -191,6 +191,7 @@ def _ensure_punkt_tab() -> None:
     # protocol (or a replayable inference dump, as MathArena and PlatinumBench
     # have) turns up. See `reference_impl.notes` for the measurements.
     status="experimental",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="facebookresearch/Multi-IF",
         url="https://github.com/facebookresearch/Multi-IF/blob/1cdb53ed18499ad729e0766e5d3099dd5344406f/metrics.py",

@@ -227,6 +227,22 @@ async def test_infer_postprocess_feedback_and_report():
 
 
 @pytest.mark.anyio
+async def test_feedback_without_a_raw_sample_fails_the_sample():
+    """No gold means no verdict, not a wrong-by-default one.
+
+    This task declares DENOMINATOR_JUDGED, so failing keeps the sample out of the
+    denominator rather than charging a row the run could not read to the model.
+    """
+    task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=0)
+
+    with pytest.raises(ValueError, match="no raw sample to grade against"):
+        await task.feedback(
+            build_prediction_record(["B"]),
+            TaskContext(sample_id=3, raw_sample=None),
+        )
+
+
+@pytest.mark.anyio
 async def test_postprocess_raises_when_option_token_missing():
     # Only A/B/C present in top-k (D dropped) → must fail loudly, not guess.
     task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=0)

@@ -675,6 +675,7 @@ def _render_text_task_show(result: CommandResult) -> None:
     log_user("Model type:    {}", d["model_type"] or "-")
     log_user("Deps:          {}", d["deps_group"] or "-")
     log_user("Status:        {}", d["status"])
+    log_user("Ground truth:  {}", d["reference_kind"])
     ref = d.get("reference_impl")
     if ref:
         log_user("")

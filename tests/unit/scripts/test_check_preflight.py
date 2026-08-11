@@ -130,7 +130,7 @@ class TestPreflightRunner:
     """Runner orchestration."""
 
     def test_all_checks_listed(self):
-        assert len(PreflightRunner.ALL_CHECKS) == 13
+        assert len(PreflightRunner.ALL_CHECKS) == 14
         assert "check_links" in PreflightRunner.ALL_CHECKS
         assert "check_examples" in PreflightRunner.ALL_CHECKS
         assert "check_meta_index_sync" in PreflightRunner.ALL_CHECKS
@@ -2569,6 +2569,287 @@ class TestCheckReportDeclarations:
         assert set(defined.values()) == set(_DENOMINATOR_VALUES)
         assert metrics.SCORE_KEY_FIELD == "score_key"
         assert metrics.DENOMINATOR_FIELD == "denominator_policy"
+
+
+class TestCheckReferenceKind:
+    """The guard on `reference_kind` vs how a task actually builds its judgement.
+
+    The field is additive with a default, so a mis-declaration is silent in both
+    directions: declared `value` on a procedural task and `missing_reference`
+    fires on every sample of the benchmark; declared `procedure` on a value task
+    and the rule never runs at all.
+    """
+
+    def _run(self, tmp_path: Path, source: str, **extra: str) -> list[CheckResult]:
+        tasks_dir = tmp_path / "sieval" / "tasks"
+        tasks_dir.mkdir(parents=True)
+        (tasks_dir / "__init__.py").write_text("")
+        (tasks_dir / "demo_0shot_gen.py").write_text(source)
+        for rel, text in extra.items():
+            (tasks_dir / f"{rel}.py").write_text(text)
+        return PreflightRunner(project_root=tmp_path).check_reference_kind()
+
+    def _one(self, tmp_path: Path, source: str, **extra: str) -> CheckResult:
+        results = self._run(tmp_path, source, **extra)
+        assert len(results) == 1
+        return results[0]
+
+    @staticmethod
+    def _task(kind: str | None, reference: str) -> str:
+        declaration = "" if kind is None else f"    reference_kind={kind!r},\n"
+        return (
+            "@sieval_task(\n"
+            "    name='demo_0shot_gen',\n"
+            f"{declaration}"
+            ")\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            f"        return True, build_judgement_record({reference}, [])\n"
+        )
+
+    # --- the two directions a mis-declaration goes --------------------------
+
+    def test_procedural_task_declaring_procedure_passes(self, tmp_path: Path):
+        r = self._one(tmp_path, self._task("procedure", "None"))
+        assert r.status == "PASS"
+        assert "all 1 task(s)" in r.message
+
+    def test_value_task_declaring_nothing_passes(self, tmp_path: Path):
+        # The default is `value`, so an undeclared value task is correct — the
+        # check must not demand a declaration it does not need.
+        r = self._one(tmp_path, self._task(None, "raw['answer']"))
+        assert r.status == "PASS"
+
+    def test_procedural_task_left_undeclared_fails(self, tmp_path: Path):
+        """The expensive direction: the rule would flag every sample."""
+        r = self._one(tmp_path, self._task(None, "None"))
+        assert r.status == "FAIL"
+        assert "declares reference_kind='value'" in r.details[0]
+        assert "passes a literal None" in r.details[0]
+        assert "declare 'procedure'" in r.details[0]
+
+    def test_value_task_declaring_procedure_fails(self, tmp_path: Path):
+        """The silent direction: the rule never runs."""
+        r = self._one(tmp_path, self._task("procedure", "raw['answer']"))
+        assert r.status == "FAIL"
+        assert "declares reference_kind='procedure'" in r.details[0]
+        assert "passes a real reference" in r.details[0]
+        assert "declare 'value'" in r.details[0]
+
+    def test_a_task_with_both_call_sites_is_a_value(self, tmp_path: Path):
+        """`ugmathbench_0shot_gen_fixed`'s shape, and the reason for the rule.
+
+        It judges a missing `raw_sample` with `None` and everything else with its
+        gold. That `None` branch *is* the anomaly, so reading it as a procedure
+        declaration would silence the report on the one task known to need it.
+        """
+        source = (
+            "@sieval_task(\n    name='demo_0shot_gen',\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        if ctx.raw_sample is None:\n"
+            "            return True, build_judgement_record(None, [])\n"
+            "        return True, build_judgement_record(ctx.raw_sample['a'], [])\n"
+        )
+        assert self._one(tmp_path, source).status == "PASS"
+        assert (
+            self._one(
+                tmp_path.__class__(str(tmp_path) + "2"),
+                source.replace(
+                    "    name='demo_0shot_gen',\n",
+                    "    name='demo_0shot_gen',\n    reference_kind='procedure',\n",
+                ),
+            ).status
+            == "FAIL"
+        )
+
+    # --- the keyword spelling and the shapes the record is built in ---------
+
+    def test_the_keyword_form_reads_the_same_as_positional(self, tmp_path: Path):
+        # `reference` is the builder's first parameter, so both spellings occur;
+        # reading only the positional one would exempt the other.
+        r = self._one(
+            tmp_path,
+            "@sieval_task(\n    name='demo_0shot_gen',\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True, build_judgement_record(\n"
+            "            rollouts=[], reference=None\n"
+            "        )\n",
+        )
+        assert r.status == "FAIL"
+        assert "passes a literal None" in r.details[0]
+
+    def test_a_call_passing_no_reference_at_all_is_skipped(self, tmp_path: Path):
+        # It does not type-check; treating a missing argument as a declaration
+        # would report a syntax problem as a mis-declaration.
+        results = self._run(
+            tmp_path,
+            "@sieval_task(\n    name='demo_0shot_gen',\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True, build_judgement_record()\n",
+        )
+        assert {r.status for r in results} == {"WARN", "PASS"}
+
+    def test_a_declaration_in_a_shared_helper_is_followed(self, tmp_path: Path):
+        """`arc/`'s layout: four leaves share one `_base.arc_judgement_record`."""
+        r = self._one(
+            tmp_path,
+            "from ._base import demo_judgement\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True, demo_judgement(ctx)\n",
+            _base="def demo_judgement(ctx):\n"
+            "    return build_judgement_record(None, [])\n",
+        )
+        assert r.status == "FAIL"
+        assert "found via helper" in r.details[0]
+
+    def test_two_helpers_disagreeing_are_both_read(self, tmp_path: Path):
+        """Every call site within a tier is read, not just the first.
+
+        `ugmathbench`'s shape again, split across two helpers instead of two
+        branches of one method: stopping at the first hit would read whichever
+        helper sorted first as the whole story, and half the time call a value
+        task procedural.
+        """
+        r = self._one(
+            tmp_path,
+            "from ._base import a_judgement, z_judgement\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n"
+            "    reference_kind='procedure',\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        if ctx.raw_sample is None:\n"
+            "            return True, a_judgement(ctx)\n"
+            "        return True, z_judgement(ctx)\n",
+            _base="def a_judgement(ctx):\n"
+            "    return build_judgement_record(None, [])\n"
+            "def z_judgement(ctx):\n"
+            "    return build_judgement_record(ctx.raw_sample['a'], [])\n",
+        )
+        assert r.status == "FAIL"
+        assert "declare 'value'" in r.details[0]
+
+    def test_an_inline_none_branch_does_not_outvote_a_helper_gold(self, tmp_path: Path):
+        """`ugmathbench`'s split, but across two tiers instead of one method.
+
+        The dangerous direction: were the class body to win outright, that lone
+        inline `None` would read as the whole story, and the FAIL would tell the
+        author to declare `procedure` — the one edit that switches
+        `missing_reference` off for the entire benchmark. Unioning the tiers
+        keeps the verdict `value`, where a mis-declaration is loud instead.
+        """
+        r = self._one(
+            tmp_path,
+            "from ._base import z_judgement\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n"
+            "    reference_kind='value',\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        if ctx.raw_sample is None:\n"
+            "            return True, build_judgement_record(None, [])\n"
+            "        return True, z_judgement(ctx)\n",
+            _base="def z_judgement(ctx):\n"
+            "    return build_judgement_record(ctx.raw_sample['a'], [])\n",
+        )
+        assert r.status == "PASS"
+
+    def test_via_names_every_tier_that_contributed(self, tmp_path: Path):
+        # Same shape mis-declared, so the detail line is visible: a task split
+        # across tiers must not be reported as if only one had been read.
+        r = self._one(
+            tmp_path,
+            "from ._base import z_judgement\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n"
+            "    reference_kind='procedure',\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        if ctx.raw_sample is None:\n"
+            "            return True, build_judgement_record(None, [])\n"
+            "        return True, z_judgement(ctx)\n",
+            _base="def z_judgement(ctx):\n"
+            "    return build_judgement_record(ctx.raw_sample['a'], [])\n",
+        )
+        assert r.status == "FAIL"
+        assert "found via class+helper" in r.details[0]
+        assert "declare 'value'" in r.details[0]
+
+    def test_an_inherited_feedback_is_followed(self, tmp_path: Path):
+        """`platinum_bench`'s layout: five leaves define no `feedback` at all."""
+        r = self._one(
+            tmp_path,
+            "from ._base import DemoBase\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n)\n"
+            "class DemoTask(DemoBase):\n"
+            "    pass\n",
+            _base="class DemoBase:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True, build_judgement_record(None, [])\n",
+        )
+        assert r.status == "FAIL"
+        assert "found via base" in r.details[0]
+
+    # --- reach: what the check cannot read, it must not call clean ----------
+
+    def test_an_unreachable_task_warns_rather_than_passing_silently(
+        self, tmp_path: Path
+    ):
+        """A task it cannot read is a task the rule may be mis-routed on.
+
+        Passing quietly would let the check's own blind spot read as a clean bill
+        of health for the tasks inside it.
+        """
+        results = self._run(
+            tmp_path,
+            "@sieval_task(\n    name='demo_0shot_gen',\n)\nclass DemoTask:\n    pass\n",
+        )
+        statuses = {r.status for r in results}
+        assert statuses == {"WARN", "PASS"}
+        warn = next(r for r in results if r.status == "WARN")
+        assert "reference_kind unverified" in warn.message
+        assert "DemoTask" in warn.details[0]
+
+    def test_an_undecorated_class_is_not_a_task(self, tmp_path: Path):
+        # An abstract base builds records but registers nothing; demanding a
+        # declaration there would fail a class that has no `reference_kind`.
+        results = self._run(
+            tmp_path,
+            "class Helper:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True, build_judgement_record(None, [])\n",
+        )
+        assert [r.status for r in results] == ["PASS"]
+        assert "all 0 task(s)" in results[0].message
+
+    def test_a_non_literal_declaration_is_skipped_not_guessed(self, tmp_path: Path):
+        # `reference_kind=SOME_CONSTANT` is unreadable statically; reporting it
+        # as a mismatch would be inventing a verdict.
+        results = self._run(
+            tmp_path,
+            "@sieval_task(\n    name='demo_0shot_gen',\n"
+            "    reference_kind=KIND,\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True, build_judgement_record(None, [])\n",
+        )
+        assert [r.status for r in results] == ["PASS"]
+        assert "all 0 task(s)" in results[0].message
+
+    def test_unparsable_module_reported_not_raised(self, tmp_path: Path):
+        r = self._one(tmp_path, "class Broken(:\n")
+        assert r.status == "FAIL"
+        assert "could not parse" in r.details[0]
+
+    def test_no_task_modules_skips(self, tmp_path: Path):
+        (tmp_path / "sieval" / "tasks").mkdir(parents=True)
+        results = PreflightRunner(project_root=tmp_path).check_reference_kind()
+        assert [r.status for r in results] == ["SKIP"]
+
+    def test_the_check_is_registered(self):
+        assert "check_reference_kind" in PreflightRunner.ALL_CHECKS
 
 
 class TestCheckRecordKeyAccess:

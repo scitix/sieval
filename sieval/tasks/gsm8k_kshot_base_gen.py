@@ -120,6 +120,7 @@ def _named(finals, metric: str) -> int:
     n_shot=N_SHOT,
     tags=("english", "math-word-problems", "open-ended", "base-model"),
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="lm-evaluation-harness",
         url=(

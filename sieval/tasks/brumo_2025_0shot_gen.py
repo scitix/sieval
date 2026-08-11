@@ -44,6 +44,7 @@ from ._math_verify import normalize_vote, verify_answer
     tags=("english", "open-ended"),
     deps_group="math",
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="matharena",
         url="https://github.com/eth-sri/matharena/blob/a11194deff8c67a232974a383795e8a2776b4c6f/configs/competitions/brumo/brumo_2025.yaml",

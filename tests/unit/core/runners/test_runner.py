@@ -31,7 +31,13 @@ from sieval.core.runners.runner import (
     read_run_version,
 )
 from sieval.core.tasks.concurrency import compute_stream_buffer_capacity
-from sieval.core.tasks.consts import TaskAction, TaskStage
+from sieval.core.tasks.consts import (
+    ERROR_REASONS_NON_RETRIABLE,
+    NON_RETRIABLE_REASON,
+    NonRetriableSampleError,
+    TaskAction,
+    TaskStage,
+)
 from sieval.core.tasks.context import TaskContext, TaskRunIdentity, TaskStageOutput
 from sieval.core.tasks.meta import (
     _TASK_CLASSES,
@@ -256,6 +262,7 @@ class TestE2ERunMetaTaskIdentity:
             "n_shot": 2,
             "tags": ["english", "multiple-choice"],
             "status": "experimental",
+            "reference_kind": "value",
         }
         assert task.name != meta["task"]["name"]
         assert meta["version"] == __version__
@@ -303,6 +310,7 @@ _IDENT: TaskRunIdentity = {
     "n_shot": 0,
     "tags": [],
     "status": "stable",
+    "reference_kind": "value",
 }
 # Same block, different registered name — the only field the gate compares.
 _OTHER: TaskRunIdentity = {
@@ -313,6 +321,7 @@ _OTHER: TaskRunIdentity = {
     "n_shot": 0,
     "tags": [],
     "status": "stable",
+    "reference_kind": "value",
 }
 
 
@@ -2139,6 +2148,43 @@ class TestRunnerInternalBranches:
         assert new_ctx.error_action == TaskAction.PREPROCESS
         assert new_ctx.error_reason == "exception::RuntimeError"
         assert new_ctx.error_msg == "boom"
+
+    @pytest.mark.anyio
+    async def test_a_non_retriable_error_records_the_reason_the_loader_honours(
+        self, tmp_path, monkeypatch
+    ):
+        """The declaration is the exception *type*, not its name.
+
+        `core` cannot enumerate task exception classes, so the runner tests
+        `isinstance` and records one fixed reason -- the one in
+        `ERROR_REASONS_NON_RETRIABLE`, so the loader leaves the sample FAILED on
+        resume instead of re-inferring a deterministic miss. The message still
+        carries the detail, which is why the class name is not in the reason.
+        """
+        dataset = MockDataset([{"question": "q", "answer": "a"}])
+        model = MockChatModel(answers={"q": "a"})
+        task = MockTask(dataset=dataset, model=model, name="internal_stage_nonretry")
+        runner = TaskRunner(task, make_config(tmp_path))
+        ctx = task.make_context(0, {"question": "q", "answer": "a"})
+
+        class _Subclass(NonRetriableSampleError):
+            pass
+
+        async def _preprocess(_raw, _ctx):
+            raise _Subclass("gold will not parse")
+
+        monkeypatch.setattr(task, "preprocess", _preprocess)
+
+        send, recv = anyio.create_memory_object_stream[TaskContext](1)
+        async with send, recv:
+            await runner._execute_stage_logic(ctx, send, TaskAction.PREPROCESS)
+            new_ctx = await recv.receive()
+
+        assert new_ctx.stage == TaskStage.FAILED
+        # A subclass counts, and the reason is not `exception::_Subclass`.
+        assert new_ctx.error_reason == NON_RETRIABLE_REASON
+        assert new_ctx.error_reason in ERROR_REASONS_NON_RETRIABLE
+        assert new_ctx.error_msg == "gold will not parse"
 
 
 class TestRunnerInterruptHandling:

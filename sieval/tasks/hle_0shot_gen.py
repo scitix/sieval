@@ -96,6 +96,7 @@ from sieval.datasets import HLEDataset, HLEDatasetSample
     model_type="chat",
     deps_group="hle",
     status="stable",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="hle",
         url="https://github.com/centerforaisafety/hle/tree/26dca2e253b405105b4c3d8c2f5af06f86f90c66/hle_eval",

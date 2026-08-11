@@ -117,6 +117,7 @@ class StepFeedback(TypedDict):
     model_type="chat",
     deps_group="scicode",
     status="experimental",
+    reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="scicode",
         url="https://github.com/scicode-bench/SciCode/tree/69a8cfc829fe8788a426ce8b5de6292366dce7ef/eval/scripts",

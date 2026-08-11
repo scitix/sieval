@@ -260,6 +260,7 @@ CMMLU_CATEGORY_SUBJECTS = {
     n_shot=DEFAULT_N_SHOT,
     tags=("chinese", "multiple-choice", "base-model"),
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="cmmlu",
         url="https://github.com/haonan-li/CMMLU/blob/d6e7b716d8ac694f38969a6c0407437d1fded799/src/qwen2.py",
@@ -428,10 +429,23 @@ class CMMLUFewShotClpTask(
         prediction = post["rollouts"][0].get("prediction")
         raw = ctx.raw_sample
         if raw is None:
-            # No sample to compare against: the verdict is wrong-by-default, and
-            # the reference is genuinely unknown rather than a procedure. Kept as
-            # the pre-migration behaviour (which recorded answer="").
-            return True, build_judgement_record("", [build_rollout_judgement(0, False)])
+            # No sample to compare against, so there is no verdict to record: a
+            # `correct=False` here would charge a missing row to the model, and
+            # this task declares DENOMINATOR_JUDGED, so failing keeps it out of
+            # the denominator entirely instead of counting it wrong.
+            #
+            # A plain raise, deliberately retriable (unlike
+            # `hendrycks_math`'s `NonRetriableSampleError`, where the gold is
+            # fixed in the row): reaching here means the resume path could not
+            # recover `raw_sample` from `dataset.test_set`, which can be an
+            # environment problem a later resume fixes. With DENOMINATOR_JUDGED a
+            # non-retriable failure would drop the sample from the denominator
+            # for good and quietly raise the score.
+            raise ValueError(
+                f"sample {ctx.sample_id!r}: no raw sample to grade against — "
+                "`raw_sample` was not recoverable from the dataset, so the "
+                "reference is unknown and no verdict can be recorded"
+            )
         answer = raw["answer"]
         # `subject` rides along so a judgement row on disk is self-describing;
         # report() still groups by raw_sample (see there).

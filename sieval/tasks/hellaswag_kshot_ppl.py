@@ -149,6 +149,7 @@ def _argmax(values: list[float]) -> int:
     n_shot=N_SHOT,
     tags=("english", "multiple-choice", "commonsense"),
     model_type="gen",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="lm-evaluation-harness",
         url=(

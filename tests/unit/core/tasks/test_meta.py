@@ -333,6 +333,7 @@ class TestGetTaskRunIdentity:
             "n_shot": 5,
             "tags": ["chinese", "multiple-choice"],
             "status": "experimental",
+            "reference_kind": "value",
         }
 
     def test_omits_fields_excluded_on_purpose(self):
@@ -362,6 +363,7 @@ class TestGetTaskRunIdentity:
             "n_shot",
             "tags",
             "status",
+            "reference_kind",
         }
 
     def test_is_json_shaped(self):
@@ -387,7 +389,8 @@ class TestGetTaskRunIdentity:
 
     def test_descriptive_tags_not_the_synthesized_protocol_set(self):
         """`tags` is the author-declared `TaskMeta.tags`, not the `cls.tags`
-        protocol set the decorator synthesizes from `eval_mode` + `n_shot`."""
+        protocol set the decorator synthesizes from `eval_mode` + `n_shot` +
+        `reference_kind`."""
 
         @sieval_task(
             name="tagsplit",
@@ -753,6 +756,109 @@ def test_sieval_task_sets_protocol_tags_from_eval_mode_and_n_shot():
         pass
 
     assert TClpZero.tags == frozenset({"clp", "zero_shot"})
+
+
+class TestReferenceKind:
+    """The declaration that says *why* a `JudgementRecord.reference` is absent.
+
+    `obj_to_dict` drops `None`, so on disk a procedural ground truth is just a
+    missing key, and the installed registry is the only thing that can say so --
+    which a run archived months ago no longer has. This field is that answer,
+    carried in the run's own `meta.json`. Purely descriptive: nothing branches on
+    it, which is why the check on it is the only thing standing between a typo
+    and a misdescribed run.
+    """
+
+    def test_defaults_to_value(self):
+        # The overwhelmingly common case, and the one every task declared
+        # implicitly before the field existed — so the default has to be `value`
+        # or shipping it would reclassify 45 tasks in silence.
+        @sieval_task(**_valid_kwargs(name="rk_default"))
+        class T(_StubTask):
+            pass
+
+        assert get_task_meta(T).reference_kind == "value"
+
+    def test_procedure_is_declarable(self):
+        @sieval_task(**_valid_kwargs(name="rk_proc", reference_kind="procedure"))
+        class T(_StubTask):
+            pass
+
+        assert get_task_meta(T).reference_kind == "procedure"
+
+    @pytest.mark.parametrize("kind", ["value", "procedure"])
+    def test_the_kind_mints_no_protocol_tag(self, kind):
+        """`reference_kind` is recorded, not routed on.
+
+        No rule consumes it, so a per-kind tag would be a routing seam with no
+        consumer: `cls.tags` is the eval_mode + shot pair and nothing else.
+        """
+
+        @sieval_task(**_valid_kwargs(name=f"rk_tag_{kind}", reference_kind=kind))
+        class T(_StubTask):
+            pass
+
+        assert T.tags == frozenset({"gen", "zero_shot"})
+        assert not {t for t in T.tags if t.endswith("_reference")}
+
+    def test_an_unknown_kind_is_rejected_at_decoration_time(self):
+        """Stricter than `status`, and for a reason: a typo here fails *silently*.
+
+        Nothing reads the value at run time, so a misspelled kind travels intact
+        into `meta/index.json` and every run's `meta.json`, misdescribing the
+        ground truth of an archived run -- the one question the field answers.
+        """
+        with pytest.raises(ValueError, match="reference_kind must be one of"):
+
+            @sieval_task(**_valid_kwargs(name="rk_bad", reference_kind="procedures"))
+            class T(_StubTask):
+                pass
+
+    def test_survives_the_index_roundtrip(self):
+        meta = TaskMeta(
+            name="rk_rt",
+            display_name="RT",
+            description="d",
+            dataset="stub_dataset",
+            eval_mode=EvalMode.GEN,
+            reference_kind="procedure",
+        )
+        payload = task_meta_to_dict(meta)
+        assert payload["reference_kind"] == "procedure"
+        assert task_meta_from_dict(payload).reference_kind == "procedure"
+
+    def test_an_index_row_written_before_the_field_reads_as_value(self):
+        # `index.json` rows are release-authored, and a row from an older cut
+        # simply has no key. Defaulting to `value` is what every such task
+        # declared implicitly.
+        payload = task_meta_to_dict(
+            TaskMeta(
+                name="rk_old",
+                display_name="Old",
+                description="d",
+                dataset="stub_dataset",
+                eval_mode=EvalMode.GEN,
+            )
+        )
+        del payload["reference_kind"]
+        assert task_meta_from_dict(payload).reference_kind == "value"
+
+    def test_run_identity_carries_it(self):
+        """A run directory has to answer this on its own.
+
+        `meta.json` is written once and never rewritten while the installed
+        registry moves on, so an archived run that consults only the registry
+        cannot say why its judgements carry no reference.
+        """
+
+        @sieval_task(**_valid_kwargs(name="rk_ident", reference_kind="procedure"))
+        class T(_StubTask):
+            pass
+
+        identity = _identity_of(T)
+        assert identity is not None
+        assert identity["reference_kind"] == "procedure"
+        assert json.loads(json.dumps(identity))["reference_kind"] == "procedure"
 
 
 def test_sieval_task_sets_class_model_type():

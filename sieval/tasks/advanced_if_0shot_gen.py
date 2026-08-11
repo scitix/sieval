@@ -85,6 +85,7 @@ from sieval.datasets import AdvancedIFDatasetSample
     n_shot=0,
     tags=("english", "open-ended"),
     model_type="chat",
+    reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="facebookresearch/AdvancedIF",
         url=(
