@@ -45,13 +45,14 @@ different mean over the same per-sample verdicts is a different benchmark:
 Two upstream quirks are reproduced deliberately. Per-sample continuous scores
 are rounded to 2 decimals *before* being averaged, which is what upstream writes
 to ``eval_results.json`` and pools from. And the ``reference`` cells of
-``translation`` / ``verb-extract`` / ``get-webpage`` carry two extra rows
-(``*_user_instruction`` / ``*_tool_instruction``) that are not scored on their
-own: their responses are glued in front of every data row's response so the
-reference measures "translate the instruction *and* the payload", matching what
-the aligned and conflict cells ask for. Those rows are still graded per sample
-so the run has a verdict on disk for every row, and are then excluded from the
-cell average exactly as upstream excludes them.
+``translation`` / ``verb-extract`` / ``get-webpage`` carry extra rows that are not
+scored on their own -- two ``*_user_instruction`` rows for the first two, and four
+``*_tool_instruction`` rows for ``get-webpage``, which composes verb-extract and
+translation separately. Their responses are glued in front of every data row's
+response so the reference measures "translate the instruction *and* the payload",
+matching what the aligned and conflict cells ask for. Those rows are still graded
+per sample so the run has a verdict on disk for every row, and are then excluded
+from the cell average exactly as upstream excludes them.
 
 Upstream runs this at temperature 0 with a 2048-token cap; neither is set here,
 because generation parameters belong to the run config.
