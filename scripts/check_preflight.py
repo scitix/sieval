@@ -2032,22 +2032,29 @@ class PreflightRunner:
         a deeper chain reports as unresolved (the caller counts it) rather than
         passing quietly.
 
-        Each tier accumulates every call site it can see before the next is
-        tried, rather than stopping at the first hit. A task whose two branches
-        build the record two ways is the case that matters (``ugmathbench``), and
-        stopping early would read one branch as the whole story.
-        """
-        found = _judgement_references(cls)
-        if found:
-            return found, "class"
+        All three are **unioned**; none short-circuits the others. A task whose
+        two branches build the record two ways is the case that matters
+        (``ugmathbench``), and nothing confines that split to one tier: a task
+        that judges its missing-``raw_sample`` branch inline and delegates the
+        real gold to a shared helper would, if the class body won outright, read
+        as a ``procedure`` on the strength of that one ``None`` -- and the
+        violation it then raises tells the author to *declare* ``procedure``,
+        which is the single edit that switches the rule off for the whole
+        benchmark. Unioning can only err the other way: an extra non-``None``
+        reference moves the verdict toward ``value``, where a mis-declaration is
+        loud (every sample flagged) rather than silent.
 
+        ``via`` names every tier that contributed, so a task split across two
+        says so instead of naming the one that happened to be searched first.
+        """
         called = _called_names(cls)
+        helper: list[ast.expr] = []
         for node in tree.body:
             if (
                 isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and node.name in called
             ):
-                found += _judgement_references(node)
+                helper += _judgement_references(node)
         for name in sorted(called):
             target = _resolve_intra_package(tree, name, path, self.project_root)
             if target is None or not target.is_file():
@@ -2057,10 +2064,9 @@ class PreflightRunner:
                 continue
             fn = _function_named(shared, name)
             if fn is not None:
-                found += _judgement_references(fn)
-        if found:
-            return found, "helper"
+                helper += _judgement_references(fn)
 
+        inherited: list[ast.expr] = []
         for base in cls.bases:
             if not isinstance(base, ast.Name):
                 continue
@@ -2072,11 +2078,17 @@ class PreflightRunner:
                 continue
             parent = _class_named(shared, base.id)
             if parent is not None:
-                found += _judgement_references(parent)
-        if found:
-            return found, "base"
+                inherited += _judgement_references(parent)
 
-        return [], "unresolved"
+        tiers = (
+            ("class", _judgement_references(cls)),
+            ("helper", helper),
+            ("base", inherited),
+        )
+        found = [ref for _, refs in tiers for ref in refs]
+        if not found:
+            return [], "unresolved"
+        return found, "+".join(tier for tier, refs in tiers if refs)
 
     def check_reference_kind(self) -> list[CheckResult]:
         """Every task's declared ``reference_kind`` must match how it judges.

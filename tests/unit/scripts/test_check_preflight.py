@@ -2708,7 +2708,7 @@ class TestCheckReferenceKind:
         assert "found via helper" in r.details[0]
 
     def test_two_helpers_disagreeing_are_both_read(self, tmp_path: Path):
-        """Each tier accumulates before the next is tried, rather than stopping.
+        """Every call site within a tier is read, not just the first.
 
         `ugmathbench`'s shape again, split across two helpers instead of two
         branches of one method: stopping at the first hit would read whichever
@@ -2731,6 +2731,50 @@ class TestCheckReferenceKind:
             "    return build_judgement_record(ctx.raw_sample['a'], [])\n",
         )
         assert r.status == "FAIL"
+        assert "declare 'value'" in r.details[0]
+
+    def test_an_inline_none_branch_does_not_outvote_a_helper_gold(self, tmp_path: Path):
+        """`ugmathbench`'s split, but across two tiers instead of one method.
+
+        The dangerous direction: were the class body to win outright, that lone
+        inline `None` would read as the whole story, and the FAIL would tell the
+        author to declare `procedure` — the one edit that switches
+        `missing_reference` off for the entire benchmark. Unioning the tiers
+        keeps the verdict `value`, where a mis-declaration is loud instead.
+        """
+        r = self._one(
+            tmp_path,
+            "from ._base import z_judgement\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n"
+            "    reference_kind='value',\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        if ctx.raw_sample is None:\n"
+            "            return True, build_judgement_record(None, [])\n"
+            "        return True, z_judgement(ctx)\n",
+            _base="def z_judgement(ctx):\n"
+            "    return build_judgement_record(ctx.raw_sample['a'], [])\n",
+        )
+        assert r.status == "PASS"
+
+    def test_via_names_every_tier_that_contributed(self, tmp_path: Path):
+        # Same shape mis-declared, so the detail line is visible: a task split
+        # across tiers must not be reported as if only one had been read.
+        r = self._one(
+            tmp_path,
+            "from ._base import z_judgement\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n"
+            "    reference_kind='procedure',\n)\n"
+            "class DemoTask:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        if ctx.raw_sample is None:\n"
+            "            return True, build_judgement_record(None, [])\n"
+            "        return True, z_judgement(ctx)\n",
+            _base="def z_judgement(ctx):\n"
+            "    return build_judgement_record(ctx.raw_sample['a'], [])\n",
+        )
+        assert r.status == "FAIL"
+        assert "found via class+helper" in r.details[0]
         assert "declare 'value'" in r.details[0]
 
     def test_an_inherited_feedback_is_followed(self, tmp_path: Path):
