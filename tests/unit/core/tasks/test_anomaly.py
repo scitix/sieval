@@ -17,6 +17,7 @@ from sieval.core.tasks.anomaly import (
     _DETECTION_RULES,
     AnomalyReport,
     TaskAnomalyDetector,
+    _model_outputs,
     _rule_applies,
     _unwrap_result,
     detect_empty_infer_gen,
@@ -66,6 +67,25 @@ class TestUnwrapResult:
         assert _unwrap_result(tso) == "answer"
 
 
+class TestModelOutputs:
+    """A multi-turn `infer` returns `list[ModelOutput]`; rules must still see it."""
+
+    def test_shapes(self, sample_model_meta):
+        one = ModelOutput(model=sample_model_meta, texts=["a"])
+        two = ModelOutput(model=sample_model_meta, texts=["b"])
+        cases = [
+            (one, (one,), "single"),
+            ([one, two], (one, two), "list_of_outputs"),
+            ([], (), "empty_list"),
+            ("not_an_output", (), "wrong_type"),
+            ([one, "mixed"], (), "mixed_list_is_not_a_multi_call_stage"),
+            ({"rollouts": []}, (), "prediction_record"),
+            (None, (), "none"),
+        ]
+        for result, expected, case_name in cases:
+            assert _model_outputs(result) == expected, case_name
+
+
 class TestDetectEmptyInferGen:
     def test_variants(self, sample_model_meta):
         wrapped_empty = TaskStageOutput(
@@ -78,6 +98,24 @@ class TestDetectEmptyInferGen:
             ("some_string", set(), "non_model_output"),
             (wrapped_empty, {0}, "wrapped_empty"),
             (None, set(), "none"),
+        ]
+        for infer_result, expected, case_name in cases:
+            ctx = _make_final_ctx(infer_result=infer_result)
+            assert detect_empty_infer_gen(ctx) == expected, case_name
+
+    def test_multi_turn_reports_a_single_empty_call(self, sample_model_meta):
+        """One dead turn out of three is the same signal as a dead single call.
+
+        Before rules read a list, this returned an empty set -- indistinguishable
+        from "nothing was wrong".
+        """
+        answered = ModelOutput(model=sample_model_meta, texts=["ok"])
+        blank = ModelOutput(model=sample_model_meta, texts=[])
+        cases = [
+            ([answered, answered, answered], set(), "every_turn_answered"),
+            ([answered, blank, answered], {0}, "middle_turn_empty"),
+            ([blank, blank, blank], {0}, "every_turn_empty"),
+            ([answered, answered], set(), "two_turn_conversation"),
         ]
         for infer_result, expected, case_name in cases:
             ctx = _make_final_ctx(infer_result=infer_result)
@@ -101,6 +139,42 @@ class TestDetectEmptyInferPpl:
             (_make_output(None, None), set(), "no_ppl_fields"),
             ("not_model_output", set(), "non_model_output"),
             (None, set(), "none"),
+        ]
+        for infer_result, expected, case_name in cases:
+            ctx = _make_final_ctx(infer_result=infer_result)
+            assert detect_empty_infer_ppl(ctx) == expected, case_name
+
+    def test_multi_call_reports_any_empty_candidate(self, sample_model_meta):
+        """One call per candidate is the only shape a ppl task ships.
+
+        Reading only a lone `ModelOutput` returned an empty set for every ppl
+        sample. It matters more than for the `gen` siblings: `postprocess` takes an
+        argmax across candidates, and an empty one sums to 0.0 where a real one is
+        negative, so it wins and changes the answer instead of failing.
+        """
+
+        def cand(logprobs, logprobs_tokens):
+            return ModelOutput(
+                model=sample_model_meta,
+                texts=["x"],
+                logprobs=logprobs,
+                logprobs_tokens=logprobs_tokens,
+            )
+
+        ok = cand([-0.5], ["a"])
+        empty = cand([], ["a"])
+        empty_tokens = cand([-0.5], [])
+        unscored = cand(None, None)
+        cases = [
+            ([ok, ok, ok, ok], set(), "every_candidate_scored"),
+            ([ok, empty, ok], {0}, "middle_candidate_empty"),
+            ([ok, ok, empty_tokens], {0}, "last_candidate_empty_tokens"),
+            ([empty, ok], {0}, "first_candidate_empty"),
+            # A candidate carrying neither field is not an empty one: `ppl` only
+            # claims a verdict where the fields exist, as the single-output arm
+            # has always done.
+            ([unscored, ok], set(), "candidate_without_ppl_fields"),
+            ([], set(), "no_calls"),
         ]
         for infer_result, expected, case_name in cases:
             ctx = _make_final_ctx(infer_result=infer_result)
@@ -141,6 +215,48 @@ class TestDetectTruncatedOutput:
             finish_reasons=["max_tokens", "length"],
         )
         ctx = _make_final_ctx(infer_result=output)
+        assert detect_truncated_output(ctx) == {0, 1}
+
+    def test_multi_turn_reports_whichever_turn_hit_the_cap(self, sample_model_meta):
+        """A conversation carrying its own history is the likeliest to truncate.
+
+        Before rules read a list this returned an empty set for every turn, so the
+        signal was simply absent for multi-turn tasks.
+        """
+
+        def turn(reason):
+            return ModelOutput(
+                model=sample_model_meta, texts=["x"], finish_reasons=[reason]
+            )
+
+        cases = [
+            ([turn("stop"), turn("stop")], set(), "nothing_truncated"),
+            ([turn("stop"), turn("length"), turn("stop")], {0}, "middle_turn"),
+            ([turn("stop"), turn("stop"), turn("max_tokens")], {0}, "last_turn"),
+            ([turn("content_filter"), turn("stop")], {0}, "filtered_first_turn"),
+        ]
+        for infer_result, expected, case_name in cases:
+            ctx = _make_final_ctx(infer_result=infer_result)
+            assert detect_truncated_output(ctx) == expected, case_name
+
+    def test_multi_turn_keeps_rollout_indices_not_turn_indices(self, sample_model_meta):
+        """`len(indices)` counts rollouts, so the turn dimension must not leak in.
+
+        Two turns, n=2 each, truncated at *different* rollout positions: the union
+        is over rollout index, so this is {0, 1} -- not {0, 1, 2} (three turns) and
+        not {1} (last turn wins).
+        """
+        first = ModelOutput(
+            model=sample_model_meta,
+            texts=["a", "b"],
+            finish_reasons=["length", "stop"],
+        )
+        second = ModelOutput(
+            model=sample_model_meta,
+            texts=["c", "d"],
+            finish_reasons=["stop", "length"],
+        )
+        ctx = _make_final_ctx(infer_result=[first, second])
         assert detect_truncated_output(ctx) == {0, 1}
 
 
@@ -826,8 +942,14 @@ class TestRulesHashStability:
         If this test fails you changed the rule set. That is allowed — update the
         value here in the same commit, so the rotation is in the diff rather than
         discovered in production.
+
+        Rotated once here, deliberately: `empty_infer_ppl` was inert for every ppl
+        task, and repairing it has to reach the runs already on disk. Its
+        description now says "any candidate's" — the accurate reading, and what
+        moves this hash. Without that, `needs_regeneration()` returns False and
+        every stored report keeps the dead rule's verdict.
         """
-        assert get_rules_hash() == "33e3c4cf9491114b"
+        assert get_rules_hash() == "56480a99ae65a3c0"
 
     def test_the_rule_set_is_the_expected_size(self):
         # Guards the other direction: a rule silently dropped from the registry

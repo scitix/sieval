@@ -768,6 +768,28 @@
       "checksums": {}
     },
     {
+      "name": "multi_if",
+      "display_name": "Multi-IF",
+      "description": "Multi-IF — 4,501 three-turn, eight-language instruction-following conversations extending IFEval.",
+      "source": [
+        "hf:facebook/Multi-IF@0ab97ce0b45c7f57772e8ba2ac1616f4b00bd3aa"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "multilingual",
+        "multi-turn",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-2.0",
+      "checksums": {}
+    },
+    {
       "name": "openbookqa",
       "display_name": "OpenBookQA",
       "description": "OpenBookQA elementary-science open-book multiple-choice QA.",
@@ -1831,6 +1853,27 @@
         "notes": "MMMLU locale/category/subject organization and size-weighted (micro) aggregation from lm-evaluation-harness; Hendrycks evaluate.py completion scoring via a single alogprobs call that reads the next token's top-logprobs over the space-prefixed option tokens ' A'/' B'/' C'/' D' (a missing option is filled with -100 per Hendrycks, not failed loudly; empirically ~0.009% of samples). Because the -100 fill is silent, faithful reproduction needs a server top-k that returns all four option tokens: SGLang serves 100 by default; on vLLM start with --max-logprobs 100 (default 20). Validated on Qwen2.5-72B (sglang): full 14-locale 5-shot = 76.13, zh_cn = 82.43. Those runs used the pre-rename PPL/base_gen packaging at an out-of-tree SHA; the scoring mechanism (single alogprobs call) is identical to this clp task, so the numbers carry over."
       },
       "status": "stable"
+    },
+    {
+      "name": "multi_if_0shot_gen",
+      "display_name": "Multi-IF (0-shot, generative)",
+      "description": "Multi-IF — 4,501 three-turn, eight-language instruction-following conversations extending IFEval.",
+      "dataset": "multi_if",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "multilingual",
+        "multi-turn",
+        "open-ended"
+      ],
+      "deps_group": "multi-if",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "facebookresearch/Multi-IF",
+        "url": "https://github.com/facebookresearch/Multi-IF/blob/1cdb53ed18499ad729e0766e5d3099dd5344406f/metrics.py",
+        "notes": "Multi-IF's own multilingual fork of the IFEval checkers is vendored (sieval.community.multi_if); the google-research IFEval sibling is NOT interchangeable with it. Upstream drives one pass per turn (--steps 1 2 3), one sample per turn; this task walks all three in one pass. Upstream reports fractions, this task percentages. Grading matches upstream's metrics_gen exactly, checked twice: offline on 535 conversations across all 8 languages (3,098 follow-lists), and on two full live runs by re-grading their own responses with upstream's graders — 128,258 per-constraint comparisons, 15 disagreements (0.012%), every one of them at a langdetect-routed checker (change_case:english_capital x10, length_constraints:number_sentences/number_words x1 each) or at the rejected-kwargs row (keywords:letter_frequency x3). Zero disagreements at any deterministic checker; re-derived per-language cells agree to 6e-02, `score` to 0.003. The two defects upstream cannot grade reproducibly itself: kwargs it rejects (letter='#' in 1122:18:en; empty keyword in 2616:4:zh — 6 of 13,447 turn-cells) send build_description to an unseeded random.choice, and langdetect is likewise unseeded and picks the counting algorithm behind every length constraint. Measured cost of both, re-grading identical responses 3x on the full set: 12 of 26,894 turn-cells flip and `score` spans 0.012 — two orders of magnitude under the +-0.4 sd that conversation sampling contributes. Tracked, not repaired, per the unqualified-name rule; fixing either needs a `_fixed` variant with a measured delta. PUBLISHED-NUMBER RESIDUAL (open). The only servable model carrying a first-party Multi-IF figure is Qwen3-32B: Qwen3 Technical Report (arXiv:2505.09388) Table 13 Thinking 73.0, Table 14 Non-thinking 70.7. Full 4,501-conversation runs at that report's own sampling knobs, 0 failures, denominators 4501/4501/4445, give `score` 78.73 (non-thinking) and 78.97 (thinking) — +8.03 and +5.97. No single reduction closes both: turn-3-only is nearest (71.38, +0.68; 71.23, -1.77) and is mechanically plausible because upstream emits one report per turn, so an integrator running --steps 3 would publish exactly that cell — but it contradicts the published ordering, since the two arms here are statistically indistinguishable (0.24 apart, bootstrap sd 0.4) where the report has Thinking +2.3. Upstream's own driver default max_new_tokens=1024 accounts for part of the level: a paired 600-conversation arm at that cap truncates 12.23% of turn-cells and loses 2.66 points, about a third of the gap. That the anchor is not the benchmark's protocol is visible in the report itself — its Table 11 gives OpenAI-o1 48.8 where the Multi-IF paper gives o1-preview 78.9 (three-turn average) and 70.7 (turn 3)."
+      },
+      "status": "experimental"
     },
     {
       "name": "openbookqa_kshot_gen",

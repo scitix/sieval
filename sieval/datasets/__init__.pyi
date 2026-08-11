@@ -141,6 +141,10 @@ from .mmmlu import (
     MMMLUDataset,
     MMMLUDatasetSample,
 )
+from .multi_if import (
+    MultiIFDataset,
+    MultiIFDatasetSample,
+)
 from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
@@ -249,6 +253,8 @@ __all__ = [
     "MMLUProDatasetSample",
     "MMMLUDataset",
     "MMMLUDatasetSample",
+    "MultiIFDataset",
+    "MultiIFDatasetSample",
     "OpenBookQADataset",
     "OpenBookQADatasetSample",
     "PlatinumBenchDataset",

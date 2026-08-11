@@ -394,6 +394,31 @@ def _unwrap_result(result: Any) -> Any:
     return result
 
 
+def _model_outputs(result: Any) -> tuple[ModelOutput, ...]:
+    """The ``ModelOutput``s a stage produced, whether it returned one or a list.
+
+    ``infer`` may return one ``ModelOutput`` or a list of them -- one call per turn
+    for a multi-turn task, one per candidate for ``ppl``. The runner already reads
+    that list as *one sample, several calls* when it sums token usage
+    (``_build_auto_meta``), and rules read it the same way: the **rollout** index is
+    the position inside each output's ``texts``, the list dimension is extra calls.
+    So ``len(indices)`` keeps meaning "how many rollouts", which is what
+    ``anomaly_rollout_details`` counts.
+
+    Without this, a rule guarding on ``isinstance(result, ModelOutput)`` returns an
+    empty set for every multi-call sample -- indistinguishable from "nothing wrong".
+    """
+    if isinstance(result, ModelOutput):
+        return (result,)
+    # An empty list means no calls to judge, not a call that came back empty --
+    # `detect_empty_postprocess` reports that, from the record.
+    if isinstance(result, list) and all(
+        isinstance(item, ModelOutput) for item in result
+    ):
+        return tuple(result)
+    return ()
+
+
 @sieval_detection_rule(
     description="Inference result is empty for generation tasks (texts=[])",
     category="output_quality",
@@ -407,15 +432,17 @@ def _unwrap_result(result: Any) -> Any:
 def detect_empty_infer_gen(ctx: TaskContext) -> set[int]:
     if ctx.infer_result is None:
         return set()
-    result = _unwrap_result(ctx.infer_result)
-    if isinstance(result, ModelOutput):
-        # texts=[] means all samples are missing — report index 0 as sentinel
-        return {0} if not result.texts else set()
-    return set()
+    outputs = _model_outputs(_unwrap_result(ctx.infer_result))
+    # texts=[] means all samples are missing — report index 0 as sentinel.
+    # For a multi-call stage (one call per conversation turn) a single call
+    # coming back empty is the same signal, so any of them is enough.
+    return {0} if any(not output.texts for output in outputs) else set()
 
 
 @sieval_detection_rule(
-    description="Inference result is empty for perplexity tasks (logprobs=[])",
+    description=(
+        "Inference result is empty for perplexity tasks (any candidate's logprobs=[])"
+    ),
     category="output_quality",
     rationale=("Empty logprobs indicate API failures or unsupported model features."),
     applies_to=["ppl"],
@@ -424,17 +451,21 @@ def detect_empty_infer_gen(ctx: TaskContext) -> set[int]:
 def detect_empty_infer_ppl(ctx: TaskContext) -> set[int]:
     if ctx.infer_result is None:
         return set()
-    result = _unwrap_result(ctx.infer_result)
-    if not isinstance(result, ModelOutput):
-        return set()
-    # For PPL tasks, we need both logprobs and logprobs_tokens
-    has_logprobs = result.logprobs is not None
-    has_logprobs_tokens = result.logprobs_tokens is not None
-    if has_logprobs or has_logprobs_tokens:
-        logprobs_empty = has_logprobs and not result.logprobs
-        logprobs_tokens_empty = has_logprobs_tokens and not result.logprobs_tokens
+    # One call per candidate is what `ppl` *is*, so every ppl task returns a list;
+    # reading only a lone `ModelOutput` left this rule inert for all of them. Any
+    # candidate is enough: `postprocess` takes an argmax across them, and an empty
+    # one sums to 0.0 where a real one is negative, so it wins.
+    for output in _model_outputs(_unwrap_result(ctx.infer_result)):
+        # For PPL tasks, we need both logprobs and logprobs_tokens
+        has_logprobs = output.logprobs is not None
+        has_logprobs_tokens = output.logprobs_tokens is not None
+        if not (has_logprobs or has_logprobs_tokens):
+            continue
+        logprobs_empty = has_logprobs and not output.logprobs
+        logprobs_tokens_empty = has_logprobs_tokens and not output.logprobs_tokens
         # Report index 0 as sentinel if any field is empty
-        return {0} if (logprobs_empty or logprobs_tokens_empty) else set()
+        if logprobs_empty or logprobs_tokens_empty:
+            return {0}
     return set()
 
 
@@ -454,12 +485,12 @@ def detect_empty_infer_ppl(ctx: TaskContext) -> set[int]:
 def detect_truncated_output(ctx: TaskContext) -> set[int]:
     if ctx.infer_result is None:
         return set()
-    result = _unwrap_result(ctx.infer_result)
-    if not isinstance(result, ModelOutput) or not result.finish_reasons:
-        return set()
+    # Unioned across calls: a conversation whose second turn hit the cap has that
+    # rollout truncated, whichever turn did it.
     return {
         i
-        for i, reason in enumerate(result.finish_reasons)
+        for output in _model_outputs(_unwrap_result(ctx.infer_result))
+        for i, reason in enumerate(output.finish_reasons or ())
         if reason in ("length", "max_tokens", "content_filter")
     }
 

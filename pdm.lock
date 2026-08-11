@@ -2,10 +2,10 @@
 # It is not intended for manual editing.
 
 [metadata]
-groups = ["default", "dev", "drop", "hle", "ifbench", "ifeval", "math", "ruler", "ruler-gen", "scicode", "t-eval", "test"]
+groups = ["default", "dev", "drop", "hle", "ifbench", "ifeval", "math", "multi-if", "ruler", "ruler-gen", "scicode", "t-eval", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:340f0b0ea67102d6bafd6731ee73b427d8492a854eb643d06757064015c1cbd9"
+content_hash = "sha256:8d05a8ea4a728e04d58233216206f4a73b12f89684432953ac10163ef30a3e76"
 
 [[metadata.targets]]
 requires_python = ">=3.12,<3.15"
@@ -301,7 +301,7 @@ name = "click"
 version = "8.3.1"
 requires_python = ">=3.10"
 summary = "Composable command line interface toolkit"
-groups = ["default", "ifbench", "ifeval", "ruler", "test"]
+groups = ["default", "ifbench", "ifeval", "multi-if", "ruler", "test"]
 dependencies = [
     "colorama; platform_system == \"Windows\"",
 ]
@@ -315,7 +315,7 @@ name = "colorama"
 version = "0.4.6"
 requires_python = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
 summary = "Cross-platform colored terminal text."
-groups = ["default", "ifbench", "ifeval", "ruler", "t-eval", "test"]
+groups = ["default", "ifbench", "ifeval", "multi-if", "ruler", "t-eval", "test"]
 marker = "platform_system == \"Windows\" or sys_platform == \"win32\""
 files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
@@ -563,7 +563,7 @@ name = "emoji"
 version = "2.15.0"
 requires_python = ">=3.8"
 summary = "Emoji for Python"
-groups = ["ifbench"]
+groups = ["ifbench", "multi-if"]
 files = [
     {file = "emoji-2.15.0-py3-none-any.whl", hash = "sha256:205296793d66a89d88af4688fa57fd6496732eb48917a87175a023c8138995eb"},
     {file = "emoji-2.15.0.tar.gz", hash = "sha256:eae4ab7d86456a70a00a985125a03263a5eac54cd55e51d7e184b1ed3b6757e4"},
@@ -979,7 +979,7 @@ name = "joblib"
 version = "1.5.2"
 requires_python = ">=3.9"
 summary = "Lightweight pipelining with Python functions"
-groups = ["ifbench", "ifeval", "ruler", "t-eval"]
+groups = ["ifbench", "ifeval", "multi-if", "ruler", "t-eval"]
 files = [
     {file = "joblib-1.5.2-py3-none-any.whl", hash = "sha256:4e1f0bdbb987e6d843c70cf43714cb276623def372df3c22fe5266b2670bc241"},
     {file = "joblib-1.5.2.tar.gz", hash = "sha256:3faa5c39054b2f03ca547da9b2f52fde67c06240c31853f306aea97f13647b55"},
@@ -989,7 +989,7 @@ files = [
 name = "langdetect"
 version = "1.0.9"
 summary = "Language detection library ported from Google's language-detection."
-groups = ["ifeval"]
+groups = ["ifeval", "multi-if"]
 dependencies = [
     "six",
 ]
@@ -1531,7 +1531,7 @@ name = "nltk"
 version = "3.9.2"
 requires_python = ">=3.9"
 summary = "Natural Language Toolkit"
-groups = ["ifbench", "ifeval", "ruler"]
+groups = ["ifbench", "ifeval", "multi-if", "ruler"]
 dependencies = [
     "click",
     "joblib",
@@ -2354,6 +2354,21 @@ files = [
 ]
 
 [[package]]
+name = "pythainlp"
+version = "5.3.5"
+requires_python = ">=3.9"
+summary = "Thai Natural Language Processing library"
+groups = ["multi-if"]
+dependencies = [
+    "importlib-resources; python_version < \"3.11\"",
+    "tzdata; sys_platform == \"win32\"",
+]
+files = [
+    {file = "pythainlp-5.3.5-py3-none-any.whl", hash = "sha256:147a7a77c5c6d5b387b827ed3b00ee23c3665d242e9d021565cae4c3bca7b2c2"},
+    {file = "pythainlp-5.3.5.tar.gz", hash = "sha256:3be53b97e44fdfc55669705b31a2fe96546146d0c1d90f18999c9b04c4e50c83"},
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 requires_python = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
@@ -2457,7 +2472,7 @@ name = "regex"
 version = "2025.11.3"
 requires_python = ">=3.9"
 summary = "Alternative regular expression module, to replace re."
-groups = ["ifbench", "ifeval", "math", "ruler", "t-eval"]
+groups = ["ifbench", "ifeval", "math", "multi-if", "ruler", "t-eval"]
 files = [
     {file = "regex-2025.11.3-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:bc8ab71e2e31b16e40868a40a69007bc305e1109bd4658eb6cad007e0bf67c41"},
     {file = "regex-2025.11.3-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:22b29dda7e1f7062a52359fca6e58e548e28c6686f205e780b02ad8ef710de36"},
@@ -2822,7 +2837,7 @@ name = "six"
 version = "1.17.0"
 requires_python = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
 summary = "Python 2 and 3 compatibility utilities"
-groups = ["default", "ifeval"]
+groups = ["default", "ifeval", "multi-if"]
 files = [
     {file = "six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"},
     {file = "six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81"},
@@ -3040,7 +3055,7 @@ name = "tqdm"
 version = "4.67.1"
 requires_python = ">=3.7"
 summary = "Fast, Extensible Progress Meter"
-groups = ["default", "ifbench", "ifeval", "ruler", "t-eval"]
+groups = ["default", "ifbench", "ifeval", "multi-if", "ruler", "t-eval"]
 dependencies = [
     "colorama; platform_system == \"Windows\"",
 ]
@@ -3207,7 +3222,7 @@ name = "tzdata"
 version = "2025.2"
 requires_python = ">=2"
 summary = "Provider of IANA time zone data"
-groups = ["default"]
+groups = ["default", "multi-if"]
 files = [
     {file = "tzdata-2025.2-py2.py3-none-any.whl", hash = "sha256:1a403fada01ff9221ca8044d701868fa132215d84beb92242d9acd2147f667a8"},
     {file = "tzdata-2025.2.tar.gz", hash = "sha256:b60a638fcc0daffadf82fe0f57e53d06bdec2f36c4df66280ae79bce6bd6f2b9"},
