@@ -11,6 +11,7 @@ from sieval.community.deepseek_math import eval_math
 from sieval.core.models import ModelOutput
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import (
+    NonRetriableSampleError,
     TaskContext,
     build_judgement_record,
     build_prediction_record,
@@ -151,14 +152,17 @@ async def test_an_unextractable_gold_fails_the_sample():
 
     With no reference there is no verdict the sample could carry — `correct`
     either way is an artifact of how the miss is handled, not evidence about the
-    model. The runner turns this into a `FAILED` sample carrying
-    `exception::ValueError` and the message, so the cause is named; scoring it
+    model. The runner turns this into a `FAILED` sample, and
+    `NonRetriableSampleError` is what keeps a resume from rolling it back to
+    re-infer a miss that is deterministic in the row's `solution`. Scoring it
     wrong instead would charge our extraction miss to the model, silently.
     """
     task, _ = _task()
     raw = _sample(solution="No boxed answer anywhere in this solution.")
 
-    with pytest.raises(ValueError, match="no reference answer could be extracted"):
+    with pytest.raises(
+        NonRetriableSampleError, match="no reference answer could be extracted"
+    ):
         await task.feedback(
             build_prediction_record([["16"]]), TaskContext(sample_id=7, raw_sample=raw)
         )

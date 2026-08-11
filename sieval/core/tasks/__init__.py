@@ -1,5 +1,5 @@
 from .anomaly import sieval_detection_rule
-from .consts import TaskAction, TaskStage
+from .consts import NonRetriableSampleError, TaskAction, TaskStage
 from .context import TaskContext, TaskStageMeta, TaskStageOutput
 from .meta import EvalMode, ReferenceImpl, TaskMeta, sieval_task
 from .records import (
@@ -23,6 +23,7 @@ __all__ = [
     "GRADER_OUTPUT_KEY",
     "EvalMode",
     "JudgementRecord",
+    "NonRetriableSampleError",
     "PredictionRecord",
     "PromptRecord",
     "ReferenceImpl",

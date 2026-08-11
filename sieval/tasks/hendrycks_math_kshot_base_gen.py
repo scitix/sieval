@@ -49,6 +49,7 @@ from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
     JudgementRecord,
+    NonRetriableSampleError,
     PredictionRecord,
     PromptRecord,
     ReferenceImpl,
@@ -193,9 +194,13 @@ class HendrycksMathFewShotBaseGenTask(
             #
             # Raising is the only route to FAILED from here: `finalize=False`
             # means "iterate again", so it would re-infer `max_iterations` times
-            # and then fail as `iteration_limit`, naming the wrong cause. The
-            # runner records `exception::ValueError` plus this message.
-            raise ValueError(
+            # and then fail as `iteration_limit`, naming the wrong cause.
+            #
+            # `NonRetriableSampleError` rather than a bare `ValueError`: the miss
+            # is deterministic in this row's `solution`, so a resume that rolled
+            # the sample back would re-infer it and fail identically, once per
+            # resume until `max_retries` ran out.
+            raise NonRetriableSampleError(
                 f"sample {ctx.sample_id!r}: no reference answer could be "
                 "extracted from its `solution`; every MATH test row is expected "
                 "to carry a \\boxed answer, so this is a data or extractor "

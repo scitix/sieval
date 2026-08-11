@@ -24,6 +24,7 @@ from sieval.core.tasks.concurrency import (
     min_limit,
     prepare_limiters,
 )
+from sieval.core.tasks.consts import NON_RETRIABLE_REASON, NonRetriableSampleError
 from sieval.core.tasks.context import (
     TaskAction,
     TaskContext,
@@ -984,9 +985,17 @@ class TaskRunner:
             logger.opt(exception=True).error(
                 "Stage {} failed for {}", action, ctx.sample_id
             )
-            new_ctx = ctx.to_failed(
-                action, f"exception::{e.__class__.__name__}", str(e)
+            # A task raising `NonRetriableSampleError` has declared the outcome
+            # deterministic in this sample's own input, so the reason it carries
+            # is one the loader will not roll back. Keyed on the type rather than
+            # on a class name: `core` cannot enumerate task exception classes
+            # without importing `sieval.tasks`.
+            reason = (
+                NON_RETRIABLE_REASON
+                if isinstance(e, NonRetriableSampleError)
+                else f"exception::{e.__class__.__name__}"
             )
+            new_ctx = ctx.to_failed(action, reason, str(e))
             await compute_send.send(new_ctx)
 
     def _ensure_raw_sample(self, ctx: TaskContext) -> TaskContext:

@@ -5,7 +5,7 @@ field clearing, and record_each_stage behavior.
 AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 """
 
-from sieval.core.tasks.consts import TaskAction, TaskStage
+from sieval.core.tasks.consts import NON_RETRIABLE_REASON, TaskAction, TaskStage
 from sieval.core.tasks.context import TaskContext
 from sieval.core.tasks.loader import TaskLoader
 
@@ -45,6 +45,28 @@ class TestPrepareFailedRetries:
         contexts = {0: ctx}
         loader._prepare_failed_retries(contexts, record_each_stage=True)
         assert contexts[0].stage == TaskStage.FAILED
+
+    def test_a_task_declared_non_retriable_failure_is_left_alone(self, tmp_path):
+        """`NonRetriableSampleError`'s reason must not roll back on resume.
+
+        The point of the declaration: the outcome is fixed in the sample's own
+        input, so rolling it back re-infers it and fails identically, once per
+        resume until `max_retries` runs out. `error_action` is set, which is what
+        would otherwise make it retriable.
+        """
+        loader = self._make_loader(tmp_path)
+        ctx = make_ctx(
+            0,
+            TaskStage.FAILED,
+            error_action=TaskAction.FEEDBACK,
+            error_reason=NON_RETRIABLE_REASON,
+        )
+        contexts = {0: ctx}
+        loader._prepare_failed_retries(contexts, record_each_stage=True)
+
+        assert contexts[0].stage == TaskStage.FAILED
+        assert contexts[0].retry_count == 0
+        assert contexts[0].error_reason == NON_RETRIABLE_REASON
 
     def test_no_error_action_unchanged(self, tmp_path):
         loader = self._make_loader(tmp_path)
