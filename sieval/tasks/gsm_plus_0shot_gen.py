@@ -65,10 +65,11 @@ verdict on 10537/10552 (99.86%). All 15 diffs are again one-directional and
 again genuinely-equal pairs, 11 of them on ``integer-decimal-fraction
 conversion``; overall 85.72 vs published 85.58, and 6 of 8 cells land exactly.
 
-**Why ``status="experimental"`` remains, and what it is no longer for.** It is
-now there for **one** reason only: upstream's code repo states no license (see
-``sieval.community.gsm_plus``'s header), so the redistribution question is open.
-It is *not* for the protocol and no longer for the absence of a live run:
+**Why ``status="stable"``.** The three things the status used to be held back for
+are all settled, and the licensing basis is now recorded rather than open (the
+project applies the dataset's CC-BY-SA-4.0 to the vendored scoring code — see
+``sieval.community.gsm_plus``'s header). What the status does *not* claim is a
+published-magnitude match, which is unreachable here by construction:
 
 * A published-magnitude anchor is unreachable by construction, not by
   omission. Upstream has two inference paths, and only ``gpt-3.5-turbo`` and
@@ -139,6 +140,8 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 from collections import defaultdict
 from typing import override
 
+from loguru import logger
+
 from sieval.community.gsm_plus import (
     CRITICAL_THINKING,
     extract_gold_ans,
@@ -163,7 +166,9 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    health_metrics,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import GSMPlusDatasetSample
 
 # Verbatim from prompt_template.py::cot_prompt_map_func, which returns
@@ -198,7 +203,7 @@ def _metric_key(perturbation_type: str) -> str:
     tags=("english", "math-word-problems", "open-ended", "robustness"),
     deps_group="math",
     model_type="chat",
-    status="experimental",
+    status="stable",
     reference_kind="value",
     reference_impl=ReferenceImpl(
         source="qtli/GSM-Plus",
@@ -213,12 +218,19 @@ def _metric_key(perturbation_type: str) -> str:
             "extraction dispatches on perturbation_type (extract_pred_ans_none "
             'for `critical thinking`, whose gold is the string "None"); '
             "normalize_final_answer + check_sympy_equivalence scoring. All "
-            "vendored in sieval.community.gsm_plus. UPSTREAM CODE STATES NO "
-            "LICENSE (no LICENSE/NOTICE/SPDX at the pinned commit, GitHub API "
-            "reports license: null); absence is not a grant, so the "
-            "redistribution question is open -- see the header of "
-            "sieval.community.gsm_plus. The dataset is separately CC-BY-SA-4.0 "
-            "and is referenced, not redistributed. Replaying upstream's stored "
+            "vendored in sieval.community.gsm_plus under CC-BY-SA-4.0, NOT the "
+            "repo's Apache-2.0: upstream's code repo states no license at the "
+            "pinned commit (no LICENSE/NOTICE/SPDX, GitHub API reports "
+            "license: null), so this project applies the dataset's own "
+            "CC-BY-SA-4.0 terms to the scoring code accompanying it. "
+            "Share-alike attaches to that one file and to modifications of it, "
+            "not to the rest of the tree -- see its header for the reasoning "
+            "and its limits. Grading is offloaded to a worker process "
+            "(GRADE_TIMEOUT), like every other sympy-backed grader here: "
+            "parse_latex + simplify costs 4 ms typical / 328 ms worst case "
+            "measured over upstream's 10552-item dump, and inline that is ~42 s "
+            "of CPU on the one event loop every runner shares. Replaying "
+            "upstream's stored "
             "GPT-3.5-Turbo CoT predictions reproduces its gold/pred on "
             "10552/10552 items and its verdict on 10527/10552 (99.76%); the 25 "
             "diffs are all genuinely-equal fraction/decimal pairs that upstream "
@@ -301,10 +313,33 @@ class GSMPlusZeroShotGenTask(
         # of 10552 on a real gemma-3-27b-it run. `or ""` then restores exactly
         # what upstream's test_answer compares against.
         prediction = post["rollouts"][0].get("prediction") or ""
-        correct = is_equivalent(gold, prediction)
+        # Offloaded, like every other sympy-backed grader in this tree:
+        # `check_sympy_equivalence` runs `parse_latex` + `simplify` — 4 ms
+        # typical, 328 ms worst case measured over upstream's own 10552-item
+        # dump, and `simplify` is reached with no bound of its own (criterion 2
+        # in `core/utils/offload.py`). Inline that is ~42 s of CPU on the one
+        # event loop every runner in the session shares.
+        try:
+            correct = await run_cpu_bound(
+                is_equivalent, gold, prediction, timeout=GRADE_TIMEOUT
+            )
+        except TimeoutError:
+            # An answer that cannot be graded is a wrong answer, not a failed
+            # run — the contract every sibling math grader keeps. Letting this
+            # propagate would land the sample in `fails`, which reads as an
+            # infrastructure failure. The accuracy is identical either way
+            # (`report` counts fails in the denominator); what changes is
+            # whether the number means what it says.
+            logger.warning(
+                "Grading sample {} exceeded {}s and was scored wrong; the "
+                "prediction is likely a shape `simplify` cannot bound.",
+                ctx.sample_id,
+                GRADE_TIMEOUT,
+            )
+            correct = False
         return True, build_judgement_record(
             gold,
-            [build_rollout_judgement(0, correct)],
+            [build_rollout_judgement(0, bool(correct))],
             extra={"perturbation_type": perturbation_type},
         )
 
@@ -322,14 +357,17 @@ class GSMPlusZeroShotGenTask(
                 correct_num += 1
                 per_type[perturbation_type][0] += 1
             per_type[perturbation_type][1] += 1
+        untyped_fails = 0
         for ctx in fails:
             # A failed sample scores 0 but still owes its perturbation a
             # denominator slot, and `raw_sample` is the only place its type
-            # survives — a fail never reached feedback. Contexts that failed
-            # before the sample was attached are counted in `total` only, so
-            # per-type denominators can sum to less than it.
+            # survives — a fail never reached feedback. A context that failed
+            # before the sample was attached has no type at all, so it can only
+            # be counted in the type-free denominators.
             if ctx.raw_sample is not None:
                 per_type[ctx.raw_sample["perturbation_type"]][1] += 1
+            else:
+                untyped_fails += 1
 
         total = len(finals) + len(fails)
         accuracy = 100 * correct_num / total if total else 0.0
@@ -343,7 +381,17 @@ class GSMPlusZeroShotGenTask(
         }
 
         wo_correct = sum(c for t, (c, _) in per_type.items() if t != CRITICAL_THINKING)
-        wo_total = sum(n for t, (_, n) in per_type.items() if t != CRITICAL_THINKING)
+        # `+ untyped_fails` so this follows the DENOMINATOR_REQUESTED declared
+        # above, like `score` does. Upstream's `gsmplus_wo_ncr` excludes the
+        # `critical thinking` ROWS, and a fail with no `raw_sample` cannot be
+        # shown to be one of them — charging it here scores it wrong rather than
+        # dropping it, which is the conservative direction and keeps every number
+        # in this report on one denominator rule. Omitting it let the co-headline
+        # read 100.0 while `score` read 50.0 on the same run.
+        wo_total = (
+            sum(n for t, (_, n) in per_type.items() if t != CRITICAL_THINKING)
+            + untyped_fails
+        )
         report["score_wo_critical_thinking"] = (
             100 * wo_correct / wo_total if wo_total else 0.0
         )
@@ -352,4 +400,11 @@ class GSMPlusZeroShotGenTask(
                 100 * correct / seen if seen else 0.0
             )
         report["fails"] = len(fails)
+        # Extraction health, outside any sampling gate: `extracted` is False for
+        # every response this task could not pull an answer out of, which is the
+        # `critical thinking` format gate's own signal. Without it the gate's
+        # failure mode — a reasoning model returning empty content, scored
+        # CORRECT on those rows and wrong everywhere else — is invisible in
+        # report.json and recoverable only by re-reading shard data.
+        report.update(health_metrics(finals))
         return report

@@ -1,17 +1,30 @@
 # Adapted from GSM-Plus (Li et al., ACL 2024), pinned commit:
 # https://github.com/qtli/GSM-Plus/blob/3474129ec12fcd3e8ac08cb037aca1928efca98c/scripts/utils/extract_ans.py
 #
-# LICENSE: NONE STATED UPSTREAM — recorded because there is nothing to attribute,
-# which is itself the fact a reader needs. Verified at the pinned commit: no
-# LICENSE / COPYING / NOTICE file and no SPDX metadata anywhere in the tree, no
-# license statement in the README, and the GitHub API reports `"license": null`
-# for qtli/GSM-Plus. Absence is not a grant: by default the code repo is
-# all-rights-reserved, so the ~80 lines of GSM-Plus-original logic here
-# (`extract_gold_ans`, `extract_pred_ans`'s cot branch, `check_sympy_equivalence`,
-# `extract_pred_ans_none` + `_NONE_PATTERNS`) are vendored into an Apache-2.0 tree
-# WITHOUT a redistribution grant. That question is open, not answered — compare
-# the two neighbours that resolved it the other way and vendored nothing:
-# `advanced_if` (CC-BY-NC-4.0) and `iheval` (CC-BY-NC-ND-4.0).
+# SPDX-License-Identifier: CC-BY-SA-4.0
+#
+# LICENSE: this file is CC-BY-SA-4.0, not the repository's Apache-2.0. Upstream's
+# CODE repo states no license at the pinned commit — no LICENSE / COPYING /
+# NOTICE file and no SPDX metadata anywhere in the tree, no license statement in
+# the README, and the GitHub API reports `"license": null` for qtli/GSM-Plus. The
+# GSM-Plus DATASET is licensed CC-BY-SA-4.0 (the `qintongli/GSM-Plus` HF card),
+# and this project applies those same terms to the scoring code that accompanies
+# it, with attribution to the authors and the exact source commit pinned above.
+#
+# Two consequences a reader needs, because they do not follow automatically:
+#
+#   - Share-alike is per-file, and does NOT extend to the rest of sieval. It
+#     attaches to this file and to modifications OF it; the task that imports it
+#     (`sieval.tasks.gsm_plus_0shot_gen`) stays Apache-2.0, as does everything
+#     else in the tree. Anyone redistributing a modified copy of THIS file owes
+#     CC-BY-SA-4.0 on that copy.
+#   - The dataset's grant covers the dataset. Reading it onto the code is this
+#     project's own construction, not a grant the code's authors published, so
+#     it is recorded here as the basis relied on rather than as a quoted licence.
+#
+# Compare the two neighbours that answered the same question by vendoring
+# nothing: `advanced_if` (CC-BY-NC-4.0) and `iheval` (CC-BY-NC-ND-4.0) — there
+# the upstream terms were stated and non-commercial, so no reading was available.
 #
 # Provenance of the rest, which carries permissive terms independently:
 #   - SUBSTITUTIONS / REMOVED_EXPRESSIONS / normalize_final_answer — Minerva
@@ -87,23 +100,13 @@ from sympy.parsing.latex import parse_latex
 # a real answer, not the protocol's `None` ("could not extract").
 NONE_ANSWER = "None"
 
+# The only perturbation type named in code, because it is the only one extraction
+# dispatches on; the other seven are read off the sample and used as report keys,
+# never compared against a literal. (Note the spelling drift, in case a dump is
+# ever replayed: upstream's `results/*.json` say "distractor insertion" where both
+# the released HF dataset and upstream's own `dataset/gsmplus_test.jsonl` say
+# "distraction insertion", which is what a run actually sees.)
 CRITICAL_THINKING = "critical thinking"
-
-# The 8 perturbation types of the pinned dataset revision, one per seed GSM8K
-# problem. Upstream's `results/*.json` prediction dumps spell the 7th
-# "distractor insertion"; both the released HF dataset and upstream's own
-# `dataset/gsmplus_test.jsonl` spell it "distraction insertion", which is what
-# a run actually sees, so that is the spelling used here.
-PERTURBATION_TYPES = (
-    "numerical substitution",
-    "digit expansion",
-    "integer-decimal-fraction conversion",
-    "adding operation",
-    "reversing operation",
-    "problem understanding",
-    "distraction insertion",
-    CRITICAL_THINKING,
-)
 
 # Part of the code is modified from the code snippets provided in "Solving Quantitative Reasoning Problems with Language Models" by Lewkowycz et al.
 SUBSTITUTIONS = [

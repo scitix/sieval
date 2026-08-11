@@ -25,7 +25,9 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.gsm_plus import GSMPlusDataset, GSMPlusDatasetSample
+from sieval.tasks import gsm_plus_0shot_gen as module
 from sieval.tasks.gsm_plus_0shot_gen import (
     SYSTEM_INSTRUCTION,
     GSMPlusZeroShotGenTask,
@@ -276,6 +278,64 @@ async def test_feedback_reads_a_record_whose_prediction_key_was_omitted():
     assert from_disk["rollouts"][0]["correct"] is False
 
 
+# --- grading is offloaded, and a timeout scores wrong rather than failing ---
+
+
+@pytest.mark.anyio
+async def test_grading_is_bounded_in_a_worker_process(monkeypatch):
+    """The mechanism, not the verdict — an inline grade scores identically, so
+    reverting the offload keeps every other test in this file passing. Why a
+    process: `check_sympy_equivalence` reaches `simplify` with no bound of its
+    own, criterion 2 in `core/utils/offload.py`.
+    """
+    seen: dict[str, object] = {}
+
+    async def _spy(func, *args, timeout=None):
+        seen.update(func=func, args=args, timeout=timeout)
+        return func(*args)
+
+    monkeypatch.setattr(module, "run_cpu_bound", _spy)
+
+    task, model = _task()
+    raw = _sample(answer="27")
+    inf = ModelOutput(model=model.meta(), texts=["Work.\n#### 27"])
+    ctx = TaskContext(sample_id=0, raw_sample=raw, infer_result=inf)
+    post = await task.postprocess(inf, ctx)
+    _, fb = await task.feedback(post, ctx)
+
+    # The spy must actually have been reached — a green suite proves nothing if
+    # the patched name is no longer the one `feedback` calls.
+    assert seen["func"] is is_equivalent
+    assert seen["args"] == ("27", "27")
+    assert seen["timeout"] == GRADE_TIMEOUT
+    assert fb["rollouts"][0]["correct"] is True
+
+
+@pytest.mark.anyio
+async def test_a_grading_timeout_scores_wrong_rather_than_failing_the_sample(
+    monkeypatch,
+):
+    # An answer that cannot be graded is a wrong answer, not an infrastructure
+    # failure: letting TimeoutError propagate would land the sample in `fails`,
+    # which is one of the signals a run is promoted on.
+    async def _raise_timeout(_func, *_args, **_kwargs):
+        raise TimeoutError("grading took too long")
+
+    monkeypatch.setattr(module, "run_cpu_bound", _raise_timeout)
+
+    task, model = _task()
+    raw = _sample(answer="27")
+    inf = ModelOutput(model=model.meta(), texts=["Work.\n#### 27"])
+    ctx = TaskContext(sample_id=0, raw_sample=raw, infer_result=inf)
+    post = await task.postprocess(inf, ctx)
+
+    finalize, fb = await task.feedback(post, ctx)
+
+    assert finalize is True
+    assert fb["rollouts"][0]["correct"] is False
+    assert fb["reference"] == "27"
+
+
 # --- report: overall, per-perturbation, wo_critical_thinking ---
 
 
@@ -331,6 +391,7 @@ async def test_report_empty_finals():
         "accuracy": 0.0,
         "score_wo_critical_thinking": 0.0,
         "fails": 0,
+        "n_unextracted": 0.0,
         SCORE_KEY_FIELD: "accuracy",
         DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
     }
@@ -356,12 +417,16 @@ async def test_report_counts_fails_in_overall_and_per_type_denominators():
 @pytest.mark.anyio
 async def test_report_tolerates_fail_without_raw_sample():
     # A context that failed before its sample was attached has no perturbation
-    # type, so it lands in the overall denominator only.
+    # type, so it cannot land in a per-type cell.
     task, _ = _task()
     finals = [_final(0, "numerical substitution", True)]
     report = await task.report(finals, [TaskContext(sample_id=1)])
     assert report["score"] == 50.0
     assert report["score_numerical_substitution"] == 100.0
+    # ...but it MUST still land in `score_wo_critical_thinking`, which declares
+    # the same `requested` denominator as `score`. Left out, this co-headline read
+    # 100.0 on a run whose `score` was 50.0.
+    assert report["score_wo_critical_thinking"] == 50.0
 
 
 @pytest.mark.anyio
