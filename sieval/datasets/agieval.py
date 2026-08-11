@@ -132,9 +132,14 @@ class AGIEvalDatasetSample(TypedDict):
     },
     categories=(Category(Level1Category.KNOWLEDGE, "Multi-domain"),),
     tags=("english", "chinese", "multiple-choice", "open-ended"),
-    # The repo (code + data/v1_1) is MIT; per-subset source exams keep their own
-    # terms, which upstream's data/v1_1/LICENSE reproduces and defers to.
-    license="MIT",
+    # The FLOOR of the aggregate, not the repo's headline MIT. Upstream's
+    # data/v1_1/LICENSE reproduces the source exams' own terms: Gaokao / SAT / LSAT
+    # / MATH are MIT, aqua-rat is Apache-2.0, and logiqa-en + logiqa-zh -- 1,302 of
+    # the 7,272 rows, present in group=all, en-mcq and zh-mcq -- are
+    # CC BY-NC-SA 4.0. jec-qa is not covered by that file at all. Selecting subsets
+    # narrows which terms actually apply; a single declared value cannot, so it
+    # declares the most restrictive one a caller could end up bound by.
+    license="CC-BY-NC-SA-4.0",
 )
 class AGIEvalDataset(Dataset[AGIEvalDatasetSample]):
     """AGIEval v1.1, one ``test`` split concatenated from the selected subsets."""

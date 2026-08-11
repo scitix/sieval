@@ -85,7 +85,7 @@
         "open-ended"
       ],
       "deps_group": null,
-      "license": "MIT",
+      "license": "CC-BY-NC-SA-4.0",
       "checksums": {
         "aqua-rat.jsonl": "sha256:cff42e946e6082dacb27285dae19cb4be98408ab760fe43c6c462e543be50572",
         "gaokao-biology.jsonl": "sha256:789baadad69c998743302143a3e1c2022a2aca785bbe75644877a336242c7e69",
