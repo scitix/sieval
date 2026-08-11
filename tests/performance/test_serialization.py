@@ -7,6 +7,10 @@ and with varying payload sizes.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import gc
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import orjson
 import pytest
 
@@ -18,6 +22,35 @@ from tests.conftest import (
     _make_bench_ctx,
     samples_per_second,
 )
+
+
+@contextmanager
+def _gc_paused() -> Iterator[None]:
+    """Take Python's cyclic collector out of a timed *ratio*.
+
+    A gen2 collection costs in proportion to the whole live heap -- ~0.3 ms at 5k
+    tracked objects, ~300 ms at 2.4M -- and by the time a suite run reaches here
+    that heap is thousands of other tests' fixtures, which this loop never touches.
+    What it does touch is the trigger: ``obj_to_dict`` builds a container per node
+    and the caller retains every result, so its net allocations drive gen0 -> gen1
+    -> gen2. ``orjson.dumps`` returns one untracked ``bytes`` and triggers almost
+    nothing, so the tax lands on the numerator alone and the ratio amplifies it:
+    the same code has measured 12x and 184x against a 50x bar, deciding only
+    whether one gen2 fell inside the window.
+
+    Only the ratio needs this. The absolute bounds elsewhere in this file keep
+    enough headroom to absorb a collection, and they are the ones whose numbers
+    should stay comparable with a real run's.
+
+    Reference counting is untouched, so nothing accumulates but cycles made inside
+    the block.
+    """
+    gc.collect()
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
 
 
 class TestSerializeThroughput:
@@ -64,18 +97,24 @@ class TestSerializeThroughput:
         n = 1000
         contexts = [_make_bench_ctx(i, TaskStage.FINAL) for i in range(n)]
 
-        # Measure serialize (Python side)
         dicts: list[dict] = []
         timer_ser = PerfTimer()
-        with timer_ser:
-            for ctx in contexts:
-                dicts.append(ctx.serialize(store_type_metadata=True, include_meta=True))
-
-        # Measure orjson.dumps (C side)
         timer_json = PerfTimer()
-        with timer_json:
-            for d in dicts:
-                orjson.dumps(d, option=orjson.OPT_SERIALIZE_NUMPY)
+        # Both halves under one pause, so the comparison stays symmetric: leaving
+        # the collector on for the C half would let the deferred collections land
+        # there instead, inflating the denominator and masking a real regression.
+        with _gc_paused():
+            # Measure serialize (Python side)
+            with timer_ser:
+                for ctx in contexts:
+                    dicts.append(
+                        ctx.serialize(store_type_metadata=True, include_meta=True)
+                    )
+
+            # Measure orjson.dumps (C side)
+            with timer_json:
+                for d in dicts:
+                    orjson.dumps(d, option=orjson.OPT_SERIALIZE_NUMPY)
 
         ratio = timer_ser.elapsed / timer_json.elapsed if timer_json.elapsed > 0 else 0
         print(
