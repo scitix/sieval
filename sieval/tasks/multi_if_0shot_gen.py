@@ -149,7 +149,9 @@ def _ensure_punkt_tab() -> None:
     Lives here, not in ``sieval/community/multi_if/``, for two reasons: the
     vendored checkers stay byte-identical to upstream, and a helper with a single
     caller belongs in its caller's module. The IFBench sibling ensures the same
-    resource the same way.
+    resource from *inside* its vendored module instead -- upstream IFBench ships
+    that download helper itself (and stages the legacy ``punkt`` alongside), where
+    Multi-IF's upstream ships none, so there is nothing to stay faithful to here.
     """
     import nltk
 
