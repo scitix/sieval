@@ -59,6 +59,12 @@ from sieval.core.tasks import (
 )
 from sieval.datasets import AGIEvalDatasetSample
 
+# Upstream sends this on BOTH calls: it lives in
+# openai_api.query_azure_openai_chat, which run_prediction.py routes stage 1 and
+# stage 2 through, so it is part of the measured prompt rather than serving
+# config — and the published leaderboard numbers were produced with it.
+_SYSTEM_TURN = "You are a helpful AI assistant."
+
 # Macro averages over named subset groups, reported as `macro_<name>`. Distinct
 # from the per-subset `score_<subset>` keys — and `macro_math` must stay distinct
 # from `score_math`, the MATH subset's own accuracy.
@@ -171,7 +177,10 @@ class AGIEvalZeroShotGenTask(
     @override
     async def preprocess(self, raw, ctx):
         return build_prompt_record(
-            [{"role": "user", "content": zero_shot_prompt(raw["subset"], raw)}],
+            [
+                {"role": "system", "content": _SYSTEM_TURN},
+                {"role": "user", "content": zero_shot_prompt(raw["subset"], raw)},
+            ],
             # Upstream's load_dataset_as_result_schema: the label when set, the
             # cloze answer otherwise.
             reference=raw["label"] if raw["label"] else raw["answer"],
@@ -191,13 +200,17 @@ class AGIEvalZeroShotGenTask(
         # An empty reply is carried into stage 2 as "", matching upstream's
         # extract_answer, rather than failing the sample.
         answer = first.texts[0] if first.texts else ""
-        context = cast(list[dict[str, str]], pre["prompt"])[0]["content"]
+        # The stage-1 QUESTION, selected by role: the prompt also carries the
+        # system turn, and indexing [0] would splice that into stage 2's context.
+        messages = cast(list[dict[str, str]], pre["prompt"])
+        context = next(m["content"] for m in messages if m["role"] == "user")
         second = await self._extractor.agenerate(
             [
+                {"role": "system", "content": _SYSTEM_TURN},
                 {
                     "role": "user",
                     "content": second_stage_prompt(subset, context, answer),
-                }
+                },
             ]
         )
         return [first, second]

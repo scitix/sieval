@@ -73,7 +73,13 @@ async def test_preprocess_carries_subset_and_reference():
 
     assert pre["extra"]["subset"] == "sat-math"
     assert pre["reference"] == "D"
-    assert pre["prompt"][0]["content"].startswith("Q: Q? Answer Choices:")
+    # Upstream's system turn is part of the measured prompt: it is prepended
+    # inside openai_api.query_azure_openai_chat, which both stages route through.
+    assert pre["prompt"][0] == {
+        "role": "system",
+        "content": "You are a helpful AI assistant.",
+    }
+    assert pre["prompt"][1]["content"].startswith("Q: Q? Answer Choices:")
 
 
 @pytest.mark.anyio
@@ -97,8 +103,12 @@ async def test_infer_runs_two_stages_and_returns_both_outputs():
     # reasoning stays on disk.
     assert len(outputs) == 2
     assert len(model.prompts) == 2
-    # Stage 2 re-sends the stage-1 prompt + reply + the family extraction cue.
-    stage2 = model.prompts[1][0]["content"]
+    # Stage 2 re-sends the stage-1 prompt + reply + the family extraction cue,
+    # under the same system turn upstream sends on both calls.
+    assert [m["role"] for m in model.prompts[1]] == ["system", "user"]
+    assert model.prompts[1][0]["content"] == "You are a helpful AI assistant."
+    stage2 = model.prompts[1][1]["content"]
+    # The QUESTION, not the system turn: stage 2's context is selected by role.
     assert stage2.startswith("Q: Q? Answer Choices:")
     assert "I think it is D" in stage2
     assert stage2.endswith("Therefore, among A through E, the answer is")
@@ -132,7 +142,7 @@ async def test_infer_carries_an_empty_first_stage_reply_into_stage_two():
     # Upstream feeds "" onward rather than dropping the sample.
     outputs = await task.infer(pre, TaskContext(sample_id=0))
     assert len(outputs) == 2
-    assert model.prompts[1][0]["content"].endswith(
+    assert model.prompts[1][1]["content"].endswith(
         "\n\nTherefore, among A through E, the answer is"
     )
 
