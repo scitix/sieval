@@ -28,29 +28,24 @@ from tests.conftest import (
 def _gc_paused() -> Iterator[None]:
     """Take Python's cyclic collector out of a timed *ratio*.
 
-    A gen2 collection costs in proportion to the whole live heap -- ~0.3 ms at 5k
-    tracked objects, ~300 ms at 2.4M -- and by the time a suite run reaches here
-    that heap is thousands of other tests' fixtures, which this loop never touches.
-    What it does touch is the trigger: ``obj_to_dict`` builds a container per node
-    and the caller retains every result, so its net allocations drive gen0 -> gen1
-    -> gen2. ``orjson.dumps`` returns one untracked ``bytes`` and triggers almost
-    nothing, so the tax lands on the numerator alone and the ratio amplifies it:
-    the same code has measured 12x and 184x against a 50x bar, deciding only
-    whether one gen2 fell inside the window.
+    A gen2 collection costs in proportion to the whole live heap, which by the time
+    a suite run reaches here is thousands of other tests' fixtures. Only the
+    numerator pays it -- this loop retains every result, while ``orjson.dumps``
+    returns an untracked ``bytes`` -- so the same code has measured 12x and 184x
+    against a 50x bar, deciding only whether one gen2 fell inside the window.
 
-    Only the ratio needs this. The absolute bounds elsewhere in this file keep
-    enough headroom to absorb a collection, and they are the ones whose numbers
-    should stay comparable with a real run's.
-
-    Reference counting is untouched, so nothing accumulates but cycles made inside
-    the block.
+    Only the ratio needs this; the absolute bounds elsewhere have the headroom to
+    absorb a collection. Reference counting is untouched, and the collector is put
+    back as found, so a suite measured under ``gc.disable()`` stays that way.
     """
+    was_enabled = gc.isenabled()
     gc.collect()
     gc.disable()
     try:
         yield
     finally:
-        gc.enable()
+        if was_enabled:
+            gc.enable()
 
 
 class TestSerializeThroughput:
@@ -100,23 +95,24 @@ class TestSerializeThroughput:
         dicts: list[dict] = []
         timer_ser = PerfTimer()
         timer_json = PerfTimer()
-        # Both halves under one pause, so the comparison stays symmetric: leaving
-        # the collector on for the C half would let the deferred collections land
-        # there instead, inflating the denominator and masking a real regression.
+        # Both halves under one pause: re-enabling for the C half would land the
+        # deferred collections in the denominator and mask a real regression.
         with _gc_paused():
-            # Measure serialize (Python side)
             with timer_ser:
                 for ctx in contexts:
                     dicts.append(
                         ctx.serialize(store_type_metadata=True, include_meta=True)
                     )
 
-            # Measure orjson.dumps (C side)
             with timer_json:
                 for d in dicts:
                     orjson.dumps(d, option=orjson.OPT_SERIALIZE_NUMPY)
 
-        ratio = timer_ser.elapsed / timer_json.elapsed if timer_json.elapsed > 0 else 0
+        # Scoring a zero denominator 0 would sail past the bar below.
+        assert timer_json.elapsed > 0, (
+            "orjson.dumps measured 0s: the clock is too coarse to form a ratio"
+        )
+        ratio = timer_ser.elapsed / timer_json.elapsed
         print(
             f"PERF: serialize={timer_ser.elapsed:.4f}s, "
             f"orjson.dumps={timer_json.elapsed:.4f}s, "
