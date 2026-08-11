@@ -47,11 +47,15 @@ paper states no repeat count, so the task defaults to ``n=1`` and the protocol
 is recorded in its ``reference_impl.notes``.
 
 Parsing. The judge is asked to end with a fenced ``{"answer_score": N}`` block,
-N in {0, 1}. :func:`parse_answer_score` reads that block and nothing else — it
-is never applied to a prompt, because **every shipped judge system prompt ends
-with a worked example scoring 1**: parsing one would return a silent PASS. That
-is the one misread direction that inflates a score invisibly, so the empty and
-echo-only cases are kept distinguishable (``score=None``) rather than defaulted.
+N in {0, 1}, introduced by ``【JSON】``. :func:`parse_answer_score` reads that
+block and nothing else — it is never applied to a prompt, because **every
+shipped judge system prompt ends with a worked example scoring 1**: parsing one
+would return a silent PASS. That is the one misread direction that inflates a
+score invisibly, so the empty and echo-only cases are kept distinguishable
+(``score=None``) rather than defaulted, and the search is anchored to the text
+after the judge's LAST ``【JSON】`` marker so that no fallback — a reply that
+skipped the fence, or one truncated mid-block — can reach back into an echoed
+example instead.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -92,9 +96,13 @@ PAPER_COLUMNS: dict[str, str] = {
 #: The rubric is two-tier; anything else is a rubric violation, not a score.
 VALID_SCORES: frozenset[int] = frozenset({0, 1})
 
-# The judge's authoritative output is the fenced block after `【JSON】`. Matching
-# fenced blocks first (and taking the LAST one) follows the shipped format
-# instead of trusting whichever number appears first in a chatty reply.
+# The judge's authoritative output is the fenced block after `【JSON】`, so that
+# marker is the anchor: everything BEFORE the last one is prior reasoning or an
+# echoed worked example. Every shipped example ends on a score of 1, so a rule
+# that can reach behind the marker can only ever inflate.
+_JSON_MARKER_RE = re.compile(r"【\s*JSON\s*】")
+# Fenced blocks are still preferred WITHIN the anchored region, so a chatty
+# aside that mentions the key after the verdict cannot outrank the block.
 _FENCE_RE = re.compile(r"```[A-Za-z]*\s*\n?(.*?)```", re.DOTALL)
 # `"answer_score": 1`, tolerating unquoted keys, full-width colons, and floats
 # (a judge writing `1.0` still means the `1` tier).
@@ -120,6 +128,20 @@ def _match_last(pattern: re.Pattern[str], text: str) -> str | None:
     return matches[-1] if matches else None
 
 
+def _authoritative_region(reply: str) -> str:
+    """The slice of *reply* the judge was told to put its verdict in.
+
+    Everything after the LAST ``【JSON】`` marker, or the whole reply when the
+    judge never wrote one — a format deviation, which the fallbacks in
+    :func:`parse_answer_score` still read rather than discard.
+
+    Anchoring here is what keeps an echoed worked example out of reach: those
+    live before the judge's own marker, and all of them score 1.
+    """
+    markers = list(_JSON_MARKER_RE.finditer(reply))
+    return reply[markers[-1].end() :] if markers else reply
+
+
 def parse_answer_score(reply: str) -> tuple[int | None, str | None]:
     """Read the judge's ``answer_score`` out of *reply*.
 
@@ -132,26 +154,35 @@ def parse_answer_score(reply: str) -> tuple[int | None, str | None]:
     * ``(None, None)`` — nothing matched: an empty reply, a refusal, or a
       reasoning judge that spent its whole budget thinking.
 
-    Resolution order follows the shipped judge prompts: the LAST fenced block
-    carrying an ``answer_score`` wins, then a bare ``answer_score`` anywhere,
-    then the ``【评分】：N分`` line. Last-match rather than first is deliberate —
-    a judge that restates the prompt's worked examples before its own verdict
-    puts the real one last.
+    Resolution is POSITIONAL first, format second: the search is confined to
+    :func:`_authoritative_region` — the text after the judge's last ``【JSON】``
+    marker — and only inside it does the last fenced block win over a bare
+    ``answer_score``. Preferring a fence globally would let ANY echoed worked
+    example (all fenced, all scoring 1) outrank a real verdict the judge wrote
+    without one, which is the single misread direction that inflates a score.
+    The ``【评分】：N分`` line is read from the whole reply, since the shipped
+    layout puts it BEFORE the marker.
+
+    A located-but-malformed verdict (``{"answer_score": null}``) stays
+    ``(None, None)`` rather than falling back to an earlier number: the
+    authoritative block was found, so a further search could only reach behind
+    the marker.
 
     Only ever call this on a judge REPLY. Every shipped ``judge_system_prompt``
-    ends with an example scoring 1, so parsing a prompt — or a reply that merely
-    echoes one — reads as PASS. Nothing here can detect that; what protects the
-    score is that the caller passes ``ModelOutput.texts[0]`` and the empty case
-    stays ``None`` instead of defaulting to a pass.
+    ends with an example scoring 1, so parsing a prompt reads as PASS. What
+    protects the score is that the caller passes ``ModelOutput.texts[0]``, that
+    the empty case stays ``None`` instead of defaulting to a pass, and the
+    anchor above. One residual case is undecidable by position and left as
+    such: a judge that echoes an example AFTER stating its own verdict.
     """
-    fenced = [block for block in _FENCE_RE.findall(reply) if "answer_score" in block]
-    raw = None
+    region = _authoritative_region(reply)
+    fenced = [block for block in _FENCE_RE.findall(region) if "answer_score" in block]
     if fenced:
         raw = _match_last(_ANSWER_SCORE_RE, fenced[-1])
-    if raw is None:
-        raw = _match_last(_ANSWER_SCORE_RE, reply)
-    if raw is None:
-        raw = _match_last(_SCORE_LINE_RE, reply)
+    else:
+        raw = _match_last(_ANSWER_SCORE_RE, region)
+        if raw is None:
+            raw = _match_last(_SCORE_LINE_RE, reply)
     if raw is None:
         return None, None
 

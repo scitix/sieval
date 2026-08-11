@@ -103,6 +103,48 @@ def test_truncated_fence_still_yields_the_verdict():
     assert parse_answer_score('【JSON】：\n```\n{"answer_score": 1}') == (1, "1")
 
 
+# --- no fallback may reach back into an echoed example ---
+#
+# The three below are the same defect in three disguises: the echo is FENCED (as
+# every shipped example is) and scores 1, while the judge's own verdict is not
+# fenced, not closed, or not parseable. A resolution order that prefers a fence
+# over its position reads all three as a PASS. Anchoring on the last `【JSON】`
+# is what separates them; each case is asserted on its own because each takes a
+# different branch out of that anchor.
+
+
+def test_an_echoed_example_does_not_outrank_an_unfenced_verdict():
+    # The judge restates a worked example inside a fence, then answers WITHOUT
+    # one. Its verdict is 0 and sits after its own `【JSON】`, so that is the
+    # only region a verdict may be read from.
+    reply = (
+        '我先回顾示例：\n【JSON】：\n```\n{"answer_score": 1}\n```\n'
+        "现在评判本题。\n【评分依据】：未遵守要求。\n【评分】：0分\n"
+        '【JSON】：\n{"answer_score": 0}'
+    )
+    assert parse_answer_score(reply) == (0, "0")
+
+
+def test_a_truncated_verdict_block_falls_back_to_the_score_line_not_the_echo():
+    # Same echo, but the real block is cut off mid-JSON by a token budget. The
+    # `【评分】` line the judge did finish states 0; the echo states 1. Reading
+    # the echo here would turn a budget overrun into a free pass.
+    reply = (
+        '示例：\n```\n{"answer_score": 1}\n```\n'
+        "【评分依据】：不符合要求，因此\n【评分】：0分\n"
+        '【JSON】：\n```\n{"answer_sco'
+    )
+    assert parse_answer_score(reply) == (0, "0")
+
+
+def test_a_malformed_verdict_block_is_unparsed_rather_than_an_earlier_echo():
+    # The authoritative block was located but carries no number. That is judge
+    # format failure (scored 0, counted in `judge_unparsed`) — not licence to
+    # reach for the echoed 1 above it.
+    reply = '```\n{"answer_score": 1}\n```\n本题：\n```\n{"answer_score": null}\n```'
+    assert parse_answer_score(reply) == (None, None)
+
+
 # --- the self-parse hazard, from the real shipped prompts ---
 
 
