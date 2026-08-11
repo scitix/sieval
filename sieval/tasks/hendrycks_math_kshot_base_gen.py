@@ -15,11 +15,17 @@ The shot count is fixed at 4 (the exemplars are a single baked-in prompt string
 upstream; there is no per-shot knob), and the reference answer is extracted from
 the ``solution`` column the same way DeepSeek's ``process_math_test`` does.
 
-Deviation from upstream ``process_math_test``: reference extraction is not
-wrapped in a ``try/except`` that drops the sample — a failed boxed extraction
-counts as a wrong answer, not a dropped one. Immaterial in practice (all 5,000
-test rows carry a ``\\boxed`` answer). Extraction/equivalence deviations
-(dropped debug prints, unused ``timeout`` path) are in the community docstring.
+Deviation from upstream ``process_math_test``: a solution whose gold cannot be
+extracted **fails the sample** instead of being silently dropped. Upstream wraps
+reference extraction in a ``try/except`` and drops the row, so it leaves the
+denominator entirely; here it is a ``FAILED`` sample, which
+``DENOMINATOR_REQUESTED`` counts as wrong — the two are not the same number, and
+failing is the reading that does not charge our extraction miss to the model.
+Unreachable on the pinned data: all 5,000 test rows carry a ``\\boxed`` answer,
+measured, so this is a guard rather than a scoring path. A missing *prediction*
+is the opposite case and stays a wrong answer (see ``_grade``).
+Extraction/equivalence deviations (dropped debug prints, unused ``timeout``
+path) are in the community docstring.
 
 Repro decoding (greedy, matching DeepSeek's ``run_cot_eval.py``): temperature=0,
 top_p=1, max_gen_toks=1024.
@@ -177,6 +183,24 @@ class HendrycksMathFewShotBaseGenTask(
         reference = extract_math_answer(
             ctx.raw_sample["problem"], ctx.raw_sample["solution"], "cot"
         )
+        if not reference:
+            # No gold to compare against, so there is no verdict this sample
+            # could carry: `correct` either way would be an artifact of how the
+            # miss is handled rather than evidence about the model. Fails the
+            # sample deliberately instead of scoring it wrong — a gold that will
+            # not extract is a defect in our data or our extractor, and `fails`
+            # is where a defect on our side belongs.
+            #
+            # Raising is the only route to FAILED from here: `finalize=False`
+            # means "iterate again", so it would re-infer `max_iterations` times
+            # and then fail as `iteration_limit`, naming the wrong cause. The
+            # runner records `exception::ValueError` plus this message.
+            raise ValueError(
+                f"sample {ctx.sample_id!r}: no reference answer could be "
+                "extracted from its `solution`; every MATH test row is expected "
+                "to carry a \\boxed answer, so this is a data or extractor "
+                "defect, not a wrong answer"
+            )
         # Concurrent, not sequential: each grade is an offloaded CPU-bound call
         # with its own GRADE_TIMEOUT, so awaiting them in turn makes a sample's
         # worst case n x the timeout instead of one.
@@ -187,17 +211,20 @@ class HendrycksMathFewShotBaseGenTask(
             build_rollout_judgement(rollout["index"], verdict)
             for rollout, verdict in zip(post["rollouts"], verdicts, strict=True)
         ]
-        # `or None` at the record boundary only, never at the grading one:
-        # `extract_math_answer` returns `[]` when the gold cannot be extracted,
-        # and `[]` on disk reads as a gold that is legitimately empty — the same
-        # trap `""` was for cmmlu/mmmlu, and invisible to `missing_reference`.
-        # `eval_math` cannot take `None` (`is_correct` raises NotImplementedError
-        # on a non-list, non-str answer), so the grade keeps seeing the list and
-        # a failed gold stays a wrong answer rather than becoming a failed sample.
-        return True, build_judgement_record(reference or None, rollouts)
+        return True, build_judgement_record(reference, rollouts)
 
     async def _grade(self, rollout, reference, ctx) -> bool:
-        prediction = rollout.get("prediction") or ""
+        # `or []`, not `or ""`. A missing *prediction* is the model failing to
+        # answer — a wrong answer, the contract every sibling math grader keeps
+        # (`extracted` records the miss and `extraction_failure` reports it) —
+        # and it must not reach `fails`, which reads as an infrastructure failure
+        # and is one of the signals a run is promoted on. But this task's
+        # reference is a *list*, and `""` against a list matches neither branch of
+        # `is_correct`, so it fell through to upstream's bare
+        # `raise NotImplementedError` and failed the sample with an empty message.
+        # `[]` takes the list/list branch and scores wrong, as intended. GSM8K's
+        # `or ""` is safe only because its gold is a single string.
+        prediction = rollout.get("prediction") or []
         # `math_equal` runs `parse_latex` + `simplify`: ~11 ms typical, 1.7 s
         # worst case — measured on *reference* data, and `simplify` on arbitrary
         # model output has no ceiling. Reached with `timeout=False`, so nothing

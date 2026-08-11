@@ -146,25 +146,44 @@ async def test_feedback_scores_against_solution_via_eval_math():
 
 
 @pytest.mark.anyio
-async def test_an_unextractable_gold_is_recorded_as_none_not_an_empty_list():
-    """`[]` on disk reads as a gold that is legitimately empty.
+async def test_an_unextractable_gold_fails_the_sample():
+    """A missing gold is our defect, so it must not be scored at all.
 
-    This task declares `reference_kind="value"`, so an unusable gold has to
-    arrive as `None` for `missing_reference` to see it — the discipline cmmlu and
-    mmmlu follow. Only the *record* is normalized: `eval_math` raises
-    `NotImplementedError` on a non-list, non-str answer, so the grade still sees
-    the list and a failed gold stays a wrong answer rather than a failed sample.
+    With no reference there is no verdict the sample could carry — `correct`
+    either way is an artifact of how the miss is handled, not evidence about the
+    model. The runner turns this into a `FAILED` sample carrying
+    `exception::ValueError` and the message, so the cause is named; scoring it
+    wrong instead would charge our extraction miss to the model, silently.
     """
     task, _ = _task()
     raw = _sample(solution="No boxed answer anywhere in this solution.")
 
+    with pytest.raises(ValueError, match="no reference answer could be extracted"):
+        await task.feedback(
+            build_prediction_record([["16"]]), TaskContext(sample_id=7, raw_sample=raw)
+        )
+
+
+@pytest.mark.anyio
+async def test_a_missing_prediction_scores_wrong_rather_than_failing():
+    """The opposite absence, and the opposite response.
+
+    A prediction that would not extract is the model failing to answer, which is
+    a wrong answer — `extracted` records the miss and `extraction_failure`
+    reports it. It must not reach `fails`, which reads as an infrastructure
+    failure. Regression guard for `or ""`: against this task's *list* reference
+    that fell through `is_correct` to upstream's bare `raise
+    NotImplementedError`, failing the sample with an empty message.
+    """
+    task, _ = _task()
+    raw = _sample(solution="Therefore $\\boxed{16}$.")
+
     finalize, fb = await task.feedback(
-        build_prediction_record([["16"]]), TaskContext(sample_id=0, raw_sample=raw)
+        build_prediction_record([None]), TaskContext(sample_id=0, raw_sample=raw)
     )
 
     assert finalize is True
-    assert fb["reference"] is None
-    # Graded, not failed: the sample is scored wrong rather than raising.
+    assert fb["reference"] == ["16"]
     assert fb["rollouts"][0]["correct"] is False
 
 
