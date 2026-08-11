@@ -264,6 +264,7 @@ def _openai_tool(tool: dict) -> tuple[list[dict], dict, dict]:
     tags=("english", "chinese", "spanish", "open-ended", "safety", "tool-use"),
     deps_group="iheval",
     model_type="chat",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="ytyz1307zzh/IHEval",
         url="https://github.com/ytyz1307zzh/IHEval/tree/726a62924c3050045954df94347d53fe2bd1090d/src",
