@@ -397,21 +397,24 @@ def _unwrap_result(result: Any) -> Any:
 def _model_outputs(result: Any) -> tuple[ModelOutput, ...]:
     """The ``ModelOutput``s a stage produced, whether it returned one or a list.
 
-    ``infer`` may return a single ``ModelOutput`` or a ``list[ModelOutput]`` -- a
-    multi-turn task answers one sample with one call per turn. The runner already
-    reads the list as *one sample, several calls* when it sums token usage
-    (``_build_auto_meta``), and rules read it the same way: the **rollout** index
-    is the position inside each output's ``texts``, while the list dimension is
-    extra calls. So a rollout is anomalous when any call is anomalous at that
-    index, and ``len(indices)`` keeps meaning "how many rollouts", which is what
-    ``anomaly_rollout_details`` counts.
+    ``infer`` may return a single ``ModelOutput`` or a ``list[ModelOutput]``: a
+    multi-turn task answers one sample with one call per turn, and a ``ppl`` task
+    with one call per candidate. The runner already reads the list as *one sample,
+    several calls* when it sums token usage (``_build_auto_meta``), and rules read
+    it the same way: the **rollout** index is the position inside each output's
+    ``texts``, while the list dimension is extra calls. So a rollout is anomalous
+    when any call is anomalous at that index, and ``len(indices)`` keeps meaning
+    "how many rollouts", which is what ``anomaly_rollout_details`` counts.
 
     Without this, a rule guarding on ``isinstance(result, ModelOutput)`` returns
-    an empty set for every multi-turn sample -- silently, and indistinguishably
+    an empty set for every multi-call sample -- silently, and indistinguishably
     from "nothing was wrong".
     """
     if isinstance(result, ModelOutput):
         return (result,)
+    # An empty list reads as "no calls to judge", not as "a call came back empty":
+    # a stage that produced nothing at all is what `detect_empty_postprocess` and
+    # `detect_extraction_failure` report, from the record rather than from a guess.
     if isinstance(result, list) and all(
         isinstance(item, ModelOutput) for item in result
     ):
@@ -440,7 +443,9 @@ def detect_empty_infer_gen(ctx: TaskContext) -> set[int]:
 
 
 @sieval_detection_rule(
-    description="Inference result is empty for perplexity tasks (logprobs=[])",
+    description=(
+        "Inference result is empty for perplexity tasks (any candidate's logprobs=[])"
+    ),
     category="output_quality",
     rationale=("Empty logprobs indicate API failures or unsupported model features."),
     applies_to=["ppl"],
@@ -449,20 +454,24 @@ def detect_empty_infer_gen(ctx: TaskContext) -> set[int]:
 def detect_empty_infer_ppl(ctx: TaskContext) -> set[int]:
     if ctx.infer_result is None:
         return set()
-    result = _unwrap_result(ctx.infer_result)
-    # Single-output on purpose, unlike its `gen` siblings: scoring one candidate
-    # per inference is what `ppl` *is*, so a list here would mean something new
-    # and should be designed rather than absorbed by an `any()`.
-    if not isinstance(result, ModelOutput):
-        return set()
-    # For PPL tasks, we need both logprobs and logprobs_tokens
-    has_logprobs = result.logprobs is not None
-    has_logprobs_tokens = result.logprobs_tokens is not None
-    if has_logprobs or has_logprobs_tokens:
-        logprobs_empty = has_logprobs and not result.logprobs
-        logprobs_tokens_empty = has_logprobs_tokens and not result.logprobs_tokens
+    # One call per candidate is what `ppl` *is*: every ppl task here returns a
+    # `list[ModelOutput]` (ARC two calls per choice, HellaSwag one per ending), so
+    # reading only a lone `ModelOutput` left this rule inert for all of them.
+    #
+    # `any` candidate is enough, because `postprocess` takes an argmax ACROSS
+    # candidates: an empty one sums to 0.0 where a real one is negative, so it
+    # wins the argmax and silently changes the answer rather than failing.
+    for output in _model_outputs(_unwrap_result(ctx.infer_result)):
+        # For PPL tasks, we need both logprobs and logprobs_tokens
+        has_logprobs = output.logprobs is not None
+        has_logprobs_tokens = output.logprobs_tokens is not None
+        if not (has_logprobs or has_logprobs_tokens):
+            continue
+        logprobs_empty = has_logprobs and not output.logprobs
+        logprobs_tokens_empty = has_logprobs_tokens and not output.logprobs_tokens
         # Report index 0 as sentinel if any field is empty
-        return {0} if (logprobs_empty or logprobs_tokens_empty) else set()
+        if logprobs_empty or logprobs_tokens_empty:
+            return {0}
     return set()
 
 
