@@ -4,36 +4,22 @@
 # SPDX-License-Identifier: CC-BY-SA-4.0
 #
 # LICENSE: this file is CC-BY-SA-4.0, not the repository's Apache-2.0. Upstream's
-# CODE repo states no license at the pinned commit — no LICENSE / COPYING /
-# NOTICE file and no SPDX metadata anywhere in the tree, no license statement in
-# the README, and the GitHub API reports `"license": null` for qtli/GSM-Plus. The
-# GSM-Plus DATASET is licensed CC-BY-SA-4.0 (the `qintongli/GSM-Plus` HF card),
-# and this project applies those same terms to the scoring code that accompanies
-# it, with attribution to the authors and the exact source commit pinned above.
+# CODE repo states no license at the pinned commit (no LICENSE/COPYING/NOTICE, no
+# SPDX, nothing in the README, `"license": null` from the GitHub API), so the
+# CC-BY-SA-4.0 the GSM-Plus DATASET carries (per the `qintongli/GSM-Plus` HF card)
+# is applied to the scoring code accompanying it, attributed above. Two things
+# that do not follow automatically:
 #
-# Two consequences a reader needs, because they do not follow automatically:
-#
-#   - Share-alike is per-file, and does NOT extend to the rest of sieval. It
-#     attaches to this file and to modifications OF it; the task that imports it
-#     (`sieval.tasks.gsm_plus_0shot_gen`) stays Apache-2.0, as does everything
-#     else in the tree. Anyone redistributing a modified copy of THIS file owes
-#     CC-BY-SA-4.0 on that copy.
+#   - Share-alike is per-file. It attaches here and to modifications of this
+#     file; the importing task and the rest of sieval stay Apache-2.0.
 #   - The dataset's grant covers the dataset. Reading it onto the code is this
-#     project's own construction, not a grant the code's authors published, so
-#     it is recorded here as the basis relied on rather than as a quoted licence.
+#     project's construction, not a grant the code's authors published — recorded
+#     as the basis relied on, not as a quoted licence.
 #
-# Compare the two neighbours that answered the same question by vendoring
-# nothing: `advanced_if` (CC-BY-NC-4.0) and `iheval` (CC-BY-NC-ND-4.0) — there
-# the upstream terms were stated and non-commercial, so no reading was available.
-#
-# Provenance of the rest, which carries permissive terms independently:
-#   - SUBSTITUTIONS / REMOVED_EXPRESSIONS / normalize_final_answer — Minerva
-#     (Lewkowycz et al.), per upstream's own attribution comment below, and also
-#     shipped in EleutherAI/lm-evaluation-harness under Apache-2.0.
-#   - delete_extra_zero — MetaMath lineage (MIT).
-#
-# The *dataset* is licensed separately and clearly (CC-BY-SA-4.0, per the
-# `qintongli/GSM-Plus` HF card) and is referenced, not redistributed.
+# Parts with independent permissive provenance: SUBSTITUTIONS /
+# REMOVED_EXPRESSIONS / normalize_final_answer are Minerva (Lewkowycz et al., per
+# upstream's own attribution comment below, and also shipped in
+# lm-evaluation-harness under Apache-2.0); delete_extra_zero is MetaMath (MIT).
 """
 GSM-Plus answer extraction and answer equivalence (zero-shot CoT protocol).
 
@@ -58,32 +44,28 @@ then compare symbolically (``check_sympy_equivalence``).
 ``mv == 1`` path) split at sieval's postprocess/feedback boundary. The order of
 operations is unchanged, so verdicts are identical; only the seam moved.
 
-Fidelity check: replaying upstream's own stored zero-shot-CoT predictions
-(``results/gpt-3.5-turbo.json``, 10552 items) through this module reproduces
-upstream's persisted ``gold``, ``pred`` and ``result`` on every item, hence its
-published GSM-Plus scores (61.19 overall / 63.18 excluding critical thinking).
+Fidelity is measured against upstream's own stored predictions for both models it
+published on this path; the numbers live on ``gsm_plus_0shot_gen``.
 
 Deviations from upstream (documented, not silent):
 
 - **Only the ``prompt_type == "cot"`` branch is ported.** Upstream's
   ``extract_pred_ans`` multiplexes ten prompting techniques (``pot``,
   ``complex``, ``ltm``, ``llama``, ``codellama``, ``sego``, ``mammoth``,
-  ``metamath``, ``tora``, plus a generic ``match_pattern`` fallback); three of
-  them ``exec()`` model-generated Python. This task implements the zero-shot CoT
-  protocol only, so the other branches — and the program-execution machinery
-  they need (``safe_execute`` / ``synthesize_program_*`` / ``func_timeout``) —
-  are deliberately not vendored. ``prompt_type`` therefore disappears from the
-  signatures instead of becoming an argument that only accepts one value.
-- **Self-consistency (``mv > 1``) is not ported.** Upstream's ``cot_sc`` draws 5
-  samples at temperature 0.7 and majority-votes the extracted answers; the
-  ported path is the ``mv == 1`` single-rollout one.
+  ``metamath``, ``tora``, plus a generic ``match_pattern`` fallback), three of
+  which ``exec()`` model-generated Python. Only the zero-shot CoT protocol is
+  implemented, so those branches and the program-execution machinery they need
+  (``safe_execute`` / ``synthesize_program_*`` / ``func_timeout``) are
+  deliberately not vendored, and ``prompt_type`` disappears from the signatures
+  rather than becoming an argument that accepts one value.
+- **Self-consistency (``mv > 1``) is not ported.** Upstream's ``cot_sc``
+  majority-votes 5 samples at temperature 0.7; this is the ``mv == 1`` path.
 - ``extract_gold_ans`` raises ``ValueError`` where upstream calls
-  ``pdb.set_trace()`` (twice: gold with neither ``####`` nor ``boxed{}``, and a
-  non-``"None"`` gold containing no number). Dropping into a debugger is not a
-  library behaviour; both cases are unreachable for the pinned dataset revision,
-  where every ``solution`` ends in ``#### <number|None>``.
-- Regex/substitution literals are spelled as raw strings (``r"\\%"`` for
-  ``'\\%'``, ``r"-?\\d+..."`` for ``'-?\\d+...'``). The string *values* are
+  ``pdb.set_trace()`` (gold with neither ``####`` nor ``boxed{}``, and a
+  non-``"None"`` gold containing no number) — a debugger is not library
+  behaviour. Both are unreachable at the pinned dataset revision, where every
+  ``solution`` ends in ``#### <number|None>``.
+- Regex/substitution literals are spelled as raw strings. The string *values* are
   byte-identical; this only avoids the invalid-escape ``SyntaxWarning`` upstream
   emits under Python 3.12.
 
@@ -100,12 +82,11 @@ from sympy.parsing.latex import parse_latex
 # a real answer, not the protocol's `None` ("could not extract").
 NONE_ANSWER = "None"
 
-# The only perturbation type named in code, because it is the only one extraction
-# dispatches on; the other seven are read off the sample and used as report keys,
-# never compared against a literal. (Note the spelling drift, in case a dump is
-# ever replayed: upstream's `results/*.json` say "distractor insertion" where both
-# the released HF dataset and upstream's own `dataset/gsmplus_test.jsonl` say
-# "distraction insertion", which is what a run actually sees.)
+# The only perturbation type named in code, being the only one extraction
+# dispatches on; the other seven are read off the sample as report keys, never
+# compared against a literal. (Spelling drift, should a dump ever be replayed:
+# upstream's `results/*.json` say "distractor insertion" where the released
+# dataset — what a run sees — says "distraction insertion".)
 CRITICAL_THINKING = "critical thinking"
 
 # Part of the code is modified from the code snippets provided in "Solving Quantitative Reasoning Problems with Language Models" by Lewkowycz et al.
@@ -273,12 +254,11 @@ def extract_pred_ans_none(pred_str):
     Returns ``"None"`` (the model recognized the question as unanswerable) or
     ``""`` (it answered anyway).
 
-    Note the second branch, upstream's verbatim: a response with **no** ``####``
-    marker scores ``"None"`` — i.e. correct — even when it confidently computed a
-    number. It is a leniency toward models that ignore the output format, and it
-    is load-bearing for reproducing upstream's published numbers. The zero-shot
-    CoT system prompt does ask for ``#### [value]``, so a format-compliant model
-    is judged on its refusal phrasing alone.
+    The second branch is upstream's verbatim, and is the format gate: a response
+    with **no** ``####`` marker scores ``"None"`` — i.e. correct — even when it
+    confidently computed a number. A leniency toward models that ignore the
+    output format, load-bearing for reproducing upstream's published numbers, and
+    the reason a format-compliant model is judged on refusal phrasing alone.
     """
     pred_str = pred_str.rstrip(".").replace(",", "").lower()
     pred = ""

@@ -260,9 +260,8 @@ async def test_feedback_credits_recognized_unanswerable():
 
 @pytest.mark.anyio
 async def test_feedback_reads_a_record_whose_prediction_key_was_omitted():
-    # `prediction` is NotRequired, so a None prediction is DROPPED on write. The
-    # fresh path carries the key with a None value; the resumed path reads the
-    # record back from disk without it. Both must score the same, and neither may
+    # A None `prediction` is DROPPED on write, so the fresh path carries the key
+    # and the resumed path does not. Both must score the same and neither may
     # raise -- this is the routine `critical thinking` case where the response
     # held no refusal phrase, 487 of 10552 on a real run.
     task, _ = _task()
@@ -383,9 +382,8 @@ async def test_report_breaks_down_by_perturbation_type():
 async def test_report_empty_finals():
     task, _ = _task()
     report = await task.report([], [])
-    # The two declarations are present on the empty-run path too: a report that
-    # says nothing about its own denominator is exactly as unreadable at 0 samples
-    # as at 10552.
+    # The two declarations are present on the empty-run path too: a report saying
+    # nothing about its denominator is as unreadable at 0 samples as at 10552.
     assert report == {
         "score": 0.0,
         "accuracy": 0.0,
