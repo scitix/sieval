@@ -147,12 +147,10 @@ class TestDetectEmptyInferPpl:
     def test_multi_call_reports_any_empty_candidate(self, sample_model_meta):
         """One call per candidate is the only shape a ppl task ships.
 
-        ARC issues two calls per choice and HellaSwag one per ending, so reading
-        only a lone `ModelOutput` returned an empty set for every ppl sample --
-        silently, and indistinguishably from "nothing was wrong". It matters more
-        here than for the `gen` siblings: `postprocess` takes an argmax ACROSS
-        candidates, and an empty one sums to 0.0 where a real one is negative, so
-        it wins the argmax and changes the answer instead of failing.
+        Reading only a lone `ModelOutput` returned an empty set for every ppl
+        sample. It matters more than for the `gen` siblings: `postprocess` takes an
+        argmax across candidates, and an empty one sums to 0.0 where a real one is
+        negative, so it wins and changes the answer instead of failing.
         """
 
         def cand(logprobs, logprobs_tokens):
@@ -946,12 +944,10 @@ class TestRulesHashStability:
         discovered in production.
 
         Rotated once here, deliberately: `empty_infer_ppl` was inert for every ppl
-        task (all of them answer one call per candidate, which the rule did not
-        read), and repairing it has to reach the runs already on disk. Its
-        description now says "any candidate's", which is both the accurate reading
-        and what moves this hash — without it `needs_regeneration()` would return
-        False and every stored report would keep the dead rule's verdict while
-        logging "rules unchanged".
+        task, and repairing it has to reach the runs already on disk. Its
+        description now says "any candidate's" — the accurate reading, and what
+        moves this hash. Without that, `needs_regeneration()` returns False and
+        every stored report keeps the dead rule's verdict.
         """
         assert get_rules_hash() == "56480a99ae65a3c0"
 
