@@ -16,7 +16,7 @@ from loguru import logger
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks.context import TaskContext, TaskStage, TaskStageOutput
-from sieval.core.tasks.records import is_judgement_record, is_prediction_record
+from sieval.core.tasks.records import is_prediction_record
 
 
 # Schema
@@ -553,38 +553,3 @@ def detect_extraction_failure(ctx: TaskContext) -> set[int]:
         for position, rollout in enumerate(rollouts)
         if not rollout.get("extracted")
     }
-
-
-@sieval_detection_rule(
-    description=(
-        "A task whose ground truth is a value judged a sample without one -- no "
-        "reference was recorded"
-    ),
-    category="correctness",
-    rationale=(
-        "The verdict was reached without the thing it compares against, so it is "
-        "not evidence either way: the sample's gold was missing or malformed, and "
-        "whatever `correct` says is an artifact of how the task handles that. "
-        "Scoped to `value_reference` because a task whose truth is a *procedure* "
-        "(a test suite, a rubric) records no reference by design -- that is the "
-        "declaration this rule reads, and without it a missing key could not be "
-        "told from a legitimately absent one. Reported once per sample, on index 0 "
-        "as a sentinel: a reference is a sample-level fact, so there is no "
-        "particular rollout to point at."
-    ),
-    severity="error",
-    applies_to=["value_reference"],
-    tags=["reference", "ground_truth", "correctness"],
-)
-def detect_missing_reference(ctx: TaskContext) -> set[int]:
-    # `None` and absent are the same finding, and which one arrives depends only
-    # on whether this context came from memory or from disk: the builder writes
-    # `reference` unconditionally, then serialization drops it when None. `.get()
-    # is None` covers both, and treats a falsy-but-real gold (0, "", []) as
-    # present -- `not value` here would report every zero answer as missing.
-    if ctx.feedback_result is None:
-        return set()
-    result = _unwrap_result(ctx.feedback_result)
-    if not is_judgement_record(result):
-        return set()
-    return {0} if result.get("reference") is None else set()

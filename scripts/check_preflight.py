@@ -234,8 +234,9 @@ _UNGATED_RECORD_KEYS = frozenset(
         # `list(None)` TypeError — `extra`'s trap again. Gating it was never the
         # fix; what it needed was a durable signal of *which* absence this is, and
         # that is now `TaskMeta.reference_kind` (declared per task, enforced by
-        # `check_reference_kind`) plus the `missing_reference` anomaly rule for the
-        # per-sample case.
+        # `check_reference_kind`). There is no second, per-sample absence to tell
+        # it from: a value-reference task with no gold raises rather than
+        # recording a judgement, so absence here means "procedure" and nothing else.
         "reference",
     }
 )
@@ -2033,16 +2034,14 @@ class PreflightRunner:
         passing quietly.
 
         All three are **unioned**; none short-circuits the others. A task whose
-        two branches build the record two ways is the case that matters
-        (``ugmathbench``), and nothing confines that split to one tier: a task
-        that judges its missing-``raw_sample`` branch inline and delegates the
-        real gold to a shared helper would, if the class body won outright, read
-        as a ``procedure`` on the strength of that one ``None`` -- and the
-        violation it then raises tells the author to *declare* ``procedure``,
-        which is the single edit that switches the rule off for the whole
-        benchmark. Unioning can only err the other way: an extra non-``None``
-        reference moves the verdict toward ``value``, where a mis-declaration is
-        loud (every sample flagged) rather than silent.
+        two branches build the record two ways is the case that matters, and
+        nothing confines that split to one tier: a task that builds a ``None``
+        record inline and delegates the real gold to a shared helper would, if
+        the class body won outright, read as a ``procedure`` on the strength of
+        that one ``None`` -- and the violation it then raises would tell the
+        author to *declare* ``procedure``, stamping "the ground truth is a test
+        suite" onto a task that has a gold. Unioning can only err the other way,
+        toward ``value``, which is the reading a mixed task actually wants.
 
         ``via`` names every tier that contributed, so a task split across two
         says so instead of naming the one that happened to be searched first.
@@ -2093,29 +2092,24 @@ class PreflightRunner:
     def check_reference_kind(self) -> list[CheckResult]:
         """Every task's declared ``reference_kind`` must match how it judges.
 
-        ``TaskMeta.reference_kind`` is what tells a stored judgement carrying no
-        ``reference`` apart from one whose gold went missing, and it is the tag the
-        ``missing_reference`` anomaly rule routes on. That makes a wrong
-        declaration silent in both directions, and silent the expensive way:
-
-        * declared ``value``, judges with ``build_judgement_record(None, ...)`` --
-          the rule fires on *every* sample of the task, so a whole benchmark reads
-          as defective;
-        * declared ``procedure``, judges with a real gold -- the rule never runs,
-          so the genuinely-missing golds it exists to catch go unreported.
-
-        Neither shows up anywhere else: the field is additive with a default, so an
-        undeclared task is valid Python, scores identically, and passes every test.
-        That is the same failure mode ``check_report_declarations`` exists for.
+        ``TaskMeta.reference_kind`` is the only durable answer to why a stored
+        judgement carries no ``reference``: it rides into ``meta/index.json`` and
+        every run's ``meta.json``, so an archived run still answers the question
+        after the installed registry has moved on. Nothing branches on it at run
+        time, which is exactly what makes a wrong declaration invisible -- the
+        field is additive with a default, so a mis-declared task is valid Python,
+        scores identically, and passes every test, while quietly misdescribing
+        the ground truth of every run it stamps. That is the same failure mode
+        ``check_report_declarations`` exists for.
 
         The verdict is read off the call sites, not the docstrings: a task whose
         every ``build_judgement_record`` passes a literal ``None`` is a
         ``procedure``, and one with any other reference expression is a ``value``.
-        A task with *both* (``ugmathbench_0shot_gen_fixed`` judges a
-        missing-``raw_sample`` with ``None`` and everything else with its gold) is
-        a ``value`` -- that ``None`` branch is precisely the anomaly, so reading it
-        as a procedure declaration would silence the report on the one task known
-        to need it.
+        A task with *both* is a ``value``: passing ``None`` on some path means it
+        has a gold it could not produce there, which is a value task's failure
+        mode, not a procedural truth. No task in the tree does this today --
+        a value task with no gold raises instead of recording a judgement -- but
+        the rule is what keeps that from being inferred backwards if one appears.
 
         AST-only, like ``check_report_declarations``, so a task whose optional deps
         are absent is still covered.

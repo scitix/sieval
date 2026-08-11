@@ -351,26 +351,23 @@ class UGMathBenchZeroShotGenFixedTask(
     async def feedback(self, post, ctx):
         raw = ctx.raw_sample
         if raw is None:
-            # Nothing to compare against; the reference is genuinely unknown
-            # rather than a procedure, so the verdict is wrong-by-default.
+            # Nothing to compare against, so there is no verdict to record: a
+            # wrong-by-default judgement would charge a missing row to the model.
             #
-            # The grouping keys still have to survive, and the prompt record
-            # carries them. Without that, report() cannot tell which problem
-            # this version belonged to and drops it from the effective-accuracy
-            # denominator, while the wrong verdict stays in AAcc's -- so EAcc is
-            # computed over the survivors and biased *upward*. That is the same
-            # failure `_identify` guards for failed samples; a wrong-by-default
-            # verdict has to hold its problem's place just as a failure does.
-            problem_id, subject = _identify(ctx)
-            return True, build_judgement_record(
-                None,
-                [
-                    build_rollout_judgement(rollout["index"], False)
-                    for rollout in post["rollouts"]
-                ],
-                extra={"problem_id": problem_id, "subject": subject}
-                if problem_id is not None
-                else None,
+            # Failing costs neither metric, which is why this replaced the
+            # wrong-by-default record it used to build. AAcc counts a version by
+            # `len(finals) + len(fails)`, so the denominator is unchanged and the
+            # sample contributes no hit either way. EAcc keeps the problem's place
+            # through report()'s failed-sample loop, which recovers the grouping
+            # keys with the same `_identify` this branch used to call -- so the
+            # branch was doing by hand exactly what the failure path already does.
+            #
+            # Retriable on purpose; see the twin in `cmmlu_kshot_clp` for why this
+            # is a plain raise and not `NonRetriableSampleError`.
+            raise ValueError(
+                f"sample {ctx.sample_id!r}: no raw sample to grade against — "
+                "`raw_sample` was not recoverable from the dataset, so the "
+                "reference is unknown and no verdict can be recorded"
             )
 
         golds = raw["answer"]
@@ -614,11 +611,13 @@ def _answer_text(final, index: int) -> str | None:
 def _identify(ctx) -> tuple[str | None, str | None]:
     """The problem and subject a sample belongs to, without a judgement.
 
-    Two callers, one reason. A failed sample never reaches ``feedback``; a
-    sample whose ``raw_sample`` is gone reaches it but has no reference to
-    record. Either way the grouping keys the judgement normally carries are
-    unavailable — and either way the sample still has to hold its place in the
-    effective-accuracy denominator, because leaving it out biases EAcc upward.
+    Two callers in ``report``, one reason. A failed sample never produced a
+    judgement to read the keys from — including the sample whose ``raw_sample``
+    could not be recovered, which now fails rather than being judged
+    wrong-by-default. A judged sample can also arrive with a judgement that
+    names no problem, from a run written before the keys rode along. Either way
+    the sample still has to hold its place in the effective-accuracy
+    denominator, because leaving it out biases EAcc upward.
 
     Two sources, in order: ``raw_sample``, which survives ``to_failed`` (a
     dataclass ``replace``), and the prompt record, which carries the same keys

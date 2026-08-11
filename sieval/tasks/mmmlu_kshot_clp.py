@@ -311,16 +311,19 @@ class MMMLUKShotClpTask(
         raw = ctx.raw_sample
         prediction = post["rollouts"][0].get("prediction")
         if raw is None:
-            # No sample to grade against, so the reference is genuinely unknown:
-            # `None` rather than the `""` the pre-migration shape recorded, so
-            # `missing_reference` sees it (this task declares
-            # `reference_kind="value"`, and `""` reads as a legitimately empty
-            # gold). The empty *grouping* keys stay as they were -- report() maps
-            # those to "unknown" and depends on them being present.
-            return True, build_judgement_record(
-                None,
-                [build_rollout_judgement(0, False)],
-                extra={"subject": "", "category": "", "locale": ""},
+            # No sample to grade against, so there is no verdict to record --
+            # `correct=False` would charge a missing row to the model, and the
+            # empty grouping keys it used to carry only existed to give report()
+            # something to bucket a verdict that should not exist. This task
+            # declares DENOMINATOR_JUDGED, so failing keeps the sample out of the
+            # denominator rather than counting it wrong.
+            #
+            # Retriable on purpose; see the twin in `cmmlu_kshot_clp` for why this
+            # is a plain raise and not `NonRetriableSampleError`.
+            raise ValueError(
+                f"sample {ctx.sample_id!r}: no raw sample to grade against — "
+                "`raw_sample` was not recoverable from the dataset, so the "
+                "reference is unknown and no verdict can be recorded"
             )
         probs = ctx.infer_result.value["probs"] if ctx.infer_result else {}
         answer = raw["Answer"]

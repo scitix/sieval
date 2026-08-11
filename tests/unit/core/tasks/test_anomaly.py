@@ -24,7 +24,6 @@ from sieval.core.tasks.anomaly import (
     detect_empty_infer_ppl,
     detect_empty_postprocess,
     detect_extraction_failure,
-    detect_missing_reference,
     detect_truncated_output,
     get_applied_rules,
     get_rules_by_category,
@@ -33,11 +32,7 @@ from sieval.core.tasks.anomaly import (
     sieval_detection_rule,
 )
 from sieval.core.tasks.context import TaskContext, TaskStageOutput
-from sieval.core.tasks.records import (
-    build_judgement_record,
-    build_prediction_record,
-    build_rollout_judgement,
-)
+from sieval.core.tasks.records import build_prediction_record
 from sieval.core.utils.serialization import dict_to_obj, obj_to_dict
 
 
@@ -351,97 +346,6 @@ class TestDetectExtractionFailure:
         assert detect_extraction_failure(ctx) == {0}
 
 
-class TestDetectMissingReference:
-    """A value-reference task that judged a sample without a ground truth.
-
-    The rule exists because `obj_to_dict` drops `None`, so "the truth is a
-    procedure" and "this sample's gold went missing" are the same missing key on
-    disk. `TaskMeta.reference_kind` separates them at the task level and scopes
-    this rule via `applies_to`; within the tasks it does run on, an absent
-    reference is a defect.
-    """
-
-    def _judgement(self, reference):
-        return build_judgement_record(reference, [build_rollout_judgement(0, True)])
-
-    def test_reports_a_sample_whose_reference_is_none(self):
-        ctx = _make_final_ctx(feedback_result=self._judgement(None))
-        assert detect_missing_reference(ctx) == {0}
-
-    def test_silent_when_a_reference_was_recorded(self):
-        ctx = _make_final_ctx(feedback_result=self._judgement("B"))
-        assert detect_missing_reference(ctx) == set()
-
-    @pytest.mark.parametrize("falsy", [0, "", [], False, 0.0])
-    def test_a_falsy_reference_is_still_a_reference(self, falsy):
-        """`not reference` here would report every zero-valued gold as missing.
-
-        `obj_to_dict` drops only `None` (`False` and `0` survive), so the test
-        has to be `is None` — and a gold of `0` is ordinary in a math task.
-        """
-        ctx = _make_final_ctx(feedback_result=self._judgement(falsy))
-        assert detect_missing_reference(ctx) == set()
-
-    def test_survives_a_round_trip_through_disk(self):
-        """The point of the rule: absence on disk reads the same as `None`.
-
-        `build_judgement_record` writes `reference` unconditionally, then
-        serialization drops it — so a fresh run sees `None` and a resumed one
-        sees no key at all. Both are the same finding, and a rule that only
-        handled the in-memory shape would go quiet on exactly the resumed runs.
-        """
-        restored = dict_to_obj(obj_to_dict(self._judgement(None), True), {})
-        assert "reference" not in restored
-        ctx = _make_final_ctx(feedback_result=restored)
-        assert detect_missing_reference(ctx) == {0}
-
-    def test_reads_through_a_stage_output_box(self):
-        ctx = _make_final_ctx(feedback_result=TaskStageOutput(self._judgement(None)))
-        assert detect_missing_reference(ctx) == {0}
-
-    def test_reports_index_0_regardless_of_rollout_count(self):
-        # A reference is a sample-level fact, so there is no particular rollout
-        # to point at — 0 is a sentinel, not rollout 0's verdict.
-        record = build_judgement_record(
-            None, [build_rollout_judgement(i, True) for i in range(4)]
-        )
-        ctx = _make_final_ctx(feedback_result=record)
-        assert detect_missing_reference(ctx) == {0}
-
-    @pytest.mark.parametrize("legacy", ["", "C", [], ["C"], {"correct": True}])
-    def test_ignores_legacy_stage_values(self, legacy):
-        # A task that has not adopted the protocol has no record to read, and
-        # guessing at a bare dict would report every unmigrated task.
-        ctx = _make_final_ctx(feedback_result=legacy)
-        assert detect_missing_reference(ctx) == set()
-
-    def test_silent_before_feedback_has_run(self):
-        ctx = _make_final_ctx(feedback_result=None)
-        assert detect_missing_reference(ctx) == set()
-
-    def test_a_prediction_record_is_not_a_judgement(self):
-        # `PredictionRecord` has no `reference` key at all; keying on absence
-        # alone would report every one of them.
-        ctx = _make_final_ctx(feedback_result=build_prediction_record(["a"]))
-        assert detect_missing_reference(ctx) == set()
-
-    def test_routes_only_to_value_reference_tasks(self):
-        """The declaration is the whole mechanism.
-
-        A procedural reference is absent by design, so the rule must not fire
-        there — and it can only know that from the task's declared
-        `reference_kind`, surfaced as a protocol tag.
-        """
-        ctx = _make_final_ctx(feedback_result=self._judgement(None))
-        detector = TaskAnomalyDetector(root_dir=Path("/tmp"))
-        assert detector.detect(ctx, {"gen", "value_reference"}).get(
-            "missing_reference"
-        ) == {0}
-        assert "missing_reference" not in detector.detect(
-            ctx, {"gen", "procedure_reference"}
-        )
-
-
 class TestDetectionRuleRegistry:
     def test_builtin_registry_and_schema_contents(self):
         rules = get_applied_rules()
@@ -450,7 +354,6 @@ class TestDetectionRuleRegistry:
         assert "truncated_output" in rules
         assert "empty_postprocess" in rules
         assert "extraction_failure" in rules
-        assert "missing_reference" in rules
 
         schema = get_rules_schema()
         assert schema["version"] == "1.0"
@@ -460,7 +363,6 @@ class TestDetectionRuleRegistry:
         assert "truncated_output" in rule_names
         assert "empty_postprocess" in rule_names
         assert "extraction_failure" in rule_names
-        assert "missing_reference" in rule_names
 
         cats = get_rules_by_category()
         assert "output_quality" in cats
@@ -1047,12 +949,12 @@ class TestRulesHashStability:
         moves this hash. Without that, `needs_regeneration()` returns False and
         every stored report keeps the dead rule's verdict.
         """
-        assert get_rules_hash() == "89a49ec16275a63a"
+        assert get_rules_hash() == "56480a99ae65a3c0"
 
     def test_the_rule_set_is_the_expected_size(self):
         # Guards the other direction: a rule silently dropped from the registry
         # stops being detected, and nothing else would notice.
-        assert len(get_applied_rules()) == 6
+        assert len(get_applied_rules()) == 5
 
     def test_the_hash_is_short_and_hex(self):
         # Persisted into every report and compared as a string; a change in

@@ -406,7 +406,7 @@ class TestGetTaskRunIdentity:
         identity = _identity_of(TagTask)
         assert identity is not None
         assert identity["tags"] == ["english"]
-        assert TagTask.tags == frozenset({"gen", "few_shot", "value_reference"})
+        assert TagTask.tags == frozenset({"gen", "few_shot"})
 
     def test_returns_none_for_undecorated_class(self):
         """Fail-soft: `Task` subclasses are not required to be decorated, and
@@ -708,7 +708,7 @@ def test_sieval_task_overrides_classvar_tags_silently():
     class T(_StubTask):
         tags: ClassVar[frozenset[str]] = frozenset({"stale", "manual"})
 
-    assert T.tags == frozenset({"gen", "zero_shot", "value_reference"})
+    assert T.tags == frozenset({"gen", "zero_shot"})
 
 
 def test_task_meta_to_dict_roundtrips_basic_fields():
@@ -737,34 +737,36 @@ def test_sieval_task_sets_protocol_tags_from_eval_mode_and_n_shot():
     class TGenZero(_StubTask):
         pass
 
-    assert TGenZero.tags == frozenset({"gen", "zero_shot", "value_reference"})
+    assert TGenZero.tags == frozenset({"gen", "zero_shot"})
 
     @sieval_task(**_valid_kwargs(name="p_ppl_few", eval_mode=EvalMode.PPL, n_shot=5))
     class TPplFew(_StubTask):
         pass
 
-    assert TPplFew.tags == frozenset({"ppl", "few_shot", "value_reference"})
+    assert TPplFew.tags == frozenset({"ppl", "few_shot"})
 
     @sieval_task(**_valid_kwargs(name="p_gen_few", eval_mode=EvalMode.GEN, n_shot=3))
     class TGenFew(_StubTask):
         pass
 
-    assert TGenFew.tags == frozenset({"gen", "few_shot", "value_reference"})
+    assert TGenFew.tags == frozenset({"gen", "few_shot"})
 
     @sieval_task(**_valid_kwargs(name="p_clp_zero", eval_mode=EvalMode.CLP, n_shot=0))
     class TClpZero(_StubTask):
         pass
 
-    assert TClpZero.tags == frozenset({"clp", "zero_shot", "value_reference"})
+    assert TClpZero.tags == frozenset({"clp", "zero_shot"})
 
 
 class TestReferenceKind:
     """The declaration that says *why* a `JudgementRecord.reference` is absent.
 
-    `obj_to_dict` drops `None`, so on disk a procedural ground truth and a
-    missing gold are the same missing key. This field is what tells them apart,
-    and the protocol tag is how `missing_reference` scopes itself to the tasks
-    where the absence is a defect.
+    `obj_to_dict` drops `None`, so on disk a procedural ground truth is just a
+    missing key, and the installed registry is the only thing that can say so --
+    which a run archived months ago no longer has. This field is that answer,
+    carried in the run's own `meta.json`. Purely descriptive: nothing branches on
+    it, which is why the check on it is the only thing standing between a typo
+    and a misdescribed run.
     """
 
     def test_defaults_to_value(self):
@@ -784,50 +786,29 @@ class TestReferenceKind:
 
         assert get_task_meta(T).reference_kind == "procedure"
 
-    @pytest.mark.parametrize(
-        ("kind", "tag", "absent"),
-        [
-            ("value", "value_reference", "procedure_reference"),
-            ("procedure", "procedure_reference", "value_reference"),
-        ],
-    )
-    def test_each_kind_gets_its_own_protocol_tag(self, kind, tag, absent):
-        """Both kinds are tagged, and the tags are mutually exclusive.
+    @pytest.mark.parametrize("kind", ["value", "procedure"])
+    def test_the_kind_mints_no_protocol_tag(self, kind):
+        """`reference_kind` is recorded, not routed on.
 
-        A rule keying on the *absence* of `value_reference` would be
-        perceiving-by-missing-key — the hazard this field exists to remove — so
-        the negative case must carry a positive tag of its own.
+        It once synthesized a `value_reference` / `procedure_reference` tag to
+        scope an anomaly rule. The rule is gone -- a value task with no gold
+        raises rather than recording a judgement to detect -- so a tag would be a
+        routing seam with no consumer. `cls.tags` stays the eval_mode + shot pair.
         """
 
         @sieval_task(**_valid_kwargs(name=f"rk_tag_{kind}", reference_kind=kind))
         class T(_StubTask):
             pass
 
-        assert tag in T.tags
-        assert absent not in T.tags
-
-    def test_the_tag_is_what_the_anomaly_rule_declares(self):
-        """Pins the tag *string* against the rule's `applies_to`.
-
-        These are the two halves of one contract, spelled in two modules: mint
-        `value_ref` here and `missing_reference` routes to nothing, silently, on
-        every task at once. Nothing else compares them.
-        """
-        from sieval.core.tasks.anomaly import _DETECTION_RULES
-
-        @sieval_task(**_valid_kwargs(name="rk_routing"))
-        class T(_StubTask):
-            pass
-
-        applies_to = _DETECTION_RULES["missing_reference"]["definition"]["applies_to"]
-        assert set(applies_to) & T.tags
+        assert T.tags == frozenset({"gen", "zero_shot"})
+        assert not {t for t in T.tags if t.endswith("_reference")}
 
     def test_an_unknown_kind_is_rejected_at_decoration_time(self):
         """Stricter than `status`, and for a reason: a typo here fails *silently*.
 
-        The kind becomes a protocol tag, and a tag no rule declares routes
-        nothing — so `missing_reference` would never fire and the task would read
-        as clean rather than as unchecked.
+        Nothing reads the value at run time, so a misspelled kind travels intact
+        into `meta/index.json` and every run's `meta.json`, misdescribing the
+        ground truth of an archived run -- the one question the field answers.
         """
         with pytest.raises(ValueError, match="reference_kind must be one of"):
 
@@ -911,7 +892,7 @@ def test_sieval_task_descriptive_tags_do_not_leak_to_class_tags():
         pass
 
     # cls.tags is the synthesized *protocol* vocabulary only
-    assert T.tags == frozenset({"gen", "zero_shot", "value_reference"})
+    assert T.tags == frozenset({"gen", "zero_shot"})
     # the *descriptive* tuple is preserved on _sieval_task_meta
     assert get_task_meta(T).tags == ("english", "open-ended")
 

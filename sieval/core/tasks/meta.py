@@ -73,10 +73,14 @@ Status = Literal["stable", "experimental", "deprecated"]
 #: that it records a reference *at all*, not that the reference looks scalar.
 #: IFEval is where the two readings part — its reference is the list of
 #: instruction ids its checkers run, which describes a procedure, yet it is
-#: recorded and compared against, so it is a ``"value"`` and the rule that
-#: reports a missing one covers it. Reserve ``"procedure"`` for a task that
-#: records no reference by design: it switches ``missing_reference`` off for
-#: every sample of that task.
+#: recorded and compared against, so it is a ``"value"``. Reserve ``"procedure"``
+#: for a task that records no reference by design.
+#:
+#: Purely descriptive: nothing branches on it. It is what lets an archived run's
+#: ``meta.json`` say why its judgements carry no ``reference`` once the installed
+#: registry has moved on — a *missing* gold is not this field's business, because
+#: a value-reference task with no gold to compare against fails the sample rather
+#: than recording a judgement without one.
 #:
 #: Unrelated to ``cli.leaderboard.card.ReferenceKind`` (``tr`` |
 #: ``user-defined``), which classifies where a published reference *score* came
@@ -127,17 +131,9 @@ _PINNED_URL_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 _MAX_DESCRIPTION_LEN = 100
 
-#: Protocol tag per :data:`ReferenceKind`, consumed by anomaly-rule routing.
-#: Spelled out rather than interpolated from the kind so the tag `anomaly.py`
-#: names in `applies_to` greps back to its definition, and so a kind added to
-#: the Literal fails this dict rather than silently minting a tag no rule
-#: declares. *Both* kinds get one: a rule that keyed on the absence of
-#: `value_reference` would be perceiving-by-missing-key, the very hazard the
-#: declaration exists to remove.
-_REFERENCE_KIND_TAGS: dict[ReferenceKind, str] = {
-    "value": "value_reference",
-    "procedure": "procedure_reference",
-}
+#: Runtime mirror of :data:`ReferenceKind`, because a ``Literal``'s members are
+#: not iterable at run time and the value has to be checked at decoration time.
+_REFERENCE_KINDS: frozenset[str] = frozenset({"value", "procedure"})
 
 
 def _validate(
@@ -161,13 +157,14 @@ def _validate(
     if n_shot < 0:
         raise ValueError(f"n_shot must be >= 0 (got {n_shot})")
     # Checked at decoration time, unlike `status`, because a typo here fails
-    # *silently*: the kind becomes a protocol tag, and a tag no rule declares
-    # simply routes nothing, so `missing_reference` would never fire and the
-    # task would look clean rather than unchecked.
-    if reference_kind not in _REFERENCE_KIND_TAGS:
+    # *silently*: nothing reads the value at run time, so a misspelled kind
+    # simply travels into `meta/index.json` and every run's `meta.json` and
+    # misdescribes the ground truth of an archived run, which is the one
+    # question the field exists to answer.
+    if reference_kind not in _REFERENCE_KINDS:
         raise ValueError(
             f"reference_kind must be one of "
-            f"{sorted(_REFERENCE_KIND_TAGS)!r} (got {reference_kind!r})"
+            f"{sorted(_REFERENCE_KINDS)!r} (got {reference_kind!r})"
         )
 
     if reference_impl is not None:
@@ -204,14 +201,15 @@ def sieval_task[T: type[Task]](
     and looking up the corresponding `@sieval_dataset`-decorated class.
 
     Also sets two runtime-facing class attrs: `cls.tags` (protocol set
-    synthesized from `eval_mode` + `n_shot` + `reference_kind`, consumed by
-    anomaly routing — distinct from the descriptive `tags` argument stored on
+    synthesized from `eval_mode` + `n_shot`, consumed by anomaly routing —
+    distinct from the descriptive `tags` argument stored on
     `_sieval_task_meta`) and `cls.model_type`. Raises ValueError at import
     time for duplicate `name`.
 
     `reference_kind` declares what form the task's ground truth takes. It is a
     task-level constant, so it lives here rather than on every judgement record
-    — storing it per sample would repeat one fact 164 times for HumanEval.
+    — storing it per sample would repeat one fact 164 times for HumanEval. It is
+    recorded, not routed on: no rule consumes it, so it mints no protocol tag.
     """
     _validate(
         name=name,
@@ -223,11 +221,7 @@ def sieval_task[T: type[Task]](
     )
 
     protocol_tags: frozenset[str] = frozenset(
-        {
-            eval_mode.value,
-            "zero_shot" if n_shot == 0 else "few_shot",
-            _REFERENCE_KIND_TAGS[reference_kind],
-        }
+        {eval_mode.value, "zero_shot" if n_shot == 0 else "few_shot"}
     )
 
     def decorator(cls: T) -> T:
