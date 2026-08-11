@@ -94,9 +94,11 @@ def test_parse_verdicts_ignores_mid_sentence_prose():
 #
 # The one misparse that would inflate a score rather than depress it, and inflate
 # it invisibly: a parsed verdict is by definition not counted in `n_unparsed`, so
-# the drift counter reads 0 while every criterion scores a pass. Both halves of
-# the guard are pinned here -- the parser rejecting an alternation, and the
-# template not containing one for a judge to echo in the first place.
+# the drift counter reads 0 while every criterion scores a pass. Pinned here are
+# the parser rejecting any line that names both verdict words, and the template
+# not containing the "<PASS|FAIL>" spelling for a judge to echo. The template
+# guard reaches no further than that spelling -- a template has to name both
+# words somewhere -- so the parser is what covers the rest.
 
 
 @pytest.mark.parametrize(
@@ -106,18 +108,42 @@ def test_parse_verdicts_ignores_mid_sentence_prose():
         "1: PASS|FAIL",
         "1: **<PASS|FAIL>**",
         "1: <FAIL|PASS>",
+        # The separator is incidental: a judge restating the format writes it
+        # whichever way it likes, and every spelling inflates identically.
+        "1: PASS or FAIL",
+        "1: PASS/FAIL",
+        "1: PASS, FAIL",
+        "1: <PASS> or <FAIL>",
+        "1: **PASS** or **FAIL**",
     ],
 )
-def test_parse_verdicts_rejects_an_alternation_as_a_verdict(line: str):
+def test_parse_verdicts_rejects_a_line_naming_both_verdicts(line: str):
     # A judge restating its instructions has reported nothing. Scoring this as a
     # pass is worse than scoring it unparsed, because unparsed is counted.
     assert parse_verdicts(line, 1) == [None]
 
 
 def test_parse_verdicts_still_reads_a_bracketed_single_verdict():
-    # The guard must reject the ALTERNATION, not the angle brackets -- a judge
+    # The guard must reject naming BOTH words, not the angle brackets -- a judge
     # that fills the placeholder in as "<PASS>" has answered.
     assert parse_verdicts("1: <PASS>\n2: <FAIL>", 2) == [True, False]
+
+
+def test_parse_verdicts_still_reads_a_verdict_with_a_trailing_rationale():
+    # Rejecting the pair must not reject a verdict that merely carries a reason:
+    # only a line naming the OTHER verdict word too is a restated format.
+    assert parse_verdicts("1: PASS - lists all four sections\n2: FAIL.", 2) == [
+        True,
+        False,
+    ]
+
+
+def test_parse_verdicts_drops_a_verdict_whose_rationale_names_the_other_word():
+    # The cost of the pair rule, pinned rather than left to be discovered: a
+    # rationale mentioning the other word makes its own verdict unreadable. That
+    # is one lost verdict, counted in `n_unparsed` and scored not-satisfied --
+    # the direction that cannot flatter a model.
+    assert parse_verdicts("1: FAIL (would PASS if it listed the risks)", 1) == [None]
 
 
 def test_template_does_not_self_parse():

@@ -41,8 +41,9 @@ recorded as unparsed rather than silently shifting its neighbours' verdicts.
 Both the template and the parser are hardened against **the judge echoing its own
 instructions**, which is the one misread that would inflate a score instead of
 depressing one -- and inflate it invisibly, since a verdict that parses is by
-definition absent from the unparsed count. See ``GRADER_TEMPLATE`` and
-:data:`_VERDICT_RE` for the two halves.
+definition absent from the unparsed count. ``GRADER_TEMPLATE`` keeps the
+parseable spelling out of the prompt; :data:`_VERDICT_RE` carries the general
+rule, since a template that names no verdict word tells the judge nothing.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -125,15 +126,25 @@ def build_grader_prompt(prompt: str, response: str, criteria: Sequence[str]) -> 
 # emphasis, then the verdict. Anchored to line starts so prose that merely
 # mentions a number cannot register as a verdict.
 #
-# The trailing `(?!\s*\|)` rejects a verdict that is really one half of an
-# alternation -- "1: <PASS|FAIL>", the shape a judge restating its instructions
-# emits. Without it the leading `[^\w\n]*` swallows the "<" and every such line
-# reads as a pass, so an echoed spec scores a full rubric with `n_unparsed == 0`:
-# score inflation with the drift counter reporting nothing. GRADER_TEMPLATE no
-# longer contains that shape either; this is the second of the two guards,
-# because the reply is not the only place an alternation can appear.
+# The trailing `(?![^\n]*\b(?:PASS|FAIL)\b)` rejects a line that names BOTH
+# verdict words: that is a judge restating the format it was handed, not a
+# judgement. Without it the leading `[^\w\n]*` swallows the "<" of
+# "1: <PASS|FAIL>" and the line reads as a pass, so an echoed spec scores a full
+# rubric with `n_unparsed == 0` -- score inflation with the drift counter
+# reporting nothing, which is the one misread whose direction is up.
+#
+# Written over the PAIR rather than over a list of separators, because the
+# spelling varies and every one of them inflates identically: "<PASS|FAIL>",
+# "PASS/FAIL", "PASS, FAIL", "PASS or FAIL", "<PASS> or <FAIL>". Unlike the
+# "<PASS|FAIL>" case, GRADER_TEMPLATE cannot be made free of this shape -- a
+# judge has to be told both words it may answer with -- so here the parser is
+# the only available guard, not the second of two. The cost is that a verdict
+# trailing a rationale that names the other word ("1: FAIL (would PASS if it
+# listed X)") reads as unparsed; that is counted and scored not-satisfied, i.e.
+# the safe direction.
 _VERDICT_RE = re.compile(
-    r"^[^\w\n]*(?:criterion\s*)?(\d{1,3})\s*[:.)\-]\s*[^\w\n]*(PASS|FAIL)\b(?!\s*\|)",
+    r"^[^\w\n]*(?:criterion\s*)?(\d{1,3})\s*[:.)\-]\s*[^\w\n]*(PASS|FAIL)\b"
+    r"(?![^\n]*\b(?:PASS|FAIL)\b)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -154,13 +165,16 @@ def parse_verdicts(reply: str, n_criteria: int) -> list[bool | None]:
     are ignored rather than clamped -- a hallucinated "41: PASS" is not evidence
     about criterion 41 of a 40-criterion rubric.
 
-    An **alternation is not a verdict**: "1: <PASS|FAIL>" reads as ``None``, not
-    as a pass. That shape is what a judge restating its instructions emits, and
-    it is the one unreadable reply whose misreading would inflate rather than
-    depress a score -- and inflate it invisibly, since a parsed verdict is by
-    definition not counted in ``n_unparsed``. Nothing else in the pipeline would
-    catch it: the ``truncated_output`` anomaly rule reads the *candidate* model's
-    finish reasons, never the grader's.
+    A line naming **both** verdict words is not a verdict: "1: <PASS|FAIL>",
+    "1: PASS/FAIL" and "1: PASS or FAIL" all read as ``None``, not as a pass.
+    That shape is what a judge restating its instructions emits, and it is the
+    one unreadable reply whose misreading would inflate rather than depress a
+    score -- and inflate it invisibly, since a parsed verdict is by definition
+    not counted in ``n_unparsed``. Nothing else in the pipeline would catch it:
+    the ``truncated_output`` anomaly rule reads the *candidate* model's finish
+    reasons, never the grader's. A real verdict whose trailing rationale happens
+    to name the other word is unparsed for the same reason, which costs a
+    readable verdict but errs toward not-satisfied rather than toward a pass.
     """
     verdicts: list[bool | None] = [None] * n_criteria
     for index_text, verdict in _VERDICT_RE.findall(reply):
