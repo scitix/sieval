@@ -19,7 +19,13 @@ DeepSeek-Math zero-shot CoT path — to GSM1k, unchanged:
 
 Extraction and scoring live verbatim in `sieval.community.deepseek_math`, vendored
 byte-faithfully from DeepSeek-Math at the pinned commit. Nothing about them is
-GSM8K-specific: the gold is a bare integer either way.
+GSM8K-specific: the gold is a bare integer either way. The *invocation* is the
+sibling's too, and that part is not cosmetic: `is_correct` is offloaded to a
+worker process under `GRADE_TIMEOUT` rather than called inline, because it
+reaches `math_equal` with `timeout=False` and so runs `simplify` with no bound of
+its own (criterion 2 in `core/utils/offload.py`). A grade-school gold is a bare
+integer, but the *prediction* is arbitrary model output, and grading is
+synchronous on the one event loop every runner in the session shares.
 
 **This is a different measurement regime from upstream's, not a port of it — no
 published GSM1k number corresponds to a 0-shot chat score.** What it buys is a
@@ -46,11 +52,11 @@ step, because GSM1k's `answer` field already *is* the bare final answer — see
 `len(finals) + len(fails)`, so a pipeline failure counts as wrong on both sides
 of the diff.
 
-`status="experimental"`: the extraction/scoring layer is the sibling's, verbatim
-and already exercised, and the pairing has now been run end-to-end (see the diff
-above). It stays experimental because, unlike the sibling, it has no published
-column of its own to be validated *against* — only a second-regime diff that
-corroborates rather than aligns.
+`status="experimental"`: the extraction/scoring layer is the sibling's — the same
+vendored functions, reached through the same offload — and the pairing has now
+been run end-to-end (see the diff above). It stays experimental because, unlike
+the sibling, it has no published column of its own to be validated *against* —
+only a second-regime diff that corroborates rather than aligns.
 
 Repro decoding (model-layer assets — set via `models:` / `infer_args`, not in
 this code): greedy `temperature=0`, `top_p=1.0`, `max_tokens=1024`, stop = the
@@ -66,6 +72,8 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 from typing import override
+
+from loguru import logger
 
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -85,7 +93,10 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    first_rollout_correct,
+    health_metrics,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import GSM1KDatasetSample
 
 # Verbatim from run_subset_parallel.py::markup_question (language="en",
@@ -106,6 +117,7 @@ COT_INSTRUCTION = (
     deps_group="math",
     model_type="chat",
     status="experimental",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="deepseek-ai/DeepSeek-Math",
         url=(
@@ -118,7 +130,10 @@ COT_INSTRUCTION = (
             '\\boxed{}.", chat template applied by the serving backend; '
             "extract_answer(exhaust=False) (= extract_last_single_answer) and "
             "is_correct/math_equal (= eval_last_single_answer) are vendored "
-            "byte-for-byte in sieval.community.deepseek_math. Gold is GSM1k's "
+            "byte-for-byte in sieval.community.deepseek_math. Grading is "
+            "offloaded to a worker process under GRADE_TIMEOUT, as for every "
+            "sympy-backed grader here: `math_equal` is reached with "
+            "timeout=False, so nothing else bounds `simplify`. Gold is GSM1k's "
             "`answer` verbatim (already the bare final answer, so no '####' "
             "split). Scale AI published GSM1k at 5-shot raw completion only "
             "(see gsm1k_kshot_base_gen) — no published number matches this "
@@ -167,8 +182,37 @@ class GSM1KZeroShotGenTask(
         # `or ""` gives the grader the same empty string a failed extraction
         # produced upstream, rather than a None it has no branch for.
         prediction = post["rollouts"][0].get("prediction") or ""
-        correct = is_correct({"prediction": prediction, "answer": gold})
-        return True, build_judgement_record(gold, [build_rollout_judgement(0, correct)])
+        # Offloaded like every other sympy-backed grader here (gsm8k_0shot_gen,
+        # gsm_plus_0shot_gen, hendrycks_math): `is_correct` reaches `math_equal`
+        # with its default `timeout=False`, so `simplify` runs with no bound of
+        # its own — criterion 2 in `core/utils/offload.py`, which names these two
+        # DeepSeek-Math graders explicitly. Inline it is unbounded CPU on the one
+        # event loop every runner in the session shares: measured on this
+        # grader, a 26-character prediction of nested `sqrt(...)` costs 46 s at
+        # depth 11 and over 9 min at depth 12, and a bare integer gold cannot
+        # short-circuit it.
+        try:
+            correct = await run_cpu_bound(
+                is_correct,
+                {"prediction": prediction, "answer": gold},
+                timeout=GRADE_TIMEOUT,
+            )
+        except TimeoutError:
+            # An ungradeable answer is a wrong answer, not a failed run — the
+            # contract every sibling math grader keeps. Propagating would land
+            # the sample in `fails`, which reads as infrastructure breakage; the
+            # accuracy is identical either way, since `report` counts fails in
+            # the denominator.
+            logger.warning(
+                "Grading sample {} exceeded {}s and was scored wrong; the "
+                "prediction is likely a shape `simplify` cannot bound.",
+                ctx.sample_id,
+                GRADE_TIMEOUT,
+            )
+            correct = False
+        return True, build_judgement_record(
+            gold, [build_rollout_judgement(0, bool(correct))]
+        )
 
     @override
     async def report(self, finals, fails):
@@ -176,10 +220,9 @@ class GSM1KZeroShotGenTask(
         # `gsm8k_0shot_gen` so both sides of the paired diff count a pipeline
         # failure as wrong rather than excluding it.
         total = len(finals) + len(fails)
-        correct_num = sum(
-            1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
-        )
-        accuracy = 100 * correct_num / total if total else 0.0
+        # First-rollout, because that is the axis a one-greedy-draw protocol
+        # publishes — the shared helper the sibling uses, not a local re-count.
+        accuracy = 100 * first_rollout_correct(finals) / total if total else 0.0
         metrics: dict[str, float | str] = {
             "score": accuracy,
             "fails": len(fails),
@@ -190,4 +233,9 @@ class GSM1KZeroShotGenTask(
             # benchmark must not leave ambiguous on disk.
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        # On BOTH halves of the pair, for the same reason the extraction rules are
+        # named rather than shared: without `n_unextracted` on each side, a
+        # GSM8K - GSM1k gap cannot be told apart from a difference in how often
+        # extraction failed, which is the confound this benchmark exists to avoid.
+        metrics |= health_metrics(finals)
         return metrics

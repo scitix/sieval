@@ -166,7 +166,9 @@ async def test_headline_follows_the_flexible_rule_not_the_strict_one():
 
     assert finalize is True
     assert post["rollouts"][0]["prediction"] == "42"
-    assert post["extra"]["strict_prediction"] == ""
+    # Per-rollout, not sample-level: the strict rule is a fact about one response.
+    assert post["rollouts"][0]["extra"]["strict_prediction"] == ""
+    assert "extra" not in post
     # Upstream's only filter is the flexible one, so it drives `correct`.
     assert feedback["metrics"]["flexible_exact_match"] is True
     assert feedback["metrics"]["strict_exact_match"] is False
@@ -229,4 +231,7 @@ async def test_report_on_empty_set_reports_zero_for_both_rules():
         "strict_exact_match": 0.0,
         "score_key": "flexible_exact_match",
         "denominator_policy": "requested",
+        # Extraction health rides on both halves of the pair, so a diff can never
+        # be confused with a difference in how often extraction failed.
+        "n_unextracted": 0.0,
     }

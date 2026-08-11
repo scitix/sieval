@@ -167,6 +167,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    health_metrics,
 )
 from sieval.datasets import GSM1KDatasetSample
 
@@ -280,6 +281,7 @@ def _extract_flexible_answer(text: str) -> str:
     tags=("english", "math-word-problems", "open-ended", "base-model"),
     model_type="gen",
     status="experimental",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="scaleapi/gsm1k_eval",
         url=(
@@ -357,13 +359,15 @@ class GSM1KFewShotBaseGenTask(
         text = inf.texts[0] if inf.texts else ""
         # The flexible rule is upstream's only filter, so it is the headline
         # prediction; the strict `#### N` rule is a second extraction RULE over
-        # the same response, not a second rollout, so it rides in `extra`. `""`
-        # there means "this rule found nothing" (the sibling GSM8K task's
-        # convention) — a `None` would be dropped by serialization and read as
-        # "never measured" on resume.
+        # the same response. PER-ROLLOUT, not in the sample-level `extra` slot:
+        # it is a fact about one response, so the sample-level slot would
+        # silently mean "rollout 0's" if a budget were ever adopted
+        # (`build_prediction_record`'s own contract, and what the sibling GSM8K
+        # task does). `""` means "this rule found nothing" — a `None` would be
+        # dropped by serialization and read as "never measured" on resume.
         return build_prediction_record(
             [_extract_flexible_answer(text) or None],
-            extra={"strict_prediction": _extract_strict_answer(text)},
+            extras=[{"strict_prediction": _extract_strict_answer(text)}],
         )
 
     @override
@@ -372,10 +376,12 @@ class GSM1KFewShotBaseGenTask(
         # Both extraction rules are recorded as co-equal metrics over one
         # response; `correct` is DERIVED from the flexible one (upstream's single
         # filter) so the headline and the metric cannot drift.
-        prediction = post["rollouts"][0].get("prediction") or ""
+        rollout = post["rollouts"][0]
+        prediction = rollout.get("prediction") or ""
+        extra = rollout.get("extra") or {}
         metrics: dict[str, bool | float] = {
             "flexible_exact_match": prediction == gold,
-            "strict_exact_match": post["extra"]["strict_prediction"] == gold,
+            "strict_exact_match": extra.get("strict_prediction") == gold,
         }
         return True, build_judgement_record(
             gold,
@@ -431,4 +437,12 @@ class GSM1KFewShotBaseGenTask(
             # both policies in view; they agree only when fails == 0.
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        # On BOTH halves of the pair, for the same reason the two extraction rules
+        # are named rather than sharing `exact_match`: without `n_unextracted` on
+        # each side, a GSM8K - GSM1k gap cannot be told apart from a difference in
+        # how often extraction failed. Counted on the flexible rule, which is the
+        # one `prediction` carries — `strict_exact_match` finding nothing is the
+        # expected case here, not an extraction failure, since GSM1k's gold has no
+        # `####` and only the response can supply one.
+        metrics |= health_metrics(finals)
         return metrics
