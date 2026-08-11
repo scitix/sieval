@@ -56,6 +56,21 @@ cell average exactly as upstream excludes them.
 Upstream runs this at temperature 0 with a 2048-token cap; neither is set here,
 because generation parameters belong to the run config.
 
+**The two tool-use subtasks are not comparable across serving stacks, and the
+other seven are.** Upstream has two inference paths that disagree with each other
+on exactly the 2,520 tool-bearing rows -- ``call_api.py`` (OpenAI protocol, which
+produced the paper's GPT rows) and ``run_vllm_model.py`` (local chat template,
+which produced its open-model rows). This task speaks the OpenAI protocol, so the
+serving layer renders the tool schema, and a measured example: for one row the
+Llama-3.1 chat template yields a 362-token prompt while sglang's chat endpoint
+yields 351. The 16,478 non-tool rows are byte-identical to upstream's rendering
+under both the Llama-3.1 and Mistral templates, and the sglang chat endpoint
+reproduces those templates exactly, so only ``get-webpage`` / ``slack-user``
+carry this caveat. Quantified on LLaMA-3.1-8B: re-running the tool rows through
+upstream's own rendering moves the six tool cells by -0.24 points on average,
+concentrated in the one cell where that model is above the floor (6.71 vs 8.22,
+published 7.9).
+
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
@@ -269,9 +284,36 @@ def _openai_tool(tool: dict) -> tuple[list[dict], dict, dict]:
             "~0.03 points. The exact-match replay above was run with those 20 "
             "kwargs patched in BOTH pipelines so the comparison measured the "
             "aggregation; unpatched, 45 of 47 cells still matched exactly.\n"
-            "Status experimental: no full live run has been scored yet, so the "
-            "numbers this task produces have not been compared against a "
-            "published row."
+            "ANCHORED against the paper's Table 7 on LLaMA-3.1-8B-Instruct, "
+            "served locally at upstream's own run_model.sh sampling "
+            "(temperature 0, top_p 1.0, max_tokens 2048), 18,998/18,998 rows, "
+            "0 failures: conflict -- the headline -- 11.44 vs published 11.3, "
+            "reference 81.45 vs 81.3, aligned 55.48 vs 55.6. Over the 21 "
+            "comparable cells (the 7 non-tool subtasks x 3 settings) the mean "
+            "delta is +0.09 and the largest is 1.33, and the published extremes "
+            "reproduce (lang-detect conflict 0.1 -> 0.21, slack-user aligned and "
+            "conflict 0.0 -> 0.00). The 173 anomalies are all truncation at "
+            "max_tokens=2048, which is upstream's own cap.\n"
+            "A second anchor, Mistral-7B-Instruct-v0.3 (Table 9), fits conflict "
+            "(19.09 vs 18.99) and aligned (59.37 vs 58.09) but NOT reference "
+            "(62.95 vs 54.49). That residual is OPEN. It is not a measurement "
+            "artifact on this side: the non-tool prompts are byte-identical to "
+            "upstream's, every rendered Mistral prompt contains exactly one BOS "
+            "so upstream's fix_bos is a no-op, and the serving endpoint "
+            "reproduces the chat template exactly on the three cells that carry "
+            "the gap. For context, the paper's own Mistral-7B lang-detect "
+            "reference (42.9, the cell that accounts for +25.4 of it) is the only "
+            "value below 99.2 in that column across all 13 published models, and "
+            "sits below its own aligned value of 88.5.\n"
+            "Both anchor runs predate the 9-character tool-call id, so that "
+            "change was checked not to invalidate them: neither Llama-3.1's chat "
+            "template nor the serving endpoint renders a tool_call id at all, and "
+            "8 of 8 sampled tool rows report an identical prompt_tokens under the "
+            "old and new id. The 16,478 non-tool rows never carried one.\n"
+            "Status experimental: the 7 non-tool subtasks are anchored, the 2 "
+            "tool-use subtasks are not anchorable over the OpenAI protocol (see "
+            "the module docstring), and the Mistral reference residual is "
+            "unexplained."
         ),
     ),
     status="experimental",
