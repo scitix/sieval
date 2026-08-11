@@ -24,22 +24,27 @@ languages). Two facts came out, each verified numerically:
   x100 — not a macro-average over the eight types. Reconstructing every
   published Overall as the count-weighted mean of that row's eight per-type
   cells matches to a mean absolute error of 0.002 (max 0.01, i.e. the tables'
-  own 2-dp rounding) across all 43 model x language rows; the unweighted
+  own 2-dp rounding) across all 44 model x language rows; the unweighted
   macro-average is off by 1.4 on average (max 4.4). Hence ``score`` here is
   ``100 * correct / total`` over samples, with no per-type reweighting.
 * **The paper's ``CC`` and ``CCF`` column labels are swapped** relative to the
   natural expansion of its own type list. Each published cell is a multiple of
   ``1 / (6n)`` for the type's row count ``n``; that fixes ``CC`` to n=41
   (Counter-Conventional Formatting, denominator 246) and ``CCF`` to n=99 (Code
-  without Comments, denominator 594), not the reverse. The fit is exact for 42
-  of 43 cells in each column and is what makes the pooled reconstruction above
-  land at all — under the unswapped reading it misses by up to 6.9.
-  :data:`PAPER_COLUMNS` records the corrected mapping, so a comparison against
-  the paper does not silently line up two columns wrong.
+  without Comments, denominator 594), not the reverse. The fit is exact for all
+  44 cells of ``CC`` and 43 of 44 in ``CCF`` (the miss is DeepSeek-V3-0324's
+  English cell, printed 29.25 where its grid implies 29.29 — a typo in the
+  table), against 0 of 44 either way round under the unswapped reading; that is
+  what makes the pooled reconstruction above land at all, since unswapped it
+  misses by up to 7.3. :data:`PAPER_COLUMNS` records the corrected mapping, so a
+  comparison against the paper does not silently line up two columns wrong.
 
 That same ``1 / (6n)`` quantization implies the published cells average **six
-rollouts per sample**; the paper states no repeat count, so the task defaults to
-``n=1`` and the protocol is recorded in its ``reference_impl.notes``.
+rollouts per sample**, and 6 is the smallest multiplier that fits all eight
+columns at once — m=3 already fits ITF, DIA and MIM exactly, but leaves ``CC``
+at 33 of 44, so the six does not come from over-fitting a coarser grid. The
+paper states no repeat count, so the task defaults to ``n=1`` and the protocol
+is recorded in its ``reference_impl.notes``.
 
 Parsing. The judge is asked to end with a fenced ``{"answer_score": N}`` block,
 N in {0, 1}. :func:`parse_answer_score` reads that block and nothing else — it
@@ -175,7 +180,13 @@ def breakdown_metrics(graded: Sequence[tuple[str, str, bool]]) -> dict[str, floa
     convention in :mod:`sieval.core.tasks.metrics`, since a 0.0 for lack of
     input reads identically to a real one. ``n_<group>`` accompanies each score
     so a sliced or filtered run's denominators can be checked against the
-    paper's (per language: 45 / 43 / 41 / 99 / 93 / 77 / 54 / 54).
+    paper's. Per language, in the order these keys are emitted — that of
+    :data:`INSTRUCTION_TYPES`, which puts Code without Comments BEFORE
+    Counter-Conventional Formatting — they are
+    45 / 43 / 99 / 41 / 93 / 77 / 54 / 54. Under the paper's column labels the
+    same eight counts read 45 / 43 / 41 / 99 / ..., so checking one order
+    against the other transposes two denominators: the very confusion
+    :data:`PAPER_COLUMNS` exists to prevent.
     """
     results: dict[str, float] = {}
 
