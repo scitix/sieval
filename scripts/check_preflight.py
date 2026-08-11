@@ -406,6 +406,153 @@ def _computes_pass_at_k(cls: ast.ClassDef) -> bool:
     return False
 
 
+#: Values ``denominator_policy`` may take, as the constants and as the strings
+#: they hold (``sieval/core/tasks/metrics.py``). A policy outside this set is a
+#: word only its author knows the meaning of.
+_DENOMINATOR_CONSTANTS = frozenset({"DENOMINATOR_REQUESTED", "DENOMINATOR_JUDGED"})
+_DENOMINATOR_VALUES = frozenset({"requested", "judged"})
+
+
+def _report_of(cls: ast.ClassDef) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """Return the class's own ``report``, or None if it does not define one."""
+    for item in cls.body:
+        if (
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name == "report"
+        ):
+            return item
+    return None
+
+
+def _dict_keys_written(fn: ast.AST) -> set[str]:
+    """Every string key *fn* WRITES into a dict.
+
+    Writes only — dict-literal keys and ``d["k"] = ...`` targets. A subscript
+    *read* is excluded on purpose: ``rollout["score"]`` reads a per-rollout
+    verdict, and counting it would make a task that never publishes a headline
+    look like one that does.
+    """
+    keys: set[str] = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Dict):
+            keys.update(
+                k.value
+                for k in node.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            )
+        elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.slice, ast.Constant)
+                    and isinstance(target.slice.value, str)
+                ):
+                    keys.add(target.slice.value)
+    return keys
+
+
+def _names_read(fn: ast.AST) -> set[str]:
+    """Every bare identifier *fn* mentions."""
+    return {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+
+
+def _declared_denominators(fn: ast.AST) -> list[str]:
+    """The value assigned to ``denominator_policy``, for each declaration.
+
+    Returned as source-ish text — a constant name (``DENOMINATOR_JUDGED``) or a
+    string literal — so the caller can reject a policy that is neither.
+    """
+    found: list[str] = []
+
+    def _record(value: ast.expr) -> None:
+        if isinstance(value, ast.Name):
+            found.append(value.id)
+        elif isinstance(value, ast.Constant) and isinstance(value.value, str):
+            found.append(value.value)
+        else:
+            found.append(ast.unparse(value))
+
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if (
+                    isinstance(key, ast.Name)
+                    and key.id == "DENOMINATOR_FIELD"
+                    or (
+                        isinstance(key, ast.Constant)
+                        and key.value == "denominator_policy"
+                    )
+                ):
+                    _record(value)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if not isinstance(target, ast.Subscript):
+                    continue
+                index = target.slice
+                if (
+                    isinstance(index, ast.Name) and index.id == "DENOMINATOR_FIELD"
+                ) or (
+                    isinstance(index, ast.Constant)
+                    and index.value == "denominator_policy"
+                ):
+                    _record(node.value)
+    return found
+
+
+def _delegate_target(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """The name of the free function *fn* hands its whole return value to.
+
+    ``arc/`` has four leaf tasks whose ``report`` is ``return arc_report(...)``.
+    The declarations belong in the shared helper — four copies is how two of them
+    come to disagree — so the check has to follow the call rather than demand the
+    keys at a site that does not build the dict.
+    """
+    body = [s for s in fn.body if not _is_docstring(s)]
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return None
+    value = body[0].value
+    if isinstance(value, ast.Await):
+        value = value.value
+    if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+        return value.func.id
+    return None
+
+
+def _is_docstring(stmt: ast.stmt) -> bool:
+    return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+
+
+def _resolve_intra_package(
+    tree: ast.Module, name: str, source: Path, root: Path
+) -> Path | None:
+    """Where inside ``sieval/tasks/`` *name* was imported from, if anywhere."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if not any((a.asname or a.name) == name for a in node.names):
+            continue
+        if node.level:
+            base = source.parent
+            for _ in range(node.level - 1):
+                base = base.parent
+            return base.joinpath(*(node.module or "").split(".")).with_suffix(".py")
+        module = node.module or ""
+        if module.startswith("sieval.tasks."):
+            return root.joinpath(*module.split(".")).with_suffix(".py")
+    return None
+
+
+def _function_named(tree: ast.Module, name: str) -> ast.AST | None:
+    for node in tree.body:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == name
+        ):
+            return node
+    return None
+
+
 @dataclasses.dataclass
 class LockDrift:
     """Version changes to already-locked packages, split by justification."""
@@ -578,6 +725,7 @@ class PreflightRunner:
         "check_dep_coverage",
         "check_tasks",
         "check_task_shot_knobs",
+        "check_report_declarations",
         "check_record_key_access",
         "check_datasets",
         "check_imports",
@@ -1436,6 +1584,147 @@ class PreflightRunner:
                 "shot knob correctly",
             )
         ]
+
+    def check_report_declarations(self) -> list[CheckResult]:
+        """Verify every task report says which column and which population it is.
+
+        Two numbers in one leaderboard column are comparable only when they were
+        averaged over the same population, and ``report.json`` splits two ways:
+        ``requested`` counts a pipeline failure as wrong, ``judged`` excludes it.
+        The split is upstream-convention-driven and deliberately *not* unified
+        (RFC #74 F) — which makes declaring it the whole mechanism. An undeclared
+        report is one whose reader has to open the source to learn what its number
+        is over, and `docs/guide/metrics.md` lists both keys under "always
+        present", so an undeclared report also makes the documentation false.
+
+        Nothing else catches it: the keys are additive, so a report missing them
+        is valid JSON, scores correctly, and passes every test that reads
+        ``report["score"]``. That is how 21 of 49 report-bearing modules stayed
+        bare after the fields shipped, and how a benchmark added later landed
+        bare too.
+
+        Three rules, AST-only so a task whose optional deps are absent is still
+        covered:
+
+        1. a class defining ``report`` declares ``denominator_policy``;
+        2. it declares ``score_key`` too — but only if that report writes a
+           ``score`` key. ``t_eval_before_calling`` publishes one rate per axis
+           and no headline, and pointing ``score_key`` at an arbitrary axis would
+           invent a ranking upstream does not make;
+        3. the declared policy is one of the two ``metrics.py`` defines. A
+           free-form third value is a word only its author knows the meaning of,
+           and it would read as a policy rather than as a typo.
+
+        A ``report`` that is a single ``return helper(...)`` is judged on the
+        helper, resolved through the module's own imports — ``arc/`` has four leaf
+        tasks sharing one ``arc_report``, and demanding the keys at a site that
+        does not build the dict would force four copies to drift apart.
+        """
+        py_files = [
+            f
+            for f in self._git_tracked_files(".py")
+            if str(f.relative_to(self.project_root)).startswith("sieval/tasks/")
+            and f.name != "__init__.py"
+        ]
+        if not py_files:
+            return [CheckResult("SKIP", "check_report_declarations", "no task modules")]
+
+        violations: list[str] = []
+        checked = 0
+        for py_file in py_files:
+            rel = py_file.relative_to(self.project_root)
+            tree = self._parse_task_module(py_file, violations)
+            if tree is None:
+                continue
+
+            for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+                report = _report_of(cls)
+                if report is None:
+                    continue
+                checked += 1
+                where = f"{rel}:{report.lineno} {cls.name}"
+
+                scopes: list[ast.AST] = [report]
+                delegate = _delegate_target(report)
+                if delegate is not None:
+                    target = _resolve_intra_package(
+                        tree, delegate, py_file, self.project_root
+                    )
+                    if target is not None and target.is_file():
+                        shared = self._parse_task_module(target, violations)
+                        if shared is not None:
+                            fn = _function_named(shared, delegate)
+                            if fn is not None:
+                                scopes.append(fn)
+
+                keys: set[str] = set()
+                names: set[str] = set()
+                policies: list[str] = []
+                for scope in scopes:
+                    keys |= _dict_keys_written(scope)
+                    names |= _names_read(scope)
+                    policies += _declared_denominators(scope)
+
+                if (
+                    "DENOMINATOR_FIELD" not in names
+                    and "denominator_policy" not in keys
+                ):
+                    violations.append(
+                        f"{where}: report() declares no 'denominator_policy', so "
+                        "nothing on disk says whether a pipeline failure counted "
+                        "as wrong (DENOMINATOR_REQUESTED) or was excluded "
+                        "(DENOMINATOR_JUDGED)"
+                    )
+                if (
+                    "score" in keys
+                    and "SCORE_KEY_FIELD" not in names
+                    and "score_key" not in keys
+                ):
+                    violations.append(
+                        f"{where}: report() emits 'score' but no 'score_key', so "
+                        "which of its other keys the headline was copied from is "
+                        "unrecoverable from the report"
+                    )
+                for policy in policies:
+                    if (
+                        policy not in _DENOMINATOR_CONSTANTS
+                        and policy not in _DENOMINATOR_VALUES
+                    ):
+                        violations.append(
+                            f"{where}: denominator_policy is {policy!r}; the "
+                            "vocabulary is DENOMINATOR_REQUESTED / "
+                            "DENOMINATOR_JUDGED (metrics.py)"
+                        )
+
+        if violations:
+            return [
+                CheckResult(
+                    "FAIL",
+                    "check_report_declarations",
+                    f"{len(violations)} undeclared report(s)",
+                    violations,
+                )
+            ]
+        return [
+            CheckResult(
+                "PASS",
+                "check_report_declarations",
+                f"all {checked} task report(s) declare their score key and "
+                "denominator policy",
+            )
+        ]
+
+    def _parse_task_module(
+        self, path: Path, violations: list[str]
+    ) -> ast.Module | None:
+        """Parse *path*, recording a violation rather than raising on failure."""
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError) as e:
+            violations.append(f"{path}: could not parse ({e})")
+            return None
 
     def check_record_key_access(self) -> list[CheckResult]:
         """Forbid ``[]`` on a rollout key whose absence is a runtime outcome.

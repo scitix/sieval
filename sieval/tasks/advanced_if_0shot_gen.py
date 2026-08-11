@@ -65,6 +65,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    health_metrics,
+)
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import AdvancedIFDatasetSample
 
@@ -179,7 +185,9 @@ class AdvancedIFZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -380,7 +388,7 @@ class AdvancedIFZeroShotGenTask(
         ] * (self._n * len(fails))
 
         overall = aggregate_metrics(verdicts + failed)
-        results: dict[str, float] = {
+        results: dict[str, float | str] = {
             "score": overall["overall_pass_rate"],
             "overall_pass_rate": overall["overall_pass_rate"],
             "micro_pass_rate": overall["micro_pass_rate"],
@@ -389,7 +397,16 @@ class AdvancedIFZeroShotGenTask(
             "n_judge_unparsed": overall["n_judge_unparsed"],
             "n_graded": float(n_graded),
             "fails": len(fails),
+            SCORE_KEY_FIELD: "overall_pass_rate",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        # `n_judge_unparsed` counts the GRADER breaking format; `n_unextracted`
+        # counts the candidate producing nothing to grade. Both land in the same
+        # zero here, so without the second one they read identically. Deliberately
+        # only `health_metrics` and not the rest of the sampling block: RFC #74
+        # defers `pass@k` / `maj@k` for the LLM-judged family, while this one
+        # measures extraction rather than the draw and is outside that gate.
+        results |= health_metrics(finals)
         for benchmark_name, group in sorted(by_benchmark.items()):
             aspect = aggregate_metrics(group)
             results[f"{benchmark_name}_pass_rate"] = aspect["overall_pass_rate"]

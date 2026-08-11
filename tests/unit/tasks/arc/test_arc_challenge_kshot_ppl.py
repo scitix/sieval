@@ -155,7 +155,14 @@ async def test_unconditional_normalization_flips_argmax():
     # the migration neither stage recorded it in a uniform place.
     assert feedback["reference"] == 0
     assert feedback["extra"]["answer_choice"] == "copper"
-    assert report == {"score": 100.0, "acc": 100.0, "fails": 0}
+    assert report == {
+        "score": 100.0,
+        "acc": 100.0,
+        "fails": 0,
+        # Both ARC modes share `arc_report`, so both carry the same declarations.
+        "score_key": "acc",
+        "denominator_policy": "judged",
+    }
 
 
 def test_echoed_logprob_excludes_trailing_generated_token():

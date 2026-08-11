@@ -54,7 +54,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import health_metrics
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    health_metrics,
+)
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import BrowseCompDatasetSample
 
@@ -105,7 +110,9 @@ class BrowseCompZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -225,6 +232,8 @@ class BrowseCompZeroShotGenTask(
             "incorrect": m["is_incorrect"] * 100,
             "n_graded": len(graded),
             "fails": len(fails),
+            SCORE_KEY_FIELD: "accuracy",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             # There is no NOT_ATTEMPTED bucket here, so an empty response scores
             # INCORRECT alongside a wrong answer; this is the count that tells
             # them apart. Deliberately only `health_metrics` and not the rest of

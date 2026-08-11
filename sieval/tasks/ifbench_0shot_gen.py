@@ -40,6 +40,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets import IFBenchDatasetSample
 
 # Both readings are published IFBench metrics. `loose` is the headline (the task's
@@ -87,7 +92,9 @@ class IFBenchZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(self, dataset, model, name: str | None = None):
@@ -174,7 +181,7 @@ class IFBenchZeroShotGenTask(
     async def report(self, finals, fails):
         # Aggregation only -- grading moved to feedback(). Reading the persisted
         # verdicts also drops report()'s dependency on raw_sample being present.
-        results: dict[str, float] = {"fails": len(fails)}
+        results: dict[str, float | str] = {"fails": len(fails)}
         judgements = [f.feedback_result for f in finals]
 
         for grade in _GRADES:
@@ -201,6 +208,13 @@ class IFBenchZeroShotGenTask(
 
         # IFBench reports prompt-level loose accuracy as the headline score.
         results["score"] = results["loose_prompt_level_accuracy"]
+        # The loose/strict x prompt/instruction rates are co-equal, and IFBench's
+        # headline is the *loose* one where IFEval's is strict — a difference two
+        # sibling tasks cannot show in the value, only in this key. Denominator is
+        # the judged set: `prompt_total` counts judgements, and a pipeline failure
+        # is reported in `fails` rather than scored as a followed-nothing prompt.
+        results[SCORE_KEY_FIELD] = "loose_prompt_level_accuracy"
+        results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
         return results
 
     def _clean_kwargs(self, kwargs: list[dict[str, Any]]) -> list[dict[str, Any]]:

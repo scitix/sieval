@@ -140,4 +140,10 @@ async def test_report_scores_finals_and_counts_fails(monkeypatch: pytest.MonkeyP
         "loose_prompt_level_accuracy": 100.0,
         "loose_instruction_level_accuracy": 100.0,
         "score": 100.0,
+        # IFBench's headline is the LOOSE prompt-level rate where IFEval's is
+        # strict — the four rates are co-equal, so only this key says which.
+        # `judged`: the failed context is counted in `fails`, not scored as a
+        # prompt that followed nothing (which is why `score` is 100.0, not 50.0).
+        "score_key": "loose_prompt_level_accuracy",
+        "denominator_policy": "judged",
     }

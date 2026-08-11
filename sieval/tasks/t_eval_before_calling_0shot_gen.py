@@ -21,6 +21,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import DENOMINATOR_FIELD, DENOMINATOR_JUDGED
 from sieval.datasets import TEvalBeforeCallingDatasetSample
 
 
@@ -46,7 +47,9 @@ class TEvalBeforeCallingZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `denominator_policy`, which names a
+        # population rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -169,7 +172,17 @@ class TEvalBeforeCallingZeroShotGenTask(
         # mapping each judgement recorded -- the same numbers, now enumerable on
         # disk instead of flattened into an untyped per-task feedback dict.
         results_list = [dict(ctx.feedback_result["metrics"]) for ctx in finals]
-        return {**self._post_process(results_list), "fails": len(fails)}
+        # No `score_key`: this report has no `score` to name. T-Eval publishes one
+        # rate per axis and no single headline, and picking one here would invent a
+        # ranking upstream does not make -- so the key is omitted rather than
+        # pointed at an arbitrary axis. `denominator_policy` still applies: every
+        # axis is macro-averaged over the judged samples, with pipeline failures
+        # reported in `fails` rather than averaged in as zeros.
+        return {
+            **self._post_process(results_list),
+            "fails": len(fails),
+            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
+        }
 
     def _format_load(self, data) -> dict:
         try:

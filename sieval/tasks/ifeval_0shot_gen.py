@@ -14,6 +14,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.datasets import IFEvalDatasetSample
 
 # Grading is per prompt-level ("did the response follow *every* constraint") and
@@ -47,7 +52,9 @@ class IFEvalZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(self, dataset, model, name: str | None = None):
@@ -134,7 +141,7 @@ class IFEvalZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
-        results: dict[str, float] = {"fails": len(fails)}
+        results: dict[str, float | str] = {"fails": len(fails)}
         judgements = [f.feedback_result for f in finals]
         for grade in _GRADES:
             prompt_total = len(judgements)
@@ -162,6 +169,13 @@ class IFEvalZeroShotGenTask(
             )
         # hard code score as strict prompt-level accuracy
         results["score"] = results["strict_prompt_level_accuracy"]
+        # Four co-equal published rates (strict/loose x prompt/instruction), so
+        # which one `score` is cannot be inferred from the value alone. The
+        # denominator is the judged set: `prompt_total` counts judgements, and a
+        # pipeline failure is reported in `fails` rather than scored as a
+        # followed-nothing prompt.
+        results[SCORE_KEY_FIELD] = "strict_prompt_level_accuracy"
+        results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
         return results
 
     def _clean_kwargs(self, kwargs):

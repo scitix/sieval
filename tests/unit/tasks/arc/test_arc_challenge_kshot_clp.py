@@ -133,7 +133,15 @@ async def test_argmax_over_option_letters():
 
     assert post["rollouts"][0]["prediction"] == 0
     assert feedback["rollouts"][0]["correct"] is True
-    assert report == {"score": 100.0, "acc": 100.0, "fails": 0}
+    assert report == {
+        "score": 100.0,
+        "acc": 100.0,
+        "fails": 0,
+        # `arc_report` names the column the headline came from and the population
+        # it is over; ARC excludes pipeline failures (MCQ-family convention).
+        "score_key": "acc",
+        "denominator_policy": "judged",
+    }
 
 
 @pytest.mark.anyio

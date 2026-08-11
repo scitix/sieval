@@ -134,7 +134,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import health_metrics
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    health_metrics,
+)
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import ComplexConstraintsDatasetSample
 
@@ -209,7 +214,9 @@ class ComplexConstraintsZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -408,6 +415,8 @@ class ComplexConstraintsZeroShotGenTask(
             # invisible inside: these criteria scored not-satisfied.
             "n_unparsed": sum(r["extra"]["n_unparsed"] for r in graded),
             "fails": len(fails),
+            SCORE_KEY_FIELD: "task_pass_rate",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             # `n_graded` counts the short-circuited empty responses too, so it
             # cannot separate "the judge failed every criterion" from "the model
             # returned nothing". `n_unextracted` is that second count, and the

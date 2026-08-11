@@ -43,7 +43,12 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import health_metrics
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    health_metrics,
+)
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import SimpleQAVerifiedDatasetSample
 
@@ -96,7 +101,9 @@ class SimpleQAVerifiedZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one.
+        dict[str, float | str],
     ]
 ):
     def __init__(
@@ -227,6 +234,8 @@ class SimpleQAVerifiedZeroShotGenTask(
             "not_attempted": m["is_not_attempted"] * 100,
             "n_graded": len(graded),
             "fails": len(fails),
+            SCORE_KEY_FIELD: "f1",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             # `not_attempted` is the autorater's reading of the answer; a blank
             # response the autorater never saw a claim in lands there too, so the
             # rate alone cannot say whether the model hedged or returned nothing.
