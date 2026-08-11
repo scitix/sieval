@@ -684,3 +684,35 @@ class TestReport:
         # Still scored -- from four components instead of six, which is why the
         # count exists rather than a hard failure.
         assert _num(degraded, "cell_translation_reference_default") > 0.0
+
+    @pytest.mark.anyio
+    async def test_get_webpage_reference_tracks_all_four_instruction_rows(self):
+        # get-webpage hangs its prefixes on four rows, not two, because it
+        # composes verb-extract and translation separately. Missing one of the
+        # four degrades the cell exactly as a missing *_user_instruction row
+        # degrades the simpler cells.
+        present = [
+            ("verb_extraction_strong_tool_instruction", "verb_extract", "run, jump"),
+            ("verb_extraction_weak_tool_instruction", "verb_extract", "run, jump"),
+            ("verb_extraction_1", "verb_extract", "run, jump"),
+            ("translation_strong_tool_instruction", "translation", "hola mundo"),
+            # translation_weak_tool_instruction is the one that failed.
+            ("translation_1", "translation", "hola mundo"),
+        ]
+        rows = [
+            _row(
+                subtask="get-webpage",
+                setting="reference",
+                sample_id=sample_id,
+                answer={"task": task_name, "content": content},
+            )
+            for sample_id, task_name, content in present
+        ]
+        task = _task(rows)
+        finals = [await _judge(task, r, "run, jump") for r in rows]
+
+        report = await task.report(finals, [])
+        assert report["reference_cells_degraded"] == 1
+        assert (
+            report["reference_cells_degraded_detail"] == "get-webpage_reference_default"
+        )
