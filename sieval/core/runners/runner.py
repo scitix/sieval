@@ -986,10 +986,8 @@ class TaskRunner:
                 "Stage {} failed for {}", action, ctx.sample_id
             )
             # A task raising `NonRetriableSampleError` has declared the outcome
-            # deterministic in this sample's own input, so the reason it carries
-            # is one the loader will not roll back. Keyed on the type rather than
-            # on a class name: `core` cannot enumerate task exception classes
-            # without importing `sieval.tasks`.
+            # deterministic in this sample's own input, so it earns the one reason
+            # the loader will not roll back.
             reason = (
                 NON_RETRIABLE_REASON
                 if isinstance(e, NonRetriableSampleError)

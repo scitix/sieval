@@ -147,10 +147,9 @@ async def test_feedback_grades_every_slot_and_records_grouping_keys():
 async def test_feedback_without_a_raw_sample_fails_the_sample():
     """No gold to compare against means no verdict, not a wrong-by-default one.
 
-    It used to record `reference=None` with `correct=False`, which charged a row
-    the run could not read to the model. Failing costs neither metric: AAcc
-    counts versions as `len(finals) + len(fails)`, and EAcc keeps the problem's
-    place through report()'s failed-sample loop.
+    Failing costs neither metric: AAcc counts versions as
+    `len(finals) + len(fails)`, and EAcc keeps the problem's place through
+    report()'s failed-sample loop.
     """
     with pytest.raises(ValueError, match="no raw sample to grade against"):
         await _task().feedback(

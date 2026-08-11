@@ -354,13 +354,11 @@ class UGMathBenchZeroShotGenFixedTask(
             # Nothing to compare against, so there is no verdict to record: a
             # wrong-by-default judgement would charge a missing row to the model.
             #
-            # Failing costs neither metric, which is why this replaced the
-            # wrong-by-default record it used to build. AAcc counts a version by
+            # Failing costs neither metric. AAcc counts a version by
             # `len(finals) + len(fails)`, so the denominator is unchanged and the
-            # sample contributes no hit either way. EAcc keeps the problem's place
+            # sample contributes no hit either way; EAcc keeps the problem's place
             # through report()'s failed-sample loop, which recovers the grouping
-            # keys with the same `_identify` this branch used to call -- so the
-            # branch was doing by hand exactly what the failure path already does.
+            # keys with `_identify`.
             #
             # Retriable on purpose; see the twin in `cmmlu_kshot_clp` for why this
             # is a plain raise and not `NonRetriableSampleError`.

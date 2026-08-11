@@ -230,9 +230,8 @@ async def test_infer_postprocess_feedback_and_report():
 async def test_feedback_without_a_raw_sample_fails_the_sample():
     """No gold means no verdict, not a wrong-by-default one.
 
-    It used to record `reference=None` with `correct=False`, charging a row the
-    run could not read to the model. This task declares DENOMINATOR_JUDGED, so
-    failing keeps the sample out of the denominator instead of counting it wrong.
+    This task declares DENOMINATOR_JUDGED, so failing keeps the sample out of the
+    denominator rather than charging a row the run could not read to the model.
     """
     task = CMMLUFewShotClpTask(_dataset(), _DummyGenModel(), n_shot=0)
 

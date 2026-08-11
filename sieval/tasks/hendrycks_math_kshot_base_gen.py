@@ -187,19 +187,13 @@ class HendrycksMathFewShotBaseGenTask(
         if not reference:
             # No gold to compare against, so there is no verdict this sample
             # could carry: `correct` either way would be an artifact of how the
-            # miss is handled rather than evidence about the model. Fails the
-            # sample deliberately instead of scoring it wrong — a gold that will
-            # not extract is a defect in our data or our extractor, and `fails`
-            # is where a defect on our side belongs.
+            # miss is handled rather than evidence about the model. A gold that
+            # will not extract is a defect in our data or our extractor, and
+            # `fails` is where a defect on our side belongs.
             #
-            # Raising is the only route to FAILED from here: `finalize=False`
-            # means "iterate again", so it would re-infer `max_iterations` times
-            # and then fail as `iteration_limit`, naming the wrong cause.
-            #
-            # `NonRetriableSampleError` rather than a bare `ValueError`: the miss
-            # is deterministic in this row's `solution`, so a resume that rolled
-            # the sample back would re-infer it and fail identically, once per
-            # resume until `max_retries` ran out.
+            # Non-retriable because the miss is deterministic in this row's
+            # `solution` — unlike the twins in cmmlu/mmmlu/ugmathbench, where the
+            # missing input can come back on a later resume.
             raise NonRetriableSampleError(
                 f"sample {ctx.sample_id!r}: no reference answer could be "
                 "extracted from its `solution`; every MATH test row is expected "
@@ -220,12 +214,9 @@ class HendrycksMathFewShotBaseGenTask(
 
     async def _grade(self, rollout, reference, ctx) -> bool:
         # `or []`, not `or ""`. A missing *prediction* is the model failing to
-        # answer — a wrong answer, the contract every sibling math grader keeps
-        # (`extracted` records the miss and `extraction_failure` reports it) —
-        # and it must not reach `fails`, which reads as an infrastructure failure
-        # and is one of the signals a run is promoted on. But this task's
-        # reference is a *list*, and `""` against a list matches neither branch of
-        # `is_correct`, so it fell through to upstream's bare
+        # answer — a wrong answer, for the reason the timeout below spells out.
+        # But this task's reference is a *list*, and `""` against a list matches
+        # neither branch of `is_correct`, so it fell through to upstream's bare
         # `raise NotImplementedError` and failed the sample with an empty message.
         # `[]` takes the list/list branch and scores wrong, as intended. GSM8K's
         # `or ""` is safe only because its gold is a single string.

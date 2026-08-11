@@ -198,10 +198,8 @@ async def test_infer_postprocess_and_feedback_use_top_logprobs():
 async def test_feedback_without_a_raw_sample_fails_the_sample():
     """No gold means no verdict, not a wrong-by-default one.
 
-    It used to record `reference=None` with empty grouping keys so report() could
-    bucket a verdict that should not have existed. This task declares
-    DENOMINATOR_JUDGED, so failing keeps the sample out of the denominator rather
-    than counting it wrong. Twin of the cmmlu case.
+    Twin of the cmmlu case: DENOMINATOR_JUDGED, so failing keeps the sample out
+    of the denominator rather than counting it wrong.
     """
     task = _task([_sample(i) for i in range(3)], n_shot=0)
 

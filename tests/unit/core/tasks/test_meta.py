@@ -790,10 +790,8 @@ class TestReferenceKind:
     def test_the_kind_mints_no_protocol_tag(self, kind):
         """`reference_kind` is recorded, not routed on.
 
-        It once synthesized a `value_reference` / `procedure_reference` tag to
-        scope an anomaly rule. The rule is gone -- a value task with no gold
-        raises rather than recording a judgement to detect -- so a tag would be a
-        routing seam with no consumer. `cls.tags` stays the eval_mode + shot pair.
+        No rule consumes it, so a per-kind tag would be a routing seam with no
+        consumer: `cls.tags` is the eval_mode + shot pair and nothing else.
         """
 
         @sieval_task(**_valid_kwargs(name=f"rk_tag_{kind}", reference_kind=kind))

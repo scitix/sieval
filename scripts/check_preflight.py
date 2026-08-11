@@ -2043,8 +2043,7 @@ class PreflightRunner:
         suite" onto a task that has a gold. Unioning can only err the other way,
         toward ``value``, which is the reading a mixed task actually wants.
 
-        ``via`` names every tier that contributed, so a task split across two
-        says so instead of naming the one that happened to be searched first.
+        ``via`` names every tier that contributed (``class+helper``).
         """
         called = _called_names(cls)
         helper: list[ast.expr] = []

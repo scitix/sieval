@@ -311,12 +311,9 @@ class MMMLUKShotClpTask(
         raw = ctx.raw_sample
         prediction = post["rollouts"][0].get("prediction")
         if raw is None:
-            # No sample to grade against, so there is no verdict to record --
-            # `correct=False` would charge a missing row to the model, and the
-            # empty grouping keys it used to carry only existed to give report()
-            # something to bucket a verdict that should not exist. This task
-            # declares DENOMINATOR_JUDGED, so failing keeps the sample out of the
-            # denominator rather than counting it wrong.
+            # No sample to grade against, so there is no verdict to record. This
+            # task declares DENOMINATOR_JUDGED, so failing keeps the sample out of
+            # the denominator rather than charging a missing row to the model.
             #
             # Retriable on purpose; see the twin in `cmmlu_kshot_clp` for why this
             # is a plain raise and not `NonRetriableSampleError`.

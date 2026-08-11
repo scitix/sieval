@@ -71,10 +71,8 @@ ERROR_ACTION_CLEAR_FIELDS = {
     TaskAction.FEEDBACK: ["feedback_result"],
 }
 #: Reason recorded when a stage raised :class:`NonRetriableSampleError`. One
-#: fixed string rather than ``non_retriable::<ClassName>``: the class name is
-#: what ``exception::`` carries because a plain exception has nothing else to
-#: say, whereas a deliberate non-retriable raise carries its own message, and a
-#: per-class reason would make the loader's membership test a prefix scan.
+#: fixed string, not ``non_retriable::<ClassName>``: the detail lives in the
+#: exception's own message, which ``error_msg`` keeps.
 NON_RETRIABLE_REASON = "non_retriable"
 
 #: Reasons the loader refuses to roll back for another attempt. The two limit
