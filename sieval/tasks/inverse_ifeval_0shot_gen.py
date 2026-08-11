@@ -97,7 +97,7 @@ from sieval.datasets import InverseIFEvalDataset, InverseIFEvalDatasetSample
             "the Overall is a POOLED mean of per-sample 0/1 verdicts x100, "
             "reconstructed from each row's eight per-type cells to a mean "
             "absolute error of 0.002 (max 0.01 = the tables' own rounding) over "
-            "all 43 rows, where an unweighted macro-average misses by 1.4 mean / "
+            "all 44 rows, where an unweighted macro-average misses by 1.4 mean / "
             "4.4 max. Reported here as `pass@1` over the requested denominator, "
             "which is that pooled mean. "
             "COLUMN LABELS: the paper's `CC` and `CCF` columns are SWAPPED "
@@ -118,7 +118,16 @@ from sieval.datasets import InverseIFEvalDataset, InverseIFEvalDatasetSample
             "NOT reproducible as published; cite the grader alongside any "
             "comparison. Reference points (English / Chinese Overall): o3-high "
             "75.66 / 76.52, GPT-5-high 73.72 / 76.02, Qwen3-32B 47.04 / 49.28, "
-            "Qwen3-30B-A3B-Instruct 30.43 / 31.42."
+            "Qwen3-30B-A3B-Instruct 30.43 / 31.42. "
+            "HOW MUCH THE JUDGE MATTERS, measured on this port: "
+            "Qwen3-30B-A3B-Instruct-2507 (temp 0.7 / top_p 0.8 / top_k 20, n=1, "
+            "all 1,012) scores 33.00 / 33.60 graded by gpt-oss-120b at "
+            "temperature 0 — against a published 30.43 / 31.42, with a binomial "
+            "SE of +-2.1 per language. Re-grading those SAME responses with "
+            "Qwen3-30B-A3B-thinking gives 42.29 / 39.92 at 84.3% per-sample "
+            "agreement. The grader alone moves the headline ~7.8 points, three "
+            "times the residual against the published figure, which is what "
+            "`experimental` is recording."
         ),
     ),
     # Faithful port of everything upstream published, but the published numbers
