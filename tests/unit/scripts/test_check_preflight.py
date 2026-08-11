@@ -6,6 +6,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 
 import contextlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -2174,11 +2175,36 @@ class TestCheckTaskShotKnobs:
 class TestCheckReportDeclarations:
     """The guard on `score_key` / `denominator_policy` in every task report."""
 
-    def _run(self, tmp_path: Path, source: str, **extra: str) -> CheckResult:
+    #: Stand-in for `sieval/core/tasks/metrics.py`, reduced to the shape rule 4
+    #: has to follow: `sampling_report` reaches `pass@k` only through a call and
+    #: a `|`, so a checker that reads one body sees none of its keys.
+    _METRICS = (
+        "def health_metrics(finals):\n"
+        "    return {'n_unextracted': 0.0}\n"
+        "def rollout_metrics(correct, k=1):\n"
+        "    return {f'pass@{k}': 1.0, 'avg@n': 1.0}\n"
+        "def budget_metrics(k=1):\n"
+        "    return {'n': 1.0, 'k': 1.0}\n"
+        "def sampling_report(correct, k=1):\n"
+        "    return rollout_metrics(correct, k=k) | budget_metrics(k=k)\n"
+    )
+
+    def _run(
+        self,
+        tmp_path: Path,
+        source: str,
+        *,
+        metrics: str | None = None,
+        **extra: str,
+    ) -> CheckResult:
         tasks_dir = tmp_path / "sieval" / "tasks"
         tasks_dir.mkdir(parents=True)
         (tasks_dir / "__init__.py").write_text("")
         (tasks_dir / "demo_0shot_gen.py").write_text(source)
+        if metrics is not None:
+            core_tasks = tmp_path / "sieval" / "core" / "tasks"
+            core_tasks.mkdir(parents=True)
+            (core_tasks / "metrics.py").write_text(metrics)
         # Kwarg name -> sibling module: `_base` becomes `_base.py` next to the
         # subject, which is the `arc/` layout the delegation rule exists for.
         for rel, text in extra.items():
@@ -2383,10 +2409,149 @@ class TestCheckReportDeclarations:
         assert len(results) == 1
         assert results[0].status == "SKIP"
 
+    # --- rule 4: score_key names a column the report actually writes ---------
+
+    def test_score_key_naming_an_absent_column_fails(self, tmp_path: Path):
+        """The copy-paste defect: a sibling's key name on a report without it."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'acc': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'exact_match',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+        )
+        assert r.status == "FAIL"
+        assert "score_key names 'exact_match'" in r.details[0]
+
+    def test_score_key_matching_an_fstring_key_passes(self, tmp_path: Path):
+        """The ifeval shape: the headline key is built in a loop, not written flat."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        results = {DENOMINATOR_FIELD: DENOMINATOR_JUDGED}\n"
+            "        for grade in ('strict', 'loose'):\n"
+            "            results[f'{grade}_prompt_level_accuracy'] = 1.0\n"
+            "        results['score'] = results['strict_prompt_level_accuracy']\n"
+            "        results[SCORE_KEY_FIELD] = 'strict_prompt_level_accuracy'\n"
+            "        return results\n",
+        )
+        assert r.status == "PASS"
+
+    def test_score_key_outside_the_fstring_pattern_fails(self, tmp_path: Path):
+        """The pattern constrains — it is not a blanket pass for the loop's shape."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        results = {'score': 1.0, DENOMINATOR_FIELD: DENOMINATOR_JUDGED}\n"
+            "        for grade in ('strict', 'loose'):\n"
+            "            results[f'{grade}_prompt_level_accuracy'] = 1.0\n"
+            "        results[SCORE_KEY_FIELD] = 'strict_prompt_level_rate'\n"
+            "        return results\n",
+        )
+        assert r.status == "FAIL"
+        assert "score_key names 'strict_prompt_level_rate'" in r.details[0]
+
+    def test_score_key_from_a_merged_helper_passes(self, tmp_path: Path):
+        """`pass@1` is legitimate when the report merges the helper that emits it.
+
+        Only reachable transitively: `sampling_report` returns
+        `rollout_metrics(...) | budget_metrics(...)`, so its own body names no
+        key at all.
+        """
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        metrics = {\n"
+            "            'score': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'pass@1',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,\n"
+            "        }\n"
+            "        rolled = sampling_report([True], k=1)\n"
+            "        metrics.update(rolled)\n"
+            "        return metrics\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+
+    def test_score_key_absent_from_the_merged_helper_fails(self, tmp_path: Path):
+        """Merging widens to THAT helper's keys, not to all of `metrics.py`.
+
+        `health_metrics` emits only `n_unextracted`, so `pass@1` is still a
+        dangling reference here — which is the whole reason the merge is traced
+        to a name rather than treated as a blanket exemption.
+        """
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'pass@1',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,\n"
+            "        } | health_metrics(finals)\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "FAIL"
+        assert "score_key names 'pass@1'" in r.details[0]
+
+    def test_untraceable_key_source_skips_the_rule(self, tmp_path: Path):
+        """A `**` spread of an expression: no module to go read, so stay silent."""
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            **self._axes(finals),\n"
+            "            'score': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'whatever_axis',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+        )
+        assert r.status == "PASS"
+
+    def test_score_key_in_the_shared_helper_is_resolved_there(self, tmp_path: Path):
+        """Delegation carries rule 4 too, so one bad key reports for every leaf."""
+        r = self._run(
+            tmp_path,
+            "from ._base import demo_report\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return demo_report(finals, fails)\n",
+            _base="def demo_report(finals, fails):\n"
+            "    return {\n"
+            "        'score': 1.0,\n"
+            "        'acc': 1.0,\n"
+            "        SCORE_KEY_FIELD: 'accuracy',\n"
+            "        DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "    }\n",
+        )
+        assert r.status == "FAIL"
+        assert "score_key names 'accuracy'" in r.details[0]
+
     def test_real_tasks_pass(self):
         """Integration: every shipped report declares both fields."""
         results = PreflightRunner().check_report_declarations()
         assert [r.status for r in results] == ["PASS"]
+
+    def test_real_tasks_resolve_their_score_key(self):
+        """Rule 4 has real coverage, not just fixtures.
+
+        A rule that silently skipped every shipped report would still pass
+        `test_real_tasks_pass`, so pin the count it actually resolved. Bump this
+        with the task count; a DROP means a report grew a key source rule 4
+        cannot follow.
+        """
+        (result,) = PreflightRunner().check_report_declarations()
+        match = re.search(r"\((\d+) score_key", result.message)
+        assert match is not None, result.message
+        assert int(match.group(1)) >= 47
 
     def test_vocabulary_matches_the_metrics_module(self):
         """Rule 3's vocabulary is `metrics.py`'s, not a second copy of it.

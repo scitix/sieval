@@ -412,6 +412,13 @@ def _computes_pass_at_k(cls: ast.ClassDef) -> bool:
 _DENOMINATOR_CONSTANTS = frozenset({"DENOMINATOR_REQUESTED", "DENOMINATOR_JUDGED"})
 _DENOMINATOR_VALUES = frozenset({"requested", "judged"})
 
+#: The declaration fields themselves, as the constant names tasks spell them
+#: with. Used as dict KEYS (``{SCORE_KEY_FIELD: "acc"}``), so a scan that only
+#: understands string-literal keys reads them as computed and gives up on the
+#: whole report — which would make the declarations hide the very rule that
+#: checks them.
+_DECLARATION_CONSTANTS = frozenset({"SCORE_KEY_FIELD", "DENOMINATOR_FIELD"})
+
 
 def _report_of(cls: ast.ClassDef) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
     """Return the class's own ``report``, or None if it does not define one."""
@@ -457,47 +464,221 @@ def _names_read(fn: ast.AST) -> set[str]:
     return {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
 
 
-def _declared_denominators(fn: ast.AST) -> list[str]:
-    """The value assigned to ``denominator_policy``, for each declaration.
+def _dict_key_patterns(fn: ast.AST) -> set[str]:
+    """Regexes for the keys *fn* writes through an f-string.
 
-    Returned as source-ish text — a constant name (``DENOMINATOR_JUDGED``) or a
-    string literal — so the caller can reject a policy that is neither.
+    ``results[f"{grade}_prompt_level_accuracy"]`` is a real key the report
+    publishes; :func:`_dict_keys_written` cannot name it, but the literal parts
+    still constrain it enough to tell ``strict_prompt_level_accuracy`` (a key
+    this loop does produce) from ``accuracy`` (one it does not). Without this
+    the ifeval/ifbench shape would have to be exempted wholesale.
     """
-    found: list[str] = []
+    patterns: set[str] = set()
 
-    def _record(value: ast.expr) -> None:
-        if isinstance(value, ast.Name):
-            found.append(value.id)
-        elif isinstance(value, ast.Constant) and isinstance(value.value, str):
-            found.append(value.value)
-        else:
-            found.append(ast.unparse(value))
+    def _record(node: ast.JoinedStr) -> None:
+        patterns.add(
+            "".join(
+                re.escape(v.value)
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                else ".+"
+                for v in node.values
+            )
+        )
+
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Dict):
+            for key in node.keys:
+                if isinstance(key, ast.JoinedStr):
+                    _record(key)
+        elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Subscript) and isinstance(
+                    target.slice, ast.JoinedStr
+                ):
+                    _record(target.slice)
+    return patterns
+
+
+def _names_a_key_statically(key: ast.expr | None) -> bool:
+    """Whether *key* pins a dict key at parse time — literally or as a pattern.
+
+    A ``None`` key is a ``**`` spread. A :class:`ast.Name` is accepted only for
+    the declaration fields themselves, which every report spells as constants.
+    """
+    return (
+        isinstance(key, ast.JoinedStr)
+        or (isinstance(key, ast.Constant) and isinstance(key.value, str))
+        or (isinstance(key, ast.Name) and key.id in _DECLARATION_CONSTANTS)
+    )
+
+
+def _merged_sources(fn: ast.AST) -> set[str] | None:
+    """The helpers *fn* folds whole dicts in from, by name.
+
+    ``metrics | health_metrics(finals)``, ``metrics |= sampling_report(...)`` and
+    ``metrics.update(rolled)`` are the three spellings in the tree, and they are
+    how ``pass@1`` / ``n_unextracted`` reach a report at all. The merged keys are
+    invisible here but not unknowable — they come from
+    ``sieval/core/tasks/metrics.py``, which :func:`_metrics_helper_keys` reads.
+
+    Naming the helper rather than just flagging that a merge happened is what
+    keeps the rule sharp: widening to every key ``metrics.py`` can emit would
+    accept ``score_key: "pass@1"`` on a task that never computed one, and
+    ``pass@1`` is exactly the value most likely to be copied in by mistake.
+
+    Returns ``None`` when a merge cannot be traced to a name — the caller then has
+    to fall back to the whole module. Deliberately narrow about ``|``:
+    ``dict[str, float | str]`` is a type annotation living in the same tree, so
+    only a call operand counts as a merge.
+    """
+    # `rolled = sampling_report(...)` then `metrics.update(rolled)` -- one hop of
+    # local dataflow, which is the only shape the tree actually uses.
+    produced_by: dict[str, str] = {}
+    for node in ast.walk(fn):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+        ):
+            produced_by[node.targets[0].id] = node.value.func.id
+
+    sources: set[str] = set()
+
+    def _resolve(value: ast.expr) -> bool:
+        """Record the helper *value* came from; False if it cannot be named."""
+        if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+            sources.add(value.func.id)
+            return True
+        if isinstance(value, ast.Name) and value.id in produced_by:
+            sources.add(produced_by[value.id])
+            return True
+        return False
+
+    for node in ast.walk(fn):
+        if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.BitOr):
+            if not isinstance(node.value, ast.Dict) and not _resolve(node.value):
+                return None
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            for side in (node.left, node.right):
+                if isinstance(side, ast.Call) and not _resolve(side):
+                    return None
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "update"
+        ):
+            if len(node.args) != 1:
+                return None
+            if not isinstance(node.args[0], ast.Dict) and not _resolve(node.args[0]):
+                return None
+    return sources
+
+
+def _has_unknowable_key(fn: ast.AST) -> bool:
+    """Whether *fn* writes a key nothing static can name — not even a pattern.
+
+    A ``**`` spread of an expression, or a key computed as a bare variable. Unlike
+    a merge there is no module to go read, so a rule that fires on a key being
+    ABSENT must stay silent rather than report a column the report does write.
+    """
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Dict):
+            if not all(_names_a_key_statically(k) for k in node.keys):
+                return True
+        elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Subscript) and not _names_a_key_statically(
+                    target.slice
+                ):
+                    return True
+    return False
+
+
+def _metrics_helper_keys(
+    tree: ast.Module | None, roots: set[str] | None
+) -> tuple[set[str], set[str]]:
+    """Report keys the named ``metrics.py`` helpers can produce.
+
+    Read from the module rather than restated, because the point of merging a
+    shared estimator in is that it owns its key names: ``pass@k`` is written
+    ``f"pass@{k}"`` there, so the answer is literals AND patterns.
+
+    Transitive within the module: ``sampling_report`` returns
+    ``rolled | budget_metrics(...)`` and gets its ``pass@k`` from
+    ``rollout_metrics``, so reading one body names only a third of its keys.
+    *roots* of ``None`` means a merge the caller could not trace, and widens this
+    to every key the module can emit.
+    """
+    if tree is None:
+        return set(), set()
+    if roots is None:
+        return _dict_keys_written(tree), _dict_key_patterns(tree)
+
+    keys: set[str] = set()
+    patterns: set[str] = set()
+    seen: set[str] = set()
+    queue = list(roots)
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        fn = _function_named(tree, name)
+        if fn is None:
+            continue
+        keys |= _dict_keys_written(fn)
+        patterns |= _dict_key_patterns(fn)
+        queue += [
+            node.func.id
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+    return keys, patterns
+
+
+def _declared_field_values(fn: ast.AST, constant: str, literal: str) -> list[ast.expr]:
+    """Every value *fn* assigns to the *constant* / *literal* report field.
+
+    One scanner for both declarations: ``score_key`` and ``denominator_policy``
+    are written the same two ways — as a key in a dict literal, or as a subscript
+    assignment — so a change to how a declaration is spelled has to reach both.
+    Returned as expression nodes; what counts as an acceptable VALUE differs per
+    field and belongs with the rule, not here.
+    """
+    found: list[ast.expr] = []
+
+    def _matches(key: ast.expr | None) -> bool:
+        return (isinstance(key, ast.Name) and key.id == constant) or (
+            isinstance(key, ast.Constant) and key.value == literal
+        )
 
     for node in ast.walk(fn):
         if isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values, strict=True):
-                if (
-                    isinstance(key, ast.Name)
-                    and key.id == "DENOMINATOR_FIELD"
-                    or (
-                        isinstance(key, ast.Constant)
-                        and key.value == "denominator_policy"
-                    )
-                ):
-                    _record(value)
+                if _matches(key):
+                    found.append(value)
         elif isinstance(node, ast.Assign):
             for target in node.targets:
-                if not isinstance(target, ast.Subscript):
-                    continue
-                index = target.slice
-                if (
-                    isinstance(index, ast.Name) and index.id == "DENOMINATOR_FIELD"
-                ) or (
-                    isinstance(index, ast.Constant)
-                    and index.value == "denominator_policy"
-                ):
-                    _record(node.value)
+                if isinstance(target, ast.Subscript) and _matches(target.slice):
+                    found.append(node.value)
     return found
+
+
+def _policy_text(value: ast.expr) -> str:
+    """A declared policy as source-ish text, so the caller can vet the word.
+
+    A constant name (``DENOMINATOR_JUDGED``) or a string literal; anything else
+    is unparsed, which reads back as the expression it is.
+    """
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return value.value
+    return ast.unparse(value)
 
 
 def _delegate_target(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
@@ -1603,7 +1784,7 @@ class PreflightRunner:
         bare after the fields shipped, and how a benchmark added later landed
         bare too.
 
-        Three rules, AST-only so a task whose optional deps are absent is still
+        Four rules, AST-only so a task whose optional deps are absent is still
         covered:
 
         1. a class defining ``report`` declares ``denominator_policy``;
@@ -1613,7 +1794,15 @@ class PreflightRunner:
            invent a ranking upstream does not make;
         3. the declared policy is one of the two ``metrics.py`` defines. A
            free-form third value is a word only its author knows the meaning of,
-           and it would read as a policy rather than as a typo.
+           and it would read as a policy rather than as a typo;
+        4. the declared ``score_key`` names a key the same report writes. Rules 1
+           and 2 buy presence, not truth: a task copied from a sibling keeps the
+           sibling's key name, and since NOTHING reads ``score_key`` at runtime a
+           headline pointing at a column that is not there survives every test
+           and every run. A key merged in from ``metrics.py`` counts, traced to
+           the helper that emits it (:func:`_merged_sources`); the rule is
+           skipped, not guessed, only for a key nothing static can name
+           (:func:`_has_unknowable_key`).
 
         A ``report`` that is a single ``return helper(...)`` is judged on the
         helper, resolved through the module's own imports — ``arc/`` has four leaf
@@ -1629,8 +1818,12 @@ class PreflightRunner:
         if not py_files:
             return [CheckResult("SKIP", "check_report_declarations", "no task modules")]
 
+        metrics_tree = self._parse_task_module(
+            self.project_root / "sieval" / "core" / "tasks" / "metrics.py", []
+        )
         violations: list[str] = []
         checked = 0
+        verified = 0
         for py_file in py_files:
             rel = py_file.relative_to(self.project_root)
             tree = self._parse_task_module(py_file, violations)
@@ -1658,12 +1851,34 @@ class PreflightRunner:
                                 scopes.append(fn)
 
                 keys: set[str] = set()
+                patterns: set[str] = set()
                 names: set[str] = set()
-                policies: list[str] = []
+                policies: list[ast.expr] = []
+                score_keys: list[ast.expr] = []
+                merged: set[str] | None = set()
+                unknowable = False
                 for scope in scopes:
                     keys |= _dict_keys_written(scope)
+                    patterns |= _dict_key_patterns(scope)
                     names |= _names_read(scope)
-                    policies += _declared_denominators(scope)
+                    policies += _declared_field_values(
+                        scope, "DENOMINATOR_FIELD", "denominator_policy"
+                    )
+                    score_keys += _declared_field_values(
+                        scope, "SCORE_KEY_FIELD", "score_key"
+                    )
+                    sources = _merged_sources(scope)
+                    if sources is None or merged is None:
+                        merged = None
+                    else:
+                        merged |= sources
+                    unknowable = unknowable or _has_unknowable_key(scope)
+                if merged is None or merged:
+                    merged_keys, merged_patterns = _metrics_helper_keys(
+                        metrics_tree, merged
+                    )
+                    keys |= merged_keys
+                    patterns |= merged_patterns
 
                 if (
                     "DENOMINATOR_FIELD" not in names
@@ -1685,7 +1900,8 @@ class PreflightRunner:
                         "which of its other keys the headline was copied from is "
                         "unrecoverable from the report"
                     )
-                for policy in policies:
+                for value in policies:
+                    policy = _policy_text(value)
                     if (
                         policy not in _DENOMINATOR_CONSTANTS
                         and policy not in _DENOMINATOR_VALUES
@@ -1694,6 +1910,31 @@ class PreflightRunner:
                             f"{where}: denominator_policy is {policy!r}; the "
                             "vocabulary is DENOMINATOR_REQUESTED / "
                             "DENOMINATOR_JUDGED (metrics.py)"
+                        )
+                # Skipped only for a key nothing static can name; a MERGE is not
+                # a reason to give up, since the merged keys come from a module
+                # this check reads.
+                if not unknowable:
+                    verified += sum(
+                        isinstance(v, ast.Constant) and isinstance(v.value, str)
+                        for v in score_keys
+                    )
+                    for value in score_keys:
+                        if not (
+                            isinstance(value, ast.Constant)
+                            and isinstance(value.value, str)
+                        ):
+                            continue
+                        named = value.value
+                        if named in keys or any(
+                            re.fullmatch(p, named) for p in patterns
+                        ):
+                            continue
+                        violations.append(
+                            f"{where}: score_key names {named!r}, which this "
+                            "report never writes — the headline's source column "
+                            "is not in the report at all, so the declaration "
+                            "points nowhere"
                         )
 
         if violations:
@@ -1710,7 +1951,8 @@ class PreflightRunner:
                 "PASS",
                 "check_report_declarations",
                 f"all {checked} task report(s) declare their score key and "
-                "denominator policy",
+                f"denominator policy ({verified} score_key(s) also resolved to a "
+                "key the report writes)",
             )
         ]
 

@@ -103,8 +103,12 @@ each and are unaffected. In prose, `k-shot` (the file-naming genre) and `top-k`
 Every `report()` says two things about its own headline, using the fields in
 `sieval.core.tasks.metrics`:
 
-- **`score_key`** — which other key `score` was copied from (`accuracy`, `f1`,
-  `pass@1`, `acc_norm`, …). Required whenever the report emits a `score`. A task
+- **`score_key`** — which key `score` was copied from (`accuracy`, `f1`,
+  `pass@1`, `acc_norm`, …); a headline with no aliased twin names itself
+  (`mmlu_kshot_clp`, `ruler`). It must name a key the same report writes — a
+  `score_key` pointing at a column that is not there is the same defect as a
+  free-form policy, and nothing reads the field at runtime to catch it.
+  Required whenever the report emits a `score`. A task
   publishing one rate per axis and no headline omits both — picking an axis to
   crown would invent a ranking upstream does not make
   (`t_eval_before_calling_0shot_gen` is the only case).
