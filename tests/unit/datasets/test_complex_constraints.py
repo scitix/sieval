@@ -111,3 +111,13 @@ def test_missing_criterion_columns_raise():
     del narrow[f"criterion_{MAX_CRITERIA}"]
     with pytest.raises(ValueError, match=r"missing criterion column\(s\)"):
         _load(_hf_dict([narrow]))
+
+
+def test_extra_criterion_columns_raise():
+    # The other direction of the same shape change, and the quieter one: a wider
+    # rubric fails nowhere downstream, it just drops the criteria past
+    # MAX_CRITERIA -- fewer criteria to satisfy, so the task pass rate goes UP.
+    wide = _row(["alpha"])
+    wide[f"criterion_{MAX_CRITERIA + 1}"] = "omega"
+    with pytest.raises(ValueError, match=r"unexpected criterion column\(s\)"):
+        _load(_hf_dict([wide]))

@@ -107,6 +107,28 @@ class ComplexConstraintsDataset(Dataset[ComplexConstraintsDatasetSample]):
                 f"{MAX_CRITERIA})."
             )
 
+        # The width is checked from BOTH sides. A revision that widened the
+        # rubric past criterion_40 would not fail anywhere downstream: the extra
+        # columns are absent from `_CRITERION_COLUMNS`, so they are neither
+        # collected into `criteria` nor removed, and the sample would carry the
+        # unknown column while its rubric quietly lost criteria -- fewer criteria
+        # to satisfy is an INFLATED task pass rate, scored against a rubric that
+        # no longer matches the data it was pinned to.
+        extra = sorted(
+            c
+            for c in split.column_names
+            if c.startswith("criterion_") and c not in _CRITERION_COLUMNS
+        )
+        if extra:
+            raise ValueError(
+                f"ComplexConstraints has unexpected criterion column(s) {extra} "
+                f"in {csv_path!r}; the loader expects the wide format of revision "
+                f"{COMPLEX_CONSTRAINTS_REVISION} (criterion_1..criterion_"
+                f"{MAX_CRITERIA}). Widen MAX_CRITERIA and re-pin the revision "
+                "rather than dropping them -- criteria dropped from the rubric "
+                "inflate the score."
+            )
+
         return HFDatasetDict(
             {
                 "test": split.map(
