@@ -177,6 +177,31 @@ async def test_feedback_survives_a_record_whose_prediction_was_dropped():
     assert fb["rollouts"][0]["correct"] is False
 
 
+@pytest.mark.anyio
+async def test_infer_rejects_more_than_one_rollout():
+    """n > 1 can only be billed, never scored: only rollout 0 reaches post_process.
+
+    Raising on stage 1 also stops stage 2 from billing a second time for rollouts
+    that scoring will drop.
+    """
+
+    class _Many(_ScriptedChatModel):
+        async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
+            _ = kwargs
+            self.prompts.append(prompt)
+            return ModelOutput(model=self.meta(), texts=["A", "B", "C", "D"])
+
+    model = _Many()
+    task = _task(model)
+    pre = await task.preprocess(_sample(), TaskContext(sample_id=0))
+
+    with pytest.raises(ValueError, match="scores one rollout per problem"):
+        await task.infer(pre, TaskContext(sample_id=0))
+
+    # Raised on stage 1, so stage 2 was never called.
+    assert len(model.prompts) == 1
+
+
 def test_extractor_arg_rejects_a_non_model():
     with pytest.raises(ValueError, match="model-config dict or a Model"):
         _task(extractor=42)

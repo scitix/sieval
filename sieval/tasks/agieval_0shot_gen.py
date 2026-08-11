@@ -80,6 +80,18 @@ _MACRO_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+def _reject_extra_rollouts(output: ModelOutput, who: str) -> None:
+    """Fail loudly on ``n > 1``, which this task can only bill for, never score."""
+    if len(output.texts) > 1:
+        raise ValueError(
+            f"AGIEval scores one rollout per problem, but {who} returned "
+            f"{len(output.texts)}. Upstream samples each problem once, so there is "
+            "no published multi-rollout AGIEval to compare against, and only "
+            "rollout 0 reaches post_process — the rest are billed and dropped. "
+            "Remove `n` from the model args (or set n=1)."
+        )
+
+
 @sieval_task(
     name="agieval_0shot_gen",
     display_name="AGIEval (0-shot, generative)",
@@ -204,6 +216,11 @@ class AGIEvalZeroShotGenTask(
         """
         subset = pre["extra"]["subset"]
         first = await self.model.agenerate(pre["prompt"])
+        # Upstream samples each problem once and there is no multi-rollout AGIEval
+        # to be faithful to. Raise BEFORE stage 2, which would otherwise bill a
+        # second time for rollouts that scoring drops: only rollout 0 reaches
+        # post_process, so n>1 silently pays n x 2 calls to score one.
+        _reject_extra_rollouts(first, "the model under test")
         # An empty reply is carried into stage 2 as "", matching upstream's
         # extract_answer, rather than failing the sample.
         answer = first.texts[0] if first.texts else ""
@@ -220,6 +237,7 @@ class AGIEvalZeroShotGenTask(
                 },
             ]
         )
+        _reject_extra_rollouts(second, "the extractor")
         return [first, second]
 
     @override
