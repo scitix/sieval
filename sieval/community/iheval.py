@@ -5,7 +5,7 @@
 # definitions a run must apply for its numbers to be IHEval numbers at all:
 # https://github.com/ytyz1307zzh/IHEval/tree/726a62924c3050045954df94347d53fe2bd1090d/src
 """
-IHEval scoring rules: five per-sample graders, independently implemented.
+IHEval scoring rules: six per-sample graders, independently implemented.
 
 The rule-following category is the exception and is *not* here. Its grader is
 upstream IFEval, which IHEval itself carries as a verbatim Apache-2.0 copy from
@@ -13,7 +13,7 @@ upstream IFEval, which IHEval itself carries as a verbatim Apache-2.0 copy from
 :mod:`sieval.community.instruction_following_eval`, so the rule-following cells
 run through the vendored original rather than through anything reimplemented.
 
-The five graders below cover the other three categories:
+The six graders below cover the other three categories:
 
 * :func:`eval_tensortrust` — safety (both subtasks). Accuracy.
 * :func:`eval_lang_detect` — task-execution / lang-detect. Accuracy.

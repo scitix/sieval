@@ -30,10 +30,15 @@ their shape is per-subtask and Arrow needs one schema per column:
 * ``tool_json`` — ``{definition, call, return}`` for the tool-use cells, empty
   everywhere else.
 
-The lang-detect rows carry an upstream ``summary`` field (the summary the
-conflicting user instruction asks for). It is reference material for the
-conflicting instruction, never an answer key — no upstream evaluator reads it —
-so it is dropped here rather than carried as a column nothing consumes.
+Two upstream fields are dropped rather than carried as columns nothing consumes.
+Neither is read by anything under upstream's ``src/``, and neither is an answer
+key:
+
+* ``summary`` (1,920 lang-detect rows) — the summary the *conflicting* user
+  instruction asks for, so it is reference material for the instruction the model
+  is supposed to refuse, not for grading it.
+* ``original_prompt`` (1,082 rows) — the pre-conflict phrasing the row was built
+  from, provenance for how the benchmark was constructed.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
