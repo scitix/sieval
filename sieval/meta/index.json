@@ -25,6 +25,27 @@
       "checksums": {}
     },
     {
+      "name": "advanced_if",
+      "display_name": "AdvancedIF",
+      "description": "Expert-written prompts with human-curated rubrics for advanced instruction following.",
+      "source": [
+        "hf:facebook/AdvancedIF@e20cba9b94b59c027dfab00b29244e8bc42e4ab4"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-NC-4.0",
+      "checksums": {}
+    },
+    {
       "name": "aime_2024",
       "display_name": "AIME 2024",
       "description": "American Invitational Mathematics Examination 2024, 30 problems.",
@@ -935,6 +956,26 @@
         "source": "aa-lcr",
         "url": "https://huggingface.co/datasets/ArtificialAnalysis/AA-LCR/blob/bdae010bbce259820c0e34c1d7cce210d966fb75/README.md",
         "notes": "Generative port of Artificial Analysis Long Context Reasoning (AA-LCR): 100 hard reasoning questions over 234 documents across 30 document sets (avg ~99k input tokens/set). No upstream eval code — the input prompt and the binary CORRECT/INCORRECT equality-checker prompt are the dataset card's own snippets (reproduced verbatim in sieval.community.aa_lcr, HF revision bdae010bbce259820c0e34c1d7cce210d966fb75). Headline metric = accuracy over the full set (pipeline failures counted INCORRECT). Grader is a REAL LLM (official checker: Qwen3 235B A22B 2507 Non-reasoning) supplied via the `grader` task arg on its own api_base/api_key. REPRODUCIBILITY: unlike deterministic-grader tasks, scores depend on the grader endpoint's model version (not pinnable like a Hub revision) — pin the grader model + temperature=0; the per-sample grade, grader model id, and the checker's full ModelOutput (extra.grader_output) are persisted — the reply being the only evidence of a verdict a re-grade need not reproduce, and (parse_grade sends anything unreadable to INCORRECT) the only way to tell format drift from a real negative. Documents are prompted in data_source_filenames order (loader-guaranteed), per the card. DEVIATION (the port's only score-affecting one): empty/whitespace candidates are graded INCORRECT without invoking the checker — the checker returns CORRECT on an empty candidate, which would inflate accuracy (grader_output absent there, no call made). REPEATS: AA-LCR uses n=3 (pass@1 aggregated across attempts); `n` is a task arg (tasks.<name>.args.n), NOT a model arg — infer forwards it call-time and call-time wins, so setting `n` on the model is overridden by the task default n=1. VALIDATION: reproduced gpt-oss-120b / gpt-oss-20b (reasoning=high) within ~2-3 pts of the AA public leaderboard (official 50.7 / 30.7), grader Qwen3-235B-A22B-Instruct-2507 at temperature 0, n=3."
+      },
+      "status": "experimental"
+    },
+    {
+      "name": "advanced_if_0shot_gen",
+      "display_name": "AdvancedIF (0-shot, generative)",
+      "description": "Instruction following graded against expert-written rubrics by an LLM judge.",
+      "dataset": "advanced_if",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "facebookresearch/AdvancedIF",
+        "url": "https://github.com/facebookresearch/AdvancedIF/blob/f9d30137c4139d4d9af260ae28108b5afae828c0/judge.py",
+        "notes": "Port of AdvancedIF (Meta, arXiv:2511.10507), 1,645 prompts across complex_if_single_turn_v5 (402), system_steerability_v2 (507) and carried_context_multi_turn_eval_v5 (736). Headline score is the overall pass rate (share of samples the grader marked SATISFIED_ALL_REQUIREMENTS=yes), the number the paper reports; micro_pass_rate is the co-published rubric-level rate; macro_pass_rate is sieval's, NOT published, averaging the per-sample rate so every sample weighs the same. LICENSING: upstream ships judge.py under CC-BY-NC-4.0, incompatible with sieval's Apache-2.0 tree, so the prompts are NOT vendored -- the operator stages a checkout and points SIEVAL_ADVANCED_IF_SRC at it, digest-checked against commit f9d30137c4139d4d9af260ae28108b5afae828c0 (which also makes them byte-exact by construction). The dataset is CC-BY-NC-4.0 too, so running this benchmark accepts those terms either way. UPSTREAM DEFECT (reproduced, not corrected): upstream routes to the system-steerability judge on benchmark_name == 'if_system_steerability_oss', a value the released dataset never contains (it ships 'system_steerability_v2'), so all 507 system-prompt rows are graded by the plain user-instruction judge and the CLI's --task choices match zero rows; processor.process_file's own docstring uses the released spelling, so the if_*_oss literals are what went stale. Kept verbatim so the unqualified name tracks upstream. Correcting it is MEASURED at +0.00 on the SS pass rate (507 rows, same responses and grader, judge prompt 5,893 -> 31,598 chars) while flipping 13.8% of individual verdicts, so no _fixed variant ships -- it would matter only for per-sample analysis. DEVIATIONS (two, both in grader-reply handling): (1) a fenced/prose-wrapped JSON verdict is recovered, since sieval cannot force response_format on an arbitrary endpoint and a fenced reply would otherwise score zero everywhere -- the same scan also recovers a verdict wrapped in a JSON array, which upstream fails the row on; (2) a non-string rubric answer is stringified instead of failing the row -- with the declaration NO that moves micro_pass_rate alone, with YES it also moves the headline (upstream fails the row, this port honours the declaration). (1) does fire in practice, on endpoints that drop response_format; (2) never fired in 1,644 live gradings. GRADER is a REAL LLM (upstream: o3-mini-2025-01-31, max_completion_tokens=32768, response_format=json_object) supplied via the `grader` task arg; pin it, as its version is not pinnable the way a Hub revision is. Send NO temperature: upstream stores self.temperature but _call_openai_api never passes it, and a reasoning-model grader rejects an explicit value outright ('temperature, top_p and n are fixed at 1'), o3-mini included -- setting it fails every grader call, and a wholly failed grading stage still reports score 0.0, which reads as a score rather than a floor. Give the grader a real thinking budget: at one endpoint's default effort the same grader emitted 0-char reasoning and ~97 output tokens for up to 20 rubrics and scored 17 points lower than itself at high effort. Its full ModelOutput and per-rubric answers are persisted under the judgement record's `extra`. VALIDATION: the port is verified against upstream, but NO published number is reproducible. Verified model-free -- judge prompts byte-identical to upstream's own _compose_prompt on all 1,645 rows for both judge classes; per-row verdicts identical to upstream's real evaluate() on 21,385 (row, reply) pairs across 13 reply shapes; pooled rates exact on every schema-conforming shape; paper Table 1 reproduced from these loaders (counts 402/736/507, avg criteria 7.44/6.08/9.81, avg turns 1.00/7.69/11.21). NOT reproducible -- the paper's judge and every model it evaluates (GPT-5, GPT-4.1, Gemini 2.5/3 Pro, Claude 4 Sonnet, Llama 4 Maverick) are legacy or retired, and judge choice alone spans ~29 points because the headline is all-or-nothing over ~7.6 rubrics: raising judge effort moved per-rubric micro only 87.2->91.8 but all-pass 48.0->65.1, a 3.4x amplification. Judge instability on identical rows: 86.6% per-sample self-agreement (same judge, same config), 69.1% across effort settings, 61.8% across families. The best available judge put gpt-5.1 at macro 76.7 against the paper's GPT-5 77.9, but with per-aspect errors of +5.1/+0.1/-8.8 that merely cancel -- not agreement, and must not be quoted as such. Upstream releases no calibration set (its Table 4 human labels are unpublished), so a replacement judge cannot be checked against human agreement first; pin and report the judge beside every score so runs stay comparable to each other."
       },
       "status": "experimental"
     },
