@@ -399,6 +399,41 @@ def test_report_survives_a_run_where_every_sample_failed():
     report = asyncio.run(_task().report([], [object(), object()]))
     assert report["fails"] == 2
     assert report["score"] == 0.0
+    # Even with nothing to pool, the headline still says which column it is and
+    # which population it averaged over -- a bare report on a wholly failed run
+    # is exactly where a reader most needs both.
+    assert report["score_key"] == "all_turns_all_languages_overall"
+    assert report["all_turns_all_languages_overall"] == 0.0
+    assert report["denominator_policy"] == "judged"
+
+
+def test_report_declares_the_headline_column_and_its_population():
+    # `score` is the mean of the per-turn overalls, so unlike its IFEval and
+    # IFBench siblings it is not a copy of one of four co-equal rates -- it is a
+    # cell of its own, and `score_key` names it rather than crowning a turn.
+    three = _judge(
+        ["no commas.", "no commas. the end.", "alpha without commas. the end."]
+    )
+    two = _judge(["no commas.", "no commas. the end."], n_turns=2)
+    report = asyncio.run(_task().report([_Final(three), _Final(two)], [object()]))
+
+    assert report["score_key"] == "all_turns_all_languages_overall"
+    # The named cell and the headline are the same number, not two computations
+    # that could drift.
+    assert report["score"] == report["all_turns_all_languages_overall"]
+    # And it really is the mean over the turns present, not turn 3 or turn 1.
+    turns = [
+        report[f"turn_{turn}_all_languages_overall"]
+        for turn in (1, 2, 3)
+        if f"turn_{turn}_all_languages_overall" in report
+    ]
+    assert report["score"] == pytest.approx(sum(turns) / len(turns))
+
+    # `judged`: the failure went to `fails`, and did not enter any turn's
+    # denominator as a conversation that followed nothing.
+    assert report["denominator_policy"] == "judged"
+    assert report["fails"] == 1
+    assert report["turn_1_prompts_number"] == 2
 
 
 @pytest.fixture

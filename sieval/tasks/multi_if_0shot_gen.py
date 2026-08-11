@@ -103,6 +103,11 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    SCORE_KEY_FIELD,
+)
 from sieval.core.types import JSONValue
 from sieval.datasets import MultiIFDatasetSample
 
@@ -113,6 +118,11 @@ _GRADES = ("strict", "loose")
 # The pooled cell every published Multi-IF number is quoted against; kept
 # distinct from the CSV's own `language` values, which are English names.
 _ALL_LANGUAGES = "all_languages"
+
+# The headline cell: pooled over languages *and* over turns. Named to match the
+# per-turn cells it averages (`turn_{t}_all_languages_overall`), so the family
+# reads as one series rather than as a total bolted onto its parts.
+_ALL_TURNS_KEY = "all_turns_all_languages_overall"
 
 
 @cache
@@ -499,7 +509,23 @@ class MultiIFZeroShotGenTask(
         # Upstream reports each turn separately; a task needs one headline, and
         # the benchmark's subject is how following degrades across turns, so the
         # mean over turns is the summary that does not privilege one of them.
-        results["score"] = (
+        #
+        # Named rather than only assigned to `score`: every other turn-and-language
+        # cell this report writes has a name, and the pooled-over-turns one is the
+        # single cell a reader is most likely to want to cite or re-derive. It also
+        # lets `score_key` name a column that exists -- a headline computed inline
+        # can only be pointed at by inventing a key or by crowning one turn, and
+        # crowning turn 3 would bake in a guess about what published tables quote
+        # (see `reference_impl.notes`) rather than report upstream's arithmetic.
+        results[_ALL_TURNS_KEY] = (
             sum(turn_overalls) / len(turn_overalls) if turn_overalls else 0.0
         )
+        results["score"] = results[_ALL_TURNS_KEY]
+        results[SCORE_KEY_FIELD] = _ALL_TURNS_KEY
+        # `judged`: `report` pools over the judgements it was handed, and a sample
+        # that never produced one is counted in `fails` instead of entering a
+        # denominator as a followed-nothing conversation. The same reading applies
+        # within a sample -- a turn the walk never reached is absent from that
+        # turn's denominator, which is why `turn_{t}_prompts_number` is reported.
+        results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
         return results
