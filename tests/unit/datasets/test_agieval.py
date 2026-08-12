@@ -69,12 +69,19 @@ _ROWS: dict[str, dict] = {
 }
 
 
-def _stage(tmp_path: Path, *subsets: str, label_override=None) -> str:
+def _stage(
+    tmp_path: Path,
+    *subsets: str,
+    label_override=None,
+    row_overrides: dict | None = None,
+) -> str:
     """Write one .jsonl per subset, the way `sieval dataset download` stages them."""
     for subset in subsets:
         row = dict(_ROWS[subset])
         if label_override is not None:
             row["label"] = label_override
+        if row_overrides:
+            row.update(row_overrides)
         path = tmp_path / f"{subset}.jsonl"
         path.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
     return str(tmp_path)
@@ -135,6 +142,16 @@ def test_multi_label_row_raises_instead_of_silently_rescoring(tmp_path):
     path = _stage(tmp_path, "jec-qa-kd", label_override=["A", "B"])
     with pytest.raises(ValueError, match="single-answer label"):
         AGIEvalDataset(path, subsets=["jec-qa-kd"])
+
+
+def test_mcq_row_without_options_raises_instead_of_dropping_the_choices(tmp_path):
+    # Only the two cloze subsets may omit `options`. Coercing a null to [] on an
+    # MCQ subset would prompt the question with no answer choices and score
+    # whatever came back, so the shape change has to surface as an error rather
+    # than as a low number.
+    path = _stage(tmp_path, "sat-math", row_overrides={"options": None})
+    with pytest.raises(ValueError, match="only the cloze subsets"):
+        AGIEvalDataset(path, subsets=["sat-math"])
 
 
 def test_subsets_and_group_together_is_rejected(tmp_path):

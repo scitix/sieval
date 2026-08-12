@@ -15,9 +15,9 @@ formats and nobody runs all of them by accident:
 
 Rows keep upstream's field names and nullability (``passage`` / ``question`` /
 ``options`` / ``label`` / ``answer`` / ``other``) and gain ``subset``, which is
-absent from the raw rows but decides prompt, parsing and scoring downstream. Two
-source-shape normalizations are unavoidable when concatenating the files, both
-verdict-neutral and both guarded — see :meth:`AGIEvalDataset.load`.
+absent from the raw rows but decides prompt, parsing and scoring downstream.
+Three source-shape normalizations are unavoidable when concatenating the files,
+all verdict-neutral and all guarded — see :meth:`AGIEvalDataset.load`.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -30,6 +30,7 @@ from datasets import DatasetDict as HFDatasetDict
 from datasets import Features, List, Value, concatenate_datasets, load_dataset
 
 from sieval.community.agieval.dataset_loader import (
+    MATH_OUTPUT_SUBSETS,
     MATH_SUBSETS,
     SUBSETS,
 )
@@ -165,7 +166,7 @@ class AGIEvalDataset(Dataset[AGIEvalDatasetSample]):
         always :data:`SUBSETS` order, so the concatenation — and every sample id
         derived from it — does not depend on how the argument was spelled.
 
-        Two normalizations, both required to concatenate the files at all:
+        Three normalizations, each required to concatenate the files at all:
 
         * ``label`` is a 1-element **list** in ``jec-qa-kd`` / ``jec-qa-ca`` and
           a string everywhere else; the list is unwrapped to its single element.
@@ -174,6 +175,12 @@ class AGIEvalDataset(Dataset[AGIEvalDatasetSample]):
         * ``other.level`` is an ``int64`` in ``math.jsonl`` and absent elsewhere;
           stringified so the struct has one dtype across subsets. No other column
           is cast — upstream already ships them as strings.
+        * ``options`` is ``null`` on the two cloze subsets (1,118 rows, which
+          have no choices to show) and a list of strings on the other 19;
+          coerced to ``[]`` so the column has one dtype. Verdict-neutral because
+          no cloze prompt renders options — which is exactly why it is guarded
+          by subset: a *silent* ``[]`` on an MCQ subset would render a question
+          with no choices and score whatever the parser made of the reply.
         """
         selected = self._select_subsets(subsets, group)
 
@@ -245,12 +252,23 @@ class AGIEvalDataset(Dataset[AGIEvalDatasetSample]):
                 )
             label = label[0]
         other = row.get("other") or {}
+        options = row.get("options")
+        if not options and subset not in MATH_OUTPUT_SUBSETS:
+            raise ValueError(
+                f"AGIEval subset {subset!r}: row has no `options`, but only the "
+                f"cloze subsets {list(MATH_OUTPUT_SUBSETS)} may omit them. On an "
+                "MCQ subset the question would be prompted with no answer "
+                "choices and scored anyway, so the shape change must be "
+                "reviewed rather than normalized away. The pinned v1.1 data has "
+                "no such row."
+            )
         return {
             "subset": subset,
             "passage": row.get("passage"),
             "question": row["question"],
-            # None for the cloze subsets, which have no options to show.
-            "options": row.get("options") or [],
+            # null on the two cloze subsets, which have no options to show; the
+            # guard above keeps this from silently emptying an MCQ row.
+            "options": options or [],
             "label": label,
             "answer": row.get("answer"),
             "other": {
