@@ -53,14 +53,18 @@ tasks:
     class: AGIEvalZeroShotGenTask
     dataset: agieval_math
     model: local-model
-    # Answer extraction (stage 2) runs on the model under test by default.
-    # Upstream instead ran it on a fixed cheap model; pin one here to match, and
-    # note the score depends on which you choose:
-    # args:
-    #   extractor:
-    #     model: gpt-3.5-turbo
-    #     api_base: https://api.openai.com/v1
-    #     temperature: 0.0
+    args:
+      # REQUIRED, and it decides the score: on identical stage-1 replies the
+      # macro moved 26 points across five extractors, so there is no default.
+      # `self` re-reads the answer with the model under test, which is what
+      # keeps this example runnable with one model. Upstream instead ran
+      # extraction on a fixed cheap model — pin one like this to match:
+      #   extractor:
+      #     model: gpt-3.5-turbo
+      #     api_base: https://api.openai.com/v1
+      #     temperature: 0.0
+      # Report which you used next to the score; the two are not comparable.
+      extractor: self
     infer_args:
       # Cloze subsets need room to work; MCQ subsets stop long before this.
       max_tokens: 4096

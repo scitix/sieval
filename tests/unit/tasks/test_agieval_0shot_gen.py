@@ -33,17 +33,21 @@ from sieval.tasks.agieval_0shot_gen import AGIEvalZeroShotGenTask
 
 
 class _ScriptedChatModel(ChatModel):
-    """Replies with ``reply`` and records every prompt it was given."""
+    """Replies with ``reply``, recording each prompt and each resolved kwarg set."""
 
-    def __init__(self, name: str = "mock-chat", reply: str = "The answer is D"):
-        super().__init__(model=name, api_key="fake")
+    def __init__(self, name: str = "mock-chat", reply: str = "The answer is D", **args):
+        super().__init__(model=name, api_key="fake", **args)
         self.reply = reply
         self.prompts: list = []
+        self.resolved: list[dict] = []
 
     async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
-        _ = kwargs
         self.prompts.append(prompt)
-        return ModelOutput(model=self.meta(), texts=[self.reply])
+        # The merge ChatModel._agenerate_impl performs: configured model args
+        # first, call-site kwargs last, so the call site wins.
+        resolved = {**self._kwargs, **kwargs}
+        self.resolved.append(resolved)
+        return ModelOutput(model=self.meta(), texts=[self.reply] * resolved.get("n", 1))
 
     async def _alogprobs_impl(self, prompt, **kwargs) -> ModelOutput:
         _ = (prompt, kwargs)
@@ -64,11 +68,19 @@ def _sample(subset: str = "sat-math", **overrides) -> AGIEvalDatasetSample:
     return cast(AGIEvalDatasetSample, sample)
 
 
-def _task(model=None, **kwargs) -> AGIEvalZeroShotGenTask:
+def _task(model=None, extractor="self", **kwargs) -> AGIEvalZeroShotGenTask:
+    """Build the task with the one-model configuration (``extractor="self"``).
+
+    There is no default extractor — it decides the score — so every test states
+    which of the two configurations it is exercising. Left unannotated so the
+    rejection tests can hand it something the signature forbids.
+    """
     dataset = AGIEvalDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
     )
-    return AGIEvalZeroShotGenTask(dataset, model or _ScriptedChatModel(), **kwargs)
+    return AGIEvalZeroShotGenTask(
+        dataset, model or _ScriptedChatModel(), extractor=extractor, **kwargs
+    )
 
 
 @pytest.mark.anyio
@@ -178,33 +190,75 @@ async def test_feedback_survives_a_record_whose_prediction_was_dropped():
 
 
 @pytest.mark.anyio
-async def test_infer_rejects_more_than_one_rollout():
-    """n > 1 can only be billed, never scored: only rollout 0 reaches post_process.
+async def test_infer_pins_n_to_one_on_both_calls():
+    """A stray `n` in the model args must not reach the backend.
 
-    Raising on stage 1 also stops stage 2 from billing a second time for rollouts
-    that scoring will drop.
+    `n` is meaningless here — upstream samples each problem once and only
+    rollout 0 is ever scored — but a model config shared with the sampling
+    tasks carries one, and call-site kwargs win the model layer's merge.
+    Passing `n=1` is what turns such a config into a no-op instead of n x 2
+    calls per problem and a run that fails every sample.
+    """
+    model = _ScriptedChatModel(n=4)
+    task = _task(model)
+    pre = await task.preprocess(_sample(), TaskContext(sample_id=0))
+
+    outputs = await task.infer(pre, TaskContext(sample_id=0))
+
+    assert [resolved["n"] for resolved in model.resolved] == [1, 1]
+    assert [len(out.texts) for out in outputs] == [1, 1]
+
+
+@pytest.mark.anyio
+async def test_infer_rejects_a_backend_that_ignored_n():
+    """More than one rollout is not scoreable: only rollout 0 reaches post_process.
+
+    Unreachable by configuration now that both calls pass `n=1`, so this is the
+    backstop for a backend that returns several anyway. Raising on stage 1 also
+    stops stage 2 from billing for rollouts that scoring would drop.
     """
 
-    class _Many(_ScriptedChatModel):
+    class _IgnoresN(_ScriptedChatModel):
         async def _agenerate_impl(self, prompt, **kwargs) -> ModelOutput:
             _ = kwargs
             self.prompts.append(prompt)
             return ModelOutput(model=self.meta(), texts=["A", "B", "C", "D"])
 
-    model = _Many()
+    model = _IgnoresN()
     task = _task(model)
     pre = await task.preprocess(_sample(), TaskContext(sample_id=0))
 
-    with pytest.raises(ValueError, match="scores one rollout per problem"):
+    with pytest.raises(ValueError, match="backend ignored `n=1`"):
         await task.infer(pre, TaskContext(sample_id=0))
 
     # Raised on stage 1, so stage 2 was never called.
     assert len(model.prompts) == 1
 
 
+def test_extractor_is_required():
+    """Stage 2's model decides the score, so no default is comparable."""
+    with pytest.raises(ValueError, match="requires an `extractor`"):
+        _task(extractor=None)
+
+
 def test_extractor_arg_rejects_a_non_model():
-    with pytest.raises(ValueError, match="model-config dict or a Model"):
+    with pytest.raises(ValueError, match="Got 42"):
         _task(extractor=42)
+
+
+def test_extractor_rejects_a_string_that_is_not_the_sentinel():
+    # "self" is the only accepted string. A near-miss must not fall back to
+    # self-extraction, or a typo would silently choose the more expensive of two
+    # non-comparable measurements.
+    with pytest.raises(ValueError, match="Got 'itself'"):
+        _task(extractor="itself")
+
+
+def test_extractor_self_runs_stage_two_on_the_model_under_test():
+    model = _ScriptedChatModel()
+    task = _task(model, extractor="self")
+
+    assert task._extractor is model
 
 
 @pytest.mark.anyio

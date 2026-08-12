@@ -20,9 +20,10 @@ averages upstream's leaderboard publishes. Which subsets run is a *dataset* knob
 (``subsets=`` / ``group="math"``), not a task knob — see
 :mod:`sieval.datasets.agieval`.
 
-Both stages default to the model under test. Pass ``extractor`` (a model-config
-dict or a Model) to run stage 2 on a fixed, cheap model instead, which is what
-upstream did — see ``reference_impl.notes``.
+``extractor`` is required, because stage 2's model *is* part of the measurement:
+pass a model-config dict (or a Model) to pin a fixed, cheap extractor as upstream
+did, or the literal ``"self"`` to extract with the model under test — a different
+measurement, not a cheaper one. See ``reference_impl.notes``.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -80,15 +81,26 @@ _MACRO_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+# The one non-model value `extractor` accepts: run stage 2 on the model under
+# test. Not a default — stage 2 defines the score, so it is chosen explicitly.
+_EXTRACTOR_SELF = "self"
+
+
 def _reject_extra_rollouts(output: ModelOutput, who: str) -> None:
-    """Fail loudly on ``n > 1``, which this task can only bill for, never score."""
+    """Backstop for the ``n=1`` both calls pass: only rollout 0 can be scored.
+
+    Unreachable by configuration — a stray ``n`` in the model args or in
+    ``infer_args`` loses the merge to the call site. It fires only if a backend
+    ignores ``n``, which is not a sample-level problem to score around.
+    """
     if len(output.texts) > 1:
         raise ValueError(
-            f"AGIEval scores one rollout per problem, but {who} returned "
-            f"{len(output.texts)}. Upstream samples each problem once, so there is "
-            "no published multi-rollout AGIEval to compare against, and only "
-            "rollout 0 reaches post_process — the rest are billed and dropped. "
-            "Remove `n` from the model args (or set n=1)."
+            f"AGIEval requested one rollout, but {who} returned "
+            f"{len(output.texts)} — the backend ignored `n=1`. Upstream samples "
+            "each problem once, so there is no published multi-rollout AGIEval "
+            "to compare against, and only rollout 0 reaches post_process. "
+            "Scoring rollout 0 anyway would silently pick one of several "
+            "samples for every problem in the run."
         )
 
 
@@ -118,13 +130,24 @@ def _reject_extra_rollouts(output: ModelOutput, who: str) -> None:
             "replies that came back empty, which sieval covers with the model's "
             "max_retries. An empty first-stage reply still proceeds to stage 2 "
             "with an empty answer, as upstream's extract_answer does.\n"
+            "DECODING: upstream's query_azure_openai_chat sends temperature=0 "
+            "and stop=['<|im_end|>'] on both calls; both calls here request "
+            "n=1 explicitly (upstream has no n knob at all). temperature "
+            "belongs to the model config in sieval, which "
+            "examples/agieval-math.yaml sets; the stop token is deliberately "
+            "not reproduced, being ChatML's own end marker, which an "
+            "OpenAI-protocol endpoint consumes as a turn delimiter rather than "
+            "emitting as text — sending it cannot change a reply this port is "
+            "able to read.\n"
             "DIVERGENCE (the one protocol-level choice): upstream runs stage 2 on "
-            "gpt-35-turbo no matter which model produced stage 1; sieval defaults "
-            "stage 2 to the model under test and takes the `extractor` task arg "
-            "(model-config dict or Model) to pin a separate one. Matching upstream "
-            "exactly means passing an extractor; leaving it unset measures the "
-            "model's own answer-extraction, which for a weak model is not the same "
-            "number. Pin whichever you choose — the score depends on it.\n"
+            "gpt-35-turbo no matter which model produced stage 1; sieval takes "
+            "the `extractor` task arg (a model-config dict, a Model, or the "
+            'literal "self") and REQUIRES it, as the LLM-judge tasks require '
+            "`grader`: stage 2's model is part of the measurement, not serving "
+            "config, so there is no default two runs could safely be compared "
+            'across. A pinned extractor matches upstream; "self" measures the '
+            "model's own answer-extraction, which for a weak model is not the "
+            "same number. Whichever you choose, report it next to the score.\n"
             "SCORING: set-of-letters for jec-qa-kd / jec-qa-ca / gaokao-physics, "
             "math equivalence for math / gaokao-mathcloze, exact string compare "
             "otherwise. The math grader is AGIEval's own vendored hendrycks/math "
@@ -146,9 +169,11 @@ def _reject_extra_rollouts(output: ModelOutput, who: str) -> None:
             "model against 38.1. (Both measured through upstream's own code; the 5 "
             "residual losses are golds containing '=', which the parser cuts down to "
             "the right-hand side.) A perfect, naturally-formatting model cannot exceed "
-            "about 96.9 on `score`.\n"
-            "THE EXTRACTOR DEFINES THE SCORE — MEASURED, not asserted, and the "
-            "default is the risky setting. On identical stage-1 replies (315 rows, "
+            "about 96.9 on `score` — or 87.2 on `macro_math`, the key this quirk "
+            "actually caps, gaokao-mathcloze being 1 of that group's 5 subsets.\n"
+            "THE EXTRACTOR DEFINES THE SCORE — MEASURED, not asserted, which is "
+            "why the arg is required rather than defaulted. On identical "
+            "stage-1 replies (315 rows, "
             "15/subset) the macro moved 52.70–78.73 across five extractors: a "
             "26-point spread, wider than the published GPT-4o → GPT-3.5-Turbo gap of "
             "16.3. Most of it is NOT extractor capability but this parser: "
@@ -218,29 +243,41 @@ class AGIEvalZeroShotGenTask(
         dataset,
         model,
         name: str | None = None,
-        extractor: Mapping | Model | None = None,
+        extractor: Mapping | Model | str | None = None,
     ):
         super().__init__(dataset=dataset, model=model, name=name)
         self._extractor = self._build_extractor(extractor, model)
 
     @staticmethod
-    def _build_extractor(extractor: Mapping | Model | None, model: Model) -> Model:
+    def _build_extractor(
+        extractor: Mapping | Model | str | None, model: Model
+    ) -> Model:
         """Resolve the ``extractor`` task arg into the model for stage 2.
 
-        ``None`` reuses the model under test (see the divergence note in
-        ``reference_impl.notes``); a Mapping is the YAML path, e.g.
-        ``{model: gpt-3.5-turbo, api_base: ..., temperature: 0}``.
+        Stage 2 is where the score is decided — the macro moved 26 points across
+        five extractors on identical stage-1 replies — so this has no safe
+        default and ``None`` raises, the same way the LLM-judge tasks' ``grader``
+        does. A Mapping is the YAML path, e.g.
+        ``{model: gpt-3.5-turbo, api_base: ..., temperature: 0}``; the literal
+        ``"self"`` opts into extracting with the model under test.
         """
-        if extractor is None:
-            return model
         if isinstance(extractor, Model):
             return extractor
-        if isinstance(extractor, Mapping):
+        # str first, and as an `elif` chain, so the Mapping branch narrows to a
+        # real mapping: any other string is a typo, not a configuration, and
+        # falls through to the error below rather than silently self-extracting.
+        if isinstance(extractor, str):
+            if extractor == _EXTRACTOR_SELF:
+                return model
+        elif isinstance(extractor, Mapping):
             return ChatModel(**extractor)
         raise ValueError(
-            "AGIEval `extractor` must be a model-config dict or a Model, got "
-            f"{type(extractor).__name__}. Omit it to run answer extraction on "
-            "the model under test."
+            "AGIEval requires an `extractor` in the task args: stage 2's model "
+            "decides the score (a 26-point macro spread across five extractors "
+            "on identical stage-1 replies), so no default is comparable across "
+            "runs. Pass a model-config dict such as {model: gpt-3.5-turbo, "
+            "api_base: ..., temperature: 0} to match upstream, or the literal "
+            f'"self" to extract with the model under test. Got {extractor!r}.'
         )
 
     @override
@@ -265,11 +302,13 @@ class AGIEvalZeroShotGenTask(
         and stage 1's reply — the actual reasoning — stays on disk as evidence.
         """
         subset = pre["extra"]["subset"]
-        first = await self.model.agenerate(pre["prompt"])
-        # Upstream samples each problem once and there is no multi-rollout AGIEval
-        # to be faithful to. Raise BEFORE stage 2, which would otherwise bill a
-        # second time for rollouts that scoring drops: only rollout 0 reaches
-        # post_process, so n>1 silently pays n x 2 calls to score one.
+        # `n=1` explicitly, as every task taking an `n` passes its own: call-time
+        # kwargs win the `{**self._kwargs, **kwargs}` merge in the model layer,
+        # so a stray `n` in the model args or in `infer_args` — meaningless here,
+        # since upstream samples each problem once and only rollout 0 reaches
+        # post_process — is pinned back to 1 instead of billing n x 2 calls per
+        # problem. Checked after the call in case the backend ignored it.
+        first = await self.model.agenerate(pre["prompt"], n=1)
         _reject_extra_rollouts(first, "the model under test")
         # An empty reply is carried into stage 2 as "", matching upstream's
         # extract_answer, rather than failing the sample.
@@ -285,7 +324,8 @@ class AGIEvalZeroShotGenTask(
                     "role": "user",
                     "content": second_stage_prompt(subset, context, answer),
                 },
-            ]
+            ],
+            n=1,
         )
         _reject_extra_rollouts(second, "the extractor")
         return [first, second]
