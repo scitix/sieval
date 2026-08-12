@@ -106,6 +106,7 @@ def _reject_extra_rollouts(output: ModelOutput, who: str) -> None:
     tags=("english", "chinese", "multiple-choice", "open-ended"),
     model_type="chat",
     status="experimental",
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="AGIEval",
         url="https://github.com/ruixiangcui/AGIEval/blob/84ab72d94318290aad2e4ec820d535a95a1f7552/src/dataset_loader.py",
