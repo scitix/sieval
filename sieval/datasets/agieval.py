@@ -16,8 +16,8 @@ formats and nobody runs all of them by accident:
 Rows keep upstream's field names and nullability (``passage`` / ``question`` /
 ``options`` / ``label`` / ``answer`` / ``other``) and gain ``subset``, which is
 absent from the raw rows but decides prompt, parsing and scoring downstream.
-Three source-shape normalizations are unavoidable when concatenating the files,
-all verdict-neutral and all guarded — see :meth:`AGIEvalDataset.load`.
+Concatenating the 21 files forces three normalizations, all verdict-neutral and
+all guarded — see :meth:`AGIEvalDataset.load`.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -135,17 +135,17 @@ class AGIEvalDatasetSample(TypedDict):
     tags=("english", "chinese", "multiple-choice", "open-ended"),
     # The closest single SPDX id for the aggregate, not the repo's headline MIT,
     # and NOT a floor -- one of the terms is narrower than any SPDX id expresses.
-    # Upstream's data/v1_1/LICENSE reproduces the source exams' own terms: Gaokao
-    # / SAT / LSAT / MATH are MIT, aqua-rat is Apache-2.0, logiqa-en + logiqa-zh
-    # -- 1,302 of the 7,272 rows, in group=all, en-mcq and zh-mcq -- are
-    # CC BY-NC-SA 4.0, and jec-qa-kd + jec-qa-ca -- 1,012 rows, in group=all and
-    # zh-mcq -- are academic research only, commercial use "strictly prohibited",
-    # plus a required citation of arXiv:1911.12011. That last section is easy to
-    # miss: upstream files it under a duplicated `# MATH` header, and the tell is
-    # `Link: https://jecqa.thunlp.org/`. Academic-only grants strictly less than
-    # CC BY-NC-SA 4.0's NonCommercial share-and-adapt, so no single value bounds
-    # the aggregate: selecting subsets narrows which terms apply, and a caller
-    # redistributing a selection must read data/v1_1/LICENSE, not this field.
+    # Upstream's data/v1_1/LICENSE reproduces each source exam's own terms: Gaokao
+    # / SAT / LSAT / MATH MIT, aqua-rat Apache-2.0, logiqa-en + logiqa-zh (1,302 of
+    # the 7,272 rows; group=all, en-mcq, zh-mcq) CC BY-NC-SA 4.0, and jec-qa-kd +
+    # jec-qa-ca (1,012 rows; group=all, zh-mcq) academic research only, commercial
+    # use "strictly prohibited", plus a required citation of arXiv:1911.12011.
+    # That last section is easy to miss -- upstream files it under a duplicated
+    # `# MATH` header, and the tell is `Link: https://jecqa.thunlp.org/`. Because
+    # academic-only grants strictly less than CC BY-NC-SA 4.0's NonCommercial
+    # share-and-adapt, no single value bounds the aggregate: a selection narrows
+    # which terms apply, so redistributing one means reading that LICENSE, not
+    # this field.
     license="CC-BY-NC-SA-4.0",
 )
 class AGIEvalDataset(Dataset[AGIEvalDatasetSample]):
@@ -168,19 +168,19 @@ class AGIEvalDataset(Dataset[AGIEvalDatasetSample]):
 
         Three normalizations, each required to concatenate the files at all:
 
-        * ``label`` is a 1-element **list** in ``jec-qa-kd`` / ``jec-qa-ca`` and
-          a string everywhere else; the list is unwrapped to its single element.
-          A longer list (AGIEval v1.0 had genuine multi-label rows) raises rather
-          than silently changing what gets compared.
+        * ``label`` is a 1-element **list** in ``jec-qa-kd`` / ``jec-qa-ca`` and a
+          string everywhere else; the list is unwrapped. A longer one (v1.0 had
+          genuine multi-label rows) raises rather than silently changing what gets
+          compared.
         * ``other.level`` is an ``int64`` in ``math.jsonl`` and absent elsewhere;
           stringified so the struct has one dtype across subsets. No other column
           is cast — upstream already ships them as strings.
-        * ``options`` is ``null`` on the two cloze subsets (1,118 rows, which
-          have no choices to show) and a list of strings on the other 19;
-          coerced to ``[]`` so the column has one dtype. Verdict-neutral because
-          no cloze prompt renders options — which is exactly why it is guarded
-          by subset: a *silent* ``[]`` on an MCQ subset would render a question
-          with no choices and score whatever the parser made of the reply.
+        * ``options`` is ``null`` on the two cloze subsets (1,118 rows with no
+          choices to show) and a list of strings on the other 19; coerced to
+          ``[]`` for one dtype. Verdict-neutral only because no cloze prompt
+          renders options, which is why it is guarded by subset: a *silent* ``[]``
+          on an MCQ subset would render a question with no choices and score
+          whatever the parser made of the reply.
         """
         selected = self._select_subsets(subsets, group)
 
@@ -257,10 +257,9 @@ class AGIEvalDataset(Dataset[AGIEvalDatasetSample]):
             raise ValueError(
                 f"AGIEval subset {subset!r}: row has no `options`, but only the "
                 f"cloze subsets {list(MATH_OUTPUT_SUBSETS)} may omit them. On an "
-                "MCQ subset the question would be prompted with no answer "
-                "choices and scored anyway, so the shape change must be "
-                "reviewed rather than normalized away. The pinned v1.1 data has "
-                "no such row."
+                "MCQ subset the question would be prompted with no answer choices "
+                "and scored anyway, so the shape change must be reviewed rather "
+                "than normalized away. The pinned v1.1 data has no such row."
             )
         return {
             "subset": subset,
