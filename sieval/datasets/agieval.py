@@ -132,13 +132,19 @@ class AGIEvalDatasetSample(TypedDict):
     },
     categories=(Category(Level1Category.KNOWLEDGE, "Multi-domain"),),
     tags=("english", "chinese", "multiple-choice", "open-ended"),
-    # The FLOOR of the aggregate, not the repo's headline MIT. Upstream's
-    # data/v1_1/LICENSE reproduces the source exams' own terms: Gaokao / SAT / LSAT
-    # / MATH are MIT, aqua-rat is Apache-2.0, and logiqa-en + logiqa-zh -- 1,302 of
-    # the 7,272 rows, present in group=all, en-mcq and zh-mcq -- are
-    # CC BY-NC-SA 4.0. jec-qa is not covered by that file at all. Selecting subsets
-    # narrows which terms actually apply; a single declared value cannot, so it
-    # declares the most restrictive one a caller could end up bound by.
+    # The closest single SPDX id for the aggregate, not the repo's headline MIT,
+    # and NOT a floor -- one of the terms is narrower than any SPDX id expresses.
+    # Upstream's data/v1_1/LICENSE reproduces the source exams' own terms: Gaokao
+    # / SAT / LSAT / MATH are MIT, aqua-rat is Apache-2.0, logiqa-en + logiqa-zh
+    # -- 1,302 of the 7,272 rows, in group=all, en-mcq and zh-mcq -- are
+    # CC BY-NC-SA 4.0, and jec-qa-kd + jec-qa-ca -- 1,012 rows, in group=all and
+    # zh-mcq -- are academic research only, commercial use "strictly prohibited",
+    # plus a required citation of arXiv:1911.12011. That last section is easy to
+    # miss: upstream files it under a duplicated `# MATH` header, and the tell is
+    # `Link: https://jecqa.thunlp.org/`. Academic-only grants strictly less than
+    # CC BY-NC-SA 4.0's NonCommercial share-and-adapt, so no single value bounds
+    # the aggregate: selecting subsets narrows which terms apply, and a caller
+    # redistributing a selection must read data/v1_1/LICENSE, not this field.
     license="CC-BY-NC-SA-4.0",
 )
 class AGIEvalDataset(Dataset[AGIEvalDatasetSample]):
