@@ -1,9 +1,20 @@
-"""JSON-shape primitives shared by the declaration and requirement modules.
+"""JSON-shape primitives for the modules that build reconciliation records.
 
-`capabilities` and `requirements` both normalise user-supplied JSON into the
-record shapes `reconcile()` consumes, so both need the same detach-and-validate
-step. They held byte-identical private copies of it; a single owner keeps the
-error vocabulary from drifting between the two halves of one contract.
+`capabilities`, `requirements` and `reconcile` all normalise user-supplied JSON
+into the record shapes `reconcile()` consumes, so all three need the same
+detach-and-validate step, and all three must agree on what "representable" means
+-- a value one of them accepts and another rejects makes the record depend on
+which module touched it first.
+
+They held three private copies. Two were byte-identical; `reconcile`'s had
+already drifted, rejecting the same values with different wording. That drift is
+the argument for a single owner: this module exists because the rule is one
+contract, not because the code happened to repeat.
+
+`validate_nonempty_string` is here on weaker grounds -- three characters of
+policy, and the three copies never diverged. It stays because `capabilities` and
+`requirements` already import from this module, not as precedent for moving
+every shared three-liner here.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """

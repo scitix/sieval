@@ -42,6 +42,7 @@ from sieval.core.models.dialect import (
     validate_input_scoring,
     validate_request_invariants,
     validate_runtime_binding_plan,
+    validate_top_logprobs,
 )
 from sieval.core.models.ir import (
     CompletionInput,
@@ -53,8 +54,6 @@ from sieval.core.models.ir import (
     UsageStats,
 )
 from sieval.core.types import JSONValue
-
-from ._shared import resolve_choice_index, validate_top_logprobs
 
 _PREFILL_UNSUPPORTED_REASON = (
     "assistant prefill is a chat input operation, not a completion operation"
@@ -317,6 +316,17 @@ def _sampled_logprob(raw: object, path: str) -> float | None:
     return normalized
 
 
+def _choice_index(choice: object, n: int) -> int:
+    index = getattr(choice, "index", None)
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise OutputContractError("completion choice index must be an integer")
+    if not 0 <= index < n:
+        raise OutputContractError(
+            f"completion choice index {index} is outside the requested range [0, {n})"
+        )
+    return index
+
+
 def _choice_sequence(raw: object) -> Sequence[object]:
     if raw is None:
         return ()
@@ -562,7 +572,7 @@ class _Accumulator:
 
     def capture_choices(self, raw_choices: object) -> None:
         for choice in _choice_sequence(raw_choices):
-            index = resolve_choice_index(choice, self._context.n, "completion")
+            index = _choice_index(choice, self._context.n)
             if not self._streaming and index in self._seen_indices:
                 raise OutputContractError(
                     f"completion response duplicated choice index {index}"

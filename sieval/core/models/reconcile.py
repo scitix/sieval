@@ -18,6 +18,7 @@ from typing import Never, Protocol, Self, cast
 from sieval.core.types import JSONValue
 
 from ._fingerprint import fingerprint_mapping
+from ._shared import copy_json_value
 from .capabilities import (
     CAPABILITY_KEYS,
     CAPABILITY_SPECS,
@@ -1773,27 +1774,6 @@ def _nonempty(value: object, name: str) -> None:
         raise TypeError(f"{name} must be a non-empty string")
 
 
-def _copy_json(value: object, path: str) -> JSONValue:
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{path} must not contain non-finite floats")
-        return value
-    if isinstance(value, Mapping):
-        copied: dict[str, JSONValue] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError(f"{path} keys must be strings")
-            copied[key] = _copy_json(item, f"{path}.{key}")
-        return copied
-    if isinstance(value, (list, tuple)):
-        return [
-            _copy_json(item, f"{path}[{index}]") for index, item in enumerate(value)
-        ]
-    raise TypeError(f"{path} contains non-JSON value {type(value).__name__}")
-
-
 class _FrozenJSONList(list[JSONValue]):
     """List-shaped JSON value that rejects mutation while preserving equality."""
 
@@ -1890,7 +1870,7 @@ def _freeze_capability_intent(value: CapabilityIntent, path: str) -> CapabilityI
 
 
 def _thaw_json(value: object) -> JSONValue:
-    return _copy_json(value, "serialized value")
+    return copy_json_value(value, "serialized value")
 
 
 def _json_sequence(value: JSONValue) -> tuple[str | int | float | bool | None, ...]:

@@ -28,6 +28,7 @@ from .ir import (
     TextPart,
     ToolCallPart,
     ToolResultPart,
+    TopKEntry,
     response_field_contract,
 )
 
@@ -524,6 +525,15 @@ def validate_tool_calls(value: object) -> None:
         isinstance(item, FunctionToolCall) for item in value
     ):
         raise OutputContractError("tool_calls channel has invalid shape")
+
+
+def validate_top_logprobs(value: object) -> None:
+    if not isinstance(value, tuple) or not all(
+        isinstance(position, tuple)
+        and all(isinstance(item, TopKEntry) for item in position)
+        for position in value
+    ):
+        raise OutputContractError("top_logprobs channel has invalid shape")
 
 
 def validate_input_scoring(value: object) -> None:

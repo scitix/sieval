@@ -40,6 +40,7 @@ from sieval.core.models.dialect import (
     validate_runtime_binding_plan,
     validate_structured_output,
     validate_tool_calls,
+    validate_top_logprobs,
 )
 from sieval.core.models.ir import (
     ChatInput,
@@ -57,8 +58,6 @@ from sieval.core.models.ir import (
     TopKEntry,
     UsageStats,
 )
-
-from ._shared import resolve_choice_index, validate_top_logprobs
 
 _OPENAI_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
@@ -293,6 +292,17 @@ def _choice_sequence(raw: object) -> Sequence[object]:
     if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
         raise OutputContractError("chat response choices must be a sequence")
     return raw
+
+
+def _choice_index(choice: object, n: int) -> int:
+    index = getattr(choice, "index", None)
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise OutputContractError("chat choice index must be an integer")
+    if not 0 <= index < n:
+        raise OutputContractError(
+            f"chat choice index {index} is outside the requested range [0, {n})"
+        )
+    return index
 
 
 def _validate_choice_coverage(seen: set[int], n: int, *, streaming: bool) -> None:
@@ -701,7 +711,7 @@ class OpenAIChatDialect:
         seen: set[int] = set()
         for raw_choice in _choice_sequence(getattr(raw, "choices", None)):
             choice = cast(Any, raw_choice)
-            index = resolve_choice_index(choice, n, "chat")
+            index = _choice_index(choice, n)
             if index in seen:
                 raise OutputContractError(
                     f"chat response duplicated choice index {index}"
@@ -770,7 +780,7 @@ class OpenAIChatDialect:
                 system_fingerprint = chunk_fingerprint
             for raw_choice in _choice_sequence(getattr(chunk, "choices", None)):
                 choice = cast(Any, raw_choice)
-                choice_index = resolve_choice_index(choice, n, "chat")
+                choice_index = _choice_index(choice, n)
                 seen.add(choice_index)
                 finish_reasons[choice_index] = choice.finish_reason or ""
                 delta = choice.delta
