@@ -251,7 +251,7 @@ class AGIEvalZeroShotGenTask(
             "extractor",
             extractor,
             models_by_role,
-            build=lambda: self._build_extractor(extractor, model),
+            build=lambda cfg: self._build_extractor(cfg, model),
         )
 
     @staticmethod

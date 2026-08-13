@@ -179,7 +179,7 @@ class AALCRZeroShotGenTask(
             "grader",
             grader,
             models_by_role,
-            build=lambda: self._build_grader(grader),
+            build=self._build_grader,
         )
 
     @staticmethod

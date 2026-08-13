@@ -152,6 +152,25 @@ class _TopLogprobsTask(_ConcreteTask):
     )
 
 
+class _MetaNamedTask(_ConcreteTask):
+    """Stands in for a ``@sieval_task``-decorated class, which sets this attr."""
+
+    _sieval_task_meta = SimpleNamespace(name="meta_named_task")
+
+
+class _MetaNamedSubTask(_MetaNamedTask):
+    """Subclass with no meta of its own — must not borrow its parent's name."""
+
+
+def _named_binding(name: str) -> NamedModelBinding:
+    return NamedModelBinding(
+        binding_id=f"binding:{name}",
+        root_deployment_key=f"deployment:{name}",
+        requested_model_id=f"org/{name}",
+        config_name=name,
+    )
+
+
 # ===================================================================
 # name property
 # ===================================================================
@@ -249,21 +268,12 @@ class TestRequiresCapabilityGate:
 
 
 class TestModelRequirementsFor:
-    @staticmethod
-    def _binding(name: str) -> NamedModelBinding:
-        return NamedModelBinding(
-            binding_id=f"binding:{name}",
-            root_deployment_key=f"deployment:{name}",
-            requested_model_id=f"org/{name}",
-            config_name=name,
-        )
-
     def test_binds_candidate_and_preserves_task_source(self):
-        candidate = self._binding("candidate")
+        candidate = _named_binding("candidate")
         context = RequirementContext(
             model_bindings={
                 "candidate": candidate,
-                "judge": self._binding("judge"),
+                "judge": _named_binding("judge"),
             }
         )
 
@@ -275,7 +285,7 @@ class TestModelRequirementsFor:
         assert result.source_task == "_ScoringTask"
 
     def test_single_legacy_model_alias_is_accepted(self):
-        binding = self._binding("legacy")
+        binding = _named_binding("legacy")
         (result,) = _ConcreteTask.model_requirements_for(
             RequirementContext(model_bindings={"model": binding})
         )
@@ -286,13 +296,174 @@ class TestModelRequirementsFor:
     def test_candidate_and_model_alias_are_ambiguous(self):
         context = RequirementContext(
             model_bindings={
-                "candidate": self._binding("candidate"),
-                "model": self._binding("legacy"),
+                "candidate": _named_binding("candidate"),
+                "model": _named_binding("legacy"),
             }
         )
 
         with pytest.raises(ValueError, match="ambiguous"):
             _ConcreteTask.model_requirements_for(context)
+
+
+# ===================================================================
+# auxiliary model-role binding — the declaration half
+# ===================================================================
+class TestBindRoleRequirement:
+    """Reached directly by the eight grader/extractor tasks.
+
+    ``model_requirements_for`` picks ``role`` out of the bindings it was handed,
+    so it can never miss one; those tasks name a literal role instead, which is
+    the only way the missing-binding branch fires.
+    """
+
+    def test_binds_the_named_role(self):
+        grader = _named_binding("grader")
+        context = RequirementContext(
+            model_bindings={"candidate": _named_binding("candidate"), "grader": grader}
+        )
+
+        (result,) = _ConcreteTask._bind_role_requirement(
+            context, "grader", _ScoringTask.requires
+        )
+
+        assert result.role == "grader"
+        assert result.binding is grader
+        assert result.requires is _ScoringTask.requires
+        assert result.source_task == "_ConcreteTask"
+
+    def test_source_task_prefers_the_decorated_name(self):
+        context = RequirementContext(
+            model_bindings={"grader": _named_binding("grader")}
+        )
+
+        (result,) = _MetaNamedTask._bind_role_requirement(
+            context, "grader", _MetaNamedTask.requires
+        )
+
+        assert result.source_task == "meta_named_task"
+
+    def test_source_task_is_not_inherited_from_the_parent(self):
+        """Looked up in ``cls.__dict__``, so a subclass reports its own name."""
+        context = RequirementContext(
+            model_bindings={"grader": _named_binding("grader")}
+        )
+
+        (result,) = _MetaNamedSubTask._bind_role_requirement(
+            context, "grader", _MetaNamedSubTask.requires
+        )
+
+        assert result.source_task == "_MetaNamedSubTask"
+
+    def test_missing_binding_names_the_task_and_role(self):
+        context = RequirementContext(
+            model_bindings={"candidate": _named_binding("candidate")}
+        )
+
+        with pytest.raises(
+            ValueError, match="_ConcreteTask requires a 'grader' model binding"
+        ) as excinfo:
+            _ConcreteTask._bind_role_requirement(
+                context, "grader", _ConcreteTask.requires
+            )
+
+        assert isinstance(excinfo.value.__cause__, KeyError)
+
+    def test_missing_binding_uses_an_before_a_vowel_role(self):
+        context = RequirementContext(
+            model_bindings={"candidate": _named_binding("candidate")}
+        )
+
+        with pytest.raises(ValueError, match="requires an 'extractor' model binding"):
+            _ConcreteTask._bind_role_requirement(
+                context, "extractor", _ConcreteTask.requires
+            )
+
+    def test_rejects_a_context_of_the_wrong_type(self):
+        with pytest.raises(TypeError, match="context must be a RequirementContext"):
+            _ConcreteTask._bind_role_requirement(
+                cast(Any, {"grader": _named_binding("grader")}),
+                "grader",
+                _ConcreteTask.requires,
+            )
+
+    @pytest.mark.parametrize("role", ["", cast(Any, None)])
+    def test_rejects_an_empty_or_non_string_role(self, role):
+        context = RequirementContext(
+            model_bindings={"grader": _named_binding("grader")}
+        )
+
+        with pytest.raises(TypeError, match="role must be a non-empty string"):
+            _ConcreteTask._bind_role_requirement(context, role, _ConcreteTask.requires)
+
+    def test_rejects_requires_of_the_wrong_type(self):
+        """Pins the contract, not the layer that enforces it.
+
+        ``TaskModelRequirement.__post_init__`` rejects a non-``TaskRequirements``
+        with the same message, so this still passes with the guard here removed
+        — deliberately kept as the entry-point contract rather than as cover for
+        that line.
+        """
+        context = RequirementContext(
+            model_bindings={"grader": _named_binding("grader")}
+        )
+
+        with pytest.raises(TypeError, match="requires must be TaskRequirements"):
+            _ConcreteTask._bind_role_requirement(
+                context, "grader", cast(Any, {"input": "chat"})
+            )
+
+
+# ===================================================================
+# auxiliary model-role resolution — the resolution half
+# ===================================================================
+def _unreachable_build(_configured):
+    raise AssertionError("build must not be called when models_by_role is supplied")
+
+
+class TestResolveRoleModel:
+    """The shared ``models_by_role`` contract, independent of any one task."""
+
+    def test_returns_the_pooled_role_model(self):
+        grader = _MockChatModel()
+
+        result = Task._resolve_role_model(
+            "grader", None, {"grader": grader}, build=_unreachable_build
+        )
+
+        assert result is grader
+
+    def test_rejects_both_supply_routes(self):
+        grader = _MockChatModel()
+
+        with pytest.raises(ValueError, match="cannot both be supplied"):
+            Task._resolve_role_model(
+                "grader", grader, {"grader": grader}, build=_unreachable_build
+            )
+
+    def test_missing_role_names_it_and_chains_the_keyerror(self):
+        with pytest.raises(ValueError, match="missing the 'grader' model") as excinfo:
+            Task._resolve_role_model("grader", None, {}, build=_unreachable_build)
+
+        assert isinstance(excinfo.value.__cause__, KeyError)
+
+    def test_build_receives_the_configured_value(self):
+        """``configured`` reaches ``build``, rather than being closed over.
+
+        The call site threading it twice is how a mistyped ``configured`` slips
+        past the both-supplied guard, so the pairing is pinned here.
+        """
+        built = _MockChatModel()
+        seen: list[object] = []
+        configured = {"model": "grader-1"}
+
+        def build(cfg) -> Model:
+            seen.append(cfg)
+            return built
+
+        result = Task._resolve_role_model("grader", configured, None, build=build)
+
+        assert seen == [configured]
+        assert result is built
 
 
 # ===================================================================

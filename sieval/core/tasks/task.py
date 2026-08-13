@@ -229,26 +229,21 @@ class Task[
         )
 
     @classmethod
-    def _resolve_role_model(
+    def _resolve_role_model[T](
         cls,
         role: str,
-        configured: object,
+        configured: T,
         models_by_role: Mapping[str, Model] | None,
         *,
-        build: Callable[[], Model],
+        build: Callable[[T], Model],
     ) -> Model:
         """Resolve one auxiliary model role to the Model the task will call.
 
-        Two supply routes, and they are mutually exclusive. Composition injects
-        ``models_by_role`` for every role it reconciled, which is the pooled
-        path a YAML run takes. Direct construction (tests, programmatic use)
-        passes the role argument instead, and ``build`` is the task's own
-        constructor for it — task-specific because each role's "you must supply
-        one" message carries that task's reason.
-
-        Supplying both is a configuration error rather than a precedence
-        question: silently preferring either one would let a run score against
-        a model the config did not name.
+        ``models_by_role`` is the pooled path a YAML run takes; otherwise
+        ``build`` turns ``configured`` into the Model, so each task keeps its
+        own "you must supply one" message. Supplying both is an error rather
+        than a precedence question: silently preferring either would let a run
+        score against a model the config did not name.
         """
 
         if models_by_role is not None:
@@ -260,7 +255,7 @@ class Task[
                 raise ValueError(
                     f"models_by_role is missing the {role!r} model"
                 ) from exc
-        return build()
+        return build(configured)
 
     @classmethod
     def _bind_top_logprobs_requirements(

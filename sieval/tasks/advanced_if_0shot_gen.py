@@ -223,7 +223,7 @@ class AdvancedIFZeroShotGenTask(
             "grader",
             grader,
             models_by_role,
-            build=lambda: self._build_grader(grader),
+            build=self._build_grader,
         )
         # Validate the checkout here, not at the first grade. Discovered in
         # feedback() it costs a whole generation pass to learn: every grade then
