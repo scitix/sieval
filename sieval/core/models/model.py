@@ -185,12 +185,9 @@ _REMOVED_SUBCLASS_HOOKS = frozenset({"_agenerate_impl", "_alogprobs_impl"})
 def _named_json_value(value: object, name: str) -> JSONValue:
     """Validate and detach a JSON value, naming the offending leaf on failure.
 
-    Sequences are restricted to ``list``/``tuple`` rather than any ``Iterable``.
-    The result is persisted in ``ModelMeta.default_params``, and the two other
-    shapes an ``Iterable`` admits both corrupt that record silently: a ``set``
-    serializes in hash order, and a generator -- consumed by the first call --
-    serializes as ``[]`` on every later one. The same-package
-    ``_shared.copy_json_value`` has always rejected both; this agrees.
+    Sequences are ``list``/``tuple`` only: the result is persisted, and a
+    ``set`` would serialize in hash order while a generator would serialize
+    as ``[]`` once consumed.
     """
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -211,13 +208,11 @@ def _named_json_value(value: object, name: str) -> JSONValue:
 
 
 def _checked_builder_defaults(values: Mapping[str, object]) -> dict[str, object]:
-    """Reject builder defaults that ``meta()`` would not be able to persist.
+    """Reject builder defaults that ``meta()`` could not persist.
 
-    ``meta()`` runs once per response, so a default that cannot round-trip
-    through JSON would otherwise raise only after a model call had been made
-    and billed. Checking at bind time moves that to the point where the value
-    is supplied. The originals are stored unconverted -- the request builders
-    still need them as given, and ``meta()`` does its own copy.
+    ``meta()`` runs once per response, so an unpersistable default would
+    otherwise raise only after a call had been billed. Values are stored
+    unconverted -- the request builders need them as given.
     """
     for key, value in values.items():
         _named_json_value(value, f"default_params.{key}")

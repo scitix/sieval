@@ -280,13 +280,10 @@ def _optional_response_string(value: object, path: str) -> str | None:
 
 
 def _completions_usage_stats(raw: object) -> UsageStats | None:
-    """Build usage from a completion reply's prompt and completion counts.
+    """Build usage from the reply's prompt and completion counts.
 
-    ``total_tokens`` is computed rather than read, so a server that reports a
-    total which does not decompose cannot cost the caller a completed reply.
-    Stays separate from the chat copy despite reading the same two field names:
-    response parsing is a per-wire-format concern, and the two endpoints have
-    already diverged once over how much of the reported usage they trusted.
+    ``total_tokens`` is computed, not read: a reported total that does not
+    decompose must not cost the caller a completed reply.
     """
     if raw is None:
         return None
@@ -730,8 +727,7 @@ class _Accumulator:
             raise OutputContractError(
                 "usage completion-token count contradicts echoed logprob positions"
             )
-        # No total-token check: _completions_usage_stats computes the total from
-        # the two counts above, so the identity holds by construction.
+        # No total-token check: the total is computed from these two counts.
         if self._top_logprobs and len(self._top_logprobs) != token_count:
             raise OutputContractError(
                 "input scoring top-logprob positions are inconsistent"

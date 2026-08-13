@@ -650,13 +650,7 @@ class TestBuilderValidation:
         ids=["set", "generator"],
     )
     def test_binding_rejects_default_params_that_cannot_round_trip(self, default):
-        """``default_params`` is persisted, so only stable sequences may enter.
-
-        A ``set`` serializes in hash order; a generator, consumed by the first
-        call, serializes as ``[]`` on every later one. Both corrupt the record
-        without raising, which is why the coercion rejects them outright -- at
-        bind time, before a model call can be spent on a doomed record.
-        """
+        """``default_params`` is persisted: a ``set`` reorders, a generator empties."""
         with pytest.raises(
             TypeError, match="default_params.stop must be JSON-compatible"
         ):

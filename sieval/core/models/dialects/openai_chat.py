@@ -256,13 +256,11 @@ class _LegacyPlan:
 
 
 def _chat_usage_stats(raw: Any) -> UsageStats | None:
-    """Build usage from a chat reply's reported prompt and completion counts.
+    """Build usage from the reply's prompt and completion counts.
 
-    ``total_tokens`` is computed rather than read. A server whose reported total
-    does not decompose into prompt + completion has a bookkeeping quirk, not a
-    corrupt reply, and rejecting it would discard tokens that were generated and
-    billed -- in the streaming path, only once the rollout had already finished.
-    The sglang transport has always summed rather than trusted; this agrees.
+    ``total_tokens`` is computed, not read: a reported total that does not
+    decompose is a bookkeeping quirk, and rejecting the reply would discard
+    tokens already generated and billed.
     """
     if raw is None:
         return None
