@@ -256,9 +256,17 @@ class _LegacyPlan:
 
 
 def _chat_usage_stats(raw: Any) -> UsageStats | None:
+    """Build usage from a chat reply's reported prompt and completion counts.
+
+    ``total_tokens`` is computed rather than read. A server whose reported total
+    does not decompose into prompt + completion has a bookkeeping quirk, not a
+    corrupt reply, and rejecting it would discard tokens that were generated and
+    billed -- in the streaming path, only once the rollout had already finished.
+    The sglang transport has always summed rather than trusted; this agrees.
+    """
     if raw is None:
         return None
-    names = ("prompt_tokens", "completion_tokens", "total_tokens")
+    names = ("prompt_tokens", "completion_tokens")
     values: list[int] = []
     for name in names:
         value = getattr(raw, name, None)
@@ -267,14 +275,10 @@ def _chat_usage_stats(raw: Any) -> UsageStats | None:
                 f"chat usage.{name} must be a non-negative integer"
             )
         values.append(value)
-    if values[2] != values[0] + values[1]:
-        raise OutputContractError(
-            "chat usage.total_tokens must equal prompt_tokens + completion_tokens"
-        )
     return UsageStats(
         input_tokens=values[0],
         output_tokens=values[1],
-        total_tokens=values[2],
+        total_tokens=values[0] + values[1],
     )
 
 

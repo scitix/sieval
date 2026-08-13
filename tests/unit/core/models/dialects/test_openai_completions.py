@@ -430,7 +430,6 @@ class TestInputScoringBoundary:
             (_usage(0, 2), "positive"),
             (_usage(3, 0), "exceeds"),
             (_usage(1, 0), "completion-token"),
-            (_usage(1, 1, 9), "total-token"),
         ],
     )
     async def test_inconsistent_usage_is_an_error(
@@ -450,6 +449,29 @@ class TestInputScoringBoundary:
 
         with pytest.raises(OutputContractError, match=message):
             await dialect.execute(prepared)
+
+    @pytest.mark.anyio
+    async def test_reported_total_is_ignored_in_favour_of_the_computed_one(
+        self,
+    ) -> None:
+        """A total that does not decompose must not cost the caller the reply."""
+        dialect, _ = _dialect(
+            _response(
+                _choice(tokens=["p", " out"], token_logprobs=[None, -0.2]),
+                usage=_usage(1, 1, 9),
+            )
+        )
+        req = Request(
+            input=CompletionInput("p"),
+            scoring=ScoringParams(input_scoring=True),
+        )
+        _, prepared = _prepare(dialect, req)
+
+        result = await dialect.execute(prepared)
+
+        assert result.usage == UsageStats(
+            input_tokens=1, output_tokens=1, total_tokens=2
+        )
 
 
 class TestOutputLifting:

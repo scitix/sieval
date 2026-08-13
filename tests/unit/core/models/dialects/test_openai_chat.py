@@ -812,7 +812,7 @@ class TestResponseLifting:
         [
             _usage(-1, 1, 0),
             _usage(1, True, 2),
-            _usage(1, 1, 2.0),
+            _usage(1, 2.0, 3),
         ],
     )
     async def test_usage_fields_must_be_non_negative_integers(
@@ -824,11 +824,17 @@ class TestResponseLifting:
             await dialect.arun(Request(input=_chat()))
 
     @pytest.mark.anyio
-    async def test_usage_total_must_equal_input_plus_output(self) -> None:
+    async def test_reported_total_is_ignored_in_favour_of_the_computed_one(
+        self,
+    ) -> None:
+        """A total that does not decompose must not cost the caller the reply."""
         dialect, _ = _dialect(_response(_choice(0, "ok"), usage=_usage(2, 3, 99)))
 
-        with pytest.raises(OutputContractError, match="must equal"):
-            await dialect.arun(Request(input=_chat()))
+        response = await dialect.arun(Request(input=_chat()))
+
+        assert response.usage == UsageStats(
+            input_tokens=2, output_tokens=3, total_tokens=5
+        )
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
