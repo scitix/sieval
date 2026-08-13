@@ -3,6 +3,7 @@
 AI-Generated Code - Claude Fable 5 (Anthropic)
 """
 
+from ._legacy_bridge import ModelCallMeta, ModelMeta, ModelOutput, ModelUsage
 from .capabilities import (
     Capability,
     CapabilityKey,
@@ -78,7 +79,7 @@ from .ir import (
     UsageStats,
     normalize_chat_input,
 )
-from .model import Model, ModelCallMeta, ModelMeta, ModelOutput, ModelUsage
+from .model import Model
 from .reconcile import (
     BindingReconcileInput,
     ConnectionScope,

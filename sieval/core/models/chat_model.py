@@ -15,11 +15,12 @@ import anyio
 
 from sieval.core.types import JSONValue
 
+from ._legacy_binding import build_legacy_openai_binding
 from .dialect import Dialect
 from .dialect_registry import _register_compat_model_type
 from .dialects.openai_chat import OpenAIChatDialect
 from .ir import ChatInput, ChatMessage, ModelInput, normalize_chat_input
-from .model import Model, build_legacy_openai_binding
+from .model import Model
 
 
 class ChatModel(Model):

@@ -36,6 +36,7 @@ from sieval.core.models import (
     TopKEntry,
     UsageStats,
 )
+from sieval.core.models._legacy_bridge import response_to_model_output
 from sieval.core.models.dialect import DialectError
 from sieval.core.models.model import _apply_request_defaults
 from sieval.core.models.reconcile import CheckStage, DeferredCheck
@@ -968,7 +969,8 @@ class TestRequestDefaultsProjection:
 # ===================================================================
 class TestResponseBridge:
     def _bridge(self, resp: Response) -> ModelOutput:
-        return GenModel(model="m", api_key="k")._response_to_model_output(resp)
+        model = GenModel(model="m", api_key="k")
+        return response_to_model_output(model.meta(), resp)
 
     def test_basic_fields(self):
         out = self._bridge(

@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from sieval.core.models.model import ModelMeta, ModelOutput, ModelUsage
+from sieval.core.models import ModelMeta, ModelOutput, ModelUsage
 from sieval.core.tasks.context import TaskContext, TaskStageMeta
 
 # scripts/ tests are repo-hygiene checks (preflight, layer imports) that run

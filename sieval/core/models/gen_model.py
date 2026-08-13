@@ -12,11 +12,12 @@ import anyio
 
 from sieval.core.types import JSONValue
 
+from ._legacy_binding import build_legacy_openai_binding
 from .dialect import Dialect
 from .dialect_registry import _register_compat_model_type
 from .dialects.openai_completions import OpenAICompletionsDialect
 from .ir import CompletionInput, ModelInput
-from .model import Model, build_legacy_openai_binding
+from .model import Model
 
 
 class GenModel(Model):

@@ -90,7 +90,7 @@ def _project_sieval_first():
 class TestLoadClassFromPath:
     def test_valid_path(self):
         cls = load_class_from_path("sieval.core.models.model.ModelOutput")
-        from sieval.core.models.model import ModelOutput
+        from sieval.core.models import ModelOutput
 
         assert cls is ModelOutput
 

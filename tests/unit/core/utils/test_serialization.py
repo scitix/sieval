@@ -11,7 +11,7 @@ from types import ModuleType
 
 import pytest
 
-from sieval.core.models.model import ModelOutput
+from sieval.core.models import ModelOutput
 from sieval.core.tasks.context import TaskStageOutput
 from sieval.core.utils.serialization import (
     dict_to_obj,

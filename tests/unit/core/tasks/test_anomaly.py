@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import orjson
 import pytest
 
-from sieval.core.models.model import ModelOutput
+from sieval.core.models import ModelOutput
 from sieval.core.tasks.anomaly import (
     _DETECTION_RULES,
     AnomalyReport,

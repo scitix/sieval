@@ -6,7 +6,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 
 import time
 
-from sieval.core.models.model import ModelMeta, ModelOutput
+from sieval.core.models import ModelMeta, ModelOutput
 from sieval.core.utils.meta import (
     build_model_call_meta,
     build_model_call_meta_from_mapping,
