@@ -1,20 +1,7 @@
 """JSON-shape primitives for the modules that build reconciliation records.
 
-`capabilities`, `requirements` and `reconcile` all normalise user-supplied JSON
-into the record shapes `reconcile()` consumes, so all three need the same
-detach-and-validate step, and all three must agree on what "representable" means
--- a value one of them accepts and another rejects makes the record depend on
-which module touched it first.
-
-They held three private copies. Two were byte-identical; `reconcile`'s had
-already drifted, rejecting the same values with different wording. That drift is
-the argument for a single owner: this module exists because the rule is one
-contract, not because the code happened to repeat.
-
-`validate_nonempty_string` is here on weaker grounds -- three characters of
-policy, and the three copies never diverged. It stays because `capabilities` and
-`requirements` already import from this module, not as precedent for moving
-every shared three-liner here.
+`capabilities`, `requirements` and `reconcile` must agree on what counts as
+representable JSON, or a record depends on which of them normalised it first.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -26,10 +13,10 @@ from sieval.core.types import JSONValue
 
 
 def copy_json_value(value: object, path: str) -> JSONValue:
-    """Deep-copy *value* into plain JSON, rejecting anything not representable.
+    """Deep-copy *value* into plain JSON, rejecting what it cannot represent.
 
-    ``path`` is the dotted location reported in errors, so a rejection names
-    the offending leaf rather than the whole record.
+    ``path`` is the dotted location errors name, so a rejection points at the
+    offending leaf rather than the whole record.
     """
 
     if value is None or isinstance(value, (str, bool, int)):
