@@ -168,8 +168,6 @@ class Task[
     ) -> tuple[TaskModelRequirement, ...]:
         if not isinstance(context, RequirementContext):
             raise TypeError("context must be a RequirementContext")
-        if not isinstance(requires, TaskRequirements):
-            raise TypeError("requires must be TaskRequirements")
 
         bindings = context.model_bindings
         if not bindings:
@@ -208,8 +206,6 @@ class Task[
             raise TypeError("context must be a RequirementContext")
         if not isinstance(role, str) or not role:
             raise TypeError("role must be a non-empty string")
-        if not isinstance(requires, TaskRequirements):
-            raise TypeError("requires must be TaskRequirements")
         try:
             binding = context.model_bindings[role]
         except KeyError as exc:

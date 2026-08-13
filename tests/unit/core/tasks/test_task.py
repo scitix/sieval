@@ -396,13 +396,8 @@ class TestBindRoleRequirement:
             _ConcreteTask._bind_role_requirement(context, role, _ConcreteTask.requires)
 
     def test_rejects_requires_of_the_wrong_type(self):
-        """Pins the contract, not the layer that enforces it.
-
-        ``TaskModelRequirement.__post_init__`` rejects a non-``TaskRequirements``
-        with the same message, so this still passes with the guard here removed
-        — deliberately kept as the entry-point contract rather than as cover for
-        that line.
-        """
+        """Pins the contract at this entry point; ``TaskModelRequirement``
+        owns the check itself."""
         context = RequirementContext(
             model_bindings={"grader": _named_binding("grader")}
         )
