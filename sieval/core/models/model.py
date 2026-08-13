@@ -954,13 +954,16 @@ class Model:
         if stop is not None:
             if isinstance(stop, str):
                 stop_value = (stop,)
-            elif isinstance(stop, Iterable):
+            elif isinstance(stop, list | tuple):
                 values = tuple(stop)
                 if not all(isinstance(item, str) for item in values):
                     raise TypeError("stop must contain only strings")
                 stop_value = cast(tuple[str, ...], values)
             else:
-                raise TypeError("stop must be a string or iterable of strings")
+                # ``list``/``tuple`` only, matching ``_named_json_value``: this
+                # value is echoed into the persisted ``request_params``, and a
+                # ``set`` would land there in hash order.
+                raise TypeError("stop must be a string, list, or tuple of strings")
         sampling = SamplingParams(
             temperature=_optional_float(temperature_value, "temperature"),
             top_p=_optional_float(top_p_value, "top_p"),
