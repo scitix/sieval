@@ -8,7 +8,6 @@ AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
 import json
-import math
 from collections.abc import Callable, Mapping
 from dataclasses import MISSING, dataclass, field, fields
 from enum import Enum, StrEnum, auto
@@ -16,6 +15,8 @@ from types import MappingProxyType
 from typing import Literal, cast
 
 from sieval.core.types import JSONValue
+
+from ._shared import copy_json_value, validate_nonempty_string
 
 type CapabilityKey = Literal[
     "input_scoring",
@@ -150,11 +151,6 @@ def validate_no_legacy_capability_ambiguity(
     )
 
 
-def _validate_nonempty_string(value: object, name: str) -> None:
-    if not isinstance(value, str) or not value:
-        raise TypeError(f"{name} must be a non-empty string")
-
-
 def _validate_string_tuple(
     value: object,
     name: str,
@@ -165,7 +161,7 @@ def _validate_string_tuple(
         raise TypeError(f"{name} must be a tuple of strings")
     seen: set[str] = set()
     for item in value:
-        _validate_nonempty_string(item, f"{name} item")
+        validate_nonempty_string(item, f"{name} item")
         assert isinstance(item, str)
         if item in seen:
             raise ValueError(f"{name} contains duplicate value {item!r}")
@@ -208,7 +204,7 @@ class ReasoningOptions:
 
     def __post_init__(self) -> None:
         if self.effort is not None:
-            _validate_nonempty_string(self.effort, "effort")
+            validate_nonempty_string(self.effort, "effort")
         if self.budget_tokens is not None:
             if isinstance(self.budget_tokens, bool) or not isinstance(
                 self.budget_tokens, int
@@ -219,7 +215,7 @@ class ReasoningOptions:
         if self.effort is not None and self.budget_tokens is not None:
             raise ValueError("effort and budget_tokens are mutually exclusive")
         if self.summary is not None:
-            _validate_nonempty_string(self.summary, "summary")
+            validate_nonempty_string(self.summary, "summary")
             if self.summary not in {"none", "auto", "concise", "detailed"}:
                 raise ValueError(
                     "summary must be one of: auto, concise, detailed, none"
@@ -458,7 +454,7 @@ def normalize_capability_declarations(
     ``false`` is retained; ``true`` and an empty mapping both construct the
     typed option dataclass with its defaults.
     """
-    _validate_nonempty_string(dialect_id, "dialect_id")
+    validate_nonempty_string(dialect_id, "dialect_id")
     if not isinstance(raw, Mapping):
         raise CapabilityConfigError("capabilities must be a mapping")
     raw_mapping = cast(Mapping[object, object], raw)
@@ -491,38 +487,16 @@ def normalize_capability_declarations(
     return normalized
 
 
-def _copy_json_value(value: object, path: str) -> JSONValue:
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{path} must not contain a non-finite float")
-        return value
-    if isinstance(value, Mapping):
-        copied: dict[str, JSONValue] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError(f"{path} mapping keys must be strings")
-            copied[key] = _copy_json_value(item, f"{path}.{key}")
-        return copied
-    if isinstance(value, (list, tuple)):
-        return [
-            _copy_json_value(item, f"{path}[{index}]")
-            for index, item in enumerate(value)
-        ]
-    raise TypeError(f"{path} contains non-JSON value {type(value).__name__}")
-
-
 def _same_json_value(left: JSONValue, right: JSONValue) -> bool:
     """Compare JSON values without collapsing distinct JSON scalar types."""
     return json.dumps(
-        _copy_json_value(left, "left"),
+        copy_json_value(left, "left"),
         allow_nan=False,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     ) == json.dumps(
-        _copy_json_value(right, "right"),
+        copy_json_value(right, "right"),
         allow_nan=False,
         ensure_ascii=True,
         sort_keys=True,
@@ -538,7 +512,7 @@ def _options_to_json(options: CapabilityOptions) -> dict[str, JSONValue]:
             continue
         if value is None:
             continue
-        result[item.name] = _copy_json_value(value, item.name)
+        result[item.name] = copy_json_value(value, item.name)
     return result
 
 
@@ -583,13 +557,13 @@ class RequestDefaults:
     values: Mapping[str, JSONValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        copied = _copy_json_value(self.values, "request_defaults")
+        copied = copy_json_value(self.values, "request_defaults")
         assert isinstance(copied, dict)
         object.__setattr__(self, "values", MappingProxyType(copied))
 
     def to_json_value(self) -> dict[str, JSONValue]:
         """Return a detached JSON-compatible mapping."""
-        copied = _copy_json_value(self.values, "request_defaults")
+        copied = copy_json_value(self.values, "request_defaults")
         assert isinstance(copied, dict)
         return cast(dict[str, JSONValue], copied)
 
@@ -609,7 +583,7 @@ class CapabilityIntent:
             raise ValueError(f"unknown capability key: {self.key!r}")
         if not isinstance(self.required, bool):
             raise TypeError("required must be a boolean")
-        copied = _copy_json_value(self.minimums, "minimums")
+        copied = copy_json_value(self.minimums, "minimums")
         assert isinstance(copied, dict)
         object.__setattr__(self, "minimums", MappingProxyType(copied))
         _validate_string_tuple(self.sources, "sources")
@@ -617,7 +591,7 @@ class CapabilityIntent:
 
     def to_json_value(self) -> dict[str, JSONValue]:
         """Return deterministic record data suitable for plan serialization."""
-        minimums = _copy_json_value(self.minimums, "minimums")
+        minimums = copy_json_value(self.minimums, "minimums")
         assert isinstance(minimums, dict)
         return {
             "key": self.key,
@@ -641,7 +615,7 @@ def legacy_capability_intents(
     source.  Ordinary sampling controls deliberately produce no intent.
     """
 
-    _validate_nonempty_string(source, "legacy intent source")
+    validate_nonempty_string(source, "legacy intent source")
     projected: list[CapabilityIntent] = []
 
     def add(
@@ -793,11 +767,11 @@ class ModelCapabilityEntry:
     def __post_init__(self) -> None:
         if not isinstance(self.status, ModelCapabilityStatus):
             raise TypeError("status must be a ModelCapabilityStatus")
-        _validate_nonempty_string(self.source, "source")
+        validate_nonempty_string(self.source, "source")
         if self.reason is not None:
-            _validate_nonempty_string(self.reason, "reason")
+            validate_nonempty_string(self.reason, "reason")
         if self.verifier is not None:
-            _validate_nonempty_string(self.verifier, "verifier")
+            validate_nonempty_string(self.verifier, "verifier")
         if self.status is ModelCapabilityStatus.UNSUPPORTED and self.reason is None:
             raise ValueError("unsupported model capability requires a reason")
         if self.status is ModelCapabilityStatus.UNKNOWN and self.verifier is None:
@@ -894,7 +868,7 @@ class Unsupported:
     reason: str
 
     def __post_init__(self) -> None:
-        _validate_nonempty_string(self.reason, "reason")
+        validate_nonempty_string(self.reason, "reason")
 
 
 type DialectCapabilityDecision = Supported | Unsupported

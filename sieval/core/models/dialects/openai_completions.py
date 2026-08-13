@@ -54,6 +54,8 @@ from sieval.core.models.ir import (
 )
 from sieval.core.types import JSONValue
 
+from ._shared import resolve_choice_index, validate_top_logprobs
+
 _PREFILL_UNSUPPORTED_REASON = (
     "assistant prefill is a chat input operation, not a completion operation"
 )
@@ -120,15 +122,6 @@ def _validate_token_logprobs(value: object) -> None:
         raise OutputContractError("logprobs channel has invalid shape")
 
 
-def _validate_top_logprobs(value: object) -> None:
-    if not isinstance(value, tuple) or not all(
-        isinstance(position, tuple)
-        and all(isinstance(item, TopKEntry) for item in position)
-        for position in value
-    ):
-        raise OutputContractError("top_logprobs channel has invalid shape")
-
-
 CAPABILITY_DECISIONS = _decisions()
 
 
@@ -139,7 +132,7 @@ OUTPUT_CONTRACT = OutputContract(
         "server_tool_uses": OutputRule(Guarantee.NEVER),
         "structured_output": OutputRule(Guarantee.NEVER),
         "logprobs": OutputRule(Guarantee.PRESENT_OR_ERROR, _validate_token_logprobs),
-        "top_logprobs": OutputRule(Guarantee.PRESENT_OR_ERROR, _validate_top_logprobs),
+        "top_logprobs": OutputRule(Guarantee.PRESENT_OR_ERROR, validate_top_logprobs),
         "input_scoring": OutputRule(Guarantee.PRESENT_OR_ERROR, validate_input_scoring),
         "citations": OutputRule(Guarantee.NEVER),
         "grounding": OutputRule(Guarantee.NEVER),
@@ -287,7 +280,7 @@ def _optional_response_string(value: object, path: str) -> str | None:
     return value
 
 
-def _usage_stats(raw: object) -> UsageStats | None:
+def _completions_usage_stats(raw: object) -> UsageStats | None:
     if raw is None:
         return None
 
@@ -330,17 +323,6 @@ def _choice_sequence(raw: object) -> Sequence[object]:
     if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
         raise OutputContractError("completion response choices must be a sequence")
     return raw
-
-
-def _choice_index(choice: object, n: int) -> int:
-    index = getattr(choice, "index", None)
-    if isinstance(index, bool) or not isinstance(index, int):
-        raise OutputContractError("completion choice index must be an integer")
-    if not 0 <= index < n:
-        raise OutputContractError(
-            f"completion choice index {index} is outside the requested range [0, {n})"
-        )
-    return index
 
 
 class OpenAICompletionsDialect:
@@ -532,7 +514,7 @@ class OpenAICompletionsDialect:
         accumulator = _Accumulator(context, streaming=False)
         accumulator.capture_metadata(raw)
         accumulator.capture_choices(getattr(raw, "choices", ()))
-        usage = _usage_stats(getattr(raw, "usage", None))
+        usage = _completions_usage_stats(getattr(raw, "usage", None))
         return accumulator.response(usage)
 
     async def _lift_stream(
@@ -549,7 +531,7 @@ class OpenAICompletionsDialect:
             accumulator.capture_choices(getattr(chunk, "choices", ()))
             raw_usage = getattr(chunk, "usage", None)
             if raw_usage is not None:
-                usage = _usage_stats(raw_usage)
+                usage = _completions_usage_stats(raw_usage)
         return accumulator.response(usage)
 
 
@@ -580,7 +562,7 @@ class _Accumulator:
 
     def capture_choices(self, raw_choices: object) -> None:
         for choice in _choice_sequence(raw_choices):
-            index = _choice_index(choice, self._context.n)
+            index = resolve_choice_index(choice, self._context.n, "completion")
             if not self._streaming and index in self._seen_indices:
                 raise OutputContractError(
                     f"completion response duplicated choice index {index}"

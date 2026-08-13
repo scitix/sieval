@@ -58,6 +58,8 @@ from sieval.core.models.ir import (
     UsageStats,
 )
 
+from ._shared import resolve_choice_index, validate_top_logprobs
+
 _OPENAI_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
@@ -171,15 +173,6 @@ def _tuple_validator(item_type: type, channel: str) -> Callable[[object], None]:
     return validate
 
 
-def _validate_top_logprobs(value: object) -> None:
-    if not isinstance(value, tuple) or not all(
-        isinstance(position, tuple)
-        and all(isinstance(item, TopKEntry) for item in position)
-        for position in value
-    ):
-        raise OutputContractError("top_logprobs channel has invalid shape")
-
-
 OUTPUT_CONTRACT = OutputContract(
     {
         "reasoning": OutputRule(Guarantee.PRESENT_OR_ERROR, validate_reasoning),
@@ -192,7 +185,7 @@ OUTPUT_CONTRACT = OutputContract(
             Guarantee.PRESENT_OR_ERROR,
             _tuple_validator(TokenLogprob, "logprobs"),
         ),
-        "top_logprobs": OutputRule(Guarantee.PRESENT_OR_ERROR, _validate_top_logprobs),
+        "top_logprobs": OutputRule(Guarantee.PRESENT_OR_ERROR, validate_top_logprobs),
         "input_scoring": OutputRule(Guarantee.NEVER),
         "citations": OutputRule(Guarantee.NEVER),
         "grounding": OutputRule(Guarantee.NEVER),
@@ -263,7 +256,7 @@ class _LegacyPlan:
     required_output_channels: frozenset[str] = frozenset()
 
 
-def _usage_stats(raw: Any) -> UsageStats | None:
+def _chat_usage_stats(raw: Any) -> UsageStats | None:
     if raw is None:
         return None
     names = ("prompt_tokens", "completion_tokens", "total_tokens")
@@ -300,17 +293,6 @@ def _choice_sequence(raw: object) -> Sequence[object]:
     if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
         raise OutputContractError("chat response choices must be a sequence")
     return raw
-
-
-def _choice_index(choice: object, n: int) -> int:
-    index = getattr(choice, "index", None)
-    if isinstance(index, bool) or not isinstance(index, int):
-        raise OutputContractError("chat choice index must be an integer")
-    if not 0 <= index < n:
-        raise OutputContractError(
-            f"chat choice index {index} is outside the requested range [0, {n})"
-        )
-    return index
 
 
 def _validate_choice_coverage(seen: set[int], n: int, *, streaming: bool) -> None:
@@ -719,7 +701,7 @@ class OpenAIChatDialect:
         seen: set[int] = set()
         for raw_choice in _choice_sequence(getattr(raw, "choices", None)):
             choice = cast(Any, raw_choice)
-            index = _choice_index(choice, n)
+            index = resolve_choice_index(choice, n, "chat")
             if index in seen:
                 raise OutputContractError(
                     f"chat response duplicated choice index {index}"
@@ -749,7 +731,7 @@ class OpenAIChatDialect:
             structured_output=self._structured_output(req, texts),
             logprobs=logprobs,
             top_logprobs=top_logprobs,
-            usage=_usage_stats(getattr(raw, "usage", None)),
+            usage=_chat_usage_stats(getattr(raw, "usage", None)),
             request_params=params,
             response_model=_optional_response_string(
                 getattr(raw, "model", None), "model"
@@ -788,7 +770,7 @@ class OpenAIChatDialect:
                 system_fingerprint = chunk_fingerprint
             for raw_choice in _choice_sequence(getattr(chunk, "choices", None)):
                 choice = cast(Any, raw_choice)
-                choice_index = _choice_index(choice, n)
+                choice_index = resolve_choice_index(choice, n, "chat")
                 seen.add(choice_index)
                 finish_reasons[choice_index] = choice.finish_reason or ""
                 delta = choice.delta
@@ -828,7 +810,7 @@ class OpenAIChatDialect:
                         logprobs.extend(chunk_logprobs)
                         top_logprobs.extend(chunk_top)
             if getattr(chunk, "usage", None) is not None:
-                usage = _usage_stats(chunk.usage)
+                usage = _chat_usage_stats(chunk.usage)
 
         _validate_choice_coverage(seen, n, streaming=True)
 

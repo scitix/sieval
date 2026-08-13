@@ -7,13 +7,14 @@ serving-policy reconciliation.
 AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
-import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
 
 from sieval.core.types import JSONValue
+
+from ._shared import copy_json_value, validate_nonempty_string
 
 
 class InputKind(StrEnum):
@@ -88,7 +89,7 @@ class NamedModelBinding:
 
     def __post_init__(self) -> None:
         _validate_binding_identity(self)
-        _validate_nonempty_string(self.config_name, "config_name")
+        validate_nonempty_string(self.config_name, "config_name")
 
 
 @dataclass(frozen=True)
@@ -122,7 +123,7 @@ class ExternalModelBinding:
 
     def __post_init__(self) -> None:
         _validate_binding_identity(self)
-        _validate_nonempty_string(
+        validate_nonempty_string(
             self.runtime_plan_fingerprint, "runtime_plan_fingerprint"
         )
 
@@ -144,7 +145,7 @@ class RequirementContext:
     def __post_init__(self) -> None:
         bindings: dict[str, NormalizedModelBinding] = {}
         for role, binding in self.model_bindings.items():
-            _validate_nonempty_string(role, "model binding role")
+            validate_nonempty_string(role, "model binding role")
             if not isinstance(
                 binding,
                 (NamedModelBinding, InlineModelBinding, ExternalModelBinding),
@@ -177,7 +178,7 @@ class TaskModelRequirement:
     source_task: str
 
     def __post_init__(self) -> None:
-        _validate_nonempty_string(self.role, "role")
+        validate_nonempty_string(self.role, "role")
         if not isinstance(
             self.binding,
             (NamedModelBinding, InlineModelBinding, ExternalModelBinding),
@@ -185,7 +186,7 @@ class TaskModelRequirement:
             raise TypeError("binding must be a NormalizedModelBinding")
         if not isinstance(self.requires, TaskRequirements):
             raise TypeError("requires must be TaskRequirements")
-        _validate_nonempty_string(self.source_task, "source_task")
+        validate_nonempty_string(self.source_task, "source_task")
 
 
 @dataclass(frozen=True)
@@ -321,45 +322,18 @@ def aggregate_task_requirements(
     )
 
 
-def _validate_nonempty_string(value: object, name: str) -> None:
-    if not isinstance(value, str) or not value:
-        raise TypeError(f"{name} must be a non-empty string")
-
-
 def _validate_binding_identity(binding: NormalizedModelBinding) -> None:
-    _validate_nonempty_string(binding.binding_id, "binding_id")
-    _validate_nonempty_string(binding.root_deployment_key, "root_deployment_key")
-    _validate_nonempty_string(binding.requested_model_id, "requested_model_id")
+    validate_nonempty_string(binding.binding_id, "binding_id")
+    validate_nonempty_string(binding.root_deployment_key, "root_deployment_key")
+    validate_nonempty_string(binding.requested_model_id, "requested_model_id")
     if binding.dialect_id is not None:
-        _validate_nonempty_string(binding.dialect_id, "dialect_id")
-
-
-def _copy_json_value(value: object, path: str) -> JSONValue:
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{path} must not contain a non-finite float")
-        return value
-    if isinstance(value, Mapping):
-        copied: dict[str, JSONValue] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError(f"{path} mapping keys must be strings")
-            copied[key] = _copy_json_value(item, f"{path}.{key}")
-        return copied
-    if isinstance(value, (list, tuple)):
-        return [
-            _copy_json_value(item, f"{path}[{index}]")
-            for index, item in enumerate(value)
-        ]
-    raise TypeError(f"{path} contains non-JSON value {type(value).__name__}")
+        validate_nonempty_string(binding.dialect_id, "dialect_id")
 
 
 def _copy_json_mapping(
     value: Mapping[str, JSONValue], path: str
 ) -> Mapping[str, JSONValue]:
-    copied = _copy_json_value(value, path)
+    copied = copy_json_value(value, path)
     if not isinstance(copied, dict):
         raise TypeError(f"{path} must be a mapping")
     return MappingProxyType(copied)
@@ -368,7 +342,7 @@ def _copy_json_mapping(
 def _validate_and_freeze_sources(sources: Iterable[str], name: str) -> frozenset[str]:
     frozen = frozenset(sources)
     for source in frozen:
-        _validate_nonempty_string(source, f"{name} item")
+        validate_nonempty_string(source, f"{name} item")
     return frozen
 
 

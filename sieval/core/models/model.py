@@ -182,7 +182,7 @@ _REQUEST_CHECK_VERIFIERS = frozenset({"validate_response_channel"})
 _REMOVED_SUBCLASS_HOOKS = frozenset({"_agenerate_impl", "_alogprobs_impl"})
 
 
-def _json_value(value: object, name: str) -> JSONValue:
+def _named_json_value(value: object, name: str) -> JSONValue:
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(f"{name} must not contain a non-finite float")
@@ -194,10 +194,10 @@ def _json_value(value: object, name: str) -> JSONValue:
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(f"{name} keys must be strings")
-            result[key] = _json_value(item, f"{name}.{key}")
+            result[key] = _named_json_value(item, f"{name}.{key}")
         return result
     if isinstance(value, Iterable) and not isinstance(value, str | bytes):
-        return [_json_value(item, name) for item in value]
+        return [_named_json_value(item, name) for item in value]
     raise TypeError(f"{name} must be JSON-compatible, got {type(value).__name__}")
 
 
@@ -409,7 +409,7 @@ def _coerce_structured_output(value: object) -> StructuredOutputParams:
         raise TypeError("json_schema strict must be a bool")
     return StructuredOutputParams(
         format="json_schema",
-        schema=cast(Mapping[str, JSONValue], _json_value(schema, "schema")),
+        schema=cast(Mapping[str, JSONValue], _named_json_value(schema, "schema")),
         name=name,
         strict=strict,
     )
@@ -751,7 +751,7 @@ class Model:
             "model": self._model,
             "api_base": self._api_base,
             "default_params": {
-                key: _json_value(value, f"default_params.{key}")
+                key: _named_json_value(value, f"default_params.{key}")
                 for key, value in self._kwargs.items()
             },
         }
@@ -1021,10 +1021,10 @@ class Model:
             functions.append(
                 cast(
                     Mapping[str, JSONValue],
-                    _json_value(tool, f"tools[{index}]"),
+                    _named_json_value(tool, f"tools[{index}]"),
                 )
             )
-        choice = _json_value(kw.pop("tool_choice", None), "tool_choice")
+        choice = _named_json_value(kw.pop("tool_choice", None), "tool_choice")
         parallel = kw.pop("parallel_tool_calls", None)
         if parallel is not None and not isinstance(parallel, bool):
             raise TypeError("parallel_tool_calls must be a bool")
@@ -1090,11 +1090,11 @@ class Model:
                     )
                 if key in options:
                     raise ValueError(f"duplicate dialect option {key!r}")
-                options[key] = _json_value(value, f"{container_name}.{key}")
+                options[key] = _named_json_value(value, f"{container_name}.{key}")
         for key, value in kw.items():
             if key in options:
                 raise ValueError(f"duplicate dialect option {key!r}")
-            options[key] = _json_value(value, key)
+            options[key] = _named_json_value(value, key)
 
         return Request(
             input=input_,
