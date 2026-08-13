@@ -644,6 +644,30 @@ class TestBuilderValidation:
     def _model(self):
         return GenModel(model="m", api_key="k")
 
+    @pytest.mark.parametrize(
+        "default",
+        [{"a", "b"}, (item for item in ["a", "b"])],
+        ids=["set", "generator"],
+    )
+    def test_meta_rejects_default_params_that_cannot_round_trip(self, default):
+        """``default_params`` is persisted, so only stable sequences may enter.
+
+        A ``set`` serializes in hash order; a generator, consumed by the first
+        call, serializes as ``[]`` on every later one. Both corrupt the record
+        without raising, which is why the coercion rejects them outright.
+        """
+        model = GenModel(model="m", api_key="k", stop=default)
+
+        with pytest.raises(
+            TypeError, match="default_params.stop must be JSON-compatible"
+        ):
+            model.meta()
+
+    def test_meta_keeps_tuple_default_params(self):
+        model = GenModel(model="m", api_key="k", stop=("a", "b"))
+
+        assert model.meta()["default_params"]["stop"] == ["a", "b"]
+
     def test_n_must_be_int(self):
         with pytest.raises(TypeError, match="n must be an int"):
             self._model()._build_generate_request("p", n="3")
@@ -733,6 +757,8 @@ class TestBuilderValidation:
         [
             ({1: "bad-key"}, "keys must be strings"),
             (object(), "JSON-compatible"),
+            ({"a", "b"}, "JSON-compatible"),
+            ((item for item in ["a"]), "JSON-compatible"),
         ],
     )
     def test_tool_choice_must_be_json_compatible(self, tool_choice, match):

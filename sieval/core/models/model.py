@@ -183,6 +183,15 @@ _REMOVED_SUBCLASS_HOOKS = frozenset({"_agenerate_impl", "_alogprobs_impl"})
 
 
 def _named_json_value(value: object, name: str) -> JSONValue:
+    """Validate and detach a JSON value, naming the offending leaf on failure.
+
+    Sequences are restricted to ``list``/``tuple`` rather than any ``Iterable``.
+    The result is persisted in ``ModelMeta.default_params``, and the two other
+    shapes an ``Iterable`` admits both corrupt that record silently: a ``set``
+    serializes in hash order, and a generator -- consumed by the first call --
+    serializes as ``[]`` on every later one. The same-package
+    ``_shared.copy_json_value`` has always rejected both; this agrees.
+    """
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(f"{name} must not contain a non-finite float")
@@ -196,7 +205,7 @@ def _named_json_value(value: object, name: str) -> JSONValue:
                 raise TypeError(f"{name} keys must be strings")
             result[key] = _named_json_value(item, f"{name}.{key}")
         return result
-    if isinstance(value, Iterable) and not isinstance(value, str | bytes):
+    if isinstance(value, list | tuple):
         return [_named_json_value(item, name) for item in value]
     raise TypeError(f"{name} must be JSON-compatible, got {type(value).__name__}")
 
