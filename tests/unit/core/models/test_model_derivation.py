@@ -230,11 +230,10 @@ class TestModelDerivation:
         assert m["default_params"]["top_p"] == 0.9
 
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-    def test_model_meta_rejects_non_finite_default_params(self, value):
-        model = StubGenModel(model="bad-param", api_key="fake", custom=value)
-
+    def test_binding_rejects_non_finite_default_params(self, value):
+        """Rejected at bind time, so no model call can be spent on it first."""
         with pytest.raises(ValueError, match="non-finite"):
-            model.meta()
+            StubGenModel(model="bad-param", api_key="fake", custom=value)
 
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
     def test_request_builder_rejects_non_finite_sampling_values(self, base_gen, value):

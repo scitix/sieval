@@ -649,19 +649,26 @@ class TestBuilderValidation:
         [{"a", "b"}, (item for item in ["a", "b"])],
         ids=["set", "generator"],
     )
-    def test_meta_rejects_default_params_that_cannot_round_trip(self, default):
+    def test_binding_rejects_default_params_that_cannot_round_trip(self, default):
         """``default_params`` is persisted, so only stable sequences may enter.
 
         A ``set`` serializes in hash order; a generator, consumed by the first
         call, serializes as ``[]`` on every later one. Both corrupt the record
-        without raising, which is why the coercion rejects them outright.
+        without raising, which is why the coercion rejects them outright -- at
+        bind time, before a model call can be spent on a doomed record.
         """
-        model = GenModel(model="m", api_key="k", stop=default)
+        with pytest.raises(
+            TypeError, match="default_params.stop must be JSON-compatible"
+        ):
+            GenModel(model="m", api_key="k", stop=default)
+
+    def test_with_args_rejects_default_params_that_cannot_round_trip(self):
+        model = GenModel(model="m", api_key="k")
 
         with pytest.raises(
             TypeError, match="default_params.stop must be JSON-compatible"
         ):
-            model.meta()
+            model.with_args(stop={"a", "b"})
 
     def test_meta_keeps_tuple_default_params(self):
         model = GenModel(model="m", api_key="k", stop=("a", "b"))

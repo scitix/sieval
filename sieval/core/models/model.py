@@ -210,6 +210,20 @@ def _named_json_value(value: object, name: str) -> JSONValue:
     raise TypeError(f"{name} must be JSON-compatible, got {type(value).__name__}")
 
 
+def _checked_builder_defaults(values: Mapping[str, object]) -> dict[str, object]:
+    """Reject builder defaults that ``meta()`` would not be able to persist.
+
+    ``meta()`` runs once per response, so a default that cannot round-trip
+    through JSON would otherwise raise only after a model call had been made
+    and billed. Checking at bind time moves that to the point where the value
+    is supplied. The originals are stored unconverted -- the request builders
+    still need them as given, and ``meta()`` does its own copy.
+    """
+    for key, value in values.items():
+        _named_json_value(value, f"default_params.{key}")
+    return dict(values)
+
+
 def _optional_float(value: object, name: str) -> float | None:
     if value is None:
         return None
@@ -551,7 +565,7 @@ class Model:
         self._transport = dialect  # one-cycle private compatibility alias
         self._model = runtime_plan.requested_model_id
         self._api_base = api_base
-        self._kwargs = dict(builder_defaults)
+        self._kwargs = _checked_builder_defaults(builder_defaults)
         self._extra = dict(extra) if extra is not None else None
         self._limiter = local_limiter
         self._parent_limiter = parent_limiter
@@ -601,7 +615,7 @@ class Model:
             raise ValueError("concurrency_limit must be a positive integer")
 
         new_model = copy.copy(self)
-        new_model._kwargs = {**self._kwargs, **kwargs}
+        new_model._kwargs = _checked_builder_defaults({**self._kwargs, **kwargs})
         if extra is not None:
             new_model._extra = dict(extra)
         if concurrency_limit is not None:
