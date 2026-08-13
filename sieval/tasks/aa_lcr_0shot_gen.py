@@ -175,24 +175,12 @@ class AALCRZeroShotGenTask(
     ):
         super().__init__(dataset=dataset, model=model, name=name)
         self._n = n
-        self._grader = self._resolve_grader(grader, models_by_role)
-
-    @classmethod
-    def _resolve_grader(
-        cls,
-        grader: Mapping | Model | None,
-        models_by_role: Mapping[str, Model] | None,
-    ) -> Model:
-        if models_by_role is not None:
-            if grader is not None:
-                raise ValueError("grader and models_by_role cannot both be supplied")
-            try:
-                return models_by_role["grader"]
-            except KeyError as exc:
-                raise ValueError(
-                    "models_by_role is missing the 'grader' model"
-                ) from exc
-        return cls._build_grader(grader)
+        self._grader = self._resolve_role_model(
+            "grader",
+            grader,
+            models_by_role,
+            build=lambda: self._build_grader(grader),
+        )
 
     @staticmethod
     def _build_grader(grader: Mapping | Model | None) -> Model:

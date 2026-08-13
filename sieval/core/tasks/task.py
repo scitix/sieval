@@ -5,7 +5,7 @@ AI-Generated Code - Claude Fable 5 (Anthropic)
 
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import replace
 from typing import ClassVar, Literal, Protocol, cast
@@ -227,6 +227,40 @@ class Task[
                 source_task=source_task,
             ),
         )
+
+    @classmethod
+    def _resolve_role_model(
+        cls,
+        role: str,
+        configured: object,
+        models_by_role: Mapping[str, Model] | None,
+        *,
+        build: Callable[[], Model],
+    ) -> Model:
+        """Resolve one auxiliary model role to the Model the task will call.
+
+        Two supply routes, and they are mutually exclusive. Composition injects
+        ``models_by_role`` for every role it reconciled, which is the pooled
+        path a YAML run takes. Direct construction (tests, programmatic use)
+        passes the role argument instead, and ``build`` is the task's own
+        constructor for it — task-specific because each role's "you must supply
+        one" message carries that task's reason.
+
+        Supplying both is a configuration error rather than a precedence
+        question: silently preferring either one would let a run score against
+        a model the config did not name.
+        """
+
+        if models_by_role is not None:
+            if configured is not None:
+                raise ValueError(f"{role} and models_by_role cannot both be supplied")
+            try:
+                return models_by_role[role]
+            except KeyError as exc:
+                raise ValueError(
+                    f"models_by_role is missing the {role!r} model"
+                ) from exc
+        return build()
 
     @classmethod
     def _bind_top_logprobs_requirements(

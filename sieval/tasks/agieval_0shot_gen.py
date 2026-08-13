@@ -247,29 +247,12 @@ class AGIEvalZeroShotGenTask(
         models_by_role: Mapping[str, Model] | None = None,
     ):
         super().__init__(dataset=dataset, model=model, name=name)
-        self._extractor = self._resolve_extractor(
+        self._extractor = self._resolve_role_model(
+            "extractor",
             extractor,
-            model,
             models_by_role,
+            build=lambda: self._build_extractor(extractor, model),
         )
-
-    @classmethod
-    def _resolve_extractor(
-        cls,
-        extractor: Mapping | Model | str | None,
-        model: Model,
-        models_by_role: Mapping[str, Model] | None,
-    ) -> Model:
-        if models_by_role is not None:
-            if extractor is not None:
-                raise ValueError("extractor and models_by_role cannot both be supplied")
-            try:
-                return models_by_role["extractor"]
-            except KeyError as exc:
-                raise ValueError(
-                    "models_by_role is missing the 'extractor' model"
-                ) from exc
-        return cls._build_extractor(extractor, model)
 
     @staticmethod
     def _build_extractor(
