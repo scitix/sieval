@@ -37,15 +37,26 @@ from .ir import (
     StructuredOutputParams,
     TokenLogprob,
     ToolParams,
+    UsageStats,
 )
 
 
 class ModelUsage(TypedDict):
-    """Token usage statistics from a single model API call."""
+    """Token usage statistics from a single model API call.
+
+    The optional keys are breakdowns of the first two counts, not addends, and
+    are written only where the server reported them -- so an absent key means
+    "not reported", never zero. Read them with ``.get()``.
+    """
 
     input_tokens: int
     output_tokens: int
     total_tokens: int
+    reasoning_tokens: NotRequired[int]
+    cached_tokens: NotRequired[int]
+    accepted_prediction_tokens: NotRequired[int]
+    rejected_prediction_tokens: NotRequired[int]
+    reported_total_tokens: NotRequired[int]
 
 
 class ModelMeta(TypedDict):
@@ -385,6 +396,32 @@ def kwargs_to_request(
     )
 
 
+def _model_usage(counts: UsageStats) -> ModelUsage:
+    """Project usage onto the record shape, omitting whatever went unreported.
+
+    The three totals are always written. Each breakdown key is written only
+    where the server actually reported it -- storing a zero instead would put a
+    measurement on disk that was never taken, and any later average over a
+    fleet of mixed servers would silently fold those in.
+    """
+    usage: ModelUsage = {
+        "input_tokens": counts.input_tokens,
+        "output_tokens": counts.output_tokens,
+        "total_tokens": counts.total_tokens,
+    }
+    if counts.reasoning_tokens is not None:
+        usage["reasoning_tokens"] = counts.reasoning_tokens
+    if counts.cached_tokens is not None:
+        usage["cached_tokens"] = counts.cached_tokens
+    if counts.accepted_prediction_tokens is not None:
+        usage["accepted_prediction_tokens"] = counts.accepted_prediction_tokens
+    if counts.rejected_prediction_tokens is not None:
+        usage["rejected_prediction_tokens"] = counts.rejected_prediction_tokens
+    if counts.reported_total_tokens is not None:
+        usage["reported_total_tokens"] = counts.reported_total_tokens
+    return usage
+
+
 def response_to_model_output(model_meta: ModelMeta, response: Response) -> ModelOutput:
     """Shape a canonical ``Response`` into the legacy ``ModelOutput``."""
 
@@ -414,13 +451,7 @@ def response_to_model_output(model_meta: ModelMeta, response: Response) -> Model
             top_logprobs.append(merged)
         top_logprobs = top_logprobs or None
 
-    usage: ModelUsage | None = None
-    if response.usage is not None:
-        usage = {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
+    usage = _model_usage(response.usage) if response.usage is not None else None
     reasoning_texts: list[str] | None = None
     if response.reasoning is not None:
         reasoning_texts = [

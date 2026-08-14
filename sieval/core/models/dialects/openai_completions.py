@@ -55,6 +55,8 @@ from sieval.core.models.ir import (
 )
 from sieval.core.types import JSONValue
 
+from ._usage import usage_stats
+
 _PREFILL_UNSUPPORTED_REASON = (
     "assistant prefill is a chat input operation, not a completion operation"
 )
@@ -282,8 +284,9 @@ def _optional_response_string(value: object, path: str) -> str | None:
 def _completions_usage_stats(raw: object) -> UsageStats | None:
     """Build usage from the reply's prompt and completion counts.
 
-    ``total_tokens`` is computed, not read: a reported total that does not
-    decompose must not cost the caller a completed reply.
+    Only these two counts are contractual. ``total_tokens`` is computed from
+    them and the optional detail breakdown is best-effort -- see
+    :func:`._usage.usage_stats`.
     """
     if raw is None:
         return None
@@ -297,11 +300,7 @@ def _completions_usage_stats(raw: object) -> UsageStats | None:
                 f"completions usage.{name} must be a non-negative integer"
             )
         values.append(value)
-    return UsageStats(
-        input_tokens=values[0],
-        output_tokens=values[1],
-        total_tokens=values[0] + values[1],
-    )
+    return usage_stats(raw, values[0], values[1])
 
 
 def _logprob_sequence(raw: object, path: str) -> Sequence[object]:

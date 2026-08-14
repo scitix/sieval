@@ -451,10 +451,8 @@ class TestInputScoringBoundary:
             await dialect.execute(prepared)
 
     @pytest.mark.anyio
-    async def test_reported_total_is_ignored_in_favour_of_the_computed_one(
-        self,
-    ) -> None:
-        """A total that does not decompose must not cost the caller the reply."""
+    async def test_reported_total_is_recorded_not_trusted(self) -> None:
+        """A total that does not decompose is evidence, not grounds to reject."""
         dialect, _ = _dialect(
             _response(
                 _choice(tokens=["p", " out"], token_logprobs=[None, -0.2]),
@@ -470,7 +468,10 @@ class TestInputScoringBoundary:
         result = await dialect.execute(prepared)
 
         assert result.usage == UsageStats(
-            input_tokens=1, output_tokens=1, total_tokens=2
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+            reported_total_tokens=9,
         )
 
 

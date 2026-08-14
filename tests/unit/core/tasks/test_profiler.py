@@ -122,6 +122,202 @@ class TestTaskProfilerRecordUsage:
         assert _capture_logs(zero_usage.log_summary).strip() == ""
 
 
+class TestTaskProfilerUsageBreakdown:
+    def test_share_denominator_is_the_reporting_subset(self):
+        """A silent call must not dilute the share of the calls that spoke."""
+        profiler = TaskProfiler(profile_usage=True)
+        profiler.record_model_usage(
+            {
+                "input_tokens": 10,
+                "output_tokens": 100,
+                "total_tokens": 110,
+                "reasoning_tokens": 50,
+            },
+            stage_name="inferred",
+        )
+        profiler.record_model_usage(
+            {"input_tokens": 10, "output_tokens": 900, "total_tokens": 910},
+            stage_name="inferred",
+        )
+
+        reasoning = profiler.to_dict()["token_usage"]["inferred"]["breakdown"][
+            "reasoning_tokens"
+        ]
+        assert reasoning["total"] == 50
+        assert reasoning["parent"] == "output_tokens"
+        assert reasoning["parent_total"] == 100
+        assert reasoning["share"] == 0.5
+        assert reasoning["calls_reporting"] == 1
+        assert reasoning["calls_total"] == 2
+
+    def test_a_field_no_server_reported_produces_no_entry(self):
+        """Absent beats a zero that would read as a measurement."""
+        profiler = TaskProfiler(profile_usage=True)
+        profiler.record_model_usage(
+            {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+            stage_name="inferred",
+        )
+
+        assert "breakdown" not in profiler.to_dict()["token_usage"]["inferred"]
+
+    def test_a_reported_zero_counts_as_reported(self):
+        """A server saying "nothing was cached" is data, not silence."""
+        profiler = TaskProfiler(profile_usage=True)
+        profiler.record_model_usage(
+            {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+                "cached_tokens": 0,
+            },
+            stage_name="inferred",
+        )
+
+        cached = profiler.to_dict()["token_usage"]["inferred"]["breakdown"][
+            "cached_tokens"
+        ]
+        assert cached["calls_reporting"] == 1
+        assert cached["total"] == 0
+        assert cached["share"] == 0.0
+
+    def test_breakdown_is_not_added_into_the_totals(self):
+        """Breakdowns are shares of input/output, never extra tokens."""
+        profiler = TaskProfiler(profile_usage=True)
+        profiler.record_model_usage(
+            {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+                "reasoning_tokens": 15,
+                "cached_tokens": 90,
+            },
+            stage_name="inferred",
+        )
+
+        assert "Total Tokens Used: 120" in _capture_logs(profiler.log_summary)
+
+    def test_reported_total_mismatches_are_counted(self):
+        profiler = TaskProfiler(profile_usage=True)
+        profiler.record_model_usage(
+            {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "total_tokens": 30,
+                "reported_total_tokens": 99,
+            },
+            stage_name="inferred",
+        )
+        profiler.record_model_usage(
+            {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+            stage_name="inferred",
+        )
+
+        entry = profiler.to_dict()["token_usage"]["inferred"]
+        assert entry["reported_total_mismatches"] == 1
+
+    def test_summary_states_the_reporting_denominator_on_every_line(self):
+        """Stated only sometimes, a coverage note reads as full the rest."""
+        profiler = TaskProfiler(profile_usage=True)
+        profiler.record_model_usage(
+            {
+                "input_tokens": 10,
+                "output_tokens": 100,
+                "total_tokens": 110,
+                "reasoning_tokens": 50,
+            },
+            stage_name="inferred",
+        )
+        profiler.record_model_usage(
+            {"input_tokens": 10, "output_tokens": 900, "total_tokens": 910},
+            stage_name="inferred",
+        )
+
+        out = _capture_logs(profiler.log_summary)
+        assert "reasoning: 50 (50.0% of output; 1 of 2 calls reporting)" in out
+
+    def test_rebuilding_from_contexts_does_not_double_count(self):
+        """The accumulators are additive, so a rebuild has to clear them."""
+        profiler = TaskProfiler(profile_usage=True)
+        ctx = _make_ctx_with_meta(
+            {
+                "inferred": [
+                    {
+                        "model_calls": [
+                            {
+                                "usage": {
+                                    "input_tokens": 10,
+                                    "output_tokens": 100,
+                                    "total_tokens": 110,
+                                    "reasoning_tokens": 50,
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+
+        profiler.aggregate_token_usage({0: ctx})
+        profiler.aggregate_token_usage({0: ctx})
+
+        reasoning = profiler.to_dict()["token_usage"]["inferred"]["breakdown"][
+            "reasoning_tokens"
+        ]
+        assert reasoning["total"] == 50
+        assert reasoning["calls_reporting"] == 1
+        assert reasoning["calls_total"] == 1
+
+    def test_share_is_absent_when_the_parent_count_is_zero(self):
+        """An undefined ratio is omitted, never reported as a measured 0%.
+
+        A server counting reasoning outside its completion count -- the case
+        ``reported_total_tokens`` exists for -- can report reasoning against 0
+        completion tokens.  ``0.0`` there would be the same lie the optional
+        counts are ``None`` to avoid, one layer up.
+        """
+        profiler = TaskProfiler(profile_usage=True)
+        profiler.record_model_usage(
+            {
+                "input_tokens": 10,
+                "output_tokens": 0,
+                "total_tokens": 10,
+                "reasoning_tokens": 50,
+            },
+            stage_name="inferred",
+        )
+
+        reasoning = profiler.to_dict()["token_usage"]["inferred"]["breakdown"][
+            "reasoning_tokens"
+        ]
+        assert "share" not in reasoning
+        assert reasoning["total"] == 50
+        assert reasoning["parent_total"] == 0
+
+        out = _capture_logs(profiler.log_summary)
+        assert "reasoning: 50 (no output; 1 of 1 calls reporting)" in out
+        assert "0.0%" not in out
+
+    def test_rebuild_admits_exactly_what_the_live_path_admits(self):
+        """The two paths share an accumulator; they must share its guard too.
+
+        ``record_model_usage`` skips a falsy usage, so a rebuild that counted
+        one would inflate ``calls_total`` -- and every share's stated coverage
+        with it -- on resume but not on the original run.
+        """
+        profiler = TaskProfiler(profile_usage=True)
+        # Not a ``ModelUsage``: the shape only arises off disk, where the
+        # record is read back untyped and nothing guarantees the three totals.
+        empty: dict[str, int] = {}
+        profiler.record_model_usage(empty, stage_name="inferred")
+        assert profiler.to_dict().get("token_usage") is None
+
+        ctx = _make_ctx_with_meta({"inferred": [{"model_calls": [{"usage": {}}]}]})
+        profiler.aggregate_token_usage({0: ctx})
+
+        assert profiler.to_dict().get("token_usage") is None
+        assert profiler._stage_usage_calls == {}
+
+
 class TestTaskProfilerAggregateStageTimings:
     def test_aggregate_stage_timings_enabled(self):
         profiler = TaskProfiler(profile_stages=True)

@@ -353,7 +353,7 @@ class TestNSamples:
         assert resp.finish_reasons == ("stop", "length", "stop")
         # prompt tokens counted once, completions summed.
         assert resp.usage == UsageStats(
-            input_tokens=4, output_tokens=6, total_tokens=10
+            input_tokens=4, output_tokens=6, total_tokens=10, cached_tokens=0
         )
         assert post.call_args[1]["body"]["sampling_params"]["n"] == 3
 
@@ -414,10 +414,37 @@ class TestLift:
         t, _ = _make_transport({"text": "out", "meta_info": meta})
         resp = await t.arun(_request("x"))
         assert resp.usage == UsageStats(
-            input_tokens=4, output_tokens=6, total_tokens=10
+            input_tokens=4, output_tokens=6, total_tokens=10, cached_tokens=0
         )
         assert resp.finish_reasons == ("length",)
         assert resp.texts == ("out",)
+
+    @pytest.mark.anyio
+    async def test_absent_cached_tokens_reads_as_unreported(self):
+        """An omitted key is silence; the 0 above is a measured cache miss."""
+        meta = _meta(prompt_tokens=4, completion_tokens=6)
+        del meta["cached_tokens"]
+        t, _ = _make_transport({"text": "out", "meta_info": meta})
+
+        resp = await t.arun(_request("x"))
+
+        assert resp.usage is not None
+        assert resp.usage.cached_tokens is None
+
+    @pytest.mark.anyio
+    async def test_cached_tokens_are_not_summed_across_samples(self):
+        """They describe the shared prefix, like prompt_tokens -- read once."""
+        t, _ = _make_transport(
+            [
+                {"text": "a", "meta_info": _meta(prompt_tokens=4, cached_tokens=3)},
+                {"text": "b", "meta_info": _meta(prompt_tokens=4, cached_tokens=3)},
+            ]
+        )
+
+        resp = await t.arun(_request("x", sampling=SamplingParams(n=2)))
+
+        assert resp.usage is not None
+        assert resp.usage.cached_tokens == 3
 
     @pytest.mark.anyio
     async def test_usage_none_when_prompt_tokens_absent(self):

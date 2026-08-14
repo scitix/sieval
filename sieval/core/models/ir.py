@@ -451,11 +451,30 @@ class GroundingMetadata:
 @sieval_record
 @dataclass(frozen=True)
 class UsageStats:
+    """Token counts for one call, plus whatever breakdown the server reported.
+
+    The trailing fields are **breakdowns of** ``input_tokens`` /
+    ``output_tokens``, not addends: summing them double-counts. Each is
+    ``None`` when the server did not report it, which ``0`` cannot express --
+    most OpenAI-compatible servers omit the detail objects entirely, so a zero
+    default would make "no cache hits" and "never said" the same number, and
+    any average over a mixed fleet silently wrong.
+
+    No subset relation is enforced. ``reasoning_tokens <= output_tokens`` is an
+    OpenAI convention rather than a wire guarantee, and a server that counts
+    reasoning outside its completion count is exactly the one whose reported
+    total exceeds the computed one -- which ``reported_total_tokens`` records
+    instead of rejecting.
+    """
+
     input_tokens: int = 0
     output_tokens: int = 0
-    reasoning_tokens: int = 0
-    cached_tokens: int = 0
     total_tokens: int = 0
+    reasoning_tokens: int | None = None
+    cached_tokens: int | None = None
+    accepted_prediction_tokens: int | None = None
+    rejected_prediction_tokens: int | None = None
+    reported_total_tokens: int | None = None
 
 
 @sieval_record

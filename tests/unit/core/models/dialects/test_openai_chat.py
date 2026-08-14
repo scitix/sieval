@@ -824,17 +824,32 @@ class TestResponseLifting:
             await dialect.arun(Request(input=_chat()))
 
     @pytest.mark.anyio
-    async def test_reported_total_is_ignored_in_favour_of_the_computed_one(
-        self,
-    ) -> None:
-        """A total that does not decompose must not cost the caller the reply."""
+    async def test_reported_total_is_recorded_not_trusted(self) -> None:
+        """A total that does not decompose is evidence, not grounds to reject.
+
+        The reply is kept and scored on the computed total; the server's own
+        figure survives beside it as the only trace that the two disagreed.
+        """
         dialect, _ = _dialect(_response(_choice(0, "ok"), usage=_usage(2, 3, 99)))
 
         response = await dialect.arun(Request(input=_chat()))
 
         assert response.usage == UsageStats(
-            input_tokens=2, output_tokens=3, total_tokens=5
+            input_tokens=2,
+            output_tokens=3,
+            total_tokens=5,
+            reported_total_tokens=99,
         )
+
+    @pytest.mark.anyio
+    async def test_agreeing_reported_total_is_not_recorded(self) -> None:
+        """Agreement carries no information, so storing it would bury the rest."""
+        dialect, _ = _dialect(_response(_choice(0, "ok"), usage=_usage(2, 3, 5)))
+
+        response = await dialect.arun(Request(input=_chat()))
+
+        assert response.usage is not None
+        assert response.usage.reported_total_tokens is None
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(

@@ -280,16 +280,26 @@ class SglangTransport:
     def _parse_usage(metas: list[dict[str, Any]]) -> UsageStats | None:
         """Build usage from sglang ``meta_info`` token counts.
 
-        Prompt tokens are shared across n samples; completions sum.
+        Prompt tokens are shared across n samples; completions sum. So is
+        ``cached_tokens``, which describes the shared prefix -- it is read off
+        ``metas[0]`` for the same reason ``prompt_tokens`` is, and summing it
+        would multiply one cache hit by n.
+
+        sglang reports no reasoning or speculative-decoding breakdown, so those
+        stay ``None``: absent, not zero.
         """
         input_tokens = metas[0].get("prompt_tokens")
         if input_tokens is None:
             return None
         output_tokens = sum(m.get("completion_tokens") or 0 for m in metas)
+        cached = metas[0].get("cached_tokens")
+        if isinstance(cached, bool) or not isinstance(cached, int) or cached < 0:
+            cached = None
         return UsageStats(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             total_tokens=input_tokens + output_tokens,
+            cached_tokens=cached,
         )
 
     def _guard_radix_cache(self, meta: dict[str, Any]) -> None:

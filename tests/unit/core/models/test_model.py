@@ -992,6 +992,49 @@ class TestResponseBridge:
         assert out.system_fingerprint == "fp"
         assert out.model["model"] == "m"
 
+    def test_unreported_breakdown_keys_are_omitted_from_the_record(self):
+        """Absent on disk is how "the server did not say" is spelled.
+
+        Writing zeros instead would put measurements in the record that were
+        never taken, and any later average over a mixed fleet folds them in.
+        """
+        out = self._bridge(
+            Response(
+                texts=("a",),
+                usage=UsageStats(input_tokens=3, output_tokens=4, total_tokens=7),
+            )
+        )
+
+        assert out.usage == {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7}
+
+    def test_reported_breakdown_keys_reach_the_record(self):
+        out = self._bridge(
+            Response(
+                texts=("a",),
+                usage=UsageStats(
+                    input_tokens=3,
+                    output_tokens=4,
+                    total_tokens=7,
+                    reasoning_tokens=2,
+                    cached_tokens=0,
+                    accepted_prediction_tokens=1,
+                    rejected_prediction_tokens=1,
+                    reported_total_tokens=9,
+                ),
+            )
+        )
+
+        assert out.usage == {
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "total_tokens": 7,
+            "reasoning_tokens": 2,
+            "cached_tokens": 0,
+            "accepted_prediction_tokens": 1,
+            "rejected_prediction_tokens": 1,
+            "reported_total_tokens": 9,
+        }
+
     def test_usage_absent_stays_none(self):
         """Absence != zeros: a zero-filled usage dict would silently corrupt
         the ARC echoed-logprob slice."""

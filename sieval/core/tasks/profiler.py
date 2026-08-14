@@ -4,9 +4,10 @@ import bisect
 import contextlib
 import time
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Self, TypedDict
+from typing import ClassVar, NotRequired, Self, TypedDict
 
 import anyio
 import orjson
@@ -61,6 +62,51 @@ class TaskTokenStats:
         return self.total / self.count if self.count > 0 else 0.0
 
 
+class UsageBreakdownStats:
+    """One optional usage field, summed against the count it breaks down.
+
+    ``parent_total`` accumulates only over the calls that actually reported the
+    field, so a share is taken against comparable tokens.  Dividing by every
+    call's output would understate reasoning on a fleet where only some servers
+    report it, and the error grows silently with the non-reporting share.
+    """
+
+    def __init__(self, parent_key: str):
+        self.parent_key = parent_key
+        self.total = 0
+        self.parent_total = 0
+        self.calls = 0
+
+    def update(self, value: int, parent: int) -> None:
+        self.total += value
+        self.parent_total += parent
+        self.calls += 1
+
+    @property
+    def share(self) -> float | None:
+        """The ratio, or ``None`` where there is no parent to take it against.
+
+        ``0.0`` would be the same lie the optional counts exist to avoid: a
+        server that reports 50 reasoning tokens against 0 completion tokens --
+        exactly the one counting reasoning outside its completion count -- has
+        not measured a 0% share, it has made the ratio undefined.  ``total``
+        still carries the number that was reported.
+        """
+        return self.total / self.parent_total if self.parent_total > 0 else None
+
+
+def _usage_count(usage: Mapping[str, object], key: str) -> int | None:
+    """Read one token count, tolerating the untyped shapes read back from disk.
+
+    ``None`` means the key was absent or unusable -- never zero, which is a
+    reported measurement.
+    """
+    value = usage.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 class ProfileConfigSnapshot(TypedDict):
     profile_io: bool
     profile_stages: bool
@@ -94,9 +140,28 @@ class ProfileTokenStats(TypedDict):
     buckets: dict[str, int]
 
 
+class ProfileTokenBreakdown(TypedDict):
+    """An optional usage field aggregated over the calls that reported it.
+
+    ``share`` is ``total / parent_total``, and both denominators cover only
+    ``calls_reporting``.  Compare that against ``calls_total`` before reading
+    the share as representative of the run.  It is **absent** when
+    ``parent_total`` is 0, since the ratio is undefined rather than zero.
+    """
+
+    total: int
+    parent: str
+    parent_total: int
+    share: NotRequired[float]
+    calls_reporting: int
+    calls_total: int
+
+
 class ProfileStageTokenUsage(TypedDict, total=False):
     input: ProfileTokenStats
     output: ProfileTokenStats
+    breakdown: dict[str, ProfileTokenBreakdown]
+    reported_total_mismatches: int
 
 
 class ProfileReport(TypedDict, total=False):
@@ -153,6 +218,9 @@ class TaskProfiler:
         # stage_name -> TaskTokenStats
         self._stage_input_tokens: dict[str, TaskTokenStats] = {}
         self._stage_output_tokens: dict[str, TaskTokenStats] = {}
+        self._stage_breakdown: dict[str, dict[str, UsageBreakdownStats]] = {}
+        self._stage_usage_calls: dict[str, int] = {}
+        self._stage_total_mismatches: dict[str, int] = {}
 
     def should_profile_io(self) -> bool:
         return self._profile_io
@@ -185,6 +253,45 @@ class TaskProfiler:
             stage_name
         ]
 
+    _BREAKDOWN_PARENTS: ClassVar[Mapping[str, str]] = {
+        "reasoning_tokens": "output_tokens",
+        "accepted_prediction_tokens": "output_tokens",
+        "rejected_prediction_tokens": "output_tokens",
+        "cached_tokens": "input_tokens",
+    }
+
+    def _accumulate_usage(self, stage_name: str, usage: Mapping[str, object]) -> None:
+        """Fold one call's usage into the per-stage statistics.
+
+        Shared by the live path and the resume rebuild.  Those two carried the
+        same input/output logic twice, so a field added to one of them would
+        have been dropped by the other on the next resume.
+        """
+        stage_input, stage_output = self._get_or_create_stage_token_stats(stage_name)
+        parents = {
+            "input_tokens": _usage_count(usage, "input_tokens") or 0,
+            "output_tokens": _usage_count(usage, "output_tokens") or 0,
+        }
+        if parents["input_tokens"] > 0:
+            stage_input.update(parents["input_tokens"])
+        if parents["output_tokens"] > 0:
+            stage_output.update(parents["output_tokens"])
+
+        self._stage_usage_calls[stage_name] = (
+            self._stage_usage_calls.get(stage_name, 0) + 1
+        )
+        breakdown = self._stage_breakdown.setdefault(stage_name, {})
+        for field, parent_key in self._BREAKDOWN_PARENTS.items():
+            value = _usage_count(usage, field)
+            if value is None:
+                continue
+            stats = breakdown.setdefault(field, UsageBreakdownStats(parent_key))
+            stats.update(value, parents[parent_key])
+        if _usage_count(usage, "reported_total_tokens") is not None:
+            self._stage_total_mismatches[stage_name] = (
+                self._stage_total_mismatches.get(stage_name, 0) + 1
+            )
+
     def record_model_usage(
         self,
         usage: dict[str, int] | ModelUsage | None,
@@ -192,14 +299,7 @@ class TaskProfiler:
     ) -> None:
         if not usage or not self._profile_usage or not stage_name:
             return
-
-        stage_input, stage_output = self._get_or_create_stage_token_stats(stage_name)
-        pt = usage.get("input_tokens", 0)
-        ct = usage.get("output_tokens", 0)
-        if pt > 0:
-            stage_input.update(pt)
-        if ct > 0:
-            stage_output.update(ct)
+        self._accumulate_usage(stage_name, usage)
 
     def aggregate_stage_timings(self, contexts: dict[str | int, TaskContext]) -> None:
         """Rebuild per-stage timing distributions from persisted task contexts."""
@@ -218,32 +318,79 @@ class TaskProfiler:
         """Rebuild per-stage token usage statistics from persisted task contexts."""
         if not self._profile_usage:
             return
-        # Clear per-stage stats
+        # Clear per-stage stats.  The breakdown accumulators have to go too:
+        # they are additive, so a rebuild that kept them would double-count
+        # every call it then re-reads.
         for stats in self._stage_input_tokens.values():
             stats.clear()
         for stats in self._stage_output_tokens.values():
             stats.clear()
+        self._stage_breakdown.clear()
+        self._stage_usage_calls.clear()
+        self._stage_total_mismatches.clear()
 
         for ctx in contexts.values():
             if ctx.stage_meta:
                 for stage_name, meta_list in ctx.stage_meta.items():
-                    # Get or create per-stage stats
-                    stage_input, stage_output = self._get_or_create_stage_token_stats(
-                        stage_name
-                    )
                     for meta in meta_list:
                         # Read usage from model_calls (new structure)
                         model_calls = meta.get("model_calls", [])
                         for call in model_calls:
                             usage = call.get("usage")
-                            if isinstance(usage, dict):
-                                # Record to per-stage stats
-                                pt = usage.get("input_tokens", 0)
-                                ct = usage.get("output_tokens", 0)
-                                if pt > 0:
-                                    stage_input.update(pt)
-                                if ct > 0:
-                                    stage_output.update(ct)
+                            # Same admission test as the live path, not a
+                            # looser one: a usage the live path never counted
+                            # must not appear in calls_total after a resume.
+                            if isinstance(usage, dict) and usage and stage_name:
+                                self._accumulate_usage(stage_name, usage)
+
+    def _breakdown_to_dict(self, stage_name: str) -> dict[str, ProfileTokenBreakdown]:
+        calls_total = self._stage_usage_calls.get(stage_name, 0)
+        result: dict[str, ProfileTokenBreakdown] = {}
+        for field, stats in sorted(self._stage_breakdown.get(stage_name, {}).items()):
+            entry = ProfileTokenBreakdown(
+                total=stats.total,
+                parent=stats.parent_key,
+                parent_total=stats.parent_total,
+                calls_reporting=stats.calls,
+                calls_total=calls_total,
+            )
+            # Omitted, not zeroed: an undefined ratio is not a measured 0%.
+            if stats.share is not None:
+                entry["share"] = stats.share
+            result[field] = entry
+        return result
+
+    def _log_usage_breakdown(self, stage_name: str) -> None:
+        """Log the optional counts as shares, with their reporting denominator.
+
+        The denominator is printed on every line rather than only when partial:
+        a share whose coverage is stated only sometimes reads as full coverage
+        the rest of the time, which is the failure this whole field set exists
+        to avoid.  Fields no server reported have no accumulator, so they emit
+        no line at all rather than a misleading zero.
+        """
+        calls_total = self._stage_usage_calls.get(stage_name, 0)
+        for field, stats in sorted(self._stage_breakdown.get(stage_name, {}).items()):
+            parent = stats.parent_key.removesuffix("_tokens")
+            share = stats.share
+            # A 0-token parent makes the ratio undefined, and printing "0.0%"
+            # there reads as a measurement of no usage rather than no basis.
+            ratio = f"{share:.1%} of {parent}" if share is not None else f"no {parent}"
+            logger.info(
+                "     {}: {:,} ({}; {} of {} calls reporting)",
+                field.removesuffix("_tokens"),
+                stats.total,
+                ratio,
+                stats.calls,
+                calls_total,
+            )
+        mismatches = self._stage_total_mismatches.get(stage_name, 0)
+        if mismatches:
+            logger.info(
+                "     reported total differed from prompt+completion on {} of {} calls",
+                mismatches,
+                calls_total,
+            )
 
     def log_summary(self) -> None:
         """Emit a formatted profiling report (token usage, I/O, stages) via loguru."""
@@ -286,10 +433,13 @@ class TaskProfiler:
                             self._log_token_stats("  Input", input_stats)
                         if output_stats and output_stats.count > 0:
                             self._log_token_stats("  Output", output_stats)
+                        # Breakdowns are shares of the two counts above, so they
+                        # are logged after the stage total and never folded in.
                         stage_total = (input_stats.total if input_stats else 0) + (
                             output_stats.total if output_stats else 0
                         )
                         logger.info("     Stage Total: {:,}", stage_total)
+                        self._log_usage_breakdown(stage_name)
 
         if self._profile_io and self._io_aggregates:
             logger.info("=== {} I/O Profile Summary ===", header)
@@ -385,6 +535,12 @@ class TaskProfiler:
                     entry["input"] = self._token_stats_to_dict(input_stats)
                 if output_stats and output_stats.count > 0:
                     entry["output"] = self._token_stats_to_dict(output_stats)
+                breakdown = self._breakdown_to_dict(stage_name)
+                if breakdown:
+                    entry["breakdown"] = breakdown
+                mismatches = self._stage_total_mismatches.get(stage_name, 0)
+                if mismatches:
+                    entry["reported_total_mismatches"] = mismatches
                 if entry:
                     token_usage[stage_name] = entry
             if token_usage:
