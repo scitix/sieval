@@ -4,8 +4,11 @@ SysBench (arXiv:2408.10943) asks whether a model keeps obeying its **system prom
 across a 5-turn conversation. Each turn carries a checklist of atomic constraints drawn
 from the system prompt, and a grader LLM answers 是/否 per constraint. The three
 published rates nest: **CSR** (mean per-turn fraction of constraints met), **ISR**
-(turns meeting every one), **SSR** (sessions whose turns all do). CSR is the headline;
-ISR and SSR fall off much faster, being conjunctions over ~2.4 constraints and 5 turns.
+(turns meeting every one), **SSR** (the mean normalised count of consecutive turns,
+from the session's start, that met every one — *not* the fraction of sessions whose
+turns all do; see :func:`~sieval.community.sysbench.aggregate_metrics`). CSR is the
+headline; ISR and SSR fall off faster, being conjunctions over ~2.4 constraints and
+over a growing prefix.
 
 **One sample is one whole session.** ``infer`` walks the five turns in order, appending
 the model's own reply before sending the next user turn — upstream's
@@ -16,7 +19,8 @@ turns. That is the protocol behind every published SysBench number.
 
 ``history="ground_truth"`` selects upstream's *other* script,
 ``eval_system_bench_with_gt.py``, which replaces the history with the dataset's
-reference answers and asks each turn from a clean slate. That is the paper's §4.5
+reference answers, so no turn is answered from the model's own earlier mistakes —
+the history is still supplied, it is just not the model's. That is the paper's §4.5
 investigative experiment (Figure 5, "we replace the historical model response with the
 ground truth"), not its headline — it measures per-turn adherence with conversational
 recovery factored out. The report names the mode it ran in, because the two numbers
@@ -43,9 +47,13 @@ Deviations / by-design behavior worth knowing:
 * ``n`` is pinned to 1 and the task takes no ``n`` argument: a second sample would fork
   the conversation, and every later turn would have to be answered once per branch.
 * A turn whose request fails outright ends the walk instead of failing the session. The
-  turns already answered keep their verdicts; the unreached ones are *absent*, not zero,
-  so an infrastructure failure cannot read as a model that stopped following its system
-  prompt. ``turn_{t}_n_turns`` counts the sessions that actually reached turn *t*.
+  turns already answered keep their verdicts; for the *means* — ``csr``, ``isr`` — the
+  unreached ones are then **absent**, not zero, so an infrastructure failure cannot read
+  as a model that stopped following its system prompt.
+  ``turn_{t}_n_turns`` counts the sessions that actually reached turn *t*.
+  ``ssr`` is the exception, and has to be: it measures a *prefix*, so an unreached turn
+  keeps the session's declared length as the denominator and simply shortens the run.
+  Dropping it there would let a failure at turn 3 of 5 report a perfect session.
 * A constraint with no readable verdict scores **not satisfied** but is counted in
   ``n_grader_unparsed``; a turn where *nothing* parsed is counted again in
   ``n_grader_unparsed_turns``. Upstream instead retries the grader up to 10 times
@@ -152,7 +160,11 @@ _CONSTRAINT_TYPES = {
     # reproduction, so this stays experimental until a run against a named grader is
     # anchored to something.
     status="experimental",
-    reference_kind="procedure",
+    # `value`, not `procedure`: the judgement records a reference -- the per-turn
+    # criteria id lists -- and that is the operational criterion, not whether the gold
+    # looks scalar. Same reading as IFEval, which records the instruction ids its
+    # checkers run and is likewise a `value`.
+    reference_kind="value",
     reference_impl=ReferenceImpl(
         source="PKU-Baichuan-MLSystemLab/SysBench",
         url=(
@@ -170,9 +182,20 @@ _CONSTRAINT_TYPES = {
             "independent), NOT its headline; the mode is named in the report. n is "
             "pinned to 1 — a second sample would fork the conversation. METRICS: "
             "headline CSR (mean per-turn fraction of constraints satisfied), with "
-            "ISR (turns satisfying ALL) and SSR (sessions whose turns all do) "
-            "alongside, plus the paper's align/misalign split, its six constraint "
-            "types, and per-turn-position cells. GRADING: one grader call per turn "
+            "ISR (turns satisfying ALL) and SSR alongside. SSR IS NOT A "
+            "SESSION-LEVEL ALL-OR-NOTHING RATE: paper SS3.3 defines it as (1/mn) "
+            "summed over EVERY prefix length alpha, i.e. the mean normalised count "
+            "of consecutive fully-satisfied turns from the session's start, which "
+            "upstream computes in utils.analysis_eval_results as "
+            "cal_continuous_avg/5 (count_continuous_round holds one count per "
+            "alpha). Reading it as 'sessions whose turns all do' reports only the "
+            "alpha=n term, the smallest, and lands ~20 points under Table 2. An "
+            "unreached turn shortens the prefix rather than leaving the "
+            "denominator, so a walk that died at turn 3 cannot report a perfect "
+            "session. Plus the paper's align/misalign split -- Table 3 reports ISR, "
+            "so isr_align/isr_misalign are the comparable pair and csr_* is carried "
+            "beside them -- its six constraint types, and per-turn-position cells. "
+            "GRADING: one grader call per turn "
             "on the same cumulative message list the model saw; the judge prompt is "
             "byte-identical to upstream's get_eval_pattern, verified over all 2,500 "
             "turns of the released set (0 differences). Upstream parses the reply "
@@ -454,9 +477,14 @@ class SysBenchZeroShotGenTask(
                 verdicts
             )
 
-            per_turn.append((csr, all_satisfied))
-            metrics[f"turn_{index}_csr"] = csr
-            metrics[f"turn_{index}_all_satisfied"] = all_satisfied
+            # A turn upstream left unlabelled carries no criteria, so it has nothing to
+            # satisfy: it keeps its place in the walk (it shaped the history of the
+            # turns after it) but stays out of every rate, which is what `report` does
+            # with it too. Counting it would score a 0.0 nobody asked for.
+            if criteria_ids:
+                per_turn.append((csr, all_satisfied))
+                metrics[f"turn_{index}_csr"] = csr
+                metrics[f"turn_{index}_all_satisfied"] = all_satisfied
             detail[f"turn_{index}"] = {
                 # Raw per-constraint outcomes, which `report` pools; a per-turn rate
                 # cannot reconstruct a pooled one, and the type is what the paper's
@@ -485,8 +513,14 @@ class SysBenchZeroShotGenTask(
         score = sum(t[0] for t in per_turn) / len(per_turn) if per_turn else 0.0
         # The strictest reading the benchmark offers -- every constraint honoured in
         # every turn -- which a session that never reached its last turn cannot claim,
-        # however well the rest scored. This is the session's SSR contribution.
-        correct = n_answered >= len(turns) and all(t[1] for t in per_turn)
+        # however well the rest scored. NOT the session's SSR contribution: SSR counts
+        # the leading run of fully-satisfied turns, so a session that keeps four turns
+        # and loses the fifth contributes 4/5 there and `False` here.
+        # `bool(per_turn)`: `all(())` is True, so a session whose turns carried no
+        # criteria at all would otherwise be crowned for satisfying nothing.
+        correct = (
+            bool(per_turn) and n_answered >= len(turns) and all(t[1] for t in per_turn)
+        )
         return True, build_judgement_record(
             [list(turn["criteria"]) for turn in turns],
             [
@@ -516,10 +550,15 @@ class SysBenchZeroShotGenTask(
     async def report(self, finals, fails):
         # Everything here derives from the persisted judgement records, so a result dir
         # can be re-reported without the model or the grader.
-        turns: list[tuple[int, float, bool]] = []
+        turns: list[tuple[int, int, float, bool]] = []
         graded_turns: list[float] = []
-        by_alignment: dict[str, list[float]] = defaultdict(list)
-        by_position: dict[int, list[tuple[int, float, bool]]] = defaultdict(list)
+        # (csr, all_satisfied) per turn: the paper splits this axis by ISR (Table 3),
+        # and CSR is carried alongside because it is the finer of the two.
+        by_alignment: dict[str, list[tuple[float, bool]]] = defaultdict(list)
+        by_position: dict[int, list[tuple[float, bool]]] = defaultdict(list)
+        # Each session's DECLARED turn count, which is `ssr`'s denominator -- an
+        # unreached turn must shorten the prefix, not leave the denominator.
+        session_n_turns: dict[int, int] = {}
         # Pooled from raw counts, not averaged from per-turn rates: turns carry
         # different constraint counts, so the two differ.
         type_totals: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -538,6 +577,12 @@ class SysBenchZeroShotGenTask(
             # session and report a rate over the wrong denominator.
             raw_id = extra.get("session_id")
             session_id = int(raw_id) if raw_id is not None else -position - 1
+            # `n_turns` is what the session HAS; `n_answered` is what it reached.
+            # They differ exactly when a walk ended early, which is the case `ssr`
+            # must not reward -- so the denominator comes from the former.
+            session_n_turns[session_id] = int(
+                extra.get("n_turns") or extra.get("n_answered", 0)
+            )
             for index in range(1, int(extra.get("n_answered", 0)) + 1):
                 turn = extra.get(f"turn_{index}") or {}
                 n_turn_criteria = int(turn.get("n_criteria", 0))
@@ -550,9 +595,9 @@ class SysBenchZeroShotGenTask(
                 csr = n_satisfied / n_turn_criteria
                 full = n_satisfied == n_turn_criteria
 
-                turns.append((session_id, csr, full))
-                by_position[index].append((session_id, csr, full))
-                by_alignment[str(turn.get("alignment", ""))].append(csr)
+                turns.append((session_id, index, csr, full))
+                by_position[index].append((csr, full))
+                by_alignment[str(turn.get("alignment", ""))].append((csr, full))
                 n_criteria += n_turn_criteria
                 n_grader_unparsed += turn_unparsed
                 if turn_unparsed >= n_turn_criteria:
@@ -566,7 +611,7 @@ class SysBenchZeroShotGenTask(
                     bucket[0] += bool(verdict)
                     bucket[1] += 1
 
-        m = aggregate_metrics(turns)
+        m = aggregate_metrics(turns, session_n_turns)
         n_turns = int(m["n_turns"])
         metrics: dict[str, float | str] = {
             "score": m["csr"] * 100,
@@ -607,17 +652,32 @@ class SysBenchZeroShotGenTask(
         # The paper's alignment split: `misalign` turns ask for something the system
         # prompt forbids, so the gap between these two is the part of the score that is
         # actually about system-message priority.
-        for alignment, values in sorted(by_alignment.items()):
-            if alignment and values:
-                metrics[f"csr_{alignment}"] = sum(values) / len(values) * 100
+        #
+        # `isr_*` is the comparable pair -- Table 3 splits ISR, not CSR, which is also
+        # what upstream computes (`analysis_eval_results` appends the all-satisfied
+        # indicator `是否可用` to its align buckets). `csr_*` is kept beside it because
+        # it is the finer signal, but it is NOT the published column.
+        for alignment, cells in sorted(by_alignment.items()):
+            if alignment and cells:
+                metrics[f"csr_{alignment}"] = (
+                    sum(c[0] for c in cells) / len(cells) * 100
+                )
+                metrics[f"isr_{alignment}"] = (
+                    sum(1 for c in cells if c[1]) / len(cells) * 100
+                )
 
         # Per-turn-position cells: SysBench's subject is how adherence decays across a
-        # conversation, and the headline averages that decay away.
+        # conversation, and the headline averages that decay away. Computed here rather
+        # than through `aggregate_metrics`, which would also return an `ssr` over a
+        # single position -- a prefix rate whose prefix is missing, i.e. meaningless.
         for position, cells in sorted(by_position.items()):
-            pos = aggregate_metrics(cells)
-            metrics[f"turn_{position}_csr"] = pos["csr"] * 100
-            metrics[f"turn_{position}_isr"] = pos["isr"] * 100
-            metrics[f"turn_{position}_n_turns"] = pos["n_turns"]
+            metrics[f"turn_{position}_csr"] = (
+                sum(c[0] for c in cells) / len(cells) * 100
+            )
+            metrics[f"turn_{position}_isr"] = (
+                sum(1 for c in cells if c[1]) / len(cells) * 100
+            )
+            metrics[f"turn_{position}_n_turns"] = float(len(cells))
 
         # Per constraint category, pooled over constraints rather than turns.
         for name, (satisfied, total) in sorted(type_totals.items()):

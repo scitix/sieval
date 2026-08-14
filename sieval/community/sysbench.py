@@ -17,7 +17,10 @@ grader LLM answers 是/否 per constraint, and the three published rates nest �
 
 * **CSR** constraint satisfaction rate, the mean per-turn fraction of constraints met;
 * **ISR** instruction satisfaction rate, the fraction of turns meeting *every* one;
-* **SSR** session satisfaction rate, the fraction of sessions whose turns all do.
+* **SSR** session *stability* rate — the mean normalised count of consecutive turns,
+  from the start of a session, that met every constraint. Not "sessions whose turns
+  all do": see :func:`aggregate_metrics` for the formula and for how upstream
+  computes it.
 
 :func:`build_judge_prompt` takes the same ``(messages, criteria)`` arguments upstream's
 ``get_eval_pattern`` takes, and slices them the same way — ``messages[0]`` is the system
@@ -67,7 +70,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 #: A single ``<id>: <verdict>`` pair, with or without quotes on either side. Upstream's
@@ -189,9 +192,14 @@ def parse_verdict(text: str, criteria_ids: Sequence[str]) -> dict[str, bool | No
     A constraint the reply did not resolve maps to ``None``, never to ``False``.
     """
     block = text
-    m = _VERDICT_BLOCK.search(text)
-    if m:
-        block = m.group(1)
+    # The LAST block wins, not the first: the requested output format is quoted in
+    # the prompt, so a grader that restates it before answering emits a decoy
+    # `评判结果` whose placeholder verdicts parse as nothing. Anchoring on the first
+    # match reads the decoy and scores the whole turn unresolved; a trailing restatement
+    # of a verdict the grader already gave is the same verdict either way.
+    blocks = _VERDICT_BLOCK.findall(text)
+    if blocks:
+        block = blocks[-1]
     found = {str(cid): (v in _PASS) for cid, v in _YESNO.findall(block)}
     return {str(cid): found.get(str(cid)) for cid in criteria_ids}
 
@@ -215,26 +223,53 @@ def aggregate_turn(verdicts: dict[str, bool | None]) -> tuple[float, bool, int, 
 
 
 def aggregate_metrics(
-    turns: Iterable[tuple[int, float, bool]],
+    turns: Iterable[tuple[int, int, float, bool]],
+    session_n_turns: Mapping[int, int] | None = None,
 ) -> dict[str, float]:
-    """Pool per-turn results into the paper's three nested rates.
+    """Pool per-turn results into the paper's three published rates.
 
-    ``turns`` is ``(session_id, csr, all_satisfied)`` per turn. CSR and ISR are means
-    over turns; SSR is over sessions, and a session counts only when **every** one of
-    its turns satisfied everything — so a session is scored on the turns present in the
-    run, which is why a subset selection must keep whole sessions to keep SSR readable.
+    ``turns`` is ``(session_id, turn_index, csr, all_satisfied)`` per turn, with
+    ``turn_index`` 1-based. ``session_n_turns`` gives each session's **declared** turn
+    count; a session missing from it falls back to the highest index seen for it.
+
+    CSR and ISR are means over turns, matching paper §3.3's ``1/mn`` outer average.
+
+    **SSR is not a session-level all-or-nothing rate.** §3.3 defines it as
+    ``(1/mn) Σ_i Σ_α (⋀_{j≤α} ⋀_k s_ijk)`` — a sum over *every* prefix length α, so it
+    is the mean normalised count of consecutive fully-satisfied turns from the start of
+    a session. Upstream computes the same quantity in ``utils.analysis_eval_results``:
+    ``count_continuous_round`` holds one count per α, and ``cal_continuous_avg``
+    telescopes them to ``Σ_α Q_α``, which is ``5 × SSR`` on the released set. Reading
+    SSR as "sessions whose turns all do" reports only the α = n term — the smallest of
+    them — and lands ~20 points below Table 2 on a run of published shape.
+
+    Dividing by the **declared** count is the other half of that: a walk that ended
+    early cannot have satisfied turns it never reached, so an unreached turn shortens
+    the prefix instead of dropping out of the denominator. Scoring on the turns merely
+    *present* lets an infrastructure failure at turn 3 report a perfect session.
     """
     turns = list(turns)
     n = len(turns)
     if n == 0:
         return {"csr": 0.0, "isr": 0.0, "ssr": 0.0, "n_turns": 0.0, "n_sessions": 0.0}
-    by_session: dict[int, list[bool]] = defaultdict(list)
-    for sid, _csr, full in turns:
-        by_session[sid].append(full)
+    full_by_session: dict[int, dict[int, bool]] = defaultdict(dict)
+    for sid, index, _csr, full in turns:
+        full_by_session[sid][index] = full
+    declared = dict(session_n_turns or {})
+    ssr = 0.0
+    for sid, by_index in full_by_session.items():
+        # `or max(...)`: a 0 or missing declared count would divide by zero or
+        # over-credit; the turns actually seen are the only honest fallback.
+        n_declared = declared.get(sid) or max(by_index)
+        prefix = 0
+        # A gap stops the run as surely as a failure does -- `.get` is None there.
+        while by_index.get(prefix + 1):
+            prefix += 1
+        ssr += prefix / n_declared
     return {
-        "csr": sum(t[1] for t in turns) / n,
-        "isr": sum(1 for t in turns if t[2]) / n,
-        "ssr": sum(1 for fulls in by_session.values() if all(fulls)) / len(by_session),
+        "csr": sum(t[2] for t in turns) / n,
+        "isr": sum(1 for t in turns if t[3]) / n,
+        "ssr": ssr / len(full_by_session),
         "n_turns": float(n),
-        "n_sessions": float(len(by_session)),
+        "n_sessions": float(len(full_by_session)),
     }

@@ -444,8 +444,11 @@ def test_report_nests_the_three_published_rates():
     assert m["csr"] == pytest.approx(87.5)
     # ISR counts turns satisfying everything: 3 of 4.
     assert m["isr"] == pytest.approx(75.0)
-    # SSR counts sessions whose turns ALL do: 1 of 2 -- the sharpest of the three.
-    assert m["ssr"] == pytest.approx(50.0)
+    # SSR averages over PREFIX lengths, not over whole sessions (paper SS3.3):
+    # session 1 keeps turn 1 and loses turn 2 -> 1/2; session 2 keeps both -> 2/2.
+    # Mean = 75.0. Counting "sessions whose turns all do" would report 50.0, which
+    # is only the alpha=2 term.
+    assert m["ssr"] == pytest.approx(75.0)
     assert m["n_turns"] == 4
     assert m["n_sessions"] == 2
     assert m["score_key"] == "csr"
@@ -466,6 +469,48 @@ def test_report_splits_aligned_from_misaligned_turns():
     m = _report(judgements)
     assert m["csr_align"] == pytest.approx(100.0)
     assert m["csr_misalign"] == pytest.approx(0.0)
+
+
+def test_report_splits_alignment_by_isr_because_that_is_the_published_column():
+    """Table 3 splits ISR, not CSR -- and the two disagree on a partial turn.
+
+    Upstream appends the all-satisfied indicator (``是否可用``) to its align
+    buckets, so a turn that met half its constraints contributes 0 there and 0.5
+    to CSR. Reporting only ``csr_*`` gives a number that cannot be read against
+    the paper's aligned/misaligned table.
+    """
+    half = ({"1": True, "2": False}, {"1": "格式约束", "2": "内容约束"}, "align")
+    m = _report([_judged_session(1, [half])])
+    assert m["csr_align"] == pytest.approx(50.0)
+    assert m["isr_align"] == pytest.approx(0.0)
+
+
+def test_a_walk_that_died_mid_session_cannot_report_a_perfect_session():
+    """The turns it never reached shorten the prefix, they do not vanish.
+
+    Scoring SSR over the turns merely *present* would let an infrastructure
+    failure at turn 3 of 5 read as a model that followed its system prompt all
+    the way through -- the exact inversion of what ending the walk is for.
+    """
+    perfect = ({"1": True}, {"1": "格式约束"}, "align")
+    judgement = _judged_session(1, [perfect, perfect])
+    judgement["extra"]["n_turns"] = 5  # declared 5, only 2 were reached
+    m = _report([judgement])
+    assert m["ssr"] == pytest.approx(40.0)  # 2 leading turns of 5, not 100.0
+    # CSR and ISR keep the judged denominator: those two are means, so an absent
+    # turn is genuinely absent rather than a zero.
+    assert m["csr"] == pytest.approx(100.0)
+    assert m["isr"] == pytest.approx(100.0)
+
+
+def test_ssr_stops_at_the_first_failure_not_at_the_last():
+    """It is a *leading* run: a later recovery cannot lengthen the prefix."""
+    ok = ({"1": True}, {"1": "格式约束"}, "align")
+    bad = ({"1": False}, {"1": "格式约束"}, "align")
+    # fail, pass, pass, pass -> prefix 0, even though 3 of 4 turns are perfect.
+    m = _report([_judged_session(1, [bad, ok, ok, ok])])
+    assert m["ssr"] == pytest.approx(0.0)
+    assert m["isr"] == pytest.approx(75.0)
 
 
 def test_report_breaks_down_by_turn_position_and_constraint_type():
@@ -567,6 +612,26 @@ def test_digits_in_the_judges_prose_are_not_read_as_verdicts():
         '  "评判结果": {1: "是"}\n}\n\'\'\''
     )
     assert parse_verdict(reply, ["1", "2"]) == {"1": True, "2": None}
+
+
+def test_a_grader_that_restates_the_asked_format_first_is_still_read():
+    """The prompt quotes the output format, so an echo of it is a decoy block.
+
+    Its placeholder verdicts (``1: "……"``) parse as nothing, so anchoring on the
+    FIRST `评判结果` would score the whole turn unresolved -- a grader-shaped
+    zero that looks like a model failure. The real answer is the last block.
+    """
+    criteria = _criteria((1, "必须用中文回答", "格式约束"))
+    decoy = build_judge_prompt(
+        [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "U"},
+            {"role": "assistant", "content": "A"},
+        ],
+        criteria,
+    )
+    assert parse_verdict(decoy, ["1"]) == {"1": None}, "the prompt must not self-parse"
+    assert parse_verdict(decoy + "\n" + _reply({1: "是"}), ["1"]) == {"1": True}
 
 
 def test_the_judge_prompt_carries_the_system_prompt_criteria_and_both_turns():
