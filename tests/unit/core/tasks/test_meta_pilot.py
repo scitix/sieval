@@ -41,6 +41,7 @@ JUDGE_TASK_NAMES = {
     "hle_0shot_gen",
     "inverse_ifeval_0shot_gen",
     "simpleqa_verified_0shot_gen",
+    "sysbench_0shot_gen",
 }
 
 

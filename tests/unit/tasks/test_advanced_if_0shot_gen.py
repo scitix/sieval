@@ -273,11 +273,11 @@ async def test_feedback_persists_the_whole_grader_output():
 
 @pytest.mark.anyio
 async def test_grader_spend_reaches_the_profiler():
-    """One batched grader call per rollout, stored as a mapping -- not a list.
+    """One batched grader call per rollout, stored as a mapping.
 
-    ``iter_grader_outputs`` skips a list, so fanning the rubric out into one
-    judge call per criterion would make the grader's tokens vanish from
-    profile.json. The whole rubric goes in a single indexed call instead.
+    The whole rubric goes to the judge in a single indexed call -- upstream's
+    shape, and one call rather than one per criterion -- so the rollout records a
+    mapping and the profiler sees exactly one grader output for it.
     """
     task, _ = _task(grader_reply=_judge_reply({"question_1": "Yes"}, "Yes"))
     _, judgement = await _run_to_feedback(task, _sample())

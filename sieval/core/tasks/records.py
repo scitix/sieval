@@ -293,9 +293,11 @@ def iter_grader_outputs(value: object) -> list[Mapping]:
     """Every grader ``ModelOutput`` recorded on a judgement record, in order.
 
     A judged rollout carries the grader's flattened output under
-    ``extra[GRADER_OUTPUT_KEY]``. Returns an empty list for any other value,
-    including judgements whose verdict had no grader at all (a string compare,
-    a test suite) -- most tasks, so this must stay cheap and silent.
+    ``extra[GRADER_OUTPUT_KEY]`` -- one mapping, or a list of them where a single
+    rollout took several grader calls (a multi-turn session judged turn by turn).
+    Returns an empty list for any other value, including judgements whose verdict
+    had no grader at all (a string compare, a test suite) -- most tasks, so this
+    must stay cheap and silent.
     """
     if not is_judgement_record(value):
         return []
@@ -309,6 +311,12 @@ def iter_grader_outputs(value: object) -> list[Mapping]:
         output = extra.get(GRADER_OUTPUT_KEY)
         if isinstance(output, Mapping):
             outputs.append(output)
+        elif isinstance(output, Sequence) and not isinstance(output, str | bytes):
+            # A task that grades a rollout in several calls -- a multi-turn session
+            # judged turn by turn -- records the list. Without this the whole rollout
+            # is skipped, so its grader spend leaves `profile.json` silently rather
+            # than being undercounted visibly.
+            outputs.extend(item for item in output if isinstance(item, Mapping))
     return outputs
 
 

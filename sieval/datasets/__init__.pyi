@@ -185,6 +185,10 @@ from .smt_2025 import (
     SMT2025Dataset,
     SMT2025DatasetSample,
 )
+from .sysbench import (
+    SysBenchDataset,
+    SysBenchDatasetSample,
+)
 from .t_eval import (
     TEvalBeforeCallingDataset,
     TEvalBeforeCallingDatasetSample,
@@ -291,6 +295,8 @@ __all__ = [
     "SciCodeDatasetSample",
     "SimpleQAVerifiedDataset",
     "SimpleQAVerifiedDatasetSample",
+    "SysBenchDataset",
+    "SysBenchDatasetSample",
     "TEvalBeforeCallingDataset",
     "TEvalBeforeCallingDatasetSample",
     "TheoremQADataset",

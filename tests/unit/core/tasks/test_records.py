@@ -359,6 +359,33 @@ class TestIterGraderOutputs:
         assert iter_grader_outputs("some text") == []
         assert iter_grader_outputs(None) == []
 
+    def test_a_rollout_graded_in_several_calls_reports_all_of_them(self):
+        """sysbench grades one session turn by turn and records the list.
+
+        Flattening it here is what keeps the profiler's arithmetic right: a
+        five-turn session bills five judge calls, and reading only the first --
+        or skipping the rollout for not being a mapping -- loses four of them
+        silently, which reads as a cheap grader rather than a miscount.
+        """
+        record = self._judged(
+            [
+                {"model": {"model": "judge"}, "usage": {"input_tokens": 1}},
+                {"model": {"model": "judge"}, "usage": {"input_tokens": 2}},
+            ],
+            {"model": {"model": "judge"}, "usage": {"input_tokens": 3}},
+        )
+        assert [o["usage"]["input_tokens"] for o in iter_grader_outputs(record)] == [
+            1,
+            2,
+            3,
+        ]
+
+    def test_a_string_grader_output_is_not_walked_as_a_sequence(self):
+        # A str is a Sequence, so the list branch would otherwise yield its
+        # characters -- none of them mappings, but the guard states the intent.
+        record = self._judged("not an output")
+        assert iter_grader_outputs(record) == []
+
     def test_judgement_whose_rollouts_are_not_mappings_is_empty(self):
         """A malformed `rollouts` must be walked past, not indexed into.
 

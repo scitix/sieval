@@ -1068,6 +1068,31 @@
       "checksums": {}
     },
     {
+      "name": "sysbench",
+      "display_name": "SysBench (system-message following)",
+      "description": "500 Chinese 5-turn sessions with per-turn constraint checklists, one row per session.",
+      "source": [
+        "url:https://raw.githubusercontent.com/PKU-Baichuan-MLSystemLab/SysBench/627ffa8010d00e270426975b33b1fb7a0a635602/datas/system_benchmark_eval_datas.json"
+      ],
+      "categories": [
+        {
+          "level1": "Language",
+          "level2": "InstructionFollowing"
+        }
+      ],
+      "tags": [
+        "chinese",
+        "multi-turn",
+        "open-ended",
+        "system-following"
+      ],
+      "deps_group": null,
+      "license": null,
+      "checksums": {
+        "system_benchmark_eval_datas.json": "sha256:d58186c227d8284e153619005cea704010e7290b4d3329c23445c6b504de1af2"
+      }
+    },
+    {
       "name": "t_eval_before_calling",
       "display_name": "T-Eval Before-Calling",
       "description": "T-Eval tool-use benchmark — before-calling stage (plan/reason).",
@@ -2386,6 +2411,29 @@
       },
       "status": "stable",
       "reference_kind": "value"
+    },
+    {
+      "name": "sysbench_0shot_gen",
+      "display_name": "SysBench (0-shot, generative)",
+      "description": "Multi-turn Chinese system-message following; per-turn constraint checklists graded by an LLM judge.",
+      "dataset": "sysbench",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "chinese",
+        "multi-turn",
+        "instruction-following",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "PKU-Baichuan-MLSystemLab/SysBench",
+        "url": "https://github.com/PKU-Baichuan-MLSystemLab/SysBench/blob/627ffa8010d00e270426975b33b1fb7a0a635602/eval_system_bench.py",
+        "notes": "Port of SysBench (arXiv:2408.10943) at commit 627ffa80. PROTOCOL: the unqualified task is upstream's HEADLINE script eval_system_bench.py — one session is one sample, and do_infer appends the model's OWN reply to `messages` before asking the next turn, so turn t is answered from the model's own history and SSR is a property of one rollout. history='ground_truth' selects eval_system_bench_with_gt.py instead, which is the paper's SS4.5 / Figure 5 ablation (GT history, turns independent), NOT its headline; the mode is named in the report. n is pinned to 1 — a second sample would fork the conversation. METRICS: headline CSR (mean per-turn fraction of constraints satisfied), with ISR (turns satisfying ALL) and SSR (sessions whose turns all do) alongside, plus the paper's align/misalign split, its six constraint types, and per-turn-position cells. GRADING: one grader call per turn on the same cumulative message list the model saw; the judge prompt is byte-identical to upstream's get_eval_pattern, verified over all 2,500 turns of the released set (0 differences). Upstream parses the reply with eval(reply[7:-3]) — Python eval, not json.loads, which is what makes the bare-integer-key dict it asks for parse at all — then asserts the verdict keys equal the criteria keys and retries up to 10x (temp 0 for five, then 0.5) before failing the session. This port reads the verdicts by regex (it does not execute grader text, and does not depend on the fence being byte-exact) and scores an unresolved constraint not-satisfied, counted in grader_unparsed_criteria: one constraint lost and visible, rather than five turns lost. UPSTREAM'S ONE RULE-BASED CHECK IS NOT PORTED: utils.character_count asserts its own regex matches are empty immediately after computing them, so its only reachable return is the -1 'not my rule' sentinel (run.sh uses plain python, no -O), and BOTH eval scripts call it as character_count(criteria_content, answer) against a def of character_count(answer, criteria_content) — arguments swapped, so the regexes scan the model's reply. Both defects point the same way: upstream grades EVERY constraint by judge, which is what its published numbers measure. Reviving the rule claims 13 of 459 constraints (2.83%) on a measured subset, bounding the CSR difference at 2.83 points — a scoring change to declare, not a repair to slip in. THE GRADER IS THE MEASUREMENT: upstream used GPT-4o and states no decoding settings; pin the grader, set temperature=0 where honoured, and name it beside every number. Every per-turn grader ModelOutput is persisted at extra.grader_output. csr averages an ungradeable turn in as 0.0 (upstream's denominator) so it is a FLOOR; read it with csr_graded and ungradeable_rate. UPSTREAM DECLARES NO LICENSE — see the dataset module. Paper Table 2 (GPT-4o grader; 500 sessions / 2,500 turns / 5,952 constraints) CSR/ISR/SSR: GPT-4o 87.1/76.4/54.4, GPT-4-Turbo-20240409 86.5/76.6/53.2, Claude-3-Opus 85.0/74.1/51.8, Qwen2.5-72B-Instruct 80.4/66.2/42.8, Qwen2-72B-Instruct 79.0/64.1/41.6, GLM-4-9B-Chat 64.2/44.0/25.9, GPT-3.5-Turbo-20231106 61.6/43.2/20.8. Best published SSR is 54.4."
+      },
+      "status": "experimental",
+      "reference_kind": "procedure"
     },
     {
       "name": "t_eval_before_calling_0shot_gen",
