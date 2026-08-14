@@ -22,6 +22,7 @@ from tests.conftest import (
     make_large_dataset,
     make_perf_config,
     samples_per_second,
+    suite_heap_excluded,
 )
 
 
@@ -48,7 +49,7 @@ class TestThroughputVsConcurrency:
 
         runner = TaskRunner(task, config)
         timer = PerfTimer()
-        with timer:
+        with suite_heap_excluded(), timer:
             report = await runner.arun()
 
         assert report is not None

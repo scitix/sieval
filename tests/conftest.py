@@ -15,12 +15,13 @@ class-path references).
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import gc
 import random
 import sys
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -837,6 +838,46 @@ class PerfTimer:
 
     def __exit__(self, *args: Any) -> None:
         self.elapsed = time.perf_counter() - self._start
+
+
+@contextmanager
+def suite_heap_excluded() -> Iterator[None]:
+    """Keep the rest of the suite's live heap out of a short timed window.
+
+    A gen2 collection costs in proportion to the whole live heap, and by the
+    time a full run reaches the perf gates that heap is thousands of other
+    tests' fixtures. Measured on this tree: after ``tests/unit`` alone the
+    process holds ~833k tracked objects and one gen2 pass takes **286 ms** --
+    longer than the 0.20 s window ``test_throughput_vs_concurrency`` measures at
+    concurrency 16. One collection landing inside such a window is the entire
+    difference between 61.7% and 18.9% efficiency for unchanged code, and it is
+    a coin flip which window it lands in: in the run that produced those
+    figures, concurrency 1 and 4 came in 0.043 s and 0.053 s slower while
+    concurrency 16 took 0.457 s longer.
+
+    ``gc.freeze()``, not ``gc.disable()``: objects the code under test allocates
+    are still collected and still charged to the window, so GC pressure the
+    pipeline itself introduces stays measurable. Only the heap it did not
+    allocate stops being rescanned. (``test_serialization``'s ``_gc_paused``
+    disables the collector outright -- correct there, where the subject is a
+    tight serialization loop and any collection is pure noise.)
+
+    Not every timed gate needs this, and the test is whether one 286 ms pause
+    fits inside a gate's own margin rather than whether its window is short.
+    Checked against the measured figures: the absolute bounds in seconds have
+    room to spare; ``iteration_overhead`` (2.98x against a 5.0x bar) and
+    ``record_each_stage`` (46% against 200%) each survive a pause landing in
+    their worst window; ``dep_loading`` times ~18 ms but takes the best of
+    five, so a pause has to hit every run. The two wrapped here survive
+    nothing -- at concurrency 16 the pause is longer than the window it would
+    land in.
+    """
+    gc.collect()
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
 
 
 def samples_per_second(n_samples: int, elapsed_s: float) -> float:

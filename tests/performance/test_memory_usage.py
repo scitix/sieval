@@ -41,11 +41,17 @@ _MEM_PAYLOAD_SIZE = 10 * 1024
 
 
 class TestPipelineMemoryScaling:
-    """Verify pipeline memory scales sub-linearly with sample count.
+    """Bound the pipeline's peak memory per additional sample.
 
     Uses 10KB payloads with concurrency=64 to measure end-to-end pipeline
     memory.  The output_size is kept small (100B) so that stage results
     don't dominate RSS — the test focuses on raw_sample lifecycle.
+
+    Peak memory here is *linear* in sample count at roughly 80KB per 10KB
+    sample; the earlier "sub-linear" claim came from a denominator inflated by
+    one-time process growth (see the comment on the assertion).  What the gate
+    catches is that figure rising — the pipeline retaining more per sample than
+    it does today.
     """
 
     @pytest.mark.anyio
@@ -88,17 +94,27 @@ class TestPipelineMemoryScaling:
                 f"peak={tracker.peak_mb:.1f}MB"
             )
 
-        # 10000/2000 = 5x samples, memory should grow sub-linearly (<4x)
-        assert results[2000] > 0, (
-            f"Baseline delta too small to measure: {results[2000]:.2f}MB"
-        )
-        ratio = results[10000] / results[2000]
-        peak_ratio = peaks[10000] / peaks[2000] if peaks[2000] > 0 else 0
+        # Marginal cost, not a ratio of deltas.  `delta` is the difference of
+        # two ~1 GB RSS readings and carries a large one-time process-growth
+        # term: measured at 122.7MB for n=2000 in a fresh process against 20MB
+        # of actual payload, and at 62.3MB for the identical run once the rest
+        # of the suite had already grown the process.  Dividing by that term
+        # published ratios from 1.2x to 6.7x for unchanged code, against a 4x
+        # bar.  Subtracting two measurements cancels the term instead: the
+        # marginal figure below held at 80.7 / 82.7 / 82.8 / 106.6 KB per
+        # sample across those same four process states.
+        span = 10000 - 2000
+        marginal_kb = (peaks[10000] - peaks[2000]) * 1024 / span
+        payload_kb = _MEM_PAYLOAD_SIZE / 1024
         print(
-            f"PERF: memory scaling ratio (10000/2000) "
-            f"delta={ratio:.1f}x, peak={peak_ratio:.1f}x"
+            f"PERF: memory delta n=2000/10000 => {results[2000]:.1f}MB / "
+            f"{results[10000]:.1f}MB (diagnostic only); marginal peak = "
+            f"{marginal_kb:.1f}KB/sample over a {payload_kb:.0f}KB payload"
         )
-        assert ratio < 4, f"Memory scales linearly or worse: {ratio:.1f}x"
+        assert marginal_kb < 200, (
+            f"Peak memory per additional sample too high: {marginal_kb:.1f}KB "
+            f"for a {payload_kb:.0f}KB payload"
+        )
 
 
 class TestInitPhaseMemory:
