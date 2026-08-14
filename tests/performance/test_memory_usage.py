@@ -7,7 +7,7 @@ workloads. To produce measurable RSS deltas, tests use large payloads
 force OS-level page allocation.
 
 Verifies that:
-- Pipeline memory scales sub-linearly with sample count
+- Pipeline peak memory per additional sample stays within budget
 - record_each_stage overhead is bounded
 - No memory leaks across runs
 - Context and saver buffer footprints are bounded
@@ -39,6 +39,13 @@ from tests.conftest import (
 # Python's existing heap and produce 0.0MB delta with psutil).
 _MEM_PAYLOAD_SIZE = 10 * 1024
 
+# Peak RSS the pipeline may add per additional sample, as a multiple of the
+# payload -- a sample in flight is its payload plus the context, stage results
+# and saver buffering around it.  Today reads 45-66 KB per 10KB sample, so 10x
+# leaves ~1.5x over the worst; also what `TestContextMemoryFootprint` allows one
+# context.
+_MARGINAL_PEAK_BUDGET = 10
+
 
 class TestPipelineMemoryScaling:
     """Bound the pipeline's peak memory per additional sample.
@@ -47,11 +54,10 @@ class TestPipelineMemoryScaling:
     memory.  The output_size is kept small (100B) so that stage results
     don't dominate RSS — the test focuses on raw_sample lifecycle.
 
-    Peak memory here is *linear* in sample count at roughly 80KB per 10KB
-    sample; the earlier "sub-linear" claim came from a denominator inflated by
-    one-time process growth (see the comment on the assertion).  What the gate
-    catches is that figure rising — the pipeline retaining more per sample than
-    it does today.
+    Peak memory here is *linear* in sample count; the earlier "sub-linear"
+    claim came from a denominator inflated by one-time process growth (see the
+    comment on the assertion).  What the gate catches is the marginal figure
+    rising — the pipeline retaining more per sample than it does today.
     """
 
     @pytest.mark.anyio
@@ -59,6 +65,7 @@ class TestPipelineMemoryScaling:
         """Memory at n=2000, 5000, 10000 with 10KB payloads."""
         results: dict[int, float] = {}
         peaks: dict[int, float] = {}
+        bases: dict[int, float] = {}
 
         for n_samples in [2000, 5000, 10000]:
             gc.collect()
@@ -88,32 +95,49 @@ class TestPipelineMemoryScaling:
 
             results[n_samples] = tracker.delta_mb
             peaks[n_samples] = tracker.peak_mb
+            bases[n_samples] = tracker.baseline_mb
             print(
                 f"PERF: memory n={n_samples} => "
                 f"delta={tracker.delta_mb:.1f}MB, "
-                f"peak={tracker.peak_mb:.1f}MB"
+                f"peak={tracker.peak_mb:.1f}MB, "
+                f"baseline={tracker.baseline_mb:.1f}MB"
             )
 
         # Marginal cost, not a ratio of deltas.  `delta` is the difference of
-        # two ~1 GB RSS readings and carries a large one-time process-growth
-        # term: measured at 122.7MB for n=2000 in a fresh process against 20MB
-        # of actual payload, and at 62.3MB for the identical run once the rest
-        # of the suite had already grown the process.  Dividing by that term
-        # published ratios from 1.2x to 6.7x for unchanged code, against a 4x
-        # bar.  Subtracting two measurements cancels the term instead: the
-        # marginal figure below held at 80.7 / 82.7 / 82.8 / 106.6 KB per
-        # sample across those same four process states.
+        # two ~1 GB RSS readings and is mostly one-time process growth: 122.7MB
+        # at n=2000 in a fresh process against 20MB of real payload, 62.3MB for
+        # the identical run once the suite had grown the process.  Dividing by
+        # that published 1.2x to 6.7x for unchanged code against a 4x bar.
+        #
+        # Differencing two *absolute* peaks does not cancel it either --
+        # `peak_mb` is a high-water mark, so the difference keeps
+        # `baseline[10000] - baseline[2000]`, the RSS retained across the earlier
+        # iterations.  That residue measured 257.1MB, 32.9 of the 84.6 KB/sample
+        # it reported, and kept the reading ordered by process weight
+        # (80.7 -> 106.6).  Taking each run's peak over its own baseline does
+        # cancel it: across four process states -- isolated, after
+        # `tests/unit/core`, after `tests/unit`, and a full-suite run -- it reads
+        # 45-66 KB per sample and is no longer ordered by how much ran first;
+        # the heaviest state reads lowest.  That ordering going away, not the
+        # spread, is what makes it usable as a gate.
         span = 10000 - 2000
-        marginal_kb = (peaks[10000] - peaks[2000]) * 1024 / span
+        marginal_kb = (
+            ((peaks[10000] - bases[10000]) - (peaks[2000] - bases[2000])) * 1024 / span
+        )
         payload_kb = _MEM_PAYLOAD_SIZE / 1024
         print(
             f"PERF: memory delta n=2000/10000 => {results[2000]:.1f}MB / "
             f"{results[10000]:.1f}MB (diagnostic only); marginal peak = "
             f"{marginal_kb:.1f}KB/sample over a {payload_kb:.0f}KB payload"
         )
-        assert marginal_kb < 200, (
-            f"Peak memory per additional sample too high: {marginal_kb:.1f}KB "
-            f"for a {payload_kb:.0f}KB payload"
+        # Two-sided: the upper bound catches the pipeline retaining more per
+        # sample, the lower one is the guard `results[2000] > 0` used to provide
+        # -- a run that measured nothing (sampler stalled, RSS fully reused)
+        # reads at or below zero, and a one-sided bound would pass it.
+        assert payload_kb < marginal_kb < payload_kb * _MARGINAL_PEAK_BUDGET, (
+            f"Peak memory per additional sample out of range: {marginal_kb:.1f}KB "
+            f"for a {payload_kb:.0f}KB payload (expected "
+            f"{payload_kb:.0f}-{payload_kb * _MARGINAL_PEAK_BUDGET:.0f}KB)"
         )
 
 

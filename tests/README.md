@@ -201,7 +201,7 @@ Mock models stub at the **Transport seam** (RFC #25): each overrides `_build_def
 | `BenchmarkTask` / `MultiIterBenchmarkTask` | Standard 4-stage tasks for benchmarks |
 | `IOProfile` | I/O pattern configuration |
 | `PerfTimer` / `MemoryTracker` | Timing and memory measurement utilities |
-| `suite_heap_excluded()` | `gc.freeze()` around a timed window, so a gen2 pass over the rest of the suite's heap (~286 ms after `tests/unit`) cannot land inside it. Wrap any gate whose margin is smaller than one pause |
+| `suite_heap_excluded()` | `gc.freeze()` around a timed window: a pass may still fire, but no longer rescans the rest of the suite's heap (~286 ms worth after `tests/unit`). Wrap any gate whose margin is under one pause. Not reentrant |
 | `make_large_dataset(n, payload_size)` | Generate large in-memory dataset |
 | `make_perf_config(tmp_path, **overrides)` | `TaskRunnerConfig` for performance tests |
 | `write_completed_samples(root, n_completed)` | Write FINAL contexts to disk for resume tests |

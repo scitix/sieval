@@ -844,34 +844,44 @@ class PerfTimer:
 def suite_heap_excluded() -> Iterator[None]:
     """Keep the rest of the suite's live heap out of a short timed window.
 
-    A gen2 collection costs in proportion to the whole live heap, and by the
-    time a full run reaches the perf gates that heap is thousands of other
-    tests' fixtures. Measured on this tree: after ``tests/unit`` alone the
-    process holds ~833k tracked objects and one gen2 pass takes **286 ms** --
-    longer than the 0.20 s window ``test_throughput_vs_concurrency`` measures at
-    concurrency 16. One collection landing inside such a window is the entire
-    difference between 61.7% and 18.9% efficiency for unchanged code, and it is
-    a coin flip which window it lands in: in the run that produced those
-    figures, concurrency 1 and 4 came in 0.043 s and 0.053 s slower while
-    concurrency 16 took 0.457 s longer.
+    A gen2 collection costs in proportion to the whole live heap, which by the
+    time a full run reaches the perf gates is thousands of other tests'
+    fixtures. After ``tests/unit`` alone this process holds ~833k tracked
+    objects and one gen2 pass takes 286 ms -- longer than the 0.20 s window
+    ``test_throughput_vs_concurrency`` measures at concurrency 16, and the whole
+    difference between 61.7% and 18.9% efficiency for unchanged code.
 
     ``gc.freeze()``, not ``gc.disable()``: objects the code under test allocates
     are still collected and still charged to the window, so GC pressure the
-    pipeline itself introduces stays measurable. Only the heap it did not
-    allocate stops being rescanned. (``test_serialization``'s ``_gc_paused``
-    disables the collector outright -- correct there, where the subject is a
-    tight serialization loop and any collection is pure noise.)
+    pipeline itself creates stays measurable. Only the heap it did not allocate
+    stops being rescanned. (``test_serialization``'s ``_gc_paused`` disables
+    outright -- right for a tight loop where any collection is pure noise.)
 
-    Not every timed gate needs this, and the test is whether one 286 ms pause
-    fits inside a gate's own margin rather than whether its window is short.
-    Checked against the measured figures: the absolute bounds in seconds have
-    room to spare; ``iteration_overhead`` (2.98x against a 5.0x bar) and
-    ``record_each_stage`` (46% against 200%) each survive a pause landing in
-    their worst window; ``dep_loading`` times ~18 ms but takes the best of
-    five, so a pause has to hit every run. The two wrapped here survive
-    nothing -- at concurrency 16 the pause is longer than the window it would
-    land in.
+    Whether a gate needs this is whether one 286 ms pause fits inside its own
+    margin, not whether its window is short. All were checked. The absolute
+    bounds have room to spare, and ``iteration_overhead`` (2.98x/5.0x),
+    ``record_each_stage`` (46%/200%), ``multi_task_runner`` (~0.4 s/~1.9 s) and
+    ``composite_limiter`` (0.03 ms/1.0 ms) survive a worst-case landing;
+    ``dep_loading`` takes the best of five, so a pause must hit every run.
+    ``dataset_iteration_overhead`` only looks tighter -- 443.7x against 600x
+    leaves 37 ms fresh -- but its plain-list denominator slows 4x on locality
+    under 1.03M live objects, dropping the ratio to 104x and raising headroom to
+    ~460 ms against a 206 ms pass. Headroom outgrows the pause.
+
+    Wrapped: ``test_throughput_vs_concurrency``, and ``test_benchmark_scenarios``
+    via ``_run_scenario`` -- same exposure at no cost, though this does *not*
+    close that one's residual gap, whose cause is still open.
+    ``test_pipeline_memory_scaling`` is fixed by measurement instead.
+
+    Not reentrant: ``gc.unfreeze()`` is all-or-nothing, so a nested exit would
+    drop the outer guard. A nested enter is a no-op -- the outer freeze already
+    covers what this window inherited, and anything since belongs to the code
+    under test, which must stay charged.
     """
+    if gc.get_freeze_count():
+        yield
+        return
+
     gc.collect()
     gc.freeze()
     try:
@@ -915,10 +925,8 @@ class MemoryTracker:
             self._update_peak(self._read_rss_mb())
 
     def start(self) -> None:
-        import gc as _gc
-
-        _gc.collect()
-        _gc.collect()
+        gc.collect()
+        gc.collect()
         baseline = self._read_rss_mb()
         with self._lock:
             self.baseline_mb = baseline
