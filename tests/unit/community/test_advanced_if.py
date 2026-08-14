@@ -307,7 +307,7 @@ def _verdict(
     n_checks: int,
     n_passed: int,
     rate: float | None = None,
-    judge_unparsed: bool = False,
+    grader_unparsed: bool = False,
 ) -> dict:
     return {
         "satisfied_all": satisfied,
@@ -316,7 +316,7 @@ def _verdict(
         "rubric_pass_rate": (n_passed / n_checks if n_checks else 0.0)
         if rate is None
         else rate,
-        "judge_unparsed": judge_unparsed,
+        "grader_unparsed": grader_unparsed,
     }
 
 
@@ -354,13 +354,13 @@ def test_aggregate_metrics_counts_unparseable_grader_replies():
     """The rates cannot distinguish a broken grader; this count is what does.
 
     Same three rollouts either way -- none satisfied, no rubrics answered -- so
-    every rate matches and only ``n_judge_unparsed`` moves.
+    every rate matches and only ``n_grader_unparsed`` moves.
     """
     failing = [_verdict(False, 0, 0) for _ in range(3)]
-    broken = [_verdict(False, 0, 0, judge_unparsed=True) for _ in range(3)]
+    broken = [_verdict(False, 0, 0, grader_unparsed=True) for _ in range(3)]
 
-    assert aggregate_metrics(failing)["n_judge_unparsed"] == 0.0
-    assert aggregate_metrics(broken)["n_judge_unparsed"] == 3.0
+    assert aggregate_metrics(failing)["n_grader_unparsed"] == 0.0
+    assert aggregate_metrics(broken)["n_grader_unparsed"] == 3.0
     assert (
         aggregate_metrics(failing)["overall_pass_rate"]
         == aggregate_metrics(broken)["overall_pass_rate"]
@@ -372,7 +372,7 @@ def test_aggregate_metrics_handles_an_empty_set():
     assert metrics["overall_pass_rate"] == 0.0
     assert metrics["micro_pass_rate"] == 0.0
     assert metrics["macro_pass_rate"] == 0.0
-    assert metrics["n_judge_unparsed"] == 0.0
+    assert metrics["n_grader_unparsed"] == 0.0
 
 
 # --- loading the upstream prompts (never vendored: CC-BY-NC-4.0) ---

@@ -215,7 +215,7 @@ async def test_feedback_parses_correct_and_confidence():
     fb = judgement["rollouts"][0]
     assert fb["correct"] is True
     assert fb["extra"]["confidence"] == 90
-    assert fb["extra"]["judge_parsed"] is True
+    assert fb["extra"]["grader_parsed"] is True
     assert judgement["reference"] == "4"
     # The judge's WHOLE ModelOutput, not a hand-picked reply field. Multi-line on
     # purpose, with reasoning the parse discards: storing only the matched fields,
@@ -237,10 +237,10 @@ async def test_feedback_unparseable_reply_flagged_not_graded():
     _, judgement = await task.feedback(build_prediction_record(["whatever"]), ctx)
     fb = judgement["rollouts"][0]
     # Unparseable -> flagged so report() drops it from grading (not a verdict).
-    assert fb["extra"]["judge_parsed"] is False
+    assert fb["extra"]["grader_parsed"] is False
     assert fb["correct"] is False
     assert fb["extra"]["confidence"] == 100
-    # The motivating case: `judge_unparsed` alone cannot separate format drift
+    # The motivating case: `n_grader_unparsed` alone cannot separate format drift
     # from an error body from a matcher gap. The reply is the evidence.
     assert fb["extra"]["grader_output"]["texts"] == [reply]
 
@@ -256,7 +256,7 @@ def _finals(grades: list[tuple[bool, int]]) -> list[TaskContext]:
                 "",
                 [
                     build_rollout_judgement(
-                        0, c, extra={"confidence": conf, "judge_parsed": True}
+                        0, c, extra={"confidence": conf, "grader_parsed": True}
                     )
                 ],
             ),
@@ -277,7 +277,7 @@ async def test_report_accuracy_and_counts_fails_in_denominator():
     assert report["n"] == 3
     assert report["n_graded"] == 2
     assert report["fails"] == 1
-    assert report["judge_unparsed"] == 0
+    assert report["n_grader_unparsed"] == 0
     assert report["subset"] == "text_only"  # dataset loaded the text-only subset
     assert report["accuracy"] == pytest.approx(33.33, abs=1e-2)
     assert report["score"] == report["accuracy"]
@@ -294,7 +294,7 @@ async def test_report_fails_weighted_by_n():
                 "",
                 [
                     build_rollout_judgement(
-                        i, True, extra={"confidence": 90, "judge_parsed": True}
+                        i, True, extra={"confidence": 90, "grader_parsed": True}
                     )
                     for i in range(2)
                 ],
@@ -316,14 +316,14 @@ async def test_report_drops_unparsed_judge_from_grading():
     # enter the grading/calibration arrays or they would inflate metrics.
     task, _, _ = _task()  # n=1
 
-    def judgement(correct, confidence, judge_parsed):
+    def judgement(correct, confidence, grader_parsed):
         return build_judgement_record(
             "",
             [
                 build_rollout_judgement(
                     0,
                     correct,
-                    extra={"confidence": confidence, "judge_parsed": judge_parsed},
+                    extra={"confidence": confidence, "grader_parsed": grader_parsed},
                 )
             ],
         )
@@ -333,7 +333,7 @@ async def test_report_drops_unparsed_judge_from_grading():
         TaskContext(sample_id=1, feedback_result=judgement(False, 100, False)),
     ]
     report = await task.report(finals, [])
-    assert report["judge_unparsed"] == 1
+    assert report["n_grader_unparsed"] == 1
     assert report["n_graded"] == 1  # only the parsed reply is graded
     assert report["n"] == 2  # both stay in the denominator
     # 1 correct / 2 => 50.0; the dropped record counts as incorrect via `n`.
@@ -347,12 +347,12 @@ async def test_report_empty_is_zero():
     assert report["n"] == 0
     assert report["accuracy"] == 0.0
     assert report["calibration_error"] is None
-    assert report["judge_unparsed"] == 0
+    assert report["n_grader_unparsed"] == 0
 
 
 @pytest.mark.anyio
 async def test_report_separates_an_unparsed_judge_from_an_empty_response():
-    # Two counts for two different actors: `judge_unparsed` is the GRADER failing
+    # Two counts for two different actors: `n_grader_unparsed` is the GRADER failing
     # to answer, `n_unextracted` is the candidate producing nothing to grade.
     # Both end up incorrect, and with only the first the report cannot say which
     # side of the pipeline went quiet.
@@ -365,7 +365,7 @@ async def test_report_separates_an_unparsed_judge_from_an_empty_response():
                 "",
                 [
                     build_rollout_judgement(
-                        0, False, extra={"confidence": 90, "judge_parsed": True}
+                        0, False, extra={"confidence": 90, "grader_parsed": True}
                     )
                 ],
             ),
@@ -377,7 +377,7 @@ async def test_report_separates_an_unparsed_judge_from_an_empty_response():
                 "",
                 [
                     build_rollout_judgement(
-                        0, False, extra={"confidence": 100, "judge_parsed": True}
+                        0, False, extra={"confidence": 100, "grader_parsed": True}
                     )
                 ],
             ),
@@ -385,7 +385,7 @@ async def test_report_separates_an_unparsed_judge_from_an_empty_response():
     ]
     report = await task.report(finals, [])
 
-    assert report["judge_unparsed"] == 0
+    assert report["n_grader_unparsed"] == 0
     assert report["n_unextracted"] == 1
     assert report["accuracy"] == pytest.approx(0.0)
 

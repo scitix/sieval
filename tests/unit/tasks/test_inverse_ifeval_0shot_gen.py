@@ -290,7 +290,7 @@ async def test_feedback_records_the_verdict(
     verdict = judgement["rollouts"][0]
     assert verdict["correct"] is expected_correct
     assert verdict["extra"]["answer_score"] == expected_score
-    assert verdict["extra"]["judge_parsed"] is True
+    assert verdict["extra"]["grader_parsed"] is True
     assert judgement["reference"] == "The answer must omit all reasoning."
     # Language and type travel on the judgement so report() need not reread
     # raw_sample.
@@ -319,7 +319,7 @@ async def test_empty_judge_reply_is_a_failure_not_a_pass():
     verdict = judgement["rollouts"][0]
     assert verdict["correct"] is False
     assert verdict["extra"]["answer_score"] is None
-    assert verdict["extra"]["judge_parsed"] is False
+    assert verdict["extra"]["grader_parsed"] is False
 
 
 @pytest.mark.anyio
@@ -330,7 +330,7 @@ async def test_off_rubric_judge_score_is_flagged_and_kept():
 
     verdict = judgement["rollouts"][0]
     assert verdict["correct"] is False
-    assert verdict["extra"]["judge_parsed"] is False
+    assert verdict["extra"]["grader_parsed"] is False
     # The token behind the violation, so a 0-100 judge is diagnosable.
     assert verdict["extra"]["answer_score_raw"] == "85"
 
@@ -356,7 +356,7 @@ def _finals(verdicts: list[tuple[str, str, list[bool]]]) -> list[TaskContext]:
                 "",
                 [
                     build_rollout_judgement(
-                        j, c, extra={"judge_parsed": True, "answer_score": int(c)}
+                        j, c, extra={"grader_parsed": True, "answer_score": int(c)}
                     )
                     for j, c in enumerate(correct)
                 ],
@@ -419,7 +419,7 @@ async def test_report_counts_unparsed_judge_replies():
             sample_id=0,
             feedback_result=build_judgement_record(
                 "",
-                [build_rollout_judgement(0, False, extra={"judge_parsed": False})],
+                [build_rollout_judgement(0, False, extra={"grader_parsed": False})],
             )
             | {
                 "extra": {
@@ -432,7 +432,7 @@ async def test_report_counts_unparsed_judge_replies():
     report = await task.report(finals, [])
     # Still scored (0) and still in the denominator — this is judge health, not a
     # missing sample.
-    assert report["judge_unparsed"] == 1
+    assert report["n_grader_unparsed"] == 1
     assert report["n_graded"] == 1
     assert report["score"] == pytest.approx(0.0)
 

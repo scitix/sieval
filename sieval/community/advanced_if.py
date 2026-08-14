@@ -442,14 +442,14 @@ def aggregate_metrics(verdicts: list[dict]) -> dict[str, float]:
     """Pool per-rollout verdicts into the two published rates, plus the macro.
 
     Each entry carries ``satisfied_all``, ``n_checks``, ``n_checks_passed``,
-    ``rubric_pass_rate`` and ``judge_unparsed``; an ungradeable rollout reaches
+    ``rubric_pass_rate`` and ``grader_unparsed``; an ungradeable rollout reaches
     only the pass-rate denominator, matching upstream.
 
     ``macro_pass_rate`` is sieval's, not published: it averages the per-sample
     rate, weighing every sample equally where micro weighs every rubric equally,
     and is the one of the two a per-sample reader can reconstruct.
 
-    ``n_judge_unparsed`` is a diagnostic, not a metric: every rate above scores an
+    ``n_grader_unparsed`` is a diagnostic, not a metric: every rate above scores an
     unparseable grader reply exactly as it scores a response that missed every
     rubric, so it is the only number that separates a broken grader from a
     failing model.
@@ -459,12 +459,12 @@ def aggregate_metrics(verdicts: list[dict]) -> dict[str, float]:
     checks = sum(v["n_checks"] for v in verdicts)
     checks_passed = sum(v["n_checks_passed"] for v in verdicts)
     macro = sum(v["rubric_pass_rate"] for v in verdicts)
-    unparsed = sum(1 for v in verdicts if v["judge_unparsed"])
+    unparsed = sum(1 for v in verdicts if v["grader_unparsed"])
     return {
         "overall_pass_rate": passed / total * 100 if total else 0.0,
         "micro_pass_rate": checks_passed / checks * 100 if checks else 0.0,
         "macro_pass_rate": macro / total * 100 if total else 0.0,
         "n_samples": float(total),
         "n_rubric_checks": float(checks),
-        "n_judge_unparsed": float(unparsed),
+        "n_grader_unparsed": float(unparsed),
     }

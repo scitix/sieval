@@ -36,7 +36,7 @@ override these (e.g. a technical report may evaluate at ``temperature=1.0``,
 Grader is a REAL LLM supplied via the ``grader`` task arg on its own
 ``api_base``/``api_key``. Correctness depends on the judge endpoint's model
 version (not pinnable like a Hub revision) — pin the grader model for
-reproducibility; each sample's ``correct``, ``confidence``, ``judge_parsed`` and
+reproducibility; each sample's ``correct``, ``confidence``, ``grader_parsed`` and
 the judge's whole ``ModelOutput`` (``extra.grader_output``: reply, reasoning,
 usage, finish reasons, model id) are persisted on the judgement record — see
 :meth:`feedback` for why the raw output is kept whole rather than hand-picked.
@@ -127,7 +127,7 @@ from sieval.datasets import HLEDataset, HLEDatasetSample
             "(extra.grader_output: reply, reasoning, usage, finish_reasons, model "
             "id) are persisted — the reply being the only evidence of a verdict a "
             "re-run need not reproduce, and what separates format drift from a "
-            "matcher gap behind the judge_unparsed count; finish_reasons "
+            "matcher gap behind the n_grader_unparsed count; finish_reasons "
             "separates a reasoning judge that spent its whole budget thinking "
             "from an empty API response. "
             "VALIDATION: gpt-oss-20b scored 12.14 / 3.61 (reasoning=high / low, "
@@ -263,7 +263,7 @@ class HLEZeroShotGenTask(
         what separates them -- and HLE is normally run with a reasoning judge, so
         this was the most reachable case of the three.
 
-        ``confidence`` and ``judge_parsed`` are task logic derived from that raw
+        ``confidence`` and ``grader_parsed`` are task logic derived from that raw
         output, which is why they are separate keys. They live in ``extra`` rather
         than ``metrics``: neither measures whether the answer was right.
         ``confidence`` is the judge's self-reported number and is the raw material
@@ -291,7 +291,7 @@ class HLEZeroShotGenTask(
                     correct,
                     extra={
                         "confidence": confidence,
-                        "judge_parsed": parsed,
+                        "grader_parsed": parsed,
                         GRADER_OUTPUT_KEY: obj_to_dict(out, add_type=False),
                     },
                 )
@@ -306,20 +306,20 @@ class HLEZeroShotGenTask(
         # spurious max-confidence point that would inflate calibration_error.
         correct: list[bool] = []
         confidence: list[int] = []
-        judge_unparsed = 0
+        n_grader_unparsed = 0
         for f in finals:
             for fb in (f.feedback_result or {}).get("rollouts", []):
-                if fb["extra"]["judge_parsed"]:
+                if fb["extra"]["grader_parsed"]:
                     correct.append(fb["correct"])
                     confidence.append(fb["extra"]["confidence"])
                 else:
-                    judge_unparsed += 1
+                    n_grader_unparsed += 1
         # Denominator spans the full requested set; pipeline failures (candidate
         # produced no gradeable answer) count as incorrect — matching upstream
         # (n = total questions) and the *_gen family, not just graded attempts.
         n = (len(finals) + len(fails)) * self._n
         m = aggregate_metrics(correct, confidence, n)
-        # `judge_unparsed` is a count over the graded attempts in `finals`, not a
+        # `n_grader_unparsed` is a count over the graded attempts in `finals`, not a
         # rate over `n` (which also spans `fails`). `subset` records which set
         # was evaluated so a text-only run is distinguishable from a full-set one
         # in the report alone. Length-capped attempts are NOT counted here — the
@@ -334,11 +334,11 @@ class HLEZeroShotGenTask(
             "n": n,
             "n_graded": len(correct),
             "fails": len(fails),
-            "judge_unparsed": judge_unparsed,
+            "n_grader_unparsed": n_grader_unparsed,
             "subset": "text_only" if self._text_only else "full",
             SCORE_KEY_FIELD: "accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-            # `judge_unparsed` counts the GRADER failing to answer; `n_unextracted`
+            # `n_grader_unparsed` counts the GRADER failing to answer; `n_unextracted`
             # counts the candidate producing nothing to grade. Both grade
             # incorrect, and without the second one they are indistinguishable in
             # the report. Deliberately only `health_metrics` and not the rest of

@@ -137,7 +137,7 @@ def test_a_truncated_verdict_block_falls_back_to_the_score_line_not_the_echo():
 
 def test_a_malformed_verdict_block_is_unparsed_rather_than_an_earlier_echo():
     # The authoritative block was located but carries no number. That is judge
-    # format failure (scored 0, counted in `judge_unparsed`) — not licence to
+    # format failure (scored 0, counted in `n_grader_unparsed`) — not licence to
     # reach for the echoed 1 above it.
     reply = '```\n{"answer_score": 1}\n```\n本题：\n```\n{"answer_score": null}\n```'
     assert parse_answer_score(reply) == (None, None)

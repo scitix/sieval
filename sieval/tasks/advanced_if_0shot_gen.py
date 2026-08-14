@@ -331,7 +331,7 @@ class AdvancedIFZeroShotGenTask(
                         "rubric_level_pass_rate": pass_rate,
                     },
                     extra={
-                        "judge_parsed": judgement is not None,
+                        "grader_parsed": judgement is not None,
                         "rubrics_check": checks,
                         "n_checks": n_checks,
                         "n_checks_passed": n_checks_passed,
@@ -365,7 +365,7 @@ class AdvancedIFZeroShotGenTask(
         ``macro_pass_rate`` is sieval's, not published -- it lifts the per-sample
         rate to ``report.json``, where it would otherwise stop at the shard data.
 
-        ``n_judge_unparsed`` is lifted for the same reason, and matters more:
+        ``n_grader_unparsed`` is lifted for the same reason, and matters more:
         every metric here treats an unparseable grader reply exactly like a
         response that missed every rubric, so without the count a broken grader
         and a bad model are the same number. Reported per aspect too, since a
@@ -390,7 +390,7 @@ class AdvancedIFZeroShotGenTask(
                     # Absent means an older record, not a broken grade -- default
                     # to parsed so the diagnostic under-reports rather than
                     # inventing failures.
-                    "judge_unparsed": not extra.get("judge_parsed", True),
+                    "grader_unparsed": not extra.get("grader_parsed", True),
                 }
                 verdicts.append(verdict)
                 by_benchmark.setdefault(benchmark_name, []).append(verdict)
@@ -407,7 +407,7 @@ class AdvancedIFZeroShotGenTask(
                 "rubric_pass_rate": 0.0,
                 # Not a grader-parse failure: no grade was ever attempted. It is
                 # `fails` that reports these.
-                "judge_unparsed": False,
+                "grader_unparsed": False,
             }
         ] * (self._n * len(fails))
 
@@ -418,13 +418,13 @@ class AdvancedIFZeroShotGenTask(
             "micro_pass_rate": overall["micro_pass_rate"],
             "macro_pass_rate": overall["macro_pass_rate"],
             "n_rubric_checks": overall["n_rubric_checks"],
-            "n_judge_unparsed": overall["n_judge_unparsed"],
+            "n_grader_unparsed": overall["n_grader_unparsed"],
             "n_graded": float(n_graded),
             "fails": len(fails),
             SCORE_KEY_FIELD: "overall_pass_rate",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
-        # `n_judge_unparsed` counts the GRADER breaking format; `n_unextracted`
+        # `n_grader_unparsed` counts the GRADER breaking format; `n_unextracted`
         # counts the candidate producing nothing to grade. Both land in the same
         # zero here, so without the second one they read identically. Deliberately
         # only `health_metrics` and not the rest of the sampling block: RFC #74
@@ -436,6 +436,6 @@ class AdvancedIFZeroShotGenTask(
             results[f"{benchmark_name}_pass_rate"] = aspect["overall_pass_rate"]
             results[f"{benchmark_name}_micro_pass_rate"] = aspect["micro_pass_rate"]
             results[f"{benchmark_name}_macro_pass_rate"] = aspect["macro_pass_rate"]
-            results[f"{benchmark_name}_n_judge_unparsed"] = aspect["n_judge_unparsed"]
+            results[f"{benchmark_name}_n_grader_unparsed"] = aspect["n_grader_unparsed"]
             results[f"{benchmark_name}_n_graded"] = aspect["n_samples"]
         return results

@@ -207,7 +207,7 @@ async def test_feedback_unparsed_verdict_scores_unsatisfied_but_is_counted():
     fb = judgement["rollouts"][0]
     assert fb["extra"]["criterion_verdicts"] == [True, None, True]
     assert fb["extra"]["n_satisfied"] == 2
-    assert fb["extra"]["n_unparsed"] == 1
+    assert fb["extra"]["n_grader_unparsed"] == 1
     assert fb["correct"] is False
 
 
@@ -285,7 +285,7 @@ async def test_feedback_short_circuit_does_not_inherit_a_prior_verdict():
 
 
 def _final(
-    sample_id: int, satisfied: int, n_criteria: int, n_unparsed: int = 0
+    sample_id: int, satisfied: int, n_criteria: int, n_grader_unparsed: int = 0
 ) -> TaskContext:
     return TaskContext(
         sample_id=sample_id,
@@ -303,7 +303,7 @@ def _final(
                     extra={
                         "n_criteria": n_criteria,
                         "n_satisfied": satisfied,
-                        "n_unparsed": n_unparsed,
+                        "n_grader_unparsed": n_grader_unparsed,
                     },
                 )
             ],
@@ -322,7 +322,7 @@ async def test_report_headline_is_the_task_pass_rate():
     assert report["score"] == report["task_pass_rate"]
     assert report["n_graded"] == 4
     assert report["n_criteria_graded"] == 70
-    assert report["n_unparsed"] == 0
+    assert report["n_grader_unparsed"] == 0
     assert report["fails"] == 0
 
 
@@ -385,8 +385,8 @@ async def test_report_surfaces_unparsed_verdicts():
     # Judge format drift must be visible in the report, not buried inside the
     # rates it silently depresses.
     task, _, _ = _task()
-    report = await task.report([_final(0, 8, 10, n_unparsed=2)], fails=[])
-    assert report["n_unparsed"] == 2
+    report = await task.report([_final(0, 8, 10, n_grader_unparsed=2)], fails=[])
+    assert report["n_grader_unparsed"] == 2
     # The two unreadable verdicts are already inside the 8/10 -- surfacing them
     # separately is what lets a reader tell drift from a real rubric failure.
     assert report["criterion_pass_rate_micro"] == pytest.approx(80.0)

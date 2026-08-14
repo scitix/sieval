@@ -24,7 +24,7 @@ would change what the counter-intuitive instruction competes against.
 Grader is a REAL LLM supplied via the ``grader`` task arg on its own
 ``api_base``/``api_key``. A judge endpoint's model version is not pinnable like a
 Hub revision, so pin the grader model and set ``temperature: 0``; each rollout
-persists ``answer_score``, ``judge_parsed`` and the judge's whole ``ModelOutput``
+persists ``answer_score``, ``grader_parsed`` and the judge's whole ``ModelOutput``
 (``extra.grader_output``). The paper's per-type "adaptive judge matrix" names none
 of its models, so a single grader is used and any comparison must cite it.
 
@@ -238,7 +238,7 @@ class InverseIFEvalZeroShotGenTask(
         Only the judge's ``texts[0]`` is parsed, never the prompt: every shipped
         ``judge_system_prompt`` ends with a worked example scoring 1, so parsing
         one would read as PASS and inflate the score invisibly. An unparseable
-        reply is recorded (``judge_parsed=False``) and counted incorrect rather
+        reply is recorded (``grader_parsed=False``) and counted incorrect rather
         than dropped — the rubric has no third state, and the persisted reply is
         what separates judge format drift from a real 0.
 
@@ -274,7 +274,7 @@ class InverseIFEvalZeroShotGenTask(
                         # The raw token behind an off-rubric verdict (e.g. "100"),
                         # so a rubric violation is distinguishable from silence.
                         "answer_score_raw": matched,
-                        "judge_parsed": score is not None,
+                        "grader_parsed": score is not None,
                         GRADER_OUTPUT_KEY: obj_to_dict(out, add_type=False),
                     },
                 )
@@ -313,7 +313,7 @@ class InverseIFEvalZeroShotGenTask(
         pass_at_1 = rolled["pass@1"]
 
         graded: list[tuple[str, str, bool]] = []
-        judge_unparsed = 0
+        n_grader_unparsed = 0
         for ctx in finals:
             judgement = ctx.feedback_result or {}
             extra = judgement.get("extra") or {}
@@ -321,8 +321,8 @@ class InverseIFEvalZeroShotGenTask(
             instruction_type = extra.get("instruction_types", "unknown")
             for verdict in judgement.get("rollouts") or []:
                 graded.append((language, instruction_type, bool(verdict["correct"])))
-                if not (verdict.get("extra") or {}).get("judge_parsed", True):
-                    judge_unparsed += 1
+                if not (verdict.get("extra") or {}).get("grader_parsed", True):
+                    n_grader_unparsed += 1
 
         metrics: dict[str, float | str | None] = {
             "score": pass_at_1,
@@ -332,7 +332,7 @@ class InverseIFEvalZeroShotGenTask(
             # A count over graded attempts, not a rate over the requested set:
             # these rollouts ARE scored (0), so this is judge health, not a
             # missing denominator.
-            "judge_unparsed": judge_unparsed,
+            "n_grader_unparsed": n_grader_unparsed,
             # Which subset was evaluated, so a single-language run is
             # distinguishable from a full one in the report alone. It names the
             # dataset's `language` ARG, not the rows that survived: a run

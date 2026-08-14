@@ -61,7 +61,7 @@ grading and report a spread; a lone number is a draw, not a measurement.
 
 Budget tokens on **both** sides. The grader needs room for one verdict line per
 criterion — up to 40 — *after* whatever reasoning it emits first; truncated
-mid-block it leaves the tail unparsed, which is counted (``n_unparsed``) and
+mid-block it leaves the tail unparsed, which is counted (``n_grader_unparsed``) and
 scored not-satisfied, biasing the score **down**, and nothing flags it since the
 ``truncated_output`` anomaly rule reads the *candidate*'s finish reasons, never
 the grader's. The candidate has the mirror failure: a reasoning model can spend
@@ -78,15 +78,15 @@ Deviations / by-design behavior worth knowing:
   makes misalignment detectable instead of silently shifting verdicts.
 * A criterion with no readable verdict is scored **not satisfied** — an
   unreadable verdict must never inflate a score — but counted separately as
-  ``n_unparsed``, so judge format drift stays distinguishable from a model that
+  ``n_grader_unparsed``, so judge format drift stays distinguishable from a model that
   failed the rubric.
 * The template and parser are **not tuned to one judge family**: across four
   judges from two vendors, 13 gradings of 1,559 criteria each, every verdict
-  parsed — ``n_unparsed`` was 0 every time, with no change to the template.
+  parsed — ``n_grader_unparsed`` was 0 every time, with no change to the template.
 * **The grader prompt is hardened in two port-authored ways**, both scoring-
   relevant: its format example reads ``<verdict>`` and the parser rejects a
   PASS/FAIL alternation as a verdict, so a judge restating its instructions lands
-  in ``n_unparsed`` rather than scoring a full rubric; and it declares the
+  in ``n_grader_unparsed`` rather than scoring a full rubric; and it declares the
   RESPONSE block material to be graded, never instruction.
 * An empty/whitespace response satisfies **zero** criteria **without** invoking
   the judge; ``extra.grader_output`` is absent there because no call was made,
@@ -178,7 +178,7 @@ from sieval.datasets import ComplexConstraintsDatasetSample
             "pass rate', Table 3) and _micro (pooled), which differ because "
             "criteria counts vary 10-40 per prompt. GRADING: one judge call per "
             "rollout, verdicts as an indexed PASS/FAIL list; an unreadable "
-            "verdict scores not-satisfied but is counted as n_unparsed; empty "
+            "verdict scores not-satisfied but is counted as n_grader_unparsed; empty "
             "responses satisfy zero criteria without invoking the judge. Give "
             "the grader max_tokens for up to 40 verdict lines AFTER its "
             "reasoning — a truncated grader biases the score DOWN. ALIGNMENT "
@@ -315,7 +315,7 @@ class ComplexConstraintsZeroShotGenTask(
         plain-dict). Nothing is hand-picked, so no field is silently dropped and
         the reply survives — the only durable evidence of a verdict set that a
         re-grade need not reproduce, and the only way to tell judge format drift
-        (``n_unparsed``) from a response that genuinely failed the rubric.
+        (``n_grader_unparsed``) from a response that genuinely failed the rubric.
 
         ``extra["criterion_verdicts"]`` is one ``True``/``False``/``None`` per
         criterion, index-aligned to the prompt record's ``criteria`` — task
@@ -344,7 +344,7 @@ class ComplexConstraintsZeroShotGenTask(
                         extra={
                             "n_criteria": n_criteria,
                             "n_satisfied": 0,
-                            "n_unparsed": 0,
+                            "n_grader_unparsed": 0,
                         },
                     )
                 )
@@ -356,7 +356,7 @@ class ComplexConstraintsZeroShotGenTask(
             reply = out.texts[0] if out.texts else ""
             verdicts = parse_verdicts(reply, n_criteria)
             n_satisfied = sum(1 for verdict in verdicts if verdict)
-            n_unparsed = sum(1 for verdict in verdicts if verdict is None)
+            n_grader_unparsed = sum(1 for verdict in verdicts if verdict is None)
             # Both published readings are co-equal metrics, so both go in
             # `metrics`; the headline merely points at task_pass. Derived from
             # the mapping, not recomputed, so the two cannot drift.
@@ -374,7 +374,7 @@ class ComplexConstraintsZeroShotGenTask(
                         "criterion_verdicts": verdicts,
                         "n_criteria": n_criteria,
                         "n_satisfied": n_satisfied,
-                        "n_unparsed": n_unparsed,
+                        "n_grader_unparsed": n_grader_unparsed,
                         GRADER_OUTPUT_KEY: obj_to_dict(out, add_type=False),
                     },
                 )
@@ -437,7 +437,7 @@ class ComplexConstraintsZeroShotGenTask(
             "n_criteria_graded": sum(r["extra"]["n_criteria"] for r in graded),
             # Judge format drift, kept out of the rates it would otherwise be
             # invisible inside: these criteria scored not-satisfied.
-            "n_unparsed": sum(r["extra"]["n_unparsed"] for r in graded),
+            "n_grader_unparsed": sum(r["extra"]["n_grader_unparsed"] for r in graded),
             "fails": len(fails),
             SCORE_KEY_FIELD: "task_pass_rate",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,

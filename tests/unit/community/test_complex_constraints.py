@@ -93,7 +93,7 @@ def test_parse_verdicts_ignores_mid_sentence_prose():
 # --- verdict parsing: the echoed-instruction hazard ---
 #
 # The one misparse that would inflate a score rather than depress it, and inflate
-# it invisibly: a parsed verdict is by definition not counted in `n_unparsed`, so
+# it invisibly: a parsed verdict is by definition not counted in `n_grader_unparsed`, so
 # the drift counter reads 0 while every criterion scores a pass. Pinned here are
 # the parser rejecting any line that names both verdict words, and the template
 # not containing the "<PASS|FAIL>" spelling for a judge to echo. The template
@@ -141,7 +141,7 @@ def test_parse_verdicts_still_reads_a_verdict_with_a_trailing_rationale():
 def test_parse_verdicts_drops_a_verdict_whose_rationale_names_the_other_word():
     # The cost of the pair rule, pinned rather than left to be discovered: a
     # rationale mentioning the other word makes its own verdict unreadable. That
-    # is one lost verdict, counted in `n_unparsed` and scored not-satisfied --
+    # is one lost verdict, counted in `n_grader_unparsed` and scored not-satisfied --
     # the direction that cannot flatter a model.
     assert parse_verdicts("1: FAIL (would PASS if it listed the risks)", 1) == [None]
 

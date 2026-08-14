@@ -115,7 +115,7 @@ def build_grader_prompt(prompt: str, response: str, criteria: Sequence[str]) -> 
 # The trailing lookahead rejects a line naming BOTH verdict words: that is a judge
 # restating the format it was handed, not a judgement. Without it the leading
 # `[^\w\n]*` swallows the "<" of "1: <PASS|FAIL>" and the line reads as a pass, so
-# an echoed spec scores a full rubric with `n_unparsed == 0` -- inflation with the
+# an echoed spec scores a full rubric with `n_grader_unparsed == 0` -- inflation with the
 # drift counter reporting nothing, the one misread whose direction is up. Written
 # over the PAIR rather than a list of separators, since every spelling inflates
 # identically ("PASS/FAIL", "PASS or FAIL", "<PASS> or <FAIL>"). GRADER_TEMPLATE

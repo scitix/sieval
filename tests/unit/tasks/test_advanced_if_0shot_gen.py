@@ -254,7 +254,7 @@ async def test_feedback_records_partial_credit_and_raw_counts():
     # Raw counts, because a per-sample rate cannot reconstruct a pooled one.
     assert rollout["extra"]["n_checks"] == 2
     assert rollout["extra"]["n_checks_passed"] == 1
-    assert rollout["extra"]["judge_parsed"] is True
+    assert rollout["extra"]["grader_parsed"] is True
     assert rollout["extra"]["rubrics_check"] == {
         "question_1": "Yes",
         "question_2": "No",
@@ -296,7 +296,7 @@ async def test_feedback_treats_an_unparseable_reply_as_a_failed_row():
     rollout = judgement["rollouts"][0]
     assert rollout["correct"] is False
     assert rollout["score"] == 0.0
-    assert rollout["extra"]["judge_parsed"] is False
+    assert rollout["extra"]["grader_parsed"] is False
     assert rollout["extra"]["n_checks"] == 0
     assert rollout["extra"]["n_checks_passed"] == 0
     # The reply is still on disk -- the only evidence of what the grader did.
@@ -313,7 +313,7 @@ def _final(
     satisfied: bool,
     n_checks: int,
     n_passed: int,
-    judge_parsed: bool = True,
+    grader_parsed: bool = True,
 ):
     rate = n_passed / n_checks if n_checks else 0.0
     judgement = build_judgement_record(
@@ -327,7 +327,7 @@ def _final(
                 extra={
                     "n_checks": n_checks,
                     "n_checks_passed": n_passed,
-                    "judge_parsed": judge_parsed,
+                    "grader_parsed": grader_parsed,
                 },
             )
         ],
@@ -351,7 +351,7 @@ async def test_report_pools_both_published_rates():
     assert report["macro_pass_rate"] == pytest.approx(75.0)
     assert report["n_graded"] == 2.0
     assert report["n_rubric_checks"] == 8.0
-    assert report["n_judge_unparsed"] == 0.0
+    assert report["n_grader_unparsed"] == 0.0
     assert report["fails"] == 0
 
 
@@ -403,8 +403,8 @@ async def test_report_separates_a_broken_grader_from_a_failing_model():
     )
     broken_grader = await task.report(
         [
-            _final(COMPLEX, False, 0, 0, judge_parsed=False),
-            _final(STEERABILITY, False, 0, 0, judge_parsed=False),
+            _final(COMPLEX, False, 0, 0, grader_parsed=False),
+            _final(STEERABILITY, False, 0, 0, grader_parsed=False),
         ],
         [],
     )
@@ -412,10 +412,10 @@ async def test_report_separates_a_broken_grader_from_a_failing_model():
     assert failing_model["score"] == broken_grader["score"] == 0.0
     assert failing_model["macro_pass_rate"] == broken_grader["macro_pass_rate"] == 0.0
     assert failing_model["micro_pass_rate"] == broken_grader["micro_pass_rate"] == 0.0
-    assert failing_model["n_judge_unparsed"] == 0.0
-    assert broken_grader["n_judge_unparsed"] == 2.0
-    assert broken_grader[f"{COMPLEX}_n_judge_unparsed"] == 1.0
-    assert broken_grader[f"{STEERABILITY}_n_judge_unparsed"] == 1.0
+    assert failing_model["n_grader_unparsed"] == 0.0
+    assert broken_grader["n_grader_unparsed"] == 2.0
+    assert broken_grader[f"{COMPLEX}_n_grader_unparsed"] == 1.0
+    assert broken_grader[f"{STEERABILITY}_n_grader_unparsed"] == 1.0
 
 
 @pytest.mark.anyio
@@ -433,6 +433,6 @@ async def test_report_counts_pipeline_failures_as_non_passes():
     assert report["n_graded"] == 1.0
     assert report["fails"] == 1
     # A sample that never reached the grader is not a grader-parse failure.
-    assert report["n_judge_unparsed"] == 0.0
+    assert report["n_grader_unparsed"] == 0.0
     # It has no aspect to attribute to, so the breakdown covers graded rollouts.
     assert report[f"{COMPLEX}_n_graded"] == 1.0

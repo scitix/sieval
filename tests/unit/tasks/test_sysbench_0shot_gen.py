@@ -337,7 +337,7 @@ def test_an_unreadable_verdict_scores_zero_and_is_counted_separately():
         n_turns=3,
     )
     extra = judgement["extra"]
-    assert extra["turn_2"]["n_unparsed"] == 2
+    assert extra["turn_2"]["n_grader_unparsed"] == 2
     assert extra["turn_2"]["n_graded"] == 0
     assert judgement["rollouts"][0]["metrics"]["turn_2_csr"] == 0.0
 
@@ -407,7 +407,7 @@ def _judged_session(session_id, per_turn):
             "alignment": alignment,
             "n_criteria": len(verdicts),
             "n_satisfied": n_satisfied,
-            "n_unparsed": sum(1 for v in verdicts.values() if v is None),
+            "n_grader_unparsed": sum(1 for v in verdicts.values() if v is None),
             "n_graded": sum(1 for v in verdicts.values() if v is not None),
         }
     return {"reference": [], "rollouts": [], "extra": extra}
@@ -523,8 +523,8 @@ def test_report_sizes_the_gap_an_ungradeable_turn_leaves_in_the_headline():
     assert m["csr"] == pytest.approx(50.0)
     assert m["csr_graded"] == pytest.approx(100.0)
     assert m["ungradeable_rate"] == pytest.approx(50.0)
-    assert m["grader_unparsed_criteria"] == 1
-    assert m["grader_unparsed_turns"] == 1
+    assert m["n_grader_unparsed"] == 1
+    assert m["n_grader_unparsed_turns"] == 1
 
 
 def test_report_names_the_protocol_that_produced_the_numbers():

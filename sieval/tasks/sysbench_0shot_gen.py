@@ -47,13 +47,13 @@ Deviations / by-design behavior worth knowing:
   so an infrastructure failure cannot read as a model that stopped following its system
   prompt. ``turn_{t}_n_turns`` counts the sessions that actually reached turn *t*.
 * A constraint with no readable verdict scores **not satisfied** but is counted in
-  ``grader_unparsed_criteria``; a turn where *nothing* parsed is counted again in
-  ``grader_unparsed_turns``. Upstream instead retries the grader up to 10 times and lets
-  the session fail, so where upstream loses 5 turns this loses 1 constraint — and says
-  so. ``csr`` counts an ungradeable turn as 0.0, matching upstream's denominator, which
-  makes it a **floor**; ``csr_graded`` is the same mean over turns actually graded and
-  ``ungradeable_rate`` sizes the gap. Read all three or a grader outage reads as a
-  weaker model.
+  ``n_grader_unparsed``; a turn where *nothing* parsed is counted again in
+  ``n_grader_unparsed_turns``. Upstream instead retries the grader up to 10 times
+  and lets the session fail, so where upstream loses 5 turns this loses 1
+  constraint — and says so. ``csr`` counts an ungradeable turn as 0.0, matching
+  upstream's denominator, which makes it a **floor**; ``csr_graded`` is the same
+  mean over turns actually graded and ``ungradeable_rate`` sizes the gap. Read all
+  three or a grader outage reads as a weaker model.
 * An empty response still goes to the grader: a SysBench constraint is frequently a
   prohibition ("不要提及…"), so short-circuiting an empty reply to zero would be a
   *different* claim from upstream's, which grades what it is given.
@@ -182,7 +182,7 @@ _CONSTRAINT_TYPES = {
             "for five, then 0.5) before failing the session. This port reads the "
             "verdicts by regex (it does not execute grader text, and does not depend "
             "on the fence being byte-exact) and scores an unresolved constraint "
-            "not-satisfied, counted in grader_unparsed_criteria: one constraint lost "
+            "not-satisfied, counted in n_grader_unparsed: one constraint lost "
             "and visible, rather than five turns lost. UPSTREAM'S ONE RULE-BASED "
             "CHECK IS NOT PORTED: utils.character_count asserts its own regex "
             "matches are empty immediately after computing them, so its only "
@@ -450,7 +450,9 @@ class SysBenchZeroShotGenTask(
             grader_outputs.append(obj_to_dict(out, add_type=False))
             reply = out.texts[0] if out.texts else ""
             verdicts = parse_verdict(reply, criteria_ids)
-            csr, all_satisfied, n_satisfied, n_unparsed = aggregate_turn(verdicts)
+            csr, all_satisfied, n_satisfied, n_grader_unparsed = aggregate_turn(
+                verdicts
+            )
 
             per_turn.append((csr, all_satisfied))
             metrics[f"turn_{index}_csr"] = csr
@@ -466,11 +468,11 @@ class SysBenchZeroShotGenTask(
                 "alignment": turn["alignment"],
                 "n_criteria": len(criteria_ids),
                 "n_satisfied": n_satisfied,
-                "n_unparsed": n_unparsed,
+                "n_grader_unparsed": n_grader_unparsed,
                 # Constraints the grader resolved. 0 means the reply was unreadable,
                 # which `csr` alone cannot distinguish from a turn that satisfied
                 # nothing.
-                "n_graded": len(criteria_ids) - n_unparsed,
+                "n_graded": len(criteria_ids) - n_grader_unparsed,
             }
 
             # Swap in the protocol's history for the NEXT turn's judge prompt: under
@@ -521,7 +523,7 @@ class SysBenchZeroShotGenTask(
         # Pooled from raw counts, not averaged from per-turn rates: turns carry
         # different constraint counts, so the two differ.
         type_totals: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-        n_unparsed = 0
+        n_grader_unparsed = 0
         n_criteria = 0
         unparsed_turns = 0
         history_modes: set[str] = set()
@@ -544,7 +546,7 @@ class SysBenchZeroShotGenTask(
                 verdicts = turn.get("criterion_verdicts") or {}
                 types = turn.get("criterion_types") or {}
                 n_satisfied = int(turn.get("n_satisfied", 0))
-                turn_unparsed = int(turn.get("n_unparsed", 0))
+                turn_unparsed = int(turn.get("n_grader_unparsed", 0))
                 csr = n_satisfied / n_turn_criteria
                 full = n_satisfied == n_turn_criteria
 
@@ -552,7 +554,7 @@ class SysBenchZeroShotGenTask(
                 by_position[index].append((session_id, csr, full))
                 by_alignment[str(turn.get("alignment", ""))].append(csr)
                 n_criteria += n_turn_criteria
-                n_unparsed += turn_unparsed
+                n_grader_unparsed += turn_unparsed
                 if turn_unparsed >= n_turn_criteria:
                     unparsed_turns += 1
                 else:
@@ -576,8 +578,8 @@ class SysBenchZeroShotGenTask(
             "n_criteria_graded": float(n_criteria),
             # Grader format drift, kept out of the rate it would be invisible inside:
             # these constraints scored not-satisfied.
-            "grader_unparsed_criteria": float(n_unparsed),
-            "grader_unparsed_turns": float(unparsed_turns),
+            "n_grader_unparsed": float(n_grader_unparsed),
+            "n_grader_unparsed_turns": float(unparsed_turns),
             # `csr` counts an ungradeable turn as 0.0 -- upstream's denominator, so it
             # stays the headline -- which makes it a floor. These two say how far.
             "csr_graded": (

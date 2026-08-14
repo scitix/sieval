@@ -37,7 +37,7 @@ what is scored:
   it does not break when a grader's fence is off by a character. Upstream then asserts
   the verdict keys are exactly the criteria keys and retries up to 10 times (temperature
   0 for the first five, 0.5 after) before letting the session fail; here an unresolved
-  constraint scores not-satisfied and is counted in ``n_unparsed``, so a grader wobble
+  constraint scores not-satisfied and is counted in ``n_grader_unparsed``, so a grader wobble
   costs one constraint and stays visible instead of costing a whole session.
   :func:`aggregate_turn` keeps unresolved (``None``) apart from refused (``False``) for
   exactly that reason — otherwise an unreadable reply scores a silent 0.0,
@@ -197,7 +197,7 @@ def parse_verdict(text: str, criteria_ids: Sequence[str]) -> dict[str, bool | No
 
 
 def aggregate_turn(verdicts: dict[str, bool | None]) -> tuple[float, bool, int, int]:
-    """One turn's ``(csr, all_satisfied, n_satisfied, n_unparsed)``.
+    """One turn's ``(csr, all_satisfied, n_satisfied, n_grader_unparsed)``.
 
     An unresolved constraint counts as not satisfied — an unreadable verdict must
     never inflate a score — but is returned separately so grader format drift stays
@@ -205,12 +205,12 @@ def aggregate_turn(verdicts: dict[str, bool | None]) -> tuple[float, bool, int, 
     """
     n = len(verdicts)
     n_satisfied = sum(1 for v in verdicts.values() if v)
-    n_unparsed = sum(1 for v in verdicts.values() if v is None)
+    n_grader_unparsed = sum(1 for v in verdicts.values() if v is None)
     return (
         n_satisfied / n if n else 0.0,
         n > 0 and n_satisfied == n,
         n_satisfied,
-        n_unparsed,
+        n_grader_unparsed,
     )
 
 
