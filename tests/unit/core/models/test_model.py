@@ -1057,3 +1057,26 @@ class TestResponseBridge:
             Response(texts=("t",), reasoning=(ReasoningOutput(text=""),))
         )
         assert out.reasoning_texts is None
+
+    def test_caller_mapping_is_not_mutated_and_not_shared(self):
+        """Provenance is attached to a copy.
+
+        The mapping is a free function's argument now, not something the method
+        built for itself, so a caller may legitimately keep a reference to it.
+        Attaching provenance in place would write into that caller's dict and
+        leak the first response's provenance into every later output built from
+        it -- and `ModelCallMeta` is persisted.
+        """
+        model = GenModel(model="m", api_key="k")
+        caller_meta = model.meta()
+        provenance = model._provenance(Response(texts=("t",)))
+
+        first = response_to_model_output(
+            caller_meta, Response(texts=("a",), provenance=provenance)
+        )
+        second = response_to_model_output(caller_meta, Response(texts=("b",)))
+
+        assert "provenance" not in caller_meta
+        assert first.model["provenance"] == provenance
+        assert "provenance" not in second.model
+        assert first.model is not second.model

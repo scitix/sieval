@@ -89,16 +89,18 @@ def _project_sieval_first():
 # ===================================================================
 class TestLoadClassFromPath:
     def test_valid_path(self):
-        cls = load_class_from_path("sieval.core.models.model.ModelOutput")
-        from sieval.core.models import ModelOutput
+        # `Model` is defined in `sieval.core.models.model`; resolving a class
+        # that the module merely re-exports would not prove the path is walked.
+        cls = load_class_from_path("sieval.core.models.model.Model")
+        from sieval.core.models import Model
 
-        assert cls is ModelOutput
+        assert cls is Model
 
     # (class_path, expected_exception, expected_error_pattern)
     @pytest.mark.parametrize(
         "class_path,error_type,error_match",
         [
-            ("ModelOutput", ValueError, "Invalid class path"),
+            ("Model", ValueError, "Invalid class path"),
             ("nonexistent.module.Foo", ImportError, "Could not import"),
             (
                 "sieval.core.models.model.NonExistentClass",
@@ -121,9 +123,9 @@ class TestLoadClassFromName:
         "class_name,search_modules,expected_path",
         [
             (
-                "ModelOutput",
+                "Model",
                 ["sieval.core.models.model"],
-                "sieval.core.models.model.ModelOutput",
+                "sieval.core.models.model.Model",
             ),
             (
                 "ChatModel",
@@ -131,9 +133,9 @@ class TestLoadClassFromName:
                 "sieval.core.models.chat_model.ChatModel",
             ),
             (
-                "ModelOutput",
+                "Model",
                 ["nonexistent.module", "sieval.core.models.model"],
-                "sieval.core.models.model.ModelOutput",
+                "sieval.core.models.model.Model",
             ),
         ],
     )
@@ -157,14 +159,14 @@ class TestResolveClass:
         "class_spec,search_modules,expected_path",
         [
             (
-                "sieval.core.models.model.ModelOutput",
+                "sieval.core.models.model.Model",
                 [],
-                "sieval.core.models.model.ModelOutput",
+                "sieval.core.models.model.Model",
             ),
             (
-                "ModelOutput",
+                "Model",
                 ["sieval.core.models.model"],
-                "sieval.core.models.model.ModelOutput",
+                "sieval.core.models.model.Model",
             ),
         ],
     )
@@ -175,7 +177,7 @@ class TestResolveClass:
     def test_leading_dot_raises_value_error(self):
         # Relative import syntax is explicitly rejected.
         with pytest.raises(ValueError, match="Relative import syntax"):
-            resolve_class(".ModelOutput", ["sieval.core.models.model"])
+            resolve_class(".Model", ["sieval.core.models.model"])
 
 
 # ===================================================================

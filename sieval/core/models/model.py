@@ -28,10 +28,10 @@ from ._legacy_bridge import (
     ModelMeta,
     ModelOutput,
     kwargs_to_request,
-    named_json_value,
     response_to_model_output,
     validate_n,
 )
+from ._shared import named_json_value
 from .capabilities import (
     Capability,
     RequestDefaults,

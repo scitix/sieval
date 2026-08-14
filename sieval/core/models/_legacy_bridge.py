@@ -3,8 +3,10 @@
 Tasks still call ``agenerate``/``alogprobs`` with loose keyword arguments and
 read a ``ModelOutput`` back; the canonical plane speaks ``Request``/``Response``
 only. Separated from ``model`` by lifetime, so the move to ``arun`` deletes this
-file as a unit with nothing in the canonical ``Model`` left to unpick — true only
-while it stays free-function shaped.
+file as a unit — true only while it stays free-function shaped and free of
+primitives the canonical plane also needs. ``Model.meta()`` is the one thread to
+cut by hand: it is public, has a caller outside the legacy path, and returns the
+``ModelMeta`` defined below.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -17,6 +19,7 @@ from typing import NotRequired, TypedDict, cast
 from sieval.core.types import JSONValue
 from sieval.core.utils.serialization import sieval_record
 
+from ._shared import named_json_value
 from .deployment import BINDING_RESOURCE_KEYS
 from .ir import (
     CompletionInput,
@@ -82,31 +85,6 @@ class ModelOutput:
     request_params: dict[str, JSONValue] | None = None
     response_model: str | None = None
     system_fingerprint: str | None = None
-
-
-def named_json_value(value: object, name: str) -> JSONValue:
-    """Validate and detach a JSON value, naming the offending leaf on failure.
-
-    Sequences are ``list``/``tuple`` only: the result is persisted, and a
-    ``set`` would serialize in hash order while a generator would serialize
-    as ``[]`` once consumed.
-    """
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{name} must not contain a non-finite float")
-        return value
-    if value is None or isinstance(value, str | int | bool):
-        return value
-    if isinstance(value, Mapping):
-        result: dict[str, JSONValue] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError(f"{name} keys must be strings")
-            result[key] = named_json_value(item, f"{name}.{key}")
-        return result
-    if isinstance(value, list | tuple):
-        return [named_json_value(item, name) for item in value]
-    raise TypeError(f"{name} must be JSON-compatible, got {type(value).__name__}")
 
 
 def _optional_float(value: object, name: str) -> float | None:
@@ -408,10 +386,10 @@ def kwargs_to_request(
 
 
 def response_to_model_output(model_meta: ModelMeta, response: Response) -> ModelOutput:
-    """Shape a canonical ``Response`` into the legacy ``ModelOutput``.
+    """Shape a canonical ``Response`` into the legacy ``ModelOutput``."""
 
-    ``model_meta`` is mutated to carry provenance; callers pass a fresh mapping.
-    """
+    # The caller may keep this mapping, and provenance is persisted.
+    model_meta = model_meta.copy()
 
     segments: list[TokenLogprob] = []
     if response.input_scoring is not None:
