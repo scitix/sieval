@@ -79,8 +79,17 @@ def _install_fake_evaluator(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_module = types.ModuleType("sieval.community.ifbench.evaluation_lib")
     fake_module.__dict__["InputExample"] = _FakeInputExample
 
-    def strict(inp: _FakeInputExample, prompt_to_response: dict[str, str]):
+    def strict(
+        inp: _FakeInputExample,
+        prompt_to_response: dict[str, str],
+        *,
+        instruction_dict: dict[str, type] | None = None,
+    ):
         assert prompt_to_response == {"final prompt": "final response"}
+        # `None` is "grade through the vendored registry". Asserting it here is
+        # what keeps the unqualified task upstream's: if it ever started passing
+        # an overlay, this test -- not a run -- is where that surfaces.
+        assert instruction_dict is None
         return _FakeOutputExample(
             instruction_id_list=inp.instruction_id_list,
             prompt=inp.prompt,
@@ -89,8 +98,14 @@ def _install_fake_evaluator(monkeypatch: pytest.MonkeyPatch) -> None:
             follow_instruction_list=[True, False],
         )
 
-    def loose(inp: _FakeInputExample, prompt_to_response: dict[str, str]):
+    def loose(
+        inp: _FakeInputExample,
+        prompt_to_response: dict[str, str],
+        *,
+        instruction_dict: dict[str, type] | None = None,
+    ):
         assert prompt_to_response == {"final prompt": "final response"}
+        assert instruction_dict is None
         return _FakeOutputExample(
             instruction_id_list=inp.instruction_id_list,
             prompt=inp.prompt,

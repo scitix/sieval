@@ -78,7 +78,12 @@ _GRADES = ("strict", "loose")
             "reproduced with Qwen3's recommended sampling (temperature=0.6, "
             "top_p=0.95, top_k=20, max_tokens=38912). As that sampling is "
             "non-greedy the score is a stochastic band with 37.3 at the top "
-            "edge, not a deterministic value."
+            "edge, not a deterministic value. Four of the vendored checkers "
+            "grade something other than what their own instruction says "
+            "(format:line_indent, ratio:sentence_type, words:words_position, "
+            "words:vowel). Kept as-is here, per the unqualified-name rule; "
+            "ifbench_0shot_gen_fixed repairs them and carries the measured "
+            "delta."
         ),
     ),
     # Not empirically validated as equivalent: the official temperature=0
@@ -100,6 +105,15 @@ class IFBenchZeroShotGenTask(
 ):
     def __init__(self, dataset, model, name: str | None = None):
         super().__init__(dataset=dataset, model=model, name=name)
+
+    def _instruction_dict(self) -> dict[str, type] | None:
+        """Registry the checkers are looked up in; ``None`` is the vendored one.
+
+        The single seam ``ifbench_0shot_gen_fixed`` needs. Everything else about
+        how a sample is prompted, graded and pooled is shared, so overriding this
+        cannot make the two tasks differ in any other way.
+        """
+        return None
 
     @override
     async def preprocess(self, raw, ctx):
@@ -158,8 +172,11 @@ class IFBenchZeroShotGenTask(
         # pools those raw counts rather than averaging the per-sample rates.
         metrics: dict[str, bool | float] = {}
         detail = {}
+        instruction_dict = self._instruction_dict()
         for grade in _GRADES:
-            out = graders[grade](inp, {prompt: response})
+            out = graders[grade](
+                inp, {prompt: response}, instruction_dict=instruction_dict
+            )
             followed = list(out.follow_instruction_list)
             metrics[f"{grade}_follow_all"] = out.follow_all_instructions
             metrics[f"{grade}_instruction_level"] = (

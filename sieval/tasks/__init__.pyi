@@ -103,6 +103,9 @@ from .human_eval_0shot_gen import (
 from .ifbench_0shot_gen import (
     IFBenchZeroShotGenTask,
 )
+from .ifbench_0shot_gen_fixed import (
+    IFBenchZeroShotGenFixedTask,
+)
 from .ifeval_0shot_gen import (
     IFEvalZeroShotGenTask,
 )
@@ -225,6 +228,7 @@ __all__ = [
     "HendrycksMathFewShotBaseGenTask",
     "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
+    "IFBenchZeroShotGenFixedTask",
     "IFBenchZeroShotGenTask",
     "IFEvalZeroShotGenFixedTask",
     "IFEvalZeroShotGenTask",
