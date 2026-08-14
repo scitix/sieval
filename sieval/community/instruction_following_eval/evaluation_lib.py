@@ -19,6 +19,13 @@ See https://github.com/google-research/google-research/blob/f97f6adab57bd3065b24
 """
 
 # adapted from https://github.com/google-research/google-research/blob/f97f6adab57bd3065b24169bcfc559dc34d0db84/instruction_following_eval/evaluation_lib.py
+#
+# Local adaptation: the two graders take a keyword-only `instruction_dict`,
+# defaulting to the vendored registry, so `ifeval_0shot_gen_fixed` can grade
+# through the repaired checkers in
+# `sieval.community.instruction_following_eval_fixed` without mutating a global
+# that concurrently-graded samples share. Omitting the argument reproduces
+# upstream's behaviour exactly, which is what the unqualified task does.
 import collections
 import dataclasses
 import json
@@ -82,14 +89,17 @@ def write_outputs(output_jsonl_filename, outputs):
 def test_instruction_following_strict(
     inp,
     prompt_to_response,
+    *,
+    instruction_dict=None,
 ):
     """Tests response to see if instrutions are followed."""
+    instruction_dict = instruction_dict or instructions_registry.INSTRUCTION_DICT
     response = prompt_to_response[inp.prompt]
     instruction_list = inp.instruction_id_list
     is_following_list = []
 
     for index, instruction_id in enumerate(instruction_list):
-        instruction_cls = instructions_registry.INSTRUCTION_DICT[instruction_id]
+        instruction_cls = instruction_dict[instruction_id]
         instruction = instruction_cls(instruction_id)
 
         instruction.build_description(**inp.kwargs[index])
@@ -114,8 +124,11 @@ def test_instruction_following_strict(
 def test_instruction_following_loose(
     inp,
     prompt_to_response,
+    *,
+    instruction_dict=None,
 ):
     """Tests response for an upper bound for following instructions."""
+    instruction_dict = instruction_dict or instructions_registry.INSTRUCTION_DICT
     response = prompt_to_response[inp.prompt]
     r = response.split("\n")
     response_remove_first = "\n".join(r[1:]).strip()
@@ -139,7 +152,7 @@ def test_instruction_following_loose(
     is_following_list = []
 
     for index, instruction_id in enumerate(instruction_list):
-        instruction_cls = instructions_registry.INSTRUCTION_DICT[instruction_id]
+        instruction_cls = instruction_dict[instruction_id]
         instruction = instruction_cls(instruction_id)
 
         instruction.build_description(**inp.kwargs[index])

@@ -220,7 +220,12 @@ def _ensure_punkt_tab() -> None:
             "26,894 turn-cells flip and `score` spans 0.012 — two orders of "
             "magnitude under the +-0.4 sd that conversation sampling contributes. "
             "Tracked, not repaired, per the unqualified-name rule; fixing either "
-            "needs a `_fixed` variant with a measured delta. "
+            "needs a `_fixed` variant with a measured delta. That variant now "
+            "exists as multi_if_0shot_gen_fixed, and it addresses the first only "
+            "in part: it keeps the letter the 1122:18:en row names, and repairs "
+            "two further checkers, but the empty-keyword row 2616:4:zh stays as "
+            "upstream grades it and langdetect still routes the counting "
+            "algorithm behind every length constraint in both tasks. "
             "PUBLISHED-NUMBER RESIDUAL (open). The only servable model carrying a "
             "first-party Multi-IF figure is Qwen3-32B: Qwen3 Technical Report "
             "(arXiv:2505.09388) Table 13 Thinking 73.0, Table 14 Non-thinking "
@@ -254,6 +259,15 @@ class MultiIFZeroShotGenTask(
         dict[str, float | str],
     ]
 ):
+    def _instruction_dict(self) -> dict[str, type] | None:
+        """Registry the checkers are looked up in; ``None`` is the vendored one.
+
+        The single seam ``multi_if_0shot_gen_fixed`` needs. Everything else about
+        how a conversation is walked, graded and pooled is shared, so overriding
+        this cannot make the two tasks differ in any other way.
+        """
+        return None
+
     @override
     async def preprocess(self, raw, ctx):
         turns = raw["turns"]
@@ -392,6 +406,7 @@ class MultiIFZeroShotGenTask(
 
         metrics: dict[str, bool | float] = {}
         detail: dict[str, dict] = {}
+        instruction_dict = self._instruction_dict()
         for index, turn in enumerate(graded, start=1):
             instruction_ids = list(turn["instruction_id_list"])
             payload = {
@@ -404,7 +419,8 @@ class MultiIFZeroShotGenTask(
             }
             detail[f"turn_{index}"] = {"instruction_id_list": instruction_ids}
             for grade in _GRADES:
-                followed = list(graders[grade](payload)["follow_instruction_list"])
+                graded_turn = graders[grade](payload, instruction_dict=instruction_dict)
+                followed = list(graded_turn["follow_instruction_list"])
                 metrics[f"turn_{index}_{grade}_follow_all"] = all(followed)
                 metrics[f"turn_{index}_{grade}_instruction_level"] = (
                     sum(followed) / len(followed) if followed else 0.0

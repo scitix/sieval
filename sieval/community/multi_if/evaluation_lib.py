@@ -25,6 +25,12 @@
 #   1. `import ifeval` -> `from . import ifeval` (upstream is a flat repo).
 #   2. The `Dict[str, float]` return annotations are corrected to `dict`: both
 #      functions return lists, not floats, so upstream's annotation is wrong.
+#   3. Both graders take a keyword-only `instruction_dict`, defaulting to the
+#      vendored registry, so `multi_if_0shot_gen_fixed` can grade through the
+#      repaired checkers in `sieval.community.instruction_following_eval_fixed`
+#      without mutating a global that concurrently-graded samples share.
+#      Omitting the argument reproduces upstream's behaviour exactly, which is
+#      what the unqualified task does.
 # Otherwise the bodies are byte-identical to upstream.
 
 from typing import Any
@@ -32,13 +38,14 @@ from typing import Any
 from . import ifeval
 
 
-def gen_acc_strict(x: dict[str, Any]) -> dict:
+def gen_acc_strict(x: dict[str, Any], *, instruction_dict=None) -> dict:
     # reference: fbcode/gen_ai/github/fair_evals/evals/tasks/finetune/ifeval.py
+    instruction_dict = instruction_dict or ifeval.INSTRUCTION_DICT
     response = str(x["response"])
     instruction_list = x["instruction_id_list"]
     is_following_list = []
     for index, instruction_id in enumerate(instruction_list):
-        instruction_cls = ifeval.INSTRUCTION_DICT[instruction_id]
+        instruction_cls = instruction_dict[instruction_id]
         instruction = instruction_cls(instruction_id)
 
         instruction.build_description(**x["kwargs"][index])
@@ -54,7 +61,8 @@ def gen_acc_strict(x: dict[str, Any]) -> dict:
     }
 
 
-def gen_acc_loose(x: dict[str, Any]) -> dict:
+def gen_acc_loose(x: dict[str, Any], *, instruction_dict=None) -> dict:
+    instruction_dict = instruction_dict or ifeval.INSTRUCTION_DICT
     response = str(x["response"])
     r = response.split("\n")
     response_remove_first = "\n".join(r[1:]).strip()
@@ -77,7 +85,7 @@ def gen_acc_loose(x: dict[str, Any]) -> dict:
     instruction_list = x["instruction_id_list"]
     is_following_list = []
     for index, instruction_id in enumerate(instruction_list):
-        instruction_cls = ifeval.INSTRUCTION_DICT[instruction_id]
+        instruction_cls = instruction_dict[instruction_id]
         instruction = instruction_cls(instruction_id)
 
         instruction.build_description(**x["kwargs"][index])

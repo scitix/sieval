@@ -43,7 +43,14 @@ _GRADES = ("strict", "loose")
     reference_impl=ReferenceImpl(
         source="google-research/instruction_following_eval",
         url="https://github.com/google-research/google-research/blob/f97f6adab57bd3065b24169bcfc559dc34d0db84/instruction_following_eval/evaluation_lib.py",
-        notes="evaluation_lib + instructions_registry vendored from google-research.",
+        notes=(
+            "evaluation_lib + instructions_registry vendored from google-research. "
+            "Three of the 25 checkers grade something other than what their own "
+            "instruction says (length_constraints:nth_paragraph_first_word, "
+            "keywords:letter_frequency, change_case:english_capital). Kept as-is "
+            "here, per the unqualified-name rule; ifeval_0shot_gen_fixed repairs "
+            "them and carries the measured delta."
+        ),
     ),
 )
 class IFEvalZeroShotGenTask(
@@ -60,6 +67,15 @@ class IFEvalZeroShotGenTask(
 ):
     def __init__(self, dataset, model, name: str | None = None):
         super().__init__(dataset=dataset, model=model, name=name)
+
+    def _instruction_dict(self) -> dict[str, type] | None:
+        """Registry the checkers are looked up in; ``None`` is the vendored one.
+
+        The single seam ``ifeval_0shot_gen_fixed`` needs. Everything else about
+        how a sample is prompted, graded and pooled is shared, so overriding this
+        cannot make the two tasks differ in any other way.
+        """
+        return None
 
     @override
     async def preprocess(self, raw, ctx):
@@ -120,8 +136,11 @@ class IFEvalZeroShotGenTask(
         # report() pools those raw counts rather than averaging the rates here.
         metrics: dict[str, bool | float] = {}
         detail = {}
+        instruction_dict = self._instruction_dict()
         for grade in _GRADES:
-            out = graders[grade](inp, {prompt: response})
+            out = graders[grade](
+                inp, {prompt: response}, instruction_dict=instruction_dict
+            )
             followed = list(out.follow_instruction_list)
             metrics[f"{grade}_follow_all"] = out.follow_all_instructions
             metrics[f"{grade}_instruction_level"] = (

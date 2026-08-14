@@ -106,6 +106,9 @@ from .ifbench_0shot_gen import (
 from .ifeval_0shot_gen import (
     IFEvalZeroShotGenTask,
 )
+from .ifeval_0shot_gen_fixed import (
+    IFEvalZeroShotGenFixedTask,
+)
 from .iheval_0shot_gen import (
     IHEvalZeroShotGenTask,
 )
@@ -141,6 +144,9 @@ from .mmmlu_kshot_clp import (
 )
 from .multi_if_0shot_gen import (
     MultiIFZeroShotGenTask,
+)
+from .multi_if_0shot_gen_fixed import (
+    MultiIFZeroShotGenFixedTask,
 )
 from .openbookqa_kshot_gen import (
     OpenBookQAFewShotGenTask,
@@ -220,6 +226,7 @@ __all__ = [
     "HumanEvalZeroShotBaseGenTask",
     "HumanEvalZeroShotGenTask",
     "IFBenchZeroShotGenTask",
+    "IFEvalZeroShotGenFixedTask",
     "IFEvalZeroShotGenTask",
     "IHEvalZeroShotGenTask",
     "IMOAnswerBenchZeroShotGenTask",
@@ -232,6 +239,7 @@ __all__ = [
     "MMLUProZeroShotGenTask",
     "MMLUZeroShotGenTask",
     "MMMLUKShotClpTask",
+    "MultiIFZeroShotGenFixedTask",
     "MultiIFZeroShotGenTask",
     "OpenBookQAFewShotGenTask",
     "PlatinumGSM8KZeroShotGenTask",
