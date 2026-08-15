@@ -482,11 +482,10 @@ class Dataset[TSample](ABC):
         * ``"random"`` — shuffle with *seed*, take first *k*.
         * ``"fixed"`` — select by *indices* (default ``0..k-1``); out-of-range dropped.
 
-        Returns a list or, if *lazy*, an iterator. Empty if *split* is missing or
-        empty, warning that it was: returning nothing here turns a k-shot prompt
-        into a 0-shot one, which the run reports as a plausible number rather
-        than a failure. Every current caller guards the split and raises first,
-        so this is the net under them, not their only defence.
+        Returns a list or, if *lazy*, an iterator. Empty if *split* is missing
+        or empty, warning that it was: returning nothing serves a k-shot prompt
+        as 0-shot, which the run reports as a plausible number. Every caller
+        guards the split and raises first, so this is the net under them.
         """
         ds = self._dataset_dict.get(split)
         if ds is None or len(ds) == 0:
@@ -535,22 +534,14 @@ def _report_no_op(
     """Report an operation a missing or empty split left with nothing to do.
 
     Returning early is right — a config may name a split only some datasets
-    carry — but silence is not. How much the silence costs differs by caller:
+    carry — but silence is not, and it costs differently per caller:
 
-    * :meth:`Dataset.slice`, :meth:`Dataset.filter` and
-      :meth:`Dataset.stratified_sample` exist to *narrow* a split. Skipping the
-      narrowing leaves the data whole, so the run scores every row and reports
-      a number that looks reasonable — the opposite of how they fail once the
-      split is found, where too few rows show up downstream.
-    * :meth:`Dataset.repeat` and :meth:`Dataset.shuffle` fail toward fewer rows
-      or unchanged order, which surfaces downstream on its own. They report for
-      the contract, not the danger.
-    * :meth:`Dataset.retrieve_samples` returns no examples, turning a k-shot
-      prompt into a 0-shot one while the run still reports a plausible number.
-      Its callers each guard the split and raise before reaching here, so this
-      is a net beneath them rather than the only line of defence — which is why
-      *outcome* is overridden there: nothing was "unchanged", the caller simply
-      got nothing back.
+    * ``slice``, ``filter`` and ``stratified_sample`` exist to *narrow*, so a
+      skipped narrowing keeps every row and the run reports a plausible number.
+    * ``repeat`` and ``shuffle`` fail toward fewer rows or unchanged order,
+      which surfaces downstream. They report for the contract, not the danger.
+    * ``retrieve_samples`` returns nothing, serving a k-shot prompt as 0-shot.
+      It overrides *outcome*: nothing was "unchanged", the caller got nothing.
 
     Only :meth:`Dataset.filter` passes *strict*, because only it has a flag
     (``require_all``) that already promised the selection landed.
