@@ -358,6 +358,29 @@ class TestFilterCompositeKey:
         with pytest.raises(ValueError, match=r"has \(tag, lang\)="):
             ds.filter(["tag", "lang"], [("z", "zz")])
 
+    def test_keys_pair_across_columns_row_by_row(self):
+        # Guards the zip: transposing the columns wrongly would still return a
+        # tuple per row, so only a case where the pairing itself matters can
+        # tell a correct transpose from a shifted one.
+        ds = _make_pairs([("a", "en"), ("b", "fr"), ("c", "de")])
+        kept = ds.filter(["tag", "lang"], [("b", "fr")]).test_set
+        assert [(r["tag"], r["lang"]) for r in kept] == [("b", "fr")]
+        # The mispairings a broken transpose would produce must match nothing.
+        for wrong in [("a", "fr"), ("b", "en"), ("b", "de"), ("c", "fr")]:
+            with pytest.raises(ValueError, match="no row of split"):
+                ds.filter(["tag", "lang"], [wrong])
+
+    def test_three_columns_pair_correctly_too(self):
+        ds = _ListDataset(
+            [
+                {"id": 0, "a": "1", "b": "2", "c": "3"},
+                {"id": 1, "a": "4", "b": "5", "c": "6"},
+            ]
+        )
+        kept = ds.filter(["a", "b", "c"], [("4", "5", "6")]).test_set
+        assert kept is not None
+        assert [r["id"] for r in kept] == [1]
+
 
 # ===================================================================
 # filter — derived keys (callable)
@@ -408,6 +431,36 @@ class TestFilterCallableKey:
         with pytest.raises(ValueError, match="cannot be compared for membership"):
             ds.filter(lambda row: [row["tag"], row["lang"]], "a")
 
+    def test_list_accepted_values_point_at_the_config_scalar_rule(self):
+        # The shape a config file produces for a tuple-returning key function:
+        # YAML/JSON write `[[a, b]]`, which is not hashable. Without the hint
+        # the message is a bare "unhashable type: 'list'".
+        ds = _make_pairs([("a", "en")])
+        with pytest.raises(ValueError, match="must take scalar"):
+            ds.filter(lambda row: (row["tag"], row["lang"]), [["a", "en"]])
+
+    def test_a_tuple_key_still_works_from_python(self):
+        # Only the config surface is constrained to scalars; passing the
+        # accepted values directly, a tuple key is fine.
+        ds = _make_pairs([("a", "en"), ("b", "fr")])
+        kept = ds.filter(lambda row: (row["tag"], row["lang"]), [("a", "en")]).test_set
+        assert [r["tag"] for r in kept] == ["a"]
+
+    def test_a_raising_key_function_names_the_row_and_the_function(self):
+        # `by` may name any importable function, so its failure is a config
+        # error; a bare KeyError from inside it says nothing about where.
+        ds = _make_tagged(["a", "b", "c"])
+
+        def key(row):
+            if row["tag"] == "b":
+                raise KeyError("missing_column")
+            return row["tag"]
+
+        with pytest.raises(ValueError, match=r"raised on row 1 of 3") as exc:
+            ds.filter(key, "a")
+        assert "key()" in str(exc.value)
+        assert "KeyError: 'missing_column'" in str(exc.value)
+
 
 # ===================================================================
 # filter — require_all
@@ -454,6 +507,21 @@ class TestFilterRequireAll:
         # the selection stays reproducible however the list was written.
         ds = _make_tagged(["a", "b", "c"])
         assert [r["tag"] for r in ds.filter("tag", ["c", "a"]).test_set] == ["a", "c"]
+
+    def test_the_warning_quotes_a_set_in_a_stable_order(self):
+        # A set has no order of its own, so quoting it as-iterated makes the
+        # diagnostic differ between runs of the same selection.
+        ds = _make_tagged(["a"])
+        out = _capture_logs(lambda: ds.filter("tag", {"a", "y", "x", "z"}))
+        assert "unmatched: ['x', 'y', 'z']" in out
+
+    def test_a_set_of_unorderable_keys_still_filters(self):
+        # Mixed types cannot be sorted; that must degrade to iteration order
+        # rather than raising out of a selection that is otherwise fine.
+        ds = _ListDataset([{"id": 0, "tag": "a"}, {"id": 1, "tag": "b"}])
+        kept = ds.filter("id", {0, "a"}).test_set
+        assert kept is not None
+        assert len(kept) == 1
 
 
 # ===================================================================

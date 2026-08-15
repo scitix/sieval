@@ -18,6 +18,7 @@ import anyio
 import pytest
 import yaml
 
+from sieval.cli._filter_spec import DIGEST_KEY, compute_values_digest
 from sieval.cli.leaderboard.session import (
     _NONMATCH_RUNNER_KEYS,
     _STRICT_RUNNER_KEYS,
@@ -1151,6 +1152,104 @@ class TestEvalSessionConfigLoading:
             runner._init_runner()
 
         assert multi_runner_cls.call_args.kwargs["deterministic"] is True
+
+
+# ===================================================================
+# filter values_file: pinned into the config the resume gate compares
+# ===================================================================
+class TestFilterValuesFilePinning:
+    """The selection lives outside the config, so the config must pin it.
+
+    ``effective_config.yaml`` records ``values_file`` as a path. Without a
+    digest beside it two runs whose persisted configs compare equal can score
+    different sample sets, and ``--resume`` accepts the second — the failure is
+    silent, which is what makes it worth a test at this level rather than a
+    unit test of the digest helper alone.
+    """
+
+    CONFIG = """
+result_dir: {result_dir}
+datasets:
+  curated:
+    class: fake.Dataset
+    operations:
+      - filter: {{by: id, values_file: picked.json}}
+"""
+
+    def _session(self, tmp_path, contents, *, result_dir="out"):
+        (tmp_path / "picked.json").write_text(contents, encoding="utf-8")
+        config_path = _write_yaml_config(
+            tmp_path,
+            "eval.yaml",
+            self.CONFIG.format(result_dir=str(tmp_path / result_dir)),
+        )
+        return EvalSession(config_path=str(config_path))
+
+    def _op(self, session):
+        return session._reified_config["datasets"]["curated"]["operations"][0]["filter"]
+
+    def test_the_digest_reaches_the_persisted_config(self, tmp_path):
+        # _reified_config is what _persist_effective_config dumps, so this is
+        # the view the resume gate compares.
+        session = self._session(tmp_path, '["a", "b"]')
+        assert self._op(session)[DIGEST_KEY] == compute_values_digest(b'["a", "b"]')
+
+    def test_the_path_is_still_stored_verbatim(self, tmp_path):
+        # Portability is why the path is not resolved: effective_config.yaml
+        # has to stay meaningful on another machine.
+        session = self._session(tmp_path, '["a"]')
+        assert self._op(session)["values_file"] == "picked.json"
+
+    def test_editing_the_file_changes_the_persisted_config(self, tmp_path):
+        # The gate compares config bodies. Before this pin both bodies were
+        # byte-identical while the selection differed.
+        before = self._op(self._session(tmp_path, '["a", "b"]'))
+        after = self._op(self._session(tmp_path, '["a"]'))
+        assert before != after
+        assert before[DIGEST_KEY] != after[DIGEST_KEY]
+
+    def test_resume_aborts_when_the_values_file_changed(self, tmp_path):
+        # End to end through the real gate: persist, edit the file, resume.
+        session = self._session(tmp_path, '["a", "b"]')
+        anyio.run(session._persist_effective_config)
+
+        resumed = self._session(tmp_path, '["a"]')
+        resumed.resume_override = True
+        with pytest.raises(RuntimeError, match="does not match current invocation"):
+            anyio.run(resumed._persist_effective_config)
+
+    def test_resume_is_accepted_when_the_values_file_is_untouched(self, tmp_path):
+        # The other half: an unchanged file must not start failing resumes.
+        session = self._session(tmp_path, '["a", "b"]')
+        anyio.run(session._persist_effective_config)
+
+        resumed = self._session(tmp_path, '["a", "b"]')
+        resumed.resume_override = True
+        anyio.run(resumed._persist_effective_config)
+
+    def test_rerunning_a_persisted_config_verifies_its_own_digest(self, tmp_path):
+        # `sieval run effective_config.yaml` after the values file moved: the
+        # digest it carries is checked rather than silently re-pinned.
+        session = self._session(tmp_path, '["a", "b"]')
+        anyio.run(session._persist_effective_config)
+        persisted = Path(str(tmp_path / "out")) / "effective_config.yaml"
+        (tmp_path / "out" / "picked.json").write_text('["a"]', encoding="utf-8")
+
+        with pytest.raises(ValueError, match="has changed since this config"):
+            EvalSession(config_path=str(persisted))
+
+    def test_a_missing_values_file_is_reported_at_load(self, tmp_path):
+        config_path = _write_yaml_config(
+            tmp_path, "eval.yaml", self.CONFIG.format(result_dir=str(tmp_path / "out"))
+        )
+        with pytest.raises(ValueError, match="'values_file' not found"):
+            EvalSession(config_path=str(config_path))
+
+    def test_the_read_rechecks_the_digest(self, tmp_path):
+        # Closes the window between the load-time read and the apply-time one.
+        session = self._session(tmp_path, '["a"]')
+        with pytest.raises(ValueError, match="changed while the run was starting"):
+            session._read_filter_values("picked.json", "curated", "sha256:" + "0" * 64)
 
 
 # ===================================================================

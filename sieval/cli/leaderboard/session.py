@@ -25,6 +25,14 @@ from loguru import logger
 from packaging.version import InvalidVersion, Version
 
 from sieval import __version__
+from sieval.cli._filter_spec import (
+    DIGEST_KEY,
+    check_by,
+    check_values_source,
+    compute_values_digest,
+    pin_values_files,
+    resolve_values_path,
+)
 from sieval.cli.leaderboard.card import AlignmentCard, load_card
 from sieval.cli.resolution import (
     TASK_MODEL_ROLES,
@@ -1122,6 +1130,13 @@ class EvalSession:
             model=model_override,
             result_dir=result_dir_override,
         )
+        # Pin every `filter` values_file into the config before it is copied,
+        # so the digest reaches BOTH the persisted view (and therefore the
+        # --resume comparison) and the runtime view below. It has to happen
+        # here rather than where the operation runs: `arun` persists before
+        # `_prepare_execution`, so by the time a dataset op is applied the
+        # comparison the digest exists for has already been made.
+        pin_values_files(reified, self.config_path.parent)
         self._reified_config: dict[str, Any] = copy.deepcopy(reified)
 
         # Runtime view = reified + the legacy external adapter (mutates
@@ -3091,30 +3106,18 @@ class EvalSession:
                 case "filter":
                     by_spec = op_args.get("by")
                     split = op_args.get("split", "test")
-                    if by_spec is None:
-                        raise ValueError(
-                            f"Dataset '{dataset_name}': 'filter' requires 'by'"
-                        )
                     by = self._resolve_filter_by(by_spec, dataset_name)
-                    # Presence, not truthiness: `value: 0` and `value: false` are
-                    # legitimate column values and must not read as "omitted".
-                    has_value = "value" in op_args
+                    problems = check_values_source(op_args)
+                    if problems:
+                        raise ValueError(f"Dataset '{dataset_name}': {problems[0]}")
                     values_file = op_args.get("values_file")
-                    if has_value == (values_file is not None):
-                        raise ValueError(
-                            f"Dataset '{dataset_name}': 'filter' requires exactly "
-                            f"one of 'value' or 'values_file'"
-                        )
                     if values_file is not None:
-                        value = self._read_filter_values(values_file, dataset_name)
+                        value = self._read_filter_values(
+                            values_file, dataset_name, op_args.get(DIGEST_KEY)
+                        )
                     else:
                         value = op_args["value"]
                     require_all = op_args.get("require_all", False)
-                    if not isinstance(require_all, bool):
-                        raise ValueError(
-                            f"Dataset '{dataset_name}': 'filter' 'require_all' "
-                            f"must be a boolean; got {require_all!r}"
-                        )
                     dataset = dataset.filter(
                         by, value, require_all=require_all, split=split
                     )
@@ -3211,39 +3214,29 @@ class EvalSession:
         ``by: {callable: 'pkg.module.fn'}`` a derived one — the config spelling
         of the callable a Python caller would pass directly, so the two surfaces
         can express the same selections.
+
+        The shape check is :func:`~sieval.cli._filter_spec.check_by`, shared with
+        ``cli.validation``; only the resolution below is this surface's own.
         """
+        problem = check_by(by_spec)
+        if problem is not None:
+            raise ValueError(f"Dataset '{dataset_name}': {problem}")
         if isinstance(by_spec, str):
             return by_spec
         if isinstance(by_spec, list):
-            if not by_spec or not all(isinstance(col, str) for col in by_spec):
-                raise ValueError(
-                    f"Dataset '{dataset_name}': 'filter' 'by' as a list must "
-                    f"name one or more columns as strings; got {by_spec!r}"
-                )
             return cast(list[str], by_spec)
-        if isinstance(by_spec, dict):
-            mapping = cast(dict[object, object], by_spec)
-            spec = mapping.get("callable")
-            if set(mapping) != {"callable"} or not isinstance(spec, str):
-                raise ValueError(
-                    f"Dataset '{dataset_name}': 'filter' 'by' as a mapping takes "
-                    f"exactly one key, 'callable', naming a dotted path; "
-                    f"got {by_spec!r}"
-                )
-            try:
-                return resolve_key_function(spec)
-            except (ValueError, ImportError, AttributeError) as exc:
-                raise ValueError(
-                    f"Dataset '{dataset_name}': 'filter' 'by' callable "
-                    f"{spec!r} could not be resolved: {exc}"
-                ) from exc
-        raise ValueError(
-            f"Dataset '{dataset_name}': 'filter' 'by' must be a column name, a "
-            f"list of column names, or {{callable: 'pkg.module.fn'}}; "
-            f"got {by_spec!r}"
-        )
+        spec = cast(dict[str, str], by_spec)["callable"]
+        try:
+            return resolve_key_function(spec)
+        except (ValueError, ImportError, AttributeError) as exc:
+            raise ValueError(
+                f"Dataset '{dataset_name}': 'filter' 'by' callable "
+                f"{spec!r} could not be resolved: {exc}"
+            ) from exc
 
-    def _read_filter_values(self, values_file: object, dataset_name: str) -> list:
+    def _read_filter_values(
+        self, values_file: object, dataset_name: str, expected_digest: object = None
+    ) -> list:
         """The accepted values a ``filter`` operation's ``values_file`` names.
 
         Reading happens here rather than in :meth:`Dataset.filter` so the
@@ -3254,6 +3247,12 @@ class EvalSession:
         values (so a map from id to whatever metadata produced the selection can
         be used as-is). Anything else is read as one value per line, with blanks
         and ``#`` comments skipped.
+
+        *expected_digest* is the ``values_digest`` pinned into the config at load
+        time. Re-checking it here closes the window between that read and this
+        one: the digest recorded next to a run's results then describes the bytes
+        the run actually selected on, not merely the bytes that were there when
+        the config was parsed.
         """
         if not isinstance(values_file, str):
             raise ValueError(
@@ -3263,14 +3262,21 @@ class EvalSession:
         # Resolved against the config that named it, and stored verbatim, so
         # ``effective_config.yaml`` stays portable across machines — the same
         # rule ``alignment.card`` follows.
-        path = Path(values_file)
-        if not path.is_absolute():
-            path = (self.config_path.parent / path).resolve()
+        path = resolve_values_path(values_file, self.config_path.parent)
         if not path.is_file():
             raise ValueError(
                 f"Dataset '{dataset_name}': 'filter' 'values_file' not found: {path}"
             )
-        text = path.read_text(encoding="utf-8")
+        data = path.read_bytes()
+        if expected_digest is not None:
+            digest = compute_values_digest(data)
+            if digest != expected_digest:
+                raise ValueError(
+                    f"Dataset '{dataset_name}': 'filter' 'values_file' {path} "
+                    f"changed while the run was starting ({DIGEST_KEY} pinned "
+                    f"{expected_digest}, the file is now {digest})"
+                )
+        text = data.decode("utf-8")
         if path.suffix == ".json":
             try:
                 payload = json.loads(text)

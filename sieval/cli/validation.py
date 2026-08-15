@@ -18,6 +18,7 @@ from typing import Any, NotRequired, TypedDict, cast
 
 import yaml
 
+from sieval.cli._filter_spec import check_by, check_values_source
 from sieval.cli.leaderboard.session import RootConfigDict
 from sieval.cli.resolution import (
     binding_resource_argument_paths,
@@ -415,48 +416,19 @@ def _validate_filter_args(
     imports are all questions for the session, which has the dataset and the
     config's directory. What is worth catching here is a config that could not
     run whatever the data turned out to be.
-    """
-    by = op_args.get("by")
-    if by is None:
-        result.errors.append(f"Dataset '{dataset_name}': 'filter' requires 'by'")
-    elif isinstance(by, list):
-        if not by or not all(isinstance(col, str) for col in by):
-            result.errors.append(
-                f"Dataset '{dataset_name}': 'filter' 'by' as a list must name "
-                f"one or more columns as strings; got {by!r}"
-            )
-    elif isinstance(by, dict):
-        if set(by) != {"callable"} or not isinstance(by.get("callable"), str):
-            result.errors.append(
-                f"Dataset '{dataset_name}': 'filter' 'by' as a mapping takes "
-                f"exactly one key, 'callable', naming a dotted path; got {by!r}"
-            )
-    elif not isinstance(by, str):
-        result.errors.append(
-            f"Dataset '{dataset_name}': 'filter' 'by' must be a column name, a "
-            f"list of column names, or {{callable: 'pkg.module.fn'}}; got {by!r}"
-        )
 
-    # Presence, not truthiness: `value: 0` and `value: false` are legitimate
-    # column values and must not read as "omitted".
-    has_value = "value" in op_args
-    has_file = op_args.get("values_file") is not None
-    if has_value == has_file:
-        result.errors.append(
-            f"Dataset '{dataset_name}': 'filter' requires exactly one of "
-            f"'value' or 'values_file'"
-        )
-    if has_file and not isinstance(op_args["values_file"], str):
-        result.errors.append(
-            f"Dataset '{dataset_name}': 'filter' 'values_file' must be a path; "
-            f"got {op_args['values_file']!r}"
-        )
-    require_all = op_args.get("require_all")
-    if require_all is not None and not isinstance(require_all, bool):
-        result.errors.append(
-            f"Dataset '{dataset_name}': 'filter' 'require_all' must be a "
-            f"boolean; got {require_all!r}"
-        )
+    The questions themselves live in :mod:`sieval.cli._filter_spec`, shared with
+    the session that applies the operation. The difference between the surfaces
+    is what they do with an answer: every problem is collected here, where the
+    session raises on the first.
+    """
+    problem = check_by(op_args.get("by"))
+    if problem is not None:
+        result.errors.append(f"Dataset '{dataset_name}': {problem}")
+    result.errors.extend(
+        f"Dataset '{dataset_name}': {problem}"
+        for problem in check_values_source(op_args)
+    )
 
 
 def _validate_tasks(cfg: dict, result: ValidationResult) -> None:
