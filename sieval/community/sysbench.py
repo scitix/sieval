@@ -15,7 +15,9 @@ SysBench (arXiv:2408.10943, "Can Large Language Models Follow System Messages?")
 scores a multi-turn reply against the turn's checklist of atomic constraints: a
 grader LLM answers 是/否 per constraint, and the three published rates nest —
 
-* **CSR** constraint satisfaction rate, the mean per-turn fraction of constraints met;
+* **CSR** constraint satisfaction rate, the fraction of *constraints* met, pooled over
+  every constraint in the run rather than averaged over turns — see
+  :func:`aggregate_metrics` for why the two differ and which one Table 2 is;
 * **ISR** instruction satisfaction rate, the fraction of turns meeting *every* one;
 * **SSR** session *stability* rate — the mean normalised count of consecutive turns,
   from the start of a session, that met every constraint. Not "sessions whose turns
@@ -65,8 +67,6 @@ licensed by that measurement, not by the defect's existence.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
-
-from __future__ import annotations
 
 import re
 from collections import defaultdict
@@ -191,17 +191,20 @@ def parse_verdict(text: str, criteria_ids: Sequence[str]) -> dict[str, bool | No
 
     A constraint the reply did not resolve maps to ``None``, never to ``False``.
     """
-    block = text
-    # The LAST block wins, not the first: the requested output format is quoted in
-    # the prompt, so a grader that restates it before answering emits a decoy
-    # `评判结果` whose placeholder verdicts parse as nothing. Anchoring on the first
-    # match reads the decoy and scores the whole turn unresolved; a trailing restatement
-    # of a verdict the grader already gave is the same verdict either way.
-    blocks = _VERDICT_BLOCK.findall(text)
-    if blocks:
-        block = blocks[-1]
-    found = {str(cid): (v in _PASS) for cid, v in _YESNO.findall(block)}
-    return {str(cid): found.get(str(cid)) for cid in criteria_ids}
+    # Blocks are read LAST to FIRST, and the first one that resolves anything wins.
+    # Both orderings occur and neither is safe alone: the requested output format is
+    # quoted in the prompt, so a grader that restates it *before* answering emits a
+    # decoy `评判结果` whose placeholder verdicts parse as nothing (anchoring on the
+    # first match reads the decoy and scores the whole turn unresolved), while a grader
+    # that answers and *then* restates the format emits the decoy last. Taking the last
+    # block unconditionally loses that second turn entirely. Skipping a block that
+    # yields no verdict handles both, and a trailing restatement of a verdict already
+    # given is the same verdict either way.
+    for block in reversed(_VERDICT_BLOCK.findall(text) or [text]):
+        found = {str(cid): (v in _PASS) for cid, v in _YESNO.findall(block)}
+        if any(str(cid) in found for cid in criteria_ids):
+            return {str(cid): found.get(str(cid)) for cid in criteria_ids}
+    return {str(cid): None for cid in criteria_ids}
 
 
 def aggregate_turn(verdicts: dict[str, bool | None]) -> tuple[float, bool, int, int]:
@@ -222,17 +225,60 @@ def aggregate_turn(verdicts: dict[str, bool | None]) -> tuple[float, bool, int, 
     )
 
 
+def session_prefixes(
+    turns: Iterable[tuple[int, int, int, int]],
+    session_n_turns: Mapping[int, int] | None = None,
+) -> dict[int, tuple[int, int]]:
+    """Per session, ``(leading run of fully-satisfied turns, declared turn count)``.
+
+    The one place the prefix is defined. ``ssr`` is the mean of ``prefix / declared``
+    over these, and Table 4's per-position ``R_t`` columns are the fraction of them
+    with ``prefix >= t`` — two readings of one quantity, which is why they are not
+    computed twice. ``turns`` is as :func:`aggregate_metrics` takes it.
+    """
+    full_by_session: dict[int, dict[int, bool]] = defaultdict(dict)
+    for sid, index, n_satisfied, n_criteria in turns:
+        full_by_session[sid][index] = n_criteria > 0 and n_satisfied == n_criteria
+    declared = dict(session_n_turns or {})
+    prefixes: dict[int, tuple[int, int]] = {}
+    for sid, by_index in full_by_session.items():
+        # `or max(...)`: a 0 or missing declared count would divide by zero or
+        # over-credit; the turns actually seen are the only honest fallback.
+        n_declared = declared.get(sid) or max(by_index)
+        prefix = 0
+        # A gap stops the run as surely as a failure does -- `.get` is None there.
+        while by_index.get(prefix + 1):
+            prefix += 1
+        prefixes[sid] = (prefix, n_declared)
+    return prefixes
+
+
 def aggregate_metrics(
-    turns: Iterable[tuple[int, int, float, bool]],
+    turns: Iterable[tuple[int, int, int, int]],
     session_n_turns: Mapping[int, int] | None = None,
 ) -> dict[str, float]:
     """Pool per-turn results into the paper's three published rates.
 
-    ``turns`` is ``(session_id, turn_index, csr, all_satisfied)`` per turn, with
-    ``turn_index`` 1-based. ``session_n_turns`` gives each session's **declared** turn
-    count; a session missing from it falls back to the highest index seen for it.
+    ``turns`` is ``(session_id, turn_index, n_satisfied, n_criteria)`` per turn, with
+    ``turn_index`` 1-based. Raw counts, not a per-turn rate: which of the two averages
+    below comes out is decided here, and a rate has already thrown away what decides it.
+    ``session_n_turns`` gives each session's **declared** turn count; a session missing
+    from it falls back to the highest index seen for it.
 
-    CSR and ISR are means over turns, matching paper §3.3's ``1/mn`` outer average.
+    **CSR pools over constraints; it is not the mean of the per-turn rates.** Turns
+    carry between 1 and 11 constraints (mean 2.38 on the released set), so
+    ``Σ satisfied / Σ constraints`` and ``mean(satisfied/constraints)`` are different
+    numbers — up to ~1.9 points apart on published runs, enough to swap two adjacent
+    rows of Table 2. The published tables are the former: upstream generates them in
+    ``plot/tab6_csr_full.py`` (``res[i] = column[1] / column[0]``, i.e. 遵循数量 over
+    约束总量 from the per-constraint-type sheet), wired to the reported CSR by
+    ``plot/eval_output.py``. Paper §3.3's ``1/mn`` prefactor describes the ISR/SSR
+    outer average over turns; reading it onto CSR as well produces the macro variant,
+    which is returned as ``csr_macro`` rather than dropped — it is the finer signal
+    when turns are the unit of interest, it is just not what Table 2 reports.
+
+    ISR *is* a mean over turns: upstream averages the per-turn all-satisfied indicator
+    ``是否可用`` (``plot/tab3_align.py``), so its unit is the turn, not the constraint.
 
     **SSR is not a session-level all-or-nothing rate.** §3.3 defines it as
     ``(1/mn) Σ_i Σ_α (⋀_{j≤α} ⋀_k s_ijk)`` — a sum over *every* prefix length α, so it
@@ -251,25 +297,25 @@ def aggregate_metrics(
     turns = list(turns)
     n = len(turns)
     if n == 0:
-        return {"csr": 0.0, "isr": 0.0, "ssr": 0.0, "n_turns": 0.0, "n_sessions": 0.0}
-    full_by_session: dict[int, dict[int, bool]] = defaultdict(dict)
-    for sid, index, _csr, full in turns:
-        full_by_session[sid][index] = full
-    declared = dict(session_n_turns or {})
-    ssr = 0.0
-    for sid, by_index in full_by_session.items():
-        # `or max(...)`: a 0 or missing declared count would divide by zero or
-        # over-credit; the turns actually seen are the only honest fallback.
-        n_declared = declared.get(sid) or max(by_index)
-        prefix = 0
-        # A gap stops the run as surely as a failure does -- `.get` is None there.
-        while by_index.get(prefix + 1):
-            prefix += 1
-        ssr += prefix / n_declared
+        return {
+            "csr": 0.0,
+            "csr_macro": 0.0,
+            "isr": 0.0,
+            "ssr": 0.0,
+            "n_turns": 0.0,
+            "n_sessions": 0.0,
+            "n_criteria": 0.0,
+        }
+    prefixes = session_prefixes(turns, session_n_turns)
+    ssr = sum(prefix / n_declared for prefix, n_declared in prefixes.values())
+    n_criteria = sum(t[3] for t in turns)
+    n_satisfied = sum(t[2] for t in turns)
     return {
-        "csr": sum(t[2] for t in turns) / n,
-        "isr": sum(1 for t in turns if t[3]) / n,
-        "ssr": ssr / len(full_by_session),
+        "csr": n_satisfied / n_criteria if n_criteria else 0.0,
+        "csr_macro": sum(t[2] / t[3] for t in turns if t[3]) / n,
+        "isr": sum(1 for t in turns if t[3] > 0 and t[2] == t[3]) / n,
+        "ssr": ssr / len(prefixes),
         "n_turns": float(n),
-        "n_sessions": float(len(full_by_session)),
+        "n_sessions": float(len(prefixes)),
+        "n_criteria": float(n_criteria),
     }

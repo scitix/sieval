@@ -8,7 +8,11 @@ import json
 
 import pytest
 
-from sieval.community.sysbench import build_judge_prompt, parse_verdict
+from sieval.community.sysbench import (
+    aggregate_metrics,
+    build_judge_prompt,
+    parse_verdict,
+)
 from sieval.core.tasks import (
     GRADER_OUTPUT_KEY,
     TaskContext,
@@ -440,9 +444,14 @@ def test_report_nests_the_three_published_rates():
         ),
     ]
     m = _report(judgements)
-    # CSR averages turns: (1 + .5 + 1 + 1) / 4.
-    assert m["csr"] == pytest.approx(87.5)
-    # ISR counts turns satisfying everything: 3 of 4.
+    # CSR pools over CONSTRAINTS: 5 satisfied of 6, not the mean of the per-turn
+    # rates. The fixture's turns carry 1 and 2 constraints precisely so the two
+    # disagree -- averaging turns gives (1 + .5 + 1 + 1) / 4 = 87.5, which is
+    # `csr_macro` and is NOT what the paper's tables report.
+    assert m["csr"] == pytest.approx(5 / 6 * 100)
+    assert m["csr_macro"] == pytest.approx(87.5)
+    assert m["n_criteria_graded"] == 6
+    # ISR counts turns satisfying everything: 3 of 4. Its unit really is the turn.
     assert m["isr"] == pytest.approx(75.0)
     # SSR averages over PREFIX lengths, not over whole sessions (paper SS3.3):
     # session 1 keeps turn 1 and loses turn 2 -> 1/2; session 2 keeps both -> 2/2.
@@ -632,6 +641,100 @@ def test_a_grader_that_restates_the_asked_format_first_is_still_read():
     )
     assert parse_verdict(decoy, ["1"]) == {"1": None}, "the prompt must not self-parse"
     assert parse_verdict(decoy + "\n" + _reply({1: "是"}), ["1"]) == {"1": True}
+
+
+def test_a_grader_that_restates_the_asked_format_last_is_still_read():
+    """The mirror of the decoy-first case: answer, then echo the format.
+
+    Anchoring on the LAST block unconditionally reads the trailing echo, whose
+    placeholder verdicts parse as nothing, and the whole turn goes unresolved --
+    the same grader-shaped zero the first-block anchor produces, just for the
+    opposite reply shape. Only skipping blocks that resolve nothing handles both.
+    """
+    criteria = _criteria((1, "必须用中文回答", "格式约束"))
+    echo = build_judge_prompt(
+        [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "U"},
+            {"role": "assistant", "content": "A"},
+        ],
+        criteria,
+    )
+    assert parse_verdict(_reply({1: "是"}) + "\n" + echo, ["1"]) == {"1": True}
+
+
+def test_csr_pools_over_constraints_while_isr_averages_over_turns():
+    """The two denominators, on turns of unequal constraint count.
+
+    Upstream's published CSR comes from ``plot/tab6_csr_full.py``, which divides
+    遵循数量 by 约束总量 -- one constraint, one vote. Averaging the per-turn rates
+    instead over-weights a 1-constraint turn against an 11-constraint one; on
+    published runs the two are up to ~1.9 points apart, which is enough to swap
+    adjacent rows of Table 2. ISR keeps the turn as its unit, so it is unaffected.
+    """
+    # Two turns: 1 of 1, then 1 of 5. Pooled 2/6 = 33.3; averaged (1 + .2)/2 = 60.0.
+    turns = [(1, 1, 1, 1), (1, 2, 1, 5)]
+    m = aggregate_metrics(turns, {1: 2})
+    assert m["csr"] == pytest.approx(2 / 6)
+    assert m["csr_macro"] == pytest.approx(0.6)
+    assert m["n_criteria"] == 6
+    # ISR is a turn-level fact and the same either way: turn 1 met all 1 of its
+    # constraints, turn 2 met 1 of 5. One turn of two, whatever the widths are.
+    assert m["isr"] == pytest.approx(0.5)
+
+
+def test_csr_and_the_constraint_type_breakdown_come_from_one_total():
+    """They are the same table in upstream -- ``tab6_csr_full`` reads both columns.
+
+    So the type cells must pool to the headline. This is the invariant that a
+    turn-averaged headline breaks: it would report 87.5 here while its own type
+    breakdown pooled to 83.3, with nothing in the report saying which is CSR.
+    """
+    judgements = [
+        _judged_session(
+            1,
+            [
+                ({"1": True}, {"1": "格式约束"}, "align"),
+                (
+                    {"1": True, "2": False},
+                    {"1": "格式约束", "2": "内容约束"},
+                    "misalign",
+                ),
+            ],
+        )
+    ]
+    m = _report(judgements)
+    satisfied = m["csr_type_format"] / 100 * 2 + m["csr_type_content"] / 100 * 1
+    assert m["csr"] == pytest.approx(satisfied / 3 * 100)
+
+
+def test_the_cumulative_turn_series_is_table_4s_r_columns_and_averages_to_ssr():
+    """``turn_{t}_isr`` is position *t* alone; ``_isr_cumulative`` is Table 4's R_t.
+
+    Published GPT-4o R1..R5 is 82.8/66.2/51.2/40.4/31.6 -- a decay the
+    per-position series does not show, so reading one against the other's
+    published column is a 40-point error rather than a rounding one.
+    """
+    ok = ({"1": True}, {"1": "格式约束"}, "align")
+    bad = ({"1": False}, {"1": "格式约束"}, "align")
+    # Session 1 fails at turn 2 then recovers; session 2 is perfect throughout.
+    m = _report(
+        [
+            _judged_session(1, [ok, bad, ok]),
+            _judged_session(2, [ok, ok, ok]),
+        ]
+    )
+    # Position 3 alone: both sessions satisfied it.
+    assert m["turn_3_isr"] == pytest.approx(100.0)
+    # Cumulative: only session 2 has its first three turns all satisfied.
+    assert m["turn_1_isr_cumulative"] == pytest.approx(100.0)
+    assert m["turn_2_isr_cumulative"] == pytest.approx(50.0)
+    assert m["turn_3_isr_cumulative"] == pytest.approx(50.0)
+    # Upstream reaches SSR by averaging exactly this series (`plot/tab4_turn.py`
+    # sums the same indicator it prints as R_t), so the two cannot drift apart.
+    assert m["ssr"] == pytest.approx(
+        sum(m[f"turn_{t}_isr_cumulative"] for t in (1, 2, 3)) / 3
+    )
 
 
 def test_the_judge_prompt_carries_the_system_prompt_criteria_and_both_turns():

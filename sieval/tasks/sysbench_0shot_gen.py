@@ -3,12 +3,15 @@
 SysBench (arXiv:2408.10943) asks whether a model keeps obeying its **system prompt**
 across a 5-turn conversation. Each turn carries a checklist of atomic constraints drawn
 from the system prompt, and a grader LLM answers 是/否 per constraint. The three
-published rates nest: **CSR** (mean per-turn fraction of constraints met), **ISR**
-(turns meeting every one), **SSR** (the mean normalised count of consecutive turns,
-from the session's start, that met every one — *not* the fraction of sessions whose
-turns all do; see :func:`~sieval.community.sysbench.aggregate_metrics`). CSR is the
-headline; ISR and SSR fall off faster, being conjunctions over ~2.4 constraints and
-over a growing prefix.
+published rates nest: **CSR** (constraints met, pooled over every constraint in the
+run — *not* the mean of the per-turn rates, which turns of unequal constraint count
+make a different number), **ISR** (turns meeting every one), **SSR** (the mean
+normalised count of consecutive turns, from the session's start, that met every one —
+*not* the fraction of sessions whose turns all do). Both readings that the paper's
+prose leaves open are settled in
+:func:`~sieval.community.sysbench.aggregate_metrics` against the scripts that
+generated the published tables. CSR is the headline; ISR and SSR fall off faster,
+being conjunctions over ~2.4 constraints and over a growing prefix.
 
 **One sample is one whole session.** ``infer`` walks the five turns in order, appending
 the model's own reply before sending the next user turn — upstream's
@@ -47,21 +50,22 @@ Deviations / by-design behavior worth knowing:
 * ``n`` is pinned to 1 and the task takes no ``n`` argument: a second sample would fork
   the conversation, and every later turn would have to be answered once per branch.
 * A turn whose request fails outright ends the walk instead of failing the session. The
-  turns already answered keep their verdicts; for the *means* — ``csr``, ``isr`` — the
-  unreached ones are then **absent**, not zero, so an infrastructure failure cannot read
-  as a model that stopped following its system prompt.
+  turns already answered keep their verdicts; for ``csr`` and ``isr`` the unreached ones
+  are then **absent** from the denominator, not zero, so an infrastructure failure
+  cannot read as a model that stopped following its system prompt.
   ``turn_{t}_n_turns`` counts the sessions that actually reached turn *t*.
-  ``ssr`` is the exception, and has to be: it measures a *prefix*, so an unreached turn
-  keeps the session's declared length as the denominator and simply shortens the run.
-  Dropping it there would let a failure at turn 3 of 5 report a perfect session.
+  ``ssr`` and ``turn_{t}_isr_cumulative`` are the exception, and have to be: they
+  measure a *prefix*, so an unreached turn keeps the session's declared length as the
+  denominator and simply shortens the run. Dropping it there would let a failure at
+  turn 3 of 5 report a perfect session.
 * A constraint with no readable verdict scores **not satisfied** but is counted in
   ``n_grader_unparsed``; a turn where *nothing* parsed is counted again in
   ``n_grader_unparsed_turns``. Upstream instead retries the grader up to 10 times
   and lets the session fail, so where upstream loses 5 turns this loses 1
-  constraint — and says so. ``csr`` counts an ungradeable turn as 0.0, matching
-  upstream's denominator, which makes it a **floor**; ``csr_graded`` is the same
-  mean over turns actually graded and ``ungradeable_rate`` sizes the gap. Read all
-  three or a grader outage reads as a weaker model.
+  constraint — and says so. ``csr`` counts an unresolved constraint as unsatisfied,
+  matching upstream's denominator, which makes it a **floor**; ``csr_graded`` is the
+  same pooled rate over the turns actually graded and ``ungradeable_rate`` sizes the
+  gap. Read all three or a grader outage reads as a weaker model.
 * An empty response still goes to the grader: a SysBench constraint is frequently a
   prohibition ("不要提及…"), so short-circuiting an empty reply to zero would be a
   *different* claim from upstream's, which grades what it is given.
@@ -96,6 +100,7 @@ from sieval.community.sysbench import (
     aggregate_turn,
     build_judge_prompt,
     parse_verdict,
+    session_prefixes,
 )
 from sieval.core.models import ChatModel, Model, ModelOutput
 from sieval.core.tasks import (
@@ -181,8 +186,25 @@ _CONSTRAINT_TYPES = {
             "which is the paper's SS4.5 / Figure 5 ablation (GT history, turns "
             "independent), NOT its headline; the mode is named in the report. n is "
             "pinned to 1 — a second sample would fork the conversation. METRICS: "
-            "headline CSR (mean per-turn fraction of constraints satisfied), with "
-            "ISR (turns satisfying ALL) and SSR alongside. SSR IS NOT A "
+            "headline CSR, with ISR (turns satisfying ALL) and SSR alongside. "
+            "CSR IS POOLED OVER CONSTRAINTS, NOT AVERAGED OVER TURNS: turns carry "
+            "1-11 constraints (mean 2.38), so sum(satisfied)/sum(constraints) and "
+            "mean(satisfied/constraints) are different numbers. Paper SS3.3's 1/mn "
+            "prefactor describes the ISR/SSR outer average over turns; the published "
+            "CSR tables come from plot/tab6_csr_full.py, which reads 遵循数量 over "
+            "约束总量 off the per-constraint-type sheet (wired to the reported CSR by "
+            "plot/eval_output.py), and upstream's own shipped analysis workbooks "
+            "carry that division as their 遵循率 row (GPT-4o: 5183/5952 = 87.08, "
+            "published 87.1). MEASURED over the 14 shipped per-turn outputs: pooled "
+            "reproduces published CSR at 1dp for all 7 models whose workbook matches "
+            "its published run (87.080/86.542/85.013/78.999/78.881/64.247/61.626 vs "
+            "87.1/86.5/85.0/79.0/78.9/64.2/61.6); the turn-averaged variant "
+            "reproduces 0 of 14, sits up to 1.903 points off (mean 0.895), and "
+            "inverts two adjacent published pairs (Qwen2-72B vs GLM-4, GLM-4-9B vs "
+            "GPT-3.5). It is still reported, as csr_macro, because it is the finer "
+            "signal when the turn is the unit of interest. ISR and SSR over the same "
+            "7 reproduce at 1dp 5/7 and 6/7 (GLM-4's workbook disagrees with its own "
+            "published row on both). SSR IS NOT A "
             "SESSION-LEVEL ALL-OR-NOTHING RATE: paper SS3.3 defines it as (1/mn) "
             "summed over EVERY prefix length alpha, i.e. the mean normalised count "
             "of consecutive fully-satisfied turns from the session's start, which "
@@ -194,7 +216,10 @@ _CONSTRAINT_TYPES = {
             "denominator, so a walk that died at turn 3 cannot report a perfect "
             "session. Plus the paper's align/misalign split -- Table 3 reports ISR, "
             "so isr_align/isr_misalign are the comparable pair and csr_* is carried "
-            "beside them -- its six constraint types, and per-turn-position cells. "
+            "beside them -- its six constraint types, and per-turn-position cells in "
+            "both readings: turn_{t}_isr is that position on its own, while "
+            "turn_{t}_isr_cumulative is Table 4's R_t (sessions still unbroken "
+            "through turn t) and averages to ssr by construction. "
             "GRADING: one grader call per turn "
             "on the same cumulative message list the model saw; the judge prompt is "
             "byte-identical to upstream's get_eval_pattern, verified over all 2,500 "
@@ -221,9 +246,11 @@ _CONSTRAINT_TYPES = {
             "MEASUREMENT: upstream used GPT-4o and states no decoding settings; pin "
             "the grader, set temperature=0 where honoured, and name it beside every "
             "number. Every per-turn grader ModelOutput is persisted at "
-            "extra.grader_output. csr averages an ungradeable turn in as 0.0 "
-            "(upstream's denominator) so it is a FLOOR; read it with csr_graded and "
-            "ungradeable_rate. UPSTREAM DECLARES NO LICENSE — see the dataset "
+            "extra.grader_output. csr keeps an ungradeable turn's constraints in the "
+            "denominator with none of them satisfied (upstream's denominator) so it "
+            "is a FLOOR; read it with csr_graded — the same pooled rate over the "
+            "turns that were graded — and ungradeable_rate. UPSTREAM DECLARES NO "
+            "LICENSE — see the dataset "
             "module. Paper Table 2 (GPT-4o grader; 500 sessions / 2,500 turns / "
             "5,952 constraints) CSR/ISR/SSR: GPT-4o 87.1/76.4/54.4, "
             "GPT-4-Turbo-20240409 86.5/76.6/53.2, Claude-3-Opus 85.0/74.1/51.8, "
@@ -550,12 +577,17 @@ class SysBenchZeroShotGenTask(
     async def report(self, finals, fails):
         # Everything here derives from the persisted judgement records, so a result dir
         # can be re-reported without the model or the grader.
-        turns: list[tuple[int, int, float, bool]] = []
-        graded_turns: list[float] = []
-        # (csr, all_satisfied) per turn: the paper splits this axis by ISR (Table 3),
-        # and CSR is carried alongside because it is the finer of the two.
-        by_alignment: dict[str, list[tuple[float, bool]]] = defaultdict(list)
-        by_position: dict[int, list[tuple[float, bool]]] = defaultdict(list)
+        turns: list[tuple[int, int, int, int]] = []
+        # [satisfied constraints, total constraints] over turns actually graded.
+        graded: list[int] = [0, 0]
+        n_graded_turns = 0
+        # [satisfied, constraints, full turns, turns] per bucket. Raw counts, because
+        # `csr_*` pools over constraints and `isr_*` averages over turns -- the two
+        # denominators differ, so neither can be recovered from the other's rate.
+        # The paper splits this axis by ISR (Table 3); CSR is carried alongside
+        # because it is the finer of the two.
+        by_alignment: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0, 0])
+        by_position: dict[int, list[int]] = defaultdict(lambda: [0, 0, 0, 0])
         # Each session's DECLARED turn count, which is `ssr`'s denominator -- an
         # unreached turn must shorten the prefix, not leave the denominator.
         session_n_turns: dict[int, int] = {}
@@ -563,7 +595,6 @@ class SysBenchZeroShotGenTask(
         # different constraint counts, so the two differ.
         type_totals: dict[str, list[int]] = defaultdict(lambda: [0, 0])
         n_grader_unparsed = 0
-        n_criteria = 0
         unparsed_turns = 0
         history_modes: set[str] = set()
 
@@ -592,18 +623,24 @@ class SysBenchZeroShotGenTask(
                 types = turn.get("criterion_types") or {}
                 n_satisfied = int(turn.get("n_satisfied", 0))
                 turn_unparsed = int(turn.get("n_grader_unparsed", 0))
-                csr = n_satisfied / n_turn_criteria
                 full = n_satisfied == n_turn_criteria
 
-                turns.append((session_id, index, csr, full))
-                by_position[index].append((csr, full))
-                by_alignment[str(turn.get("alignment", ""))].append((csr, full))
-                n_criteria += n_turn_criteria
+                turns.append((session_id, index, n_satisfied, n_turn_criteria))
+                for bucket in (
+                    by_position[index],
+                    by_alignment[str(turn.get("alignment", ""))],
+                ):
+                    bucket[0] += n_satisfied
+                    bucket[1] += n_turn_criteria
+                    bucket[2] += full
+                    bucket[3] += 1
                 n_grader_unparsed += turn_unparsed
                 if turn_unparsed >= n_turn_criteria:
                     unparsed_turns += 1
                 else:
-                    graded_turns.append(csr)
+                    graded[0] += n_satisfied
+                    graded[1] += n_turn_criteria
+                    n_graded_turns += 1
                 for cid, verdict in verdicts.items():
                     bucket = type_totals[
                         _CONSTRAINT_TYPES.get(types.get(cid, ""), types.get(cid, ""))
@@ -615,23 +652,25 @@ class SysBenchZeroShotGenTask(
         n_turns = int(m["n_turns"])
         metrics: dict[str, float | str] = {
             "score": m["csr"] * 100,
+            # Pooled over constraints, which is what Table 2 reports -- NOT the mean
+            # of the per-turn rates, which turns of unequal constraint count make a
+            # different number (`csr_macro`, reported beside it).
             "csr": m["csr"] * 100,
+            "csr_macro": m["csr_macro"] * 100,
             "isr": m["isr"] * 100,
             "ssr": m["ssr"] * 100,
             "n_turns": float(n_turns),
             "n_sessions": m["n_sessions"],
-            "n_criteria_graded": float(n_criteria),
+            "n_criteria_graded": m["n_criteria"],
             # Grader format drift, kept out of the rate it would be invisible inside:
             # these constraints scored not-satisfied.
             "n_grader_unparsed": float(n_grader_unparsed),
             "n_grader_unparsed_turns": float(unparsed_turns),
             # `csr` counts an ungradeable turn as 0.0 -- upstream's denominator, so it
             # stays the headline -- which makes it a floor. These two say how far.
-            "csr_graded": (
-                (sum(graded_turns) / len(graded_turns) * 100) if graded_turns else 0.0
-            ),
+            "csr_graded": (graded[0] / graded[1] * 100) if graded[1] else 0.0,
             "ungradeable_rate": (
-                (n_turns - len(graded_turns)) / n_turns * 100 if n_turns else 0.0
+                (n_turns - n_graded_turns) / n_turns * 100 if n_turns else 0.0
             ),
             "fails": float(len(fails)),
             SCORE_KEY_FIELD: "csr",
@@ -657,27 +696,43 @@ class SysBenchZeroShotGenTask(
         # what upstream computes (`analysis_eval_results` appends the all-satisfied
         # indicator `是否可用` to its align buckets). `csr_*` is kept beside it because
         # it is the finer signal, but it is NOT the published column.
-        for alignment, cells in sorted(by_alignment.items()):
+        for alignment, (satisfied, criteria, full_turns, cells) in sorted(
+            by_alignment.items()
+        ):
             if alignment and cells:
-                metrics[f"csr_{alignment}"] = (
-                    sum(c[0] for c in cells) / len(cells) * 100
-                )
-                metrics[f"isr_{alignment}"] = (
-                    sum(1 for c in cells if c[1]) / len(cells) * 100
-                )
+                metrics[f"csr_{alignment}"] = satisfied / criteria * 100
+                metrics[f"isr_{alignment}"] = full_turns / cells * 100
 
         # Per-turn-position cells: SysBench's subject is how adherence decays across a
         # conversation, and the headline averages that decay away. Computed here rather
         # than through `aggregate_metrics`, which would also return an `ssr` over a
         # single position -- a prefix rate whose prefix is missing, i.e. meaningless.
-        for position, cells in sorted(by_position.items()):
-            metrics[f"turn_{position}_csr"] = (
-                sum(c[0] for c in cells) / len(cells) * 100
-            )
-            metrics[f"turn_{position}_isr"] = (
-                sum(1 for c in cells if c[1]) / len(cells) * 100
-            )
-            metrics[f"turn_{position}_n_turns"] = float(len(cells))
+        for position, (satisfied, criteria, full_turns, cells) in sorted(
+            by_position.items()
+        ):
+            metrics[f"turn_{position}_csr"] = satisfied / criteria * 100
+            # Turn *t* on its own, over the sessions that reached it. NOT Table 4's
+            # `R_t`, which is cumulative -- see `turn_{t}_isr_cumulative` below. The
+            # two diverge fast: upstream's shipped GPT-4o run reads 82.8/66.2/51.2/
+            # 40.4/31.6 cumulative (mean 54.4, its published SSR) against a
+            # per-position 82.8/77.2/74.0/74.8/73.0 that barely decays, so a run read
+            # against the wrong one looks like a different model.
+            metrics[f"turn_{position}_isr"] = full_turns / cells * 100
+            metrics[f"turn_{position}_n_turns"] = float(cells)
+
+        # Table 4's `R_t`: the fraction of sessions whose first *t* turns ALL satisfied
+        # every constraint -- upstream's `plot/tab4_turn.py`, which credits position
+        # `turn` only while `accmulated_turn == turn`. Denominator is the sessions
+        # declaring at least *t* turns, so a session that never had turn *t* is absent
+        # rather than counted against. `ssr` is the mean of this series when every
+        # session declares the same length, which is the released set's shape.
+        prefix_cells: dict[int, list[int]] = defaultdict(lambda: [0, 0])
+        for prefix, n_declared in session_prefixes(turns, session_n_turns).values():
+            for position in range(1, n_declared + 1):
+                prefix_cells[position][0] += position <= prefix
+                prefix_cells[position][1] += 1
+        for position, (hits, sessions) in sorted(prefix_cells.items()):
+            metrics[f"turn_{position}_isr_cumulative"] = hits / sessions * 100
 
         # Per constraint category, pooled over constraints rather than turns.
         for name, (satisfied, total) in sorted(type_totals.items()):
