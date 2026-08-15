@@ -2,7 +2,7 @@
 
 Four of the checkers vendored in :mod:`sieval.community.ifbench.instructions`
 grade something other than what their own instruction text asks for. This module
-holds a repaired subclass of each and the registry overlay that mounts them;
+holds a repaired version of each and the registry overlay that mounts them;
 :mod:`sieval.tasks.ifbench_0shot_gen_fixed` is the only caller.
 
 Nothing here changes what an item *asks*. Every repair is to the code that
@@ -10,20 +10,32 @@ decides whether an answer complied.
 
 **Why a separate module for one caller.** Not for sharing — it has exactly one
 importer, and `sieval/community/CLAUDE.md` is explicit that a one-caller helper
-belongs in its caller. It is here for import discipline: each repair subclasses
-its upstream checker, which is only sound if the upstream class is loaded when
-the subclass is defined, and `sieval/community/ifbench/instructions.py` pulls in
-NLTK and 2.3k lines of checker fork. `ifbench_0shot_gen` is asserted not to load
-any of that on import (``test_import_does_not_pull_evaluation_lib``) and the
-``_fixed`` task inherits the same obligation, so the subclasses cannot live at
-that module's scope. Private and underscore-prefixed so ``sieval/tasks``'s
-discovery scan skips it: it registers no task and must not look like one.
+belongs in its caller. It is here because the task module's entire claim is that
+it is the unqualified task plus *one* overridden method
+(``test_exactly_one_method_differs_from_the_unqualified_task``), and two hundred
+lines of surgery on vendored code — four defects, each owing its own statement —
+is not something that claim survives being read beside.
+
+**Registration must not pay for any of this.** ``import_all_tasks`` — what
+``scripts/sync_meta_index.py`` runs, and what CI runs it through — imports
+*every* module under ``sieval/tasks``, private ones included. The underscore
+keeps this module out of the task *index*; it does not keep it out of the
+*import scan*, so the discipline has to be kept by the code rather than by the
+filename. :mod:`sieval.community.ifbench.instructions` pulls in NLTK, a network
+fetch of NLTK's corpora, and a 2.3k-line checker fork, so it is imported inside
+:func:`_fixed_checker_classes` and never at module scope: importing this module
+is free, and *naming a repaired checker* is what costs.
+:mod:`sieval.tasks._math_verify` keeps the same rule for the same reason.
 
 **Subclasses rather than replacements.** ``build_description``'s defaults and
 validation, ``get_instruction_args`` and the description pattern all stay
 upstream's *by construction* rather than by review, so a repair cannot silently
 change what the item says while claiming to change only how it is graded. Each
-overrides exactly ``check_following``.
+overrides exactly ``check_following``. Subclassing needs the upstream class
+loaded when the subclass is *defined*, which is why the four class statements
+live inside :func:`_fixed_checker_classes` rather than at module scope; the
+verdict logic each one delegates to stays out here, where it is read, typed and
+tested without the fork present.
 
 The four:
 
@@ -94,14 +106,11 @@ passes, two blank-line-separated paragraphs still fail.
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
+import functools
 import re
 import string
 import unicodedata
 from typing import override
-
-from sieval.community.ifbench import instructions as _upstream
-from sieval.community.ifbench import instructions_util
-from sieval.community.ifbench.instructions_registry import INSTRUCTION_DICT
 
 #: Trailing characters that close a sentence without ending it — a quoted
 #: declarative is still a declarative. Deliberately not "all punctuation":
@@ -144,71 +153,101 @@ def _is_punct_token(token: str) -> bool:
     )
 
 
-class IndentStairsCheckerFixed(_upstream.IndentStairsChecker):
+def _check_indent_stairs(value: str) -> bool:
     """``format:line_indent``, without the mutate-while-iterating blank removal."""
-
-    @override
-    def check_following(self, value):
-        lines = [line for line in value.split("\n") if line.strip()]
-        for current, following in zip(lines, lines[1:], strict=False):
-            current_indent = len(current) - len(current.lstrip(" "))
-            next_indent = len(following) - len(following.lstrip(" "))
-            if next_indent <= current_indent:
-                return False
-        return True
+    lines = [line for line in value.split("\n") if line.strip()]
+    for current, following in zip(lines, lines[1:], strict=False):
+        current_indent = len(current) - len(current.lstrip(" "))
+        next_indent = len(following) - len(following.lstrip(" "))
+        if next_indent <= current_indent:
+            return False
+    return True
 
 
-class SentTypeRatioCheckerFixed(_upstream.SentTypeRatioChecker):
-    """``ratio:sentence_type`` counting quoted declaratives, and not vacuously true.
+def _check_sent_type_ratio(value: str) -> bool:
+    """``ratio:sentence_type`` counting quoted sentences, and not vacuously true.
 
     The 2:1 test itself is untouched: exact is what the instruction says.
     """
+    from sieval.community.ifbench import instructions_util
 
-    @override
-    def check_following(self, value):
-        sentences = instructions_util.split_into_sentences(value)
-        terminals = [_terminal(sentence) for sentence in sentences]
-        declarative_count = sum(1 for t in terminals if t == ".")
-        interrogative_count = sum(1 for t in terminals if t == "?")
-        # `interrogative_count >= 1` is the false-pass repair: without it an
-        # all-exclamatory response satisfies a ratio it never engaged with.
-        return interrogative_count >= 1 and declarative_count == 2 * interrogative_count
+    sentences = instructions_util.split_into_sentences(value)
+    terminals = [_terminal(sentence) for sentence in sentences]
+    declarative_count = sum(1 for t in terminals if t == ".")
+    interrogative_count = sum(1 for t in terminals if t == "?")
+    # `interrogative_count >= 1` is the false-pass repair: without it an
+    # all-exclamatory response satisfies a ratio it never engaged with.
+    return interrogative_count >= 1 and declarative_count == 2 * interrogative_count
 
 
-class WordsPositionCheckerFixed(_upstream.WordsPositionChecker):
+def _check_words_position(value: str, keyword: str) -> bool:
     """``words:words_position`` positioned on words rather than on tokens."""
+    from sieval.community.ifbench import instructions_util
 
-    @override
-    def check_following(self, value):
-        tokens = instructions_util.nltk.word_tokenize(value)
-        words = [token for token in tokens if not _is_punct_token(token)]
-        if len(words) < 2:
-            return False
-        keyword = self._keyword.lower()
-        return words[1].lower() == words[-2].lower() == keyword
+    tokens = instructions_util.nltk.word_tokenize(value)
+    words = [token for token in tokens if not _is_punct_token(token)]
+    if len(words) < 2:
+        return False
+    return words[1].lower() == words[-2].lower() == keyword.lower()
 
 
-class SingleVowelParagraphCheckerFixed(_upstream.SingleVowelParagraphChecker):
+def _check_single_vowel_paragraph(value: str) -> bool:
     """``words:vowel`` counting paragraphs by blank line, not by newline."""
-
-    @override
-    def check_following(self, value):
-        paragraphs = [p for p in _PARA_SPLIT.split(value.strip()) if p.strip()]
-        if len(paragraphs) != 1:
-            return False
-        vowels = set("aeiou")
-        used = {char for char in paragraphs[0].lower() if char in vowels}
-        return len(used) <= 3
+    paragraphs = [p for p in _PARA_SPLIT.split(value.strip()) if p.strip()]
+    if len(paragraphs) != 1:
+        return False
+    vowels = set("aeiou")
+    used = {char for char in paragraphs[0].lower() if char in vowels}
+    return len(used) <= 3
 
 
-#: instruction id -> repaired checker. These keys are the whole story of what the
-#: ``_fixed`` task changes.
-FIXED_CHECKERS: dict[str, type] = {
-    "format:line_indent": IndentStairsCheckerFixed,
-    "ratio:sentence_type": SentTypeRatioCheckerFixed,
-    "words:words_position": WordsPositionCheckerFixed,
-    "words:vowel": SingleVowelParagraphCheckerFixed,
-}
+@functools.cache
+def _fixed_checker_classes() -> dict[str, type]:
+    """instruction id -> repaired checker. These keys are the whole story of what
+    the ``_fixed`` task changes.
+
+    The vendored fork is imported *here*, not at module scope: a subclass needs
+    its base loaded at class-definition time, and ``import_all_tasks`` imports
+    this module whether or not anything will grade through it. Cached, so the
+    four classes are built once per process — samples grade concurrently and the
+    registry is compared by identity.
+    """
+    from sieval.community.ifbench import instructions as upstream
+
+    class IndentStairsCheckerFixed(upstream.IndentStairsChecker):
+        """``format:line_indent``, without the mutate-while-iterating removal."""
+
+        @override
+        def check_following(self, value):
+            return _check_indent_stairs(value)
+
+    class SentTypeRatioCheckerFixed(upstream.SentTypeRatioChecker):
+        """``ratio:sentence_type`` counting quoted sentences, and not vacuous."""
+
+        @override
+        def check_following(self, value):
+            return _check_sent_type_ratio(value)
+
+    class WordsPositionCheckerFixed(upstream.WordsPositionChecker):
+        """``words:words_position`` positioned on words rather than on tokens."""
+
+        @override
+        def check_following(self, value):
+            return _check_words_position(value, self._keyword)
+
+    class SingleVowelParagraphCheckerFixed(upstream.SingleVowelParagraphChecker):
+        """``words:vowel`` counting paragraphs by blank line, not by newline."""
+
+        @override
+        def check_following(self, value):
+            return _check_single_vowel_paragraph(value)
+
+    return {
+        "format:line_indent": IndentStairsCheckerFixed,
+        "ratio:sentence_type": SentTypeRatioCheckerFixed,
+        "words:words_position": WordsPositionCheckerFixed,
+        "words:vowel": SingleVowelParagraphCheckerFixed,
+    }
 
 
 def fixed_ifbench_registry() -> dict[str, type]:
@@ -226,8 +265,10 @@ def fixed_ifbench_registry() -> dict[str, type]:
     while still claiming a delta. Failing loudly here is the only place that is
     visible.
     """
+    from sieval.community.ifbench.instructions_registry import INSTRUCTION_DICT
+
     registry = dict(INSTRUCTION_DICT)
-    for instruction_id, fixed_cls in FIXED_CHECKERS.items():
+    for instruction_id, fixed_cls in _fixed_checker_classes().items():
         base = registry.get(instruction_id)
         if base is None:
             raise KeyError(

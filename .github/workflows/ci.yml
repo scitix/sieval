@@ -14,7 +14,14 @@ env:
   PYTHON_DEFAULT: "3.12"
   # light, no torch. `iheval` is a superset of `ifeval` plus rouge-score, so it
   # adds ~one wheel and keeps the reimplemented IHEval graders under test.
-  INSTALL_GROUPS: "-G drop -G ifeval -G iheval -G math -G scicode -G test -G dev"
+  # `ifbench` earns its place the same way: emoji + syllapy on top of the nltk
+  # `ifeval` already pulls, and it is what puts the *repaired* IFBench checkers
+  # under test -- first-party code, unlike the vendored fork they subclass, and
+  # untestable without the fork present. It is also the first group here whose
+  # vendored code fetches NLTK corpora at import, so the `checks` job warms them
+  # in a named step rather than letting a test discover it mid-run.
+  INSTALL_GROUPS: >-
+    -G drop -G ifbench -G ifeval -G iheval -G math -G scicode -G test -G dev
 
 jobs:
   changes:
@@ -108,6 +115,20 @@ jobs:
         run: pdm install --check --frozen-lockfile ${{ env.INSTALL_GROUPS }}
       - name: Preflight (registration, version, deps, links, meta-drift)
         run: pdm run python scripts/check_preflight.py
+      # IFBench's vendored `instructions_util` calls `download_nltk_resources()`
+      # at import, so the first test to grade through a repaired checker would
+      # otherwise fetch these mid-run and report an nltk LookupError rather than
+      # a missing-corpus one. Warming them here names the network dependency
+      # instead of hiding it; it is the only one in the test job.
+      - name: NLTK corpora (IFBench's vendored checkers load them at import)
+        run: |
+          pdm run python - <<'PY'
+          import nltk
+
+          for corpus in ("punkt", "punkt_tab", "stopwords",
+                         "averaged_perceptron_tagger_eng"):
+              nltk.download(corpus, quiet=True)
+          PY
       # `benchmark` deselected: shared runners cannot hold wall-clock
       # thresholds calibrated on a dedicated box. The rest is deterministic.
       - name: Unit + integration + acceptance tests + coverage

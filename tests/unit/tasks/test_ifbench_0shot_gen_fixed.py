@@ -47,12 +47,47 @@ def test_import_does_not_pull_evaluation_lib():
     assert result.returncode == 0, result.stderr
 
 
+def test_the_registration_scan_does_not_need_the_ifbench_extras():
+    # `import_all_tasks()` -- what `scripts/sync_meta_index.py` runs, and what
+    # CI's preflight runs it through -- imports EVERY module under
+    # `sieval/tasks`, private ones included. The underscore keeps the repair
+    # module out of the task *index*; it does not keep it out of the *import
+    # scan*, so the module owes the same discipline every other task module
+    # keeps (`_math_verify` lazy-imports `math_verify` inside its function for
+    # the same reason): no optional dependency at module scope. Defining the
+    # four subclasses at module scope broke exactly this, and a green local run
+    # could not see it because the `ifbench` extras were installed.
+    #
+    # `emoji` is blocked rather than assumed absent: it stands in for the whole
+    # `ifbench` extra, so the test keeps its teeth in an environment that has it.
+    code = (
+        "import sys\n"
+        "class _NoEmoji:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'emoji' or name.startswith('emoji.'):\n"
+        "            raise ModuleNotFoundError(f'No module named {name!r}')\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, _NoEmoji())\n"
+        "from sieval.core.tasks.meta import import_all_tasks\n"
+        "import_all_tasks()\n"
+        "assert 'sieval.community.ifbench.instructions' not in sys.modules, (\n"
+        "    'registration must not load the vendored checker fork')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_the_repair_module_registers_no_task():
-    # The discovery scan skips underscore-prefixed modules, which is the only
-    # reason a non-task module may sit in `sieval/tasks`. Asserted through the
-    # synced index rather than the scanner's private helper, so this keeps
-    # holding if the scan is reimplemented: what matters is that the repair
-    # module contributes no registry entry, not how it comes to be skipped.
+    # A non-task module may sit in `sieval/tasks` only if it registers nothing.
+    # Asserted through the synced index rather than the scanner's private
+    # helper, so this keeps holding if the scan is reimplemented: what matters
+    # is that the repair module contributes no registry entry. It is imported by
+    # the scan either way -- see the test above.
     repair = Path(__file__).parents[3] / "sieval/tasks/_ifbench_fixed_checkers.py"
     assert repair.exists()
     assert repair.name.startswith("_")

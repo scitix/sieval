@@ -22,13 +22,19 @@ import pytest
 from sieval.community.ifbench import instructions as upstream
 from sieval.community.ifbench.instructions_registry import INSTRUCTION_DICT
 from sieval.tasks._ifbench_fixed_checkers import (
-    FIXED_CHECKERS,
-    IndentStairsCheckerFixed,
-    SentTypeRatioCheckerFixed,
-    SingleVowelParagraphCheckerFixed,
-    WordsPositionCheckerFixed,
+    _fixed_checker_classes,
     fixed_ifbench_registry,
 )
+
+# The four subclasses are built inside a function, not at module scope, so that
+# importing the repair module does not import the vendored fork -- `sieval/tasks`
+# is walked wholesale by `import_all_tasks`, private modules included. Naming
+# them here is what triggers the build, which is exactly the contract.
+FIXED_CHECKERS = _fixed_checker_classes()
+IndentStairsCheckerFixed = FIXED_CHECKERS["format:line_indent"]
+SentTypeRatioCheckerFixed = FIXED_CHECKERS["ratio:sentence_type"]
+WordsPositionCheckerFixed = FIXED_CHECKERS["words:words_position"]
+SingleVowelParagraphCheckerFixed = FIXED_CHECKERS["words:vowel"]
 
 
 def _check(cls, value, **kwargs):
@@ -252,8 +258,11 @@ def test_registry_refuses_to_mount_a_repair_whose_id_moved_upstream(monkeypatch)
     # After a re-vendor that renamed an id, a silent overlay would land on a key
     # nothing looks up and `_fixed` would grade identically while still claiming
     # a delta. Failing loudly here is the only place that is visible.
+    # Patched at the vendored registry itself rather than at a name this module
+    # re-exports: that is where a re-vendor would actually move the id, and the
+    # overlay reads it fresh on every call.
     monkeypatch.setattr(
-        "sieval.tasks._ifbench_fixed_checkers.INSTRUCTION_DICT",
+        "sieval.community.ifbench.instructions_registry.INSTRUCTION_DICT",
         {k: v for k, v in INSTRUCTION_DICT.items() if k != "words:vowel"},
     )
     with pytest.raises(KeyError, match="words:vowel"):
@@ -264,7 +273,7 @@ def test_registry_refuses_a_repair_whose_base_class_moved_upstream(monkeypatch):
     # The id survives a re-vendor but is re-bound to a different class: the
     # subclass would reintroduce the behaviour of a checker upstream dropped.
     monkeypatch.setattr(
-        "sieval.tasks._ifbench_fixed_checkers.INSTRUCTION_DICT",
+        "sieval.community.ifbench.instructions_registry.INSTRUCTION_DICT",
         {**INSTRUCTION_DICT, "words:vowel": upstream.IndentStairsChecker},
     )
     with pytest.raises(TypeError, match="words:vowel"):
