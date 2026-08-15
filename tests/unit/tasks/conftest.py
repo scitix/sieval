@@ -1,36 +1,23 @@
 """Task-test collection tweaks: NLTK staging under xdist, and mutation testing.
 
 **NLTK staging.** ``sieval/community/ifbench/instructions_util.py`` calls
-``download_nltk_resources()`` at module scope, so the corpora are fetched by
-whoever imports the vendored fork first. Serial that is fine. Under ``-n auto``
-several workers import it while collecting ``test__ifbench_fixed_checkers.py``
-and race to unzip into one shared NLTK data directory: the losers read a
-half-written archive and die with ``FileExistsError`` / ``EOFError`` /
-``LookupError`` — none of them the ``LookupError`` upstream's helper catches —
-and a collection error takes the whole run with it. Reproduced outside CI: 4
-concurrent cold imports, 3 fail; warmed first, 4 pass.
+``download_nltk_resources()`` at module scope, so the corpora arrive with whoever
+imports the vendored fork first. Serial that is fine; under ``-n auto`` several
+workers import it while collecting ``test__ifbench_fixed_checkers.py`` and race to
+unzip into one shared directory. The losers read a half-written archive and die
+with ``FileExistsError`` / ``EOFError`` / ``LookupError`` — none of them the one
+upstream's helper catches — and a collection error takes the whole run with it.
+Repro outside CI: 4 concurrent cold imports, 3 fail; warmed first, 4 pass.
 
-This has to run at conftest *import* time, not in a fixture: the race is between
-test-module imports during collection, which finishes before any fixture runs.
-
-The block below therefore does one warm import while holding a cross-process
-lock, and does exactly two things to stay cheap:
-
-* It is skipped entirely outside xdist — a single process cannot race itself,
-  and the import costs ~3.4s that a plain ``pytest tests/unit/tasks/test_x.py``
-  should not pay.
-* Only the first worker to take the lock imports; the rest see the sentinel and
-  return immediately, so their own import happens during collection, in
-  parallel, against corpora already on disk. Serializing all of them would turn
-  ``worker_count × 3.4s`` of parallel work into the same amount of serial work.
-
-The sentinel is keyed on ``PYTEST_XDIST_TESTRUNUID`` so it cannot outlive the run
-that wrote it and vouch for corpora someone has since deleted.
-
-Importing the module the tests import — rather than naming corpora here — keeps
-the resource list in one place. ``ImportError`` is swallowed so that an
-environment without the ``ifbench`` extra fails where it already failed, at that
-one test module, instead of taking this whole directory down with it.
+The warm import below runs at conftest *import* time, not in a fixture: the race
+is between test-module imports during collection, which finishes before any
+fixture runs. It imports the module the tests import, so no second corpus list
+lives here. It is skipped outside xdist (one process cannot race itself, and the
+import costs ~3.4s), and only the first worker to take the lock imports — the rest
+return on a ``PYTEST_XDIST_TESTRUNUID``-keyed sentinel, so their imports still run
+in parallel against corpora already on disk, and the sentinel cannot outlive its
+run. ``ImportError`` is swallowed so a box without the ``ifbench`` extra still
+fails at that one test module rather than taking this directory down.
 
 **Mutation testing.**
 ``test_import_does_not_pull_the_optional_grader`` proves an optional dependency
@@ -78,10 +65,10 @@ def _warm_ifbench_nltk_corpora() -> None:
             return
         with contextlib.suppress(ImportError):
             import sieval.community.ifbench.instructions  # noqa: F401
-        # Written even when the import failed. It records that the one serialized
-        # attempt happened, which is all the other workers are waiting on; an
-        # environment without the extra should not serialize them one at a time
-        # to reach the same ImportError.
+        # Written even when the import failed: it records that the one serialized
+        # attempt happened, which is all the other workers wait on. Without the
+        # extra they would otherwise queue up one at a time for the same
+        # ImportError.
         sentinel.touch()
 
 
@@ -89,9 +76,8 @@ _warm_ifbench_nltk_corpora()
 
 
 def pytest_sessionfinish():
-    # Collection is long over by now, so the sentinel has no readers left. Left
-    # behind, these would accumulate one pair per parallel run for as long as
-    # the box goes without a reboot.
+    # Collection is long over, so the sentinel has no readers left. Left behind,
+    # these accumulate one pair per parallel run until the box reboots.
     stem = _warm_stem()
     if stem is None:
         return

@@ -55,21 +55,16 @@ from sieval.datasets import IFBenchDatasetSample
 # is the headline; the shape is otherwise identical.
 _GRADES = ("strict", "loose")
 
-# What upstream's `download_nltk_resources()` stages, as ``nltk.data.find``
-# lookup paths. It runs at import of the vendored `instructions_util`, so nothing
-# here downloads them; this list exists only to *verify* that staging. It is a
-# second copy of upstream's list, and a test drives that helper with every lookup
-# failing to assert the two ask for the same set, so they cannot drift silently.
+# Upstream's download list -- what `download_nltk_resources()` stages at import of
+# the vendored `instructions_util` -- as ``nltk.data.find`` lookup paths. Nothing
+# here downloads; this only *verifies* that staging, and a test drives upstream's
+# helper with every lookup failing to pin the two sets equal.
 #
-# Upstream's download list, deliberately -- not the narrower set the checkers
-# actually need. On nltk >= 3.9 `tokenizers/punkt` is dead weight: every NLTK
-# call site in the vendored fork resolves through `punkt_tab`, including the
-# explicit `nltk.data.load("nltk:tokenizers/punkt/english.pickle")` in
-# `instructions_util`. Verifying it anyway keeps the drift pin an equality rather
-# than a subset, so a corpus added upstream cannot slip in unverified. The cost
-# is that a box hand-staged with only what grading needs is refused -- but the
-# error message names `punkt`, and both routes that stage these automatically
-# (upstream's helper, the Docker image) fetch all four regardless.
+# Deliberately upstream's list, not the narrower set grading needs: on nltk >= 3.9
+# `tokenizers/punkt` is dead weight -- every call site resolves through punkt_tab,
+# including the explicit `nltk.data.load("nltk:tokenizers/punkt/english.pickle")`.
+# Keeping it holds the pin at equality, so a corpus added upstream cannot slip in
+# unverified; the price is refusing a box staged with only what grading needs.
 _NLTK_RESOURCES = (
     "tokenizers/punkt",
     "tokenizers/punkt_tab",
@@ -82,35 +77,26 @@ _NLTK_RESOURCES = (
 def _ensure_nltk_resources() -> None:
     """Stop loudly if the corpora the vendored checkers need are not staged.
 
-    Upstream's `download_nltk_resources()` calls `nltk.download(..., quiet=True)`
-    and never re-checks. `nltk.download` defaults to ``raise_on_error=False``, so
-    an offline or rate-limited box gets `False` back and the import completes as
-    if the data were there. The absence then surfaces one `LookupError` at a time,
-    deep inside whichever checkers happen to reach NLTK.
+    Upstream's `download_nltk_resources()` calls `nltk.download(..., quiet=True)`,
+    which defaults to ``raise_on_error=False``, and never re-checks -- so offline
+    the import completes as if the data were there, and the absence surfaces one
+    `LookupError` at a time, only in the checkers that reach NLTK.
 
-    Left alone that is not a failed run but a *wrong* one: those samples raise out
-    of `feedback()` into `fails`, and `report()`'s denominator is the judged set,
-    so the score is computed over the subset whose constraints never touched NLTK
-    -- a biased remainder published under the full benchmark's name. Checking all
-    four resources once, unconditionally, converts that into a total failure: every
-    sample stops here naming what is missing and `fails` equals the set size, so
-    nothing is scored over a subset. The run still writes a report -- one whose
-    rates are all `0.0` beside a full failure count. `fails` is what separates
-    that from a model which genuinely followed no constraint.
+    That is not a failed run but a *wrong* one: those samples land in `fails` while
+    `report()`'s judged denominator scores the remainder -- the subset whose
+    constraints never touched NLTK, published under the full benchmark's name.
+    Checking all four up front makes the failure total instead: `fails` equals the
+    set size and the report's rates are all `0.0`, which only `fails` tells apart
+    from a model that followed no constraint.
 
-    Verification only, no download: upstream already tried, and a second attempt
-    would just spend the same timeout again. The Multi-IF sibling *does* download
-    in its own `_ensure_punkt_tab`, because upstream Multi-IF ships no such helper
-    and its vendored files stay free of anything upstream lacks. The shapes differ
-    because the two upstreams do; the guarantee they leave the caller is the same.
+    Verification only -- upstream already spent the download attempt. The Multi-IF
+    sibling *does* download, in `_ensure_punkt_tab`, because its upstream ships no
+    such helper; the shapes differ because the two upstreams do.
 
-    `ifbench_0shot_gen_fixed` subclasses this task and overrides only the checker
-    registry, so it inherits this check with the rest of `feedback()`.
-
-    Cached: on success this runs once per process rather than once per sample --
-    `nltk.data.find` walks every entry on `nltk.data.path`. `functools.cache`
-    stores return values only, so a failing box keeps raising on every sample
-    instead of being silently marked done.
+    `ifbench_0shot_gen_fixed` overrides only the checker registry, so it inherits
+    this. `functools.cache` stores return values only: success costs one pass over
+    `nltk.data.path`, and a failing box keeps raising per sample rather than being
+    marked done by the first.
     """
     import nltk
 

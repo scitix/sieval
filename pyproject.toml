@@ -130,10 +130,8 @@ dev = [
   "types-tqdm>=4.67.0.20250809",
 ]
 test = [
-  # Direct, not just via datasets/huggingface-hub: tests/unit/tasks/conftest.py
-  # imports FileLock to serialize the one cold NLTK import across xdist workers.
-  # Declared so that tree does not fail collection if a transitive owner drops it
-  # -- check_dep_coverage scans only tasks/ and datasets/, so nothing else looks.
+  # Direct: tests/unit/tasks/conftest.py locks the cold NLTK import across xdist
+  # workers. Otherwise only transitive, and check_dep_coverage does not scan tests.
   "filelock>=3.20.0",
   "mutmut>=3.5.0",
   "psutil>=7.2.2",

@@ -246,10 +246,9 @@ def test_a_failing_check_is_not_cached(monkeypatch: pytest.MonkeyPatch):
         with pytest.raises(LookupError):
             module._ensure_nltk_resources()
 
-    # `functools.cache` stores return values only, never raises. That is what
-    # keeps a broken box saying so on every sample instead of being marked done
-    # by the first one -- the whole reason the failure is total rather than a
-    # biased subset. A hand-rolled "checked already" flag would lose this.
+    # `functools.cache` stores return values only, never raises -- which is what
+    # keeps a broken box failing every sample instead of being marked done by the
+    # first. A hand-rolled "checked already" flag would lose that.
     assert len(checked) == 2 * len(module._NLTK_RESOURCES)
 
 
@@ -274,10 +273,9 @@ def test_the_verified_resources_match_upstreams_download_helper(
 
     instructions.instructions_util.download_nltk_resources()
 
-    # `_NLTK_RESOURCES` is a second copy of a list that belongs to upstream. This
-    # drives upstream's own helper with every lookup failing and records what it
-    # asks for, so a corpus added there without being added here fails here --
-    # rather than in a run, as one unverified resource.
+    # `_NLTK_RESOURCES` is a second copy of upstream's list. Driving upstream's own
+    # helper with every lookup failing records what it asks for, so a corpus added
+    # there but not here fails here rather than in a run.
     assert set(looked_up) == set(module._NLTK_RESOURCES)
     assert len(looked_up) == len(module._NLTK_RESOURCES)
 
@@ -286,10 +284,9 @@ def test_the_verified_resources_match_upstreams_download_helper(
 async def test_feedback_stops_when_the_corpora_are_missing(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    # Teeth for the call site rather than the helper: unwire the check from
-    # `feedback()` and this is what goes red. The faked evaluator grades happily
-    # with no NLTK data at all, which is exactly how the real one hid the
-    # problem -- only the checkers that reach NLTK ever noticed.
+    # Teeth for the call site, not the helper: unwire the check from `feedback()`
+    # and this is what goes red. The faked evaluator grades happily with no NLTK
+    # data, which is exactly how the real one hid the problem.
     _install_fake_evaluator(monkeypatch)
 
     import nltk

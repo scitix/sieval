@@ -16,13 +16,12 @@ env:
   # adds ~one wheel and keeps the reimplemented IHEval graders under test.
   # `ifbench` earns its place the same way: emoji + syllapy on top of the nltk
   # `ifeval` already pulls, and the repaired IFBench checkers are first-party
-  # code, untestable without the vendored fork they subclass. Its NLTK corpora
-  # are still fetched on demand by the vendored code at import time, exactly as
-  # `multi_if` and the `ruler` dataset do in this job -- no staged copy of the
-  # corpus list lives here to drift from them. The cache step below keeps that
-  # fetch off the network on all but the first run; making it concurrency safe
-  # is `tests/unit/tasks/conftest.py`'s job, because the race is between test
-  # imports and shows up under any `-n`, not only here.
+  # code, untestable without the vendored fork they subclass. Its NLTK corpora are
+  # still fetched on demand by the vendored code, as `multi_if` and the `ruler`
+  # dataset also do here -- no copy of the corpus list lives in this file. The
+  # cache step below keeps that fetch off the network; making it concurrency safe
+  # is `tests/unit/tasks/conftest.py`'s job, since the race is between test
+  # imports and fires under any `-n`, not only here.
   INSTALL_GROUPS: >-
     -G drop -G ifbench -G ifeval -G iheval -G math -G scicode -G test -G dev
 
@@ -118,23 +117,19 @@ jobs:
         run: pdm install --check --frozen-lockfile ${{ env.INSTALL_GROUPS }}
       - name: Preflight (registration, version, deps, links, meta-drift)
         run: pdm run python scripts/check_preflight.py
-      # The graders fetch their NLTK corpora on demand, from the `nltk_data`
-      # GitHub repo -- the one dependency in this job that no lockfile pins and
-      # no hash covers. Restoring them makes the common run hermetic; a miss
-      # just falls back to the same on-demand fetch the code already does.
+      # The graders fetch their NLTK corpora on demand from the `nltk_data` GitHub
+      # repo -- the one dependency here that no lockfile pins and no hash covers.
+      # A miss just falls back to that same fetch.
       #
       # Two paths because the families resolve differently: the vendored IFBench
-      # fork redirects NLTK_DATA into the sieval cache so downloads never land
-      # in the source tree, while `multi_if` and `ruler` use NLTK's default. That
-      # first path is spelled by `sieval/community/ifbench/instructions.py`, which
-      # nothing here can key on -- move the cache dir there and this step silently
-      # restores nothing. It goes cold, not wrong, which is why it is a comment
-      # and not a guard.
+      # fork redirects NLTK_DATA into the sieval cache so downloads never land in
+      # the source tree, while `multi_if` and `ruler` use NLTK's default. That
+      # first path is spelled by `sieval/community/ifbench/instructions.py` and
+      # keyed on nothing here: move it there and this step goes cold, not wrong.
       #
-      # Keyed on the files that decide *which* corpora get fetched, so adding
-      # one invalidates the cache on its own. A hand-written version key would
-      # be the second copy of the corpus list this job has deliberately avoided
-      # keeping -- one someone must remember to bump.
+      # Keyed on the files that decide *which* corpora get fetched, so adding one
+      # invalidates the cache on its own -- a hand-written version key would be the
+      # second copy of the corpus list this job avoids keeping.
       - name: Restore the NLTK corpora the graders fetch on demand
         uses: actions/cache@v4
         with:
@@ -146,10 +141,9 @@ jobs:
             'sieval/community/ifbench/instructions_util.py',
             'sieval/tasks/multi_if_0shot_gen.py',
             'sieval/datasets/ruler/_shared.py') }}
-          # Editing any of those files for an unrelated reason misses the exact
-          # key while the corpora themselves are unchanged. Falling back to the
-          # newest previous entry keeps that run off the network for everything
-          # already staged; only a genuinely new corpus is fetched.
+          # An unrelated edit to those files misses the exact key while the corpora
+          # are unchanged; falling back to the newest entry still stages everything
+          # but a genuinely new corpus.
           restore-keys: nltk-${{ runner.os }}-
       # `benchmark` deselected: shared runners cannot hold wall-clock
       # thresholds calibrated on a dedicated box. The rest is deterministic.
