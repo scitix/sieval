@@ -188,12 +188,12 @@ def resolve_values_path(values_file: str, config_dir: Path) -> Path:
 def relative_values_files(cfg: Mapping) -> list[str]:
     """Every ``values_file`` in *cfg* named by a relative path.
 
-    Such a path resolves against the config that named it, so the persisted
-    ``effective_config.yaml`` — which stores it verbatim, to stay portable —
-    only reproduces the selection when re-run from beside the original config.
-    Its header says so rather than the path being rewritten absolute: the
-    persisted copy would then no longer compare equal to the source config's
-    relative one, and ``--resume`` would reject its own artifact.
+    Resolving against the config being run (above) means the persisted
+    ``effective_config.yaml`` reproduces the selection only when re-run from
+    beside the original config. Its header says so rather than the path being
+    rewritten absolute: the persisted copy would then stop comparing equal to
+    the source config's relative one, and ``--resume`` would reject its own
+    artifact.
     """
     return [
         values_file

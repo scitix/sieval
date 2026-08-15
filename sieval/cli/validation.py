@@ -417,13 +417,9 @@ def _validate_filter_args(
 ) -> None:
     """Shape-check a ``filter`` operation.
 
-    Shape only — whether a column exists, a file is readable or a dotted path
-    imports are questions for the session, which has the dataset and the
-    config's directory. What is worth catching here is a config that could not
-    run whatever the data turned out to be.
-
-    The questions live in :mod:`sieval.cli._filter_spec`; this surface collects
-    every problem where the session raises on the first.
+    The checks are :mod:`sieval.cli._filter_spec`'s, which says what each one
+    answers and what it leaves to the session. What is worth catching *here* is
+    a config that could not run whatever the data turned out to be.
     """
     problem = check_by(op_args.get("by"))
     if problem is not None:

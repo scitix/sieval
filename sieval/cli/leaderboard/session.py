@@ -3257,10 +3257,9 @@ class EvalSession:
         comments skipped.
 
         Only the JSON *list* form carries a type: lines are strings, and so are
-        an object's keys, so a numeric id column needs the list. A mismatch is
-        loud rather than silent — every key misses, which raises — but the
-        message reads ``id=['0', '1']`` against ``present values: [0, 1]``, and
-        the difference is one pair of quotes.
+        an object's keys, so a numeric id column needs the list. A mismatch
+        raises rather than passing silently, but reads ``id=['0', '1']`` against
+        ``present values: [0, 1]`` — the difference is one pair of quotes.
 
         *expected_digest* is the ``values_digest`` pinned at load time.
         Re-checking it here closes the window between that read and this one, so
@@ -3272,8 +3271,6 @@ class EvalSession:
                 f"Dataset '{dataset_name}': 'filter' 'values_file' must be a "
                 f"path; got {values_file!r}"
             )
-        # Resolved against the config that named it, stored verbatim — the same
-        # rule `alignment.card` follows.
         path = resolve_values_path(values_file, self.config_path.parent)
         if not path.is_file():
             raise ValueError(

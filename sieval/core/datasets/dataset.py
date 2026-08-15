@@ -142,10 +142,10 @@ class Dataset[TSample](ABC):
         not an error.
 
         Returns ``self`` unchanged if *split* is absent or empty, warning that
-        nothing was filtered — a misspelled *split* otherwise keeps every row
-        while looking like a selection, which is the one failure here that
-        reports a plausible number. *require_all* raises on it: a caller who
-        asks for every key to land is not asking about one split in particular.
+        nothing was filtered: a misspelled *split* leaves the real one whole, so
+        this is the one failure here that keeps every row while still reporting
+        a plausible number. *require_all* raises on it — asking for every key to
+        land is not a question about one split.
 
         Raises if *by* names a column that does not exist, or if **nothing**
         matches: an empty result is a misspelled *value* far more often than an
@@ -502,12 +502,9 @@ class Dataset[TSample](ABC):
 
 
 def _report_nothing_filtered(detail: str, *, require_all: bool) -> None:
-    """Report a ``filter`` that could not run, having no split to run on.
+    """Report a ``filter`` left with no split to run on.
 
-    Silence is the wrong default here even though returning *self* is the right
-    behaviour: every other way ``filter`` fails leaves too few rows, which shows
-    up downstream, while this one leaves them all — a run scored on the whole
-    split while its config says otherwise.
+    Why this is not silent is in :meth:`Dataset.filter`, where a caller reads it.
     """
     detail = f"{detail}, so nothing was filtered"
     if require_all:
