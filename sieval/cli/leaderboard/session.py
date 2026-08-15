@@ -27,12 +27,14 @@ from packaging.version import InvalidVersion, Version
 from sieval import __version__
 from sieval.cli._filter_spec import (
     VALUES_DIGEST_KEY,
+    check_arg_names,
     check_by,
     check_by_digest,
     check_values_source,
     compute_values_digest,
     key_function_spec,
     pin_filter_digests,
+    relative_values_files,
     resolve_values_path,
 )
 from sieval.cli.leaderboard.card import AlignmentCard, load_card
@@ -3107,7 +3109,11 @@ class EvalSession:
                     by_spec = op_args.get("by")
                     split = op_args.get("split", "test")
                     by = self._resolve_filter_by(by_spec, dataset_name)
-                    problems = check_values_source(op_args) + check_by_digest(op_args)
+                    problems = (
+                        check_arg_names(op_args)
+                        + check_values_source(op_args)
+                        + check_by_digest(op_args)
+                    )
                     if problems:
                         raise ValueError(f"Dataset '{dataset_name}': {problems[0]}")
                     values_file = op_args.get("values_file")
@@ -3249,6 +3255,12 @@ class EvalSession:
         values (so a map from id to whatever metadata produced the selection can
         be used as-is). Anything else is one value per line, blanks and ``#``
         comments skipped.
+
+        Only the JSON *list* form carries a type: lines are strings, and so are
+        an object's keys, so a numeric id column needs the list. A mismatch is
+        loud rather than silent — every key misses, which raises — but the
+        message reads ``id=['0', '1']`` against ``present values: [0, 1]``, and
+        the difference is one pair of quotes.
 
         *expected_digest* is the ``values_digest`` pinned at load time.
         Re-checking it here closes the window between that read and this one, so
@@ -3646,17 +3658,25 @@ class EvalSession:
             allow_unicode=True,
             sort_keys=False,
         )
+        extra_lines = [
+            "Reproduce:",
+            "  sieval run <this file>",
+            "    — universal; re-launches auto-served models",
+            "  sieval eval <this file>",
+            "    — only when every model already has api_base",
+        ]
+        if relative := relative_values_files(self._reified_config):
+            extra_lines += [
+                "",
+                "Relative filter values_file: " + ", ".join(relative),
+                "  resolves against the config being run, so reproduce from",
+                "  beside the source config above, or make the path absolute.",
+            ]
         header = _format_comment_header(
             title="Persisted by",
             source_config=str(self.config_path.resolve()),
             invocation=self.invocation,
-            extra_lines=[
-                "Reproduce:",
-                "  sieval run <this file>",
-                "    — universal; re-launches auto-served models",
-                "  sieval eval <this file>",
-                "    — only when every model already has api_base",
-            ],
+            extra_lines=extra_lines,
         )
         await self._persist_yaml_with_strict_resume(
             target_name="effective_config.yaml",

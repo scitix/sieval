@@ -757,6 +757,7 @@ class TestValidateDatasets:
             {"by": {"callable": "pkg.module.my_key"}, "value": "k"},
             {"by": "id", "values_file": "picked.json"},
             {"by": "id", "value": ["a"], "require_all": True},
+            {"by": "id", "value": ["a"], "split": "validation"},
             # Falsy but present: a value the validator must not read as absent.
             {"by": "n", "value": 0},
             {"by": "flag", "value": False},
@@ -781,6 +782,13 @@ class TestValidateDatasets:
             ({"by": 42, "value": "a"}, "must be a column name"),
             ({"by": "id", "values_file": 7}, "'values_file' must be a path"),
             ({"by": "id", "value": "a", "require_all": "yes"}, "must be a boolean"),
+            # A typo in an optional key would otherwise read as that key left
+            # unset, so the config validates and the run quietly drops it.
+            (
+                {"by": "id", "value": "a", "require_all_keys": True},
+                r"unknown key(s) ['require_all_keys']",
+            ),
+            ({"by": "id", "value": "a", "split": 3}, "'split' must be a split name"),
         ],
     )
     def test_invalid_filter_operations(self, args, error_match):

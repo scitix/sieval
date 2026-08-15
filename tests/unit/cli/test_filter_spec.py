@@ -1,9 +1,10 @@
 """
 Unit tests for sieval/cli/_filter_spec.py.
 
-Covers: key_function_spec, check_by, check_values_source, check_by_digest,
-resolve_values_path, compute_values_digest, compute_key_function_digest, and
-pin_filter_digests (inject / verify / reject, for both digests).
+Covers: key_function_spec, check_arg_names, check_by, check_values_source,
+check_by_digest, resolve_values_path, relative_values_files,
+compute_values_digest, compute_key_function_digest, and pin_filter_digests
+(inject / verify / reject, for both digests).
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -20,6 +21,7 @@ import pytest
 from sieval.cli._filter_spec import (
     BY_DIGEST_KEY,
     VALUES_DIGEST_KEY,
+    check_arg_names,
     check_by,
     check_by_digest,
     check_values_source,
@@ -27,6 +29,7 @@ from sieval.cli._filter_spec import (
     compute_values_digest,
     key_function_spec,
     pin_filter_digests,
+    relative_values_files,
     resolve_values_path,
 )
 
@@ -123,6 +126,57 @@ class TestCheckBy:
     @pytest.mark.parametrize("by", [3, 1.5, True, object()])
     def test_rejects_other_types(self, by):
         assert "must be a column name" in (check_by(by) or "")
+
+
+class TestCheckArgNames:
+    def test_every_documented_key_is_accepted(self):
+        assert (
+            check_arg_names(
+                {
+                    "by": {"callable": "pkg.mod.fn"},
+                    "values_file": "picked.json",
+                    VALUES_DIGEST_KEY: f"sha256:{'0' * 64}",
+                    BY_DIGEST_KEY: f"sha256:{'1' * 64}",
+                    "require_all": True,
+                    "split": "validation",
+                }
+            )
+            == []
+        )
+
+    def test_rejects_an_unknown_key(self):
+        # A typo in an *optional* key is otherwise silent: this one reads as
+        # require_all simply left at its default, and the assertion is lost.
+        problems = check_arg_names({"by": "tag", "require_all_keys": True})
+        assert len(problems) == 1
+        assert "unknown key(s) ['require_all_keys']" in problems[0]
+
+    def test_names_every_unknown_key_at_once(self):
+        problems = check_arg_names({"by": "tag", "zzz": 1, "aaa": 2})
+        assert "['aaa', 'zzz']" in problems[0]
+
+    @pytest.mark.parametrize("split", [3, ["test"], {"name": "test"}, True])
+    def test_rejects_a_non_string_split(self, split):
+        problems = check_arg_names({"by": "tag", "split": split})
+        assert any("'split' must be a split name" in p for p in problems)
+
+    def test_an_absent_split_is_fine(self):
+        assert check_arg_names({"by": "tag", "value": "a"}) == []
+
+
+class TestRelativeValuesFiles:
+    def test_reports_only_the_relative_ones(self):
+        cfg = {
+            "datasets": {
+                "d1": {"operations": [{"filter": {"values_file": "picked.json"}}]},
+                "d2": {"operations": [{"filter": {"values_file": "/abs/picked.json"}}]},
+                "d3": {"operations": [{"filter": {"by": "tag", "value": "a"}}]},
+            }
+        }
+        assert relative_values_files(cfg) == ["picked.json"]
+
+    def test_no_filter_operations_is_empty(self):
+        assert relative_values_files({"datasets": {"d1": {}}}) == []
 
 
 class TestCheckValuesSource:

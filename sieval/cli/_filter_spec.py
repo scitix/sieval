@@ -39,6 +39,43 @@ BY_DIGEST_KEY = "by_digest"
 
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
+#: Every key a ``filter`` operation accepts. Enumerated so a typo in an
+#: *optional* one is caught: a misspelled ``by`` or ``value`` fails the checks
+#: below because what they name goes missing, but ``require_all_keys: true``
+#: reads as ``require_all`` simply left at its default, and a misspelled
+#: ``split`` reads as a split that is not there — both silently.
+_FILTER_KEYS = frozenset(
+    {
+        "by",
+        "value",
+        "values_file",
+        "require_all",
+        "split",
+        VALUES_DIGEST_KEY,
+        BY_DIGEST_KEY,
+    }
+)
+
+
+def check_arg_names(op_args: Mapping) -> list[str]:
+    """Every problem with a ``filter`` operation's key names, and with *split*.
+
+    *split* is checked here rather than against the dataset: whether the split
+    exists is the session's question, but whether it is a *string* is answerable
+    with no data in hand, and a non-string one silently matches no split.
+    """
+    problems: list[str] = []
+    unknown = sorted(set(op_args) - _FILTER_KEYS)
+    if unknown:
+        problems.append(
+            f"'filter' has unknown key(s) {unknown}; valid keys are "
+            f"{sorted(_FILTER_KEYS)}"
+        )
+    split = op_args.get("split")
+    if split is not None and not isinstance(split, str):
+        problems.append(f"'filter' 'split' must be a split name; got {split!r}")
+    return problems
+
 
 def key_function_spec(by: object) -> str | None:
     """The dotted path *by* names, or ``None`` if it is not the callable form.
@@ -146,6 +183,24 @@ def resolve_values_path(values_file: str, config_dir: Path) -> Path:
     """
     path = Path(values_file)
     return path if path.is_absolute() else (config_dir / path).resolve()
+
+
+def relative_values_files(cfg: Mapping) -> list[str]:
+    """Every ``values_file`` in *cfg* named by a relative path.
+
+    Such a path resolves against the config that named it, so the persisted
+    ``effective_config.yaml`` — which stores it verbatim, to stay portable —
+    only reproduces the selection when re-run from beside the original config.
+    Its header says so rather than the path being rewritten absolute: the
+    persisted copy would then no longer compare equal to the source config's
+    relative one, and ``--resume`` would reject its own artifact.
+    """
+    return [
+        values_file
+        for _, op_args in _filter_operations(cfg)
+        if isinstance(values_file := op_args.get("values_file"), str)
+        and not Path(values_file).is_absolute()
+    ]
 
 
 def compute_values_digest(data: bytes) -> str:

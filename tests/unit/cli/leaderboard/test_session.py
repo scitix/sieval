@@ -411,6 +411,32 @@ class TestDatasetOperations:
                 "test_ds",
             )
 
+    # -- key names --------------------------------------------------------
+
+    def test_a_misspelled_optional_key_is_rejected_rather_than_ignored(self):
+        # The failure this closes: `require_all_keys` reads as `require_all`
+        # left at its default, so the run proceeds with the assertion silently
+        # disarmed — and reports a plausible number on a partial selection.
+        runner = self._make_runner()
+        with pytest.raises(
+            ValueError, match=r"unknown key\(s\) \['require_all_keys'\]"
+        ):
+            runner._apply_dataset_operations(
+                MagicMock(),
+                [{"filter": {"by": "id", "value": "a", "require_all_keys": True}}],
+                "test_ds",
+            )
+
+    def test_split_must_be_a_split_name(self):
+        # A non-string `split` matches no split, which keeps every row.
+        runner = self._make_runner()
+        with pytest.raises(ValueError, match="'split' must be a split name"):
+            runner._apply_dataset_operations(
+                MagicMock(),
+                [{"filter": {"by": "id", "value": "a", "split": ["test"]}}],
+                "test_ds",
+            )
+
     def test_chained_operations(self):
         runner = self._make_runner()
         ds = MagicMock()

@@ -261,6 +261,13 @@ class TestFilter:
         with pytest.raises(ValueError, match="column 'nope' not found"):
             ds.filter("nope", "a")
 
+    def test_filter_non_string_column_raises(self):
+        # Only reachable from Python: the config surface never gets here
+        # because `check_by` rejects a non-string element first.
+        ds = _make_tagged(["a"])
+        with pytest.raises(ValueError, match="must name columns as strings"):
+            ds.filter(["tag", 2], "a")
+
     def test_filter_no_match_raises_and_lists_present_values(self):
         # An empty split would otherwise become a run that scores zero samples.
         ds = _make_tagged(["a", "b"])
@@ -293,6 +300,53 @@ class TestFilter:
             _hf_dict=HFDatasetDict({"test": HFDataset.from_dict({})})
         )
         assert ds.filter("tag", "a") is ds
+
+    def test_filter_warns_that_a_missing_split_filtered_nothing(self):
+        # The one failure that keeps EVERY row while looking like a selection:
+        # a misspelled split leaves the real one untouched, so the run scores
+        # the whole set and reports a plausible number.
+        ds = _make_tagged(["a", "b", "c"])
+        logs = _capture_logs(lambda: ds.filter("tag", "zzz", split="tst"))
+        assert "split 'tst' is not in this dataset" in logs
+        assert "nothing was filtered" in logs
+        assert "['test']" in logs
+
+    def test_filter_warns_that_an_empty_split_filtered_nothing(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict({"test": HFDataset.from_dict({})})
+        )
+        logs = _capture_logs(lambda: ds.filter("tag", "a"))
+        assert "split 'test' is empty, so nothing was filtered" in logs
+
+    def test_require_all_raises_rather_than_warning_on_a_missing_split(self):
+        # require_all promises every requested key lands; silently keeping all
+        # rows because the split name was wrong breaks that promise outright.
+        ds = _make_tagged(["a", "b", "c"])
+        with pytest.raises(ValueError, match=r"split 'tst' is not in this dataset"):
+            ds.filter("tag", "zzz", split="tst", require_all=True)
+
+    def test_require_all_raises_rather_than_warning_on_an_empty_split(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict({"test": HFDataset.from_dict({})})
+        )
+        with pytest.raises(ValueError, match=r"split 'test' is empty"):
+            ds.filter("tag", "a", require_all=True)
+
+    def test_filter_no_match_truncates_a_wide_requested_list(self):
+        # A values_file puts thousands of keys in `value`, and a stale id list
+        # matches none of them — the message must not become the file.
+        ds = _make_tagged(["a", "b"])
+        with pytest.raises(ValueError) as excinfo:
+            ds.filter("tag", [f"missing_{i}" for i in range(1005)])
+        message = str(excinfo.value)
+        assert "... (1005 requested)" in message
+        assert "missing_1004" not in message
+        assert len(message) < 500
+
+    def test_filter_no_match_still_quotes_a_short_value_whole(self):
+        ds = _make_tagged(["a", "b"])
+        with pytest.raises(ValueError, match=r"has tag='z'"):
+            ds.filter("tag", "z")
 
     def test_filter_empty_value_list_raises(self):
         # An empty selection keeps nothing, so it would fail the no-match guard

@@ -141,16 +141,29 @@ class Dataset[TSample](ABC):
         checks the *keys*, not the row count — one key matching many rows is
         not an error.
 
-        Returns ``self`` unchanged if *split* is absent or empty. Raises if *by*
-        names a column that does not exist, or if **nothing** matches: an empty
-        result is a misspelled *value* far more often than an intended
-        selection, and it would otherwise surface as a run that silently scores
-        zero samples.
+        Returns ``self`` unchanged if *split* is absent or empty, warning that
+        nothing was filtered — a misspelled *split* otherwise keeps every row
+        while looking like a selection, which is the one failure here that
+        reports a plausible number. *require_all* raises on it: a caller who
+        asks for every key to land is not asking about one split in particular.
+
+        Raises if *by* names a column that does not exist, or if **nothing**
+        matches: an empty result is a misspelled *value* far more often than an
+        intended selection, and it would otherwise surface as a run that
+        silently scores zero samples.
         """
         if split not in self._dataset_dict:
+            _report_nothing_filtered(
+                f"filter: split {split!r} is not in this dataset "
+                f"(have: {sorted(self._dataset_dict)})",
+                require_all=require_all,
+            )
             return self
         hf = self._dataset_dict[split]
         if len(hf) == 0:
+            _report_nothing_filtered(
+                f"filter: split {split!r} is empty", require_all=require_all
+            )
             return self
 
         cols = _filter_columns(by, hf.column_names)
@@ -202,8 +215,16 @@ class Dataset[TSample](ABC):
             present = list(dict.fromkeys(keys))
             shown = present[:10]
             suffix = f", ... ({len(present)} distinct)" if len(present) > 10 else ""
+            # A `values_file` puts thousands of keys in `value`, and no overlap
+            # at all is exactly what a stale id list produces — truncate it the
+            # way the unmatched warning below already truncates its own.
+            asked = (
+                f"{requested[:10]}, ... ({len(requested)} requested)"
+                if len(requested) > 10
+                else repr(value)
+            )
             raise ValueError(
-                f"filter: no row of split {split!r} has {label}={value!r}; "
+                f"filter: no row of split {split!r} has {label}={asked}; "
                 f"present values: {shown}{suffix}"
             )
 
@@ -478,6 +499,20 @@ class Dataset[TSample](ABC):
             raise ValueError(f"Unknown mode: {mode}.")
 
         return iter(selected_ds) if lazy else list(selected_ds)
+
+
+def _report_nothing_filtered(detail: str, *, require_all: bool) -> None:
+    """Report a ``filter`` that could not run, having no split to run on.
+
+    Silence is the wrong default here even though returning *self* is the right
+    behaviour: every other way ``filter`` fails leaves too few rows, which shows
+    up downstream, while this one leaves them all — a run scored on the whole
+    split while its config says otherwise.
+    """
+    detail = f"{detail}, so nothing was filtered"
+    if require_all:
+        raise ValueError(detail)
+    logger.warning(detail)
 
 
 def _filter_columns(by: TFilterKey, column_names: list[str]) -> list[str] | None:
