@@ -125,7 +125,11 @@ jobs:
       #
       # Two paths because the families resolve differently: the vendored IFBench
       # fork redirects NLTK_DATA into the sieval cache so downloads never land
-      # in the source tree, while `multi_if` and `ruler` use NLTK's default.
+      # in the source tree, while `multi_if` and `ruler` use NLTK's default. That
+      # first path is spelled by `sieval/community/ifbench/instructions.py`, which
+      # nothing here can key on -- move the cache dir there and this step silently
+      # restores nothing. It goes cold, not wrong, which is why it is a comment
+      # and not a guard.
       #
       # Keyed on the files that decide *which* corpora get fetched, so adding
       # one invalidates the cache on its own. A hand-written version key would

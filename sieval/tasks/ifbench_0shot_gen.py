@@ -55,12 +55,21 @@ from sieval.datasets import IFBenchDatasetSample
 # is the headline; the shape is otherwise identical.
 _GRADES = ("strict", "loose")
 
-# The NLTK data the vendored checkers reach for, as ``nltk.data.find`` lookup
-# paths. Upstream IFBench stages these itself -- `download_nltk_resources()` runs
-# at import of the vendored `instructions_util` -- so nothing here downloads
-# them; this list exists only to *verify* that staging. It is a second copy of
-# upstream's list, and a test drives that helper with every lookup failing to
-# assert the two ask for the same set, so they cannot drift apart silently.
+# What upstream's `download_nltk_resources()` stages, as ``nltk.data.find``
+# lookup paths. It runs at import of the vendored `instructions_util`, so nothing
+# here downloads them; this list exists only to *verify* that staging. It is a
+# second copy of upstream's list, and a test drives that helper with every lookup
+# failing to assert the two ask for the same set, so they cannot drift silently.
+#
+# Upstream's download list, deliberately -- not the narrower set the checkers
+# actually need. On nltk >= 3.9 `tokenizers/punkt` is dead weight: every NLTK
+# call site in the vendored fork resolves through `punkt_tab`, including the
+# explicit `nltk.data.load("nltk:tokenizers/punkt/english.pickle")` in
+# `instructions_util`. Verifying it anyway keeps the drift pin an equality rather
+# than a subset, so a corpus added upstream cannot slip in unverified. The cost
+# is that a box hand-staged with only what grading needs is refused -- but the
+# error message names `punkt`, and both routes that stage these automatically
+# (upstream's helper, the Docker image) fetch all four regardless.
 _NLTK_RESOURCES = (
     "tokenizers/punkt",
     "tokenizers/punkt_tab",
@@ -84,8 +93,10 @@ def _ensure_nltk_resources() -> None:
     so the score is computed over the subset whose constraints never touched NLTK
     -- a biased remainder published under the full benchmark's name. Checking all
     four resources once, unconditionally, converts that into a total failure: every
-    sample stops here naming what is missing, `fails` equals the set size, and no
-    partial score is reported.
+    sample stops here naming what is missing and `fails` equals the set size, so
+    nothing is scored over a subset. The run still writes a report -- one whose
+    rates are all `0.0` beside a full failure count. `fails` is what separates
+    that from a model which genuinely followed no constraint.
 
     Verification only, no download: upstream already tried, and a second attempt
     would just spend the same timeout again. The Multi-IF sibling *does* download
