@@ -57,7 +57,7 @@ def test_meta():
     assert meta.dataset == base.dataset
     assert meta.eval_mode == base.eval_mode
     assert meta.deps_group == base.deps_group == "multi-if"
-    assert meta.status == "experimental"
+    assert meta.status == "stable"
 
 
 def test_reference_impl_quantifies_the_divergence():

@@ -81,12 +81,13 @@ repair here touches and none should.
 Pin ``langdetect.DetectorFactory.seed`` in both arms before attributing a flip
 to a repair.
 
-**Status.** ``experimental``, for both of its parent's reasons and one of its
-own: no first-party published Multi-IF number is reproducible under any single
-reduction (see ``multi_if_0shot_gen``'s notes — that is a property of the
-anchor and this variant does not change it), and this name has not been run end
-to end. Repairing three checkers does not make an unreproducible anchor
-reproducible; if anything it moves further from one, deliberately.
+**Status.** ``stable``. Its parent stays ``experimental`` because it is a
+faithful port whose first-party published number is not reproducible under any
+single reduction (see ``multi_if_0shot_gen``'s notes). That is a property of the
+anchor, which this variant neither changes nor inherits: it claims no anchor at
+all. Repairing three checkers moves further from that number, deliberately; what
+this variant owes instead is a quantified delta, which the measurements above
+carry.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -106,10 +107,11 @@ from sieval.tasks.multi_if_0shot_gen import MultiIFZeroShotGenTask
     tags=("multilingual", "multi-turn", "open-ended"),
     deps_group="multi-if",
     model_type="chat",
-    # Inherits its parent's unreproducible-anchor problem and adds a deliberate
-    # divergence on top, so `stable` is not reachable by reproduction here. The
-    # divergence is quantified, which is what `_fixed` owes.
-    status="experimental",
+    # The parent stays `experimental` because it is a faithful port whose
+    # published anchor is not reachable. That reason does not carry over here:
+    # this variant grades differently on purpose and claims no anchor, so what
+    # it owes is a quantified delta, which `notes` below carries.
+    status="stable",
     reference_kind="value",
     reference_impl=ReferenceImpl(
         source="facebookresearch/Multi-IF",

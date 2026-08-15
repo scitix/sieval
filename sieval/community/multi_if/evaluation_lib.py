@@ -40,7 +40,8 @@ from . import ifeval
 
 def gen_acc_strict(x: dict[str, Any], *, instruction_dict=None) -> dict:
     # reference: fbcode/gen_ai/github/fair_evals/evals/tasks/finetune/ifeval.py
-    instruction_dict = instruction_dict or ifeval.INSTRUCTION_DICT
+    if instruction_dict is None:
+        instruction_dict = ifeval.INSTRUCTION_DICT
     response = str(x["response"])
     instruction_list = x["instruction_id_list"]
     is_following_list = []
@@ -62,7 +63,8 @@ def gen_acc_strict(x: dict[str, Any], *, instruction_dict=None) -> dict:
 
 
 def gen_acc_loose(x: dict[str, Any], *, instruction_dict=None) -> dict:
-    instruction_dict = instruction_dict or ifeval.INSTRUCTION_DICT
+    if instruction_dict is None:
+        instruction_dict = ifeval.INSTRUCTION_DICT
     response = str(x["response"])
     r = response.split("\n")
     response_remove_first = "\n".join(r[1:]).strip()

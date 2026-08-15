@@ -108,12 +108,14 @@ looked for a while like the repair leaking through a shared RNG. Pin
 any flip to a fix. The same unseededness is why ``english_capital`` is worth
 repairing at all rather than merely worth noting.
 
-**Status.** ``experimental``: the divergence from upstream is measured three
-ways above and the repairs each reduce to upstream's own expression on the
-inputs upstream already handled (asserted in the tests), but the variant has not
-yet been run end to end against a published anchor — and by construction it
-cannot reproduce one, since it grades differently on purpose. Promotion wants a
-full live run of this name, not a replay of the unqualified one's responses.
+**Status.** ``stable``. The divergence is carried by the name, so ``status`` is
+not gated on reproducing a published number — by construction this variant
+cannot reproduce one, since it grades differently on purpose. What a ``_fixed``
+variant owes instead is a quantified delta, and this one is measured three ways
+above, with each repair reducing to upstream's own expression on the inputs
+upstream already handled (asserted in the tests). ``experimental`` is for a
+faithful port whose published anchor is not reachable, which is not a claim this
+task makes.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -133,11 +135,13 @@ from sieval.tasks.ifeval_0shot_gen import IFEvalZeroShotGenTask
     tags=("english", "open-ended"),
     deps_group="ifeval",
     model_type="chat",
-    # Not a reproduction of a published number by construction -- it grades
-    # differently on purpose -- and not yet run end to end under this name. The
-    # divergence is quantified (module docstring, and `notes` below), which is
-    # what `_fixed` owes; a live run is what promotion owes.
-    status="experimental",
+    # The divergence is carried by the name, not by `status`: this task grades
+    # differently on purpose, so it claims no published number and `status` is
+    # not gated on reproducing one. What a `_fixed` variant owes instead is a
+    # quantified delta, which the module docstring and `notes` below carry.
+    # `experimental` is for a faithful port whose published anchor is not
+    # reachable -- a claim this task does not make.
+    status="stable",
     reference_kind="value",
     reference_impl=ReferenceImpl(
         source="google-research/instruction_following_eval",

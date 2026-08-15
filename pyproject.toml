@@ -61,13 +61,22 @@ ifeval = [
 iheval = ["sieval[ifeval]", "rouge-score>=0.1.2"]
 multi-if = [
   # Multi-IF vendors its own multilingual fork of the IFEval checkers, so this
-  # group is deliberately not `ifeval`'s: no absl/immutabledict (the fork uses
-  # stdlib logging and MappingProxyType), and emoji is required rather than
-  # optional because the CJK word counter behind every Chinese length
-  # constraint counts emoji as words.
+  # group is deliberately not `ifeval`'s: it restates what the fork reaches
+  # rather than reusing a list built for the other copy, and emoji is required
+  # rather than optional because the CJK word counter behind every Chinese
+  # length constraint counts emoji as words.
   "emoji>=2.15.0",
   "langdetect>=1.0.9",
   "nltk>=3.9.2",
+  # Not reached by the fork itself, which uses stdlib logging and
+  # MappingProxyType. `multi_if_0shot_gen_fixed` grades through
+  # `sieval.community.instruction_following_eval_fixed`, whose three repairs are
+  # shared with the ifeval family, so it imports google-research's
+  # `instructions` module -- absl-py and immutabledict are that module's. They
+  # are needed at grading time, not import time, so omitting them fails inside
+  # `feedback()` with inference already paid for.
+  "absl-py>=2.3.1",
+  "immutabledict>=4.2.2",
   # Only reached when langdetect reports Thai for a model *response* (Thai is
   # not one of the dataset's eight languages). Declared anyway so that path
   # cannot die on ImportError mid-run; the import itself is deferred.

@@ -211,10 +211,14 @@ class _EnglishCapitalFix:
     Because the checker's own precondition is that the response *is* all capitals,
     every response it ever sees is in exactly the state the detector handles worst.
 
-    Only the argument to ``detect`` changes. ``isupper()`` is still upstream's,
-    still first, and still short-circuits, so the set of responses that reach the
-    detector is exactly the set upstream sends there, and "all capital letters"
-    is decided by code this mixin does not touch.
+    Only the argument to ``detect`` changes in what is *graded*. ``isupper()`` is
+    still upstream's, still first, and still short-circuits, so the set of
+    responses that reach the detector is exactly the set upstream sends there,
+    and "all capital letters" is decided by code this mixin does not touch. The
+    one other difference is that overriding the whole method drops upstream's
+    log-on-exception (``logging.error`` in google-research's copy, ``logger.info``
+    in Meta's -- the single line on which the two copies of this class differ).
+    It logged the entire response, and the verdict it accompanied is unchanged.
 
     The sibling ``change_case:english_lowercase`` is deliberately *not* repaired:
     it calls the detector on text that is already lowercase, which is the

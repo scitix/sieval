@@ -93,7 +93,8 @@ def test_instruction_following_strict(
     instruction_dict=None,
 ):
     """Tests response to see if instrutions are followed."""
-    instruction_dict = instruction_dict or instructions_registry.INSTRUCTION_DICT
+    if instruction_dict is None:
+        instruction_dict = instructions_registry.INSTRUCTION_DICT
     response = prompt_to_response[inp.prompt]
     instruction_list = inp.instruction_id_list
     is_following_list = []
@@ -128,7 +129,8 @@ def test_instruction_following_loose(
     instruction_dict=None,
 ):
     """Tests response for an upper bound for following instructions."""
-    instruction_dict = instruction_dict or instructions_registry.INSTRUCTION_DICT
+    if instruction_dict is None:
+        instruction_dict = instructions_registry.INSTRUCTION_DICT
     response = prompt_to_response[inp.prompt]
     r = response.split("\n")
     response_remove_first = "\n".join(r[1:]).strip()

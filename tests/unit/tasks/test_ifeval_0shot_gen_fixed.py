@@ -63,8 +63,9 @@ def test_meta():
     assert meta.eval_mode == base.eval_mode
     assert meta.n_shot == base.n_shot == 0
     assert meta.deps_group == base.deps_group == "ifeval"
-    # Not a reproduction of a published number by construction.
-    assert meta.status == "experimental"
+    # Not gated on reproducing a published number: the divergence is carried by
+    # the name, and what `_fixed` owes is the quantified delta in `notes`.
+    assert meta.status == "stable"
 
 
 def test_reference_impl_quantifies_the_divergence():
