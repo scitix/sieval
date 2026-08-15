@@ -35,6 +35,17 @@ def _under_a_forbidden_name(module: str, forbidden: frozenset[str]) -> bool:
     return any(".".join(parts[:i]) in forbidden for i in range(1, len(parts) + 1))
 
 
+def _is_sticky(module: str) -> bool:
+    """True if *module* is a sticky root, or lives under one.
+
+    Matched on dotted segments rather than raw characters: `str.startswith`
+    would also claim a future `sieval.tasks_v2` or `sieval.corelib`, and the
+    failure that produces is the silent direction — such a module would stop
+    being dropped and leak into every task checked after it.
+    """
+    return any(module == root or module.startswith(root + ".") for root in _STICKY)
+
+
 def _drop_addenda(baseline: frozenset[str], forbidden: frozenset[str]) -> None:
     """Unload every module added since *baseline* that is safe to re-import.
 
@@ -46,7 +57,7 @@ def _drop_addenda(baseline: frozenset[str], forbidden: frozenset[str]) -> None:
     dropping it cannot cost a later import anything it is entitled to.
     """
     for name in sys.modules.keys() - baseline:
-        if not name.startswith(_STICKY) or _under_a_forbidden_name(name, forbidden):
+        if not _is_sticky(name) or _under_a_forbidden_name(name, forbidden):
             del sys.modules[name]
 
 
