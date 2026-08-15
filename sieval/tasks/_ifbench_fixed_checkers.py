@@ -8,34 +8,31 @@ holds a repaired version of each and the registry overlay that mounts them;
 Nothing here changes what an item *asks*. Every repair is to the code that
 decides whether an answer complied.
 
-**Why a separate module for one caller.** Not for sharing — it has exactly one
-importer, and `sieval/community/CLAUDE.md` is explicit that a one-caller helper
-belongs in its caller. It is here because the task module's entire claim is that
-it is the unqualified task plus *one* overridden method
-(``test_exactly_one_method_differs_from_the_unqualified_task``), and two hundred
-lines of surgery on vendored code — four defects, each owing its own statement —
-is not something that claim survives being read beside.
+**Why a separate module for one caller.** Not for sharing: one importer is why
+it sits under ``tasks/`` rather than in ``community/``. It is a separate *file*
+because the task module's whole claim is that it is the unqualified task plus
+one overridden method, and two hundred lines of surgery on vendored code is not
+something that claim survives being read beside.
 
-**Registration must not pay for any of this.** ``import_all_tasks`` — what
-``scripts/sync_meta_index.py`` runs, and what CI runs it through — imports
-*every* module under ``sieval/tasks``, private ones included. The underscore
-keeps this module out of the task *index*; it does not keep it out of the
-*import scan*, so the discipline has to be kept by the code rather than by the
-filename. :mod:`sieval.community.ifbench.instructions` pulls in NLTK, a network
-fetch of NLTK's corpora, and a 2.3k-line checker fork, so it is imported inside
-:func:`_fixed_checker_classes` and never at module scope: importing this module
+**Registration must not pay for any of this.** ``import_all_tasks`` — which
+``scripts/sync_meta_index.py`` and CI run — imports *every* module under
+``sieval/tasks``, private ones included: the underscore keeps this module out of
+the task *index*, not out of the *import scan*, so the discipline has to be kept
+by the code rather than by the filename.
+:mod:`sieval.community.ifbench.instructions` is a 2.3k-line fork pulling in NLTK
+and a network fetch of its corpora, so it is imported inside
+:func:`_fixed_checker_classes` and never at module scope — importing this module
 is free, and *naming a repaired checker* is what costs.
 :mod:`sieval.tasks._math_verify` keeps the same rule for the same reason.
 
 **Subclasses rather than replacements.** ``build_description``'s defaults and
 validation, ``get_instruction_args`` and the description pattern all stay
 upstream's *by construction* rather than by review, so a repair cannot silently
-change what the item says while claiming to change only how it is graded. Each
-overrides exactly ``check_following``. Subclassing needs the upstream class
-loaded when the subclass is *defined*, which is why the four class statements
-live inside :func:`_fixed_checker_classes` rather than at module scope; the
-verdict logic each one delegates to stays out here, where it is read, typed and
-tested without the fork present.
+change what an item says while claiming to change only how it is graded. Each
+overrides exactly ``check_following``. A subclass needs its base loaded when it
+is *defined*, which is why the four class statements live inside
+:func:`_fixed_checker_classes` while the verdict logic they delegate to stays
+out here, read, typed and tested without the fork present.
 
 The four:
 
@@ -52,9 +49,8 @@ removal. A blank line that survives has indent 0 and breaks the "each line
 indents further than the last" chain, so the verdict depends on *how many* blank
 lines the response happened to contain — something the instruction neither
 states nor could state. ``a\\n\\n b\\n  c`` (one blank line, removed) was already
-True; ``a\\n\\n\\n b\\n  c`` (two, one survives) was False. Same response shape,
-opposite verdict, decided by an implementation detail. Repaired by filtering with
-a comprehension. A leading ``Sure!`` still fails, correctly — that is two
+True; ``a\\n\\n\\n b\\n  c`` (two, one survives) was False. Repaired by filtering
+with a comprehension. A leading ``Sure!`` still fails, correctly — that is two
 consecutive lines at indent 0, which is what the instruction forbids.
 
 **``ratio:sentence_type``** — two independent defects in
@@ -70,10 +66,9 @@ consecutive lines at indent 0, which is what the instruction forbids.
    The repair is applied to **both** counts, so it recovers a quoted
    interrogative (``She said "Really?" He nodded. It is fine.`` — terminals
    ``?``, ``.``, ``.``, so 2 == 2*1, False upstream and True here) exactly as it
-   recovers a quoted declarative. Symmetry is the point rather than a side
-   effect: repairing one side alone would leave the ratio comparing a
-   quote-aware count against a quote-blind one, which is a third reading of the
-   instruction and not one anybody asked for.
+   recovers a quoted declarative. Repairing one side alone would compare a
+   quote-aware count against a quote-blind one — a third reading of the
+   instruction, and not one anybody asked for.
 2. ``0 == 0`` is True, so a response with no interrogative at all — every
    sentence exclamatory, or nothing the splitter recognises as a sentence —
    **passes**. That is a false pass, the direction that inflates a score and the
@@ -120,14 +115,12 @@ _CLOSERS = "\"'”’»)]}"
 #: A paragraph break is a blank line. A single newline inside a paragraph is a
 #: soft wrap, which is what upstream's `split('\n')` mistakes for a break.
 #:
-#: Every spelling of a blank line counts, because the repair's whole claim is
-#: that a response is one paragraph or two and a line ending cannot be what
-#: decides which: `\r?\n` reads CRLF as one break, and `[^\S\r\n]` is "whitespace
-#: that is not a line break", so a blank line padded with NBSP or a form feed
-#: separates paragraphs the same way one padded with spaces does. Narrower
-#: spellings fail open -- an unmatched break leaves the halves joined, the
-#: response counts as a single paragraph, and two paragraphs pass a checker whose
-#: only job is to reject them.
+#: Every spelling of a blank line counts, because a line ending cannot be what
+#: decides whether a response is one paragraph or two: `\r?\n` reads CRLF as one
+#: break, and `[^\S\r\n]` is "whitespace that is not a line break", so an
+#: NBSP-padded blank line separates paragraphs like a space-padded one. Narrower
+#: spellings fail open -- the halves stay joined, and two paragraphs pass a
+#: checker whose only job is to reject them.
 _PARA_SPLIT = re.compile(r"\r?\n[^\S\r\n]*\r?\n")
 
 
@@ -257,13 +250,12 @@ def fixed_ifbench_registry() -> dict[str, type]:
     concurrently, and mutating the shared registry would change how the
     unqualified task grades in the same session.
 
-    Refuses to mount a repair whose id or base class has moved upstream. After a
-    re-vendor that renamed an id the overlay would otherwise land on a key
-    nothing looks up, and after one that re-bound an id to a different class the
-    subclass would silently reintroduce the behaviour of a class no longer in
-    play — either way ``_fixed`` would grade identically to the unqualified task
-    while still claiming a delta. Failing loudly here is the only place that is
-    visible.
+    Refuses to mount a repair whose id or base class has moved upstream. A
+    re-vendor that renames an id would land the overlay on a key nothing looks
+    up; one that re-binds an id to a different class would reintroduce a checker
+    upstream no longer uses. Either way ``_fixed`` would grade identically to the
+    unqualified task while still claiming a delta, and here is the only place
+    that is visible.
     """
     from sieval.community.ifbench.instructions_registry import INSTRUCTION_DICT
 

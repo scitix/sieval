@@ -24,49 +24,41 @@ strict instruction-level           34.0480   34.4477  +0.3997
 **The delta is small, and that is the finding.** The four ids appear on 28 of the
 300 prompts (224 of 2,752 constraint slots); 12 of the 5,504 gradings flip, every
 one FAIL→PASS, none PASS→FAIL. A second run over the same 300 prompts at 2
-rollouts moves no metric at all. So this variant is not a materially different
-benchmark — it is the same benchmark with a bounded, known correction, and the
-bound is the point: without it the residual is an unmeasured guess.
+rollouts moves no metric at all. This is the same benchmark with a bounded
+correction, not a different one — and without the bound the residual is a guess.
 
-Only two of the four repairs flip anything on real responses, and saying which is
-part of the measurement:
+Only two of the four repairs flip anything on these responses:
 
-- ``format:line_indent`` — 11 flips (strict). The whole delta, essentially.
+- ``format:line_indent`` — 11 flips (strict), essentially the whole delta.
 - ``words:words_position`` — 1 flip (loose).
 - ``ratio:sentence_type`` — **0 flips** across 48 gradings. Quoted-declarative
-  recovery fired twice without changing a verdict, and the vacuous ``0 == 0``
-  false pass was *reachable but never fired*: 5 gradings had no interrogative,
-  and all 5 also had a nonzero declarative count, so upstream's test was False
-  for the right reason by luck rather than by construction.
-- ``words:vowel`` — **0 flips** across 80 gradings. The line-count gate and the
-  paragraph-count gate agreed on all 70 non-blank responses (38 single, 32
+  recovery fired twice without changing a verdict; the vacuous ``0 == 0`` false
+  pass was reachable but never fired, since all 5 gradings with no interrogative
+  also had a nonzero declarative count — upstream was False by luck.
+- ``words:vowel`` — **0 flips** across 80 gradings. The line-count and
+  paragraph-count gates agreed on all 70 non-blank responses (38 single, 32
   multi): this model never produced the soft-wrapped single paragraph that
-  separates them. The defect is real and unexercised, not absent.
+  separates them.
 
-Both are kept. A checker that is wrong only on inputs a particular model happens
-not to produce is still wrong, and the next model is not bound by this one's
-formatting habits — but a reader deserves to know the number came from two
-repairs, not four.
+Both are kept — a checker wrong only on inputs one model happens not to produce
+is still wrong, and the next model is not bound by its formatting habits.
 
 Use the unqualified ``ifbench_0shot_gen`` to compare against published IFBench
-numbers; those were produced by upstream's code, defects included. Use this task
+numbers, which were produced by upstream's code, defects included; use this task
 when the grading needs to match what the items actually ask.
 
 **Not a sibling of the IFEval-family repairs.** ``ifeval_0shot_gen_fixed`` and
 ``multi_if_0shot_gen_fixed`` share one mixin module because their two vendored
 copies of google-research's checkers are logic-identical. IFBench is allenai's
-own instruction set with its own checkers and its own defects — nothing here
-overlaps those three, which is why the repairs live in a module of their own
-rather than joining :mod:`sieval.community.instruction_following_eval_fixed`.
+own checker set, sharing none of those three defects, so its repairs live in a
+module of their own.
 
 **Status.** ``stable``. Its parent stays ``experimental`` because of its
-*reproduction*: upstream's temperature=0 protocol does not reproduce, so the
-published-number claim it makes is unverified. That is a property of the anchor,
-which this variant neither changes nor inherits — it claims no anchor at all,
-and ``notes`` forbids the comparison outright. What a ``_fixed`` variant owes
-instead is a quantified delta, measured above over the full official 300-prompt
-test set. ``experimental`` would say "not ready", which is the one thing a
-measured fork is not.
+*reproduction* — upstream's temperature=0 protocol does not reproduce, so its
+published-number claim is unverified. That is a property of the anchor, which
+this variant neither changes nor inherits: it claims none, and ``notes`` forbids
+the comparison outright. What a ``_fixed`` owes instead is a quantified delta,
+measured above.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -98,10 +90,8 @@ from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
         notes=(
             "Deliberate fork of ifbench_0shot_gen, which stays byte-faithful to "
             "upstream. Four vendored checkers grade something other than what "
-            "their instruction says and are repaired here, in "
-            "sieval.tasks._ifbench_fixed_checkers -- a module of its own, not "
-            "the IFEval family's shared mixins, since IFBench is allenai's own "
-            "checker set with its own defects and shares none of those three. "
+            "their instruction says and are replaced by the repaired subclasses "
+            "in sieval.tasks._ifbench_fixed_checkers. "
             "DIVERGENCES (all four, exhaustive): "
             "(1) format:line_indent drops blank "
             "lines with `for line in lines: if not line.strip(): "
@@ -129,39 +119,28 @@ from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
             "headline) 39.2917→39.3333 (+0.0417), strict prompt-level "
             "30.7917→31.2500 (+0.4583), loose instruction-level "
             "42.2602→42.2965, strict instruction-level 34.0480→34.4477. "
-            "The four ids cover 28 "
-            "of 300 prompts; 12 of 5,504 gradings flip, all FAIL->PASS, none "
-            "PASS->FAIL. Only format:line_indent (11 flips) and "
-            "words:words_position (1) flip anything on these responses; "
-            "ratio:sentence_type and words:vowel flip nothing here and are kept "
-            "because the defect is unexercised by this model, not absent. So "
-            "this variant is not a different benchmark, it is the same one with "
-            "a bounded correction -- do not compare its numbers to published "
-            "IFBench results, which were produced by upstream's code. "
+            "The four ids cover 28 of 300 prompts; 12 of 5,504 gradings flip, "
+            "all FAIL->PASS, none PASS->FAIL. Only format:line_indent (11 "
+            "flips) and words:words_position (1) flip anything on these "
+            "responses; ratio:sentence_type and words:vowel flip nothing here "
+            "and are kept because the defect is unexercised by this model, not "
+            "absent. Do not compare these numbers to published IFBench results, "
+            "which were produced by upstream's code. "
             "REPRODUCTION NOTE: 16 of IFBench's 58 checkers fall back to "
             "random.randint/random.choice in build_description when a row omits "
             "the kwarg, so seed `random` in both arms before attributing a flip "
             "to a repair -- an unseeded A/B can move checkers this task does not "
-            "touch. None of the four repaired here draws, so the repairs "
-            "themselves consume no draw and leave that shared stream unperturbed."
+            "touch. None of the four repaired here draws, so the repairs consume "
+            "no draw and leave that shared stream unperturbed."
         ),
     ),
 )
 class IFBenchZeroShotGenFixedTask(IFBenchZeroShotGenTask):
-    """IFBench graded through the repaired checkers.
-
-    Overrides exactly one method. Everything that decides what a sample is asked,
-    how it is decoded, and how verdicts are pooled into the headline is inherited,
-    so the two tasks cannot drift apart anywhere except the registry lookup.
-    """
-
     @override
     def _instruction_dict(self) -> dict[str, type] | None:
         # Imported here, not at module scope, for the reason the base task
-        # lazy-imports `evaluation_lib`: the repair module subclasses the
-        # vendored 2.3k-line checker fork and reaches NLTK through it, and
-        # importing this task -- which `sieval task show` and the registry
-        # scan do -- must not pay for either.
+        # lazy-imports `evaluation_lib`: registration imports every task module,
+        # and must not pay for the vendored checker fork and NLTK.
         from sieval.tasks._ifbench_fixed_checkers import fixed_ifbench_registry
 
         # A fresh dict per call, never the vendored global: samples grade

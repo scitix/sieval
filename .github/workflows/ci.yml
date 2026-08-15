@@ -15,12 +15,10 @@ env:
   # light, no torch. `iheval` is a superset of `ifeval` plus rouge-score, so it
   # adds ~one wheel and keeps the reimplemented IHEval graders under test.
   # `ifbench` earns its place the same way: emoji + syllapy on top of the nltk
-  # `ifeval` already pulls, and it is what puts the *repaired* IFBench checkers
-  # under test -- first-party code, unlike the vendored fork they subclass, and
-  # untestable without the fork present. Its NLTK corpora need no staging step
-  # here: the vendored `instructions_util` find-or-downloads them at import,
-  # which is the same on-demand route `multi_if` and the `ruler` dataset already
-  # take in this job. The delivery image bakes them instead (`Dockerfile`).
+  # `ifeval` already pulls, and the repaired IFBench checkers are first-party
+  # code, untestable without the vendored fork they subclass. Its NLTK corpora
+  # need no staging step -- the vendored code find-or-downloads them at import,
+  # as `multi_if` and the `ruler` dataset already do in this job.
   INSTALL_GROUPS: >-
     -G drop -G ifbench -G ifeval -G iheval -G math -G scicode -G test -G dev
 
