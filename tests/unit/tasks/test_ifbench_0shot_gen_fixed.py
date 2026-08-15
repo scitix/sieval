@@ -23,30 +23,6 @@ _INDENT = "format:line_indent"
 _TITLE = "format:title_case"
 
 
-def test_import_does_not_pull_evaluation_lib():
-    # Same contract as the unqualified task's, and one more: the repair module
-    # subclasses the vendored checkers and reaches NLTK through them, so
-    # defining it at module scope would make *registration* -- which imports
-    # every task module -- pay for both.
-    code = (
-        "import sys\n"
-        "import sieval.tasks.ifbench_0shot_gen_fixed\n"
-        "assert 'sieval.community.ifbench.evaluation_lib' not in sys.modules, (\n"
-        "    'evaluation_lib must be lazy-imported')\n"
-        "assert 'sieval.tasks._ifbench_fixed_checkers' not in sys.modules, (\n"
-        "    'the repair module must be lazy-imported')\n"
-        "assert 'nltk' not in sys.modules, 'nltk must be lazy-imported'\n"
-    )
-    # A fresh interpreter, so pytest's already-loaded modules cannot mask it.
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
-
-
 def test_the_registration_scan_does_not_need_the_ifbench_extras():
     # `import_all_tasks()` -- what `scripts/sync_meta_index.py` runs, and what
     # CI's preflight runs it through -- imports EVERY module under

@@ -116,11 +116,19 @@ jobs:
         run: pdm run python scripts/check_preflight.py
       # `benchmark` deselected: shared runners cannot hold wall-clock
       # thresholds calibrated on a dedicated box. The rest is deterministic.
+      #
+      # `-n auto` is one worker per vCPU, and one per vCPU is the ceiling that
+      # matters: the math tasks grade under a 30s in-code timeout, and enough
+      # oversubscription starves that call until it trips and scores the sample
+      # wrong -- ~16 green tests turn red together at 32x, with no assertion on
+      # time anywhere in them. `auto` reads `os.cpu_count()`, which is the real
+      # vCPU count on a GitHub-hosted VM (this job runs no `container:`), so it
+      # lands at 1:1. Pinning a literal here would only drift from the runner.
       - name: Unit + integration + acceptance tests + coverage
         run: >-
           pdm run python -m pytest tests/unit tests/integration tests/acceptance
           -m "not stress and not benchmark"
-          --cov --cov-report=xml -q
+          -n auto --cov --cov-report=xml -q
       - name: Upload coverage (advisory)
         if: always()
         uses: actions/upload-artifact@v4

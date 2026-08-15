@@ -1,6 +1,6 @@
 # SiEval Test Suite
 
-**~1200 tests** | **95%+ core coverage** | pytest + anyio
+**~5500 tests** | **95%+ core coverage** | pytest + anyio + xdist
 
 ---
 
@@ -137,9 +137,9 @@ python -m pytest tests/acceptance/ -v -s
 SIEVAL_BENCHMARK_ARTIFACT_DIR=./outputs/benchmarks \
 python -m pytest tests/acceptance/ -v -s
 
-# What CI runs: everything deterministic, benchmarks deselected
+# What CI runs: everything deterministic, benchmarks deselected, in parallel
 python -m pytest tests/unit tests/integration tests/acceptance \
-  -m "not stress and not benchmark" --cov -q
+  -m "not stress and not benchmark" -n auto --cov -q
 
 # Performance diagnostic benchmarks (default excludes stress)
 python -m pytest tests/performance/ -v
@@ -162,6 +162,35 @@ python -m pytest -m benchmark -v -s
 | `benchmark` | Wall-clock throughput gates, calibrated on a dedicated box. A plain local `pytest` runs them; **CI deselects them** (a shared runner cannot hold the thresholds, and `--cov` skews the latency they measure), so `/sieval-release` is where they are enforced. |
 
 Because these assert on *time*, treat a failure as "re-run idle" before calling it a regression. `tests/acceptance/` holds one (`test_benchmark_scenarios`); its other nine are deterministic and do run in CI.
+
+### Parallelism
+
+CI runs the deterministic suite under `pytest-xdist` (`-n auto`), which is what
+keeps it near a minute rather than near five. Two rules keep that sound.
+
+**A test that asserts on wall-clock time must carry `benchmark` or `stress`.**
+Otherwise workers competing for cores will eventually fail it for reasons that
+have nothing to do with the code, and CI deselects both markers.
+
+**Do not run more workers than you have cores free.** This is the sharper rule,
+because the tests it breaks assert nothing about time. The math tasks grade
+through a 30s in-code timeout (`GRADE_TIMEOUT`), and a starved grading call
+trips it and *scores the sample wrong* — so oversubscription surfaces as
+`assert False is True` in a dozen unrelated-looking grading tests, not as a
+timeout error. Measured: 4 workers on 4 cores is green; 128 workers on the same
+4 cores fails 16 tests.
+
+`-n auto` reads `os.cpu_count()`, which **ignores CPU affinity and cgroup
+quotas** — on a big shared box, `taskset`, a container limit, or simply other
+work running will leave `auto` far above what you actually have. Pass an
+explicit `-n <cores you have>` there.
+
+Otherwise nothing in the suite depends on execution order or a shared writable
+path. The one thing that costs more under parallelism is
+`tests/unit/tasks/test_import_discipline_family.py`: its probe interpreter is a
+session fixture, so each worker that receives one of its tests starts its own
+(~2.6s). That is still an order cheaper than the 23 per-task subprocesses it
+replaced.
 
 ```bash
 # Single file

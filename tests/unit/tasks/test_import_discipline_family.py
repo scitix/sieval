@@ -48,6 +48,14 @@ FORBIDDEN: dict[str, tuple[str, ...]] = {
     "drop_kshot_gen": ("sieval.community.simple_evals.drop_eval",),
     # evaluation_lib pulls the optional IFBench scorers.
     "ifbench_0shot_gen": ("sieval.community.ifbench.evaluation_lib",),
+    # The repair module subclasses the vendored checkers and reaches NLTK
+    # through them. Its underscore keeps it out of the task *index*, not out of
+    # `import_all_tasks`' scan, so it owes the same discipline as a public one.
+    "ifbench_0shot_gen_fixed": (
+        "sieval.community.ifbench.evaluation_lib",
+        "sieval.tasks._ifbench_fixed_checkers",
+        "nltk",
+    ),
     # evaluation_lib pulls absl/langdetect/nltk.
     "ifeval_0shot_gen": ("sieval.community.instruction_following_eval.evaluation_lib",),
     # multi_if's fork adds emoji and a 3.5k-line checker; `_ensure_punkt_tab`

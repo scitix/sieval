@@ -29,15 +29,30 @@ import sys
 _STICKY = ("sieval.tasks", "sieval.datasets", "sieval.core")
 
 
-def _drop_addenda(baseline: frozenset[str]) -> None:
-    """Unload every module added since *baseline* that is safe to re-import."""
+def _under_a_forbidden_name(module: str, forbidden: frozenset[str]) -> bool:
+    """True if *module* is a forbidden name, or lives under one."""
+    parts = module.split(".")
+    return any(".".join(parts[:i]) in forbidden for i in range(1, len(parts) + 1))
+
+
+def _drop_addenda(baseline: frozenset[str], forbidden: frozenset[str]) -> None:
+    """Unload every module added since *baseline* that is safe to re-import.
+
+    *forbidden* is every name the manifest names anywhere. A sticky subtree
+    can hold one — `sieval.tasks._ifbench_fixed_checkers` is a private task
+    module, not a registered task — and leaving it loaded would read as a leak
+    for every task checked after whichever one pulled it in. Nothing under
+    `_STICKY` may be imported at module scope by a task that forbids it, so
+    dropping it cannot cost a later import anything it is entitled to.
+    """
     for name in sys.modules.keys() - baseline:
-        if not name.startswith(_STICKY):
+        if not name.startswith(_STICKY) or _under_a_forbidden_name(name, forbidden):
             del sys.modules[name]
 
 
 def main() -> int:
     manifest: dict[str, list[str]] = json.load(sys.stdin)
+    forbidden_anywhere = frozenset(n for names in manifest.values() for n in names)
 
     # Some optional dependencies print on import, which would corrupt the reply.
     # Hand the protocol a handle nothing else holds and send stray output away.
@@ -56,7 +71,7 @@ def main() -> int:
             results[module] = {
                 "present": [name for name in forbidden if name in sys.modules]
             }
-        _drop_addenda(baseline)
+        _drop_addenda(baseline, forbidden_anywhere)
 
     json.dump(results, reply_to)
     return 0
