@@ -20,7 +20,11 @@ from sieval.core.datasets import Dataset
 
 def _capture_logs(fn) -> str:
     sink = io.StringIO()
-    logger_id = logger.add(sink, format="{message}")
+    # `level` is load-bearing, not a default worth tidying away: a sink without
+    # it captures DEBUG upward, so downgrading a `logger.warning` under test to
+    # `logger.debug` would keep every assertion below green while going silent
+    # in production, where the console sink is INFO unless `--verbose`.
+    logger_id = logger.add(sink, format="{message}", level="WARNING")
     try:
         fn()
     finally:
@@ -952,16 +956,24 @@ class TestStratifiedFraction:
 
 
 # ===================================================================
-# a missing split is reported by every transform
+# a missing split is reported by every operation that takes one
 # ===================================================================
 class TestMissingSplitIsReported:
-    """One contract over all five transforms, so none can drift back to silence.
+    """One contract over every ``split``-taking operation, so none goes quiet.
 
-    Each returns ``self`` when its split is absent — right, since a config may
-    name a split only some datasets carry. But every one of them exists to
-    *narrow* a split, so skipping the narrowing leaves the data whole and the
-    run scores every row: the only failure mode here that reports a plausible
-    number instead of an obviously wrong one.
+    The five transforms each return ``self`` when their split is absent, and
+    :meth:`Dataset.retrieve_samples` returns nothing — both right, since a
+    config may name a split only some datasets carry. What they must not do is
+    keep it to themselves.
+
+    The cost of that silence is not uniform, which is why the transforms are
+    covered together but argued separately: ``slice``, ``filter`` and
+    ``stratified_sample`` exist to *narrow*, so a skipped narrowing leaves the
+    data whole and the run scores every row — a plausible number rather than an
+    obviously wrong one. ``repeat`` and ``shuffle`` fail toward fewer rows or
+    unchanged order, which surfaces downstream; they are here for the contract.
+    ``retrieve_samples`` sits with the first group: no examples means a k-shot
+    prompt silently served as 0-shot.
     """
 
     @staticmethod
@@ -1026,7 +1038,30 @@ class TestMissingSplitIsReported:
         for op, call in self.TRANSFORMS:
             if op == "filter":
                 continue
-            assert call(ds) is ds, f"{op} must not raise"
+            # Reaching the next iteration *is* the assertion; what each one
+            # returns is pinned by `test_still_returns_self_untouched` above.
+            call(ds)
+
+    # `retrieve_samples` is not a transform — it returns samples, not a clone,
+    # so it carries neither the `self` contract nor `require_all`. It takes the
+    # same `split` and went just as quiet without these.
+    def test_retrieve_samples_reports_a_missing_split(self):
+        ds = self._dataset()
+        logs = _capture_logs(lambda: ds.retrieve_samples(2, split="tst"))
+        assert "retrieve_samples: split 'tst' is not in this dataset" in logs
+        assert "['test']" in logs
+        # Not "unchanged": nothing was transformed, the caller got nothing back.
+        assert "no samples are returned" in logs
+
+    def test_retrieve_samples_reports_an_empty_split(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict({"test": HFDataset.from_dict({})})
+        )
+        logs = _capture_logs(lambda: ds.retrieve_samples(2, split="test"))
+        assert (
+            "retrieve_samples: split 'test' is empty, so no samples are returned"
+            in logs
+        )
 
 
 # ===================================================================
