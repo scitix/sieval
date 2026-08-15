@@ -48,11 +48,20 @@ consecutive lines at indent 0, which is what the instruction forbids.
 **``ratio:sentence_type``** — two independent defects in
 ``declarative_count == 2 * interrogative_count``:
 
-1. Declaratives are counted with ``sentence.endswith('.')``, so a quoted
-   declarative (``... the sky is blue."``) is not counted at all. Repaired by
-   looking past a trailing run of closing quotes/brackets before testing the
-   terminal punctuation. Deliberately *not* "strip all punctuation": removing
-   ``!`` or ``?`` would move a sentence into a different bucket.
+1. Both counts test the raw final character — ``sentence.endswith('.')`` and
+   ``sentence.endswith('?')`` — so a sentence closing on a quote or bracket
+   (``... the sky is blue."``) is not counted at all. Repaired by looking past a
+   trailing run of closing quotes/brackets before testing the terminal
+   punctuation. Deliberately *not* "strip all punctuation": removing ``!`` or
+   ``?`` would move a sentence into a different bucket.
+
+   The repair is applied to **both** counts, so it recovers a quoted
+   interrogative (``She said "Really?" He nodded. It is fine.`` — terminals
+   ``?``, ``.``, ``.``, so 2 == 2*1, False upstream and True here) exactly as it
+   recovers a quoted declarative. Symmetry is the point rather than a side
+   effect: repairing one side alone would leave the ratio comparing a
+   quote-aware count against a quote-blind one, which is a third reading of the
+   instruction and not one anybody asked for.
 2. ``0 == 0`` is True, so a response with no interrogative at all — every
    sentence exclamatory, or nothing the splitter recognises as a sentence —
    **passes**. That is a false pass, the direction that inflates a score and the
@@ -101,7 +110,16 @@ _CLOSERS = "\"'”’»)]}"
 
 #: A paragraph break is a blank line. A single newline inside a paragraph is a
 #: soft wrap, which is what upstream's `split('\n')` mistakes for a break.
-_PARA_SPLIT = re.compile(r"\n[ \t]*\n")
+#:
+#: Every spelling of a blank line counts, because the repair's whole claim is
+#: that a response is one paragraph or two and a line ending cannot be what
+#: decides which: `\r?\n` reads CRLF as one break, and `[^\S\r\n]` is "whitespace
+#: that is not a line break", so a blank line padded with NBSP or a form feed
+#: separates paragraphs the same way one padded with spaces does. Narrower
+#: spellings fail open -- an unmatched break leaves the halves joined, the
+#: response counts as a single paragraph, and two paragraphs pass a checker whose
+#: only job is to reject them.
+_PARA_SPLIT = re.compile(r"\r?\n[^\S\r\n]*\r?\n")
 
 
 def _terminal(sentence: str) -> str:

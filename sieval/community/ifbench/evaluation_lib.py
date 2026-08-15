@@ -17,7 +17,7 @@
 
 # Local adaptation: the two graders take a keyword-only `instruction_dict`,
 # defaulting to the vendored registry, so `ifbench_0shot_gen_fixed` can grade
-# through the repaired checkers in `sieval.tasks.ifbench_0shot_gen_fixed`
+# through the repaired checkers in `sieval.tasks._ifbench_fixed_checkers`
 # without mutating a global that concurrently-graded samples share. Omitting the
 # argument reproduces upstream's behaviour exactly, which is what the
 # unqualified task does.
@@ -86,7 +86,8 @@ def test_instruction_following_strict(
     instruction_dict=None,
 ):
   """Tests response to see if instrutions are followed."""
-  instruction_dict = instruction_dict or instructions_registry.INSTRUCTION_DICT
+  if instruction_dict is None:
+    instruction_dict = instructions_registry.INSTRUCTION_DICT
   response = prompt_to_response[inp.prompt]
   instruction_list = inp.instruction_id_list
   is_following_list = []
@@ -121,7 +122,8 @@ def test_instruction_following_loose(
     instruction_dict=None,
 ):
   """Tests response for an upper bound for following instructions."""
-  instruction_dict = instruction_dict or instructions_registry.INSTRUCTION_DICT
+  if instruction_dict is None:
+    instruction_dict = instructions_registry.INSTRUCTION_DICT
   response = prompt_to_response[inp.prompt]
   if response is None:
       return OutputExample(

@@ -102,6 +102,17 @@ def test_sentence_type_counts_a_quoted_declarative():
     assert _check(SentTypeRatioCheckerFixed, value) is True
 
 
+def test_sentence_type_counts_a_quoted_interrogative():
+    # The same repair, on the other count. Asserted separately because it is a
+    # separate reachable divergence from upstream and the notes owe every one:
+    # upstream tests `endswith('?')` just as blindly, and repairing only the
+    # declarative side would compare a quote-aware count against a quote-blind
+    # one.
+    value = 'She said "Really?" He nodded. It is fine.'
+    assert _check(upstream.SentTypeRatioChecker, value) is False
+    assert _check(SentTypeRatioCheckerFixed, value) is True
+
+
 def test_sentence_type_no_longer_passes_a_response_with_no_ratio_at_all():
     # `0 == 2 * 0` is True: upstream passes a response that engaged with the
     # instruction not at all. A false PASS is the direction that inflates a
@@ -188,10 +199,16 @@ def test_vowel_accepts_a_soft_wrapped_paragraph():
     assert _check(SingleVowelParagraphCheckerFixed, value) is True
 
 
-def test_vowel_still_rejects_two_paragraphs():
+@pytest.mark.parametrize("blank", ["\n\n", "\r\n\r\n", "\n \n", "\n\t\n", "\n\xa0\n"])
+def test_vowel_still_rejects_two_paragraphs(blank):
     # The single-paragraph requirement is declared by the item, so it stays;
-    # only the definition of a break changes.
-    assert _check(SingleVowelParagraphCheckerFixed, "the beet\n\nneeds sun") is False
+    # only the definition of a break changes. Parametrized over how a blank line
+    # can be spelled because this repair is the one that decides what a break
+    # *is*: a pattern matching only `\n[ \t]*\n` leaves a CRLF response's
+    # paragraphs joined, and two paragraphs then pass. Asserting the claim for
+    # one separator is what let that through.
+    value = f"the beet{blank}needs sun"
+    assert _check(SingleVowelParagraphCheckerFixed, value) is False, repr(value)
 
 
 def test_vowel_still_rejects_a_fourth_vowel():

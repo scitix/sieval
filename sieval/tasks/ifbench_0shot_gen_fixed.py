@@ -70,7 +70,18 @@ from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
     tags=("english", "open-ended"),
     deps_group="ifbench",
     model_type="chat",
-    status="experimental",
+    # Stable, though the task it inherits from is not, because the two words
+    # answer different questions. The base is `experimental` for its *reproduction*
+    # -- upstream's temperature=0 protocol does not reproduce, so its published-
+    # number claim is unverified. This task makes no published-number claim at
+    # all; the notes below forbid the comparison outright. What `stable` has to
+    # carry here is the bar the variant rule sets -- a quantified score impact
+    # against upstream's actual behaviour on a stored run -- and that is met over
+    # the full official 300-prompt test set. The divergence itself is announced by
+    # the `_fixed` in the name, which is where a deliberate fork belongs; spelling
+    # it a second time as `experimental` would say "not ready", which is the one
+    # thing a measured fork is not.
+    status="stable",
     reference_kind="value",
     reference_impl=ReferenceImpl(
         source="allenai/IFBench",
@@ -85,9 +96,13 @@ from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
             "and so skips one element per removal -- a surviving blank line has "
             "indent 0 and breaks the increasing-indent chain, making the verdict "
             "depend on how many blank lines the response happened to contain. "
-            "(2) ratio:sentence_type counts declaratives with endswith('.'), "
-            "missing quoted declaratives, and returns declarative == 2 * "
-            "interrogative, so a response with neither passes vacuously at 0==0. "
+            "(2) ratio:sentence_type tests the raw final character on both "
+            "counts, endswith('.') and endswith('?'), so any sentence closing "
+            "on a quote or bracket goes uncounted; the repair reads the "
+            "terminal mark past those closers on both sides, recovering quoted "
+            "interrogatives as well as quoted declaratives. It also returns "
+            "declarative == 2 * interrogative, so a response with neither "
+            "passes vacuously at 0==0. "
             "(3) words:words_position indexes tokens, handling exactly one "
             "trailing punctuation token, so a response ending in two shifts "
             "every position by one. (4) words:vowel counts paragraphs with "

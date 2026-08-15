@@ -77,9 +77,13 @@ def test_meta():
     assert meta.eval_mode == base.eval_mode
     assert meta.n_shot == base.n_shot == 0
     assert meta.deps_group == base.deps_group == "ifbench"
-    # Not a reproduction of a published number by construction -- the point of
-    # the variant is that it deliberately does NOT match upstream's grading.
-    assert meta.status == "experimental"
+    # Deliberately NOT inherited. The base is `experimental` about a
+    # published-number reproduction that this task does not attempt, so that
+    # reason does not carry over; what a `_fixed` owes for `stable` is a
+    # quantified score impact, which the notes carry. The divergence is
+    # announced by the name -- saying it again in the status would read as "not
+    # ready" rather than "deliberately different".
+    assert meta.status == "stable"
 
 
 def test_reference_impl_quantifies_the_divergence():
