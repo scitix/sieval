@@ -3224,6 +3224,8 @@ class EvalSession:
         if isinstance(by_spec, str):
             return by_spec
         if isinstance(by_spec, list):
+            # cast, not a rebuild: `check_by` above has already established
+            # every element is a `str`, which the checker cannot see.
             return cast(list[str], by_spec)
         spec = cast(dict[str, str], by_spec)["callable"]
         try:

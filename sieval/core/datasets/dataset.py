@@ -6,7 +6,7 @@ import math
 import random
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping
-from typing import Literal, Self, cast, overload
+from typing import Literal, Self, overload
 
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -536,11 +536,14 @@ def _derive_filter_keys(
         # A callable can read anything, so the rows must be materialised. The
         # column paths below read only the columns named, which is why they are
         # kept separate rather than routed through this one.
-        key_fn = cast(Callable[[Mapping[str, object]], object], by)
+        # by is the callable form here: `_filter_columns` returns None for
+        # nothing else. Excluding the column forms narrows to it; `callable(by)`
+        # does not, since a str subclass could carry a `__call__` too.
+        assert not isinstance(by, str | list)
         keys: list[object] = []
         for index, row in enumerate(hf):
             try:
-                keys.append(key_fn(row))
+                keys.append(by(row))
             except Exception as exc:
                 # `by` may name any importable function, so its failure is a
                 # config error, not an internal one — say which row and which

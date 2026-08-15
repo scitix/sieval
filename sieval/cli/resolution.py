@@ -299,7 +299,12 @@ def load_class_from_path(class_path: str) -> type:
     """
     Load a class from a full module path like 'sieval.core.datasets.AIME2024Dataset'.
     """
-    return cast(type, load_object_from_path(class_path, "class"))
+    loaded = load_object_from_path(class_path, "class")
+    if not isinstance(loaded, type):
+        raise ValueError(
+            f"'{class_path}' resolved to {type(loaded).__name__}, not a class"
+        )
+    return loaded
 
 
 def resolve_key_function(spec: str) -> Callable[..., object]:
@@ -334,7 +339,7 @@ def resolve_key_function(spec: str) -> Callable[..., object]:
         raise ValueError(
             f"'{spec}' resolved to {type(resolved).__name__}, not a callable"
         )
-    return cast(Callable[..., object], resolved)
+    return resolved
 
 
 def load_class_from_name(name: str, search_modules: list[str]) -> type:

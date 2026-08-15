@@ -108,6 +108,14 @@ class TestLoadClassFromPath:
                 AttributeError,
                 "has no class",
             ),
+            # Resolves, but not to a class. The shared loader returns any
+            # attribute, so the declared `-> type` is only true because this
+            # is checked rather than asserted.
+            (
+                "sieval.cli.resolution.load_class_from_path",
+                ValueError,
+                "not a class",
+            ),
         ],
     )
     def test_invalid_path_raises(self, class_path, error_type, error_match):

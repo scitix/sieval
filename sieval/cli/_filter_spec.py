@@ -25,7 +25,6 @@ import hashlib
 import re
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
-from typing import Any, cast
 
 #: Config key holding the digest of the ``values_file`` a run selected on.
 DIGEST_KEY = "values_digest"
@@ -52,10 +51,11 @@ def check_by(by: object) -> str | None:
             )
         return None
     if isinstance(by, dict):
-        # cast: `isinstance(x, dict)` narrows an `object` to dict[Never, Never],
-        # which rejects every key lookup below.
-        mapping = cast(dict[object, object], by)
-        if set(mapping) != {"callable"} or not isinstance(mapping.get("callable"), str):
+        # The value is read positionally because `isinstance(x, dict)` narrows
+        # an `object` to dict[Never, Never], which rejects a `str` key lookup.
+        # The key check to its left is what guarantees there is one to read.
+        values = list(by.values())
+        if set(by) != {"callable"} or not isinstance(values[0], str):
             return (
                 f"'filter' 'by' as a mapping takes exactly one key, "
                 f"'callable', naming a dotted path; got {by!r}"
@@ -67,7 +67,7 @@ def check_by(by: object) -> str | None:
     )
 
 
-def check_values_source(op_args: Mapping[str, Any]) -> list[str]:
+def check_values_source(op_args: Mapping) -> list[str]:
     """Every problem with where a ``filter`` operation gets its values."""
     problems: list[str] = []
 
@@ -115,7 +115,7 @@ def compute_values_digest(data: bytes) -> str:
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 
-def pin_values_files(cfg: MutableMapping[str, Any], config_dir: Path) -> None:
+def pin_values_files(cfg: MutableMapping, config_dir: Path) -> None:
     """Record each ``filter`` operation's ``values_file`` digest into *cfg*.
 
     Called on the reified config before it is both persisted and handed to the
