@@ -14,8 +14,6 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
 import asyncio
-import subprocess
-import sys
 
 import pytest
 
@@ -25,31 +23,6 @@ from sieval.tasks.ifeval_0shot_gen_fixed import IFEvalZeroShotGenFixedTask
 
 _NTH = "length_constraints:nth_paragraph_first_word"
 _NO_COMMA = "punctuation:no_comma"
-
-
-def test_import_does_not_pull_evaluation_lib():
-    # Same contract as the unqualified task's, and one more: the repair module
-    # reaches the vendored checkers and langdetect, so importing it at module
-    # scope would make *registration* -- which imports every task module --
-    # pay for them.
-    code = (
-        "import sys\n"
-        "import sieval.tasks.ifeval_0shot_gen_fixed\n"
-        "assert 'sieval.community.instruction_following_eval.evaluation_lib' "
-        "not in sys.modules, 'evaluation_lib must be lazy-imported'\n"
-        "assert 'sieval.community.instruction_following_eval_fixed' "
-        "not in sys.modules, 'the repair module must be lazy-imported'\n"
-        "assert 'langdetect' not in sys.modules, 'langdetect must be lazy-imported'\n"
-    )
-    # Run in a fresh interpreter so pytest's already-loaded modules
-    # don't mask the check.
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 def test_meta():

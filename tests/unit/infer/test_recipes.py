@@ -4,8 +4,10 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
 import io
+import os
 
 import pytest
+import yaml
 from loguru import logger
 
 from sieval.infer.recipes import (
@@ -610,3 +612,70 @@ class TestShippedRecipeCapabilities:
         for name in list_recipes():
             recipe = load_recipe(name)
             assert set(recipe.capabilities) == {"instruct", "base"}, name
+
+
+class TestRecipeFileCache:
+    """Parsed YAML is cached — but never past the file it was parsed from."""
+
+    @pytest.fixture
+    def recipe_dir(self, tmp_path, monkeypatch):
+        """Point the registry at a recipe dir this test owns outright."""
+        from sieval.infer.recipes import registry as reg_mod
+
+        monkeypatch.setattr(reg_mod, "_RECIPE_DIR", tmp_path)
+        return tmp_path
+
+    @staticmethod
+    def _write(path, lo: str, hi: str) -> None:
+        """Write the probe recipe. *lo* / *hi* are fixed-width, so an edit that
+        only swaps them leaves the file's byte count untouched."""
+        path.write_text(
+            "_family: zz-cache\n"
+            "zz-cache-1b:\n"
+            f"  size_range: [{lo}, {hi}]\n"
+            "  hardware:\n"
+            "    H100-80G:\n"
+            "      bf16:\n"
+            "        vllm: {dtype: bfloat16}\n"
+        )
+
+    def test_repeated_lookups_parse_the_file_once(self, recipe_dir, monkeypatch):
+        """`yaml.safe_load` is ~99% of a lookup's cost, and losing the cache is
+        invisible to every other test here.
+
+        This counts parses rather than cache hits on purpose: a cache bypassed
+        at the *call site* leaves `cache_info()` untouched, so counting hits
+        would pass vacuously. Expecting exactly one — not zero — also proves the
+        stand-in is on the path the registry really takes.
+        """
+        self._write(recipe_dir / "zz_cache.yaml", "1.0", "2.0")
+        parses = 0
+        real_safe_load = yaml.safe_load
+
+        def counting_safe_load(stream):
+            nonlocal parses
+            parses += 1
+            return real_safe_load(stream)
+
+        monkeypatch.setattr(yaml, "safe_load", counting_safe_load)
+        for _ in range(5):
+            load_recipe("zz-cache-1b")
+
+        assert parses == 1, f"one recipe file, 5 lookups, {parses} parses"
+
+    def test_an_edited_file_is_re_parsed(self, recipe_dir) -> None:
+        """A same-size rewrite must still miss: the key carries mtime as well."""
+        path = recipe_dir / "zz_cache.yaml"
+        self._write(path, "1.0", "2.0")
+        assert load_recipe("zz-cache-1b").size_range == (1.0, 2.0)
+
+        size_before = path.stat().st_size
+        self._write(path, "3.0", "4.0")
+        assert path.stat().st_size == size_before, (
+            "rewrite changed the byte count, so this asserts nothing about mtime"
+        )
+        # Explicit, so a filesystem with a coarse mtime clock cannot mask the edit.
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+
+        assert load_recipe("zz-cache-1b").size_range == (3.0, 4.0)

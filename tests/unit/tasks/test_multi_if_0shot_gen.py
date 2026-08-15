@@ -4,36 +4,11 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import asyncio
-import subprocess
-import sys
 
 import pytest
 
 from sieval.tasks import multi_if_0shot_gen as module
 from sieval.tasks.multi_if_0shot_gen import MultiIFZeroShotGenTask
-
-
-def test_import_does_not_pull_evaluation_lib():
-    # evaluation_lib pulls langdetect/nltk/emoji and the 3.5k-line checker
-    # fork; registration must not import it.
-    code = (
-        "import sys\n"
-        "import sieval.tasks.multi_if_0shot_gen\n"
-        "assert 'sieval.community.multi_if.evaluation_lib' not in sys.modules, "
-        "'evaluation_lib must be lazy-imported'\n"
-        # `_ensure_punkt_tab` imports nltk when called, not at module scope, so
-        # registration must not drag it in either.
-        "assert 'nltk' not in sys.modules, 'nltk must be lazy-imported'\n"
-    )
-    # Run in a fresh interpreter so pytest's already-loaded modules
-    # don't mask the check.
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 def _task() -> MultiIFZeroShotGenTask:

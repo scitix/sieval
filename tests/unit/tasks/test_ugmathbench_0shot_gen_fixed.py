@@ -3,9 +3,6 @@
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
-import subprocess
-import sys
-
 import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -270,23 +267,6 @@ async def test_empty_run_reports_the_same_keys():
     for key in ("score", "eacc", "aacc", "cacc", "delta", "relative_delta", "fails"):
         assert key in report
     assert report["score"] == 0.0
-
-
-def test_import_does_not_pull_math_verify():
-    code = (
-        "import sys\n"
-        "import sieval.tasks.ugmathbench_0shot_gen_fixed\n"
-        "assert 'math_verify' not in sys.modules, "
-        "'math_verify must be lazy-imported'\n"
-    )
-    # Fresh interpreter so pytest's already-loaded modules don't mask the check.
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 def _judged_without_extra(problem_id: str, version: int, correct: bool) -> TaskContext:

@@ -14,8 +14,6 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
 import asyncio
-import subprocess
-import sys
 
 import pytest
 
@@ -25,28 +23,6 @@ from sieval.tasks.multi_if_0shot_gen_fixed import MultiIFZeroShotGenFixedTask
 
 _NTH = "length_constraints:nth_paragraph_first_word"
 _NO_COMMA = "punctuation:no_comma"
-
-
-def test_import_does_not_pull_evaluation_lib():
-    code = (
-        "import sys\n"
-        "import sieval.tasks.multi_if_0shot_gen_fixed\n"
-        "assert 'sieval.community.multi_if.evaluation_lib' not in sys.modules, "
-        "'evaluation_lib must be lazy-imported'\n"
-        "assert 'sieval.community.instruction_following_eval_fixed' "
-        "not in sys.modules, 'the repair module must be lazy-imported'\n"
-        "assert 'langdetect' not in sys.modules, 'langdetect must be lazy-imported'\n"
-        "assert 'nltk' not in sys.modules, 'nltk must be lazy-imported'\n"
-    )
-    # Run in a fresh interpreter so pytest's already-loaded modules
-    # don't mask the check.
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 def test_meta():

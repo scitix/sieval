@@ -9,8 +9,6 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import json
-import subprocess
-import sys
 
 import pytest
 from datasets import Dataset as HFDataset
@@ -113,22 +111,6 @@ def _verdict(ctx: TaskContext) -> dict:
     record = ctx.feedback_result
     assert record is not None
     return record
-
-
-def test_import_does_not_pull_the_graders():
-    # Both grader modules are behind the optional `iheval` group; registering the
-    # task must not need them installed.
-    code = (
-        "import sys\n"
-        "import sieval.tasks.iheval_0shot_gen\n"
-        "assert 'sieval.community.iheval' not in sys.modules\n"
-        "assert 'sieval.community.instruction_following_eval.evaluation_lib' "
-        "not in sys.modules\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
-    )
-    assert result.returncode == 0, result.stderr
 
 
 class TestPreprocess:

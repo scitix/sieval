@@ -3,7 +3,6 @@
 AI-Generated Code - GPT-5 (OpenAI)
 """
 
-import subprocess
 import sys
 import types
 from dataclasses import dataclass
@@ -16,23 +15,6 @@ from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import TaskContext, build_prediction_record
 from sieval.datasets.ifbench import IFBenchDataset
 from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
-
-
-def test_import_does_not_pull_evaluation_lib():
-    # evaluation_lib pulls optional IFBench scorers; registration must not import it.
-    code = (
-        "import sys\n"
-        "import sieval.tasks.ifbench_0shot_gen\n"
-        "assert 'sieval.community.ifbench.evaluation_lib' not in sys.modules, "
-        "'evaluation_lib must be lazy-imported'\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 @dataclass

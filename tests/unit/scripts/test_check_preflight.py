@@ -140,16 +140,27 @@ class TestPreflightRunner:
         assert "check_record_key_access" in PreflightRunner.ALL_CHECKS
         assert "check_mutmut_config" in PreflightRunner.ALL_CHECKS
 
-    def test_run_all_returns_results(self):
-        runner = PreflightRunner()
-        results = runner.run()
-        assert len(results) >= 10
-        assert any(r.check == "check_links" for r in results)
-        assert any(r.check == "check_deps" for r in results)
-        assert any(r.check == "check_examples" for r in results)
-        assert any(r.check == "check_meta_index_sync" for r in results)
-        assert any(r.check == "check_version" for r in results)
-        assert any(r.check == "check_imports" for r in results)
+    def test_run_dispatches_every_registered_check(self, monkeypatch):
+        """`run()` fans out over ALL_CHECKS — the checks themselves are not the
+        subject.
+
+        Running them for real re-ran the whole preflight, which CI already runs
+        as its own step, and left the assertion vague enough to miss a dropped
+        check: six spot-checked names out of fourteen. Against stubs the
+        dispatch is assertable outright — every registered name, once, in order.
+        """
+        for name in PreflightRunner.ALL_CHECKS:
+            monkeypatch.setattr(
+                PreflightRunner,
+                name,
+                lambda _self, _name=name: [
+                    CheckResult(status="PASS", check=_name, message="stub")
+                ],
+            )
+
+        results = PreflightRunner().run()
+
+        assert [r.check for r in results] == PreflightRunner.ALL_CHECKS
 
     def test_run_single_check(self):
         runner = PreflightRunner()
@@ -171,18 +182,72 @@ class TestPreflightRunner:
 class TestMainCLI:
     """CLI entry point."""
 
-    def test_main_text_output(self, capsys):
-        code = main(["--format", "text"])
-        captured = capsys.readouterr()
-        assert "[SKIP]" in captured.out or "[PASS]" in captured.out
-        assert code in (0, 1)  # may FAIL due to real check findings
+    # `main()` renders whatever `run()` hands back and picks an exit code from
+    # it. Driving that with the real checks meant the outcome depended on the
+    # working tree, so the exit code could only be asserted as `in (0, 1)` —
+    # which `main` satisfies by construction. Fixed results make both halves of
+    # the contract assertable, and cost nothing to produce.
+    _MIXED = [
+        CheckResult(status="PASS", check="check_links", message="all good"),
+        CheckResult(
+            status="FAIL",
+            check="check_deps",
+            message="1 problem",
+            details=["sieval.tasks.x: missing group"],
+        ),
+    ]
 
-    def test_main_json_output(self, capsys):
+    @pytest.fixture
+    def canned(self, monkeypatch):
+        """Make `main()` see one PASS and one FAIL, details included."""
+        results = list(self._MIXED)
+        monkeypatch.setattr(PreflightRunner, "run", lambda _self, only=None: results)
+        return results
+
+    def test_main_text_output(self, capsys, canned):
+        code = main(["--format", "text"])
+        out = capsys.readouterr().out
+        assert "[PASS] check_links — all good" in out
+        assert "[FAIL] check_deps — 1 problem" in out
+        assert "\n  sieval.tasks.x: missing group" in out, (
+            "detail lines must stay indented under the check that produced them"
+        )
+        assert code == 1, "a FAIL must exit non-zero"
+
+    def test_main_json_output(self, capsys, canned):
         code = main(["--format", "json"])
-        captured = capsys.readouterr()
-        data = json.loads(captured.out)
-        assert isinstance(data, list)
-        assert code in (0, 1)  # may FAIL due to real check findings
+        data = json.loads(capsys.readouterr().out)
+        assert data == [
+            {
+                "status": "PASS",
+                "check": "check_links",
+                "message": "all good",
+                "details": [],
+            },
+            {
+                "status": "FAIL",
+                "check": "check_deps",
+                "message": "1 problem",
+                "details": ["sieval.tasks.x: missing group"],
+            },
+        ]
+        assert code == 1
+
+    def test_main_exits_zero_when_nothing_failed(self, capsys, monkeypatch):
+        """WARN and SKIP are not failures — the half `in (0, 1)` never pinned."""
+        monkeypatch.setattr(
+            PreflightRunner,
+            "run",
+            lambda _self, only=None: [
+                CheckResult(status="WARN", check="check_links", message="soft"),
+                CheckResult(status="SKIP", check="check_deps", message="skipped"),
+            ],
+        )
+
+        code = main(["--format", "text"])
+
+        assert code == 0
+        assert "[WARN] check_links — soft" in capsys.readouterr().out
 
     def test_main_single_check(self, capsys):
         code = main(["--check", "check_links", "--format", "json"])

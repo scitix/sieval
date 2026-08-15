@@ -19,6 +19,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 
 import re
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 
 import yaml
@@ -29,6 +30,32 @@ from packaging.version import InvalidVersion, Version
 from sieval.infer.config import ParamValue
 
 _RECIPE_DIR = Path(__file__).parent
+
+
+@cache
+def _parse_recipe_file(path: str, _stamp: tuple[int, int]) -> dict:
+    """Parse one recipe YAML, keyed on the file's path and its on-disk stamp.
+
+    Every lookup helper below re-reads *all* recipe files, and `yaml.safe_load`
+    is ~99% of a lookup's cost, so resolving a batch of models re-parses the
+    same unchanging ~20 files hundreds of times.
+
+    `_stamp` is `(st_mtime_ns, st_size)`, underscored because the body never
+    reads it — it is there to be keyed on, so an edited file, or a
+    `_RECIPE_DIR` pointed somewhere else, gets a fresh parse instead of a
+    stale entry.
+
+    The returned mapping must not be mutated; it is shared across callers.
+    """
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    return data if isinstance(data, dict) else {}
+
+
+def _read_recipe_file(path: Path) -> dict:
+    """Return *path* parsed as a top-level mapping, or `{}` if it is not one."""
+    stat = path.stat()
+    return _parse_recipe_file(str(path), (stat.st_mtime_ns, stat.st_size))
 
 
 def _coerce_param(value: object) -> ParamValue:
@@ -271,10 +298,7 @@ def load_family_recipes(family: str) -> list[Recipe]:
     """
     recipes: list[Recipe] = []
     for yaml_file in sorted(_RECIPE_DIR.glob("*.yaml")):
-        with open(yaml_file) as f:
-            data = yaml.safe_load(f) or {}
-        if not isinstance(data, dict):
-            continue
+        data = _read_recipe_file(yaml_file)
         file_family = data.get("_family", "")
         if file_family != family:
             continue
@@ -456,9 +480,8 @@ def load_recipe(name: str) -> Recipe:
         )
 
     for yaml_file in _RECIPE_DIR.glob("*.yaml"):
-        with open(yaml_file) as f:
-            data = yaml.safe_load(f) or {}
-        if isinstance(data, dict) and name in data:
+        data = _read_recipe_file(yaml_file)
+        if name in data:
             raw = data[name]
             if not isinstance(raw, dict):
                 raise ValueError(f"Recipe {name!r} is not a dict")
@@ -476,8 +499,6 @@ def list_recipes() -> list[str]:
     """List all available recipe names across all YAML files."""
     names: list[str] = []
     for yaml_file in sorted(_RECIPE_DIR.glob("*.yaml")):
-        with open(yaml_file) as f:
-            data = yaml.safe_load(f) or {}
-        if isinstance(data, dict):
-            names.extend(k for k in data if not k.startswith("_"))
+        data = _read_recipe_file(yaml_file)
+        names.extend(k for k in data if not k.startswith("_"))
     return sorted(set(names))

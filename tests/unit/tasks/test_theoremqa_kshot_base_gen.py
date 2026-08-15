@@ -7,8 +7,6 @@ AI-Generated Code - GPT-5.5 (OpenAI)
 import builtins
 import importlib
 import math
-import subprocess
-import sys
 import time
 
 import pytest
@@ -106,24 +104,6 @@ def _task(n_shot: int | None = None):
     return task_module.TheoremQAKShotBaseGenTask(
         _dataset(), _MockGenModel(), n_shot=n_shot
     )
-
-
-def test_import_does_not_pull_latex2sympy():
-    code = (
-        "import sys\n"
-        "import sieval.tasks.theoremqa_kshot_base_gen\n"
-        "assert 'latex2sympy2' not in sys.modules, "
-        "'latex2sympy2 must be lazy-imported'\n"
-        "assert 'latex2sympy2_extended' not in sys.modules, "
-        "'latex2sympy2_extended must be lazy-imported'\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.anyio

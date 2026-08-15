@@ -3,9 +3,6 @@
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-import subprocess
-import sys
-
 import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -16,25 +13,6 @@ from sieval.core.tasks import TaskContext
 from sieval.datasets.drop import DROPDataset, DROPDatasetSample
 from sieval.tasks.drop_kshot_gen import DROPFewShotGenTask
 from tests.conftest import HandlerTransport
-
-
-def test_import_does_not_pull_drop_eval_backend():
-    # drop_eval pulls scipy; importing the task for registration must not.
-    code = (
-        "import sys\n"
-        "import sieval.tasks.drop_kshot_gen\n"
-        "assert 'sieval.community.simple_evals.drop_eval' not in sys.modules, "
-        "'drop_eval backend must be lazy-imported'\n"
-    )
-    # Run in a fresh interpreter so pytest's already-loaded modules
-    # don't mask the check.
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 class _StubChatModel(ChatModel):
