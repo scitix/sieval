@@ -1130,12 +1130,10 @@ class EvalSession:
             model=model_override,
             result_dir=result_dir_override,
         )
-        # Pin every `filter` values_file into the config before it is copied,
-        # so the digest reaches BOTH the persisted view (and therefore the
-        # --resume comparison) and the runtime view below. It has to happen
-        # here rather than where the operation runs: `arun` persists before
-        # `_prepare_execution`, so by the time a dataset op is applied the
-        # comparison the digest exists for has already been made.
+        # Before the copy, so the digest reaches both the persisted view (and
+        # therefore --resume) and the runtime view below. Not where the
+        # operation runs: `arun` persists before `_prepare_execution`, so by
+        # then the comparison the digest exists for has already been made.
         pin_values_files(reified, self.config_path.parent)
         self._reified_config: dict[str, Any] = copy.deepcopy(reified)
 
@@ -3195,10 +3193,8 @@ class EvalSession:
                     )
 
                 case _:
-                    # Kept in step with `sieval.cli.validation._VALID_OPERATIONS`
-                    # by `test_the_unknown_operation_message_lists_every_valid
-                    # _operation`; this message silently omitted `filter` for as
-                    # long as `filter` had existed.
+                    # Kept in step with `validation._VALID_OPERATIONS` by
+                    # `test_the_unknown_operation_message_lists_every_valid_operation`.
                     raise ValueError(
                         f"Dataset '{dataset_name}': Unknown operation '{op_name}'. "
                         f"Valid operations: filter, repeat, shuffle, slice, "
@@ -3212,8 +3208,7 @@ class EvalSession:
 
         ``by: tag`` is a column, ``by: [tag, lang]`` a composite key, and
         ``by: {callable: 'pkg.module.fn'}`` a derived one — the config spelling
-        of the callable a Python caller would pass directly, so the two surfaces
-        can express the same selections.
+        of the callable a Python caller passes directly.
 
         The shape check is :func:`~sieval.cli._filter_spec.check_by`, shared with
         ``cli.validation``; only the resolution below is this surface's own.
@@ -3247,23 +3242,21 @@ class EvalSession:
 
         A ``.json`` file is a list of values, or an object whose *keys* are the
         values (so a map from id to whatever metadata produced the selection can
-        be used as-is). Anything else is read as one value per line, with blanks
-        and ``#`` comments skipped.
+        be used as-is). Anything else is one value per line, blanks and ``#``
+        comments skipped.
 
-        *expected_digest* is the ``values_digest`` pinned into the config at load
-        time. Re-checking it here closes the window between that read and this
-        one: the digest recorded next to a run's results then describes the bytes
-        the run actually selected on, not merely the bytes that were there when
-        the config was parsed.
+        *expected_digest* is the ``values_digest`` pinned at load time.
+        Re-checking it here closes the window between that read and this one, so
+        the digest stored beside the results describes the bytes the run
+        selected on, not the bytes that were there when the config was parsed.
         """
         if not isinstance(values_file, str):
             raise ValueError(
                 f"Dataset '{dataset_name}': 'filter' 'values_file' must be a "
                 f"path; got {values_file!r}"
             )
-        # Resolved against the config that named it, and stored verbatim, so
-        # ``effective_config.yaml`` stays portable across machines — the same
-        # rule ``alignment.card`` follows.
+        # Resolved against the config that named it, stored verbatim — the same
+        # rule `alignment.card` follows.
         path = resolve_values_path(values_file, self.config_path.parent)
         if not path.is_file():
             raise ValueError(

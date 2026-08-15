@@ -1,22 +1,20 @@
 """Shape of a ``filter`` dataset operation, shared by its two surfaces.
 
 ``cli.validation`` shape-checks a config with no dataset in hand and collects
-every problem it finds; ``cli.leaderboard.session`` applies the operation and
-raises on the first. They ask the same questions of the same keys, so the
-questions live here and each caller keeps its own way of reporting the answer —
-returning a message rather than raising is what lets one accumulate and the
-other raise. ``cli.validation`` already imports ``cli.leaderboard.session``, so
-this cannot live in either without pointing that dependency backwards.
+every problem; ``cli.leaderboard.session`` applies the operation and raises on
+the first. Same questions, different reporting — which is why these return a
+message rather than raising. They live here because ``cli.validation`` already
+imports ``cli.leaderboard.session``, so neither file could hold them without
+pointing that dependency backwards.
 
 Callers prepend their own ``Dataset '<name>': `` to every message returned here.
 
-This module also pins ``values_file``. The accepted values live outside the
-config, so the config alone does not say which rows a run selected: two runs
-whose ``effective_config.yaml`` compares equal can score different sample sets
-if the file changed in between, and ``--resume`` would accept the second. So
-the file's digest is recorded *into* the config at load time, where the resume
-gate can see it. The path is still stored verbatim, which is what keeps
-``effective_config.yaml`` portable across machines.
+This module also pins ``values_file``. Its values live outside the config, so
+two runs whose ``effective_config.yaml`` compares equal can score different
+sample sets if the file changed in between — and ``--resume`` would accept the
+second. Recording the digest *into* the config puts that difference where the
+resume gate can see it, while the path stays verbatim so
+``effective_config.yaml`` remains portable across machines.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -51,9 +49,9 @@ def check_by(by: object) -> str | None:
             )
         return None
     if isinstance(by, dict):
-        # The value is read positionally because `isinstance(x, dict)` narrows
-        # an `object` to dict[Never, Never], which rejects a `str` key lookup.
-        # The key check to its left is what guarantees there is one to read.
+        # Read positionally: `isinstance(x, dict)` narrows an `object` to
+        # dict[Never, Never], which rejects a `str` key lookup. The key check
+        # to its left guarantees there is one value to read.
         values = list(by.values())
         if set(by) != {"callable"} or not isinstance(values[0], str):
             return (
@@ -120,15 +118,14 @@ def pin_values_files(cfg: MutableMapping, config_dir: Path) -> None:
 
     Called on the reified config before it is both persisted and handed to the
     runtime, so the digest reaches ``effective_config.yaml`` — and therefore
-    the ``--resume`` comparison — without the transform ever learning where a
-    config lives.
+    the ``--resume`` comparison.
 
-    A digest already present is *verified* rather than overwritten: that is the
-    case where a persisted ``effective_config.yaml`` is re-run after its values
-    file changed underneath it.
+    A digest already present is *verified* rather than overwritten: that is a
+    persisted ``effective_config.yaml`` re-run after its values file changed
+    underneath it.
 
-    Malformed operations are left alone. They are ``cli.validation``'s to
-    report, and a shape error raised from here would pre-empt a better message.
+    Malformed operations are left alone — they are ``cli.validation``'s to
+    report, and raising here would pre-empt a better message.
     """
     datasets = cfg.get("datasets")
     if not isinstance(datasets, dict):

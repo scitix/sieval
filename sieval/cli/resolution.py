@@ -310,16 +310,14 @@ def load_class_from_path(class_path: str) -> type:
 def resolve_key_function(spec: str) -> Callable[..., object]:
     """Resolve ``'pkg.module.function'`` to the callable it names.
 
-    The config counterpart of handing a Python caller a function directly —
+    The config counterpart of passing a function directly —
     ``dataset.filter(by=my_key, ...)`` in Python, ``by: {callable:
-    'pkg.module.my_key'}`` in YAML — so neither surface can express a selection
-    the other cannot. YAML cannot hold a function body, so it names one, exactly
-    as ``class:`` names a class rather than defining it.
+    'pkg.module.my_key'}`` in YAML. YAML cannot hold a function body, so it
+    names one, exactly as ``class:`` names a class rather than defining it.
 
     A full dotted path is required: unlike a dataset or task class there is no
-    registry of key functions to search a bare name in, and silently importing
-    ``my_key`` from wherever it first appeared would make the resolved function
-    depend on import order.
+    registry to search a bare name in, and importing ``my_key`` from wherever
+    it first appeared would make the resolved function depend on import order.
     """
     if not isinstance(spec, str):
         raise ValueError(f"Callable reference must be a string, got {spec!r}")

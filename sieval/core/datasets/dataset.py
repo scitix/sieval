@@ -118,38 +118,28 @@ class Dataset[TSample](ABC):
         *by* says how to read a row's key, in three forms:
 
         * a **column name** — the key is that column's value;
-        * a **list of column names** — the key is the tuple of their values, so
-          rows are selected on a composite identity no single column carries
-          (the same ``str | list[str]`` spelling ``stratified_sample`` uses, and
-          as there a single name still yields a scalar key, not a 1-tuple);
+        * a **list of column names** — the key is the tuple of their values,
+          selecting on a composite identity no single column carries;
         * a **callable** ``row -> key`` — the key is derived rather than stored,
-          which is what selecting on a content hash, a normalised id or a
-          concatenation of fields needs. It is handed the whole row as a mapping.
-          Driven from a config file the derived key must be a **scalar**:
+          which is what a content hash, a normalised id or a concatenation of
+          fields needs. Driven from a config the key must be a **scalar**:
           neither YAML nor JSON has a tuple, and the list each writes instead is
-          unhashable, so a key function written for ``by: {callable: ...}``
-          should join its parts into a string rather than return a tuple. From
-          Python, where the accepted values are passed directly, a tuple is fine.
+          unhashable. From Python a tuple is fine.
 
         *value* is one accepted key, or a list/tuple/set of them (membership
         test). A string is always one key, never a set of characters. Under a
         composite *by* each accepted key must itself be a sequence of the same
         length — ``value: [[a, b]]`` is one two-column key, ``value: [a, b]`` is
-        two one-column keys — so the two readings of a bare list can never be
-        confused for one another.
+        two one-column keys.
 
         Relative order among the kept rows is preserved, so a caller that
         narrows to one category gets the same sequence — and therefore the same
         sample ids — it would have got by loading that category alone.
 
-        *require_all* additionally demands that **every** requested key match at
-        least one row. It is off by default (a request may legitimately
-        over-cover a split), but any unmatched key is warned about, because the
-        case it guards is quiet: a stored list of ids is a pointer into a
-        dataset that can move under it, and four ids going stale out of a
-        thousand is a run that reports a number for a set nobody selected. Note
-        it is a check on the *keys*, not on the row count — one key may match
-        many rows (a session expanded into turns), and that is not an error.
+        *require_all* raises on a requested key that matches no row, where the
+        default only warns; a request may legitimately over-cover a split. It
+        checks the *keys*, not the row count — one key matching many rows is
+        not an error.
 
         Returns ``self`` unchanged if *split* is absent or empty. Raises if *by*
         names a column that does not exist, or if **nothing** matches: an empty
@@ -168,23 +158,22 @@ class Dataset[TSample](ABC):
         keys = _derive_filter_keys(hf, by, cols)
         raw = list(value) if isinstance(value, list | tuple | set) else [value]
         if isinstance(value, set):
-            # A set has no order of its own, so give it one: the messages below
-            # quote the requested keys, and an unordered quote would differ
-            # between runs of the same selection. Keys of mixed types are not
-            # orderable — those keep iteration order rather than failing here.
+            # A set has no order of its own; give it one, so the messages below
+            # quote the same keys in the same order across runs of the same
+            # selection. Mixed-type keys are not orderable — those keep
+            # iteration order rather than failing here.
             with contextlib.suppress(TypeError):
                 raw = sorted(raw)
         # Composite keys are tupled *before* the dedup below, which hashes them.
         if cols is not None and len(cols) > 1:
             raw = [_filter_composite_key(v, len(cols), label) for v in raw]
-        # Ordered and deduped: the set drives membership, the list fixes the
-        # order the two messages below quote — as the caller wrote it for a
-        # list or tuple, sorted for a set.
+        # Deduped but ordered: the set drives membership, the list fixes the
+        # order the messages below quote.
         try:
             requested = list(dict.fromkeys(raw))
         except TypeError as exc:
-            # The one shape that reaches here from a config file: a callable
-            # key whose accepted values were written as JSON/YAML lists.
+            # The one shape that reaches here from a config: a callable key
+            # whose accepted values were written as JSON/YAML lists.
             hint = (
                 " (a callable key driven from a config file must take scalar "
                 "accepted values — see the 'by' callable form in the docstring)"
@@ -506,8 +495,7 @@ def _filter_columns(by: TFilterKey, column_names: list[str]) -> list[str] | None
         raise ValueError(f"filter: 'by' must name columns as strings; got {by!r}")
     missing = [col for col in cols if col not in column_names]
     if missing:
-        # Singular wording for the single-column case, which is the overwhelming
-        # majority of calls and whose message predates the composite form.
+        # Unchanged wording for the single-column case, which is most calls.
         if isinstance(by, str):
             raise ValueError(
                 f"filter: column {by!r} not found; available columns: {column_names}"
@@ -533,12 +521,10 @@ def _derive_filter_keys(
 ) -> list[object]:
     """One key per row of *hf*, in row order."""
     if cols is None:
-        # A callable can read anything, so the rows must be materialised. The
-        # column paths below read only the columns named, which is why they are
-        # kept separate rather than routed through this one.
-        # by is the callable form here: `_filter_columns` returns None for
-        # nothing else. Excluding the column forms narrows to it; `callable(by)`
-        # does not, since a str subclass could carry a `__call__` too.
+        # A callable can read anything, so the rows must be materialised; the
+        # column paths below read only the columns named. `cols is None` is the
+        # callable form and nothing else — but `callable(by)` would not narrow
+        # to it, since a str subclass could carry `__call__`.
         assert not isinstance(by, str | list)
         keys: list[object] = []
         for index, row in enumerate(hf):
@@ -546,8 +532,8 @@ def _derive_filter_keys(
                 keys.append(by(row))
             except Exception as exc:
                 # `by` may name any importable function, so its failure is a
-                # config error, not an internal one — say which row and which
-                # function rather than letting a bare KeyError surface.
+                # config error — name the row and the function rather than
+                # letting a bare KeyError surface.
                 raise ValueError(
                     f"filter: key function {_filter_key_label(by)} raised on "
                     f"row {index} of {len(hf)}: {type(exc).__name__}: {exc}"
@@ -563,10 +549,9 @@ def _derive_filter_keys(
 def _filter_composite_key(value: object, n_cols: int, label: str) -> tuple:
     """*value* as a composite key of *n_cols* parts.
 
-    Rejects a scalar rather than promoting it, because the alternative is the
-    silent misreading this exists to prevent: under a two-column *by*,
-    ``[a, b]`` is two keys and ``[[a, b]]`` is one, and a scalar arriving here
-    means the caller wrote the first while meaning the second.
+    Rejects a scalar rather than promoting it: under a two-column *by*,
+    ``[a, b]`` is two keys and ``[[a, b]]`` is one, so a scalar here means the
+    caller wrote the first while meaning the second.
     """
     if isinstance(value, str) or not isinstance(value, list | tuple):
         raise ValueError(
