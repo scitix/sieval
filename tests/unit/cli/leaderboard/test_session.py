@@ -18,7 +18,7 @@ import anyio
 import pytest
 import yaml
 
-from sieval.cli._filter_spec import DIGEST_KEY, compute_values_digest
+from sieval.cli._filter_spec import VALUES_DIGEST_KEY, compute_values_digest
 from sieval.cli.leaderboard.session import (
     _NONMATCH_RUNNER_KEYS,
     _STRICT_RUNNER_KEYS,
@@ -1192,7 +1192,9 @@ datasets:
         # _reified_config is what _persist_effective_config dumps, so this is
         # the view the resume gate compares.
         session = self._session(tmp_path, '["a", "b"]')
-        assert self._op(session)[DIGEST_KEY] == compute_values_digest(b'["a", "b"]')
+        assert self._op(session)[VALUES_DIGEST_KEY] == (
+            compute_values_digest(b'["a", "b"]')
+        )
 
     def test_the_path_is_still_stored_verbatim(self, tmp_path):
         # Portability is why the path is not resolved: effective_config.yaml
@@ -1206,7 +1208,7 @@ datasets:
         before = self._op(self._session(tmp_path, '["a", "b"]'))
         after = self._op(self._session(tmp_path, '["a"]'))
         assert before != after
-        assert before[DIGEST_KEY] != after[DIGEST_KEY]
+        assert before[VALUES_DIGEST_KEY] != after[VALUES_DIGEST_KEY]
 
     def test_resume_aborts_when_the_values_file_changed(self, tmp_path):
         # End to end through the real gate: persist, edit the file, resume.

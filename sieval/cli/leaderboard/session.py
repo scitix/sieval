@@ -26,11 +26,13 @@ from packaging.version import InvalidVersion, Version
 
 from sieval import __version__
 from sieval.cli._filter_spec import (
-    DIGEST_KEY,
+    VALUES_DIGEST_KEY,
     check_by,
+    check_by_digest,
     check_values_source,
     compute_values_digest,
-    pin_values_files,
+    key_function_spec,
+    pin_filter_digests,
     resolve_values_path,
 )
 from sieval.cli.leaderboard.card import AlignmentCard, load_card
@@ -1130,11 +1132,11 @@ class EvalSession:
             model=model_override,
             result_dir=result_dir_override,
         )
-        # Before the copy, so the digest reaches both the persisted view (and
+        # Before the copy, so the digests reach both the persisted view (and
         # therefore --resume) and the runtime view below. Not where the
         # operation runs: `arun` persists before `_prepare_execution`, so by
-        # then the comparison the digest exists for has already been made.
-        pin_values_files(reified, self.config_path.parent)
+        # then the comparison the digests exist for has already been made.
+        pin_filter_digests(reified, self.config_path.parent)
         self._reified_config: dict[str, Any] = copy.deepcopy(reified)
 
         # Runtime view = reified + the legacy external adapter (mutates
@@ -3105,13 +3107,13 @@ class EvalSession:
                     by_spec = op_args.get("by")
                     split = op_args.get("split", "test")
                     by = self._resolve_filter_by(by_spec, dataset_name)
-                    problems = check_values_source(op_args)
+                    problems = check_values_source(op_args) + check_by_digest(op_args)
                     if problems:
                         raise ValueError(f"Dataset '{dataset_name}': {problems[0]}")
                     values_file = op_args.get("values_file")
                     if values_file is not None:
                         value = self._read_filter_values(
-                            values_file, dataset_name, op_args.get(DIGEST_KEY)
+                            values_file, dataset_name, op_args.get(VALUES_DIGEST_KEY)
                         )
                     else:
                         value = op_args["value"]
@@ -3222,7 +3224,10 @@ class EvalSession:
             # cast, not a rebuild: `check_by` above has already established
             # every element is a `str`, which the checker cannot see.
             return cast(list[str], by_spec)
-        spec = cast(dict[str, str], by_spec)["callable"]
+        # `check_by` passed and the two column forms are out, so this is the
+        # callable form; `key_function_spec` is what read it there too.
+        spec = key_function_spec(by_spec)
+        assert spec is not None
         try:
             return resolve_key_function(spec)
         except (ValueError, ImportError, AttributeError) as exc:
@@ -3268,7 +3273,7 @@ class EvalSession:
             if digest != expected_digest:
                 raise ValueError(
                     f"Dataset '{dataset_name}': 'filter' 'values_file' {path} "
-                    f"changed while the run was starting ({DIGEST_KEY} pinned "
+                    f"changed while the run was starting ({VALUES_DIGEST_KEY} pinned "
                     f"{expected_digest}, the file is now {digest})"
                 )
         text = data.decode("utf-8")

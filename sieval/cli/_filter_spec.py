@@ -9,25 +9,50 @@ pointing that dependency backwards.
 
 Callers prepend their own ``Dataset '<name>': `` to every message returned here.
 
-This module also pins ``values_file``. Its values live outside the config, so
-two runs whose ``effective_config.yaml`` compares equal can score different
-sample sets if the file changed in between — and ``--resume`` would accept the
-second. Recording the digest *into* the config puts that difference where the
-resume gate can see it, while the path stays verbatim so
-``effective_config.yaml`` remains portable across machines.
+This module also pins the two things a ``filter`` names but does not contain:
+the ``values_file`` holding its accepted values, and the key function
+``by: {callable: ...}`` names. Either can change while the config does not, so
+two runs whose ``effective_config.yaml`` compares equal can select different
+rows — and ``--resume`` would accept the second. Recording a digest of each
+*into* the config puts that difference where the resume gate can see it, while
+the path and the dotted path stay verbatim so ``effective_config.yaml`` remains
+portable across machines.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import hashlib
+import inspect
 import re
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from pathlib import Path
 
+from loguru import logger
+
+from .resolution import resolve_key_function
+
 #: Config key holding the digest of the ``values_file`` a run selected on.
-DIGEST_KEY = "values_digest"
+VALUES_DIGEST_KEY = "values_digest"
+
+#: Config key holding the digest of the key function a run selected with.
+BY_DIGEST_KEY = "by_digest"
 
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def key_function_spec(by: object) -> str | None:
+    """The dotted path *by* names, or ``None`` if it is not the callable form.
+
+    The one place that knows how ``by: {callable: 'pkg.module.fn'}`` is spelled,
+    so the checker, the pin and the session all read it the same way.
+    """
+    if not isinstance(by, dict) or set(by) != {"callable"}:
+        return None
+    # Read positionally: `isinstance(x, dict)` narrows an `object` to
+    # dict[Never, Never], which rejects a `str` key lookup. The key check above
+    # guarantees there is exactly one value to read.
+    spec = next(iter(by.values()))
+    return spec if isinstance(spec, str) else None
 
 
 def check_by(by: object) -> str | None:
@@ -49,11 +74,7 @@ def check_by(by: object) -> str | None:
             )
         return None
     if isinstance(by, dict):
-        # Read positionally: `isinstance(x, dict)` narrows an `object` to
-        # dict[Never, Never], which rejects a `str` key lookup. The key check
-        # to its left guarantees there is one value to read.
-        values = list(by.values())
-        if set(by) != {"callable"} or not isinstance(values[0], str):
+        if key_function_spec(by) is None:
             return (
                 f"'filter' 'by' as a mapping takes exactly one key, "
                 f"'callable', naming a dotted path; got {by!r}"
@@ -78,16 +99,17 @@ def check_values_source(op_args: Mapping) -> list[str]:
     if values_file is not None and not isinstance(values_file, str):
         problems.append(f"'filter' 'values_file' must be a path; got {values_file!r}")
 
-    digest = op_args.get(DIGEST_KEY)
+    digest = op_args.get(VALUES_DIGEST_KEY)
     if digest is not None:
         if not isinstance(digest, str) or not _DIGEST_RE.match(digest):
             problems.append(
-                f"'filter' {DIGEST_KEY!r} must look like 'sha256:<64 hex>'; "
+                f"'filter' {VALUES_DIGEST_KEY!r} must look like 'sha256:<64 hex>'; "
                 f"got {digest!r}"
             )
         elif values_file is None:
             problems.append(
-                f"'filter' {DIGEST_KEY!r} pins a 'values_file', but none is given"
+                f"'filter' {VALUES_DIGEST_KEY!r} pins a 'values_file', but none "
+                f"is given"
             )
 
     require_all = op_args.get("require_all")
@@ -96,6 +118,24 @@ def check_values_source(op_args: Mapping) -> list[str]:
             f"'filter' 'require_all' must be a boolean; got {require_all!r}"
         )
     return problems
+
+
+def check_by_digest(op_args: Mapping) -> list[str]:
+    """Every problem with a ``filter`` operation's pinned key-function digest."""
+    digest = op_args.get(BY_DIGEST_KEY)
+    if digest is None:
+        return []
+    if not isinstance(digest, str) or not _DIGEST_RE.match(digest):
+        return [
+            f"'filter' {BY_DIGEST_KEY!r} must look like 'sha256:<64 hex>'; "
+            f"got {digest!r}"
+        ]
+    if key_function_spec(op_args.get("by")) is None:
+        return [
+            f"'filter' {BY_DIGEST_KEY!r} pins a key function, but 'by' does not "
+            f"name one"
+        ]
+    return []
 
 
 def resolve_values_path(values_file: str, config_dir: Path) -> Path:
@@ -110,23 +150,54 @@ def resolve_values_path(values_file: str, config_dir: Path) -> Path:
 
 def compute_values_digest(data: bytes) -> str:
     """The recorded digest of a values file's contents."""
-    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+    return _digest(data)
 
 
-def pin_values_files(cfg: MutableMapping, config_dir: Path) -> None:
-    """Record each ``filter`` operation's ``values_file`` digest into *cfg*.
+def compute_key_function_digest(fn: Callable) -> str | None:
+    """The recorded digest of a key function's source, or ``None``.
+
+    ``None`` means the source cannot be read — a builtin, a C extension, a
+    ``functools.partial``. Those stay unpinned rather than blocking the run.
+
+    The digest covers the ``def`` block and its decorators, not what the body
+    calls, so it is a tripwire for the function being edited rather than a proof
+    that the selection reproduces — the same reach ``values_digest`` has over a
+    file of ids but not over the dataset they index. Reformatting and comment
+    edits trip it too: on a resume a false positive is a question, a false
+    negative is a wrong number.
+    """
+    try:
+        source = inspect.getsource(fn)
+    except (OSError, TypeError):
+        return None
+    return _digest(source.encode("utf-8"))
+
+
+def pin_filter_digests(cfg: MutableMapping, config_dir: Path) -> None:
+    """Record each ``filter`` operation's provenance digests into *cfg*.
 
     Called on the reified config before it is both persisted and handed to the
-    runtime, so the digest reaches ``effective_config.yaml`` — and therefore
-    the ``--resume`` comparison.
+    runtime, so the digests reach ``effective_config.yaml`` — and therefore the
+    ``--resume`` comparison.
 
     A digest already present is *verified* rather than overwritten: that is a
-    persisted ``effective_config.yaml`` re-run after its values file changed
-    underneath it.
+    persisted ``effective_config.yaml`` re-run after its values file or its key
+    function changed underneath it.
 
     Malformed operations are left alone — they are ``cli.validation``'s to
     report, and raising here would pre-empt a better message.
     """
+    for name, op_args in _filter_operations(cfg):
+        _pin_values_file(name, op_args, config_dir)
+        _pin_key_function(name, op_args)
+
+
+def _digest(data: bytes) -> str:
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def _filter_operations(cfg: Mapping) -> Iterator[tuple[str, MutableMapping]]:
+    """Every well-formed ``filter`` operation in *cfg*, with its dataset name."""
     datasets = cfg.get("datasets")
     if not isinstance(datasets, dict):
         return
@@ -142,29 +213,74 @@ def pin_values_files(cfg: MutableMapping, config_dir: Path) -> None:
             if next(iter(op)) != "filter":
                 continue
             op_args = op["filter"]
-            if not isinstance(op_args, dict):
-                continue
-            values_file = op_args.get("values_file")
-            if not isinstance(values_file, str):
-                continue
+            if isinstance(op_args, dict):
+                yield name, op_args
 
-            path = resolve_values_path(values_file, config_dir)
-            if not path.is_file():
-                raise ValueError(
-                    f"Dataset '{name}': 'filter' 'values_file' not found: {path}"
-                )
-            digest = compute_values_digest(path.read_bytes())
-            recorded = op_args.get(DIGEST_KEY)
-            if recorded is None:
-                op_args[DIGEST_KEY] = digest
-            elif recorded != digest:
-                raise ValueError(
-                    f"Dataset '{name}': 'filter' 'values_file' {values_file} "
-                    f"has changed since this config recorded it "
-                    f"({DIGEST_KEY} says {recorded}, the file is {digest}). "
-                    f"The selection would not be the one this config names. "
-                    f"Either:\n"
-                    f"  1. Restore {path} to the contents the digest pins\n"
-                    f"  2. Drop '{DIGEST_KEY}' to pin the current contents — a "
-                    f"different selection, so use a fresh result_dir"
-                )
+
+def _pin_values_file(name: str, op_args: MutableMapping, config_dir: Path) -> None:
+    values_file = op_args.get("values_file")
+    if not isinstance(values_file, str):
+        return
+
+    path = resolve_values_path(values_file, config_dir)
+    if not path.is_file():
+        raise ValueError(f"Dataset '{name}': 'filter' 'values_file' not found: {path}")
+    digest = compute_values_digest(path.read_bytes())
+    recorded = op_args.get(VALUES_DIGEST_KEY)
+    if recorded is None:
+        op_args[VALUES_DIGEST_KEY] = digest
+    elif recorded != digest:
+        raise ValueError(
+            f"Dataset '{name}': 'filter' 'values_file' {values_file} "
+            f"has changed since this config recorded it "
+            f"({VALUES_DIGEST_KEY} says {recorded}, the file is {digest}). "
+            f"The selection would not be the one this config names. "
+            f"Either:\n"
+            f"  1. Restore {path} to the contents the digest pins\n"
+            f"  2. Drop '{VALUES_DIGEST_KEY}' to pin the current contents — a "
+            f"different selection, so use a fresh result_dir"
+        )
+
+
+def _pin_key_function(name: str, op_args: MutableMapping) -> None:
+    spec = key_function_spec(op_args.get("by"))
+    if spec is None:
+        return
+    try:
+        fn = resolve_key_function(spec)
+    except (ValueError, ImportError, AttributeError):
+        # Unresolvable: the session raises on it a moment later with a message
+        # that names the dataset and what could not be imported.
+        return
+
+    digest = compute_key_function_digest(fn)
+    recorded = op_args.get(BY_DIGEST_KEY)
+    if digest is None:
+        if recorded is not None:
+            raise ValueError(
+                f"Dataset '{name}': 'filter' 'by' callable {spec} is pinned by "
+                f"{BY_DIGEST_KEY}, but its source can no longer be read, so the "
+                f"pin cannot be checked. Drop '{BY_DIGEST_KEY}' to run it "
+                f"unpinned — a selection this config can no longer vouch for, "
+                f"so use a fresh result_dir"
+            )
+        logger.warning(
+            "Dataset '{}': 'filter' 'by' callable {} has no readable source, so "
+            "it is not pinned and --resume cannot tell if it changed. Give the "
+            "key a plain 'def' to make it pinnable.",
+            name,
+            spec,
+        )
+        return
+    if recorded is None:
+        op_args[BY_DIGEST_KEY] = digest
+    elif recorded != digest:
+        raise ValueError(
+            f"Dataset '{name}': 'filter' 'by' callable {spec} has changed since "
+            f"this config recorded it ({BY_DIGEST_KEY} says {recorded}, its "
+            f"source is now {digest}). The selection would not be the one this "
+            f"config names. Either:\n"
+            f"  1. Restore {spec} to the source the digest pins\n"
+            f"  2. Drop '{BY_DIGEST_KEY}' to pin the current source — a "
+            f"different selection, so use a fresh result_dir"
+        )

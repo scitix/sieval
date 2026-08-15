@@ -18,7 +18,7 @@ from typing import Any, NotRequired, TypedDict, cast
 
 import yaml
 
-from sieval.cli._filter_spec import check_by, check_values_source
+from sieval.cli._filter_spec import check_by, check_by_digest, check_values_source
 from sieval.cli.leaderboard.session import RootConfigDict
 from sieval.cli.resolution import (
     binding_resource_argument_paths,
@@ -425,7 +425,7 @@ def _validate_filter_args(
         result.errors.append(f"Dataset '{dataset_name}': {problem}")
     result.errors.extend(
         f"Dataset '{dataset_name}': {problem}"
-        for problem in check_values_source(op_args)
+        for problem in check_values_source(op_args) + check_by_digest(op_args)
     )
 
 
