@@ -33,12 +33,13 @@ from sieval.cli.resolution import (
     is_task_model_role_sentinel,
     normalize_inline_model_binding,
     resolve_dataset_class,
+    resolve_key_function,
     resolve_task_class,
     validate_named_config_map,
     validate_task_config_args,
     validate_task_model_requirements,
 )
-from sieval.core.datasets import Dataset
+from sieval.core.datasets import Dataset, TFilterKey
 from sieval.core.models import ChatModel, GenModel, Model, SglangGenModel
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
@@ -3088,22 +3089,42 @@ class EvalSession:
                     logger.debug("Dataset '{}': repeated {} times", dataset_name, times)
 
                 case "filter":
-                    by = op_args.get("by")
+                    by_spec = op_args.get("by")
                     split = op_args.get("split", "test")
-                    if by is None:
+                    if by_spec is None:
                         raise ValueError(
                             f"Dataset '{dataset_name}': 'filter' requires 'by'"
                         )
+                    by = self._resolve_filter_by(by_spec, dataset_name)
                     # Presence, not truthiness: `value: 0` and `value: false` are
                     # legitimate column values and must not read as "omitted".
-                    if "value" not in op_args:
+                    has_value = "value" in op_args
+                    values_file = op_args.get("values_file")
+                    if has_value == (values_file is not None):
                         raise ValueError(
-                            f"Dataset '{dataset_name}': 'filter' requires 'value'"
+                            f"Dataset '{dataset_name}': 'filter' requires exactly "
+                            f"one of 'value' or 'values_file'"
                         )
-                    value = op_args["value"]
-                    dataset = dataset.filter(by, value, split=split)
+                    if values_file is not None:
+                        value = self._read_filter_values(values_file, dataset_name)
+                    else:
+                        value = op_args["value"]
+                    require_all = op_args.get("require_all", False)
+                    if not isinstance(require_all, bool):
+                        raise ValueError(
+                            f"Dataset '{dataset_name}': 'filter' 'require_all' "
+                            f"must be a boolean; got {require_all!r}"
+                        )
+                    dataset = dataset.filter(
+                        by, value, require_all=require_all, split=split
+                    )
                     logger.debug(
-                        "Dataset '{}': filtered to {}={}", dataset_name, by, value
+                        "Dataset '{}': filtered to {}={}",
+                        dataset_name,
+                        by_spec,
+                        f"<{len(value)} keys from {values_file}>"
+                        if values_file is not None
+                        else value,
                     )
 
                 case "stratified_sample":
@@ -3171,13 +3192,107 @@ class EvalSession:
                     )
 
                 case _:
+                    # Kept in step with `sieval.cli.validation._VALID_OPERATIONS`
+                    # by `test_the_unknown_operation_message_lists_every_valid
+                    # _operation`; this message silently omitted `filter` for as
+                    # long as `filter` had existed.
                     raise ValueError(
                         f"Dataset '{dataset_name}': Unknown operation '{op_name}'. "
-                        f"Valid operations: slice, shuffle, repeat, "
+                        f"Valid operations: filter, repeat, shuffle, slice, "
                         f"stratified_sample"
                     )
 
         return dataset
+
+    def _resolve_filter_by(self, by_spec: object, dataset_name: str) -> TFilterKey:
+        """A ``filter`` operation's ``by``, in any of its three config forms.
+
+        ``by: tag`` is a column, ``by: [tag, lang]`` a composite key, and
+        ``by: {callable: 'pkg.module.fn'}`` a derived one — the config spelling
+        of the callable a Python caller would pass directly, so the two surfaces
+        can express the same selections.
+        """
+        if isinstance(by_spec, str):
+            return by_spec
+        if isinstance(by_spec, list):
+            if not by_spec or not all(isinstance(col, str) for col in by_spec):
+                raise ValueError(
+                    f"Dataset '{dataset_name}': 'filter' 'by' as a list must "
+                    f"name one or more columns as strings; got {by_spec!r}"
+                )
+            return cast(list[str], by_spec)
+        if isinstance(by_spec, dict):
+            mapping = cast(dict[object, object], by_spec)
+            spec = mapping.get("callable")
+            if set(mapping) != {"callable"} or not isinstance(spec, str):
+                raise ValueError(
+                    f"Dataset '{dataset_name}': 'filter' 'by' as a mapping takes "
+                    f"exactly one key, 'callable', naming a dotted path; "
+                    f"got {by_spec!r}"
+                )
+            try:
+                return resolve_key_function(spec)
+            except (ValueError, ImportError, AttributeError) as exc:
+                raise ValueError(
+                    f"Dataset '{dataset_name}': 'filter' 'by' callable "
+                    f"{spec!r} could not be resolved: {exc}"
+                ) from exc
+        raise ValueError(
+            f"Dataset '{dataset_name}': 'filter' 'by' must be a column name, a "
+            f"list of column names, or {{callable: 'pkg.module.fn'}}; "
+            f"got {by_spec!r}"
+        )
+
+    def _read_filter_values(self, values_file: object, dataset_name: str) -> list:
+        """The accepted values a ``filter`` operation's ``values_file`` names.
+
+        Reading happens here rather than in :meth:`Dataset.filter` so the
+        transform never learns where a config lives: the same selection stays
+        expressible from Python by passing the list directly.
+
+        A ``.json`` file is a list of values, or an object whose *keys* are the
+        values (so a map from id to whatever metadata produced the selection can
+        be used as-is). Anything else is read as one value per line, with blanks
+        and ``#`` comments skipped.
+        """
+        if not isinstance(values_file, str):
+            raise ValueError(
+                f"Dataset '{dataset_name}': 'filter' 'values_file' must be a "
+                f"path; got {values_file!r}"
+            )
+        # Resolved against the config that named it, and stored verbatim, so
+        # ``effective_config.yaml`` stays portable across machines — the same
+        # rule ``alignment.card`` follows.
+        path = Path(values_file)
+        if not path.is_absolute():
+            path = (self.config_path.parent / path).resolve()
+        if not path.is_file():
+            raise ValueError(
+                f"Dataset '{dataset_name}': 'filter' 'values_file' not found: {path}"
+            )
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".json":
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Dataset '{dataset_name}': 'filter' 'values_file' {path} is "
+                    f"not valid JSON: {exc}"
+                ) from exc
+            if isinstance(payload, dict):
+                return list(payload)
+            if not isinstance(payload, list):
+                raise ValueError(
+                    f"Dataset '{dataset_name}': 'filter' 'values_file' {path} "
+                    f"must hold a JSON list of values or an object keyed by "
+                    f"them; got {type(payload).__name__}"
+                )
+            return payload
+        return [
+            stripped
+            for line in text.splitlines()
+            if (stripped := line.strip()) and not stripped.startswith("#")
+        ]
 
     def _setup_tasks(self) -> None:
         """Initialize all tasks from config."""

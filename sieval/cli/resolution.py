@@ -19,7 +19,7 @@ import hashlib
 import importlib
 import inspect
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -267,19 +267,23 @@ def validate_task_model_requirements(
     return tuple(records)
 
 
-def load_class_from_path(class_path: str) -> type:
+def load_object_from_path(object_path: str, kind: str = "class") -> object:
     """
-    Load a class from a full module path like 'sieval.core.datasets.AIME2024Dataset'.
+    Load a module attribute from a full path like 'pkg.module.Name'.
+
+    *kind* only names the attribute in the error messages ("class", "function"),
+    so the same import mechanism can be reported in the caller's vocabulary.
     """
-    if "." not in class_path:
+    if "." not in object_path:
         raise ValueError(
-            f"Invalid class path: {class_path}. Expected format: 'module.ClassName'"
+            f"Invalid {kind} path: {object_path}. Expected format: "
+            f"'module.{'ClassName' if kind == 'class' else 'name'}'"
         )
 
-    module_name, class_name = class_path.rsplit(".", 1)
+    module_name, attribute_name = object_path.rsplit(".", 1)
     try:
         module = importlib.import_module(module_name)
-        return getattr(module, class_name)
+        return getattr(module, attribute_name)
     except ImportError as exc:
         if _is_missing_module_error(exc, module_name):
             raise ImportError(f"Could not import module '{module_name}'") from exc
@@ -287,8 +291,50 @@ def load_class_from_path(class_path: str) -> type:
         raise
     except AttributeError as e:
         raise AttributeError(
-            f"Module '{module_name}' has no class '{class_name}'"
+            f"Module '{module_name}' has no {kind} '{attribute_name}'"
         ) from e
+
+
+def load_class_from_path(class_path: str) -> type:
+    """
+    Load a class from a full module path like 'sieval.core.datasets.AIME2024Dataset'.
+    """
+    return cast(type, load_object_from_path(class_path, "class"))
+
+
+def resolve_key_function(spec: str) -> Callable[..., object]:
+    """Resolve ``'pkg.module.function'`` to the callable it names.
+
+    The config counterpart of handing a Python caller a function directly —
+    ``dataset.filter(by=my_key, ...)`` in Python, ``by: {callable:
+    'pkg.module.my_key'}`` in YAML — so neither surface can express a selection
+    the other cannot. YAML cannot hold a function body, so it names one, exactly
+    as ``class:`` names a class rather than defining it.
+
+    A full dotted path is required: unlike a dataset or task class there is no
+    registry of key functions to search a bare name in, and silently importing
+    ``my_key`` from wherever it first appeared would make the resolved function
+    depend on import order.
+    """
+    if not isinstance(spec, str):
+        raise ValueError(f"Callable reference must be a string, got {spec!r}")
+    if spec.startswith("."):
+        raise ValueError(
+            f"Relative import syntax is not supported: '{spec}'. "
+            f"Use a full path ('pkg.module.my_key')"
+        )
+    if "." not in spec:
+        raise ValueError(
+            f"Invalid function path: {spec}. A callable must be given as a full "
+            f"path ('pkg.module.{spec}'), since there is no module to search a "
+            f"bare name in"
+        )
+    resolved = load_object_from_path(spec, "function")
+    if not callable(resolved):
+        raise ValueError(
+            f"'{spec}' resolved to {type(resolved).__name__}, not a callable"
+        )
+    return cast(Callable[..., object], resolved)
 
 
 def load_class_from_name(name: str, search_modules: list[str]) -> type:

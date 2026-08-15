@@ -1,4 +1,4 @@
-from .dataset import Dataset
+from .dataset import Dataset, TFilterKey
 from .meta import (
     Category,
     DatasetMeta,
@@ -11,5 +11,6 @@ __all__ = [
     "Dataset",
     "DatasetMeta",
     "Level1Category",
+    "TFilterKey",
     "sieval_dataset",
 ]

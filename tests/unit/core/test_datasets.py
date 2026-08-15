@@ -294,6 +294,167 @@ class TestFilter:
         )
         assert ds.filter("tag", "a") is ds
 
+    def test_filter_empty_value_list_raises(self):
+        # An empty selection keeps nothing, so it would fail the no-match guard
+        # anyway — but saying *why* matters, because the way this arrives in
+        # practice is a key file that read as empty, not a value anyone typed.
+        ds = _make_tagged(["a", "b"])
+        with pytest.raises(ValueError, match="no accepted values given for tag"):
+            ds.filter("tag", [])
+
+
+# ===================================================================
+# filter — composite keys
+# ===================================================================
+def _make_pairs(pairs):
+    """A _ListDataset with 'tag' and 'lang' columns."""
+    return _ListDataset(
+        [{"id": i, "tag": t, "lang": g} for i, (t, g) in enumerate(pairs)]
+    )
+
+
+class TestFilterCompositeKey:
+    def test_selects_on_the_tuple_of_columns(self):
+        # Neither column alone identifies the row: 'a' spans two langs and 'en'
+        # spans two tags, so this is a selection no single-column filter makes.
+        ds = _make_pairs([("a", "en"), ("a", "fr"), ("b", "en")])
+        kept = ds.filter(["tag", "lang"], [("a", "fr")]).test_set
+        assert [r["id"] for r in kept] == [1]
+
+    def test_a_one_element_list_matches_the_bare_column_name(self):
+        # `stratified_sample` keeps a single column's key scalar rather than a
+        # 1-tuple; filter follows, so the two spellings cannot diverge.
+        ds = _make_pairs([("a", "en"), ("b", "en")])
+        assert [r["id"] for r in ds.filter(["tag"], "a").test_set] == [
+            r["id"] for r in ds.filter("tag", "a").test_set
+        ]
+
+    def test_a_scalar_value_is_rejected_rather_than_promoted(self):
+        # The whole ambiguity: under a 2-column `by`, [a, b] is two keys and
+        # [[a, b]] is one. A scalar arriving here means the caller wrote the
+        # first meaning the second, and quietly guessing would select the wrong
+        # rows while still reporting a plausible count.
+        ds = _make_pairs([("a", "en"), ("b", "fr")])
+        with pytest.raises(ValueError, match=r"value: \[\[a, b\]\] for one key"):
+            ds.filter(["tag", "lang"], ["a", "en"])
+
+    def test_a_wrong_length_key_is_rejected(self):
+        ds = _make_pairs([("a", "en")])
+        with pytest.raises(ValueError, match="has 2 parts but the accepted value"):
+            ds.filter(["tag", "lang"], [("a", "en", "extra")])
+
+    def test_unknown_column_names_every_missing_one(self):
+        ds = _make_pairs([("a", "en")])
+        with pytest.raises(ValueError, match=r"column\(s\) \['nope'\] not found"):
+            ds.filter(["tag", "nope"], [("a", "en")])
+
+    def test_empty_column_list_raises(self):
+        ds = _make_pairs([("a", "en")])
+        with pytest.raises(ValueError, match="must name at least one column"):
+            ds.filter([], "a")
+
+    def test_no_match_error_names_the_composite(self):
+        ds = _make_pairs([("a", "en")])
+        with pytest.raises(ValueError, match=r"has \(tag, lang\)="):
+            ds.filter(["tag", "lang"], [("z", "zz")])
+
+
+# ===================================================================
+# filter — derived keys (callable)
+# ===================================================================
+def _tag_key(row):
+    """A module-level key function, as a config-referenced one would be."""
+    return row["tag"]
+
+
+class TestFilterCallableKey:
+    def test_selects_on_a_key_the_dataset_does_not_store(self):
+        # The case that motivated the callable: the selection is a list of
+        # content hashes, and no column holds one.
+        ds = _ListDataset([{"id": i, "text": t} for i, t in enumerate("abc")])
+        digests = {"a": "d0", "b": "d1", "c": "d2"}
+        kept = ds.filter(lambda row: digests[row["text"]], ["d0", "d2"]).test_set
+        assert kept is not None
+        assert [r["id"] for r in kept] == [0, 2]
+
+    def test_the_callable_receives_the_whole_row(self):
+        ds = _make_pairs([("a", "en"), ("b", "fr")])
+        seen: list[dict] = []
+
+        def key(row):
+            seen.append(dict(row))
+            return row["tag"]
+
+        ds.filter(key, "a")
+        assert {"id", "tag", "lang"} <= set(seen[0])
+
+    def test_no_column_check_applies(self):
+        # A callable may read nothing, or read columns conditionally, so there
+        # is no column list to validate up front.
+        ds = _make_tagged(["a", "b"])
+        assert len(ds.filter(lambda row: "always", "always").test_set) == 2
+
+    def test_no_match_error_names_the_function(self):
+        # A module-level function, which is the only kind the config surface can
+        # reference — its qualname is the name a reader wrote in the YAML.
+        ds = _make_tagged(["a", "b"])
+        with pytest.raises(ValueError, match=r"has _tag_key\(\)="):
+            ds.filter(_tag_key, "z")
+
+    def test_an_unhashable_derived_key_is_reported_as_such(self):
+        # Returning a list is the easy mistake for a derived composite key, and
+        # the bare TypeError from the membership test names nothing useful.
+        ds = _make_pairs([("a", "en")])
+        with pytest.raises(ValueError, match="cannot be compared for membership"):
+            ds.filter(lambda row: [row["tag"], row["lang"]], "a")
+
+
+# ===================================================================
+# filter — require_all
+# ===================================================================
+class TestFilterRequireAll:
+    def test_raises_when_a_requested_key_matches_nothing(self):
+        # The failure this exists for: 3 of 4 ids still resolve, so without it
+        # the run scores a set nobody selected and reports a plausible number.
+        ds = _make_tagged(["a", "b", "c"])
+        with pytest.raises(ValueError, match=r"1 of 4 requested keys match no row"):
+            ds.filter("tag", ["a", "b", "c", "gone"], require_all=True)
+
+    def test_names_the_unmatched_keys(self):
+        ds = _make_tagged(["a"])
+        with pytest.raises(ValueError, match=r"unmatched: \['x', 'y'\]"):
+            ds.filter("tag", ["a", "x", "y"], require_all=True)
+
+    def test_passes_when_every_key_matches(self):
+        ds = _make_tagged(["a", "b"])
+        assert len(ds.filter("tag", ["a", "b"], require_all=True).test_set) == 2
+
+    def test_counts_keys_not_rows(self):
+        # Load-bearing. A row-count check would reject a correct selection
+        # wherever one key expands to many rows — a session into its turns, a
+        # problem into its languages. Two keys, five rows, and that is right.
+        ds = _make_tagged(["s1", "s1", "s1", "s2", "s2"])
+        assert len(ds.filter("tag", ["s1", "s2"], require_all=True).test_set) == 5
+
+    def test_is_off_by_default_but_warns(self):
+        # Off, because over-covering a split is a legitimate request; warned,
+        # because the alternative is a silently smaller run.
+        ds = _make_tagged(["a", "b"])
+        out = _capture_logs(lambda: ds.filter("tag", ["a", "gone"]))
+        assert "1 of 2 requested keys match no row" in out
+        assert len(ds.filter("tag", ["a", "gone"]).test_set) == 1
+
+    def test_a_fully_matched_selection_warns_about_nothing(self):
+        ds = _make_tagged(["a", "b"])
+        assert _capture_logs(lambda: ds.filter("tag", ["a", "b"])) == ""
+
+    def test_kept_rows_follow_dataset_order_not_the_order_asked_for(self):
+        # Worth pinning: a caller handing over an ordered key list might expect
+        # the rows back in that order. They come back in the split's order, so
+        # the selection stays reproducible however the list was written.
+        ds = _make_tagged(["a", "b", "c"])
+        assert [r["tag"] for r in ds.filter("tag", ["c", "a"]).test_set] == ["a", "c"]
+
 
 # ===================================================================
 # stratified_sample

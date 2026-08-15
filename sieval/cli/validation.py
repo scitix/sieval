@@ -402,6 +402,61 @@ def _validate_operations(
                 f"Dataset '{dataset_name}': operation '{op_name}' "
                 f"args must be a dict or null"
             )
+        elif op_name == "filter" and isinstance(op_args, dict):
+            _validate_filter_args(op_args, dataset_name, result)
+
+
+def _validate_filter_args(
+    op_args: dict, dataset_name: str, result: ValidationResult
+) -> None:
+    """Shape-check a ``filter`` operation.
+
+    Shape only: whether a column exists, a file is readable or a dotted path
+    imports are all questions for the session, which has the dataset and the
+    config's directory. What is worth catching here is a config that could not
+    run whatever the data turned out to be.
+    """
+    by = op_args.get("by")
+    if by is None:
+        result.errors.append(f"Dataset '{dataset_name}': 'filter' requires 'by'")
+    elif isinstance(by, list):
+        if not by or not all(isinstance(col, str) for col in by):
+            result.errors.append(
+                f"Dataset '{dataset_name}': 'filter' 'by' as a list must name "
+                f"one or more columns as strings; got {by!r}"
+            )
+    elif isinstance(by, dict):
+        if set(by) != {"callable"} or not isinstance(by.get("callable"), str):
+            result.errors.append(
+                f"Dataset '{dataset_name}': 'filter' 'by' as a mapping takes "
+                f"exactly one key, 'callable', naming a dotted path; got {by!r}"
+            )
+    elif not isinstance(by, str):
+        result.errors.append(
+            f"Dataset '{dataset_name}': 'filter' 'by' must be a column name, a "
+            f"list of column names, or {{callable: 'pkg.module.fn'}}; got {by!r}"
+        )
+
+    # Presence, not truthiness: `value: 0` and `value: false` are legitimate
+    # column values and must not read as "omitted".
+    has_value = "value" in op_args
+    has_file = op_args.get("values_file") is not None
+    if has_value == has_file:
+        result.errors.append(
+            f"Dataset '{dataset_name}': 'filter' requires exactly one of "
+            f"'value' or 'values_file'"
+        )
+    if has_file and not isinstance(op_args["values_file"], str):
+        result.errors.append(
+            f"Dataset '{dataset_name}': 'filter' 'values_file' must be a path; "
+            f"got {op_args['values_file']!r}"
+        )
+    require_all = op_args.get("require_all")
+    if require_all is not None and not isinstance(require_all, bool):
+        result.errors.append(
+            f"Dataset '{dataset_name}': 'filter' 'require_all' must be a "
+            f"boolean; got {require_all!r}"
+        )
 
 
 def _validate_tasks(cfg: dict, result: ValidationResult) -> None:

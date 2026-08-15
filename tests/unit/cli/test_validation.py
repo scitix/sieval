@@ -735,6 +735,59 @@ class TestValidateDatasets:
         result = validate_eval_config(cfg)
         assert result.ok
 
+    # -- filter -----------------------------------------------------------
+    # Shape only. Whether a column exists, a file is readable, or a dotted
+    # path imports are the session's questions — it has the dataset and the
+    # config's directory; the validator has neither.
+
+    @staticmethod
+    def _filter_cfg(args):
+        return {
+            "models": {},
+            "tasks": {},
+            "datasets": {"d": {"class": "X", "operations": [{"filter": args}]}},
+        }
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            {"by": "subset", "value": "gsm8k"},
+            {"by": "subset", "value": ["gsm8k", "svamp"]},
+            {"by": ["subset", "key"], "value": [["a", "b"]]},
+            {"by": {"callable": "pkg.module.my_key"}, "value": "k"},
+            {"by": "id", "values_file": "picked.json"},
+            {"by": "id", "value": ["a"], "require_all": True},
+            # Falsy but present: a value the validator must not read as absent.
+            {"by": "n", "value": 0},
+            {"by": "flag", "value": False},
+        ],
+    )
+    def test_valid_filter_operations(self, args):
+        assert validate_eval_config(self._filter_cfg(args)).ok
+
+    @pytest.mark.parametrize(
+        "args,error_match",
+        [
+            ({"value": "a"}, "requires 'by'"),
+            ({"by": "id"}, "exactly one of 'value' or 'values_file'"),
+            (
+                {"by": "id", "value": "a", "values_file": "k.json"},
+                "exactly one of 'value' or 'values_file'",
+            ),
+            ({"by": [], "value": "a"}, "must name one or more columns"),
+            ({"by": ["a", 2], "value": "a"}, "must name one or more columns"),
+            ({"by": {"fn": "pkg.m.f"}, "value": "a"}, "exactly one key, 'callable'"),
+            ({"by": {"callable": 7}, "value": "a"}, "exactly one key, 'callable'"),
+            ({"by": 42, "value": "a"}, "must be a column name"),
+            ({"by": "id", "values_file": 7}, "'values_file' must be a path"),
+            ({"by": "id", "value": "a", "require_all": "yes"}, "must be a boolean"),
+        ],
+    )
+    def test_invalid_filter_operations(self, args, error_match):
+        result = validate_eval_config(self._filter_cfg(args))
+        assert not result.ok
+        assert any(error_match in e for e in result.errors), result.errors
+
 
 # ---------------------------------------------------------------------------
 # Schema validation — tasks

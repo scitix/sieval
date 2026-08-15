@@ -22,6 +22,7 @@ from sieval.cli.resolution import (
     normalize_inline_model_binding,
     resolve_class,
     resolve_config_model_types,
+    resolve_key_function,
 )
 from sieval.core.models.requirements import (
     AggregatedTaskRequirements,
@@ -112,6 +113,57 @@ class TestLoadClassFromPath:
     def test_invalid_path_raises(self, class_path, error_type, error_match):
         with pytest.raises(error_type, match=error_match):
             load_class_from_path(class_path)
+
+
+# ===================================================================
+# resolve_key_function
+# ===================================================================
+class TestResolveKeyFunction:
+    """The config counterpart of handing a Python caller a function directly.
+
+    YAML cannot hold a function body, so it names one — exactly as `class:`
+    names a class rather than defining it. These tests pin that a config can
+    reach any callable a Python caller could pass, and nothing else.
+    """
+
+    def test_resolves_a_dotted_path_to_the_function_itself(self):
+        from sieval.cli.resolution import derive_model_type as expected
+
+        assert resolve_key_function("sieval.cli.resolution.derive_model_type") is (
+            expected
+        )
+
+    # (spec, expected_exception, expected_error_pattern)
+    @pytest.mark.parametrize(
+        "spec,error_type,error_match",
+        [
+            # A bare name has no registry to search, unlike a dataset or task
+            # class, so importing it from wherever it first appeared would make
+            # the resolved function depend on import order.
+            ("my_key", ValueError, "Invalid function path"),
+            (".relative", ValueError, "Relative import syntax"),
+            ("nonexistent.module.fn", ImportError, "Could not import"),
+            (
+                "sieval.cli.resolution.no_such_function",
+                AttributeError,
+                "has no function",
+            ),
+            # Resolvable, importable, and useless as a key: caught here rather
+            # than as a TypeError from deep inside the row loop.
+            ("sieval.cli.resolution.DATASET_MODULE", ValueError, "not a callable"),
+            (42, ValueError, "must be a string"),
+        ],
+    )
+    def test_a_spec_it_cannot_use_raises(self, spec, error_type, error_match):
+        with pytest.raises(error_type, match=error_match):
+            resolve_key_function(spec)
+
+    def test_a_class_is_accepted_because_a_class_is_callable(self):
+        # Nothing requires a key function be a `def`; a small callable class
+        # holding configuration is a legitimate way to write one.
+        from sieval.core.models.model import Model
+
+        assert resolve_key_function("sieval.core.models.model.Model") is Model
 
 
 # ===================================================================
