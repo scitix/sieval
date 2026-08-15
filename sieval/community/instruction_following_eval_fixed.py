@@ -8,28 +8,26 @@ item *asks*: every repair is to the code that decides whether an answer complied
 **Why this is original code in ``community/``, which the directory's CLAUDE.md
 asks to be argued for.** The same three checkers are vendored twice — once under
 ``instruction_following_eval/`` (google-research) and once under ``multi_if/``
-(Meta's copy of the same file). Their bodies are logic-identical; the only
-divergence between the two copies of these three classes is one import path
-(``instructions_util.generate_keywords`` against a flat ``generate_keywords``)
-and one logging call, neither of which a repair touches. So this is the
-``_sympy_guards.py`` situation exactly: holding the fix *outside* both vendored
-packages serves upstream alignment rather than working against it, because the
-alternative is two copies of every repair inside files whose value is being
-diffable against upstream — "a fix duplicated into two files is a fix that will
-eventually exist in only one of them".
+(Meta's copy of the same file) — and their bodies are logic-identical, differing
+only in one import path (``instructions_util.generate_keywords`` against a flat
+``generate_keywords``) and one logging call, neither of which a repair touches.
+So this is the ``_sympy_guards.py`` situation exactly: holding the fix *outside*
+both vendored packages serves upstream alignment rather than working against it,
+because the alternative is two copies of every repair inside files whose value is
+being diffable against upstream — "a fix duplicated into two files is a fix that
+will eventually exist in only one of them".
 
 **Nothing here is reachable from the unqualified tasks.** ``ifeval_0shot_gen``
 and ``multi_if_0shot_gen`` keep grading through the vendored registry, byte for
-byte; the repairs are only visible to the ``_fixed`` siblings, which say so in
-their names. That split is the whole point: a faithful port stays available for
-reproducing published numbers, and a repaired one is available for measuring a
-model.
+byte; the repairs are visible only to the ``_fixed`` siblings, which say so in
+their names. A faithful port stays available for reproducing published numbers,
+and a repaired one for measuring a model.
 
 The one change inside the vendored files is a keyword-only ``instruction_dict``
 parameter on their four grader functions, defaulting to the vendored registry.
 It was preferred over re-implementing the grading loops here: those loops are
-~25 lines each of upstream logic, and a copy of them would drift silently the
-next time the vendored files are re-synced, whereas a parameter cannot.
+~25 lines each of upstream logic, and a copy would drift silently the next time
+the vendored files are re-synced, whereas a parameter cannot.
 
 Every repair below is the narrowest one that fixes the defect, and each reduces
 to upstream's own expression on the inputs upstream already handled — the tests
@@ -107,9 +105,9 @@ class _NthParagraphFirstWordFix:
     checked — or hands the check a blank one — while the total it is compared
     against is computed on the other reading. The common case is a response whose
     *first* chunk is blank, which whole runs do uniformly depending on the chat
-    template. (A single leading ``\\n`` does not do it: two newlines have to meet
-    before ``re.split`` yields an empty chunk. A blank chunk *after* the target
-    index is harmless — both readings then agree.) The two readings are
+    template. (Two newlines have to meet before ``re.split`` yields an empty
+    chunk, so a single leading ``\\n`` does not do it; a blank chunk *after* the
+    target index is harmless, both readings then agreeing.) The two are
     reconciled the only way that keeps upstream's own ``num_paragraphs``: filter
     once, and index what was counted.
 
@@ -117,9 +115,8 @@ class _NthParagraphFirstWordFix:
     against ``paragraph.split()[0]``, a single whitespace-delimited token. Some
     slots store a multi-token phrase there, and the prompts that carry them ask
     for that same phrase, so the kwarg is faithful to the item and the comparison
-    is what is wrong. A single token can never equal a multi-token string, so
-    such a slot returns FAIL for every possible response — a check that cannot
-    pass measures nothing.
+    is what is wrong: a single token can never equal a multi-token string, so
+    such a slot returns FAIL for every possible response.
 
     The repair reads how many tokens the *constraint's own value* spans and
     compares that many tokens of the paragraph, each normalised by upstream's own
@@ -159,12 +156,10 @@ class _LetterFrequencyFix:
     """Keep the character the item names.
 
     Upstream's ``build_description`` accepts a letter only when it is a single
-    character in ``[a-z]``; anything else is replaced by
-    ``random.choice(string.ascii_letters)``. The substitution is silent, and it
-    is drawn *freshly on every call*, so an item naming a non-alphabetic
-    character is graded against a different letter each time it is scored — the
-    prompt asks for one thing and the checker tests another, and not even
-    reproducibly.
+    character in ``[a-z]``; anything else is silently replaced by
+    ``random.choice(string.ascii_letters)``, drawn *freshly on every call* — so
+    an item naming a non-alphabetic character is graded against a different
+    letter each time it is scored.
 
     Everything else is deferred to upstream — the frequency default, the relation
     validation, the description pattern — so the only input whose handling
@@ -213,12 +208,12 @@ class _EnglishCapitalFix:
 
     Only the argument to ``detect`` changes in what is *graded*. ``isupper()`` is
     still upstream's, still first, and still short-circuits, so the set of
-    responses that reach the detector is exactly the set upstream sends there,
-    and "all capital letters" is decided by code this mixin does not touch. The
-    one other difference is that overriding the whole method drops upstream's
+    responses reaching the detector is exactly the set upstream sends there, and
+    "all capital letters" is decided by code this mixin does not touch. The one
+    other difference is that overriding the whole method drops upstream's
     log-on-exception (``logging.error`` in google-research's copy, ``logger.info``
-    in Meta's -- the single line on which the two copies of this class differ).
-    It logged the entire response, and the verdict it accompanied is unchanged.
+    in Meta's -- the single line on which the two copies differ); it logged the
+    entire response, and the verdict it accompanied is unchanged.
 
     The sibling ``change_case:english_lowercase`` is deliberately *not* repaired:
     it calls the detector on text that is already lowercase, which is the

@@ -1,121 +1,51 @@
 """IFEval 0-shot generative task, corrected — three repaired constraint checkers.
 
-The ``_fixed`` variant. ``ifeval_0shot_gen`` keeps grading through the vendored
-google-research registry, defects included, because that is what reproduces a
-published number. This one substitutes three repaired checkers and is therefore
-*not* a reproduction: it measures whether a response obeyed the constraint its
-own prompt states.
+``ifeval_0shot_gen`` keeps grading through the vendored google-research
+registry, defects included, because that is what reproduces a published number.
+This variant substitutes three repaired checkers and is therefore *not* a
+reproduction: it measures whether a response obeyed the constraint its own
+prompt states.
 
 **One method differs.** This class overrides
 :meth:`~sieval.tasks.ifeval_0shot_gen.IFEvalZeroShotGenTask._instruction_dict`
 and nothing else — the prompt, the strict/loose graders, the per-sample record
 and the pooled report are all inherited, so the two tasks cannot diverge
 anywhere except at the registry the checkers are looked up in. That is the
-strongest available statement that the delta below is the repair and not a
-second change riding along with it.
+strongest available statement that the delta is the repair and not a second
+change riding along with it.
 
-The three repairs, their defects, and why each is the narrowest fix are
-documented on the mixins in
-:mod:`sieval.community.instruction_following_eval_fixed`. In one line each:
+The three defects, and why each fix is the narrowest one, are documented on the
+mixins in :mod:`sieval.community.instruction_following_eval_fixed`; the
+divergences and the measured deltas are enumerated in ``notes`` below. Three
+things those numbers do not say on their own:
 
-* ``length_constraints:nth_paragraph_first_word`` — upstream counts paragraphs
-  on a blank-filtered list and then indexes the *unfiltered* one, so an empty
-  ``\\n\\n`` chunk at or before the nth paragraph checks the wrong paragraph
-  against a total computed the other way.
-* ``keywords:letter_frequency`` — a letter outside ``[a-z]`` is silently
-  replaced by ``random.choice(string.ascii_letters)``, freshly drawn per call,
-  so the item is graded against a letter nobody asked for and not even the same
-  one twice.
-* ``change_case:english_capital`` — ``langdetect`` is called on ALL-CAPS text,
-  which is off-distribution for every profile it ships; the repair detects on a
-  case-folded copy, leaving ``isupper()`` (upstream's, and still first) to
-  decide the capitals requirement.
-
-**Coverage on the pinned 541.** The three ids account for 70 of 834 constraint
-slots (``english_capital`` 25, ``letter_frequency`` 33,
-``nth_paragraph_first_word`` 12), spread over 68 prompts — 12.6% of the set. Two
-``letter_frequency`` slots carry a non-``[a-z]`` letter (keys 1122 ``#`` and 1129
-``!``). Every ``nth_paragraph_first_word`` slot carries a single-token
-``first_word``, so the multi-token half of that repair is inert here and is
-exercised only by the Multi-IF sibling.
-
-**Score impact, measured on stored responses.** Three stored response sets were
-re-graded by running *this task's own* ``feedback()`` and ``report()`` against
-them and the unqualified task's over the same records — so these are the numbers
-a run reports, not a grader-level approximation — with ``langdetect``'s factory
-seeded identically per arm (see the caveat below):
-
-==============================================  ==============  ==============
-set                                             strict prompt   loose prompt
-==============================================  ==============  ==============
-Intern-S2-Preview, full 541                     92.79 → 95.38   95.19 → 95.75
-a second stored full-541 run                    94.82 → 95.19   95.93 → 96.49
-Qwen3-30B-A3B thinking-on, 100-prompt subset    65.00 → 67.00   71.00 → 73.00
-==============================================  ==============  ==============
-
-So **+0.37 to +2.59 strict prompt-level**; strict instruction-level moves
-95.20 → 96.88, 96.52 → 96.76 and 79.70 → 80.69. Per-id flips, strict: set 1
-``nth_paragraph_first_word`` 12 (every slot in the set) and ``english_capital``
-2; set 2 ``english_capital`` 2; set 3 one each of ``english_capital`` and
-``nth_paragraph_first_word``. The direction is not uniformly upward, which is
-the point — set 2's loose reading moves ``english_capital`` 2 slots FAIL→PASS
-*and 1 PASS→FAIL*: a well-posed detector removes false passes as well as false
-failures.
-
-**It also removes a source of run-to-run nondeterminism, and that is
-measurable.** Re-grading each set under five different ``langdetect`` seeds,
-strict prompt-level spans:
-
-======================  =======================  =====================
-set                     upstream                 fixed
-======================  =======================  =====================
-Intern-S2-Preview 541   92.61–92.79 (0.18)       95.38–95.38 (**0.00**)
-second full-541 run     94.45–94.82 (0.37)       95.19–95.19 (**0.00**)
-Qwen3 100-prompt        63.00–65.00 (2.00)       65.00–67.00 (2.00)
-======================  =======================  =====================
-
-On both full sets the repaired task is *seed-invariant*: not one of the 834
-slots changes verdict across all five seeds, against upstream's 1–2 unstable
-slots (``letter_frequency``, whose random draw the repair removes outright, and
-``english_capital``). The 100-prompt subset keeps a 2.00 spread, and the
-attribution is exact — its two unstable slots are one
-``change_case:english_lowercase`` (deliberately not repaired: it detects on
-already-lowercase text) and one ``english_capital`` whose response is a
-94,152-character, 18,544-word repetition loop that reads as Welsh on one seed in
-five. **The repair makes detection well-posed; it does not make ``langdetect``
-deterministic**, and on a degenerate response nothing would.
-
-**What fires the paragraph defect, and how often.** ``re.split(r"\\n\\n", ...)``
-yields an empty chunk only where two newlines meet, so the trigger is a response
-whose first ``\\n\\n``-separated chunk is *blank* — not merely one that opens
-with a newline. Whole runs do this uniformly, and by different routes: 540 of
-541 Intern-S2 responses open with a space and then a blank line, all 100 Qwen3
-responses open with ``\\n\\n`` outright, and the second full-541 run does it in
-0.2%. The per-set flips track that rate exactly — 12 of 12
-``nth_paragraph_first_word`` slots have their target index moved in set 1 and
-0 of 12 in set 2, and set 2's flips at this id are correspondingly zero, which
-is why its delta is the smallest of the three. So the defect is not specific to
-reasoning models, but neither is its blast radius uniform: on a run whose
-responses never open with a blank line, this repair moves ``english_capital``
-and nothing else.
-
-**Caveat on reproducing these deltas: seed langdetect.** ``langdetect.detect``
-is randomized and SiEval does not set ``DetectorFactory.seed``, so an unseeded
-A/B shows flips at *unrepaired* checkers too — ``change_case:english_lowercase``
-flipped between arms during this measurement before its factory was pinned, and
-looked for a while like the repair leaking through a shared RNG. Pin
-``langdetect.DetectorFactory.seed`` identically in both arms before attributing
-any flip to a fix. The same unseededness is why ``english_capital`` is worth
-repairing at all rather than merely worth noting.
+* **Coverage.** The three ids hold 70 of the pinned set's 834 constraint slots,
+  over 68 of 541 prompts. Every ``nth_paragraph_first_word`` slot carries a
+  single-token ``first_word``, so the multi-token half of that repair is inert
+  here and is exercised only by the Multi-IF sibling.
+* **What fires the paragraph defect.** ``re.split(r"\\n\\n", ...)`` yields an
+  empty chunk only where two newlines meet, so the trigger is a response whose
+  first chunk is *blank*, not merely one that opens with a newline. Whole runs
+  do this uniformly and by different routes — 540 of 541 Intern-S2 responses
+  open with a space then a blank line, all 100 Qwen3 responses open with
+  ``\\n\\n`` outright, a second full-541 run does it in 0.2% — which is why the
+  per-set deltas span an order of magnitude rather than reading as noise. On a
+  run whose responses never open blank, this repair moves ``english_capital``
+  and nothing else.
+* **Seed ``langdetect`` before reproducing any of it.** ``langdetect.detect`` is
+  randomized and SiEval does not set ``DetectorFactory.seed``, so an unseeded
+  A/B flips *unrepaired* checkers too — ``change_case:english_lowercase``
+  flipped between arms during this measurement and looked for a while like the
+  repair leaking through a shared RNG. That same unseededness is why
+  ``english_capital`` is worth repairing rather than merely worth noting.
 
 **Status.** ``stable``. The divergence is carried by the name, so ``status`` is
 not gated on reproducing a published number — by construction this variant
-cannot reproduce one, since it grades differently on purpose. What a ``_fixed``
-variant owes instead is a quantified delta, and this one is measured three ways
-above, with each repair reducing to upstream's own expression on the inputs
-upstream already handled (asserted in the tests). ``experimental`` is for a
-faithful port whose published anchor is not reachable, which is not a claim this
-task makes.
+cannot, since it grades differently on purpose. What a ``_fixed`` variant owes
+instead is a quantified delta, measured here on three stored response sets, with
+each repair reducing to upstream's own expression on the inputs upstream already
+handled (asserted in the tests). ``experimental`` is for a faithful port whose
+published anchor is not reachable, which is not a claim this task makes.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -136,11 +66,8 @@ from sieval.tasks.ifeval_0shot_gen import IFEvalZeroShotGenTask
     deps_group="ifeval",
     model_type="chat",
     # The divergence is carried by the name, not by `status`: this task grades
-    # differently on purpose, so it claims no published number and `status` is
-    # not gated on reproducing one. What a `_fixed` variant owes instead is a
-    # quantified delta, which the module docstring and `notes` below carry.
-    # `experimental` is for a faithful port whose published anchor is not
-    # reachable -- a claim this task does not make.
+    # differently on purpose, so it claims no published number to be gated on.
+    # What a `_fixed` variant owes instead is the quantified delta in `notes`.
     status="stable",
     reference_kind="value",
     reference_impl=ReferenceImpl(
@@ -194,9 +121,8 @@ class IFEvalZeroShotGenFixedTask(IFEvalZeroShotGenTask):
     @override
     def _instruction_dict(self) -> dict[str, type] | None:
         # Imported here, not at module scope, for the reason the base task
-        # lazy-imports `evaluation_lib`: the repair module reaches the vendored
-        # checkers and langdetect, and registration -- which imports every task
-        # module to build the registry -- must not pay for them.
+        # lazy-imports `evaluation_lib`: registration imports every task module,
+        # and must not pay for the vendored checkers and langdetect.
         from sieval.community.instruction_following_eval_fixed import (
             fixed_ifeval_registry,
         )

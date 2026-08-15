@@ -68,13 +68,12 @@ multi-if = [
   "emoji>=2.15.0",
   "langdetect>=1.0.9",
   "nltk>=3.9.2",
-  # Not reached by the fork itself, which uses stdlib logging and
-  # MappingProxyType. `multi_if_0shot_gen_fixed` grades through
-  # `sieval.community.instruction_following_eval_fixed`, whose three repairs are
-  # shared with the ifeval family, so it imports google-research's
-  # `instructions` module -- absl-py and immutabledict are that module's. They
-  # are needed at grading time, not import time, so omitting them fails inside
-  # `feedback()` with inference already paid for.
+  # Not reached by the fork itself, but `multi_if_0shot_gen_fixed` grades
+  # through `sieval.community.instruction_following_eval_fixed`, whose repairs
+  # are shared with the ifeval family and so import google-research's
+  # `instructions` module -- these two are that module's. Needed at grading
+  # time, not import time, so omitting them fails inside `feedback()` with
+  # inference already paid for.
   "absl-py>=2.3.1",
   "immutabledict>=4.2.2",
   # Only reached when langdetect reports Thai for a model *response* (Thai is
