@@ -308,7 +308,7 @@ class TestFilter:
         ds = _make_tagged(["a", "b", "c"])
         logs = _capture_logs(lambda: ds.filter("tag", "zzz", split="tst"))
         assert "split 'tst' is not in this dataset" in logs
-        assert "nothing was filtered" in logs
+        assert "the dataset is unchanged" in logs
         assert "['test']" in logs
 
     def test_filter_warns_that_an_empty_split_filtered_nothing(self):
@@ -316,7 +316,7 @@ class TestFilter:
             _hf_dict=HFDatasetDict({"test": HFDataset.from_dict({})})
         )
         logs = _capture_logs(lambda: ds.filter("tag", "a"))
-        assert "split 'test' is empty, so nothing was filtered" in logs
+        assert "split 'test' is empty, so the dataset is unchanged" in logs
 
     def test_require_all_raises_rather_than_warning_on_a_missing_split(self):
         # require_all promises every requested key lands; silently keeping all
@@ -949,6 +949,84 @@ class TestStratifiedFraction:
             ds.stratified_sample(by="subject", fraction=0.5, split="train", seed=0)
             is ds
         )
+
+
+# ===================================================================
+# a missing split is reported by every transform
+# ===================================================================
+class TestMissingSplitIsReported:
+    """One contract over all five transforms, so none can drift back to silence.
+
+    Each returns ``self`` when its split is absent — right, since a config may
+    name a split only some datasets carry. But every one of them exists to
+    *narrow* a split, so skipping the narrowing leaves the data whole and the
+    run scores every row: the only failure mode here that reports a plausible
+    number instead of an obviously wrong one.
+    """
+
+    @staticmethod
+    def _dataset():
+        return _BypassLoadDataset(
+            _hf_dict=HFDatasetDict(
+                {"test": HFDataset.from_list([{"id": i, "g": "a"} for i in range(6)])}
+            )
+        )
+
+    # (label, call) — every transform that takes a `split`.
+    TRANSFORMS = [
+        ("repeat", lambda ds: ds.repeat(2, split="tst")),
+        ("slice", lambda ds: ds.slice(2, split="tst")),
+        ("shuffle", lambda ds: ds.shuffle(seed=0, split="tst")),
+        ("filter", lambda ds: ds.filter("id", [0], split="tst")),
+        (
+            "stratified_sample",
+            lambda ds: ds.stratified_sample(by="g", num=2, split="tst"),
+        ),
+    ]
+
+    @pytest.mark.parametrize("op,call", TRANSFORMS, ids=[t[0] for t in TRANSFORMS])
+    def test_warns_and_names_the_splits_it_does_have(self, op, call):
+        ds = self._dataset()
+        logs = _capture_logs(lambda: call(ds))
+        assert f"{op}: split 'tst' is not in this dataset" in logs
+        # The splits it *does* have — without them the warning cannot be acted on.
+        assert "['test']" in logs
+        assert "the dataset is unchanged" in logs
+
+    @pytest.mark.parametrize("op,call", TRANSFORMS, ids=[t[0] for t in TRANSFORMS])
+    def test_still_returns_self_untouched(self, op, call):
+        # Warning is the whole change: the no-op contract is deliberately kept,
+        # so a config naming a split some datasets lack still runs.
+        ds = self._dataset()
+        assert call(ds) is ds
+
+    @pytest.mark.parametrize(
+        "op,call",
+        [
+            ("filter", lambda ds: ds.filter("id", [0])),
+            ("stratified_sample", lambda ds: ds.stratified_sample(by="g", num=2)),
+        ],
+    )
+    def test_an_empty_split_is_reported_too(self, op, call):
+        # The two transforms that bail on an empty split rather than letting
+        # the underlying op no-op harmlessly.
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict({"test": HFDataset.from_dict({})})
+        )
+        logs = _capture_logs(lambda: call(ds))
+        assert f"{op}: split 'test' is empty, so the dataset is unchanged" in logs
+
+    def test_only_filter_escalates_to_a_raise(self):
+        # `require_all` is filter's alone, so it is the only transform with a
+        # promise strong enough to turn the warning into an error. The others
+        # have no such flag and must not grow one silently.
+        ds = self._dataset()
+        with pytest.raises(ValueError, match="split 'tst' is not in this dataset"):
+            ds.filter("id", [0], split="tst", require_all=True)
+        for op, call in self.TRANSFORMS:
+            if op == "filter":
+                continue
+            assert call(ds) is ds, f"{op} must not raise"
 
 
 # ===================================================================

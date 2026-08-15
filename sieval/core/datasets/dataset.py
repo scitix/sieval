@@ -5,7 +5,7 @@ import copy
 import math
 import random
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Literal, Self, overload
 
 from datasets import Dataset as HFDataset
@@ -73,9 +73,10 @@ class Dataset[TSample](ABC):
     def repeat(self, times: int, split: str = "test") -> Self:
         """Return a shallow clone with *split* repeated *times* times.
 
-        Returns ``self`` unchanged if *split* is absent.
+        Returns ``self`` unchanged if *split* is absent, warning that it did.
         """
         if split not in self._dataset_dict:
+            _report_unchanged("repeat", _absent_split(split, self._dataset_dict))
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
         new_dict[split] = new_dict[split].repeat(times)
@@ -85,9 +86,12 @@ class Dataset[TSample](ABC):
         """Return a shallow clone with only the first *num* samples of *split*.
 
         Positional, deterministic prefix. Keeps all samples if *num* exceeds
-        split length. Returns ``self`` unchanged if *split* is absent.
+        split length. Returns ``self`` unchanged if *split* is absent, warning
+        that it did — an unnarrowed split is the failure that looks like a
+        selection, since every row survives and scores as if *num* had applied.
         """
         if split not in self._dataset_dict:
+            _report_unchanged("slice", _absent_split(split, self._dataset_dict))
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
         num_to_keep = min(num, len(new_dict[split]))
@@ -97,9 +101,10 @@ class Dataset[TSample](ABC):
     def shuffle(self, seed: int = 0, split: str = "test") -> Self:
         """Return a shallow clone with *split* shuffled (deterministic via *seed*).
 
-        Returns ``self`` unchanged if *split* is absent.
+        Returns ``self`` unchanged if *split* is absent, warning that it did.
         """
         if split not in self._dataset_dict:
+            _report_unchanged("shuffle", _absent_split(split, self._dataset_dict))
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
         new_dict[split] = new_dict[split].shuffle(seed=seed)
@@ -142,10 +147,9 @@ class Dataset[TSample](ABC):
         not an error.
 
         Returns ``self`` unchanged if *split* is absent or empty, warning that
-        nothing was filtered: a misspelled *split* leaves the real one whole, so
-        this is the one failure here that keeps every row while still reporting
-        a plausible number. *require_all* raises on it — asking for every key to
-        land is not a question about one split.
+        it did, as every transform here does. *require_all* escalates that to a
+        raise: asking for every key to land is not a question about one split,
+        and the flag would otherwise be defeated by a typo in it.
 
         Raises if *by* names a column that does not exist, or if **nothing**
         matches: an empty result is a misspelled *value* far more often than an
@@ -153,17 +157,13 @@ class Dataset[TSample](ABC):
         silently scores zero samples.
         """
         if split not in self._dataset_dict:
-            _report_nothing_filtered(
-                f"filter: split {split!r} is not in this dataset "
-                f"(have: {sorted(self._dataset_dict)})",
-                require_all=require_all,
+            _report_unchanged(
+                "filter", _absent_split(split, self._dataset_dict), strict=require_all
             )
             return self
         hf = self._dataset_dict[split]
         if len(hf) == 0:
-            _report_nothing_filtered(
-                f"filter: split {split!r} is empty", require_all=require_all
-            )
+            _report_unchanged("filter", f"split {split!r} is empty", strict=require_all)
             return self
 
         cols = _filter_columns(by, hf.column_names)
@@ -289,7 +289,9 @@ class Dataset[TSample](ABC):
         *seed*-driven shuffle, so the selection reproduces across runs and
         processes.
 
-        Returns ``self`` unchanged if *split* is absent or empty.
+        Returns ``self`` unchanged if *split* is absent or empty, warning that
+        it did — like :meth:`slice`, an unsubsampled split keeps every row and
+        scores as if the budget had applied.
         """
         budgets = [num, per_group, fraction]
         if sum(budget is not None for budget in budgets) != 1:
@@ -319,9 +321,13 @@ class Dataset[TSample](ABC):
             )
 
         if split not in self._dataset_dict:
+            _report_unchanged(
+                "stratified_sample", _absent_split(split, self._dataset_dict)
+            )
             return self
         hf = self._dataset_dict[split]
         if len(hf) == 0:
+            _report_unchanged("stratified_sample", f"split {split!r} is empty")
             return self
 
         cols = [by] if isinstance(by, str) else list(by)
@@ -501,13 +507,31 @@ class Dataset[TSample](ABC):
         return iter(selected_ds) if lazy else list(selected_ds)
 
 
-def _report_nothing_filtered(detail: str, *, require_all: bool) -> None:
-    """Report a ``filter`` left with no split to run on.
+def _absent_split(split: str, have: Iterable) -> str:
+    """Why a transform had nothing to act on, when the split is not there.
 
-    Why this is not silent is in :meth:`Dataset.filter`, where a caller reads it.
+    *have* is bare rather than ``Iterable[str]`` because every caller passes a
+    ``DatasetDict``, whose upstream stub does not parameterise ``dict`` — so the
+    element type would be a claim the checker cannot see, not one it verifies.
     """
-    detail = f"{detail}, so nothing was filtered"
-    if require_all:
+    return f"split {split!r} is not in this dataset (have: {sorted(have)})"
+
+
+def _report_unchanged(op: str, why: str, *, strict: bool = False) -> None:
+    """Report a transform that returned its dataset untouched.
+
+    Returning *self* is right — a config may name a split only some datasets
+    carry — but silence is not. These transforms exist to *narrow* a split, and
+    a misspelled ``split`` skips the narrowing while leaving the data whole, so
+    the run scores every row and reports a number that looks reasonable. That
+    is the opposite of how they fail once the split is found, where too few
+    rows show up downstream.
+
+    Only :meth:`Dataset.filter` passes *strict*, because only it has a flag
+    (``require_all``) that already promised the selection landed.
+    """
+    detail = f"{op}: {why}, so the dataset is unchanged"
+    if strict:
         raise ValueError(detail)
     logger.warning(detail)
 
