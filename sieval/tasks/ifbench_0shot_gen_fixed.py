@@ -52,6 +52,22 @@ Use the unqualified ``ifbench_0shot_gen`` to compare against published IFBench
 numbers; those were produced by upstream's code, defects included. Use this task
 when the grading needs to match what the items actually ask.
 
+**Not a sibling of the IFEval-family repairs.** ``ifeval_0shot_gen_fixed`` and
+``multi_if_0shot_gen_fixed`` share one mixin module because their two vendored
+copies of google-research's checkers are logic-identical. IFBench is allenai's
+own instruction set with its own checkers and its own defects — nothing here
+overlaps those three, which is why the repairs live in a module of their own
+rather than joining :mod:`sieval.community.instruction_following_eval_fixed`.
+
+**Status.** ``stable``. Its parent stays ``experimental`` because of its
+*reproduction*: upstream's temperature=0 protocol does not reproduce, so the
+published-number claim it makes is unverified. That is a property of the anchor,
+which this variant neither changes nor inherits — it claims no anchor at all,
+and ``notes`` forbids the comparison outright. What a ``_fixed`` variant owes
+instead is a quantified delta, measured above over the full official 300-prompt
+test set. ``experimental`` would say "not ready", which is the one thing a
+measured fork is not.
+
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
@@ -70,17 +86,10 @@ from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
     tags=("english", "open-ended"),
     deps_group="ifbench",
     model_type="chat",
-    # Stable, though the task it inherits from is not, because the two words
-    # answer different questions. The base is `experimental` for its *reproduction*
-    # -- upstream's temperature=0 protocol does not reproduce, so its published-
-    # number claim is unverified. This task makes no published-number claim at
-    # all; the notes below forbid the comparison outright. What `stable` has to
-    # carry here is the bar the variant rule sets -- a quantified score impact
-    # against upstream's actual behaviour on a stored run -- and that is met over
-    # the full official 300-prompt test set. The divergence itself is announced by
-    # the `_fixed` in the name, which is where a deliberate fork belongs; spelling
-    # it a second time as `experimental` would say "not ready", which is the one
-    # thing a measured fork is not.
+    # The parent stays `experimental` because its published anchor is not
+    # reproducible. That reason does not carry over: this variant grades
+    # differently on purpose and claims no anchor, so what it owes instead is
+    # the quantified delta in `notes`.
     status="stable",
     reference_kind="value",
     reference_impl=ReferenceImpl(
@@ -89,8 +98,12 @@ from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
         notes=(
             "Deliberate fork of ifbench_0shot_gen, which stays byte-faithful to "
             "upstream. Four vendored checkers grade something other than what "
-            "their instruction says and are repaired here; nothing else differs, "
-            "and no item text is changed. (1) format:line_indent drops blank "
+            "their instruction says and are repaired here, in "
+            "sieval.tasks._ifbench_fixed_checkers -- a module of its own, not "
+            "the IFEval family's shared mixins, since IFBench is allenai's own "
+            "checker set with its own defects and shares none of those three. "
+            "DIVERGENCES (all four, exhaustive): "
+            "(1) format:line_indent drops blank "
             "lines with `for line in lines: if not line.strip(): "
             "lines.remove(line)`, which mutates the list under its own iterator "
             "and so skips one element per removal -- a surviving blank line has "
@@ -107,7 +120,10 @@ from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
             "trailing punctuation token, so a response ending in two shifts "
             "every position by one. (4) words:vowel counts paragraphs with "
             "split('\\n'), rejecting any soft-wrapped single paragraph on line "
-            "count. SCORE IMPACT, measured against the unqualified task over the "
+            "count. Nothing else differs: the task overrides one method "
+            "(_instruction_dict) of ifbench_0shot_gen and inherits prompting, "
+            "decoding, grading, records and report; no item text is changed. "
+            "SCORE IMPACT, measured against the unqualified task over the "
             "full official 300-prompt test set at 8 rollouts (Qwen3-30B-A3B, "
             "thinking on), replaying stored responses: loose prompt-level (the "
             "headline) 39.2917→39.3333 (+0.0417), strict prompt-level "
@@ -121,7 +137,13 @@ from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
             "because the defect is unexercised by this model, not absent. So "
             "this variant is not a different benchmark, it is the same one with "
             "a bounded correction -- do not compare its numbers to published "
-            "IFBench results, which were produced by upstream's code."
+            "IFBench results, which were produced by upstream's code. "
+            "REPRODUCTION NOTE: 16 of IFBench's 58 checkers fall back to "
+            "random.randint/random.choice in build_description when a row omits "
+            "the kwarg, so seed `random` in both arms before attributing a flip "
+            "to a repair -- an unseeded A/B can move checkers this task does not "
+            "touch. None of the four repaired here draws, so the repairs "
+            "themselves consume no draw and leave that shared stream unperturbed."
         ),
     ),
 )
