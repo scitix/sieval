@@ -114,6 +114,22 @@ jobs:
         run: pdm install --check --frozen-lockfile ${{ env.INSTALL_GROUPS }}
       - name: Preflight (registration, version, deps, links, meta-drift)
         run: pdm run python scripts/check_preflight.py
+      # `sieval/community/ifbench/instructions_util.py` calls
+      # `download_nltk_resources()` at module scope, so the corpora are fetched
+      # by whoever imports the vendored fork first. Serial that was fine. Under
+      # `-n auto` several workers collect `test__ifbench_fixed_checkers.py` at
+      # the same moment and race to unzip into one shared NLTK_DATA: the losers
+      # read a half-written archive and die with FileExistsError / EOFError /
+      # LookupError -- none of them the LookupError that helper catches -- and
+      # a collection error takes the whole run with it. Reproduced outside CI:
+      # 4 concurrent cold imports, 3 fail; warmed first, 4 pass.
+      #
+      # This imports the module the tests do, in the same job and environment,
+      # so it populates whichever directory the code resolves to rather than a
+      # guess -- and it asks for exactly the corpora the code asks for, so
+      # there is no second copy of the list here to drift from it.
+      - name: Warm the NLTK corpora the vendored IFBench graders fetch on import
+        run: pdm run python -c "import sieval.community.ifbench.instructions"
       # `benchmark` deselected: shared runners cannot hold wall-clock
       # thresholds calibrated on a dedicated box. The rest is deterministic.
       #

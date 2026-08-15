@@ -185,6 +185,16 @@ quotas** — on a big shared box, `taskset`, a container limit, or simply other
 work running will leave `auto` far above what you actually have. Pass an
 explicit `-n <cores you have>` there.
 
+**On a cold machine, warm the NLTK corpora first.** The vendored IFBench
+graders download them at module scope, so parallel workers race to unzip into
+one shared `NLTK_DATA` and the losers read a half-written archive
+(`FileExistsError` / `EOFError` / `LookupError`, surfacing as a *collection*
+error). One serial import is enough, and CI does it in its own step:
+
+```bash
+python -c "import sieval.community.ifbench.instructions"
+```
+
 Otherwise nothing in the suite depends on execution order or a shared writable
 path. The one thing that costs more under parallelism is
 `tests/unit/tasks/test_import_discipline_family.py`: its probe interpreter is a
