@@ -19,9 +19,10 @@ env:
   # code, untestable without the vendored fork they subclass. Its NLTK corpora
   # are still fetched on demand by the vendored code at import time, exactly as
   # `multi_if` and the `ruler` dataset do in this job -- no staged copy of the
-  # corpus list lives here to drift from them. That fetch is not concurrency
-  # safe, though, so the parallel test step is preceded by one serial warm-up
-  # import; see the step below for why.
+  # corpus list lives here to drift from them. The cache step below keeps that
+  # fetch off the network on all but the first run; making it concurrency safe
+  # is `tests/unit/tasks/conftest.py`'s job, because the race is between test
+  # imports and shows up under any `-n`, not only here.
   INSTALL_GROUPS: >-
     -G drop -G ifbench -G ifeval -G iheval -G math -G scicode -G test -G dev
 
@@ -117,22 +118,35 @@ jobs:
         run: pdm install --check --frozen-lockfile ${{ env.INSTALL_GROUPS }}
       - name: Preflight (registration, version, deps, links, meta-drift)
         run: pdm run python scripts/check_preflight.py
-      # `sieval/community/ifbench/instructions_util.py` calls
-      # `download_nltk_resources()` at module scope, so the corpora are fetched
-      # by whoever imports the vendored fork first. Serial that was fine. Under
-      # `-n auto` several workers collect `test__ifbench_fixed_checkers.py` at
-      # the same moment and race to unzip into one shared NLTK_DATA: the losers
-      # read a half-written archive and die with FileExistsError / EOFError /
-      # LookupError -- none of them the LookupError that helper catches -- and
-      # a collection error takes the whole run with it. Reproduced outside CI:
-      # 4 concurrent cold imports, 3 fail; warmed first, 4 pass.
+      # The graders fetch their NLTK corpora on demand, from the `nltk_data`
+      # GitHub repo -- the one dependency in this job that no lockfile pins and
+      # no hash covers. Restoring them makes the common run hermetic; a miss
+      # just falls back to the same on-demand fetch the code already does.
       #
-      # This imports the module the tests do, in the same job and environment,
-      # so it populates whichever directory the code resolves to rather than a
-      # guess -- and it asks for exactly the corpora the code asks for, so
-      # there is no second copy of the list here to drift from it.
-      - name: Warm the NLTK corpora the vendored IFBench graders fetch on import
-        run: pdm run python -c "import sieval.community.ifbench.instructions"
+      # Two paths because the families resolve differently: the vendored IFBench
+      # fork redirects NLTK_DATA into the sieval cache so downloads never land
+      # in the source tree, while `multi_if` and `ruler` use NLTK's default.
+      #
+      # Keyed on the files that decide *which* corpora get fetched, so adding
+      # one invalidates the cache on its own. A hand-written version key would
+      # be the second copy of the corpus list this job has deliberately avoided
+      # keeping -- one someone must remember to bump.
+      - name: Restore the NLTK corpora the graders fetch on demand
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/sieval/ifbench_nltk_data
+            ~/nltk_data
+          key: >-
+            nltk-${{ runner.os }}-${{ hashFiles(
+            'sieval/community/ifbench/instructions_util.py',
+            'sieval/tasks/multi_if_0shot_gen.py',
+            'sieval/datasets/ruler/_shared.py') }}
+          # Editing any of those files for an unrelated reason misses the exact
+          # key while the corpora themselves are unchanged. Falling back to the
+          # newest previous entry keeps that run off the network for everything
+          # already staged; only a genuinely new corpus is fetched.
+          restore-keys: nltk-${{ runner.os }}-
       # `benchmark` deselected: shared runners cannot hold wall-clock
       # thresholds calibrated on a dedicated box. The rest is deterministic.
       #

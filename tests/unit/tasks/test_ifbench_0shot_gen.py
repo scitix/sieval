@@ -14,6 +14,7 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import TaskContext, build_prediction_record
 from sieval.datasets.ifbench import IFBenchDataset
+from sieval.tasks import ifbench_0shot_gen as module
 from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
 
 
@@ -105,6 +106,32 @@ def _install_fake_evaluator(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def fresh_nltk_check():
+    """Keep `_ensure_nltk_resources`' cache from leaking between tests.
+
+    Autouse because the cache is process-global: a test that lets a success
+    through decides the outcome of every later one, whichever order they run in.
+    """
+    module._ensure_nltk_resources.cache_clear()
+    yield
+    module._ensure_nltk_resources.cache_clear()
+
+
+@pytest.fixture
+def staged_nltk(monkeypatch: pytest.MonkeyPatch):
+    """Report every corpus as present, so grading tests do not need real data.
+
+    `feedback()` verifies the corpora for real, which is the point of the check
+    -- but a test driving it through a faked evaluator should still pass on a box
+    that has never staged them.
+    """
+    import nltk
+
+    monkeypatch.setattr(nltk.data, "find", lambda path: path)
+
+
+@pytest.mark.usefixtures("staged_nltk")
 @pytest.mark.anyio
 async def test_report_scores_finals_and_counts_fails(monkeypatch: pytest.MonkeyPatch):
     _install_fake_evaluator(monkeypatch)
@@ -144,3 +171,138 @@ async def test_report_scores_finals_and_counts_fails(monkeypatch: pytest.MonkeyP
         "score_key": "loose_prompt_level_accuracy",
         "denominator_policy": "judged",
     }
+
+
+def test_ensure_nltk_resources_passes_when_every_resource_is_staged(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nltk
+
+    checked: list[str] = []
+
+    def fake_find(path):
+        checked.append(path)
+        return path
+
+    monkeypatch.setattr(nltk.data, "find", fake_find)
+    module._ensure_nltk_resources()
+    assert set(checked) == set(module._NLTK_RESOURCES)
+
+
+def test_ensure_nltk_resources_names_every_missing_resource(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nltk
+
+    absent = {"corpora/stopwords", "taggers/averaged_perceptron_tagger_eng"}
+
+    def fake_find(path):
+        if path in absent:
+            raise LookupError(path)
+        return path
+
+    monkeypatch.setattr(nltk.data, "find", fake_find)
+    with pytest.raises(LookupError) as excinfo:
+        module._ensure_nltk_resources()
+
+    message = str(excinfo.value)
+    # All of them, not just the first one to fail: stopping at the first would
+    # make an offline box stage its corpora one run at a time.
+    for resource in absent:
+        assert resource in message
+    # And nothing that *is* staged. `tokenizers/punkt` is a prefix of
+    # `tokenizers/punkt_tab`, so this one assertion rules out naming either.
+    assert "tokenizers/punkt" not in message
+
+
+def test_a_passing_check_runs_once_per_process(monkeypatch: pytest.MonkeyPatch):
+    import nltk
+
+    checked: list[str] = []
+
+    def fake_find(path):
+        checked.append(path)
+        return path
+
+    monkeypatch.setattr(nltk.data, "find", fake_find)
+    module._ensure_nltk_resources()
+    module._ensure_nltk_resources()
+    # `nltk.data.find` walks every entry on `nltk.data.path`, and `feedback()`
+    # calls this per sample -- 4 walks x set size is worth caching away.
+    assert len(checked) == len(module._NLTK_RESOURCES)
+
+
+def test_a_failing_check_is_not_cached(monkeypatch: pytest.MonkeyPatch):
+    import nltk
+
+    checked: list[str] = []
+
+    def fake_find(path):
+        checked.append(path)
+        raise LookupError(path)
+
+    monkeypatch.setattr(nltk.data, "find", fake_find)
+    for _ in range(2):
+        with pytest.raises(LookupError):
+            module._ensure_nltk_resources()
+
+    # `functools.cache` stores return values only, never raises. That is what
+    # keeps a broken box saying so on every sample instead of being marked done
+    # by the first one -- the whole reason the failure is total rather than a
+    # biased subset. A hand-rolled "checked already" flag would lose this.
+    assert len(checked) == 2 * len(module._NLTK_RESOURCES)
+
+
+def test_the_verified_resources_match_upstreams_download_helper(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import nltk
+
+    # Reached through `instructions`, not imported directly: that module points
+    # NLTK at the sieval cache dir *before* loading `instructions_util`, and
+    # loading `instructions_util` is what runs the staging attempt.
+    from sieval.community.ifbench import instructions
+
+    looked_up: list[str] = []
+
+    def fake_find(path):
+        looked_up.append(path)
+        raise LookupError(path)
+
+    monkeypatch.setattr(nltk.data, "find", fake_find)
+    monkeypatch.setattr(nltk, "download", lambda name, **_kwargs: True)
+
+    instructions.instructions_util.download_nltk_resources()
+
+    # `_NLTK_RESOURCES` is a second copy of a list that belongs to upstream. This
+    # drives upstream's own helper with every lookup failing and records what it
+    # asks for, so a corpus added there without being added here fails here --
+    # rather than in a run, as one unverified resource.
+    assert set(looked_up) == set(module._NLTK_RESOURCES)
+    assert len(looked_up) == len(module._NLTK_RESOURCES)
+
+
+@pytest.mark.anyio
+async def test_feedback_stops_when_the_corpora_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Teeth for the call site rather than the helper: unwire the check from
+    # `feedback()` and this is what goes red. The faked evaluator grades happily
+    # with no NLTK data at all, which is exactly how the real one hid the
+    # problem -- only the checkers that reach NLTK ever noticed.
+    _install_fake_evaluator(monkeypatch)
+
+    import nltk
+
+    def fake_find(path):
+        raise LookupError(path)
+
+    monkeypatch.setattr(nltk.data, "find", fake_find)
+
+    task = _task()
+    with pytest.raises(LookupError) as excinfo:
+        await task.feedback(
+            build_prediction_record(["final response"]),
+            TaskContext(sample_id=0, raw_sample=_sample("ifbench-1", "final prompt")),
+        )
+    assert "SIEVAL_IFBENCH_NLTK_DATA" in str(excinfo.value)

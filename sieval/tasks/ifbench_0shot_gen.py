@@ -19,11 +19,14 @@ decoding via the model config, not in this task.
 Infra: scoring lazily fetches the NLTK corpora it needs (punkt, stopwords,
 averaged_perceptron_tagger_eng) on first use if absent — an eval-time network
 dependency. The Docker image pre-bakes them; offline runs must pre-stage them
-(see SIEVAL_IFBENCH_NLTK_DATA in sieval.community.ifbench).
+(see SIEVAL_IFBENCH_NLTK_DATA in sieval.community.ifbench). That fetch cannot
+report its own failure (see ``_ensure_nltk_resources``), so this task verifies
+it before grading.
 
 AI-Generated Code - GPT-5 (OpenAI)
 """
 
+from functools import cache
 from typing import Any, override
 
 from sieval.core.models import ModelOutput
@@ -51,6 +54,68 @@ from sieval.datasets import IFBenchDatasetSample
 # `score` is loose prompt-level accuracy) -- the opposite of IFEval, where strict
 # is the headline; the shape is otherwise identical.
 _GRADES = ("strict", "loose")
+
+# The NLTK data the vendored checkers reach for, as ``nltk.data.find`` lookup
+# paths. Upstream IFBench stages these itself -- `download_nltk_resources()` runs
+# at import of the vendored `instructions_util` -- so nothing here downloads
+# them; this list exists only to *verify* that staging. It is a second copy of
+# upstream's list, and a test drives that helper with every lookup failing to
+# assert the two ask for the same set, so they cannot drift apart silently.
+_NLTK_RESOURCES = (
+    "tokenizers/punkt",
+    "tokenizers/punkt_tab",
+    "corpora/stopwords",
+    "taggers/averaged_perceptron_tagger_eng",
+)
+
+
+@cache
+def _ensure_nltk_resources() -> None:
+    """Stop loudly if the corpora the vendored checkers need are not staged.
+
+    Upstream's `download_nltk_resources()` calls `nltk.download(..., quiet=True)`
+    and never re-checks. `nltk.download` defaults to ``raise_on_error=False``, so
+    an offline or rate-limited box gets `False` back and the import completes as
+    if the data were there. The absence then surfaces one `LookupError` at a time,
+    deep inside whichever checkers happen to reach NLTK.
+
+    Left alone that is not a failed run but a *wrong* one: those samples raise out
+    of `feedback()` into `fails`, and `report()`'s denominator is the judged set,
+    so the score is computed over the subset whose constraints never touched NLTK
+    -- a biased remainder published under the full benchmark's name. Checking all
+    four resources once, unconditionally, converts that into a total failure: every
+    sample stops here naming what is missing, `fails` equals the set size, and no
+    partial score is reported.
+
+    Verification only, no download: upstream already tried, and a second attempt
+    would just spend the same timeout again. The Multi-IF sibling *does* download
+    in its own `_ensure_punkt_tab`, because upstream Multi-IF ships no such helper
+    and its vendored files stay free of anything upstream lacks. The shapes differ
+    because the two upstreams do; the guarantee they leave the caller is the same.
+
+    `ifbench_0shot_gen_fixed` subclasses this task and overrides only the checker
+    registry, so it inherits this check with the rest of `feedback()`.
+
+    Cached: on success this runs once per process rather than once per sample --
+    `nltk.data.find` walks every entry on `nltk.data.path`. `functools.cache`
+    stores return values only, so a failing box keeps raising on every sample
+    instead of being silently marked done.
+    """
+    import nltk
+
+    missing = []
+    for resource in _NLTK_RESOURCES:
+        try:
+            nltk.data.find(resource)
+        except LookupError:
+            missing.append(resource)
+    if missing:
+        raise LookupError(
+            "IFBench grading needs NLTK data that is not staged: "
+            f"{', '.join(missing)}. The vendored checkers fetch it on import, so "
+            "this means the download failed -- most likely no network access. "
+            "Pre-stage the corpora and point SIEVAL_IFBENCH_NLTK_DATA at them."
+        )
 
 
 @sieval_task(
@@ -150,6 +215,11 @@ class IFBenchZeroShotGenTask(
             test_instruction_following_loose,
             test_instruction_following_strict,
         )
+
+        # After the import, not before: importing the vendored fork is what
+        # triggers upstream's staging attempt, so there is nothing to verify
+        # until it has run.
+        _ensure_nltk_resources()
 
         graders = {
             "strict": test_instruction_following_strict,
