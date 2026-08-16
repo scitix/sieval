@@ -17,6 +17,7 @@ from loguru import logger
 from sieval.core.models import ModelOutput
 from sieval.core.tasks.context import TaskContext, TaskStage, TaskStageOutput
 from sieval.core.tasks.records import is_prediction_record
+from sieval.core.utils.meta import TRUNCATION_FINISH_REASONS
 
 
 # Schema
@@ -487,11 +488,16 @@ def detect_truncated_output(ctx: TaskContext) -> set[int]:
         return set()
     # Unioned across calls: a conversation whose second turn hit the cap has that
     # rollout truncated, whichever turn did it.
+    #
+    # The reason set is shared with the `n_truncated` report key, which reduces the
+    # same event off the persisted `finish_reasons` instead of the live output. Two
+    # copies of the tuple would let this rule and that count come to disagree about
+    # what "truncated" means, with nothing to catch it.
     return {
         i
         for output in _model_outputs(_unwrap_result(ctx.infer_result))
         for i, reason in enumerate(output.finish_reasons or ())
-        if reason in ("length", "max_tokens", "content_filter")
+        if reason in TRUNCATION_FINISH_REASONS
     }
 
 

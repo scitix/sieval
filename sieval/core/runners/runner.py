@@ -35,7 +35,7 @@ from sieval.core.tasks.context import (
     TaskStageOutput,
 )
 from sieval.core.tasks.loader import TaskLoader
-from sieval.core.tasks.meta import get_task_run_identity
+from sieval.core.tasks.meta import EvalMode, get_task_run_identity
 from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
 from sieval.core.tasks.records import iter_grader_outputs
@@ -46,6 +46,7 @@ from sieval.core.utils.concurrency import CompositeLimiter
 from sieval.core.utils.meta import (
     build_model_call_meta_from_mapping,
     build_stage_meta,
+    count_truncated_rollouts,
     report_versions,
 )
 
@@ -603,7 +604,7 @@ class TaskRunner:
                 finals, fails = self._final_and_failed()
                 report = await self._task.report(finals, fails)
                 # Always save report on completion
-                await self._save_report_with_versions(report, finals, fails)
+                await self._save_report_with_diagnostics(report, finals, fails)
                 return report
 
             # 6. Setup Progress Tracker
@@ -675,7 +676,7 @@ class TaskRunner:
             finals, fails = self._final_and_failed()
             report = await self._task.report(finals, fails)
             # Always save report on completion
-            await self._save_report_with_versions(report, finals, fails)
+            await self._save_report_with_diagnostics(report, finals, fails)
             # Backstop: create-if-absent, normally a no-op (written at run start).
             await self._saver.write_run_meta()
             # Generate anomaly report
@@ -1010,25 +1011,47 @@ class TaskRunner:
         fails = [c for c in self._contexts.values() if c.stage == TaskStage.FAILED]
         return finals, fails
 
-    async def _save_report_with_versions(
+    async def _save_report_with_diagnostics(
         self,
         report: JSONValue,
         finals: list[TaskContext],
         fails: list[TaskContext],
     ) -> None:
-        """Inject the distinct producing-version list into a dict report, then save.
+        """Inject the run-level diagnostics into a dict report, then save.
 
-        Aggregates over the in-memory terminal contexts' ``stage_meta`` at zero
-        extra I/O; :func:`report_versions` owns the ``"unknown"`` sentinel rule.
+        Both aggregate over the in-memory terminal contexts' ``stage_meta`` at
+        zero extra I/O: :func:`report_versions` owns the ``"unknown"`` sentinel
+        rule, :func:`count_truncated_rollouts` the stage and history choices.
+        They are injected here rather than by each task because neither is a
+        fact about a task's metric -- every task would have to remember to report
+        them, and the ones that forgot would look clean.
+
+        ``n_truncated`` is injected for ``gen`` tasks only, and omitted rather
+        than zeroed elsewhere: ``ppl``/``clp`` infer with ``max_tokens=1`` and so
+        finish every call with ``length``, which would make the key read 100% on
+        every such run and mean nothing. The anomaly rule for the same event is
+        ``gen``-scoped for the same reason, and metrics.py states the general
+        rule -- a 0.0 meaning "not measurable" is indistinguishable from one
+        meaning "measured, and zero".
+
+        Only finals are counted, matching both the anomaly detector (which runs
+        on FINAL) and ``n_unextracted``: a FAILED sample has no score for a
+        truncation to explain.
+
         Non-dict reports are saved unchanged; ``None`` skips the save.
         """
         if report is None:
             return
         if isinstance(report, dict):
-            cast(dict[str, JSONValue], report)["sieval_versions"] = report_versions(
+            as_dict = cast(dict[str, JSONValue], report)
+            as_dict["sieval_versions"] = report_versions(
                 (c.stage_meta for c in finals),
                 (c.stage_meta for c in fails),
             )
+            if EvalMode.GEN.value in self._task.tags:
+                as_dict["n_truncated"] = count_truncated_rollouts(
+                    c.stage_meta for c in finals
+                )
         await self._saver.save_report(report)
 
     def _resolve_result_dir(

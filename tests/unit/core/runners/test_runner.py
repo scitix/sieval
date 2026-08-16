@@ -47,7 +47,13 @@ from sieval.core.tasks.meta import (
     sieval_task,
 )
 from sieval.core.tasks.task import Task
-from tests.conftest import MockAlwaysFailModel, MockChatModel, MockDataset, make_config
+from tests.conftest import (
+    MockAlwaysFailModel,
+    MockChatModel,
+    MockDataset,
+    make_config,
+    prompt_of,
+)
 
 # ===================================================================
 # Default samples & answers for the 3-sample happy-path dataset
@@ -2664,3 +2670,90 @@ class TestReportVersions:
 
         assert report is None
         assert not (runner.root_dir / "report.json").exists()
+
+
+class GenTask(MockTask):
+    """A ``gen``-tagged task: the protocol set ``@sieval_task`` synthesizes.
+
+    Set directly rather than by registering a decorated task, so the test does
+    not mutate the global registry to obtain one class attribute.
+    """
+
+    tags = frozenset({EvalMode.GEN.value, "zero_shot"})
+
+
+class TruncatingChatModel(MockChatModel):
+    """MockChatModel whose generations stop at the token cap, not by choice.
+
+    ``Response`` validates that ``finish_reasons`` aligns with ``texts``, so the
+    tuple is rebuilt at the same length rather than replaced by a literal.
+    """
+
+    def __init__(self, *args, truncate_for: set[str] | None = None, **kwargs):
+        self._truncate_for = truncate_for  # None = every prompt
+        super().__init__(*args, **kwargs)
+
+    async def _stub_arun(self, req):
+        response = await super()._stub_arun(req)
+        if self._truncate_for is not None and prompt_of(req) not in self._truncate_for:
+            return response
+        return replace(response, finish_reasons=("length",) * len(response.texts))
+
+
+class TestReportTruncation:
+    """`n_truncated` in the report: the count a leaderboard reader can see.
+
+    The per-sample anomaly rule for the same event predates this and is
+    unchanged; what these pin is that the count reaches `report.json`, where
+    previously a score that a truncation rate explained was indistinguishable
+    from one that capability explained.
+    """
+
+    @pytest.mark.anyio
+    async def test_gen_report_counts_every_truncated_rollout(self, tmp_path):
+        model = TruncatingChatModel(answers=DEFAULT_ANSWERS)
+        task = GenTask(dataset=MockDataset(), model=model, name="trunc_all")
+        runner = TaskRunner(task, make_config(tmp_path))
+        report = await runner.arun()
+
+        assert report["n_truncated"] == 3  # all three samples
+        saved = orjson.loads((runner.root_dir / "report.json").read_bytes())
+        assert saved["n_truncated"] == 3
+
+    @pytest.mark.anyio
+    async def test_counts_only_the_rollouts_that_truncated(self, tmp_path):
+        # The number has to move with the run. A count that only ever reads 0 or
+        # "all" would pass an all-truncated fixture while measuring nothing.
+        model = TruncatingChatModel(
+            answers=DEFAULT_ANSWERS, truncate_for={"What is 2+3?"}
+        )
+        task = GenTask(dataset=MockDataset(), model=model, name="trunc_one")
+        report = await TaskRunner(task, make_config(tmp_path)).arun()
+
+        assert report["n_truncated"] == 1
+
+    @pytest.mark.anyio
+    async def test_clean_gen_run_reports_zero_not_nothing(self, tmp_path):
+        # Present-and-zero is the point: it says the run was measured and no
+        # rollout was cut short, which an absent key cannot say.
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = GenTask(dataset=MockDataset(), model=model, name="trunc_none")
+        report = await TaskRunner(task, make_config(tmp_path)).arun()
+
+        assert report["n_truncated"] == 0
+
+    @pytest.mark.anyio
+    async def test_non_gen_task_omits_the_key(self, tmp_path):
+        # The ppl/clp shape: every call here finishes `length`, and a task that
+        # infers at max_tokens=1 finishes that way by construction. Reporting 0%
+        # would be false and 100% would be meaningless, so the key is omitted --
+        # `sieval_versions`, which is protocol-independent, still lands.
+        model = TruncatingChatModel(answers=DEFAULT_ANSWERS)
+        task = MockTask(dataset=MockDataset(), model=model, name="trunc_nongen")
+        runner = TaskRunner(task, make_config(tmp_path))
+        report = await runner.arun()
+
+        assert "n_truncated" not in report
+        saved = orjson.loads((runner.root_dir / "report.json").read_bytes())
+        assert "n_truncated" not in saved
+        assert saved["sieval_versions"] == [__version__]

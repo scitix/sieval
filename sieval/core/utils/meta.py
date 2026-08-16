@@ -7,7 +7,24 @@ from packaging.version import InvalidVersion, Version
 
 from sieval import __version__
 from sieval.core.models import ModelCallMeta, ModelOutput
+from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.context import TaskStageMeta
+
+#: Finish reasons that mean the generation stopped before the model chose to.
+#:
+#: Provider-verbatim, because the IR does not normalize them: an
+#: OpenAI-compatible server says ``length``, Anthropic says ``max_tokens``, and
+#: sglang's native ``meta_info`` nests the same thing under ``type``. The set
+#: holds every spelling rather than one canonical name, so a count does not
+#: silently read zero on whichever provider spells it the other way.
+#:
+#: ``content_filter`` is in here because the output is cut short the same way,
+#: which is what a reader of the count is being warned about. The cause differs,
+#: and separating causes is what the raw ``finish_reasons`` on the record are
+#: for. :func:`sieval.core.tasks.anomaly.detect_truncated_output` reads this same
+#: set, so the rule and the report key cannot drift into meaning different
+#: things.
+TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens", "content_filter"})
 
 
 def build_model_call_meta(output: ModelOutput) -> ModelCallMeta:
@@ -135,3 +152,47 @@ def report_versions(
     if has_unstamped_final:
         versions.append("unknown")
     return versions
+
+
+def count_truncated_rollouts(stage_metas: Iterable[Mapping[str, list]]) -> int:
+    """Rollouts whose generation was cut short, over a report's scored records.
+
+    A truncated rollout scores as wrong without the model necessarily being
+    wrong -- it ran out of budget mid-answer, and the fix is ``max_tokens``, not
+    the prompt and not the model. ``finish_reasons`` has always been persisted
+    per call (:func:`build_model_call_meta`) and the ``gen``-scoped anomaly rule
+    already reports it per sample, but nothing carried it into ``report.json``,
+    the artifact a leaderboard actually reads. So a score that a truncation rate
+    explains was indistinguishable there from one that capability explains.
+
+    Only the INFERRED stage is read. A judged task's FEEDBACK stage carries the
+    GRADER's calls, and a grader that hit its own budget is a different fact
+    about a different model -- the tasks that care already report that
+    separately (``n_grader_unparsed``).
+
+    Only the LAST entry of that stage's history is read, because a retried or
+    re-iterated sample was scored on its last attempt: counting earlier ones
+    would report truncations that no longer affect any number in the report.
+    That is the opposite choice from :func:`collect_versions`, which unions the
+    whole history precisely because provenance is about everything that ran.
+
+    Counted per rollout, not per sample -- one truncated draw in four is a
+    different fact from four (RFC #74 C) -- and deduplicated by rollout index
+    within a sample, so a multi-turn task whose second turn truncated counts
+    that rollout once however many turns it took. That is the same union
+    :func:`sieval.core.tasks.anomaly.detect_truncated_output` takes across the
+    calls of one stage, so the two agree by construction rather than by
+    coincidence.
+    """
+    total = 0
+    for stage_meta in stage_metas:
+        entries = stage_meta.get(TaskStage.INFERRED.value)
+        if not entries:
+            continue
+        truncated: set[int] = set()
+        for call in entries[-1].get("model_calls") or ():
+            for index, reason in enumerate(call.get("finish_reasons") or ()):
+                if reason in TRUNCATION_FINISH_REASONS:
+                    truncated.add(index)
+        total += len(truncated)
+    return total

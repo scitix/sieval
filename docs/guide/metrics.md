@@ -64,9 +64,10 @@ reporting a `pass@k` of `0.0`.
 | `self_consistency` | Share of the draw that agreed on that modal answer. | the task votes on answers |
 | `n`, `k` | The budget the numbers above were measured at. | always |
 | `n_short` | Samples that came back with fewer than `n` rollouts. | always |
+| `n_truncated` | Rollouts whose generation hit its token budget instead of stopping. | `gen` tasks |
 
-Rates are percentages (0–100) over the task's declared denominator; `n`, `k` and
-`n_short` are counts.
+Rates are percentages (0–100) over the task's declared denominator; `n`, `k`,
+`n_short` and `n_truncated` are counts.
 
 **`avg@n` is spelled `@n`, not `@k`, on purpose:** it takes no `k` and does not
 move with one — at `n=4, k=2` it averages four verdicts where `pass@k` estimates
@@ -78,6 +79,23 @@ the draw that was paid for. They separate once a verdict stops being a bool.
 at **every** budget, `n = 1` included, and by the single-draw tasks below that
 have no `n` at all. It measures the parser, not the draw, and `n = 1` is where a
 silently-stopped extractor survives longest: no second rollout to disagree with.
+
+`n_truncated` — **rollouts** whose generation stopped because it ran out of
+tokens rather than because the model was done — is the one key here the *runner*
+injects rather than a task computing it, so a task cannot report a truncation
+rate of zero by having forgotten to look. It is omitted, not zeroed, outside
+`gen`: `ppl`/`clp` infer with `max_tokens=1` and therefore finish every call the
+same way a truncated generation does, so the count would read 100% and mean
+nothing.
+
+Read it as a **bound on how much of a score is budget, not capability** — a
+truncated rollout is scored wrong whether or not the model was on its way to the
+right answer, and the fix is `max_tokens`. It is independent of
+`n_unextracted`: an answer can be cut short and still parse (the truncation lands
+after the boxed answer), or parse cleanly and be wrong for reasons of its own.
+The two are worth reading together only in the direction where they coincide — a
+rollout that is both truncated *and* unextracted is the case where raising the
+budget is most likely to move the score.
 
 ### Pairs that must be read together
 

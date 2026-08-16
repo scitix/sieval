@@ -7,11 +7,13 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 import time
 
 from sieval.core.models import ModelMeta, ModelOutput
+from sieval.core.tasks.consts import TaskStage
 from sieval.core.utils.meta import (
     build_model_call_meta,
     build_model_call_meta_from_mapping,
     build_stage_meta,
     collect_versions,
+    count_truncated_rollouts,
     report_versions,
 )
 
@@ -254,3 +256,93 @@ class TestBuildStageMetaModelCalls:
 
     def test_no_calls_omits_the_key(self):
         assert "model_calls" not in build_stage_meta(timing_s=1.0)
+
+
+def _inferred(*calls: dict) -> dict:
+    """A stage_meta whose INFERRED history is one entry with *calls*."""
+    return {TaskStage.INFERRED.value: [{"model_calls": list(calls)}]}
+
+
+class TestCountTruncatedRollouts:
+    """The report-level count of rollouts that ran out of budget.
+
+    Semantics are pinned against `detect_truncated_output`, which reduces the
+    same event off the live output rather than the persisted meta: the two must
+    agree on what "one truncation" is, or the anomaly file and the report will
+    disagree with nothing to catch it.
+    """
+
+    def test_no_records(self):
+        assert count_truncated_rollouts([]) == 0
+
+    def test_stage_absent_contributes_nothing(self):
+        # A ppl/clp task, or a sample that failed before infer: no INFERRED
+        # history at all. Absence is 0, not an error.
+        assert count_truncated_rollouts([{}, {"final": [{"version": "0.7.0"}]}]) == 0
+
+    def test_natural_stop_is_not_truncation(self):
+        assert count_truncated_rollouts([_inferred({"finish_reasons": ["stop"]})]) == 0
+
+    def test_counts_rollouts_not_samples(self):
+        # One truncated draw in four is a different fact from four.
+        one = _inferred({"finish_reasons": ["stop", "length", "stop", "stop"]})
+        four = _inferred({"finish_reasons": ["length"] * 4})
+        assert count_truncated_rollouts([one]) == 1
+        assert count_truncated_rollouts([one, four]) == 5
+
+    def test_every_provider_spelling_counts(self):
+        # The IR keeps finish_reasons provider-verbatim: an OpenAI-compatible
+        # server says `length`, Anthropic says `max_tokens`. A set holding only
+        # one spelling would read zero on the other provider.
+        for reason in ("length", "max_tokens", "content_filter"):
+            assert (
+                count_truncated_rollouts([_inferred({"finish_reasons": [reason]})]) == 1
+            )
+
+    def test_same_rollout_truncated_on_two_turns_counts_once(self):
+        # A multi-turn stage makes several calls per rollout. Rollout 0 hit the
+        # cap on both turns; that is one truncated rollout, not two.
+        multi_turn = _inferred(
+            {"finish_reasons": ["length", "stop"]},
+            {"finish_reasons": ["length", "stop"]},
+        )
+        assert count_truncated_rollouts([multi_turn]) == 1
+
+    def test_union_across_calls_of_one_stage(self):
+        # Rollout 0 truncated on turn 1, rollout 1 on turn 2: two rollouts.
+        multi_turn = _inferred(
+            {"finish_reasons": ["length", "stop"]},
+            {"finish_reasons": ["stop", "length"]},
+        )
+        assert count_truncated_rollouts([multi_turn]) == 2
+
+    def test_only_the_scored_attempt_is_counted(self):
+        # A retried sample keeps its earlier attempts in the stage history, but
+        # was scored on the last one. Counting a superseded truncation would
+        # report one that no longer affects any number in the report.
+        retried = {
+            TaskStage.INFERRED.value: [
+                {"model_calls": [{"finish_reasons": ["length"]}]},
+                {"model_calls": [{"finish_reasons": ["stop"]}]},
+            ]
+        }
+        assert count_truncated_rollouts([retried]) == 0
+
+    def test_grader_truncation_is_not_the_models(self):
+        # FEEDBACK carries the *grader's* calls. A judge that hit its own budget
+        # is a fact about a different model, already reported separately as
+        # `n_grader_unparsed` -- charging it to the candidate would inflate a
+        # judged lane's truncation rate with someone else's.
+        judged = {
+            TaskStage.INFERRED.value: [{"model_calls": [{"finish_reasons": ["stop"]}]}],
+            TaskStage.FEEDBACK.value: [
+                {"model_calls": [{"finish_reasons": ["length"]}]}
+            ],
+        }
+        assert count_truncated_rollouts([judged]) == 0
+
+    def test_calls_without_finish_reasons_are_skipped(self):
+        # `build_model_call_meta` omits the key when the provider sent nothing.
+        assert count_truncated_rollouts([_inferred({"model": _model_meta("m")})]) == 0
+        assert count_truncated_rollouts([{TaskStage.INFERRED.value: [{}]}]) == 0
+        assert count_truncated_rollouts([{TaskStage.INFERRED.value: []}]) == 0
