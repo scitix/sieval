@@ -20,6 +20,7 @@ from sieval.core.types import JSONValue
 
 from ._fingerprint import fingerprint_mapping
 from .capabilities import RequestDefaults, Supported
+from .connection_factory import DEFAULT_REQUEST_TIMEOUT
 from .deployment import (
     ConnectionIdentity,
     ConnectionPool,
@@ -120,6 +121,7 @@ def build_legacy_openai_binding(
         base_url=api_base,
         api_key=api_key,
         max_retries=max_retries,
+        timeout=DEFAULT_REQUEST_TIMEOUT,
     )
     endpoint = str(client.base_url).rstrip("/")
     local_limiter = (

@@ -14,6 +14,31 @@ from types import MappingProxyType
 import httpx
 from openai import AsyncOpenAI
 
+#: The per-request timeout every sieval-owned client declares.
+#:
+#: Before this constant, no sieval client passed ``timeout`` at all, so the bound
+#: on a request was whichever default the underlying library happened to ship --
+#: and the two libraries disagreed by 120x. The OpenAI SDK defaults to
+#: ``read=600``; ``httpx`` defaults to ``5`` for every phase. Which connection
+#: family a dialect was registered under therefore decided how long a generation
+#: was allowed to take, which is not a property any dialect declares or a reader
+#: could find. Neither number was sieval's, and either library can change its
+#: default in a patch release with nothing here noticing.
+#:
+#: The value is what the ``openai_sdk`` family already had in effect, so adopting
+#: it changes no behaviour on the only family with live transports today. It is
+#: the ``async_http_json`` family that moves, off a 5s read that no generation
+#: could survive: that family has no implemented transport yet, so the 5s was
+#: never a live bug -- it was a trap set for whoever implements the first
+#: Anthropic, Google, or native-serving transport, and it would present as "the
+#: endpoint is broken" rather than "our client gave up".
+#:
+#: ``connect`` stays short because a refused or unroutable endpoint should fail
+#: fast. ``read`` is long because a reasoning model emitting thousands of tokens
+#: legitimately takes minutes, and a premature read timeout is indistinguishable
+#: -- in a result directory -- from the model having produced nothing.
+DEFAULT_REQUEST_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
+
 
 class UnknownConnectionFamily(ValueError):
     """No registered factory owns the requested connection family."""
@@ -191,6 +216,7 @@ def _openai_sdk_connection(request: ConnectionRequest) -> AsyncOpenAI:
         base_url=request.endpoint,
         api_key=request.credential,
         max_retries=request.max_retries,
+        timeout=DEFAULT_REQUEST_TIMEOUT,
     )
 
 
@@ -198,7 +224,11 @@ def _async_http_json_connection(
     request: ConnectionRequest,
 ) -> AsyncHTTPJSONConnection:
     transport = httpx.AsyncHTTPTransport(retries=request.max_retries)
-    client = httpx.AsyncClient(base_url=request.endpoint, transport=transport)
+    client = httpx.AsyncClient(
+        base_url=request.endpoint,
+        transport=transport,
+        timeout=DEFAULT_REQUEST_TIMEOUT,
+    )
     return AsyncHTTPJSONConnection(client, request.credential)
 
 

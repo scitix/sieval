@@ -19,6 +19,7 @@ from openai import AsyncOpenAI
 from sieval.core.types import JSONValue
 
 from .capabilities import Capability
+from .connection_factory import DEFAULT_REQUEST_TIMEOUT
 from .deployment import (
     ConnectionIdentity,
     ConnectionPool,
@@ -150,6 +151,7 @@ class SglangGenModel(Model):
             base_url=api_base,
             api_key=api_key,
             max_retries=max_retries,
+            timeout=DEFAULT_REQUEST_TIMEOUT,
         )
         self._kwargs = dict(kwargs)
         self._extra = dict(extra) if extra is not None else None

@@ -16,6 +16,7 @@ from .chat_model import ChatModel
 from .connection_factory import (
     ASYNC_HTTP_JSON_FACTORY,
     CONNECTION_FACTORY_REGISTRY,
+    DEFAULT_REQUEST_TIMEOUT,
     OPENAI_SDK_FACTORY,
     AsyncHTTPJSONConnection,
     ConnectionFactoryRegistry,
@@ -113,6 +114,7 @@ __all__ = [
     "ConnectionRequest",
     "ConnectionScope",
     "ContentPart",
+    "DEFAULT_REQUEST_TIMEOUT",
     "Deployment",
     "DeploymentCapabilityPlan",
     "DeploymentPlanProjection",

@@ -46,6 +46,7 @@ from sieval.cli.leaderboard.session import (
 )
 from sieval.cli.resolution import derive_model_type
 from sieval.cli.validation import _VALID_OPERATIONS
+from sieval.core.models.connection_factory import DEFAULT_REQUEST_TIMEOUT
 from sieval.core.models.model import Model
 from sieval.core.models.reconcile import CheckStage, Configured, DeferredCheck
 from sieval.core.models.requirements import (
@@ -3187,6 +3188,7 @@ tasks:
             base_url="https://realized.example/v1",
             api_key=None,
             max_retries=9,
+            timeout=DEFAULT_REQUEST_TIMEOUT,
         )
         await session._close_owned_model_resources()
         close.assert_awaited_once()

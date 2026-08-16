@@ -11,6 +11,7 @@ import pytest
 
 from sieval.core.models.connection_factory import (
     CONNECTION_FACTORY_REGISTRY,
+    DEFAULT_REQUEST_TIMEOUT,
     AsyncHTTPJSONConnection,
     ConnectionFactoryRegistry,
     ConnectionFactorySpec,
@@ -215,4 +216,43 @@ class TestBuiltInConnectionFactories:
             base_url="https://openai-compatible.example/v1",
             api_key="sk-runtime-only",
             max_retries=7,
+            timeout=DEFAULT_REQUEST_TIMEOUT,
         )
+
+    def test_the_request_timeout_is_declared_here_not_inherited(self) -> None:
+        """The numbers, asserted literally, because their whole job is to be ours.
+
+        Reading them off ``httpx`` or the OpenAI SDK would re-derive the bound
+        from the same defaults this constant exists to stop depending on: the
+        assertion would keep passing through exactly the upstream change it is
+        supposed to catch.
+        """
+        assert DEFAULT_REQUEST_TIMEOUT.read == 600.0
+        assert DEFAULT_REQUEST_TIMEOUT.write == 600.0
+        assert DEFAULT_REQUEST_TIMEOUT.pool == 600.0
+        assert DEFAULT_REQUEST_TIMEOUT.connect == 5.0
+
+    @pytest.mark.anyio
+    async def test_both_families_bound_a_request_by_the_same_declared_timeout(
+        self,
+    ) -> None:
+        """One declared bound, not one per library.
+
+        ``httpx`` defaults every phase to 5s and the OpenAI SDK defaults ``read``
+        to 600s, so before this was declared, a dialect's connection family
+        silently decided whether a long generation was allowed to finish -- a
+        120x difference that no dialect declares and no reader could find.
+        """
+        request = ConnectionRequest(
+            endpoint="https://models.example/v1",
+            credential="runtime-only",
+            max_retries=2,
+        )
+
+        http_json = CONNECTION_FACTORY_REGISTRY.create("async_http_json", request)
+        assert isinstance(http_json, AsyncHTTPJSONConnection)
+        assert http_json.client.timeout == DEFAULT_REQUEST_TIMEOUT
+        await http_json.aclose()
+
+        openai_sdk = CONNECTION_FACTORY_REGISTRY.create("openai_sdk", request)
+        assert cast(Any, openai_sdk).timeout == DEFAULT_REQUEST_TIMEOUT
