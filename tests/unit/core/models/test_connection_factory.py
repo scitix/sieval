@@ -256,3 +256,4 @@ class TestBuiltInConnectionFactories:
 
         openai_sdk = CONNECTION_FACTORY_REGISTRY.create("openai_sdk", request)
         assert cast(Any, openai_sdk).timeout == DEFAULT_REQUEST_TIMEOUT
+        await cast(Any, openai_sdk).close()

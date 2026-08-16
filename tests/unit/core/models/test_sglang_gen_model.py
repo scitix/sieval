@@ -20,6 +20,7 @@ import anyio
 import pytest
 
 from sieval.core.models import (
+    DEFAULT_REQUEST_TIMEOUT,
     Capability,
     CompletionInput,
     DialectOptions,
@@ -62,6 +63,31 @@ class TestDefaultTransport:
         assert m._transport._client is m._client
         assert m._transport._model == "m"
         assert m._transport._api_base == "http://host:8000/v1"
+
+    def test_client_declares_the_shared_request_timeout(self):
+        """The other bypass owes the same declared bound as the factory.
+
+        This facade is deliberately outside canonical binding and builds its own
+        client, so a contract asserted against ``connection_factory`` does not
+        reach it. The SDK's default is the same value today, which is exactly why
+        a drift here would be silent.
+        """
+        client = SimpleNamespace(
+            base_url="http://host:8000/v1/",
+            close=AsyncMock(),
+        )
+        with patch(
+            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
+            return_value=client,
+        ) as client_factory:
+            SglangGenModel(model="m", api_base="http://host:8000/v1", api_key="local")
+
+        client_factory.assert_called_once_with(
+            base_url="http://host:8000/v1",
+            api_key="local",
+            max_retries=3,
+            timeout=DEFAULT_REQUEST_TIMEOUT,
+        )
 
     def test_subclass_does_not_use_registered_compatibility_factory(self):
         class DerivedSglangGenModel(SglangGenModel):

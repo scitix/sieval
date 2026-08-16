@@ -7,7 +7,7 @@ import numpy as np
 from openai import AsyncOpenAI
 
 from sieval.community.t_eval import EMB_PLACEHOLDER, ResponseDataSample, format_load
-from sieval.core.models import ModelOutput
+from sieval.core.models import DEFAULT_REQUEST_TIMEOUT, ModelOutput
 from sieval.core.tasks import (
     EvalMode,
     JudgementRecord,
@@ -88,6 +88,7 @@ class TEvalBeforeCallingZeroShotGenTask(
                     "SIEVAL_EMBED_API", "https://console.siflow.cn/model-api"
                 ),
                 api_key=api_key,
+                timeout=DEFAULT_REQUEST_TIMEOUT,
             )
         else:
             self._bert_api_client = None

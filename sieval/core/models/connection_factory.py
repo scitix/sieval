@@ -14,7 +14,13 @@ from types import MappingProxyType
 import httpx
 from openai import AsyncOpenAI
 
-#: The per-request timeout every sieval-owned client declares.
+#: The per-request timeout every sieval client that talks to a model declares.
+#:
+#: Scope is the clients whose call has no bound of its own. The code-evaluator and
+#: health-check clients are excluded on purpose: each passes a per-request
+#: ``timeout`` derived from the budget it is already enforcing server-side (a
+#: sandbox's own subprocess wall, a probe interval), so a client-level default
+#: would either duplicate that number or silently contradict it.
 #:
 #: Before this constant, no sieval client passed ``timeout`` at all, so the bound
 #: on a request was whichever default the underlying library happened to ship --
@@ -34,9 +40,19 @@ from openai import AsyncOpenAI
 #: endpoint is broken" rather than "our client gave up".
 #:
 #: ``connect`` stays short because a refused or unroutable endpoint should fail
-#: fast. ``read`` is long because a reasoning model emitting thousands of tokens
-#: legitimately takes minutes, and a premature read timeout is indistinguishable
-#: -- in a result directory -- from the model having produced nothing.
+#: fast. ``read`` is long because a premature read timeout is indistinguishable --
+#: in a result directory -- from the model having produced nothing, and a
+#: reasoning model emitting thousands of tokens legitimately takes minutes.
+#:
+#: What ``read`` bounds is not the same quantity on both paths, so 600s means two
+#: things. Streamed, ``read`` is the gap between chunks, which makes 600s a stall
+#: tolerance rather than a generation budget. Unstreamed, it bounds the whole
+#: response, so the one number covers every one of a request's ``n`` rollouts
+#: together: sieval asks for all of them in a single call, and the non-streaming
+#: lift only sees them once the last is done. So it is the unstreamed reading that
+#: a long high-``n`` run can actually exhaust. Which one applies is not a single
+#: default -- ``SchedulingParams.stream`` is ``False``, while the legacy
+#: ``ChatModel``/``GenModel`` wrappers send ``True`` unless a caller overrides it.
 DEFAULT_REQUEST_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 
 

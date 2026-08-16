@@ -6,11 +6,11 @@ AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
-from sieval.core.models import ChatModel
+from sieval.core.models import DEFAULT_REQUEST_TIMEOUT, ChatModel
 from sieval.core.tasks import build_prediction_record
 from sieval.tasks.t_eval_before_calling_0shot_gen import (
     TEvalBeforeCallingZeroShotGenTask,
@@ -119,6 +119,29 @@ class TestMetricKeys:
         # the macro-average, long after the bad config was accepted.
         with pytest.raises(NotImplementedError, match="json and str"):
             _task(default_prompt_type="ReWOO")._metric_keys()
+
+
+class TestEmbeddingClient:
+    def test_client_declares_the_shared_request_timeout(self, monkeypatch):
+        """The thought axis reaches a model, so it owes the declared bound too.
+
+        This client is built here rather than through ``connection_factory``, and
+        the SDK's fallback is the same value today -- so a drift would show up as
+        an embedding call that hangs differently, with nothing pointing here.
+        """
+        monkeypatch.setenv("SIEVAL_EMBED_API_KEY", "not-a-real-key")
+        monkeypatch.setenv("SIEVAL_EMBED_API", "https://embed.example/model-api")
+
+        with patch(
+            "sieval.tasks.t_eval_before_calling_0shot_gen.AsyncOpenAI"
+        ) as client_factory:
+            _task(eval_thought=True)
+
+        client_factory.assert_called_once_with(
+            base_url="https://embed.example/model-api",
+            api_key="not-a-real-key",
+            timeout=DEFAULT_REQUEST_TIMEOUT,
+        )
 
 
 class TestCorrectDerivation:
