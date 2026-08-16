@@ -102,9 +102,14 @@ class TaskContext[TRawSample, TPreprocessed, TInferred, TPostprocessed, TFeedbac
         sample_id: Unique identifier for this sample (string key or integer index).
         raw_sample: The original sample from the dataset (may be ``None``).
         repeat_index: Which copy of a repeated split this sample came from (0-based),
-            or ``None`` if the dataset was not repeated. Lifted from the row's
+            or ``None`` if no copy number was recorded for it — normally because the
+            split was not repeated, though see :meth:`serialize` for the one case
+            where a missing value is weaker than that. Read off the row's
             ``repeat_index`` column by
-            :meth:`~sieval.core.tasks.task.Task.make_context`.
+            :func:`~sieval.core.datasets.repeat_index_of`, at either seam that
+            attaches a row to a context:
+            :meth:`~sieval.core.tasks.task.Task.make_context` builds them, and the
+            runner backfills the row onto contexts it resumed.
             **A different axis from** ``iteration`` **and from a rollout index**:
             ``iteration`` counts feedback-loop passes over one sample, a rollout
             index counts the model's own samples within one request (``n``), and
@@ -260,8 +265,15 @@ class TaskContext[TRawSample, TPreprocessed, TInferred, TPostprocessed, TFeedbac
         }
         # Emitted only when the split was repeated, in both modes. Omitted rather
         # than written as null so that an archive from an unrepeated run is
-        # byte-identical to one written before this field existed — the key's
-        # presence is what says "these rows are copies".
+        # byte-identical to one written before this field existed.
+        #
+        # So the key's presence says "this row is a copy", but its absence is the
+        # weaker "no copy number was recorded" — not "the split was not repeated".
+        # A resume across a compatible version boundary (`resume_version_verdict`
+        # keys on the (major, minor) series below 1.0) appends to shards whose
+        # existing records predate this field, which leaves one run's archive mixed.
+        # Read a missing key as unknown rather than as copy 0; `stage_meta`'s
+        # per-record version separates the two wherever it was recorded.
         if self.repeat_index is not None:
             d["repeat_index"] = self.repeat_index
         if self._is_snapshot:

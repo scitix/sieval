@@ -1,4 +1,4 @@
-from .dataset import REPEAT_INDEX_COLUMN, Dataset, TFilterKey
+from .dataset import REPEAT_INDEX_COLUMN, Dataset, TFilterKey, repeat_index_of
 from .meta import (
     Category,
     DatasetMeta,
@@ -13,5 +13,6 @@ __all__ = [
     "DatasetMeta",
     "Level1Category",
     "TFilterKey",
+    "repeat_index_of",
     "sieval_dataset",
 ]

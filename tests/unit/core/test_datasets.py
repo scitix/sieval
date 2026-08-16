@@ -15,7 +15,7 @@ from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 from loguru import logger
 
-from sieval.core.datasets import REPEAT_INDEX_COLUMN, Dataset
+from sieval.core.datasets import REPEAT_INDEX_COLUMN, Dataset, repeat_index_of
 
 
 def _capture_logs(fn) -> str:
@@ -202,8 +202,59 @@ class TestRepeat:
 
     def test_repeat_refuses_to_overwrite_existing_column(self):
         already = _make(2).repeat(2)
-        with pytest.raises(ValueError, match=REPEAT_INDEX_COLUMN):
+        # Matched on wording only this guard uses. HuggingFace's `add_column` also
+        # raises ValueError here, and its message quotes the column name too, so
+        # matching the column alone passes with the guard deleted.
+        with pytest.raises(ValueError, match="composite index") as excinfo:
             already.repeat(2)
+        assert REPEAT_INDEX_COLUMN in str(excinfo.value)
+
+    @pytest.mark.parametrize("times", [0, -1])
+    def test_repeat_rejects_times_below_one(self, times):
+        # HuggingFace answers both with an empty split, which scores zero samples
+        # without ever failing — the same reason `filter` refuses an empty result.
+        with pytest.raises(ValueError, match="at least 1"):
+            _make(3).repeat(times)
+
+    @pytest.mark.parametrize("times", [0, -1])
+    def test_repeat_rejects_times_before_looking_at_the_split(self, times):
+        # An argument that cannot be honoured for any split is reported as such,
+        # rather than as the missing-split no-op that would otherwise mask it.
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict({"test": HFDataset.from_list([{"id": 0}])})
+        )
+        with pytest.raises(ValueError, match="at least 1"):
+            ds.repeat(times, split="train")
+
+
+class TestRepeatIndexOf:
+    """The one definition both stamping seams share.
+
+    Public because the runner reads it too — a private copy per seam could disagree
+    about a row without either one failing.
+    """
+
+    def test_reads_the_column_repeat_stamped(self):
+        row = _make(2).repeat(2).test_set[2]
+        assert repeat_index_of(row) == 1
+
+    def test_absent_column_is_not_repeated(self):
+        assert repeat_index_of({"id": 0}) is None
+
+    def test_copy_zero_is_a_value_not_a_falsy_miss(self):
+        assert repeat_index_of({REPEAT_INDEX_COLUMN: 0}) == 0
+
+    @pytest.mark.parametrize("bad", [True, False, "1", 1.5, None, [1]])
+    def test_non_integer_reads_as_not_repeated(self, bad):
+        # `True`/`False` pass `isinstance(..., int)`; recording `True` as copy 1
+        # would invent a copy number the dataset never stamped.
+        assert repeat_index_of({REPEAT_INDEX_COLUMN: bad}) is None
+
+    @pytest.mark.parametrize("raw", [None, "row", 7, [REPEAT_INDEX_COLUMN]])
+    def test_non_mapping_reads_as_not_repeated(self, raw):
+        # A raw sample is whatever the dataset yields, so this tolerates rather
+        # than raises.
+        assert repeat_index_of(raw) is None
 
 
 # ===================================================================

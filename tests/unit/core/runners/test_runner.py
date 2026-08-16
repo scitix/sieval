@@ -1549,6 +1549,42 @@ class TestRunnerResumeState:
         assert observed_feedback_ctx["raw_sample"] == sample
 
     @pytest.mark.anyio
+    async def test_resume_backfill_stamps_the_rows_copy_number(
+        self, tmp_path, monkeypatch
+    ):
+        """Both seams that attach a row to a context stamp it the same way.
+
+        Sample 1 arrives as a resumed skeleton and gets its row backfilled; sample 0
+        is fresh and gets it from ``make_context``. A backfill that attached the row
+        without its copy number would serialize as though the split had never been
+        repeated.
+        """
+        sample = {"question": "What is 1+1?", "answer": "2"}
+        dataset = MockDataset([sample]).repeat(2)
+        model = MockChatModel(answers={"What is 1+1?": "2"})
+        task = MockTask(dataset=dataset, model=model, name="resume_repeat_index")
+        runner = TaskRunner(task, make_config(tmp_path))
+
+        # Bare, the way the loader hands back a skeleton whose row is unfetched.
+        bare = TaskContext(sample_id=1, raw_sample=None)
+        observed: dict[str | int, int | None] = {}
+
+        async def _feedback(post, ctx):
+            observed[ctx.sample_id] = ctx.repeat_index
+            return True, {"correct": True, "predicted": post}
+
+        monkeypatch.setattr(task, "feedback", _feedback)
+        monkeypatch.setattr(
+            runner._loader,
+            "load_initial_state",
+            AsyncMock(return_value={1: bare}),
+        )
+        monkeypatch.setattr(runner._loader, "hydrate", AsyncMock(return_value=None))
+
+        await runner.arun()
+        assert observed == {0: 0, 1: 1}
+
+    @pytest.mark.anyio
     async def test_initial_manifest_includes_error_action_for_failed_context(
         self, tmp_path, monkeypatch
     ):

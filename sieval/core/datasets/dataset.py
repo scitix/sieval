@@ -6,7 +6,7 @@ import math
 import random
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import Literal, Self, overload
+from typing import Literal, Self, cast, overload
 
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -25,6 +25,29 @@ TFilterKey = str | list[str] | Callable[[Mapping[str, object]], object]
 #: read: a task may branch on it, and anything reporting a spread across repeats has
 #: to group by it.
 REPEAT_INDEX_COLUMN = "repeat_index"
+
+
+def repeat_index_of(raw: object) -> int | None:
+    """Read a repeated row's copy number, or ``None`` if the split was not repeated.
+
+    Tolerant on purpose: a raw sample is whatever the dataset yields, so anything
+    that is not a mapping carrying an integer under :data:`REPEAT_INDEX_COLUMN` is
+    treated as "not repeated" rather than raising. A bool is rejected explicitly —
+    ``True`` would otherwise pass ``isinstance(..., int)`` and record copy 1.
+
+    Lives beside the column it reads because more than one seam fills a context's
+    ``repeat_index``: tasks build contexts through ``make_context``, and the runner
+    backfills ``raw_sample`` onto contexts it resumed. Two copies of this rule could
+    disagree about a row without either one failing.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    # The cast only says "keys are strings"; the value is still checked below, so a
+    # row carrying something other than an int under this key cannot slip through.
+    value = cast("Mapping[str, object]", raw).get(REPEAT_INDEX_COLUMN)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 class Dataset[TSample](ABC):
@@ -92,14 +115,28 @@ class Dataset[TSample](ABC):
         of "this split was repeated" rather than of how many times — a column that
         appeared only sometimes would have to be guarded at every read.
 
-        Returns ``self`` unchanged if *split* is absent, warning that it did.
+        Returns ``self`` unchanged if *split* is absent, warning that it did —
+        *times* is validated first, so a bad count is reported as one whichever
+        split was named.
 
         Raises:
-            ValueError: if *split* already carries a ``repeat_index`` column.
-                Overwriting it would silently redefine a column the caller is
-                presumably reading, and repeating an already-repeated split needs a
-                composite index this single column cannot express.
+            ValueError: if *times* is less than 1, or if *split* already carries a
+                ``repeat_index`` column.
+
+                Zero or a negative empties the split — that is how HuggingFace's own
+                ``repeat`` answers both — which would surface much later as a run
+                that silently scored zero samples, the failure :meth:`filter` refuses
+                for the same reason. Overwriting an existing stamp would silently
+                redefine a column the caller is presumably reading, and repeating an
+                already-repeated split needs a composite index this single column
+                cannot express.
         """
+        if times < 1:
+            raise ValueError(
+                f"repeat: 'times' must be at least 1; got {times}. HuggingFace's "
+                f"repeat() answers zero or a negative with an empty split, which "
+                f"would surface as a run that silently scored zero samples."
+            )
         if split not in self._dataset_dict:
             _report_no_op("repeat", _absent_split(split, self._dataset_dict))
             return self
@@ -108,9 +145,12 @@ class Dataset[TSample](ABC):
         if REPEAT_INDEX_COLUMN in original.column_names:
             raise ValueError(
                 f"split {split!r} already has a {REPEAT_INDEX_COLUMN!r} column, so "
-                f"repeat() would overwrite it. Rename the existing column, or drop "
-                f"it if it came from an earlier repeat() — repeating twice needs a "
-                f"composite index that one column cannot carry."
+                f"repeat() would overwrite it, and repeating twice needs a composite "
+                f"index that one column cannot carry. Repeat exactly once: when the "
+                f"task repeats this split itself (those taking an 'n_repeats' "
+                f"argument do), drop the repeat configured around it or set that "
+                f"argument to 1; otherwise rename the column if the dataset owns it, "
+                f"or drop it if an earlier repeat() left it."
             )
         n_rows = len(original)
         # Copy-major, matching what HuggingFace's own `repeat` concatenates: copy 0

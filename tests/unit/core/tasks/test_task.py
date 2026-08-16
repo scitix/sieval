@@ -509,7 +509,7 @@ class TestMakeContext:
     def test_make_context_lifts_repeat_index_from_repeated_dataset(self):
         """Every context comes through here, so no task has to opt in."""
         task = _ConcreteTask(_SimpleDataset().repeat(2), _MockChatModel())
-        n = len(_SimpleDataset().test_set)
+        n = len(_SimpleDataset().dataset_dict["test"])
         assert task.make_context(0).repeat_index == 0
         assert task.make_context(n).repeat_index == 1
 
