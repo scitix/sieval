@@ -696,12 +696,24 @@ class SysBenchZeroShotGenTask(
         # what upstream computes (`analysis_eval_results` appends the all-satisfied
         # indicator `是否可用` to its align buckets). `csr_*` is kept beside it because
         # it is the finer signal, but it is NOT the published column.
+        # Every rate below is reported with the count it was divided by. A breakdown
+        # cell is not readable without one: `csr_misalign` over 4 constraints and over
+        # 400 are the same number and a different claim, and the reader who wants to
+        # pool the cells back to the headline -- which is upstream's own `tab6_csr_full`
+        # pairing -- cannot weight them without the denominators. `turn_{t}_n_turns`
+        # already did this for one of the four families here; the other three, and the
+        # per-position CSR's own denominator, are the rest of that convention.
         for alignment, (satisfied, criteria, full_turns, cells) in sorted(
             by_alignment.items()
         ):
             if alignment and cells:
                 metrics[f"csr_{alignment}"] = satisfied / criteria * 100
                 metrics[f"isr_{alignment}"] = full_turns / cells * 100
+                # Two denominators, not one: `csr_*` pools over constraints while
+                # `isr_*` averages over turns, so neither is recoverable from the
+                # other's rate -- the same reason `by_alignment` carries both counts.
+                metrics[f"csr_{alignment}_n_criteria"] = float(criteria)
+                metrics[f"isr_{alignment}_n_turns"] = float(cells)
 
         # Per-turn-position cells: SysBench's subject is how adherence decays across a
         # conversation, and the headline averages that decay away. Computed here rather
@@ -719,6 +731,10 @@ class SysBenchZeroShotGenTask(
             # against the wrong one looks like a different model.
             metrics[f"turn_{position}_isr"] = full_turns / cells * 100
             metrics[f"turn_{position}_n_turns"] = float(cells)
+            # `turn_{t}_csr`'s own denominator, which is NOT `n_turns`: turns carry
+            # different constraint counts, so the position's constraint total is a
+            # separate number and the one the CSR cell was divided by.
+            metrics[f"turn_{position}_n_criteria"] = float(criteria)
 
         # Table 4's `R_t`: the fraction of sessions whose first *t* turns ALL satisfied
         # every constraint -- upstream's `plot/tab4_turn.py`, which credits position
@@ -733,10 +749,38 @@ class SysBenchZeroShotGenTask(
                 prefix_cells[position][1] += 1
         for position, (hits, sessions) in sorted(prefix_cells.items()):
             metrics[f"turn_{position}_isr_cumulative"] = hits / sessions * 100
+            # A third denominator, different again from the two above: sessions that
+            # DECLARE at least `position` turns, where `turn_{t}_n_turns` counts turns
+            # that were reached and graded. A walk that died mid-session separates them,
+            # which is the case this series exists to punish -- so reporting one as if
+            # it were the other would hide exactly the sessions R_t is about.
+            metrics[f"turn_{position}_isr_cumulative_n_sessions"] = float(sessions)
 
         # Per constraint category, pooled over constraints rather than turns.
+        #
+        # `total` cannot be 0 -- a bucket is created by the increment that fills it --
+        # so the live half of the old `if name and total` guard was `name`, and what it
+        # dropped was every constraint upstream left untyped. That drop was SILENT and
+        # it breaks the invariant the type cells exist to support: the cells pooled to
+        # less than the headline, with nothing in the report saying by how much or that
+        # anything was missing. A category is still not invented for them -- upstream's
+        # six are upstream's six -- so the residual is reported as a count instead.
+        n_criteria_untyped = 0
         for name, (satisfied, total) in sorted(type_totals.items()):
-            if name and total:
-                metrics[f"csr_type_{name}"] = satisfied / total * 100
+            if not name:
+                n_criteria_untyped += total
+                continue
+            metrics[f"csr_type_{name}"] = satisfied / total * 100
+            metrics[f"csr_type_{name}_n_criteria"] = float(total)
+        # Always emitted, including as 0.0: a reader who has to distinguish "none were
+        # untyped" from "this build does not report it" is back to guessing, and a key
+        # that appears only in the bad case is a key nobody has a baseline for.
+        metrics["n_criteria_untyped"] = float(n_criteria_untyped)
+        # The same silence on the other axis: a turn whose alignment label is missing is
+        # in `csr`/`isr` and in no alignment cell. `by_alignment` is keyed by the label,
+        # so an unlabelled turn lands under "" and the guard above skips it. Read with
+        # `.get`, because `by_alignment` is a defaultdict and indexing it here would
+        # create the bucket as a side effect of asking whether it exists.
+        metrics["n_turns_unaligned"] = float(by_alignment.get("", (0, 0, 0, 0))[3])
 
         return metrics | health_metrics(finals)

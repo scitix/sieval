@@ -737,6 +737,148 @@ def test_the_cumulative_turn_series_is_table_4s_r_columns_and_averages_to_ssr():
     )
 
 
+def test_every_breakdown_rate_reports_the_count_it_was_divided_by():
+    """A breakdown cell without its denominator is a number, not a measurement.
+
+    ``csr_misalign`` over 4 constraints and over 400 are the same value and a
+    different claim, and this is the check that would have caught the report
+    emitting one of the four families' denominators and none of the rest.
+    """
+    m = _report(
+        [
+            _judged_session(
+                1,
+                [
+                    ({"1": True}, {"1": "格式约束"}, "align"),
+                    (
+                        {"1": False, "2": True},
+                        {"1": "格式约束", "2": "内容约束"},
+                        "misalign",
+                    ),
+                ],
+            )
+        ]
+    )
+    # Every rate key maps to the key naming its own denominator. Written as a
+    # table rather than a loop over `m`, because the point is that a NEW rate
+    # added without one has to appear here to be believed.
+    for rate, denominator in (
+        ("csr_align", "csr_align_n_criteria"),
+        ("isr_align", "isr_align_n_turns"),
+        ("csr_misalign", "csr_misalign_n_criteria"),
+        ("isr_misalign", "isr_misalign_n_turns"),
+        ("turn_1_csr", "turn_1_n_criteria"),
+        ("turn_1_isr", "turn_1_n_turns"),
+        ("turn_2_csr", "turn_2_n_criteria"),
+        ("turn_1_isr_cumulative", "turn_1_isr_cumulative_n_sessions"),
+        ("csr_type_format", "csr_type_format_n_criteria"),
+        ("csr_type_content", "csr_type_content_n_criteria"),
+    ):
+        assert rate in m, rate
+        assert denominator in m, f"{rate} has no denominator key {denominator}"
+        assert m[denominator] > 0, denominator
+    # And the three denominators are genuinely different counts, which is why one
+    # of them cannot stand in for the others: turn 2 holds 2 constraints in 1 turn.
+    assert m["turn_2_n_criteria"] == 2
+    assert m["turn_2_n_turns"] == 1
+    assert m["turn_2_isr_cumulative_n_sessions"] == 1
+
+
+def test_the_type_cells_pool_to_the_headline_using_only_reported_numbers():
+    """The same invariant as ``..._come_from_one_total``, weighted from the report.
+
+    That test has to hardcode the per-category constraint counts, so it passes on
+    a report a consumer cannot check. With the denominators emitted, the pooling
+    is a reduction over the report alone -- and it fails if a cell goes missing.
+    """
+    m = _report(
+        [
+            _judged_session(
+                1,
+                [
+                    ({"1": True}, {"1": "格式约束"}, "align"),
+                    (
+                        {"1": True, "2": False},
+                        {"1": "格式约束", "2": "内容约束"},
+                        "misalign",
+                    ),
+                ],
+            )
+        ]
+    )
+    cells = [
+        k for k in m if k.startswith("csr_type_") and not k.endswith("_n_criteria")
+    ]
+    satisfied = sum(m[k] / 100 * m[f"{k}_n_criteria"] for k in cells)
+    total = sum(m[f"{k}_n_criteria"] for k in cells) + m["n_criteria_untyped"]
+    assert total == m["n_criteria_graded"]
+    assert m["csr"] == pytest.approx(satisfied / total * 100)
+
+
+def test_a_constraint_upstream_left_untyped_is_counted_not_dropped():
+    """It is in ``csr``, so it must be visible in the breakdown's arithmetic.
+
+    Silently skipping it made the type cells pool to less than the headline with
+    nothing saying so: 2 satisfied of 4 reads as ``csr`` 50.0 beside a lone
+    ``csr_type_format`` of 100.0, which is the shape of a model that aced the only
+    category measured rather than one that failed half the constraints.
+    """
+    m = _report(
+        [
+            _judged_session(
+                1,
+                [
+                    (
+                        {"1": True, "2": True, "3": False, "4": False},
+                        {"1": "格式约束", "2": "格式约束", "3": "", "4": ""},
+                        "align",
+                    )
+                ],
+            )
+        ]
+    )
+    assert m["csr"] == pytest.approx(50.0)
+    assert m["csr_type_format"] == pytest.approx(100.0)
+    assert m["csr_type_format_n_criteria"] == 2
+    # No invented category for them -- upstream's six stay upstream's six.
+    assert not [k for k in m if k.startswith("csr_type_") and "untyped" in k]
+    # The residual is what makes the 50.0 and the 100.0 reconcilable.
+    assert m["n_criteria_untyped"] == 2
+    assert (
+        m["csr_type_format_n_criteria"] + m["n_criteria_untyped"]
+        == m["n_criteria_graded"]
+    )
+
+
+def test_the_untyped_count_is_reported_as_zero_rather_than_omitted():
+    # A key present only in the bad case gives a reader no baseline, and absence
+    # then has to be read as either "clean" or "old build".
+    m = _report([_judged_session(1, [({"1": True}, {"1": "格式约束"}, "align")])])
+    assert m["n_criteria_untyped"] == 0
+    assert m["n_turns_unaligned"] == 0
+
+
+def test_a_turn_with_no_alignment_label_is_counted_not_dropped():
+    # The turn is in `csr`, `isr` and `n_turns`; it is in neither alignment cell,
+    # so without this count the two cells silently fail to cover the headline.
+    m = _report(
+        [
+            _judged_session(
+                1,
+                [
+                    ({"1": True}, {"1": "格式约束"}, "align"),
+                    ({"1": False}, {"1": "格式约束"}, ""),
+                ],
+            )
+        ]
+    )
+    assert m["n_turns"] == 2
+    assert m["csr"] == pytest.approx(50.0)
+    assert m["isr_align_n_turns"] == 1
+    assert "csr_" not in [k for k in m if k == "csr_"]
+    assert m["n_turns_unaligned"] == 1
+
+
 def test_the_judge_prompt_carries_the_system_prompt_criteria_and_both_turns():
     messages = [
         {"role": "system", "content": "SYS"},
