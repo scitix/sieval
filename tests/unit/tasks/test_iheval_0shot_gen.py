@@ -213,6 +213,37 @@ class TestPreprocess:
         record = await task.preprocess(row, _ctx(row))
         assert "tools" not in record["extra"]
 
+    @pytest.mark.anyio
+    async def test_the_record_names_its_row_not_just_its_cell(self):
+        """Two rows of one cell must be distinguishable on the record alone.
+
+        `(subtask, setting, variant)` is a cell key and a cell holds many rows,
+        so a record carrying only those three says which *group* it came from and
+        not which row. The run's own `sample_id` is no help: it is a positional
+        index into the loaded test set, so it names a different row under a
+        different `limit` or filter without anything in the record changing.
+        """
+        rows = [
+            _row(
+                subtask="lang-detect",
+                setting="conflict",
+                sample_id=sample_id,
+                answer="fr",
+            )
+            for sample_id in ("1", "2")
+        ]
+        task = _task(rows)
+        records = [await task.preprocess(row, _ctx(row)) for row in rows]
+
+        cell = [
+            (r["extra"]["subtask"], r["extra"]["setting"], r["extra"]["variant"])
+            for r in records
+        ]
+        assert cell[0] == cell[1], "same cell -- the premise of the test"
+        uids = [r["extra"]["uid"] for r in records]
+        assert uids[0] != uids[1]
+        assert uids == [row["uid"] for row in rows]
+
 
 class TestInfer:
     @pytest.mark.anyio
@@ -296,6 +327,24 @@ class TestFeedback:
         detail = _verdict(ctx)["extra"]["follow_instruction_list"]
         assert detail["strict"] == [True, True]
         assert _verdict(ctx)["metrics"]["strict_follow_all"] is True
+
+    @pytest.mark.anyio
+    async def test_both_grading_paths_put_the_row_key_on_the_judgement(self):
+        """A judgements-only export is a normal way to read a run.
+
+        The two paths build their judgement in different places -- rule-following
+        through the IFEval checkers, everything else through the scored graders --
+        so the key has to be on both or the coverage is a coin flip on subtask.
+        """
+        rule_following = _row(
+            subtask="single-turn",
+            setting="conflict",
+            answer={"instruction_id_list": ["punctuation:no_comma"], "kwargs": [{}]},
+        )
+        scored = _row(subtask="lang-detect", setting="conflict", answer="fr")
+        for row, response in ((rule_following, "no commas"), (scored, "fr")):
+            ctx = await _judge(_task([row]), row, response)
+            assert _verdict(ctx)["extra"]["uid"] == row["uid"], row["subtask"]
 
     @pytest.mark.anyio
     async def test_unknown_subtask_is_an_error(self):

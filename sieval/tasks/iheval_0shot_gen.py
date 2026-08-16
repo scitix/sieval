@@ -386,6 +386,16 @@ class IHEvalZeroShotGenTask(
         messages.append({"role": "user", "content": raw["instruction"]})
 
         extra: dict = {
+            # The stable per-row key, alongside the three cell components below.
+            # `(subtask, setting, variant)` names a CELL holding many rows, so on
+            # its own it cannot say which row a record came from -- and the
+            # record's `sample_id` is a positional index into the loaded test set
+            # (`Runner`: `range(dataset_size)`), which moves under `limit` or a
+            # dataset filter while pointing at a different row just as silently.
+            # `uid` is what the dataset builds for exactly this (see
+            # `IHEvalDatasetSample`: upstream ids are unique only within a cell),
+            # and `key` is already on the ifeval / ifbench / multi_if records.
+            "uid": raw["uid"],
             "subtask": raw["subtask"],
             "setting": raw["setting"],
             "variant": raw["variant"],
@@ -427,7 +437,7 @@ class IHEvalZeroShotGenTask(
 
         if subtask in ("single-turn", "multi-turn"):
             return self._judge_rule_following(raw, answer, prediction)
-        return self._judge_scored(subtask, answer, prediction)
+        return self._judge_scored(subtask, answer, prediction, uid=raw["uid"])
 
     def _judge_rule_following(self, raw, answer, prediction: str):
         from sieval.community.instruction_following_eval.evaluation_lib import (
@@ -472,10 +482,15 @@ class IHEvalZeroShotGenTask(
             [build_rollout_judgement(0, correct, score=score, metrics=metrics)],
             score=score,
             metrics=metrics,
-            extra={"follow_instruction_list": detail},
+            # `uid` travels on the judgement as well as the prompt record, the way
+            # ifeval / ifbench carry `key` on both: a judgements-only export is a
+            # normal way to read a run, and joining back to the prompt record on
+            # `sample_id` to recover the row identity defeats the point of having
+            # a stable one.
+            extra={"uid": raw["uid"], "follow_instruction_list": detail},
         )
 
-    def _judge_scored(self, subtask: str, answer, prediction: str):
+    def _judge_scored(self, subtask: str, answer, prediction: str, *, uid: str):
         from sieval.community.iheval import (
             eval_lang_detect,
             eval_mixed,
@@ -519,6 +534,11 @@ class IHEvalZeroShotGenTask(
             [build_rollout_judgement(0, score >= 1.0, score=score, metrics=metrics)],
             score=score,
             metrics=metrics,
+            # This builder had no `extra` at all, so the row key is the whole of
+            # it. Some of these subtasks score continuously (ROUGE-L, word F1),
+            # and a fractional score is the kind a reader goes back to the source
+            # row for -- which is the case that needs the key most.
+            extra={"uid": uid},
         )
 
     @override
