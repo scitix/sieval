@@ -856,27 +856,73 @@ def test_the_untyped_count_is_reported_as_zero_rather_than_omitted():
     m = _report([_judged_session(1, [({"1": True}, {"1": "格式约束"}, "align")])])
     assert m["n_criteria_untyped"] == 0
     assert m["n_turns_unaligned"] == 0
+    assert m["n_criteria_unaligned"] == 0
+
+
+def test_a_constraint_typed_null_is_counted_untyped_rather_than_killing_the_report():
+    """An explicit null type must not reach the bucket key.
+
+    `criteria` is stored raw by the loader, so ``criteria_type: null`` keys a
+    bucket under None and the sort over type buckets raises `TypeError` -- losing
+    the whole report rather than one constraint.
+    """
+    m = _report(
+        [
+            _judged_session(
+                1,
+                [
+                    (
+                        {"1": True, "2": False},
+                        {"1": "格式约束", "2": None},
+                        "align",
+                    )
+                ],
+            )
+        ]
+    )
+    assert m["csr"] == pytest.approx(50.0)
+    assert m["csr_type_format_n_criteria"] == 1
+    assert m["n_criteria_untyped"] == 1
+    # No bucket keyed by the null itself, under any spelling.
+    assert not [k for k in m if k.startswith("csr_type_") and "None" in k]
+    assert (
+        m["csr_type_format_n_criteria"] + m["n_criteria_untyped"]
+        == m["n_criteria_graded"]
+    )
 
 
 def test_a_turn_with_no_alignment_label_is_counted_not_dropped():
-    # The turn is in `csr`, `isr` and `n_turns`; it is in neither alignment cell,
-    # so without this count the two cells silently fail to cover the headline.
+    """It is in ``csr``, ``isr`` and ``n_turns`` and in neither alignment cell.
+
+    The unlabelled turn carries 3 constraints against the labelled turn's 1, which
+    is what gives this test teeth: with one apiece both residuals are 1, so
+    reporting either count for both would pass.
+    """
     m = _report(
         [
             _judged_session(
                 1,
                 [
                     ({"1": True}, {"1": "格式约束"}, "align"),
-                    ({"1": False}, {"1": "格式约束"}, ""),
+                    (
+                        {"1": False, "2": False, "3": False},
+                        {"1": "格式约束", "2": "格式约束", "3": "格式约束"},
+                        "",
+                    ),
                 ],
             )
         ]
     )
     assert m["n_turns"] == 2
-    assert m["csr"] == pytest.approx(50.0)
-    assert m["isr_align_n_turns"] == 1
-    assert "csr_" not in [k for k in m if k == "csr_"]
+    assert m["csr"] == pytest.approx(25.0)
+    assert "csr_" not in m
     assert m["n_turns_unaligned"] == 1
+    assert m["n_criteria_unaligned"] == 3
+    # Both alignment axes close to the headline using only reported numbers.
+    assert m["isr_align_n_turns"] + m["n_turns_unaligned"] == m["n_turns"]
+    assert (
+        m["csr_align_n_criteria"] + m["n_criteria_unaligned"] == m["n_criteria_graded"]
+    )
 
 
 def test_the_judge_prompt_carries_the_system_prompt_criteria_and_both_turns():

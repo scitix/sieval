@@ -642,9 +642,13 @@ class SysBenchZeroShotGenTask(
                     graded[1] += n_turn_criteria
                     n_graded_turns += 1
                 for cid, verdict in verdicts.items():
-                    bucket = type_totals[
-                        _CONSTRAINT_TYPES.get(types.get(cid, ""), types.get(cid, ""))
-                    ]
+                    # Coerced: the loader normalises `alignment` but stores
+                    # `criteria` raw, so `criteria_type: null` would key this
+                    # bucket under None and make the `sorted()` below raise --
+                    # losing the report, not one constraint. Absent and null
+                    # both mean untyped here.
+                    raw_type = str(types.get(cid) or "")
+                    bucket = type_totals[_CONSTRAINT_TYPES.get(raw_type, raw_type)]
                     bucket[0] += bool(verdict)
                     bucket[1] += 1
 
@@ -776,11 +780,14 @@ class SysBenchZeroShotGenTask(
         # untyped" from "this build does not report it" is back to guessing, and a key
         # that appears only in the bad case is a key nobody has a baseline for.
         metrics["n_criteria_untyped"] = float(n_criteria_untyped)
-        # The same silence on the other axis: a turn whose alignment label is missing is
-        # in `csr`/`isr` and in no alignment cell. `by_alignment` is keyed by the label,
-        # so an unlabelled turn lands under "" and the guard above skips it. Read with
-        # `.get`, because `by_alignment` is a defaultdict and indexing it here would
-        # create the bucket as a side effect of asking whether it exists.
-        metrics["n_turns_unaligned"] = float(by_alignment.get("", (0, 0, 0, 0))[3])
+        # The same silence on the other axis, and it takes BOTH counts for the
+        # reason the alignment cells take two denominators: an unlabelled turn
+        # (which lands under "", so the guard above skips it) leaves `csr_*` short
+        # by constraints and `isr_*` short by turns, and neither count sizes the
+        # other. `.get`, because indexing this defaultdict would create the bucket
+        # as a side effect of asking whether it exists.
+        unaligned = by_alignment.get("", (0, 0, 0, 0))
+        metrics["n_criteria_unaligned"] = float(unaligned[1])
+        metrics["n_turns_unaligned"] = float(unaligned[3])
 
         return metrics | health_metrics(finals)
