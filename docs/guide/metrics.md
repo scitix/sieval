@@ -79,32 +79,28 @@ at **every** budget, `n = 1` included, and by the single-draw tasks below that
 have no `n` at all. It measures the parser, not the draw, and `n = 1` is where a
 silently-stopped extractor survives longest: no second rollout to disagree with.
 
-`n_truncated` and `n_scored_rollouts` — **rollouts** whose generation stopped
-because it ran out of tokens rather than because the model was done, and the
-rollouts that were scored in total — are reported by **every `gen` task**, at
-every budget, `n = 1` included, and by the single-draw tasks below that have no
-`n` at all. Like `n_unextracted` they describe the generation rather than the
-draw, so neither is confined to `n > 1`; unlike every other key on this page they
-are injected by the *runner*, not computed by a task, so a task cannot report a
-truncation of zero by having forgotten to look.
+`n_truncated` — **rollouts** whose generation stopped because it ran out of
+tokens rather than because the model was done — and `n_scored_rollouts`, the
+rollouts scored in total, are reported by **every `gen` task**, on the same terms
+as `n_unextracted`: they describe the generation rather than the draw, so neither
+is confined to `n > 1`. Unlike every other key here the *runner* injects them, so
+a task cannot report zero truncation by having forgotten to look.
 
-They are a **pair, and arrive together or not at all** — the count alone says
-nothing about how much of a score it explains (`26` is a different fact at 600
-rollouts than at 30), and the rule lanes that most need it publish rates plus
-`fails` and no sample total, so there was previously nothing in `report.json` to
-divide by. `n_scored_rollouts` is the **observed** draw, not `n × samples`: a
-short sample drew fewer rollouts than its budget asked for, and the share a
-reader wants is over what actually ran. Deriving the rate — and deciding what
-threshold should warn, fail, or annotate a score — is left to the reader.
+They arrive as a **pair or not at all**. The count alone says nothing about how
+much of a score it explains — `26` is a different fact at 600 rollouts than at 30
+— and the rule lanes that most need it publish rates plus `fails` and no sample
+total, so nothing here was divisible into it. `n_scored_rollouts` is the
+**observed** draw, not `n × samples`: a short sample drew fewer rollouts than its
+budget asked for. Deriving the rate, and deciding what threshold should warn,
+fail or annotate a score, is left to the reader.
 
-Both are omitted, not zeroed, outside `gen`: `ppl`/`clp` infer with
-`max_tokens=1` and therefore finish every call the same way a truncated
-generation does, so the count would equal the rollout total on every such run and
-mean nothing. They are also omitted when the reasons were never recorded —
-resuming a run that was written with `record_meta=False` hydrates its finals
-without any per-stage metadata, and a `0` there would claim a clean run rather
-than an unmeasured one. `sieval_versions` reports that same state in band as
-`"unknown"`; a count has no value that means "not measured", so it is left out.
+Both are omitted rather than zeroed in two cases: outside `gen`, where `ppl`/`clp`
+infer at `max_tokens=1` and finish every call the way a truncation does, so the
+count would equal the total and mean nothing; and when the reasons were never
+recorded, since resuming a run written with `record_meta=False` hydrates its
+finals without per-stage metadata and a `0` would claim a clean run rather than an
+unmeasured one. `sieval_versions` reports that state in band as `"unknown"`; a
+count has no such value.
 
 Read `n_truncated` as a **bound on how much of a score is budget, not
 capability** — a truncated rollout is scored wrong whether or not the model was

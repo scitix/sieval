@@ -487,12 +487,9 @@ def detect_truncated_output(ctx: TaskContext) -> set[int]:
     if ctx.infer_result is None:
         return set()
     # Unioned across calls: a conversation whose second turn hit the cap has that
-    # rollout truncated, whichever turn did it.
-    #
-    # The reason set is shared with the `n_truncated` report key, which reduces the
-    # same event off the persisted `finish_reasons` instead of the live output. Two
-    # copies of the tuple would let this rule and that count come to disagree about
-    # what "truncated" means, with nothing to catch it.
+    # rollout truncated, whichever turn did it. The reason set is shared with the
+    # `n_truncated` report key -- which reduces the same event off the persisted
+    # `finish_reasons` rather than the live output -- so the two cannot drift.
     return {
         i
         for output in _model_outputs(_unwrap_result(ctx.infer_result))

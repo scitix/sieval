@@ -1020,34 +1020,24 @@ class TaskRunner:
     ) -> None:
         """Inject the run-level diagnostics into a dict report, then save.
 
-        All of them aggregate over the in-memory terminal contexts' ``stage_meta``
-        at zero extra I/O: :func:`report_versions` owns the ``"unknown"`` sentinel
-        rule, and the rollout counters share the stage, history and measurability
-        choices of :func:`_scored_rollout_indices`. They are injected here rather
-        than by each task because none is a fact about a task's metric -- every
-        task would have to remember to report them, and the ones that forgot
-        would look clean.
+        All aggregate over the in-memory terminal contexts' ``stage_meta`` at zero
+        extra I/O -- :func:`report_versions` owns the ``"unknown"`` sentinel rule,
+        the rollout counters :func:`_scored_rollout_indices`. Injected here rather
+        than per task because none is a fact about a task's metric: every task
+        would have to remember, and the ones that forgot would look clean.
 
-        ``n_truncated`` and its denominator ``n_scored_rollouts`` are injected for
-        ``gen`` tasks only, and omitted rather than zeroed elsewhere:
-        ``ppl``/``clp`` infer with ``max_tokens=1`` and so finish every call with
-        ``length``, which would make the count equal the rollout total on every
-        such run and mean nothing. The anomaly rule for the same event is
-        ``gen``-scoped for the same reason, and metrics.py states the general
-        rule -- a 0 meaning "not measurable" is indistinguishable from one
-        meaning "measured, and zero".
+        ``n_truncated`` and its denominator ``n_scored_rollouts`` go in for ``gen``
+        tasks only, and are omitted rather than zeroed elsewhere -- ``ppl``/``clp``
+        infer at ``max_tokens=1`` and so finish every call with ``length``, which
+        would make the count equal the total and mean nothing. The anomaly rule is
+        ``gen``-scoped for the same reason. They go in as a **pair or not at all**:
+        a count whose base is missing is not a share of anything, and both drop out
+        when any scored record is unmeasurable (see the ``record_meta=False`` resume
+        case on ``_scored_rollout_indices``).
 
-        The pair is injected together, or not at all: a count whose base is
-        missing cannot be read as a share of anything, and the two are omitted
-        outright when any scored record turns out not to be measurable (a resume
-        under ``record_meta=False`` hydrates finals with no ``stage_meta``, so
-        reducing them to ``0`` would report a clean run for samples whose finish
-        reasons were never recorded). ``sieval_versions`` says the same thing in
-        band with its ``"unknown"`` sentinel; a count has no such value.
-
-        Only finals are counted, matching both the anomaly detector (which runs
-        on FINAL) and ``n_unextracted``: a FAILED sample has no score for a
-        truncation to explain.
+        Only finals are counted, matching both the anomaly detector (which runs on
+        FINAL) and ``n_unextracted``: a FAILED sample has no score for a truncation
+        to explain.
 
         Non-dict reports are saved unchanged; ``None`` skips the save.
         """

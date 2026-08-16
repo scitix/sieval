@@ -12,18 +12,12 @@ from sieval.core.tasks.context import TaskStageMeta
 
 #: Finish reasons that mean the generation stopped before the model chose to.
 #:
-#: Provider-verbatim, because the IR does not normalize them: an
-#: OpenAI-compatible server says ``length``, Anthropic says ``max_tokens``, and
-#: sglang's native ``meta_info`` nests the same thing under ``type``. The set
-#: holds every spelling rather than one canonical name, so a count does not
-#: silently read zero on whichever provider spells it the other way.
-#:
-#: ``content_filter`` is in here because the output is cut short the same way,
-#: which is what a reader of the count is being warned about. The cause differs,
-#: and separating causes is what the raw ``finish_reasons`` on the record are
-#: for. :func:`sieval.core.tasks.anomaly.detect_truncated_output` reads this same
-#: set, so the rule and the report key cannot drift into meaning different
-#: things.
+#: Every spelling, not one canonical name: the IR does not normalize these, so a
+#: set holding only ``length`` (OpenAI-compatible) would read zero against
+#: ``max_tokens`` (Anthropic). ``content_filter`` is in because the output is cut
+#: short the same way; separating causes is what the raw ``finish_reasons`` are
+#: for. Shared with :func:`sieval.core.tasks.anomaly.detect_truncated_output` so
+#: the rule and the report key cannot drift apart.
 TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens", "content_filter"})
 
 
@@ -159,31 +153,25 @@ def _scored_rollout_indices(
 ) -> tuple[set[int], set[int]] | None:
     """``(every rollout index, the truncated ones)`` for one scored record.
 
-    The two counts this backs are reduced off the same index space, so
-    ``n_truncated <= n_scored_rollouts`` holds by construction rather than by two
-    walks happening to agree.
+    Both counts come off this one index space, so ``n_truncated <=
+    n_scored_rollouts`` holds by construction rather than by two walks agreeing.
 
-    Only the INFERRED stage is read. A judged task's FEEDBACK stage carries the
-    GRADER's calls, and a grader that hit its own budget is a different fact
-    about a different model -- the tasks that care already report that
-    separately (``n_grader_unparsed``).
+    **INFERRED only:** a judged task's FEEDBACK stage carries the GRADER's calls,
+    and a grader that hit its own budget is a fact about a different model
+    (already reported as ``n_grader_unparsed``).
 
-    Only the LAST entry of that stage's history is read, because a retried or
-    re-iterated sample was scored on its last attempt: counting earlier ones
-    would report truncations that no longer affect any number in the report.
-    That is the opposite choice from :func:`collect_versions`, which unions the
-    whole history precisely because provenance is about everything that ran.
+    **Last entry only:** a retried or re-iterated sample was scored on its last
+    attempt, so an earlier truncation no longer affects any number in the report.
+    The opposite choice from :func:`collect_versions`, which unions the whole
+    history because provenance is about everything that ran.
 
-    Returns ``None`` when the record carries no INFERRED history, which means
-    nothing about its rollouts is measurable. On a fresh run that cannot happen
-    -- the runner builds a stage meta for every stage it executes, in memory,
-    whatever ``record_meta`` says. It happens on a **resume under**
-    ``record_meta=False``: nothing was persisted, so the loader hydrates a final
-    with no ``stage_meta``, and reducing that to ``0`` would report a clean run
-    for samples whose finish reasons were never recorded. Callers omit the keys
-    instead. :func:`report_versions` resolves the same state with its
-    ``"unknown"`` sentinel; a count has no in-band value that means "not
-    measured", which is the whole reason this returns an option.
+    ``None`` means no INFERRED history, so nothing here is measurable. A fresh run
+    cannot hit it -- stage meta is built in memory whatever ``record_meta`` says
+    -- but a **resume under** ``record_meta=False`` can: nothing was persisted, so
+    the loader hydrates a final without it, and reducing that to ``0`` would
+    report a clean run for samples whose finish reasons were never recorded.
+    :func:`report_versions` says this in band with ``"unknown"``; a count has no
+    such value, hence the option.
     """
     entries = stage_meta.get(TaskStage.INFERRED.value)
     if not entries:
@@ -203,25 +191,20 @@ def count_truncated_rollouts(
 ) -> int | None:
     """Rollouts whose generation was cut short, over a report's scored records.
 
-    A truncated rollout scores as wrong without the model necessarily being
-    wrong -- it ran out of budget mid-answer, and the fix is ``max_tokens``, not
-    the prompt and not the model. ``finish_reasons`` has always been persisted
-    per call (:func:`build_model_call_meta`) and the ``gen``-scoped anomaly rule
-    already reports it per sample, but nothing carried it into ``report.json``,
-    the artifact a leaderboard actually reads. So a score that a truncation rate
-    explains was indistinguishable there from one that capability explains.
+    A truncated rollout scores as wrong without the model being wrong -- it ran
+    out of budget mid-answer, and the fix is ``max_tokens``. Reported so a score
+    a truncation rate explains is distinguishable from one capability explains.
 
     Counted per rollout, not per sample -- one truncated draw in four is a
-    different fact from four (RFC #74 C) -- and deduplicated by rollout index
-    within a sample, so a multi-turn task whose second turn truncated counts
-    that rollout once however many turns it took. That is the same union
-    :func:`sieval.core.tasks.anomaly.detect_truncated_output` takes across the
-    calls of one stage, so the two agree by construction rather than by
-    coincidence.
+    different fact from four (RFC #74 C) -- and deduplicated by rollout index, so
+    a multi-turn task whose second turn truncated counts that rollout once. That
+    is the same union :func:`sieval.core.tasks.anomaly.detect_truncated_output`
+    takes over one stage's calls, so the report and the anomaly file agree by
+    construction.
 
-    Stage and history scoping, and the ``None`` case, are
-    :func:`_scored_rollout_indices`. ``None`` propagates: a count over a set of
-    records where one was not measurable would read low with nothing to say so.
+    Scoping and the ``None`` case are :func:`_scored_rollout_indices`; ``None``
+    propagates, since a count skipping an unmeasurable record reads low with
+    nothing to say so.
     """
     total = 0
     for stage_meta in stage_metas:
@@ -235,17 +218,14 @@ def count_truncated_rollouts(
 def count_scored_rollouts(stage_metas: Iterable[Mapping[str, list]]) -> int | None:
     """Rollouts a report's scored records actually drew -- ``n_truncated``'s base.
 
-    A bare count does not say how much of a score it explains: ``26`` is a
-    different fact at 600 rollouts than at 30, and the four rule lanes this was
-    built for publish rates plus ``fails`` and no sample total at all, so there
-    was nothing in ``report.json`` to divide by. This is that denominator, and it
-    is the *observed* draw rather than ``n * len(finals)``: a run with a short
-    sample drew fewer rollouts than its budget asked for, and the rate a reader
-    wants is over what actually ran.
+    Without it the numerator is unreadable: ``26`` is a different fact at 600
+    rollouts than at 30, and the rule lanes publish rates plus ``fails`` and no
+    sample total, so nothing in ``report.json`` was divisible into it.
 
-    Deliberately not the rate itself. Whether a lane above some threshold should
-    warn, fail or annotate its score is a policy call; this only makes the
-    fraction computable by whoever wants to make it.
+    The *observed* draw, not ``n * len(finals)``: a short sample drew fewer
+    rollouts than its budget asked for, and the share a reader wants is over what
+    ran. Not the rate itself -- what threshold should warn, fail or annotate a
+    score is a policy call left to the reader.
     """
     total = 0
     for stage_meta in stage_metas:
