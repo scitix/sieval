@@ -2717,8 +2717,10 @@ class TestReportTruncation:
         report = await runner.arun()
 
         assert report["n_truncated"] == 3  # all three samples
+        assert report["n_scored_rollouts"] == 3
         saved = orjson.loads((runner.root_dir / "report.json").read_bytes())
         assert saved["n_truncated"] == 3
+        assert saved["n_scored_rollouts"] == 3
 
     @pytest.mark.anyio
     async def test_counts_only_the_rollouts_that_truncated(self, tmp_path):
@@ -2731,6 +2733,9 @@ class TestReportTruncation:
         report = await TaskRunner(task, make_config(tmp_path)).arun()
 
         assert report["n_truncated"] == 1
+        # The denominator is what makes that a share rather than a bare count:
+        # 1 of 3, which is the fact a reader of the score needs.
+        assert report["n_scored_rollouts"] == 3
 
     @pytest.mark.anyio
     async def test_clean_gen_run_reports_zero_not_nothing(self, tmp_path):
@@ -2741,6 +2746,7 @@ class TestReportTruncation:
         report = await TaskRunner(task, make_config(tmp_path)).arun()
 
         assert report["n_truncated"] == 0
+        assert report["n_scored_rollouts"] == 3
 
     @pytest.mark.anyio
     async def test_non_gen_task_omits_the_key(self, tmp_path):
@@ -2754,6 +2760,74 @@ class TestReportTruncation:
         report = await runner.arun()
 
         assert "n_truncated" not in report
+        assert "n_scored_rollouts" not in report
         saved = orjson.loads((runner.root_dir / "report.json").read_bytes())
         assert "n_truncated" not in saved
+        assert "n_scored_rollouts" not in saved
         assert saved["sieval_versions"] == [__version__]
+
+    @pytest.mark.anyio
+    async def test_resume_without_recorded_meta_omits_rather_than_undercounts(
+        self, tmp_path
+    ):
+        # `record_meta=False` persists no stage_meta, so a resume hydrates finals
+        # with none and the reasons cannot be re-read. Reducing that to 0 would
+        # report a clean run for a lane that truncated every rollout -- wrong in
+        # the safe-looking direction, which is exactly what this key exists to
+        # stop. `sieval_versions` says the same thing in band with "unknown"; a
+        # count has no such value, so the pair is omitted.
+        model = TruncatingChatModel(answers=DEFAULT_ANSWERS)
+        task = GenTask(dataset=MockDataset(), model=model, name="trunc_resume")
+        first = TaskRunner(task, make_config(tmp_path, record_meta=False))
+        assert (await first.arun())["n_truncated"] == 3
+        root = first.root_dir
+
+        # Drop the cached report so the resume recomputes from the disk records
+        # rather than short-circuiting on the saved artifact.
+        (root / "report.json").unlink()
+
+        resumed_task = GenTask(
+            dataset=MockDataset(),
+            model=TruncatingChatModel(answers=DEFAULT_ANSWERS),
+            name="trunc_resume",
+        )
+        resumed = TaskRunner(
+            resumed_task,
+            replace(
+                make_config(tmp_path, record_meta=False),
+                result_dir=str(root),
+                auto_resume=True,
+            ),
+        )
+        report = await resumed.arun()
+
+        assert "n_truncated" not in report
+        assert "n_scored_rollouts" not in report
+        assert report["sieval_versions"] == ["unknown"]
+        saved = orjson.loads((resumed.root_dir / "report.json").read_bytes())
+        assert "n_truncated" not in saved
+
+    @pytest.mark.anyio
+    async def test_default_resume_still_counts(self, tmp_path):
+        # The omission above must be scoped to the unmeasurable case: under the
+        # default config the hydrated stage_meta survives, so a resume reports
+        # the same count as the original run rather than dropping the key.
+        model = TruncatingChatModel(answers=DEFAULT_ANSWERS)
+        task = GenTask(dataset=MockDataset(), model=model, name="trunc_resume_ok")
+        first = TaskRunner(task, make_config(tmp_path))
+        assert (await first.arun())["n_truncated"] == 3
+        root = first.root_dir
+        (root / "report.json").unlink()
+
+        resumed_task = GenTask(
+            dataset=MockDataset(),
+            model=TruncatingChatModel(answers=DEFAULT_ANSWERS),
+            name="trunc_resume_ok",
+        )
+        report = await TaskRunner(
+            resumed_task,
+            replace(make_config(tmp_path), result_dir=str(root), auto_resume=True),
+        ).arun()
+
+        assert report["n_truncated"] == 3
+        assert report["n_scored_rollouts"] == 3

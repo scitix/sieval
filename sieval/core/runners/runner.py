@@ -46,6 +46,7 @@ from sieval.core.utils.concurrency import CompositeLimiter
 from sieval.core.utils.meta import (
     build_model_call_meta_from_mapping,
     build_stage_meta,
+    count_scored_rollouts,
     count_truncated_rollouts,
     report_versions,
 )
@@ -1019,20 +1020,30 @@ class TaskRunner:
     ) -> None:
         """Inject the run-level diagnostics into a dict report, then save.
 
-        Both aggregate over the in-memory terminal contexts' ``stage_meta`` at
-        zero extra I/O: :func:`report_versions` owns the ``"unknown"`` sentinel
-        rule, :func:`count_truncated_rollouts` the stage and history choices.
-        They are injected here rather than by each task because neither is a
-        fact about a task's metric -- every task would have to remember to report
-        them, and the ones that forgot would look clean.
+        All of them aggregate over the in-memory terminal contexts' ``stage_meta``
+        at zero extra I/O: :func:`report_versions` owns the ``"unknown"`` sentinel
+        rule, and the rollout counters share the stage, history and measurability
+        choices of :func:`_scored_rollout_indices`. They are injected here rather
+        than by each task because none is a fact about a task's metric -- every
+        task would have to remember to report them, and the ones that forgot
+        would look clean.
 
-        ``n_truncated`` is injected for ``gen`` tasks only, and omitted rather
-        than zeroed elsewhere: ``ppl``/``clp`` infer with ``max_tokens=1`` and so
-        finish every call with ``length``, which would make the key read 100% on
-        every such run and mean nothing. The anomaly rule for the same event is
+        ``n_truncated`` and its denominator ``n_scored_rollouts`` are injected for
+        ``gen`` tasks only, and omitted rather than zeroed elsewhere:
+        ``ppl``/``clp`` infer with ``max_tokens=1`` and so finish every call with
+        ``length``, which would make the count equal the rollout total on every
+        such run and mean nothing. The anomaly rule for the same event is
         ``gen``-scoped for the same reason, and metrics.py states the general
-        rule -- a 0.0 meaning "not measurable" is indistinguishable from one
+        rule -- a 0 meaning "not measurable" is indistinguishable from one
         meaning "measured, and zero".
+
+        The pair is injected together, or not at all: a count whose base is
+        missing cannot be read as a share of anything, and the two are omitted
+        outright when any scored record turns out not to be measurable (a resume
+        under ``record_meta=False`` hydrates finals with no ``stage_meta``, so
+        reducing them to ``0`` would report a clean run for samples whose finish
+        reasons were never recorded). ``sieval_versions`` says the same thing in
+        band with its ``"unknown"`` sentinel; a count has no such value.
 
         Only finals are counted, matching both the anomaly detector (which runs
         on FINAL) and ``n_unextracted``: a FAILED sample has no score for a
@@ -1049,9 +1060,12 @@ class TaskRunner:
                 (c.stage_meta for c in fails),
             )
             if EvalMode.GEN.value in self._task.tags:
-                as_dict["n_truncated"] = count_truncated_rollouts(
-                    c.stage_meta for c in finals
-                )
+                metas = [c.stage_meta for c in finals]
+                truncated = count_truncated_rollouts(metas)
+                scored = count_scored_rollouts(metas)
+                if truncated is not None and scored is not None:
+                    as_dict["n_truncated"] = truncated
+                    as_dict["n_scored_rollouts"] = scored
         await self._saver.save_report(report)
 
     def _resolve_result_dir(

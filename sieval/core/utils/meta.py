@@ -154,16 +154,14 @@ def report_versions(
     return versions
 
 
-def count_truncated_rollouts(stage_metas: Iterable[Mapping[str, list]]) -> int:
-    """Rollouts whose generation was cut short, over a report's scored records.
+def _scored_rollout_indices(
+    stage_meta: Mapping[str, list],
+) -> tuple[set[int], set[int]] | None:
+    """``(every rollout index, the truncated ones)`` for one scored record.
 
-    A truncated rollout scores as wrong without the model necessarily being
-    wrong -- it ran out of budget mid-answer, and the fix is ``max_tokens``, not
-    the prompt and not the model. ``finish_reasons`` has always been persisted
-    per call (:func:`build_model_call_meta`) and the ``gen``-scoped anomaly rule
-    already reports it per sample, but nothing carried it into ``report.json``,
-    the artifact a leaderboard actually reads. So a score that a truncation rate
-    explains was indistinguishable there from one that capability explains.
+    The two counts this backs are reduced off the same index space, so
+    ``n_truncated <= n_scored_rollouts`` holds by construction rather than by two
+    walks happening to agree.
 
     Only the INFERRED stage is read. A judged task's FEEDBACK stage carries the
     GRADER's calls, and a grader that hit its own budget is a different fact
@@ -176,6 +174,43 @@ def count_truncated_rollouts(stage_metas: Iterable[Mapping[str, list]]) -> int:
     That is the opposite choice from :func:`collect_versions`, which unions the
     whole history precisely because provenance is about everything that ran.
 
+    Returns ``None`` when the record carries no INFERRED history, which means
+    nothing about its rollouts is measurable. On a fresh run that cannot happen
+    -- the runner builds a stage meta for every stage it executes, in memory,
+    whatever ``record_meta`` says. It happens on a **resume under**
+    ``record_meta=False``: nothing was persisted, so the loader hydrates a final
+    with no ``stage_meta``, and reducing that to ``0`` would report a clean run
+    for samples whose finish reasons were never recorded. Callers omit the keys
+    instead. :func:`report_versions` resolves the same state with its
+    ``"unknown"`` sentinel; a count has no in-band value that means "not
+    measured", which is the whole reason this returns an option.
+    """
+    entries = stage_meta.get(TaskStage.INFERRED.value)
+    if not entries:
+        return None
+    scored: set[int] = set()
+    truncated: set[int] = set()
+    for call in entries[-1].get("model_calls") or ():
+        for index, reason in enumerate(call.get("finish_reasons") or ()):
+            scored.add(index)
+            if reason in TRUNCATION_FINISH_REASONS:
+                truncated.add(index)
+    return scored, truncated
+
+
+def count_truncated_rollouts(
+    stage_metas: Iterable[Mapping[str, list]],
+) -> int | None:
+    """Rollouts whose generation was cut short, over a report's scored records.
+
+    A truncated rollout scores as wrong without the model necessarily being
+    wrong -- it ran out of budget mid-answer, and the fix is ``max_tokens``, not
+    the prompt and not the model. ``finish_reasons`` has always been persisted
+    per call (:func:`build_model_call_meta`) and the ``gen``-scoped anomaly rule
+    already reports it per sample, but nothing carried it into ``report.json``,
+    the artifact a leaderboard actually reads. So a score that a truncation rate
+    explains was indistinguishable there from one that capability explains.
+
     Counted per rollout, not per sample -- one truncated draw in four is a
     different fact from four (RFC #74 C) -- and deduplicated by rollout index
     within a sample, so a multi-turn task whose second turn truncated counts
@@ -183,16 +218,39 @@ def count_truncated_rollouts(stage_metas: Iterable[Mapping[str, list]]) -> int:
     :func:`sieval.core.tasks.anomaly.detect_truncated_output` takes across the
     calls of one stage, so the two agree by construction rather than by
     coincidence.
+
+    Stage and history scoping, and the ``None`` case, are
+    :func:`_scored_rollout_indices`. ``None`` propagates: a count over a set of
+    records where one was not measurable would read low with nothing to say so.
     """
     total = 0
     for stage_meta in stage_metas:
-        entries = stage_meta.get(TaskStage.INFERRED.value)
-        if not entries:
-            continue
-        truncated: set[int] = set()
-        for call in entries[-1].get("model_calls") or ():
-            for index, reason in enumerate(call.get("finish_reasons") or ()):
-                if reason in TRUNCATION_FINISH_REASONS:
-                    truncated.add(index)
-        total += len(truncated)
+        indices = _scored_rollout_indices(stage_meta)
+        if indices is None:
+            return None
+        total += len(indices[1])
+    return total
+
+
+def count_scored_rollouts(stage_metas: Iterable[Mapping[str, list]]) -> int | None:
+    """Rollouts a report's scored records actually drew -- ``n_truncated``'s base.
+
+    A bare count does not say how much of a score it explains: ``26`` is a
+    different fact at 600 rollouts than at 30, and the four rule lanes this was
+    built for publish rates plus ``fails`` and no sample total at all, so there
+    was nothing in ``report.json`` to divide by. This is that denominator, and it
+    is the *observed* draw rather than ``n * len(finals)``: a run with a short
+    sample drew fewer rollouts than its budget asked for, and the rate a reader
+    wants is over what actually ran.
+
+    Deliberately not the rate itself. Whether a lane above some threshold should
+    warn, fail or annotate its score is a policy call; this only makes the
+    fraction computable by whoever wants to make it.
+    """
+    total = 0
+    for stage_meta in stage_metas:
+        indices = _scored_rollout_indices(stage_meta)
+        if indices is None:
+            return None
+        total += len(indices[0])
     return total

@@ -13,6 +13,7 @@ from sieval.core.utils.meta import (
     build_model_call_meta_from_mapping,
     build_stage_meta,
     collect_versions,
+    count_scored_rollouts,
     count_truncated_rollouts,
     report_versions,
 )
@@ -275,10 +276,23 @@ class TestCountTruncatedRollouts:
     def test_no_records(self):
         assert count_truncated_rollouts([]) == 0
 
-    def test_stage_absent_contributes_nothing(self):
-        # A ppl/clp task, or a sample that failed before infer: no INFERRED
-        # history at all. Absence is 0, not an error.
-        assert count_truncated_rollouts([{}, {"final": [{"version": "0.7.0"}]}]) == 0
+    def test_unmeasurable_record_is_not_zero(self):
+        # No INFERRED history means the finish reasons were never recorded, not
+        # that nothing was truncated. The reachable cause is a resume under
+        # `record_meta=False`, which hydrates a final with no stage_meta; the two
+        # causes the absence *looks* like -- a ppl/clp task, a sample that failed
+        # before infer -- cannot arrive here, since the caller passes finals only
+        # and gates on `gen`. Reducing it to 0 would report a clean run.
+        assert count_truncated_rollouts([{}]) is None
+        assert count_truncated_rollouts([{"final": [{"version": "0.7.0"}]}]) is None
+
+    def test_one_unmeasurable_record_forfeits_the_whole_count(self):
+        # A partially-hydrated resume: some finals carry their meta, some do not.
+        # A count over just the measurable ones reads low with nothing saying so,
+        # which is the failure mode this key exists to remove.
+        truncated = _inferred({"finish_reasons": ["length"]})
+        assert count_truncated_rollouts([truncated]) == 1
+        assert count_truncated_rollouts([truncated, {}]) is None
 
     def test_natural_stop_is_not_truncation(self):
         assert count_truncated_rollouts([_inferred({"finish_reasons": ["stop"]})]) == 0
@@ -343,6 +357,90 @@ class TestCountTruncatedRollouts:
 
     def test_calls_without_finish_reasons_are_skipped(self):
         # `build_model_call_meta` omits the key when the provider sent nothing.
+        # The stage still ran, so this is measured-and-zero, not unmeasurable.
         assert count_truncated_rollouts([_inferred({"model": _model_meta("m")})]) == 0
         assert count_truncated_rollouts([{TaskStage.INFERRED.value: [{}]}]) == 0
-        assert count_truncated_rollouts([{TaskStage.INFERRED.value: []}]) == 0
+
+    def test_empty_stage_history_is_unmeasurable(self):
+        # An INFERRED key whose history is empty records nothing about the stage,
+        # which is the `{}` case spelled differently -- not a measured zero.
+        assert count_truncated_rollouts([{TaskStage.INFERRED.value: []}]) is None
+
+
+class TestCountScoredRollouts:
+    """`n_truncated`'s denominator: the rollouts a report actually scored.
+
+    Without it the numerator is unreadable -- the lanes this was built for
+    publish rates plus `fails` and no sample total, so `report.json` carried
+    nothing to divide by.
+    """
+
+    def test_no_records(self):
+        assert count_scored_rollouts([]) == 0
+
+    def test_counts_the_draw_not_the_samples(self):
+        four = _inferred({"finish_reasons": ["stop"] * 4})
+        assert count_scored_rollouts([four]) == 4
+        assert count_scored_rollouts([four, four]) == 8
+
+    def test_multi_turn_counts_each_rollout_once(self):
+        # Same union as the numerator: the list dimension is extra calls, the
+        # index dimension is rollouts. Two turns of a 2-rollout draw is 2.
+        multi_turn = _inferred(
+            {"finish_reasons": ["stop", "stop"]},
+            {"finish_reasons": ["stop", "length"]},
+        )
+        assert count_scored_rollouts([multi_turn]) == 2
+
+    def test_observed_draw_not_the_budget(self):
+        # A short sample drew fewer rollouts than the budget asked for. The rate
+        # a reader wants is over what actually ran, so the base is the observed
+        # width -- `n * len(finals)` would understate the truncation share.
+        short = _inferred({"finish_reasons": ["length"]})
+        full = _inferred({"finish_reasons": ["stop"] * 4})
+        assert count_scored_rollouts([short, full]) == 5
+        assert count_truncated_rollouts([short, full]) == 1
+
+    def test_only_the_scored_attempt_is_counted(self):
+        # Same last-entry rule as the numerator, or a retried sample would
+        # inflate the base and dilute the rate.
+        retried = {
+            TaskStage.INFERRED.value: [
+                {"model_calls": [{"finish_reasons": ["stop"] * 4}]},
+                {"model_calls": [{"finish_reasons": ["stop"] * 2}]},
+            ]
+        }
+        assert count_scored_rollouts([retried]) == 2
+
+    def test_grader_calls_are_not_part_of_the_base(self):
+        judged = {
+            TaskStage.INFERRED.value: [{"model_calls": [{"finish_reasons": ["stop"]}]}],
+            TaskStage.FEEDBACK.value: [
+                {"model_calls": [{"finish_reasons": ["stop"] * 8}]}
+            ],
+        }
+        assert count_scored_rollouts([judged]) == 1
+
+    def test_unmeasurable_record_is_not_zero(self):
+        assert count_scored_rollouts([{}]) is None
+        assert (
+            count_scored_rollouts([_inferred({"finish_reasons": ["stop"]}), {}]) is None
+        )
+
+    def test_numerator_never_exceeds_the_base(self):
+        # The invariant that makes the pair a fraction: both are reduced off the
+        # same index space, so a rate can never come out above 1.
+        cases = [
+            _inferred({"finish_reasons": ["length", "stop", "max_tokens"]}),
+            _inferred(
+                {"finish_reasons": ["length", "stop"]},
+                {"finish_reasons": ["stop", "content_filter"]},
+            ),
+            _inferred({"finish_reasons": ["length"] * 4}),
+            _inferred({"model": _model_meta("m")}),
+        ]
+        for case in cases:
+            truncated = count_truncated_rollouts([case])
+            scored = count_scored_rollouts([case])
+            assert truncated is not None and scored is not None
+            assert truncated <= scored
