@@ -15,7 +15,7 @@ from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 from loguru import logger
 
-from sieval.core.datasets import Dataset
+from sieval.core.datasets import REPEAT_INDEX_COLUMN, Dataset
 
 
 def _capture_logs(fn) -> str:
@@ -169,6 +169,41 @@ class TestRepeat:
             _hf_dict=HFDatasetDict({"test": HFDataset.from_list([{"id": 0}])})
         )
         assert ds.repeat(2, split="train") is ds
+
+    def test_repeat_stamps_copy_major_index(self):
+        result = _make(3).repeat(3)
+        assert result.test_set[REPEAT_INDEX_COLUMN] == [0, 0, 0, 1, 1, 1, 2, 2, 2]
+        # Copy-major, so the stamp agrees with position *before* any reordering.
+        assert result.test_set["id"] == [0, 1, 2, 0, 1, 2, 0, 1, 2]
+
+    def test_repeat_once_still_stamps(self):
+        # The column's presence means "this split was repeated", not "repeated more
+        # than once" — one that appeared only sometimes needs guarding at every read.
+        assert _make(2).repeat(1).test_set[REPEAT_INDEX_COLUMN] == [0, 0]
+
+    def test_repeat_index_survives_shuffle(self):
+        # The reason the stamp exists: `i // n_rows` is right until something
+        # reorders the rows, and then it is wrong without ever failing.
+        shuffled = _make(4).repeat(3).shuffle(seed=7)
+        pairs = sorted(
+            zip(
+                shuffled.test_set["id"],
+                shuffled.test_set[REPEAT_INDEX_COLUMN],
+                strict=True,
+            )
+        )
+        assert pairs == sorted((i, c) for c in range(3) for i in range(4))
+        derived = [i // 4 for i in range(12)]
+        assert shuffled.test_set[REPEAT_INDEX_COLUMN] != derived
+
+    def test_repeat_index_survives_filter(self):
+        repeated = _make(3).repeat(2).filter("id", [1])
+        assert repeated.test_set[REPEAT_INDEX_COLUMN] == [0, 1]
+
+    def test_repeat_refuses_to_overwrite_existing_column(self):
+        already = _make(2).repeat(2)
+        with pytest.raises(ValueError, match=REPEAT_INDEX_COLUMN):
+            already.repeat(2)
 
 
 # ===================================================================

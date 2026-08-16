@@ -10,7 +10,7 @@ from collections.abc import Set as AbstractSet
 from dataclasses import replace
 from typing import ClassVar, Literal, Protocol, cast
 
-from sieval.core.datasets import Dataset
+from sieval.core.datasets import REPEAT_INDEX_COLUMN, Dataset
 from sieval.core.models import Model
 from sieval.core.models.requirements import (
     InputKind,
@@ -99,6 +99,24 @@ def _validate_descriptor_capabilities(
             f"{task_name} requires unsupported dialect capabilities: "
             + ", ".join(sorted(missing))
         )
+
+
+def _repeat_index_of(raw: object) -> int | None:
+    """Read a repeated row's copy number, or ``None`` if the split was not repeated.
+
+    Tolerant on purpose: a raw sample is whatever the dataset yields, so anything
+    that is not a mapping carrying an integer under ``repeat_index`` is treated as
+    "not repeated" rather than raising. A bool is rejected explicitly — ``True``
+    would otherwise pass ``isinstance(..., int)`` and record copy 1.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    # The cast only says "keys are strings"; the value is still checked below, so a
+    # row carrying something other than an int under this key cannot slip through.
+    value = cast("Mapping[str, object]", raw).get(REPEAT_INDEX_COLUMN)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 class Task[
@@ -352,6 +370,11 @@ class Task[
 
         If *raw* is ``None`` and *sample_id* is a valid integer index into
         the dataset's test set, the raw sample is fetched on demand.
+
+        A ``repeat_index`` column left by :meth:`~sieval.core.datasets.Dataset.repeat`
+        is lifted onto the context here, which is the one place every context is
+        built — so a repeated run records which copy each row is without any task
+        opting in, and a resumed sample gets the same value from the same row.
         """
         # If raw not supplied and integer index available, attempt lazy fetch
         if (
@@ -361,7 +384,7 @@ class Task[
             and 0 <= sample_id < len(self._dataset.test_set)
         ):
             raw = cast(TRawSample, self._dataset.test_set[sample_id])
-        return TaskContext(sample_id, raw)
+        return TaskContext(sample_id, raw, repeat_index=_repeat_index_of(raw))
 
     @abstractmethod
     async def preprocess(

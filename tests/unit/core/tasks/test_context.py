@@ -4,6 +4,8 @@ Tests for sieval.core.tasks.context — state machine, serialization, snapshot.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+from dataclasses import replace
+
 import pytest
 
 from sieval.core.tasks.consts import TaskAction, TaskStage
@@ -188,6 +190,21 @@ class TestTaskContextSerialize:
         d = ctx.serialize(store_type_metadata=True)
         assert d["infer_result"]["__sieval_cls__"] == "ModelOutput"
 
+    def test_repeat_index_omitted_when_the_split_was_not_repeated(self, base_context):
+        assert base_context.repeat_index is None
+        assert "repeat_index" not in base_context.serialize(store_type_metadata=False)
+
+    def test_repeat_index_emitted_when_set(self, base_context):
+        ctx = replace(base_context, repeat_index=2).to_inferred("inf")
+        d = ctx.serialize(store_type_metadata=False)
+        assert d["repeat_index"] == 2
+
+    def test_repeat_index_zero_is_emitted_not_treated_as_absent(self, base_context):
+        # The first copy is index 0, which is falsy: a truthiness test here would
+        # make copy 0 indistinguishable from an unrepeated row.
+        d = replace(base_context, repeat_index=0).serialize(store_type_metadata=False)
+        assert d["repeat_index"] == 0
+
 
 class TestTaskContextSnapshot:
     """Snapshot mode serialization."""
@@ -220,6 +237,22 @@ class TestTaskContextSnapshot:
         ctx = base_context.make_snapshot()
         assert ctx.is_snapshot is True
         assert base_context.is_snapshot is False
+
+    def test_snapshot_keeps_repeat_index(self, base_context):
+        # Snapshot mode is the shape the per-stage shards are written in, so this is
+        # the mode a repeated run actually needs the copy number in.
+        ctx = replace(base_context, repeat_index=1).to_inferred("inf").make_snapshot()
+        d = ctx.serialize(store_type_metadata=False)
+        assert d["repeat_index"] == 1
+        assert "preprocess_result" not in d
+
+    def test_snapshot_omits_repeat_index_when_unrepeated(self, base_context):
+        d = (
+            base_context.to_inferred("inf")
+            .make_snapshot()
+            .serialize(store_type_metadata=False)
+        )
+        assert "repeat_index" not in d
 
 
 class TestTaskRunMeta:

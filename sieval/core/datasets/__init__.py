@@ -1,4 +1,4 @@
-from .dataset import Dataset, TFilterKey
+from .dataset import REPEAT_INDEX_COLUMN, Dataset, TFilterKey
 from .meta import (
     Category,
     DatasetMeta,
@@ -7,6 +7,7 @@ from .meta import (
 )
 
 __all__ = [
+    "REPEAT_INDEX_COLUMN",
     "Category",
     "Dataset",
     "DatasetMeta",

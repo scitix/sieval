@@ -14,7 +14,7 @@ import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
-from sieval.core.datasets import Dataset
+from sieval.core.datasets import REPEAT_INDEX_COLUMN, Dataset
 from sieval.core.models import Model
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.models.gen_model import GenModel
@@ -501,6 +501,29 @@ class TestMakeContext:
         task = _ConcreteTask(_TrainOnlyDataset(), _MockChatModel())
         ctx = task.make_context(0)
         assert ctx.raw_sample is None
+
+    def test_make_context_unrepeated_leaves_repeat_index_none(self):
+        task = _ConcreteTask(_SimpleDataset(), _MockChatModel())
+        assert task.make_context(0).repeat_index is None
+
+    def test_make_context_lifts_repeat_index_from_repeated_dataset(self):
+        """Every context comes through here, so no task has to opt in."""
+        task = _ConcreteTask(_SimpleDataset().repeat(2), _MockChatModel())
+        n = len(_SimpleDataset().test_set)
+        assert task.make_context(0).repeat_index == 0
+        assert task.make_context(n).repeat_index == 1
+
+    def test_make_context_lifts_repeat_index_from_supplied_raw(self):
+        task = _ConcreteTask(_SimpleDataset(), _MockChatModel())
+        ctx = task.make_context(0, raw={"q": "hello", REPEAT_INDEX_COLUMN: 3})
+        assert ctx.repeat_index == 3
+
+    def test_make_context_ignores_a_non_integer_repeat_index(self):
+        """`True` is an int to `isinstance`; recording it as copy 1 would be a lie."""
+        task = _ConcreteTask(_SimpleDataset(), _MockChatModel())
+        for bad in (True, "1", 1.5, None):
+            ctx = task.make_context(0, raw={"q": "hello", REPEAT_INDEX_COLUMN: bad})
+            assert ctx.repeat_index is None
 
 
 # ===================================================================

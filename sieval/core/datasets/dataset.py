@@ -20,6 +20,12 @@ TRetrieveStrategy = Literal["random", "fixed"]
 #: names forming a composite key, or a callable deriving one from the whole row.
 TFilterKey = str | list[str] | Callable[[Mapping[str, object]], object]
 
+#: Column :meth:`Dataset.repeat` stamps on every row, naming which copy the row
+#: belongs to. Plainly named rather than dunder-prefixed because it is meant to be
+#: read: a task may branch on it, and anything reporting a spread across repeats has
+#: to group by it.
+REPEAT_INDEX_COLUMN = "repeat_index"
+
 
 class Dataset[TSample](ABC):
     """Abstract evaluation dataset backed by a HuggingFace DatasetDict.
@@ -73,13 +79,47 @@ class Dataset[TSample](ABC):
     def repeat(self, times: int, split: str = "test") -> Self:
         """Return a shallow clone with *split* repeated *times* times.
 
+        Every row is stamped with :data:`REPEAT_INDEX_COLUMN` — a 0-based copy
+        number — because the copies are otherwise indistinguishable, and the spread
+        across them is the only thing repeating a split measures. Without it the
+        index has to be recovered from row position (``i // n_rows``), which is
+        right only while the rows stay in the order this method emitted them:
+        :meth:`shuffle` permutes them and leaves that arithmetic returning a
+        confident wrong answer instead of raising. The stamp travels with the row,
+        so it survives any later reordering, filtering or slicing.
+
+        Stamped even when *times* is 1, so that the column's presence is a property
+        of "this split was repeated" rather than of how many times — a column that
+        appeared only sometimes would have to be guarded at every read.
+
         Returns ``self`` unchanged if *split* is absent, warning that it did.
+
+        Raises:
+            ValueError: if *split* already carries a ``repeat_index`` column.
+                Overwriting it would silently redefine a column the caller is
+                presumably reading, and repeating an already-repeated split needs a
+                composite index this single column cannot express.
         """
         if split not in self._dataset_dict:
             _report_no_op("repeat", _absent_split(split, self._dataset_dict))
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
-        new_dict[split] = new_dict[split].repeat(times)
+        original = new_dict[split]
+        if REPEAT_INDEX_COLUMN in original.column_names:
+            raise ValueError(
+                f"split {split!r} already has a {REPEAT_INDEX_COLUMN!r} column, so "
+                f"repeat() would overwrite it. Rename the existing column, or drop "
+                f"it if it came from an earlier repeat() — repeating twice needs a "
+                f"composite index that one column cannot carry."
+            )
+        n_rows = len(original)
+        # Copy-major, matching what HuggingFace's own `repeat` concatenates: copy 0
+        # in full, then copy 1. Built from `times`/`n_rows` rather than read back off
+        # the result so the stamp cannot agree with a reordering that already
+        # happened.
+        new_dict[split] = original.repeat(times).add_column(
+            REPEAT_INDEX_COLUMN, [i for i in range(times) for _ in range(n_rows)]
+        )
         return self._clone_with_new_dict(new_dict)
 
     def slice(self, num: int, split: str = "test") -> Self:
