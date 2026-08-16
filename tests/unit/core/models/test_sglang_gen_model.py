@@ -67,10 +67,9 @@ class TestDefaultTransport:
     def test_client_declares_the_shared_request_timeout(self):
         """The other bypass owes the same declared bound as the factory.
 
-        This facade is deliberately outside canonical binding and builds its own
-        client, so a contract asserted against ``connection_factory`` does not
-        reach it. The SDK's default is the same value today, which is exactly why
-        a drift here would be silent.
+        This facade sits outside canonical binding and builds its own client, so
+        a contract asserted against ``connection_factory`` never reaches it. The
+        SDK's default is the same value, which is why a drift would be silent.
         """
         client = SimpleNamespace(
             base_url="http://host:8000/v1/",

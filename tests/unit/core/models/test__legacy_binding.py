@@ -1,8 +1,7 @@
 """Tests for the legacy ``ChatModel``/``GenModel`` binding construction.
 
-Scoped to what this path owes *independently* of ``connection_factory``: it
-builds its own ``AsyncOpenAI`` instead of going through a factory, so a contract
-asserted only against the factory does not reach it.
+Scoped to what this path owes *independently* of ``connection_factory``, which it
+bypasses.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -19,9 +18,8 @@ class TestLegacyBindingClient:
         """The wrapper path owes the same declared bound as the factory.
 
         ``ChatModel`` and ``GenModel`` both build their client here, so this is
-        the construction that serves runs today -- and the one place a drift back
-        to whichever ``timeout`` the OpenAI SDK happens to default to would go
-        unnoticed, since the fallback is currently the same value.
+        the construction serving runs today. Its fallback is the SDK's default,
+        which is the same value -- so a drift would be silent without this.
         """
         client = SimpleNamespace(
             base_url="https://legacy.example/v1/",

@@ -16,43 +16,26 @@ from openai import AsyncOpenAI
 
 #: The per-request timeout every sieval client that talks to a model declares.
 #:
-#: Scope is the clients whose call has no bound of its own. The code-evaluator and
-#: health-check clients are excluded on purpose: each passes a per-request
-#: ``timeout`` derived from the budget it is already enforcing server-side (a
-#: sandbox's own subprocess wall, a probe interval), so a client-level default
-#: would either duplicate that number or silently contradict it.
+#: Declared rather than inherited: the OpenAI SDK defaults ``read`` to 600 and
+#: ``httpx`` defaults every phase to 5, so a dialect's connection family silently
+#: decided how long a generation could take, and either library can change its
+#: default in a patch release. The value is what ``openai_sdk`` already had in
+#: effect, so it moves only ``async_http_json`` -- whose dialects have no
+#: implemented transport yet, making its 5s a trap rather than a live bug.
 #:
-#: Before this constant, no sieval client passed ``timeout`` at all, so the bound
-#: on a request was whichever default the underlying library happened to ship --
-#: and the two libraries disagreed by 120x. The OpenAI SDK defaults to
-#: ``read=600``; ``httpx`` defaults to ``5`` for every phase. Which connection
-#: family a dialect was registered under therefore decided how long a generation
-#: was allowed to take, which is not a property any dialect declares or a reader
-#: could find. Neither number was sieval's, and either library can change its
-#: default in a patch release with nothing here noticing.
+#: Scope is clients whose call carries no bound of its own. The code-evaluator and
+#: health-check clients each pass a per-request ``timeout`` derived from a budget
+#: they already enforce server-side, which a client-level default would duplicate
+#: or contradict.
 #:
-#: The value is what the ``openai_sdk`` family already had in effect, so adopting
-#: it changes no behaviour on the only family with live transports today. It is
-#: the ``async_http_json`` family that moves, off a 5s read that no generation
-#: could survive: that family has no implemented transport yet, so the 5s was
-#: never a live bug -- it was a trap set for whoever implements the first
-#: Anthropic, Google, or native-serving transport, and it would present as "the
-#: endpoint is broken" rather than "our client gave up".
-#:
-#: ``connect`` stays short because a refused or unroutable endpoint should fail
-#: fast. ``read`` is long because a premature read timeout is indistinguishable --
-#: in a result directory -- from the model having produced nothing, and a
-#: reasoning model emitting thousands of tokens legitimately takes minutes.
-#:
-#: What ``read`` bounds is not the same quantity on both paths, so 600s means two
-#: things. Streamed, ``read`` is the gap between chunks, which makes 600s a stall
-#: tolerance rather than a generation budget. Unstreamed, it bounds the whole
-#: response, so the one number covers every one of a request's ``n`` rollouts
-#: together: sieval asks for all of them in a single call, and the non-streaming
-#: lift only sees them once the last is done. So it is the unstreamed reading that
-#: a long high-``n`` run can actually exhaust. Which one applies is not a single
-#: default -- ``SchedulingParams.stream`` is ``False``, while the legacy
-#: ``ChatModel``/``GenModel`` wrappers send ``True`` unless a caller overrides it.
+#: ``connect`` is short so an unroutable endpoint fails fast. ``read`` is long
+#: because a premature read timeout is indistinguishable, in a result directory,
+#: from the model having produced nothing. Note it bounds two different
+#: quantities: the gap between chunks when streamed (a stall tolerance), the whole
+#: response when not -- every one of a request's ``n`` rollouts together, since
+#: sieval asks for all of them in one call. That second reading is the one a long
+#: high-``n`` run can exhaust. ``SchedulingParams.stream`` is ``False``; the legacy
+#: ``ChatModel``/``GenModel`` wrappers send ``True``.
 DEFAULT_REQUEST_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 
 

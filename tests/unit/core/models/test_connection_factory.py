@@ -220,12 +220,11 @@ class TestBuiltInConnectionFactories:
         )
 
     def test_the_request_timeout_is_declared_here_not_inherited(self) -> None:
-        """The numbers, asserted literally, because their whole job is to be ours.
+        """Asserted literally on purpose.
 
-        Reading them off ``httpx`` or the OpenAI SDK would re-derive the bound
-        from the same defaults this constant exists to stop depending on: the
-        assertion would keep passing through exactly the upstream change it is
-        supposed to catch.
+        Reading the numbers off ``httpx`` or the OpenAI SDK would re-derive them
+        from the very defaults this constant exists to stop depending on, so the
+        assertion would survive the upstream change it is meant to catch.
         """
         assert DEFAULT_REQUEST_TIMEOUT.read == 600.0
         assert DEFAULT_REQUEST_TIMEOUT.write == 600.0
@@ -238,10 +237,9 @@ class TestBuiltInConnectionFactories:
     ) -> None:
         """One declared bound, not one per library.
 
-        ``httpx`` defaults every phase to 5s and the OpenAI SDK defaults ``read``
-        to 600s, so before this was declared, a dialect's connection family
-        silently decided whether a long generation was allowed to finish -- a
-        120x difference that no dialect declares and no reader could find.
+        The two library defaults differ by 120x, so before this was declared a
+        dialect's connection family decided whether a long generation could
+        finish.
         """
         request = ConnectionRequest(
             endpoint="https://models.example/v1",

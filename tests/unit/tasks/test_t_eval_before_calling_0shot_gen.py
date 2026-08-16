@@ -125,9 +125,8 @@ class TestEmbeddingClient:
     def test_client_declares_the_shared_request_timeout(self, monkeypatch):
         """The thought axis reaches a model, so it owes the declared bound too.
 
-        This client is built here rather than through ``connection_factory``, and
-        the SDK's fallback is the same value today -- so a drift would show up as
-        an embedding call that hangs differently, with nothing pointing here.
+        Built here rather than through ``connection_factory``, with the SDK's
+        default as its silent fallback.
         """
         monkeypatch.setenv("SIEVAL_EMBED_API_KEY", "not-a-real-key")
         monkeypatch.setenv("SIEVAL_EMBED_API", "https://embed.example/model-api")
