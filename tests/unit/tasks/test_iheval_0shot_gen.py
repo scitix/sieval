@@ -217,11 +217,9 @@ class TestPreprocess:
     async def test_the_record_names_its_row_not_just_its_cell(self):
         """Two rows of one cell must be distinguishable on the record alone.
 
-        `(subtask, setting, variant)` is a cell key and a cell holds many rows,
-        so a record carrying only those three says which *group* it came from and
-        not which row. The run's own `sample_id` is no help: it is a positional
-        index into the loaded test set, so it names a different row under a
-        different `limit` or filter without anything in the record changing.
+        A cell holds many rows, so `(subtask, setting, variant)` says which
+        *group* a record came from and not which row; the run's own `sample_id`
+        is a positional index, so it renames rows under a different `limit`.
         """
         rows = [
             _row(
@@ -240,9 +238,10 @@ class TestPreprocess:
             for r in records
         ]
         assert cell[0] == cell[1], "same cell -- the premise of the test"
-        uids = [r["extra"]["uid"] for r in records]
-        assert uids[0] != uids[1]
-        assert uids == [row["uid"] for row in rows]
+        # Pins the value, not just its presence: never upstream's `sample_id`.
+        keys = [r["extra"]["key"] for r in records]
+        assert keys[0] != keys[1]
+        assert keys == [row["uid"] for row in rows]
 
 
 class TestInfer:
@@ -332,9 +331,8 @@ class TestFeedback:
     async def test_both_grading_paths_put_the_row_key_on_the_judgement(self):
         """A judgements-only export is a normal way to read a run.
 
-        The two paths build their judgement in different places -- rule-following
-        through the IFEval checkers, everything else through the scored graders --
-        so the key has to be on both or the coverage is a coin flip on subtask.
+        The two paths build their judgement in different places, so the key has
+        to be on both or coverage is a coin flip on which subtask you ran.
         """
         rule_following = _row(
             subtask="single-turn",
@@ -344,7 +342,7 @@ class TestFeedback:
         scored = _row(subtask="lang-detect", setting="conflict", answer="fr")
         for row, response in ((rule_following, "no commas"), (scored, "fr")):
             ctx = await _judge(_task([row]), row, response)
-            assert _verdict(ctx)["extra"]["uid"] == row["uid"], row["subtask"]
+            assert _verdict(ctx)["extra"]["key"] == row["uid"], row["subtask"]
 
     @pytest.mark.anyio
     async def test_unknown_subtask_is_an_error(self):
