@@ -1555,9 +1555,7 @@ class TestRunnerResumeState:
         """Both seams that attach a row to a context stamp it the same way.
 
         Sample 1 arrives as a resumed skeleton and gets its row backfilled; sample 0
-        is fresh and gets it from ``make_context``. A backfill that attached the row
-        without its copy number would serialize as though the split had never been
-        repeated.
+        is fresh and gets it from ``make_context``.
         """
         sample = {"question": "What is 1+1?", "answer": "2"}
         dataset = MockDataset([sample]).repeat(2)

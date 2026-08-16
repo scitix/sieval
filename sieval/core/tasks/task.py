@@ -354,12 +354,10 @@ class Task[
         the dataset's test set, the raw sample is fetched on demand.
 
         A ``repeat_index`` column left by :meth:`~sieval.core.datasets.Dataset.repeat`
-        is read onto the context here, which is the one place every context is
-        built — so a repeated run records which copy each row is without any task
-        opting in, and a resumed sample gets the same value from the same row.
-        Building is not the only way a row reaches a context, though: the runner
-        also backfills one onto a context it resumed, and stamps it there through
-        the same :func:`~sieval.core.datasets.repeat_index_of`.
+        is read onto the context here — every context is built through this method, so
+        no task opts in and a resume re-derives the same value from the same row. The
+        runner's resume backfill stamps it too, through the same
+        :func:`~sieval.core.datasets.repeat_index_of`.
         """
         # If raw not supplied and integer index available, attempt lazy fetch
         if (
