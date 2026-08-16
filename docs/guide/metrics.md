@@ -64,10 +64,9 @@ reporting a `pass@k` of `0.0`.
 | `self_consistency` | Share of the draw that agreed on that modal answer. | the task votes on answers |
 | `n`, `k` | The budget the numbers above were measured at. | always |
 | `n_short` | Samples that came back with fewer than `n` rollouts. | always |
-| `n_truncated` | Rollouts whose generation hit its token budget instead of stopping. | `gen` tasks |
 
-Rates are percentages (0–100) over the task's declared denominator; `n`, `k`,
-`n_short` and `n_truncated` are counts.
+Rates are percentages (0–100) over the task's declared denominator; `n`, `k` and
+`n_short` are counts.
 
 **`avg@n` is spelled `@n`, not `@k`, on purpose:** it takes no `k` and does not
 move with one — at `n=4, k=2` it averages four verdicts where `pass@k` estimates
@@ -80,17 +79,36 @@ at **every** budget, `n = 1` included, and by the single-draw tasks below that
 have no `n` at all. It measures the parser, not the draw, and `n = 1` is where a
 silently-stopped extractor survives longest: no second rollout to disagree with.
 
-`n_truncated` — **rollouts** whose generation stopped because it ran out of
-tokens rather than because the model was done — is the one key here the *runner*
-injects rather than a task computing it, so a task cannot report a truncation
-rate of zero by having forgotten to look. It is omitted, not zeroed, outside
-`gen`: `ppl`/`clp` infer with `max_tokens=1` and therefore finish every call the
-same way a truncated generation does, so the count would read 100% and mean
-nothing.
+`n_truncated` and `n_scored_rollouts` — **rollouts** whose generation stopped
+because it ran out of tokens rather than because the model was done, and the
+rollouts that were scored in total — are reported by **every `gen` task**, at
+every budget, `n = 1` included, and by the single-draw tasks below that have no
+`n` at all. Like `n_unextracted` they describe the generation rather than the
+draw, so neither is confined to `n > 1`; unlike every other key on this page they
+are injected by the *runner*, not computed by a task, so a task cannot report a
+truncation of zero by having forgotten to look.
 
-Read it as a **bound on how much of a score is budget, not capability** — a
-truncated rollout is scored wrong whether or not the model was on its way to the
-right answer, and the fix is `max_tokens`. It is independent of
+They are a **pair, and arrive together or not at all** — the count alone says
+nothing about how much of a score it explains (`26` is a different fact at 600
+rollouts than at 30), and the rule lanes that most need it publish rates plus
+`fails` and no sample total, so there was previously nothing in `report.json` to
+divide by. `n_scored_rollouts` is the **observed** draw, not `n × samples`: a
+short sample drew fewer rollouts than its budget asked for, and the share a
+reader wants is over what actually ran. Deriving the rate — and deciding what
+threshold should warn, fail, or annotate a score — is left to the reader.
+
+Both are omitted, not zeroed, outside `gen`: `ppl`/`clp` infer with
+`max_tokens=1` and therefore finish every call the same way a truncated
+generation does, so the count would equal the rollout total on every such run and
+mean nothing. They are also omitted when the reasons were never recorded —
+resuming a run that was written with `record_meta=False` hydrates its finals
+without any per-stage metadata, and a `0` there would claim a clean run rather
+than an unmeasured one. `sieval_versions` reports that same state in band as
+`"unknown"`; a count has no value that means "not measured", so it is left out.
+
+Read `n_truncated` as a **bound on how much of a score is budget, not
+capability** — a truncated rollout is scored wrong whether or not the model was
+on its way to the right answer, and the fix is `max_tokens`. It is independent of
 `n_unextracted`: an answer can be cut short and still parse (the truncation lands
 after the boxed answer), or parse cleanly and be wrong for reasons of its own.
 The two are worth reading together only in the direction where they coincide — a
