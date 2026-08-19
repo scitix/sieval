@@ -224,13 +224,15 @@ class TestReport:
         assert result["parse_rate"] == 100.0
         assert result["fails"] == 0
 
-    def test_str_mode_reports_args_parsed_without_the_args_axes_recorded(self):
-        """The *_parsed variants are reported in every mode, scored or not.
+    def test_str_mode_omits_the_parsed_axes_this_mode_never_scores(self):
+        """A mode that does not score args reports no args column, suffixed or not.
 
-        In str/reason mode `metrics` legitimately holds only `parse_rate`, so
-        these three have to read defensively. Pre-fix they were 0.0 because
-        `_evaluate` pre-seeded them and everything was recorded; 0.0 is therefore
-        also the parity-preserving answer.
+        In str/reason mode `_metric_keys` excludes the three args axes, so
+        `metrics` holds only `parse_rate` and the un-suffixed axes are correctly
+        absent. Their `*_parsed` twins must go with them: a report that omits
+        `args_precision` while publishing `args_precision_parsed = 0.0` says
+        both "never measured" and "measured, zero" about one axis, and the 0.0
+        is a `.get` default rather than anything the evaluator produced.
         """
         task = _task(default_prompt_type="str", eval_type="reason")
         finals = [
@@ -241,9 +243,38 @@ class TestReport:
         result = asyncio.run(task.report(finals, []))
 
         assert result["parse_rate"] == 100.0
-        assert result["args_precision_parsed"] == 0.0
+        # The denominator still reports: it is the parsed subset's size, which
+        # is a fact about the run whether or not an axis was averaged over it.
+        assert result["n_parsed"] == 2.0
+        for axis in ("args_precision", "args_recall", "args_f1_score"):
+            assert axis not in result
+            assert f"{axis}_parsed" not in result
+
+    def test_str_understand_mode_keeps_the_parsed_axes_it_does_score(self):
+        """The other half of the gate: str/understand DOES score args.
+
+        Discriminating against a fix that drops the `*_parsed` triple in every
+        str mode rather than only where the axis is unscored.
+        """
+        task = _task(default_prompt_type="str", eval_type="understand")
+        finals = [
+            SimpleNamespace(
+                feedback_result={
+                    "metrics": {
+                        "args_precision": 1.0,
+                        "args_recall": 0.0,
+                        "args_f1_score": 0.0,
+                        "parse_rate": 1.0,
+                    }
+                }
+            )
+        ]
+
+        result = asyncio.run(task.report(finals, []))
+
+        assert result["args_precision"] == 100.0
+        assert result["args_precision_parsed"] == 100.0
         assert result["args_recall_parsed"] == 0.0
-        assert result["args_f1_score_parsed"] == 0.0
 
     def test_no_judged_samples_omits_every_axis_instead_of_averaging_nothing(self):
         """`np.mean([])` is nan, and a nan reaches report.json as `null`.
@@ -258,13 +289,13 @@ class TestReport:
             assert axis not in result
         for axis in ("args_precision_parsed", "args_recall_parsed"):
             assert axis not in result
-        assert result["n_judged"] == 0.0
+        assert result["n_graded"] == 0.0
         assert result["n_parsed"] == 0.0
         # The declarations survive the empty path (`.claude/rules/tasks.md`).
         assert result["denominator_policy"] == "judged"
 
     def test_zero_parseable_answers_omits_only_the_parsed_axes(self):
-        """The issue-20 shape: samples judged, not one of them parseable.
+        """Samples graded, not one of them parseable -- the two zeros differ.
 
         The macro axes were measured over those samples and are a real zero; the
         `*_parsed` triple has an empty denominator and is not. Reporting the
@@ -291,14 +322,16 @@ class TestReport:
 
         assert result["parse_rate"] == 0.0
         assert result["args_precision"] == 0.0
-        assert result["n_judged"] == 5.0
-        assert result["n_parsed"] == 0.0
+        # The core claim first: a later `KeyError` on a denominator must not
+        # pre-empt the omission this test exists to pin.
         for axis in (
             "args_precision_parsed",
             "args_recall_parsed",
             "args_f1_score_parsed",
         ):
             assert axis not in result
+        assert result["n_graded"] == 5.0
+        assert result["n_parsed"] == 0.0
 
     def test_every_report_path_is_strict_json(self):
         """No path may emit a nan: `allow_nan=False` is the reader's contract."""

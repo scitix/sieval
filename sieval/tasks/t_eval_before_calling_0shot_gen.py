@@ -394,29 +394,31 @@ class TEvalBeforeCallingZeroShotGenTask(
         an absent key cannot be read without the count it would have been divided
         by -- a reader who has to tell "nothing to average" from "this build does
         not emit that axis" is back to guessing. They are two different numbers:
-        `n_judged` backs the axes below, `n_parsed` backs the `*_parsed` triple,
+        `n_graded` backs the axes below, `n_parsed` backs the `*_parsed` triple,
         and they come apart exactly when the model emitted replies the format
         could not parse -- which empties the second while leaving the first whole.
         """
+        scored = self._metric_keys()
         # list of dict to dict of list
-        results: dict[str, float] = {"n_judged": float(len(results_list))}
-        for key in self._metric_keys():
-            if results_list:
+        results: dict[str, float] = {"n_graded": float(len(results_list))}
+        if results_list:
+            for key in scored:
                 results[key] = float(
                     np.mean([result[key] for result in results_list]) * 100
                 )
 
-        # The *_parsed variants are reported in every mode, including the str modes
-        # that never score args at all -- so read defensively rather than assuming
-        # these axes are among the ones recorded.
+        # The `*_parsed` triple restricts the args axes to the samples whose reply
+        # parsed. It is a sieval addition -- upstream reports no parsed-subset
+        # variant of any axis -- so it follows the same rule as the axes it
+        # narrows: emitted only where this mode scores args at all, since an
+        # `args_precision_parsed` beside an omitted `args_precision` would call
+        # one axis both unmeasured and zero.
         success_samples = [r for r in results_list if r.get("parse_rate", 0) == 1]
         results["n_parsed"] = float(len(success_samples))
-        for key in ("args_precision", "args_recall", "args_f1_score"):
-            # Samples parsed but this mode never scored the axis is a MEASURED
-            # zero (`_evaluate` pre-seeds the three, and upstream averages them),
-            # so it stays 0.0; only an empty parsed subset omits the key.
-            if success_samples:
-                results[f"{key}_parsed"] = float(
-                    np.mean([r.get(key, 0.0) for r in success_samples]) * 100
-                )
+        if success_samples:
+            for key in ("args_precision", "args_recall", "args_f1_score"):
+                if key in scored:
+                    results[f"{key}_parsed"] = float(
+                        np.mean([r[key] for r in success_samples]) * 100
+                    )
         return results
