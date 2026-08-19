@@ -227,12 +227,11 @@ class TestReport:
     def test_str_mode_omits_the_parsed_axes_this_mode_never_scores(self):
         """A mode that does not score args reports no args column, suffixed or not.
 
-        In str/reason mode `_metric_keys` excludes the three args axes, so
-        `metrics` holds only `parse_rate` and the un-suffixed axes are correctly
-        absent. Their `*_parsed` twins must go with them: a report that omits
-        `args_precision` while publishing `args_precision_parsed = 0.0` says
-        both "never measured" and "measured, zero" about one axis, and the 0.0
-        is a `.get` default rather than anything the evaluator produced.
+        str/reason scores only `parse_rate`, so the un-suffixed axes are already
+        absent; their `*_parsed` twins must go with them. Publishing
+        `args_precision_parsed = 0.0` beside an omitted `args_precision` calls
+        one axis both unmeasured and zero, off a `.get` default the evaluator
+        never produced.
         """
         task = _task(default_prompt_type="str", eval_type="reason")
         finals = [
@@ -243,8 +242,8 @@ class TestReport:
         result = asyncio.run(task.report(finals, []))
 
         assert result["parse_rate"] == 100.0
-        # The denominator still reports: it is the parsed subset's size, which
-        # is a fact about the run whether or not an axis was averaged over it.
+        # The denominator still reports -- it is a fact about the run whether or
+        # not an axis was averaged over it.
         assert result["n_parsed"] == 2.0
         for axis in ("args_precision", "args_recall", "args_f1_score"):
             assert axis not in result
@@ -253,8 +252,8 @@ class TestReport:
     def test_str_understand_mode_keeps_the_parsed_axes_it_does_score(self):
         """The other half of the gate: str/understand DOES score args.
 
-        Discriminating against a fix that drops the `*_parsed` triple in every
-        str mode rather than only where the axis is unscored.
+        Discriminates against a fix that drops the triple in every str mode
+        rather than only where the axis is unscored.
         """
         task = _task(default_prompt_type="str", eval_type="understand")
         finals = [
@@ -279,9 +278,8 @@ class TestReport:
     def test_no_judged_samples_omits_every_axis_instead_of_averaging_nothing(self):
         """`np.mean([])` is nan, and a nan reaches report.json as `null`.
 
-        `null` cannot be told apart from a measured value that failed to
-        serialise, so an axis with nothing behind it is omitted and its
-        denominator reported instead.
+        A `null` cannot be told apart from a measured value that failed to
+        serialise, so the axis is omitted and its denominator reported instead.
         """
         result = asyncio.run(_task().report([], []))
 
@@ -299,8 +297,7 @@ class TestReport:
 
         The macro axes were measured over those samples and are a real zero; the
         `*_parsed` triple has an empty denominator and is not. Reporting the
-        second as 0.0 would claim the model scored zero precision on calls it
-        never successfully emitted.
+        second as 0.0 claims zero precision on calls the model never emitted.
         """
         task = _task()
         finals = [
@@ -322,8 +319,8 @@ class TestReport:
 
         assert result["parse_rate"] == 0.0
         assert result["args_precision"] == 0.0
-        # The core claim first: a later `KeyError` on a denominator must not
-        # pre-empt the omission this test exists to pin.
+        # Core claim first: a later `KeyError` on a denominator must not pre-empt
+        # the omission this test exists to pin.
         for axis in (
             "args_precision_parsed",
             "args_recall_parsed",
