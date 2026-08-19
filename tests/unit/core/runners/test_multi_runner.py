@@ -7,8 +7,10 @@ rather than internal wiring (private attributes, mock call args).
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import json
 from typing import Any
 
+import anyio
 import pytest
 
 from sieval.core.runners.multi_runner import MultiTaskRunner
@@ -190,3 +192,88 @@ async def test_arun_exception_propagates(tmp_path):
     # Verify the runner completes with 0% accuracy instead of crashing.
     result = await runner.arun()
     assert result["bad"]["accuracy"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_a_crashing_report_lets_its_siblings_finish(tmp_path):
+    """A task dying in `report()` must not cancel the rest of the batch.
+
+    The sibling is deliberately slower than the crash, so pre-fix it is still
+    mid-flight when the exception reaches the task group: cancellation lands in
+    `TaskRunner.arun`'s interrupt path, which flushes shards but never writes
+    `report.json`. So the sibling's report on disk -- not merely the absence of a
+    crash -- is what separates "ran to completion" from "cancelled".
+    """
+
+    class _CrashingReportTask(_SimpleTask):
+        async def report(self, finals, fails):
+            # The shape of the real defect: a grader metric over an empty
+            # denominator, raised after every sample has been judged.
+            raise ValueError("Found array with 0 sample(s) (shape=(0,))")
+
+    class _SlowTask(_SimpleTask):
+        async def postprocess(self, inf, ctx):
+            await anyio.sleep(0.5)
+            return inf.texts[0].strip()
+
+    crasher = _CrashingReportTask(
+        dataset=MockDataset(SAMPLES),
+        model=MockChatModel(answers={"1+1?": "2", "2+3?": "5"}),
+        name="crasher",
+    )
+    sibling = _SlowTask(
+        dataset=MockDataset(SAMPLES),
+        model=MockChatModel(answers={"1+1?": "2", "2+3?": "5"}),
+        name="sibling",
+    )
+
+    base = tmp_path / "isolated"
+    runner = MultiTaskRunner(result_dir=str(base))
+    runner.add_task(crasher, config=make_config(tmp_path, result_dir=None))
+    runner.add_task(sibling, config=make_config(tmp_path, result_dir=None))
+
+    with pytest.raises(ExceptionGroup) as excinfo:
+        await runner.arun()
+
+    # The discriminating assertion, first: the sibling reached its own report.
+    sibling_report = base / "sibling" / "report.json"
+    assert sibling_report.exists()
+    assert json.loads(sibling_report.read_text())["accuracy"] == 1.0
+    assert not (base / "crasher" / "report.json").exists()
+
+    # The failure still reaches the caller -- isolated, not swallowed -- and names
+    # which task it came from, so a batch of many does not need a log dive.
+    assert "crasher" in str(excinfo.value)
+    assert "sibling" not in str(excinfo.value)
+    assert [type(e) for e in excinfo.value.exceptions] == [ValueError]
+    assert "0 sample(s)" in str(excinfo.value.exceptions[0])
+
+
+@pytest.mark.anyio
+async def test_the_failure_guard_does_not_swallow_cancellation(tmp_path):
+    """`except Exception` must not widen into `BaseException`.
+
+    Cancellation and `KeyboardInterrupt` are BaseException-only; catching them
+    here would turn an interrupt into a collected "task failure" and let the
+    remaining runners keep going, which is the opposite of what an interrupt
+    means. Asserting on the message proves which path raised: the guard's own
+    `ExceptionGroup` says "task(s) failed", anyio's does not.
+    """
+
+    class _Interrupt(BaseException):
+        pass
+
+    async def _interrupted() -> None:
+        raise _Interrupt("ctrl-c")
+
+    runner = MultiTaskRunner(result_dir=str(tmp_path / "cancelled"))
+    runner.add_task(_make_task("t"), config=make_config(tmp_path, result_dir=None))
+    # Injected at the seam the guard wraps: an instance attribute shadows the
+    # method, so `r.arun()` raises straight into `_run_wrapper`.
+    runner._runners[0].arun = _interrupted  # type: ignore[method-assign]
+
+    with pytest.raises(BaseExceptionGroup) as excinfo:
+        await runner.arun()
+
+    assert "task(s) failed" not in str(excinfo.value)
+    assert [type(e) for e in excinfo.value.exceptions] == [_Interrupt]

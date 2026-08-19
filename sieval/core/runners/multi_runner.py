@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 import anyio
+from loguru import logger
 
 from sieval.core.tasks.concurrency import prepare_limiters
 from sieval.core.tasks.context import TaskAction
@@ -118,13 +119,43 @@ class MultiTaskRunner:
 
         # 3. Run in Parallel
         results: dict[str, Any] = {}
+        failures: dict[str, Exception] = {}
 
         async def _run_wrapper(r: TaskRunner) -> None:
-            res = await r.arun()
-            results[r._task.name] = res
+            name = r._task.name
+            try:
+                results[name] = await r.arun()
+            except Exception as exc:
+                # ONE TASK'S CRASH MUST NOT CANCEL ITS SIBLINGS. Raising into the
+                # task group cancels every other runner mid-flight, so a single
+                # task that dies in `report()` -- a grader dividing by an empty
+                # denominator is the usual way -- used to cost the whole batch its
+                # results, including tasks that had already finished computing
+                # them. Hold the exception instead: the siblings run to completion
+                # and each writes its own `report.json`.
+                #
+                # `Exception`, deliberately not `BaseException`: cancellation
+                # (`asyncio.CancelledError`) and `KeyboardInterrupt` are
+                # BaseException-only, so an interrupt still tears the batch down
+                # through `TaskRunner.arun`'s own flush-and-save path.
+                logger.error("Task '{}' failed: {!r}", name, exc)
+                failures[name] = exc
 
         async with anyio.create_task_group() as tg:
             for runner in self._runners:
                 tg.start_soon(_run_wrapper, runner)
+
+        # Isolated, NOT swallowed. A partial dict returned as if it were the whole
+        # batch is the failure mode this guard would otherwise introduce: the
+        # caller's exit code would read success while a task is missing from the
+        # results. `ExceptionGroup` is the shape an uncaught failure already had
+        # (anyio's task group wraps even a single exception), so nothing
+        # downstream has to learn a new one.
+        if failures:
+            raise ExceptionGroup(
+                f"{len(failures)} of {len(self._runners)} task(s) failed: "
+                + ", ".join(sorted(failures)),
+                [failures[name] for name in sorted(failures)],
+            )
 
         return results
