@@ -382,17 +382,41 @@ class TEvalBeforeCallingZeroShotGenTask(
         return keys
 
     def _post_process(self, results_list: list[dict]) -> dict[str, float]:
+        """Macro-average each recorded axis over the samples behind it.
+
+        An axis with an empty denominator is OMITTED, not averaged: `np.mean([])`
+        is `nan`, `orjson` writes a nan as `null`, and a `null` in `report.json`
+        says nothing about whether the axis was measured. Omission is the
+        :mod:`sieval.core.tasks.metrics` convention, and it keeps "no sample to
+        average" out of the 0.0 that means "averaged, and it came out zero".
+
+        Both denominators are reported unconditionally, including as 0.0, because
+        an absent key cannot be read without the count it would have been divided
+        by -- a reader who has to tell "nothing to average" from "this build does
+        not emit that axis" is back to guessing. They are two different numbers:
+        `n_judged` backs the axes below, `n_parsed` backs the `*_parsed` triple,
+        and they come apart exactly when the model emitted replies the format
+        could not parse -- which empties the second while leaving the first whole.
+        """
         # list of dict to dict of list
-        results = {}
+        results: dict[str, float] = {"n_judged": float(len(results_list))}
         for key in self._metric_keys():
-            results[key] = np.mean([result[key] for result in results_list]) * 100
+            if results_list:
+                results[key] = float(
+                    np.mean([result[key] for result in results_list]) * 100
+                )
 
         # The *_parsed variants are reported in every mode, including the str modes
         # that never score args at all -- so read defensively rather than assuming
         # these axes are among the ones recorded.
         success_samples = [r for r in results_list if r.get("parse_rate", 0) == 1]
+        results["n_parsed"] = float(len(success_samples))
         for key in ("args_precision", "args_recall", "args_f1_score"):
-            results[f"{key}_parsed"] = (
-                np.mean([r.get(key, 0.0) for r in success_samples]) * 100
-            )
+            # Samples parsed but this mode never scored the axis is a MEASURED
+            # zero (`_evaluate` pre-seeds the three, and upstream averages them),
+            # so it stays 0.0; only an empty parsed subset omits the key.
+            if success_samples:
+                results[f"{key}_parsed"] = float(
+                    np.mean([r.get(key, 0.0) for r in success_samples]) * 100
+                )
         return results

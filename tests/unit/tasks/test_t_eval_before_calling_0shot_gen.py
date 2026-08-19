@@ -244,3 +244,68 @@ class TestReport:
         assert result["args_precision_parsed"] == 0.0
         assert result["args_recall_parsed"] == 0.0
         assert result["args_f1_score_parsed"] == 0.0
+
+    def test_no_judged_samples_omits_every_axis_instead_of_averaging_nothing(self):
+        """`np.mean([])` is nan, and a nan reaches report.json as `null`.
+
+        `null` cannot be told apart from a measured value that failed to
+        serialise, so an axis with nothing behind it is omitted and its
+        denominator reported instead.
+        """
+        result = asyncio.run(_task().report([], []))
+
+        for axis in ("name", "args_precision", "args_f1_score", "parse_rate"):
+            assert axis not in result
+        for axis in ("args_precision_parsed", "args_recall_parsed"):
+            assert axis not in result
+        assert result["n_judged"] == 0.0
+        assert result["n_parsed"] == 0.0
+        # The declarations survive the empty path (`.claude/rules/tasks.md`).
+        assert result["denominator_policy"] == "judged"
+
+    def test_zero_parseable_answers_omits_only_the_parsed_axes(self):
+        """The issue-20 shape: samples judged, not one of them parseable.
+
+        The macro axes were measured over those samples and are a real zero; the
+        `*_parsed` triple has an empty denominator and is not. Reporting the
+        second as 0.0 would claim the model scored zero precision on calls it
+        never successfully emitted.
+        """
+        task = _task()
+        finals = [
+            SimpleNamespace(
+                feedback_result={
+                    "metrics": {
+                        "name": 0.0,
+                        "args_precision": 0.0,
+                        "args_recall": 0.0,
+                        "args_f1_score": 0.0,
+                        "parse_rate": 0.0,
+                    }
+                }
+            )
+            for _ in range(5)
+        ]
+
+        result = asyncio.run(task.report(finals, []))
+
+        assert result["parse_rate"] == 0.0
+        assert result["args_precision"] == 0.0
+        assert result["n_judged"] == 5.0
+        assert result["n_parsed"] == 0.0
+        for axis in (
+            "args_precision_parsed",
+            "args_recall_parsed",
+            "args_f1_score_parsed",
+        ):
+            assert axis not in result
+
+    def test_every_report_path_is_strict_json(self):
+        """No path may emit a nan: `allow_nan=False` is the reader's contract."""
+        task = _task()
+        unparseable = SimpleNamespace(
+            feedback_result={"metrics": dict.fromkeys(task._metric_keys(), 0.0)}
+        )
+
+        for finals in ([], [unparseable], [unparseable, unparseable]):
+            json.dumps(asyncio.run(task.report(finals, [])), allow_nan=False)
