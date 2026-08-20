@@ -55,12 +55,14 @@ Grader is a REAL LLM supplied via the ``grader`` task arg on its own
 ``temperature=0.0``, ``top_p=1.0``, ``max_tokens=512``,
 ``stop=["[Evaluation End]"]``, ``max_model_len=4096``. Correctness depends on
 the grader endpoint's model version (not pinnable like a Hub revision) — pin
-it, and expect a stronger grader to move the column. Two upstream quirks the
-port inherits and records rather than repairs: the ``[Evaluation End]`` stop
-sequence cannot be assumed on an arbitrary chat endpoint (the parser truncates
-on the marker itself instead), and the rendered grader prompt contains a JSON
-example that parses as a perfect score, so a grader that quotes the template
-back reads high — see ``sieval.community.scitarc``. Each rollout persists the
+it, and expect a stronger grader to move the column. Two upstream assumptions a
+chat endpoint breaks, both handled in the parser rather than the prompt: the
+``[Evaluation End]`` stop sequence cannot be assumed on an arbitrary endpoint,
+so the parser truncates on the marker itself instead; and the rendered grader
+prompt carries a JSON example that would parse as a perfect score, so a grader
+quoting the template back would read high — the parser therefore reads only what
+follows the last ``[Evaluation Start]``, the boundary upstream's completion
+endpoint supplied for free. See ``sieval.community.scitarc``. Each rollout persists the
 grader's ternary ``score``, its ``grader_parsed`` flag and the grader's whole
 ``ModelOutput`` (``extra.grader_output``), which is the only durable evidence of
 a verdict a re-grade need not reproduce.
@@ -189,10 +191,14 @@ PARTIAL_SCORE = 0.5
             "identical over 2,000 randomised table sets; "
             "extract_answer_language over 4,000 replies; parse_response "
             "(score AND reasoning) over 29 hand-built replies plus 3,000 fuzzed "
-            "ones; normalize_text over 2,000. Exactly one divergence, "
-            'deliberate: on a reply parsing to {"score": null} upstream raises '
-            "TypeError out of float(None) and kills the batch, where this port "
-            "records the reply as unparsed and scores it 0.0. "
+            "ones; normalize_text over 2,000. Two deliberate divergences: on a "
+            'reply parsing to {"score": null} upstream raises TypeError out of '
+            "float(None) and kills the batch, where this port records the reply "
+            "as unparsed and scores it 0.0; and the reply is cut to the text "
+            "after the last [Evaluation Start] before parsing, which rebuilds "
+            "the boundary upstream's completion endpoint provided and is a "
+            "no-op on every reply upstream could produce (none carries that "
+            "marker). "
             "CHAT vs COMPLETION: upstream's generate.py is vLLM-only and calls "
             "LLM.generate(), which applies no chat template — but it cannot be "
             "the artifact behind Table 2, whose nine proprietary rows have no "
@@ -236,12 +242,16 @@ PARTIAL_SCORE = 0.5
             'max_tokens=512, stop=["[Evaluation End]"], max_model_len=4096) '
             "supplied via the `grader` task arg; scores depend on the grader "
             "endpoint's model version, so pin it. The rendered grader prompt "
-            "self-parses as 1.0 (its JSON example matches the parser's own "
-            "pattern, ahead of the [Evaluation End] truncation point) — "
-            "unreachable upstream, whose completion endpoint returns only the "
-            "continuation, but live for a chat grader that quotes the template "
-            "back; kept as-is and pinned by a test, with the grader's full "
-            "ModelOutput persisted so the case is auditable. "
+            "would otherwise self-parse as 1.0 (its JSON example matches the "
+            "parser's own pattern, ahead of the [Evaluation End] truncation "
+            "point, and Method 1 takes the FIRST brace-run, so an echoed "
+            "template outranks a real verdict following it) — unreachable "
+            "upstream, whose completion endpoint returns only the continuation, "
+            "but live for a chat grader that quotes the template back. Closed "
+            "at the prompt/reply boundary, not by retuning the score patterns, "
+            "and pinned by tests on the bare echo, the echo-then-verdict case "
+            "and the first-match ordering; the grader's full ModelOutput is "
+            "persisted so any such reply stays auditable. "
             "SAMPLING: upstream runs one rollout per question and publishes no "
             "repeat protocol; generation at temperature=0.1, top_p=0.95, "
             "max_tokens=2048, repetition_penalty=1.05 (model-layer, set via "

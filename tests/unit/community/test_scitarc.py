@@ -142,23 +142,45 @@ def test_partial_credit_is_not_correct():
     assert score != CORRECT_SCORE
 
 
-def test_rendered_grader_prompt_self_parses_as_a_perfect_score():
-    """PINNED, not endorsed: the prompt's own JSON example reads as 1.0.
+def test_echoed_grader_prompt_is_not_read_as_a_verdict():
+    """The template's own JSON example must not become the score.
 
     ``{"reasoning": "Brief explanation", "score": 1.0}`` sits ahead of the
     ``[Evaluation End]`` truncation point and matches the very pattern
-    :func:`parse_response` looks for. Upstream never trips on it — its
-    completion endpoint returns only the continuation, so the example is never
-    in the parsed text — but a chat grader that quotes the template back reads
-    high, and this is the only misread that inflates rather than deflates.
+    :func:`parse_response` looks for, so a chat grader that quotes the template
+    back would otherwise read as a perfect score — the one misread that
+    inflates rather than deflates. Upstream cannot reach it (its completion
+    endpoint returns only the continuation); the parser reconstructs that
+    boundary by cutting to the last ``[Evaluation Start]``.
 
-    The assertion exists so nobody "repairs" the parser without deciding what
-    to do about the prompt: tightening the regex here would silently change
-    every published-column comparison. If this test starts failing, the parser
-    diverged from upstream — check that first.
+    Nothing follows the marker in a bare echo, so there is no verdict to read
+    and the reply is a read failure — counted by ``n_grader_unparsed`` instead
+    of scoring a silent 1.0.
     """
     rendered = EVAL_PROMPT.format(question="q", ground_truth="g", prediction="p")
-    assert parse_response(rendered) == (1.0, "Brief explanation", True)
+    assert parse_response(rendered) == (0.0, NO_REASONING, False)
+
+
+def test_echoed_grader_prompt_does_not_outrank_the_real_verdict():
+    """An echo followed by a real grade must yield the grade, not the example."""
+    rendered = EVAL_PROMPT.format(question="q", ground_truth="g", prediction="p")
+    verdict = '{"reasoning": "missing a part", "score": 0.5}'
+    assert parse_response(f"{rendered}\n{verdict}\n[Evaluation End]") == (
+        0.5,
+        "missing a part",
+        True,
+    )
+
+
+def test_first_scoring_json_wins():
+    """Upstream's ``re.search`` takes the FIRST brace-run; a later one must not win.
+
+    Pinned because switching to the last match is the natural-looking "repair"
+    for the two echo cases above, and it would silently change every
+    published-column comparison. The echo is handled at the prompt/reply
+    boundary; the score patterns stay upstream's.
+    """
+    assert parse_response('{"score": 1.0} then {"score": 0.0}')[0] == 1.0
 
 
 def test_eval_prompt_renders_all_three_placeholders():

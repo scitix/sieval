@@ -42,15 +42,25 @@ Deviations from upstream (@ d96f4e7b):
 * It returns ``(score, reasoning, parsed)`` rather than upstream's dict, whose
   third key was the truncated reply. The caller persists the grader's whole
   ``ModelOutput`` instead, which subsumes it.
+* :func:`parse_response` reads only what follows the LAST ``[Evaluation Start]``
+  marker. Upstream's parser may assume the prompt is absent from the text it
+  reads, because its completion endpoint returns only the continuation; a chat
+  grader handed the same prompt may quote it back, and the template's own JSON
+  example then parses as a perfect ``1.0`` — ahead of, and therefore instead of,
+  any real verdict that follows it. Cutting at the marker the prompt ends with
+  reproduces that endpoint's boundary, so this is a no-op for every reply
+  upstream could have produced (none carries the marker) and recovers the
+  verdict from one it could not.
 
-**The rendered grader prompt parses as a perfect score.** Its format example,
-``{"reasoning": "Brief explanation", "score": 1.0}``, sits before the
-``[Evaluation End]`` truncation point and matches the very JSON pattern
-:func:`parse_response` looks for. Upstream never trips on this because it drives
-a completion endpoint that stops at ``[Evaluation End]`` and returns only what
-follows the prompt, so the example is never in the text being parsed. Kept as-is
-and pinned by a test — a grader that quotes the template back is the one reply
-shape that misreads high, and the parser is not where that gets fixed.
+**The rendered grader prompt would otherwise parse as a perfect score.** Its
+format example, ``{"reasoning": "Brief explanation", "score": 1.0}``, sits before
+the ``[Evaluation End]`` truncation point and matches the very JSON pattern
+:func:`parse_response` looks for; since Method 1 takes the FIRST brace-run, an
+echoed template outranks a genuine grade that follows it. This is the one reply
+shape that misreads *high*, so it is closed at the prompt/reply boundary (the
+deviation above) rather than by tightening the score patterns — those stay
+upstream's, byte for byte, because they are what the published column was
+computed with.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -207,12 +217,23 @@ def parse_response(response: str) -> tuple[float, str, bool]:
     so the ``0.0`` is a read failure rather than a verdict. The caller counts
     those as ``n_grader_unparsed`` and still scores them incorrect, which is
     what upstream's undifferentiated ``0.0`` does.
+
+    The reply is first cut to the text after the last ``[Evaluation Start]``,
+    which is where upstream's completion endpoint would have begun; see the
+    module docstring for why a chat grader makes that necessary.
     """
     raw_score = 0.0
     reasoning = ""
     parsed = False
 
     response = response.strip()
+    # Upstream's completion endpoint returns only the continuation, so its
+    # parser never sees the prompt. A chat grader can quote it back, and the
+    # template's JSON example would then read as 1.0 ahead of the real verdict
+    # — so cut to the continuation first. No reply upstream could produce
+    # carries this marker, so this leaves upstream's own inputs untouched.
+    if "[Evaluation Start]" in response:
+        response = response.rsplit("[Evaluation Start]", 1)[1].strip()
     if "[Evaluation End]" in response:
         response = response.split("[Evaluation End]")[0].strip()
 
