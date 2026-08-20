@@ -50,7 +50,13 @@ Deviations from upstream (@ d96f4e7b):
   any real verdict that follows it. Cutting at the marker the prompt ends with
   reproduces that endpoint's boundary, so this is a no-op for every reply
   upstream could have produced (none carries the marker) and recovers the
-  verdict from one it could not.
+  verdict from one it could not. Replayed over a stored 371-row run, the marker
+  turns out to be reachable but harmless in practice: 4 of 369 grader replies
+  opened by restating ``[Evaluation Start]`` and put their verdict after it, so
+  the cut keeps it, and **no verdict changed**. The shape that would have
+  inflated — the format example ahead of the verdict — did not occur there, but
+  a grader inclined to restate the tag at all is one prompt-following nudge
+  away from restating the example with it.
 
 **The rendered grader prompt would otherwise parse as a perfect score.** Its
 format example, ``{"reasoning": "Brief explanation", "score": 1.0}``, sits before
