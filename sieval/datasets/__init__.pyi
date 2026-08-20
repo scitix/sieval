@@ -177,6 +177,10 @@ from .scicode import (
     SciCodeDataset,
     SciCodeDatasetSample,
 )
+from .scitarc import (
+    SciTaRCDataset,
+    SciTaRCDatasetSample,
+)
 from .simpleqa_verified import (
     SimpleQAVerifiedDataset,
     SimpleQAVerifiedDatasetSample,
@@ -293,6 +297,8 @@ __all__ = [
     "SMT2025DatasetSample",
     "SciCodeDataset",
     "SciCodeDatasetSample",
+    "SciTaRCDataset",
+    "SciTaRCDatasetSample",
     "SimpleQAVerifiedDataset",
     "SimpleQAVerifiedDatasetSample",
     "SysBenchDataset",
