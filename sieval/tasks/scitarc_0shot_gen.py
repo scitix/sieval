@@ -465,6 +465,12 @@ class SciTaRCZeroShotGenTask(
             # changing the headline.
             "partial": rate(n_partial),
             "n": float(n),
+            # Rollouts the grader was actually CALLED on: `grader_skipped` ones
+            # excluded, unparsed replies included — so this is the denominator
+            # `n_grader_unparsed` is a rate over. The judged family splits three
+            # ways on this key, so it is spelled out rather than inferred:
+            # hle / sysbench count parsed replies only, simpleqa_verified /
+            # complex_constraints count every rollout in `finals`.
             "n_graded": float(n_graded),
             "fails": float(len(fails)),
             "n_grader_unparsed": float(n_grader_unparsed),
