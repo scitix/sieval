@@ -8,22 +8,22 @@ plan so planning can be scored apart from execution. The Hub repo exposes a
 single ``test`` split; this loader mirrors it as-is.
 
 Schema, measured over all 371 rows at the pinned revision: seven columns, all
-either strings or nested string lists. ``paper``, ``question`` and ``answer``
-are populated on every row; ``plan`` is null on exactly one, hence
-``str | None``. ``relevant_tables`` is non-empty everywhere, so no row prompts
-against a blank table block.
+strings or nested string lists. ``paper``, ``question`` and ``answer`` are
+populated on every row; ``plan`` is null on exactly one, hence ``str | None``.
+``relevant_tables`` is non-empty everywhere, so no row prompts against a blank
+table block.
 
 ``relevant_tables`` and ``tables`` are ``list[list[str]]`` — a list of tables,
-each a list of LaTeX source lines that already carry their own newlines. The
-inner lists are joined with nothing and the outer with a blank line
-(``sieval.community.scitarc.get_table_text``), which is why re-joining them
-with ``"\\n"`` would double every line break.
+each a list of LaTeX source lines that already carry their own newlines, joined
+inner-with-nothing and outer-with-a-blank-line by
+``sieval.community.scitarc.get_table_text``. Re-joining them with ``"\\n"``
+would double every line break.
 
-The heavy auxiliary columns are kept rather than dropped: ``fulltext`` (~50 KB
-per row) and ``tables`` (every table in the source paper, not just the ones the
-question needs) are what a future full-paper or table-retrieval reading would
-consume, and at 371 rows the whole split is under 14 MB. ``scitarc_0shot_gen``
-reads ``relevant_tables`` only, matching upstream's ``generate.py``.
+``fulltext`` (~50 KB per row) and ``tables`` (every table in the paper, not just
+the ones the question needs) are kept rather than dropped: they are what a
+future full-paper or table-retrieval reading would consume, and the whole split
+is under 14 MB. ``scitarc_0shot_gen`` reads ``relevant_tables`` only, matching
+upstream's ``generate.py``.
 
 Licensing is split: the data is CC-BY-NC-4.0 (non-commercial), while upstream's
 harness code — vendored in ``sieval.community.scitarc`` — is MIT.

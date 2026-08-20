@@ -4,19 +4,18 @@
 #     generate.py
 #   - EVAL_PROMPT (verbatim, `.strip()`ed as upstream's loader does):
 #     eval_prompt.txt, loaded by evaluate.py TableQAEvaluator.load_prompt
-#   - parse_response (verbatim but for the added `parsed` flag):
+#   - parse_response (upstream's ladder, plus the two deviations below):
 #     evaluate.py TableQAEvaluator.parse_response
 #   - normalize_text and the equality it feeds (verbatim): exact_match.py
 #
-# LICENSE: upstream's CODE is MIT, which is permissive and compatible with this
+# LICENSE: upstream's CODE is MIT, permissive and compatible with this
 # repository's Apache-2.0, so this file needs no per-file SPDX marker (contrast
-# `gsm_plus.py`, whose share-alike terms do). Recording how that is known,
-# because it is weaker than a LICENSE file: at the pinned commit the repo holds
-# nine files and none of them is a LICENSE/COPYING/NOTICE, the GitHub API
-# reports `"license": null`, and the sole statement is the README's badge pair —
-# "Code License: MIT" and "Data License: CC BY-NC 4.0". Only the code half is
-# relied on here; the CC-BY-NC data half governs `SciTaRCDataset`, which
-# declares it, and does not reach this module.
+# `gsm_plus.py`, whose share-alike terms do). How that is known, since it is
+# weaker than a LICENSE file: at the pinned commit the repo holds nine files,
+# none a LICENSE/COPYING/NOTICE, the GitHub API reports `"license": null`, and
+# the sole statement is the README's badge pair — "Code License: MIT" and "Data
+# License: CC BY-NC 4.0". Only the code half is relied on here; the CC-BY-NC
+# data half governs `SciTaRCDataset`, which declares it.
 """SciTaRC prompt + grading assets.
 
 SciTaRC (Wang et al., 2026, arXiv:2603.08910) is a 371-question expert-authored
@@ -42,31 +41,21 @@ Deviations from upstream (@ d96f4e7b):
 * It returns ``(score, reasoning, parsed)`` rather than upstream's dict, whose
   third key was the truncated reply. The caller persists the grader's whole
   ``ModelOutput`` instead, which subsumes it.
-* :func:`parse_response` reads only what follows the LAST ``[Evaluation Start]``
-  marker. Upstream's parser may assume the prompt is absent from the text it
-  reads, because its completion endpoint returns only the continuation; a chat
-  grader handed the same prompt may quote it back, and the template's own JSON
-  example then parses as a perfect ``1.0`` — ahead of, and therefore instead of,
-  any real verdict that follows it. Cutting at the marker the prompt ends with
-  reproduces that endpoint's boundary, so this is a no-op for every reply
-  upstream could have produced (none carries the marker) and recovers the
-  verdict from one it could not. Replayed over a stored 371-row run, the marker
-  turns out to be reachable but harmless in practice: 4 of 369 grader replies
-  opened by restating ``[Evaluation Start]`` and put their verdict after it, so
-  the cut keeps it, and **no verdict changed**. The shape that would have
-  inflated — the format example ahead of the verdict — did not occur there, but
-  a grader inclined to restate the tag at all is one prompt-following nudge
-  away from restating the example with it.
-
-**The rendered grader prompt would otherwise parse as a perfect score.** Its
-format example, ``{"reasoning": "Brief explanation", "score": 1.0}``, sits before
-the ``[Evaluation End]`` truncation point and matches the very JSON pattern
-:func:`parse_response` looks for; since Method 1 takes the FIRST brace-run, an
-echoed template outranks a genuine grade that follows it. This is the one reply
-shape that misreads *high*, so it is closed at the prompt/reply boundary (the
-deviation above) rather than by tightening the score patterns — those stay
-upstream's, byte for byte, because they are what the published column was
-computed with.
+* :func:`parse_response` reads only what follows the LAST ``[Evaluation Start]``.
+  Upstream's parser may assume the prompt is absent from the text it reads,
+  because its completion endpoint returns only the continuation. A chat grader
+  handed the same prompt can quote it back, and the template's format example,
+  ``{"reasoning": "Brief explanation", "score": 1.0}``, sits before the
+  ``[Evaluation End]`` truncation point and matches the very pattern Method 1
+  looks for — which takes the FIRST brace-run, so an echo outranks a genuine
+  grade that follows it. That is the one reply shape misreading *high*, so it is
+  closed at the boundary rather than by tightening the score patterns, which
+  stay upstream's byte for byte because they are what the published column was
+  computed with. A no-op on every reply upstream could produce (none carries the
+  marker). Replayed over a stored 371-row run it proves reachable but harmless:
+  4 of 369 replies restated ``[Evaluation Start]`` before their verdict, so the
+  cut keeps it, and **no verdict changed** — though a grader inclined to restate
+  the tag is one nudge from restating the example with it.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -233,11 +222,8 @@ def parse_response(response: str) -> tuple[float, str, bool]:
     parsed = False
 
     response = response.strip()
-    # Upstream's completion endpoint returns only the continuation, so its
-    # parser never sees the prompt. A chat grader can quote it back, and the
-    # template's JSON example would then read as 1.0 ahead of the real verdict
-    # — so cut to the continuation first. No reply upstream could produce
-    # carries this marker, so this leaves upstream's own inputs untouched.
+    # Cut to the continuation upstream's completion endpoint would have returned,
+    # so an echoed template cannot be read as a verdict (module docstring).
     if "[Evaluation Start]" in response:
         response = response.rsplit("[Evaluation Start]", 1)[1].strip()
     if "[Evaluation End]" in response:

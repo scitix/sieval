@@ -1,108 +1,89 @@
 """SciTaRC — 0-shot generative table QA, LLM-grader + exact-match scored.
 
-Generative port of SciTaRC (JHU-CLSP; Wang et al., COLM 2026). The model is
-handed the LaTeX source of the table(s) a question needs and answers in free
-text under an ``Answer:`` instruction; a separate **LLM grader** rates the
-extracted answer against the gold on upstream's ternary scale, which is
-binarised so only a full 1.0 counts. Headline metric is that accuracy, reported
-next to upstream's second column: a strict, case-sensitive exact match.
+Generative port of SciTaRC (JHU-CLSP; Wang et al., COLM 2026). The model gets
+the LaTeX source of the table(s) a question needs and answers in free text under
+an ``Answer:`` instruction; an **LLM grader** rates the extracted answer against
+the gold on upstream's ternary scale, binarised so only a full 1.0 counts. That
+accuracy is the headline, reported next to upstream's second column: a strict,
+case-sensitive exact match.
 
-Upstream's protocol is a grid — ``plan_mode`` (``none`` / ``auto`` / ``oracle``)
-x ``exec_mode`` (``language`` / ``code``). This task is the ``none`` x
-``language`` cell, which is the one behind upstream's zero-shot leaderboard
-(Table 2, N=371); the other five are deliberately not ported:
+Upstream's protocol is a grid — ``plan_mode`` (``none``/``auto``/``oracle``) x
+``exec_mode`` (``language``/``code``). This is the ``none`` x ``language`` cell,
+the one behind upstream's zero-shot leaderboard (Table 2, N=371). The other five
+are not ported:
 
 * **The two ``code`` cells are an execution-safety stop, not a scope call.**
-  Upstream's ``extract_answer_code`` ``exec``s model-authored Python in-process
-  with the real ``__builtins__``, no sandbox and no timeout, behind a bare
-  ``except:`` that turns any failure into an empty answer. sieval grades
-  synchronously on one shared event loop, so an unbounded ``exec`` stalls the
-  session rather than the sample. Reproducing it is out of the question; a
-  sandboxed reading is a separate task, not a hardening of this one, so this
-  file does not claim to cover the PoT rows of Table 2.
-* **The ``auto`` / ``oracle`` plan cells are upstream's Table 4 ablation**, run
-  over four models rather than the leaderboard. They are cheap to add later as
-  sibling tasks over the same dataset — the ``plan`` column and the pseudo-code
-  spec are both already in place — and are left out because nothing needs them
-  yet.
+  ``extract_answer_code`` ``exec``s model-authored Python in-process with the
+  real ``__builtins__``, no sandbox, no timeout, behind a bare ``except:``.
+  Grading is synchronous on one shared event loop, so an unbounded ``exec``
+  stalls the session, not the sample. A sandboxed reading is a separate task, so
+  Table 2's PoT rows are out of this file's reach.
+* **The ``auto``/``oracle`` plan cells are upstream's Table 4 ablation**, over
+  four models rather than the leaderboard. Cheap to add later as siblings — the
+  ``plan`` column and the pseudo-code spec are already in the dataset.
 
-**Upstream's published script cannot have produced most of Table 2, so this is
-a chat port on purpose.** ``generate.py`` is vLLM-only and calls
-``LLM.generate()``, which applies no chat template (``LLM.chat()`` is the entry
-point that does). Yet nine of Table 2's twenty-five rows are proprietary
-(GPT-5, Grok-4.1, Claude-Opus-4.5, Gemini-2.5-Flash, Kimi-K2/K2-Thinking,
-GPT-4o) and two of those vendors expose no completion endpoint at all; the repo
-holds nine files on one branch with no API path anywhere, and the paper reports
-no serving details (its only mention of an API is Appendix G's "Proprietary
-models are omitted because of API constraints on long prompts"). Several
-open-weight rows are equally unreachable that way — GPT-OSS-120B at 62.5 under
-harmony formatting, DeepSeek-V3.2-thinking at 73.6, the ``-Think`` checkpoints —
-since a reasoning model prompted without its template never opens its reasoning
-channel. So the shipped script is a partial artifact, and the chat reading is
-the one that can produce the published column. The prompt string itself is
-upstream's, byte for byte, sent as a **single user turn**: upstream bakes the
-"You are a helpful science assistant" persona into the same string as the table
-block, so splitting a system message out of it would change the rendered text.
+**Ported as chat, not completion, because upstream's script cannot have produced
+most of Table 2.** ``generate.py`` is vLLM-only and calls ``LLM.generate()``,
+not ``LLM.chat()``, so no chat template is applied. Yet nine of Table 2's 25
+rows are proprietary (GPT-5, Grok-4.1, Claude-Opus-4.5, Gemini-2.5-Flash,
+Kimi-K2/K2-Thinking, GPT-4o), two of those vendors expose no completion endpoint,
+and the repo holds no API path — the paper's only mention of one is Appendix G's
+"Proprietary models are omitted because of API constraints on long prompts".
+The harmony-format and ``-Think`` open-weight rows (GPT-OSS-120B 62.5,
+DeepSeek-V3.2-thinking 73.6) could not score as published without their
+templates either. The prompt string is upstream's byte for byte, sent as a
+**single user turn** — upstream bakes its persona into the same string as the
+table block, so splitting out a system message would change the rendered text.
 
-Decoding params are model-layer, set via ``models:`` / ``infer_args`` — never by
-this task. Upstream's ``generate.py`` samples at ``temperature=0.1``,
-``top_p=0.95``, ``max_tokens=2048``, ``repetition_penalty=1.05``, one rollout
-per question (no repeats — ``n=1`` is the protocol, not just this task's
-default).
+Decoding params are model-layer, via ``models:``/``infer_args`` — never this
+task. Upstream samples at ``temperature=0.1``, ``top_p=0.95``,
+``max_tokens=2048``, ``repetition_penalty=1.05``, one rollout per question
+(``n=1`` is the protocol, not just this task's default).
 
-Grader is a REAL LLM supplied via the ``grader`` task arg on its own
+Grader is a REAL LLM via the ``grader`` task arg on its own
 ``api_base``/``api_key``; upstream's is ``Llama-3.3-70B-Instruct`` at
 ``temperature=0.0``, ``top_p=1.0``, ``max_tokens=512``,
-``stop=["[Evaluation End]"]``, ``max_model_len=4096``. Correctness depends on
-the grader endpoint's model version (not pinnable like a Hub revision) — pin
-it, and expect a stronger grader to move the column. Two upstream assumptions a
-chat endpoint breaks, both handled in the parser rather than the prompt: the
-``[Evaluation End]`` stop sequence cannot be assumed on an arbitrary endpoint,
-so the parser truncates on the marker itself instead; and the rendered grader
-prompt carries a JSON example that would parse as a perfect score, so a grader
-quoting the template back would read high — the parser therefore reads only what
-follows the last ``[Evaluation Start]``, the boundary upstream's completion
-endpoint supplied for free. See ``sieval.community.scitarc``. Each rollout persists the
-grader's ternary ``score``, its ``grader_parsed`` flag and the grader's whole
-``ModelOutput`` (``extra.grader_output``), which is the only durable evidence of
-a verdict a re-grade need not reproduce.
+``stop=["[Evaluation End]"]``, ``max_model_len=4096``. Scores depend on the
+grader endpoint's model version (not pinnable like a Hub revision) — pin it, and
+expect a stronger grader to move the column. Two upstream assumptions a chat
+endpoint breaks are handled in the parser, not the prompt: the stop sequence
+cannot be assumed, so the parser truncates on the marker itself; and the
+prompt's JSON example would parse as a perfect score, so the parser reads only
+what follows the last ``[Evaluation Start]`` — see ``sieval.community.scitarc``.
+Each rollout persists the ternary ``score``, the ``grader_parsed`` flag and the
+grader's whole ``ModelOutput`` (``extra.grader_output``).
 
-An answer that extracts to nothing is scored 0.0 **without** a grader call,
-matching upstream's ``if item['prediction'].strip()`` filter; those rollouts
-carry ``grader_skipped`` and are counted by ``n_unextracted``, not by
+An answer extracting to nothing is scored 0.0 **without** a grader call, matching
+upstream's ``if item['prediction'].strip()`` filter; those rollouts carry
+``grader_skipped`` and are counted by ``n_unextracted``, not
 ``n_grader_unparsed``.
 
-Target: upstream Table 2 (LLM-Judge % / EM %, N=371) — e.g. GPT-5 76.8 / 22.1,
+Target: upstream Table 2 (LLM-Judge % / EM %, N=371) — GPT-5 76.8 / 22.1,
 DeepSeek-V3.2 non-thinking 69.3 / 11.6, Qwen2.5-72B-Instruct 42.0 / 4.9,
 Llama-3.3-70B-Instruct 34.5 / 5.1.
 
 **Measured** (2026-08-20; Llama-3.3-70B-Instruct as both candidate and grader —
-upstream's own grader model — via OpenRouter pinned to Crusoe bf16, upstream's
-sampling params, all 371 rows, ``fails=0``, ``n_grader_unparsed=0``):
-**34.77 accuracy / 19.68 exact match**.
+upstream's own — via OpenRouter pinned to Crusoe bf16, upstream's sampling
+params, all 371 rows, ``fails=0``, ``n_grader_unparsed=0``): **34.77 accuracy /
+19.68 exact match**, against the row's 34.5 / 5.1.
 
-The headline reproduces. +0.27pp against a paired sigma of 3.49pp for two
-single runs at this N is 0.08 sigma — indistinguishable, which is the most a
-single run can claim. The paper's independent statement that this model
-"collapse[s] on 65.5% of the benchmark" agrees too (100 − 34.77 = 65.23).
+The headline reproduces: +0.27pp against a paired sigma of 3.49pp is 0.08 sigma,
+indistinguishable. The paper's independent "collapse[s] on 65.5% of the
+benchmark" agrees (100 − 34.77 = 65.23).
 
-**The exact-match column does not reproduce, and that is the protocol showing
-through rather than a porting defect.** +14.58pp at 6.18 sigma is not sampling
-noise. Being grader-independent, EM invites reading as the protocol-neutral
-anchor of the two; it is the opposite. Upstream's extractor takes everything
-after an ``Answer:`` marker and falls back to the WHOLE reply when there is
-none, so EM measures whether the answer got *formatted* at least as much as
-whether it was right — and formatting is exactly what a chat template governs.
-Under this port the candidate emitted the marker on 97.0% of rollouts
-(extracted answers: median 8 characters, against a 21.5-character mean gold),
-which is what lets EM fire at all; a template-free completion call is the
-reading that yields upstream's near-zero column. Table 2's own shape
-corroborates it — the rows at ~0 EM are open-weight (Llama-3.1-8B 0.0,
-Qwen-3-8B 0.0, GPT-OSS-120B 0.3, Gemma-3-27B 0.8) while the rows that score
-(Grok-4 34.0, DeepSeek-V3.2-thinking 32.1, GPT-5 22.1) are the API models that
-could only have gone through chat. Compare this task's headline against Table
-2's LLM-Judge column; read its ``exact_match`` as this task's own measurement,
-not as that table's EM.
+**The exact-match column does not, and that is the protocol showing through, not
+a porting defect.** +14.58pp at 6.18 sigma is not sampling noise. EM is
+grader-independent but *not* protocol-independent: upstream's extractor falls
+back to the WHOLE reply when no ``Answer:`` marker is present, so it scores
+whether the answer got *formatted* as much as whether it was right — and
+formatting is what a chat template governs. This port emitted the marker on
+97.0% of rollouts (median extracted answer 8 chars vs a 21.5-char mean gold),
+which is what lets EM fire at all; a template-free completion call is what
+yields upstream's near-zero column. Table 2's shape agrees: its ~0-EM rows are
+open-weight (Llama-3.1-8B 0.0, Qwen-3-8B 0.0, GPT-OSS-120B 0.3, Gemma-3-27B 0.8)
+while the rows that score (Grok-4 34.0, DeepSeek-V3.2-thinking 32.1, GPT-5 22.1)
+are API models that had to use chat. Compare the headline against Table 2's
+LLM-Judge column; read ``exact_match`` as this task's own measurement.
 
 References:
 
@@ -181,28 +162,33 @@ PARTIAL_SCORE = 0.5
         notes=(
             "Generative port of SciTaRC (JHU-CLSP), upstream's plan_mode=none x "
             "exec_mode=language cell — the protocol behind its zero-shot "
-            "leaderboard (Table 2, N=371). The prompt, the `Answer:` extractor, "
-            "the grader prompt, the grader-reply parser and the exact-match "
-            "normaliser are vendored in sieval.community.scitarc and were "
-            "checked against upstream by executing upstream's own functions "
-            "(lifted by AST, since generate.py imports vllm at module scope) on "
-            "shared inputs: EVAL_PROMPT byte-identical to eval_prompt.txt as "
-            "loaded (.strip()ed); create_language_prompt/get_table_text "
-            "identical over 2,000 randomised table sets; "
-            "extract_answer_language over 4,000 replies; parse_response "
-            "(score AND reasoning) over 29 hand-built replies plus 3,000 fuzzed "
-            "ones; normalize_text over 2,000. Two deliberate divergences: on a "
-            'reply parsing to {"score": null} upstream raises TypeError out of '
-            "float(None) and kills the batch, where this port records the reply "
-            "as unparsed and scores it 0.0; and the reply is cut to the text "
-            "after the last [Evaluation Start] before parsing, which rebuilds "
-            "the boundary upstream's completion endpoint provided and is a "
-            "no-op on every reply upstream could produce (none carries that "
-            "marker). Score impact of the second, replayed over the stored "
-            "371-row run below: 0.00pp — the marker appears in 4 of 369 grader "
-            "replies, every one with its verdict after it, and 0 verdicts "
-            "change (34.77 either way). "
-            "CHAT vs COMPLETION: upstream's generate.py is vLLM-only and calls "
+            "leaderboard (Table 2, N=371). Prompt, `Answer:` extractor, grader "
+            "prompt, grader-reply parser and exact-match normaliser are "
+            "vendored in sieval.community.scitarc and checked by executing "
+            "upstream's own functions (AST-lifted, since generate.py imports "
+            "vllm at module scope): EVAL_PROMPT byte-identical to "
+            "eval_prompt.txt as loaded (.strip()ed); "
+            "create_language_prompt/get_table_text over 2,000 randomised table "
+            "sets; extract_answer_language over 4,000 replies; parse_response "
+            "(score AND reasoning) over 29 hand-built plus 3,000 fuzzed; "
+            "normalize_text over 2,000. "
+            'TWO DELIBERATE DIVERGENCES. (1) On a reply parsing to {"score": '
+            "null} upstream raises TypeError out of float(None) and kills the "
+            "batch; this port records it unparsed and scores 0.0. (2) The reply "
+            "is cut to the text after the last [Evaluation Start] before "
+            "parsing. Upstream's completion endpoint returns only the "
+            "continuation, so its parser never sees the prompt; a chat grader "
+            "can quote the template back, and the prompt's JSON example — ahead "
+            "of the [Evaluation End] truncation point, and Method 1 takes the "
+            "FIRST brace-run — would then outrank a real verdict following it. "
+            "The cut rebuilds that boundary rather than retuning the score "
+            "patterns, and is a no-op on every reply upstream could produce. "
+            "Score impact, replayed over the stored run below: 0.00pp — the "
+            "marker appears in 4 of 369 grader replies, every one with its "
+            "verdict after it, 0 verdicts change. Pinned by tests on the bare "
+            "echo, echo-then-verdict and first-match ordering; the grader's "
+            "full ModelOutput is persisted so such replies stay auditable. "
+            "CHAT vs COMPLETION: generate.py is vLLM-only and calls "
             "LLM.generate(), which applies no chat template — but it cannot be "
             "the artifact behind Table 2, whose nine proprietary rows have no "
             "completion endpoint to call (the repo has no API path; the paper "
@@ -213,56 +199,39 @@ PARTIAL_SCORE = 0.5
             "NOT PORTED: the two exec_mode=code cells (upstream execs "
             "model-authored Python in-process with real __builtins__, no "
             "sandbox, no timeout, behind a bare except — an execution-safety "
-            "stop, so the PoT rows of Table 2 are out of this task's reach) and "
-            "the plan_mode=auto/oracle cells (Table 4's four-model ablation). "
+            "stop, so Table 2's PoT rows are out of reach) and "
+            "plan_mode=auto/oracle (Table 4's four-model ablation). "
             "GRADING: upstream's ternary 1.0/0.5/0.0 binarised so only 1.0 is "
-            "correct, matching its summary; an answer extracting to nothing is "
-            "scored 0.0 with no grader call, as upstream's non-empty filter "
+            "correct, matching its summary; an answer extracting to nothing "
+            "scores 0.0 with no grader call, as upstream's non-empty filter "
             "does. Exact match is strict and CASE-SENSITIVE (upstream leaves "
-            "the .lower() commented out), which is part of why its published EM "
-            "column runs far below the grader column. "
+            "the .lower() commented out). Grader is a REAL LLM via the `grader` "
+            "task arg (upstream: Llama-3.3-70B-Instruct, temperature=0.0, "
+            'top_p=1.0, max_tokens=512, stop=["[Evaluation End]"], '
+            "max_model_len=4096); scores depend on the grader endpoint's model "
+            "version, so pin it. "
+            "SAMPLING: one rollout per question, no published repeat protocol; "
+            "generation at temperature=0.1, top_p=0.95, max_tokens=2048, "
+            "repetition_penalty=1.05 (model-layer, via models:/infer_args). "
             "VALIDATION: Llama-3.3-70B-Instruct scored 34.77 accuracy / 19.68 "
-            "exact match (2026-08-20, all 371 rows, fails=0, "
-            "n_grader_unparsed=0, n_unextracted=2, n_truncated=5 at upstream's "
-            "own max_tokens=2048; grader was upstream's own "
-            "Llama-3.3-70B-Instruct, OpenRouter pinned to Crusoe bf16 to match "
-            "upstream's dtype=\"bfloat16\") vs the Table 2 row's 34.5 / 5.1. "
-            "The headline is 0.08 sigma off (+0.27pp against a paired sigma of "
-            "3.49pp) — indistinguishable. EM is +14.58pp at 6.18 sigma, a real "
-            "difference and the expected one: EM is grader-independent but NOT "
-            "protocol-independent, because upstream's extractor falls back to "
-            "the whole reply absent an `Answer:` marker, so it scores "
-            "formatting as much as correctness and formatting is what the chat "
-            "template governs. This port emitted the marker on 97.0% of "
-            "rollouts (median extracted answer 8 chars vs 21.5-char mean gold); "
-            "a template-free completion call is what produces upstream's "
-            "near-zero open-weight EM column, whose shape corroborates it (the "
-            "~0 rows are open-weight, the scoring rows are API models that had "
-            "to use chat). Compare the headline against Table 2's LLM-Judge "
-            "column; read exact_match as this task's own measurement. "
-            "REPRODUCIBILITY: grader is a REAL LLM (upstream: "
-            "Llama-3.3-70B-Instruct, temperature=0.0, top_p=1.0, "
-            'max_tokens=512, stop=["[Evaluation End]"], max_model_len=4096) '
-            "supplied via the `grader` task arg; scores depend on the grader "
-            "endpoint's model version, so pin it. The rendered grader prompt "
-            "would otherwise self-parse as 1.0 (its JSON example matches the "
-            "parser's own pattern, ahead of the [Evaluation End] truncation "
-            "point, and Method 1 takes the FIRST brace-run, so an echoed "
-            "template outranks a real verdict following it) — unreachable "
-            "upstream, whose completion endpoint returns only the continuation, "
-            "but live for a chat grader that quotes the template back. Closed "
-            "at the prompt/reply boundary, not by retuning the score patterns, "
-            "and pinned by tests on the bare echo, the echo-then-verdict case "
-            "and the first-match ordering; the grader's full ModelOutput is "
-            "persisted so any such reply stays auditable. "
-            "SAMPLING: upstream runs one rollout per question and publishes no "
-            "repeat protocol; generation at temperature=0.1, top_p=0.95, "
-            "max_tokens=2048, repetition_penalty=1.05 (model-layer, set via "
-            "models:/infer_args). "
-            "status=stable on the headline: parity-checked against upstream's "
-            "code and reproducing its published LLM-Judge column within noise. "
-            "The one stated limit is the exact-match column above, which the "
-            "chat reading cannot reproduce by construction."
+            "exact match vs the Table 2 row's 34.5 / 5.1 (2026-08-20, all 371 "
+            "rows, fails=0, n_grader_unparsed=0, n_unextracted=2, "
+            "n_truncated=5 at upstream's own max_tokens=2048; grader was "
+            "upstream's own Llama-3.3-70B-Instruct, OpenRouter pinned to "
+            'Crusoe bf16 to match dtype="bfloat16"). The headline is 0.08 sigma '
+            "off (+0.27pp against a paired sigma of 3.49pp) — indistinguishable. "
+            "EM is +14.58pp at 6.18 sigma, real and expected: EM is "
+            "grader-independent but NOT protocol-independent, because "
+            "upstream's extractor falls back to the whole reply absent an "
+            "`Answer:` marker, so it scores formatting as much as correctness "
+            "and formatting is what the chat template governs. This port "
+            "emitted the marker on 97.0% of rollouts (median extracted answer "
+            "8 chars vs 21.5-char mean gold); a template-free completion call "
+            "is what produces upstream's near-zero open-weight EM column, "
+            "whose shape corroborates it. Compare the headline against Table "
+            "2's LLM-Judge column; read exact_match as this task's own "
+            "measurement. status=stable on the headline, with that EM column "
+            "as its one stated limit."
         ),
     ),
 )
@@ -468,11 +437,10 @@ class SciTaRCZeroShotGenTask(
             # changing the headline.
             "partial": rate(n_partial),
             "n": float(n),
-            # Rollouts the grader was actually CALLED on: `grader_skipped` ones
-            # excluded, unparsed replies included — so this is the denominator
-            # `n_grader_unparsed` is a rate over. The judged family splits three
-            # ways on this key, so it is spelled out rather than inferred:
-            # hle / sysbench count parsed replies only, simpleqa_verified /
+            # Rollouts the grader was CALLED on: `grader_skipped` excluded,
+            # unparsed included — the denominator `n_grader_unparsed` is a rate
+            # over. Spelled out because the judged family splits three ways:
+            # hle/sysbench count parsed replies only, simpleqa_verified/
             # complex_constraints count every rollout in `finals`.
             "n_graded": float(n_graded),
             "fails": float(len(fails)),
