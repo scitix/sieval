@@ -7,6 +7,16 @@
 #   - parse_response (verbatim but for the added `parsed` flag):
 #     evaluate.py TableQAEvaluator.parse_response
 #   - normalize_text and the equality it feeds (verbatim): exact_match.py
+#
+# LICENSE: upstream's CODE is MIT, which is permissive and compatible with this
+# repository's Apache-2.0, so this file needs no per-file SPDX marker (contrast
+# `gsm_plus.py`, whose share-alike terms do). Recording how that is known,
+# because it is weaker than a LICENSE file: at the pinned commit the repo holds
+# nine files and none of them is a LICENSE/COPYING/NOTICE, the GitHub API
+# reports `"license": null`, and the sole statement is the README's badge pair —
+# "Code License: MIT" and "Data License: CC BY-NC 4.0". Only the code half is
+# relied on here; the CC-BY-NC data half governs `SciTaRCDataset`, which
+# declares it, and does not reach this module.
 """SciTaRC prompt + grading assets.
 
 SciTaRC (Wang et al., 2026, arXiv:2603.08910) is a 371-question expert-authored
