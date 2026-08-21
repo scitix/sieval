@@ -23,6 +23,7 @@ from sieval.cli.resolution import (
     resolve_class,
     resolve_config_model_types,
     resolve_key_function,
+    validate_model_type_dialect,
 )
 from sieval.core.models.requirements import (
     AggregatedTaskRequirements,
@@ -306,6 +307,36 @@ class TestDeriveModelType:
         assert "completion_task" in str(exc.value)
 
 
+class TestValidateModelTypeDialect:
+    @pytest.mark.parametrize(
+        ("model_type", "dialect_id"),
+        [
+            ("chat", "openai_chat"),
+            ("chat", "openai_responses"),
+            ("gen", "openai_completions"),
+            ("gen", "sglang_legacy"),
+        ],
+    )
+    def test_matching_input_contract_is_accepted(self, model_type, dialect_id):
+        validate_model_type_dialect("m", model_type, dialect_id)
+
+    @pytest.mark.parametrize(
+        ("model_type", "dialect_id", "expected_input"),
+        [
+            ("gen", "openai_responses", "completion input"),
+            ("chat", "openai_completions", "chat input"),
+        ],
+    )
+    def test_conflicting_input_contract_fails_loudly(
+        self, model_type, dialect_id, expected_input
+    ):
+        with pytest.raises(
+            ValueError,
+            match=rf"legacy type.*{expected_input}.*dialect.*must agree",
+        ):
+            validate_model_type_dialect("m", model_type, dialect_id)
+
+
 class TestResolveConfigModelTypes:
     """The YAML adapter invokes requirement hooks and delegates kind choice."""
 
@@ -365,6 +396,30 @@ class TestResolveConfigModelTypes:
                 ),
             )
 
+    class NoInputTask:
+        @classmethod
+        def model_requirements_for(cls, context):
+            return (
+                TaskModelRequirement(
+                    role="candidate",
+                    binding=context.model_bindings["candidate"],
+                    requires=TaskRequirements(),
+                    source_task="no_input",
+                ),
+            )
+
+    class ChatTask:
+        @classmethod
+        def model_requirements_for(cls, context):
+            return (
+                TaskModelRequirement(
+                    role="candidate",
+                    binding=context.model_bindings["candidate"],
+                    requires=TaskRequirements(input=InputKind.CHAT),
+                    source_task="chat",
+                ),
+            )
+
     def test_hook_evidence_flows_through_derived_model_root(self):
         config = {
             "models": {
@@ -393,6 +448,72 @@ class TestResolveConfigModelTypes:
                 return_value=self.MisleadingCompletionTask,
             ),
             pytest.raises(ValueError, match="checked assertion"),
+        ):
+            resolve_config_model_types(config)
+
+    def test_explicit_type_cannot_conflict_with_dialect_input_contract(self):
+        config = {
+            "models": {
+                "m": {
+                    "name": "org/model",
+                    "type": "gen",
+                    "dialect": "openai_responses",
+                }
+            },
+            "tasks": {"task": {"model": "m", "class": "fake.Task"}},
+        }
+        with (
+            patch(
+                "sieval.cli.resolution.resolve_task_class",
+                return_value=self.NoInputTask,
+            ),
+            pytest.raises(
+                ValueError,
+                match=r"legacy type 'gen'.*openai_responses.*must agree",
+            ),
+        ):
+            resolve_config_model_types(config)
+
+    def test_explicit_null_dialect_is_not_treated_as_omitted(self):
+        config = {
+            "models": {
+                "m": {
+                    "name": "org/model",
+                    "type": "chat",
+                    "dialect": None,
+                }
+            },
+            "tasks": {"task": {"model": "m", "class": "fake.Task"}},
+        }
+        with (
+            patch(
+                "sieval.cli.resolution.resolve_task_class",
+                return_value=self.NoInputTask,
+            ),
+            pytest.raises(ValueError, match=r"m.*dialect must be a non-empty string"),
+        ):
+            resolve_config_model_types(config)
+
+    def test_each_derived_dialect_must_match_the_shared_root_type(self):
+        config = {
+            "models": {
+                "base": {"name": "org/model"},
+                "completion_view": {
+                    "base": "base",
+                    "dialect": "openai_completions",
+                },
+            },
+            "tasks": {"task": {"model": "base", "class": "fake.ChatTask"}},
+        }
+        with (
+            patch(
+                "sieval.cli.resolution.resolve_task_class",
+                return_value=self.ChatTask,
+            ),
+            pytest.raises(
+                ValueError,
+                match=r"completion_view.*legacy type 'chat'.*openai_completions",
+            ),
         ):
             resolve_config_model_types(config)
 
@@ -832,6 +953,18 @@ class TestNormalizeInlineModelBinding:
         with pytest.raises(ValueError, match="sglang_legacy"):
             normalize_inline_model_binding(
                 "t", "grader", self._config(dialect="sglang_legacy")
+            )
+
+    @pytest.mark.parametrize("engine", [None, "", 7])
+    def test_invalid_engine_is_rejected(self, engine):
+        with pytest.raises(TypeError, match="engine must be a non-empty string"):
+            normalize_inline_model_binding("t", "grader", self._config(engine=engine))
+
+    @pytest.mark.parametrize("service_role", [None, "", 7])
+    def test_invalid_service_role_is_rejected(self, service_role):
+        with pytest.raises(ValueError, match="service_role must be a non-empty string"):
+            normalize_inline_model_binding(
+                "t", "grader", self._config(service_role=service_role)
             )
 
     def test_credentials_are_kept_out_of_the_stored_config(self):

@@ -117,6 +117,8 @@ def _input_leaves(req: Request) -> dict[str, object]:
     # Branch-sensitive optional fields need their own leaf so a dialect must
     # explicitly consume or reject them instead of hiding a partial drop.
     for message in req.input.messages:
+        if message.name is not None:
+            result.setdefault("input.chat.message.name", message.name)
         for part in message.content:
             path = part_paths.get(type(part))
             if path is None:
@@ -126,6 +128,8 @@ def _input_leaves(req: Request) -> dict[str, object]:
             result.setdefault(path, True)
             if isinstance(part, ImagePart) and part.media_type is not None:
                 result.setdefault("input.modality.image.media_type", part.media_type)
+            if isinstance(part, ImagePart) and part.detail is not None:
+                result.setdefault("input.modality.image.detail", part.detail)
             if isinstance(part, ToolResultPart) and part.is_error:
                 result.setdefault("input.modality.tool_result.is_error", True)
     return result
@@ -252,6 +256,7 @@ def request_capability(path: str) -> str | None:
     exact = {
         "input.completion.suffix": "fim",
         "input.modality.image": "multimodal_input",
+        "input.modality.image.detail": "multimodal_input",
         "input.modality.image.media_type": "multimodal_input",
         "scoring.input_scoring": "input_scoring",
         "scoring.sampled_logprobs": "sampled_logprobs",

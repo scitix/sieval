@@ -189,9 +189,8 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                     f"Model '{name}': 'service_role' must be a non-empty string"
                 )
 
-        # `engine` selects the gen backend (mirrors _setup_models' guards; the
-        # engine-on-non-gen check there uses the *inferred* type, so here we
-        # can only flag the statically-decidable explicit `type: chat` case).
+        # `engine` is an optional identity assertion on the root deployment.
+        # It is independent of the request dialect and legacy model type.
         if "engine" in mcfg:
             engine = mcfg.get("engine")
             if has_base:
@@ -199,13 +198,9 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                     f"Model '{name}': derived models cannot set 'engine'; it is "
                     "inherited from the base model. Set it on the base instead."
                 )
-            elif engine not in ("vllm", "sglang"):
+            elif not isinstance(engine, str) or not engine:
                 result.errors.append(
-                    f"Model '{name}': engine must be 'vllm' or 'sglang', got {engine!r}"
-                )
-            elif model_type == "chat":
-                result.errors.append(
-                    f"Model '{name}': 'engine' is only valid for type: gen, not 'chat'"
+                    f"Model '{name}': 'engine' must be a non-empty string"
                 )
 
         if has_base:
@@ -293,20 +288,6 @@ def _validate_capabilities(cfg: dict, result: ValidationResult) -> None:
                 )
                 continue
             dialect_id = raw_dialect
-
-        # The one-cycle SGLang path intentionally has no RuntimeBindingPlan or
-        # capability binder.  Existing configs may keep using it, but new
-        # capability declarations must wait for the native adapter.
-        if (
-            not has_dialect
-            and "capabilities" in mcfg
-            and mcfg.get("engine") == "sglang"
-        ):
-            result.errors.append(
-                f"Model '{name}': 'capabilities' cannot be declared on the "
-                "legacy SGLang bypass; select an active canonical dialect"
-            )
-            continue
 
         if dialect_id is not None:
             try:

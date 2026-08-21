@@ -58,6 +58,19 @@ class TestCapabilities:
 
 
 class TestArun:
+    def test_handler_transport_uses_registered_connection_family(self):
+        from tests.conftest import HandlerTransport
+
+        async def handler(req: Request) -> Response:
+            del req
+            return Response(texts=("ok",))
+
+        native = HandlerTransport(handler, "anthropic_messages")
+        assert native.connection_family == "async_http_json"
+
+        with pytest.raises(ValueError, match="unknown dialect"):
+            HandlerTransport(handler, "unregistered")
+
     @pytest.mark.anyio
     async def test_arun_requires_request_instance(self):
         model = GenModel(model="g", api_key="k")

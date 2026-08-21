@@ -48,6 +48,7 @@ from sieval.cli.resolution import (
     resolve_dataset_class,
     resolve_key_function,
     resolve_task_class,
+    validate_model_type_dialect,
     validate_named_config_map,
     validate_task_config_args,
     validate_task_model_requirements,
@@ -514,7 +515,7 @@ class _InferMetaDict(TypedDict, total=False):
 class ModelConfigDict(TypedDict, total=False):
     name: str  # For base models
     type: Literal["chat", "gen"]  # "chat" or "gen" (default: "chat")
-    engine: Literal["vllm", "sglang"]  # gen backend (default: "vllm")
+    engine: str  # Optional remote/managed engine identity assertion
     dialect: str  # Canonical provider wire dialect (RFC #25)
     service_role: str  # Explicit route when a deployment has multiple endpoints
     capabilities: dict[str, object]  # Typed/normalized by cli.validation
@@ -1558,20 +1559,21 @@ class EvalSession:
 
         chain = self._model_config_chain(binding.config_name, models_cfg)
         _, root_config = chain[0]
+        dialect_declared = any("dialect" in config for _, config in chain)
         explicit_dialect = self._merged_model_value(chain, "dialect")
-        if explicit_dialect is not None and (
+        if dialect_declared and (
             not isinstance(explicit_dialect, str) or not explicit_dialect
         ):
             raise ValueError(
                 f"Model '{binding.config_name}' dialect must be a non-empty string"
             )
 
+        # Only the explicit model-level assertion activates the one-cycle
+        # SGLang compatibility shim.  A managed DeploymentPlan's engine is a
+        # serving fact, not a dialect selector.
         root_engine = root_config.get("engine")
-        if root_engine is None:
-            infer_config = root_config.get("infer")
-            if isinstance(infer_config, Mapping):
-                root_engine = infer_config.get("backend")
-        if explicit_dialect is not None:
+        if dialect_declared:
+            assert isinstance(explicit_dialect, str)
             dialect_id = explicit_dialect
         elif root_engine == "sglang" and model_type == "gen":
             dialect_id = (
@@ -2220,12 +2222,15 @@ class EvalSession:
                     f"External binding '{binding.binding_id}' has no runtime plan"
                 )
             service_role: object | None = model.runtime_plan.resolved_route.service_role
+            service_role_declared = service_role is not None
         elif isinstance(binding, InlineModelBinding):
+            service_role_declared = "service_role" in binding.config
             service_role = binding.config.get("service_role")
         else:
             chain = self._model_config_chain(binding.config_name, models_cfg)
+            service_role_declared = any("service_role" in config for _, config in chain)
             service_role = self._merged_model_value(chain, "service_role")
-        if service_role is None:
+        if not service_role_declared:
             return RouteIntent()
         if not isinstance(service_role, str) or not service_role:
             raise ValueError("model service_role must be a non-empty string")
@@ -2290,38 +2295,47 @@ class EvalSession:
             )
 
         if isinstance(binding, InlineModelBinding):
+            engine_declared = "engine" in binding.config
             raw_engine = binding.config.get("engine")
-            if raw_engine is not None and (
-                not isinstance(raw_engine, str) or not raw_engine
-            ):
+            if engine_declared and (not isinstance(raw_engine, str) or not raw_engine):
                 raise TypeError(
                     f"Inline binding '{binding.binding_id}' engine must be a "
                     "non-empty string"
                 )
-            engine_id = raw_engine or "unknown"
+            if binding.dialect_id is None:
+                raise ValueError(f"Model binding '{binding.binding_id}' has no dialect")
+            self._external_endpoint(binding.config, binding.dialect_id)
+            engine_id = raw_engine if engine_declared else "unknown"
+            assert isinstance(engine_id, str)
             return DeploymentReconcileInput(
                 root_deployment_key=binding.root_deployment_key,
-                engine_id=engine_id or "unknown",
+                engine_id=engine_id,
             )
 
         chain = self._model_config_chain(binding.config_name, models_cfg)
         root_name, root_config = chain[0]
         raw_plan = (self._infer_plans or {}).get(root_name)
         projection = self._plan_projection(raw_plan) if raw_plan is not None else None
+        engine_declared = "engine" in root_config
+        raw_engine = root_config.get("engine")
+        if engine_declared and (not isinstance(raw_engine, str) or not raw_engine):
+            raise TypeError(f"Model '{root_name}' engine must be a non-empty string")
         if projection is not None:
+            if engine_declared and raw_engine != projection.engine_id:
+                raise ValueError(
+                    f"Model '{root_name}' engine assertion {raw_engine!r} does not "
+                    f"match normalized deployment engine {projection.engine_id!r}"
+                )
             engine_id = projection.engine_id
         else:
-            raw_engine = root_config.get("engine")
-            infer_config = root_config.get("infer")
-            if raw_engine is None and isinstance(infer_config, Mapping):
-                raw_engine = infer_config.get("backend")
-            if raw_engine is not None and (
-                not isinstance(raw_engine, str) or not raw_engine
-            ):
-                raise TypeError(
-                    f"Model '{root_name}' engine/backend must be a non-empty string"
-                )
-            engine_id = raw_engine or "unknown"
+            engine_id = raw_engine if engine_declared else "unknown"
+            assert isinstance(engine_id, str)
+            if root_name not in self._realized_deployments:
+                if binding.dialect_id is None:
+                    raise ValueError(
+                        f"Model binding '{binding.binding_id}' has no dialect"
+                    )
+                self._external_endpoint(root_config, binding.dialect_id)
         return DeploymentReconcileInput(
             root_deployment_key=binding.root_deployment_key,
             engine_id=engine_id,
@@ -2423,9 +2437,16 @@ class EvalSession:
             model_type = derive_model_type(root_name, explicit_type, root_requirements)
             model_types_by_root[root_key] = model_type
             for binding in root_bindings:
-                finalized_named[binding.binding_id] = self._finalize_named_binding(
+                finalized = self._finalize_named_binding(
                     binding, model_type, models_cfg
                 )
+                assert finalized.dialect_id is not None
+                validate_model_type_dialect(
+                    binding.config_name,
+                    model_type,
+                    finalized.dialect_id,
+                )
+                finalized_named[binding.binding_id] = finalized
 
         def finalized_binding(
             binding: NormalizedModelBinding,
@@ -2796,18 +2817,32 @@ class EvalSession:
         return None
 
     @staticmethod
-    def _external_endpoint(config: Mapping[str, object]) -> str:
-        """Resolve the endpoint the legacy OpenAI constructor would use."""
+    def _external_endpoint(config: Mapping[str, object], dialect_id: str) -> str:
+        """Resolve one external endpoint without crossing protocol families."""
 
         endpoint = config.get("api_base")
         args = config.get("args")
         if endpoint is None and isinstance(args, Mapping):
             endpoint = cast(Mapping[str, object], args).get("api_base")
         if endpoint is None:
+            connection_family = get_dialect_spec(dialect_id).connection_family
+            if connection_family != "openai_sdk":
+                raise ValueError(
+                    f"Dialect {dialect_id!r} uses connection family "
+                    f"{connection_family!r} and requires an explicit api_base "
+                    "for an external deployment"
+                )
             endpoint = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         if not isinstance(endpoint, str) or not endpoint:
-            raise ValueError("OpenAI api_base must be a non-empty string")
-        return endpoint.rstrip("/")
+            raise ValueError(
+                f"api_base for dialect {dialect_id!r} must be a non-empty string"
+            )
+        normalized = endpoint.rstrip("/")
+        if not normalized:
+            raise ValueError(
+                f"api_base for dialect {dialect_id!r} must be a non-empty string"
+            )
+        return normalized
 
     @staticmethod
     def _connection_options(
@@ -2829,9 +2864,9 @@ class EvalSession:
             "concurrency_limit", nested.get("concurrency_limit")
         )
         if api_key is not None and not isinstance(api_key, str):
-            raise TypeError("OpenAI api_key must be a string")
+            raise TypeError("api_key must be a string")
         if isinstance(max_retries, bool) or not isinstance(max_retries, int):
-            raise TypeError("OpenAI max_retries must be an integer")
+            raise TypeError("max_retries must be an integer")
         if isinstance(concurrency_limit, bool) or (
             concurrency_limit is not None
             and (not isinstance(concurrency_limit, int) or concurrency_limit < 1)
@@ -2875,7 +2910,9 @@ class EvalSession:
                 )
             config = cast(Mapping[str, object], source)
 
-        endpoint = self._external_endpoint(config)
+        if binding.dialect_id is None:
+            raise ValueError(f"Model binding '{binding.binding_id}' has no dialect")
+        endpoint = self._external_endpoint(config, binding.dialect_id)
         engine_source = "config" if template.engine_id != "unknown" else "unknown"
         return Deployment(
             deployment_id=None,
@@ -3121,15 +3158,16 @@ class EvalSession:
         self,
         model: Model,
         requirements: AggregatedTaskRequirements,
+        model_type: Literal["chat", "gen"] | None = None,
     ) -> Model:
-        """Use the public wrapper factory without guessing from runtime type."""
+        """Use normalized evidence or the deployment root's single type."""
 
-        if len(requirements.input) == 1:
+        if model_type is not None:
+            input_kind = (
+                InputKind.CHAT if model_type == "chat" else InputKind.COMPLETION
+            )
+        elif len(requirements.input) == 1:
             input_kind = next(iter(requirements.input))
-        elif model.dialect_id == "openai_chat":
-            input_kind = InputKind.CHAT
-        elif model.dialect_id == "openai_completions":
-            input_kind = InputKind.COMPLETION
         else:
             runtime_plan = model.runtime_plan
             binding_id = runtime_plan.binding_id if runtime_plan is not None else "?"
@@ -3279,7 +3317,9 @@ class EvalSession:
                             **args,
                         )
                     model = self._as_legacy_wrapper(
-                        model, self._aggregated_requirements[binding.binding_id]
+                        model,
+                        self._aggregated_requirements[binding.binding_id],
+                        self._model_types_by_root[binding.root_deployment_key],
                     )
 
                 if self.deterministic:

@@ -132,6 +132,23 @@ class TestLeafDerivation:
             active_request_leaves(req)["input.modality.image.media_type"] == "image/png"
         )
 
+    def test_branch_sensitive_chat_metadata_has_separate_leaves(self):
+        req = Request(
+            input=ChatInput(
+                (
+                    ChatMessage(
+                        "user",
+                        (ImagePart(url="https://x", detail="high"),),
+                        name="speaker",
+                    ),
+                )
+            )
+        )
+
+        leaves = active_request_leaves(req)
+        assert leaves["input.chat.message.name"] == "speaker"
+        assert leaves["input.modality.image.detail"] == "high"
+
     def test_tool_result_error_marker_is_a_separate_nondefault_leaf(self):
         normal = Request(
             input=ChatInput((ChatMessage("tool", (ToolResultPart("call", "ok"),)),))
@@ -167,6 +184,7 @@ class TestLeafDerivation:
         [
             ("input.completion.suffix", "fim"),
             ("input.modality.image", "multimodal_input"),
+            ("input.modality.image.detail", "multimodal_input"),
             ("input.modality.image.media_type", "multimodal_input"),
             ("scoring.input_scoring", "input_scoring"),
             ("scoring.sampled_logprobs", "sampled_logprobs"),

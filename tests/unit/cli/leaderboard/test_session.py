@@ -1677,6 +1677,18 @@ class TestPrelaunchReconciliation:
                 ),
             )
 
+    class NoInputTask:
+        @classmethod
+        def model_requirements_for(cls, context):
+            return (
+                TaskModelRequirement(
+                    role="candidate",
+                    binding=context.model_bindings["candidate"],
+                    requires=TaskRequirements(),
+                    source_task="no_input",
+                ),
+            )
+
     class JudgeTask:
         model_type = "chat"
 
@@ -2174,6 +2186,119 @@ tasks:
         ):
             session.prepare_prelaunch()
 
+    def test_type_and_dialect_conflict_fails_before_model_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  responses:
+    name: org/model
+    type: gen
+    dialect: openai_responses
+tasks:
+  no_input:
+    class: fake.NoInputTask
+    dataset:
+      class: fake.Dataset
+    model: responses
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.NoInputTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(
+                ValueError,
+                match=r"legacy type 'gen'.*openai_responses.*must agree",
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
+
+    def test_explicit_null_dialect_is_rejected_before_model_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: chat
+    dialect: null
+tasks:
+  no_input:
+    class: fake.NoInputTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.NoInputTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(ValueError, match=r"m.*dialect must be a non-empty string"),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
+
+    def test_unused_derived_dialect_must_match_shared_root_type_before_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  base:
+    name: org/model
+    type: chat
+  completion_view:
+    base: base
+    dialect: openai_completions
+tasks:
+  chat:
+    class: fake.ChatTask
+    dataset:
+      class: fake.Dataset
+    model: base
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.ChatTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(
+                ValueError,
+                match=(r"completion_view.*legacy type 'chat'.*openai_completions"),
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
+
     def test_sibling_derived_kinds_conflict_at_shared_root(
         self, tmp_path: Path
     ) -> None:
@@ -2281,6 +2406,231 @@ tasks:
         assert deployment.engine_source == "unknown"
         assert deployment.deployment_id is None
         assert deployment.plan is None
+
+    def test_native_external_dialect_requires_explicit_api_base(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: claude
+    type: chat
+    dialect: anthropic_messages
+tasks: {}
+""",
+        )
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://wrong-family.example/v1")
+        session = EvalSession(config_path)
+
+        with pytest.raises(
+            ValueError,
+            match=r"anthropic_messages.*requires an explicit api_base",
+        ):
+            session.prepare_prelaunch()
+
+    def test_managed_native_dialect_does_not_require_external_api_base(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: claude
+    type: chat
+    dialect: anthropic_messages
+    infer:
+      backend: vllm
+      checkpoint: /models/claude
+tasks: {}
+""",
+        )
+        raw_plan = {
+            "backend": "vllm",
+            "checkpoint": "/models/claude",
+            "assignments": [],
+        }
+        session = EvalSession(config_path, infer_plans={"m": raw_plan})
+        models_cfg = session._get_named_config_map("models")
+        binding = session._finalize_named_binding(
+            session._provisional_named_binding("m", models_cfg),
+            "chat",
+            models_cfg,
+        )
+
+        deployment_input = session._deployment_input_for(binding, models_cfg)
+
+        assert deployment_input.engine_id == "vllm"
+        assert deployment_input.plan is not None
+
+    def test_explicit_engine_assertion_must_match_deployment_plan(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: sglang
+    dialect: openai_completions
+    infer:
+      backend: vllm
+      checkpoint: /models/org-model
+tasks: {}
+""",
+        )
+        raw_plan = {
+            "backend": "vllm",
+            "checkpoint": "/models/org-model",
+            "assignments": [],
+        }
+        session = EvalSession(config_path, infer_plans={"m": raw_plan})
+
+        with pytest.raises(
+            ValueError,
+            match=r"engine assertion 'sglang'.*deployment engine 'vllm'",
+        ):
+            session.prepare_prelaunch()
+
+    def test_infer_backend_is_not_a_remote_engine_or_dialect_selector(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    infer:
+      backend: sglang
+      checkpoint: /models/org-model
+tasks: {}
+""",
+        )
+        session = EvalSession(config_path)
+        models_cfg = session._get_named_config_map("models")
+        binding = session._finalize_named_binding(
+            session._provisional_named_binding("m", models_cfg),
+            "gen",
+            models_cfg,
+        )
+
+        assert binding.dialect_id == "openai_completions"
+        deployment_input = session._deployment_input_for(binding, models_cfg)
+        assert deployment_input.engine_id == "unknown"
+
+    def test_managed_sglang_engine_does_not_select_legacy_dialect(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    infer:
+      backend: sglang
+      checkpoint: /models/org-model
+tasks: {}
+""",
+        )
+        raw_plan = {
+            "backend": "sglang",
+            "checkpoint": "/models/org-model",
+            "assignments": [],
+        }
+        session = EvalSession(config_path, infer_plans={"m": raw_plan})
+        models_cfg = session._get_named_config_map("models")
+        binding = session._finalize_named_binding(
+            session._provisional_named_binding("m", models_cfg),
+            "gen",
+            models_cfg,
+        )
+
+        assert binding.dialect_id == "openai_completions"
+        deployment_input = session._deployment_input_for(binding, models_cfg)
+        assert deployment_input.engine_id == "sglang"
+
+    def test_remote_engine_identity_is_independent_of_chat_dialect(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: chat
+    engine: hosted-vendor
+    dialect: openai_chat
+tasks: {}
+""",
+        )
+        session = EvalSession(config_path)
+
+        session.prepare_prelaunch()
+
+        deployment_input = session._prelaunch_deployment_inputs["model:m"]
+        assert deployment_input.engine_id == "hosted-vendor"
+        deployment = session._configured_deployment_for(
+            session._normalized_model_bindings["model:m"],
+            deployment_input,
+            session._get_named_config_map("models"),
+        )
+        assert deployment.engine.engine_id == "hosted-vendor"
+        assert deployment.engine_source == "config"
+
+    @pytest.mark.parametrize(
+        ("field", "error_type", "expected"),
+        [
+            ("engine", TypeError, "engine must be a non-empty string"),
+            ("service_role", ValueError, "service_role must be a non-empty string"),
+        ],
+    )
+    def test_explicit_null_binding_identity_fields_are_not_treated_as_omitted(
+        self,
+        tmp_path: Path,
+        field: str,
+        error_type: type[Exception],
+        expected: str,
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  m:
+    name: org/model
+    type: chat
+    {field}: null
+tasks:
+  no_input:
+    class: fake.NoInputTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.NoInputTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(error_type, match=expected),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
 
     def test_infer_overrides_are_projected_as_explicit_engine_parameters(
         self, tmp_path: Path
@@ -2559,7 +2909,7 @@ tasks:
                 "sieval.cli.leaderboard.session.resolve_task_class",
                 return_value=self.CompletionTask,
             ),
-            pytest.raises(ValueError, match="input_kind_unsupported"),
+            pytest.raises(ValueError, match=r"legacy type 'gen'.*must agree"),
         ):
             await session._prepare_execution()
 
