@@ -2224,6 +2224,52 @@ tasks:
 
         client_factory.assert_not_called()
 
+    def test_inline_dialect_input_conflict_fails_before_model_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+    type: chat
+    dialect: openai_chat
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: org/grader
+        dialect: openai_completions
+        api_base: https://grader.example/v1
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(
+                ValueError,
+                match=(
+                    r"input_kind_unsupported.*inline:judged:grader.*"
+                    r"openai_completions.*does not accept 'chat' input"
+                ),
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
+
     def test_explicit_null_dialect_is_rejected_before_model_io(
         self, tmp_path: Path
     ) -> None:

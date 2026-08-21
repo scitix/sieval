@@ -557,7 +557,11 @@ def _validate_unreferenced(cfg: dict, result: ValidationResult) -> None:
 
 
 def validate_eval_config(cfg: dict) -> ValidationResult:
-    """Static schema validation — no imports, no instantiation."""
+    """Validate static schema without imports or instantiation.
+
+    Dialect selection and capability compatibility become authoritative only
+    during prelaunch reconciliation; use :func:`run_dry_run` for that check.
+    """
     result = ValidationResult()
     if not _validate_structure(cfg, result):
         return result
