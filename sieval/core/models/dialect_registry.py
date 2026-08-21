@@ -251,10 +251,12 @@ def _request_schema_leaves() -> frozenset[str]:
                         ImagePart(
                             url="https://schema.invalid/image",
                             media_type="image/png",
+                            detail="high",
                         ),
                         ToolCallPart("call", "tool", {}),
                         ToolResultPart("call", None, is_error=True),
                     ),
+                    name="schema-message",
                 ),
             )
         )

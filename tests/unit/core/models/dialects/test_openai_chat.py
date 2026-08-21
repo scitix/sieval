@@ -260,6 +260,7 @@ class TestWireTranslation:
                         TextPart("look"),
                         ImagePart(url="https://example.test/image.png", detail="high"),
                     ),
+                    name="viewer",
                 ),
                 ChatMessage(
                     "assistant",
@@ -280,6 +281,7 @@ class TestWireTranslation:
         assert _awaited_kwargs(create)["messages"] == [
             {
                 "role": "user",
+                "name": "viewer",
                 "content": [
                     {"type": "text", "text": "look"},
                     {
@@ -311,6 +313,26 @@ class TestWireTranslation:
                 "content": '{"ok":true,"score":3}',
             },
         ]
+
+    @pytest.mark.anyio
+    async def test_inline_content_after_tool_call_is_rejected_before_io(self) -> None:
+        dialect, create = _dialect()
+        req = Request(
+            input=_chat(
+                ChatMessage(
+                    "assistant",
+                    (
+                        ToolCallPart("call_1", "inspect", {}),
+                        TextPart("this would be moved before the call"),
+                    ),
+                )
+            )
+        )
+
+        with pytest.raises(RequestAuditError, match="cannot preserve inline content"):
+            await dialect.arun(req)
+
+        create.assert_not_awaited()
 
     @pytest.mark.anyio
     async def test_tool_result_error_marker_is_rejected_before_io(self) -> None:

@@ -28,6 +28,7 @@ from typing import Any, Literal, cast
 from loguru import logger
 
 from sieval.core.models.deployment import BINDING_RESOURCE_KEYS
+from sieval.core.models.dialect_registry import get_dialect_spec
 from sieval.core.models.requirements import (
     AggregatedTaskRequirements,
     InlineModelBinding,
@@ -207,6 +208,18 @@ def normalize_inline_model_binding(
             f"Task '{task_name}' inline {role} cannot use the named-model-only "
             "sglang_legacy bypass; configure a named model or use a bindable dialect"
         )
+    if "engine" in raw_config:
+        engine = raw_config.get("engine")
+        if not isinstance(engine, str) or not engine:
+            raise TypeError(
+                f"Inline binding '{binding_id}' engine must be a non-empty string"
+            )
+    if "service_role" in raw_config:
+        service_role = raw_config.get("service_role")
+        if not isinstance(service_role, str) or not service_role:
+            raise ValueError(
+                f"Inline binding '{binding_id}' service_role must be a non-empty string"
+            )
     return InlineModelBinding(
         binding_id=binding_id,
         root_deployment_key=f"deployment:{binding_id}",
@@ -539,6 +552,41 @@ def derive_model_type(
     return "chat"
 
 
+def validate_model_type_dialect(
+    model_name: str,
+    model_type: Literal["chat", "gen"],
+    dialect_id: str,
+) -> None:
+    """Require the single legacy model kind to match the dialect input contract.
+
+    ``derive_model_type`` remains the sole compatibility-wrapper authority. A
+    dialect can validate that result, but it cannot silently select a different
+    wrapper kind.
+    """
+
+    if not isinstance(model_name, str) or not model_name:
+        raise TypeError("model_name must be a non-empty string")
+    if model_type not in ("chat", "gen"):
+        raise ValueError(f"invalid model type {model_type!r}")
+    if not isinstance(dialect_id, str) or not dialect_id:
+        raise ValueError("dialect_id must be a non-empty string")
+
+    expected_input = "chat" if model_type == "chat" else "completion"
+    accepted_inputs = (
+        ("completion",)
+        if dialect_id == "sglang_legacy"
+        else get_dialect_spec(dialect_id).input_kinds
+    )
+    if expected_input not in accepted_inputs:
+        accepted = ", ".join(repr(item) for item in accepted_inputs)
+        raise ValueError(
+            f"Model '{model_name}' resolves legacy type {model_type!r} "
+            f"({expected_input} input), but dialect {dialect_id!r} accepts "
+            f"only {accepted}. The model type and dialect input contract "
+            "must agree."
+        )
+
+
 @dataclass(frozen=True)
 class ConfigModelTypeResolution:
     """Legacy model kinds derived from normalized task requirement hooks."""
@@ -636,6 +684,20 @@ def resolve_config_model_types(
         model_type = derive_model_type(root_name, explicit_type, requirements)
         by_root[root_key] = model_type
         for binding in root_bindings:
+            chain = chains[binding.config_name]
+            dialect_declared = any("dialect" in config for _, config in chain)
+            dialect_id = _config_merged_model_value(chain, "dialect")
+            if dialect_declared:
+                if not isinstance(dialect_id, str) or not dialect_id:
+                    raise ValueError(
+                        f"Model '{binding.config_name}' dialect must be a "
+                        "non-empty string"
+                    )
+                validate_model_type_dialect(
+                    binding.config_name,
+                    model_type,
+                    dialect_id,
+                )
             by_config[binding.config_name] = model_type
 
     return ConfigModelTypeResolution(by_root, by_config)
@@ -674,6 +736,16 @@ def _config_model_chain(
     visit(model_name)
     chain.reverse()
     return tuple(chain)
+
+
+def _config_merged_model_value(
+    chain: tuple[tuple[str, dict[str, Any]], ...], field: str
+) -> object | None:
+    value: object | None = None
+    for _, config in chain:
+        if field in config:
+            value = config[field]
+    return value
 
 
 def _config_named_binding(

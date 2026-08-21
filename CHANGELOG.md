@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING — `infer.backend` no longer selects a request dialect or activates
+  `sglang_legacy`.** It only selects the managed inference backend. Model
+  configs that intentionally relied on `infer.backend: sglang` for the
+  temporary legacy bypass must also declare model-level `engine: sglang`;
+  managed deployments should omit that assertion and use the dialect selected
+  during reconciliation.
+
 ## [0.8.0] - 2026-08-14
 
 A minor bump, and a wide one: the on-disk record shape, several `report.json`

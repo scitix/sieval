@@ -230,25 +230,25 @@ class TestValidateModels:
         assert not result.ok
         assert any("type" in e for e in result.errors)
 
-    def test_invalid_engine_value(self):
+    @pytest.mark.parametrize("engine", [None, "", 7, ["vllm"]])
+    def test_invalid_engine_value(self, engine):
         cfg = {
-            "models": {"m": {"name": "x", "type": "gen", "engine": "bogus"}},
+            "models": {"m": {"name": "x", "type": "gen", "engine": engine}},
             "datasets": {},
             "tasks": {},
         }
         result = validate_eval_config(cfg)
         assert not result.ok
-        assert any("engine must be" in e for e in result.errors)
+        assert any("'engine' must be a non-empty string" in e for e in result.errors)
 
-    def test_engine_on_chat_model(self):
+    def test_engine_identity_is_independent_of_chat_model_type(self):
         cfg = {
-            "models": {"m": {"name": "x", "type": "chat", "engine": "sglang"}},
+            "models": {"m": {"name": "claude", "type": "chat", "engine": "anthropic"}},
             "datasets": {},
             "tasks": {},
         }
         result = validate_eval_config(cfg)
-        assert not result.ok
-        assert any("only valid for type: gen" in e for e in result.errors)
+        assert result.ok, result.errors
 
     def test_engine_on_derived_model(self):
         cfg = {
@@ -538,7 +538,7 @@ class TestValidateModelCapabilities:
         assert not invalid.ok
         assert any("minimum must be an integer" in error for error in invalid.errors)
 
-    def test_legacy_sglang_bypass_rejects_new_capability_declarations(self):
+    def test_static_validation_does_not_guess_the_legacy_sglang_dialect(self):
         result = validate_eval_config(
             self._config(
                 type="gen",
@@ -547,8 +547,7 @@ class TestValidateModelCapabilities:
             )
         )
 
-        assert not result.ok
-        assert any("legacy SGLang bypass" in error for error in result.errors)
+        assert result.ok, result.errors
 
 
 # ---------------------------------------------------------------------------
@@ -1741,5 +1740,6 @@ class TestRunDryRun:
         )
         assert check["ok"] is False
         assert check["detail"] == str(normal.value)
-        assert "input_kind_unsupported" in check["detail"]
+        assert "legacy type 'chat'" in check["detail"]
+        assert "must agree" in check["detail"]
         assert result["n_errors"] == 1
