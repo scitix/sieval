@@ -82,6 +82,9 @@ FORBIDDEN: dict[str, tuple[str, ...]] = {
     "t_eval_before_calling_0shot_gen": ("sentence_transformers",),
     # latex2sympy2 is behind the `math` group.
     "theoremqa_kshot_base_gen": ("latex2sympy2", "latex2sympy2_extended"),
+    # The vendored engine reaches babel (upstream's `parse_decimal`) at module
+    # scope, so the whole package is forbidden and not just the third-party name.
+    "wikisql_0shot_gen": ("sieval.community.wikisql", "babel"),
 }
 
 
