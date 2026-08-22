@@ -184,6 +184,9 @@ from .simpleqa_verified_0shot_gen import (
 from .smt_2025_0shot_gen import (
     SMT2025ZeroShotGenTask,
 )
+from .spider_0shot_gen import (
+    SpiderZeroShotGenTask,
+)
 from .sysbench_0shot_gen import (
     SysBenchZeroShotGenTask,
 )
@@ -259,6 +262,7 @@ __all__ = [
     "SciCodeZeroShotGenTask",
     "SciTaRCZeroShotGenTask",
     "SimpleQAVerifiedZeroShotGenTask",
+    "SpiderZeroShotGenTask",
     "SysBenchZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",
     "TheoremQAKShotBaseGenTask",

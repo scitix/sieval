@@ -1094,6 +1094,30 @@
       "checksums": {}
     },
     {
+      "name": "spider",
+      "display_name": "Spider 1.0",
+      "description": "Cross-domain text-to-SQL; 1,034 dev questions over 20 databases.",
+      "source": [
+        "url:https://huggingface.co/datasets/HAL-9001/spider-databases/resolve/4a01bbac6520cd35b216db9e1724e5e1ada60aa4/spider_data.zip"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        }
+      ],
+      "tags": [
+        "english",
+        "text-to-sql",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-SA-4.0",
+      "checksums": {
+        "spider_data.zip": "sha256:00636695dabed6b5f4b8328a16b13e069a2f16591d5efcce57660669c85b121b"
+      }
+    },
+    {
       "name": "sysbench",
       "display_name": "SysBench (system-message following)",
       "description": "500 Chinese 5-turn sessions with per-turn constraint checklists, one row per session.",
@@ -2522,6 +2546,28 @@
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. LIST GOLDS: problem 32's gold is a comma-separated list, and upstream joins every box on the final line whenever the gold holds a comma; this task derives that `list_answer` flag as grader.py does. Wiring it moved 0 of 10,875 smt_2025_outputs rollouts — every model that answered problem 32 boxed the whole list, so the flag is parity insurance here, not a fix. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 43 models on matharena.ai's SMT table (1,060/10,875 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. OVERLAP: apex_2025 re-uses problems 8, 42 and 43 verbatim. VALIDATED: replaying MathArena/smt_2025_outputs (10,875 rollouts) reproduces upstream's `correct` on 99.1%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; residual is un-vendored normalize_string plus math-verify-vs-sympy."
       },
       "status": "stable",
+      "reference_kind": "value"
+    },
+    {
+      "name": "spider_0shot_gen",
+      "display_name": "Spider 1.0 (0-shot, generative)",
+      "description": "Cross-domain text-to-SQL; exact set match and execution accuracy.",
+      "dataset": "spider",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "text-to-sql",
+        "code-exec"
+      ],
+      "deps_group": "spider",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "taoyds/spider",
+        "url": "https://github.com/taoyds/spider/tree/b7b5b8c890cd30e35427348bb9eb8c6d1350ca7c/",
+        "notes": "Grader vendored byte-identical in sieval.community.spider except evaluation.py:29, a flat import that cannot resolve inside a package. Exact set match is upstream's DISABLE_VALUE=True default. Execution accuracy diverges for SAFETY ONLY: read-only immutable connection, ATTACH/DETACH denied, and a progress-handler deadline, because upstream runs model SQL on a read-write connection with no timeout behind a bare except. Comparison stays upstream's column-keyed res_map, and exact match runs after execution because eval_exact_match mutates the parse trees in place. Two further verdict-preserving divergences: get_schema is reproduced read-only (upstream opens read-write; dict equality asserted in tests), and a surrogateescape text factory, because wta_1.players.last_name is not valid UTF-8 and upstream fetches gold outside its except, so it dies on two dev examples rather than scoring them. SAFETY DELTA MEASURED: 99.903% verdict parity against upstream's own eval_exec_match over 1,033 comparable pairs (1,032 agree, 1 differs, plus 1 upstream crash); all three cases are wta_1 and all trace to the text factory — the read-only connection, ATTACH denial, deadline and row cap produced zero verdict differences. Worst-case headline impact 2/1,034 = 0.19pp. Bounds measured over all 1,034 dev golds: largest result 20,662 rows, slowest 0.486s, against a 100,000-row cap and a 5s deadline. Prompt follows Rajkumar et al. 2022 (arXiv:2204.00498) CREATE TABLE + 3 example rows; upstream's trailing bare SELECT becomes a fenced-block instruction because a chat turn cannot end mid-token. Upstream runs one deterministic pass per question; n=1 is the protocol, not just this task's default."
+      },
+      "status": "experimental",
       "reference_kind": "value"
     },
     {
