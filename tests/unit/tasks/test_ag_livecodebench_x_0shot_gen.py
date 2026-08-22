@@ -55,6 +55,9 @@ _PROMPT_DIGEST = "69180174fafdd13d7523628d3d1df3ff9c2ef6e026af5c2529f696744ee3ae
 
 _CASES = [{"input": "2\n", "output": "4"}, {"input": "5\n", "output": "10"}]
 
+# What the evaluator reports back as the verifier that scored a rollout.
+_IMAGE = "ghcr.io/nuprl/agnostics@sha256:" + "c1" * 32
+
 
 def _encode(cases: list[dict]) -> str:
     """LiveCodeBench's private-test encoding: JSON -> pickle -> zlib -> base64."""
@@ -92,7 +95,11 @@ class _Response:
         return {
             "status": True,
             "msg": "success",
-            "data": {"n_cases": 1, "n_passed": 1},
+            "data": {
+                "n_cases": 1,
+                "n_passed": 1,
+                "verifier_image": _IMAGE,
+            },
         }
 
 
@@ -389,9 +396,14 @@ def test_k_may_not_exceed_n():
 # --------------------------------------------------------------------------- #
 # report()
 # --------------------------------------------------------------------------- #
-async def _report(msgs: list[str], corrects: list[bool] | None = None):
+async def _report(
+    msgs: list[str],
+    corrects: list[bool] | None = None,
+    images: list[str | None] | None = None,
+):
     task = _task()
     corrects = corrects if corrects is not None else [False] * len(msgs)
+    images = images if images is not None else [_IMAGE] * len(msgs)
     try:
         finals = [
             TaskContext(
@@ -399,10 +411,16 @@ async def _report(msgs: list[str], corrects: list[bool] | None = None):
                 raw_sample=_raw(),
                 feedback_result=build_judgement_record(
                     None,
-                    [build_rollout_judgement(0, ok, extra={"msg": msg})],
+                    [
+                        build_rollout_judgement(
+                            0, ok, extra={"msg": msg, "verifier_image": image}
+                        )
+                    ],
                 ),
             )
-            for i, (msg, ok) in enumerate(zip(msgs, corrects, strict=True))
+            for i, (msg, ok, image) in enumerate(
+                zip(msgs, corrects, images, strict=True)
+            )
         ]
         return await task.report(finals, [])
     finally:
@@ -440,6 +458,38 @@ async def test_the_report_declares_its_column_and_the_language_it_measured():
     # The task name cannot carry the language, so the report has to.
     assert report["language"] == "Lua"
     assert report["container_lang"] == "lua"
+
+
+@pytest.mark.anyio
+async def test_the_pinned_verifier_is_recorded_on_the_verdict():
+    # A digest-pinned verifier is only as good as the run's record of it: without
+    # this, nothing on disk says which grader produced the column.
+    evaluator = await _post_one()
+    _ = evaluator
+
+    report = await _report(["success"], corrects=[True])
+    assert report["verifier_image"] == _IMAGE
+
+
+@pytest.mark.anyio
+async def test_two_verifiers_in_one_run_are_both_reported():
+    # An evaluator re-pointed mid-run makes the column a mix of two graders.
+    # Picking one to stand for the rest would hide that.
+    other = "ghcr.io/nuprl/agnostics@sha256:" + "b4" * 32
+    report = await _report(
+        ["success", "success"], corrects=[True, True], images=[_IMAGE, other]
+    )
+
+    assert report["verifier_image"] == ", ".join(sorted([_IMAGE, other]))
+
+
+@pytest.mark.anyio
+async def test_an_unreported_verifier_is_omitted_not_blanked():
+    # `None` is what a command override yields, where the image is unknowable.
+    # An empty string would read as "ran unpinned", a different claim.
+    report = await _report(["success"], corrects=[True], images=[None])
+
+    assert "verifier_image" not in report
 
 
 @pytest.mark.anyio

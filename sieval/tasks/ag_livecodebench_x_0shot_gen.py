@@ -62,13 +62,17 @@ Divergences from upstream, each with what it costs:
   row; upstream's own README warns that truncation at its default
   ``max_tokens=5000`` is common enough to mention, and truncation is precisely
   what strips the closing marker.
-* **The container is run by the evaluator, not by this task.** Upstream shells
-  out to ``podman run ... ghcr.io/nuprl/agnostics:<lang>`` (or ``apptainer`` for
-  a ``.sif``) from the harness process. Here the task POSTs to sieval's
-  code-evaluator, which runs that same container server-side; the invocation is
-  the evaluator's deployment config, not a per-request field, so a client cannot
-  name an arbitrary image to execute. Same verifier, same protocol, different
-  process boundary.
+* **The container is run by the evaluator, not by this task, and pinned by
+  digest.** Upstream shells out to ``podman run ... ghcr.io/nuprl/agnostics:<lang>``
+  (or ``apptainer`` for a ``.sif``) from the harness process, against the mutable
+  tag. Here the task POSTs to sieval's code-evaluator, which runs that same
+  container server-side from a digest — the verifier is scoring data, so it is
+  pinned the way a dataset revision is, and a tag moved under a finished
+  leaderboard cannot change a score silently. The invocation is the evaluator's
+  deployment config, not a per-request field, so a client cannot name an
+  arbitrary image to execute; the digest that ran comes back on each verdict and
+  is surfaced once as ``report()``'s ``verifier_image``. Same verifier, same
+  protocol, stronger pin, different process boundary.
 * **No smoke call.** Upstream sends ``lm("Say this is a test!")`` before the run;
   it measures nothing and is not reproduced.
 * **No DSPy cache.** Upstream defaults it off (``--enable-dspy-cache`` is opt-in
@@ -364,8 +368,10 @@ def _decode_private_test_cases(text: str) -> list[dict[str, str]]:
             "reply missing either marker scores 0 here and the gap is exactly "
             "n_unextracted, making this a lower bound; (2) the Agnostics "
             "verifier container is run by sieval's code-evaluator rather than "
-            "from the harness process, same protocol and same image, different "
-            "process boundary; (3) upstream's pre-run 'Say this is a test!' "
+            "from the harness process, and pinned by DIGEST rather than by "
+            "upstream's mutable tag -- the digest that scored each rollout comes "
+            "back on the verdict and is surfaced as report()'s verifier_image; "
+            "(3) upstream's pre-run 'Say this is a test!' "
             "smoke call is not reproduced. Verifier tags are upstream's own, "
             "which are FILE EXTENSIONS, not language names -- "
             "ghcr.io/nuprl/agnostics ships lua, r, python, jl, java, cpp, ml, "
@@ -519,10 +525,16 @@ class AgLiveCodeBenchXZeroShotGenTask(
                         "msg": msg,
                         "n_cases": data.get("n_cases"),
                         "n_passed": data.get("n_passed"),
+                        # Which pinned verifier produced this verdict. Recorded
+                        # per rollout rather than once per run because it is the
+                        # evaluator that resolves it, and a deployment could be
+                        # re-pointed mid-run; `None` means the evaluator ran a
+                        # command override, where the image is unknowable.
+                        "verifier_image": data.get("verifier_image"),
                         "resources": {
                             key: value
                             for key, value in data.items()
-                            if key not in ("n_cases", "n_passed")
+                            if key not in ("n_cases", "n_passed", "verifier_image")
                         },
                     },
                 )
@@ -541,6 +553,25 @@ class AgLiveCodeBenchXZeroShotGenTask(
                 "container_lang": self._container_lang,
             },
         )
+
+    @staticmethod
+    def _verifier_image(finals) -> str | None:
+        """The pinned verifier behind this column, or ``None`` if unrecorded.
+
+        A run should see exactly one image. More than one means the evaluator was
+        re-pointed mid-run, which makes the column a mix of two graders -- so all
+        of them are reported, sorted and joined, rather than one being picked to
+        stand for the rest.
+        """
+        images = {
+            image
+            for final in finals
+            for rollout in final.feedback_result["rollouts"]
+            if (image := rollout["extra"].get("verifier_image")) is not None
+        }
+        if not images:
+            return None
+        return ", ".join(sorted(images))
 
     @override
     async def report(self, finals, fails):
@@ -573,6 +604,12 @@ class AgLiveCodeBenchXZeroShotGenTask(
             SCORE_KEY_FIELD: "pass@1",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        verifier_image = self._verifier_image(finals)
+        if verifier_image is not None:
+            # **Omitted rather than blanked** when the evaluator reported none: an
+            # empty string would read as "ran unpinned", which is a different
+            # claim from "this deployment does not say".
+            metrics["verifier_image"] = verifier_image
         if self._n > 1:
             # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)
