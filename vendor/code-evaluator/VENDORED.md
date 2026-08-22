@@ -72,3 +72,48 @@
 - `README.md` — translated from Chinese to English, so the vendored docs match
   the rest of the repo. Content is otherwise unchanged apart from the case-count
   section above.
+- `app/exec_agnostics.py` (new), `app/server.py`, `README.md` — **the Agnostics
+  protocol** as `source="agnostics"`, which is what makes a non-Python language
+  reachable at all. Nothing executes in this process: the request is forwarded to
+  a per-language verifier container over one JSON line in, one JSON line out
+  (`{code, timeout_s, test_cases}` -> `{result: "success" | "fail:*", ...}`), and
+  only `"success"` is a pass. Upstream of the *protocol* is
+  nuprl/Ag-LiveCodeBench-X at `b7b273ef`; sieval's client is
+  `ag_livecodebench_x_0shot_gen`.
+
+  Three deliberate choices, each of which a reviewer will want to push back on:
+
+  * **The container command is deployment config, not a request field.** Upstream
+    passes `--container-name` on its own CLI, which is safe when the harness and
+    the caller are the same process. Here they are not, so a client able to name
+    the image could run an arbitrary container on the evaluator host. `lang` is
+    all the client sends, constrained to `[a-z0-9][a-z0-9_.+-]{0,31}` because it
+    lands in an argv slot, and the command comes from
+    `CODE_EVAL_AGNOSTICS_COMMAND`, defaulting to upstream's own podman
+    invocation. That is the one place this deviates from upstream's shape rather
+    than its behaviour.
+  * **`infra:<reason>` is reported instead of upstream's collapse to `"fail"`.**
+    Upstream turns every harness-side failure (non-zero exit, undecodable stdout)
+    into `result: "fail"` and recovers only the stdin-write case, by matching a
+    stderr suffix. The split is named here, where it is known, rather than left to
+    a client-side classifier over free text. **It does not change what counts as a
+    pass** -- only `"success"` does, either way -- so `pass@1` is unaffected and
+    only the diagnostic count differs (sieval's `n_run_errors` is therefore
+    broader than upstream's `run_error_rate` numerator).
+  * **One number in two roles, kept.** `timeout` is sent as both the container's
+    `timeout_s` and the wall the process is held to, because upstream does that
+    and widening the wall would move scores. Consequence, confirmed by running it:
+    the outer wall is armed first, so the container's own `fail:timeout` is
+    effectively unreachable and a timing-out submission surfaces as
+    `infra:timeout`. Writing the payload keeps upstream's separate 300s budget
+    (`stdin_write_timeout`), since a decoded LiveCodeBench suite is tens of MB.
+
+  Resource stats are the podman *client* process's, not the container's -- the
+  existing `monitor_process_resources` watches the pid it spawned. Reported anyway
+  so `data` is never null, but do not read them as the submission's cost.
+
+  Verified against a local stub verifier speaking the protocol (no podman on the
+  dev box): `success` / `fail:wrong-output` / `fail:error` pass through verbatim,
+  and `infra:timeout` / `infra:bad-lang` / `infra:no-test` all fire. Not yet
+  upstream -- land in `scitix/code-evaluator` and re-vendor; tests belong there
+  rather than under `tests/`, which mirrors `sieval/`.

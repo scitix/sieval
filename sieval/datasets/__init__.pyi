@@ -9,6 +9,10 @@ from .advanced_if import (
     AdvancedIFDataset,
     AdvancedIFDatasetSample,
 )
+from .ag_livecodebench_x import (
+    AgLiveCodeBenchXDataset,
+    AgLiveCodeBenchXDatasetSample,
+)
 from .agieval import (
     AGIEvalDataset,
     AGIEvalDatasetSample,
@@ -223,6 +227,8 @@ __all__ = [
     "ARCEasyDatasetSample",
     "AdvancedIFDataset",
     "AdvancedIFDatasetSample",
+    "AgLiveCodeBenchXDataset",
+    "AgLiveCodeBenchXDatasetSample",
     "Apex2025Dataset",
     "Apex2025DatasetSample",
     "ApexShortlist2025Dataset",

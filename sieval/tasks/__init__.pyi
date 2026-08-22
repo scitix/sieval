@@ -7,6 +7,9 @@ from .aa_lcr_0shot_gen import (
 from .advanced_if_0shot_gen import (
     AdvancedIFZeroShotGenTask,
 )
+from .ag_livecodebench_x_0shot_gen import (
+    AgLiveCodeBenchXZeroShotGenTask,
+)
 from .agieval_0shot_gen import (
     AGIEvalZeroShotGenTask,
 )
@@ -208,6 +211,7 @@ __all__ = [
     "ARCEasyFewShotClpTask",
     "ARCEasyFewShotPplTask",
     "AdvancedIFZeroShotGenTask",
+    "AgLiveCodeBenchXZeroShotGenTask",
     "Apex2025ZeroShotGenTask",
     "ApexShortlist2025ZeroShotGenTask",
     "BRUMO2025ZeroShotGenTask",

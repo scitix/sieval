@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from loguru import logger
 from pydantic import BaseModel
 
+from .exec_agnostics import execute_agnostics
 from .exec_js import execute_code as exec_js
 from .exec_py_code import execute_code as exec_py_code
 from .exec_py_test import execute_test as exec_py_test
@@ -216,6 +217,59 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
                 peak_memory_mb=stats.peak_memory_mb,
                 n_cases=n_cases,
                 n_passed=n_passed,
+            ),
+        )
+    elif sample.source == "agnostics":
+        # 'agnostics': the Agnostics protocol (nuprl/Ag-LiveCodeBench-X) -- one
+        # JSON line to a per-language verifier container, one JSON line back.
+        # `lang` names the container, not an executor in this process, which is
+        # what makes Lua / R / Julia / OCaml / Fortran reachable at all.
+        logger.debug(f"code to exec:\n{sample.code}")
+
+        if sample.test is None:
+            # Unlike 'livecodebench', there is no direct-run reading: the
+            # protocol has no shape that carries a submission with no suite.
+            msg = "infra:no-test: source 'agnostics' requires a test suite"
+            logger.error(msg)
+            return BasicResponse(status=False, msg=msg, data=None)
+
+        # Upstream's `--timeout-seconds` is required and its README uses 15.
+        timeout = sample.timeout if sample.timeout is not None else 15.0
+        # `test.fn_name` is ignored on purpose: this set is entirely
+        # stdin/stdout, and the protocol has no call-based mode to route it to.
+        # `memory_limit` likewise -- the container owns its own limits, and they
+        # belong in the command template rather than in a request field.
+        ok, msg, stats = await execute_agnostics(
+            code=sample.code,
+            inputs=sample.test.inputs,
+            expect_outputs=sample.test.outputs,
+            lang=sample.lang,
+            timeout=timeout,
+        )
+
+        logger.info(
+            f"evaluate sample '{sample.uuid}' from '{sample.source}', "
+            f"language: {sample.lang}, timeout: {timeout}, "
+            f"cases: {len(sample.test.inputs)}, kwargs: {sample.kwargs}, "
+            f"status: {ok}, msg: {msg}, "
+            f"avg_cpu: {stats.cpu_percent:.2f}%, "
+            f"peak_cpu: {stats.peak_cpu_percent:.2f}%, "
+            f"avg_memory: {stats.memory_mb:.2f}MB, "
+            f"peak_memory: {stats.peak_memory_mb:.2f}MB"
+        )
+        return BasicResponse(
+            status=ok,
+            msg=msg,
+            data=ResourceMetrics(
+                avg_cpu_percent=stats.cpu_percent,
+                peak_cpu_percent=stats.peak_cpu_percent,
+                avg_memory_mb=stats.memory_mb,
+                peak_memory_mb=stats.peak_memory_mb,
+                # The verifier returns one verdict for the whole suite, so this
+                # is the all-or-nothing pair the direct-run modes report. The
+                # suite's real size is on the request, not in this count.
+                n_cases=1,
+                n_passed=int(ok),
             ),
         )
     else:
