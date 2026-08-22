@@ -120,6 +120,18 @@ scicode = ["h5py>=3.11", "numpy<=2.2", "scipy>=1.16.3"]
 # `deps_group` preflight scans only tasks/ and datasets/, so it cannot see a
 # dependency reached through community/; this entry is verified by hand.
 spider = ["nltk>=3.9.2"]
+# spider2: the vendored evaluate.py imports pandas, google-cloud-bigquery and
+# tqdm at module scope, so all three are required to import the grader at all —
+# credentials are what stay optional, not the client libraries.
+# snowflake-connector-python is reached only by sieval's own Snowflake backend:
+# upstream's current lite evaluator dropped its Snowflake branch, so there is no
+# vendored path to it (see sieval/community/spider2/__init__.py).
+spider2 = [
+  "google-cloud-bigquery>=3.25",
+  "pandas>=2.0",
+  "snowflake-connector-python>=3.12",
+  "tqdm>=4.66",
+]
 t-eval = ["numpy<=2.2", "sentence-transformers>=5.1.2"]
 
 [project.scripts]

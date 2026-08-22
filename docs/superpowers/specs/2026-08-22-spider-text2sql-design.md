@@ -73,6 +73,24 @@ Every number below was measured against the pinned artifacts, not read off a REA
   | Local SQLite | `local` (135) | **135** |
   | | | **547** |
 
+- **Correction, found during phase-2 implementation: upstream's current lite
+  evaluator cannot score Snowflake at all.** `evaluate_single_sql_instance`
+  routes `bq`/`ga` to BigQuery and `local` to SQLite, and sends every other
+  prefix to `"Unsupported instance id prefix"` — the word "snowflake" does not
+  appear anywhere in `evaluate.py`. That leaves **207 of 547 unscoreable by
+  upstream**, even though gold results ship for all 547 (verified: 1,545 CSVs
+  covering every instance, including all 189 `sf_bq` and 18 `sf`). The likely
+  cause is upstream's own 2026-08-12 note about its Snowflake evaluation account
+  being suspended. Consequence for §2's "all 547" decision: it still stands, but
+  sieval's Snowflake execution is **first-party** rather than vendored, and a
+  Snowflake number has no upstream *lite* counterpart — the comparable published
+  setting is Spider 2.0-Snow, same questions, same warehouse.
+- **Second correction: take the comparison from `evaluate.py`, not
+  `evaluate_utils.py`.** The repo ships two `compare_pandas_table` functions
+  under the same name in the same directory. Only `evaluate.py`'s carries the
+  2025-10-29 accuracy fix — a `normalize` mapping NaN to 0, an early `break`
+  once a gold column finds no match, and an empty-`multi_gold` guard. The stale
+  copy computes different verdicts, and §4 of this spec originally cited it.
 - Rows (`spider2-lite.jsonl`) carry only `instance_id`, `db`, `question`,
   `external_knowledge`. The HF copy (`xlangai/spider2-lite`) is **stale** relative
   to GitHub — question text differs — so the pinned GitHub revision is the source.
