@@ -78,6 +78,12 @@ class ResourceMetrics(BaseModel):
     peak_memory_mb: float
     n_cases: int | None = None
     n_passed: int | None = None
+    # The one field here that is not a cost. `agnostics` delegates the verdict to
+    # a pinned container, and which digest scored a rollout is provenance the
+    # caller has to be able to record -- there is nowhere else on this route to
+    # put it, since the response model is flat by necessity (see above). `None`
+    # everywhere else, and under a command override, where it is unknowable.
+    verifier_image: str | None = None
 
 
 @app.get("/health")
@@ -239,7 +245,7 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
         # stdin/stdout, and the protocol has no call-based mode to route it to.
         # `memory_limit` likewise -- the container owns its own limits, and they
         # belong in the command template rather than in a request field.
-        ok, msg, stats = await execute_agnostics(
+        ok, msg, stats, verifier_image = await execute_agnostics(
             code=sample.code,
             inputs=sample.test.inputs,
             expect_outputs=sample.test.outputs,
@@ -251,6 +257,7 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
             f"evaluate sample '{sample.uuid}' from '{sample.source}', "
             f"language: {sample.lang}, timeout: {timeout}, "
             f"cases: {len(sample.test.inputs)}, kwargs: {sample.kwargs}, "
+            f"image: {verifier_image}, "
             f"status: {ok}, msg: {msg}, "
             f"avg_cpu: {stats.cpu_percent:.2f}%, "
             f"peak_cpu: {stats.peak_cpu_percent:.2f}%, "
@@ -270,6 +277,7 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
                 # suite's real size is on the request, not in this count.
                 n_cases=1,
                 n_passed=int(ok),
+                verifier_image=verifier_image,
             ),
         )
     else:

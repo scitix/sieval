@@ -92,6 +92,21 @@
     `CODE_EVAL_AGNOSTICS_COMMAND`, defaulting to upstream's own podman
     invocation. That is the one place this deviates from upstream's shape rather
     than its behaviour.
+  * **The image is pinned by digest, where upstream uses the mutable tag.** The
+    verifier decides scores, so it gets the treatment a dataset revision gets:
+    `_IMAGE_DIGESTS` maps each of upstream's eight published tags to a digest
+    resolved from the registry on 2026-08-23 (each verified against the
+    manifest's own `Docker-Content-Digest`). A language with no pinned digest is
+    **refused** (`infra:unpinned-lang`) rather than floated — an unpinned
+    verifier scores silently, which is the failure the table exists to prevent.
+    All eight are single-platform **linux/amd64** manifests, so the pin binds the
+    architecture as well; arm64 needs the override. The resolved reference is
+    returned as `data.verifier_image` so the verdict's provenance reaches the run
+    record, and is `None` under an override whose template does not contain
+    `{image}` — reporting a digest that did not run would be worse than
+    reporting nothing. Note the tags are **file extensions**, not language names
+    (`jl`, `ml`, `f90`), which the framework repo's directory names
+    (`executors/julia`) actively mislead about.
   * **`infra:<reason>` is reported instead of upstream's collapse to `"fail"`.**
     Upstream turns every harness-side failure (non-zero exit, undecodable stdout)
     into `result: "fail"` and recovers only the stdin-write case, by matching a
@@ -114,6 +129,21 @@
 
   Verified against a local stub verifier speaking the protocol (no podman on the
   dev box): `success` / `fail:wrong-output` / `fail:error` pass through verbatim,
-  and `infra:timeout` / `infra:bad-lang` / `infra:no-test` all fire. Not yet
-  upstream -- land in `scitix/code-evaluator` and re-vendor; tests belong there
-  rather than under `tests/`, which mirrors `sieval/`.
+  and `infra:timeout` / `infra:bad-lang` / `infra:no-test` all fire. Separately,
+  on the default (table-driven) path: all four of `lua` / `jl` / `ml` / `f90`
+  resolve to their digests and report them, `julia` and `rust` are refused as
+  `infra:unpinned-lang`, and an override templated on `{lang}` reports no image.
+  Not yet upstream -- land in `scitix/code-evaluator` and re-vendor; tests belong
+  there rather than under `tests/`, which mirrors `sieval/`.
+
+  **Re-pinning.** The digests are a snapshot. If upstream rebuilds an image, the
+  table keeps scoring against the old one, which is the intended behaviour --
+  moving it is a deliberate act that changes scores. Resolve a new digest with
+  an anonymous pull token:
+
+  ```bash
+  TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:nuprl/agnostics:pull&service=ghcr.io" | jq -r .token)
+  curl -sI -H "Authorization: Bearer $TOKEN" \
+    -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+    "https://ghcr.io/v2/nuprl/agnostics/manifests/lua" | grep -i docker-content-digest
+  ```

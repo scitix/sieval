@@ -199,18 +199,33 @@ all-or-nothing pair (`1/1` or `1/0`); the suite's real size is on the request.
 
 The command is **deployment configuration, not a request field** — a caller able
 to name the image could run any container on this host. It defaults to upstream's
-own invocation, with `{lang}` filled from the request:
+own invocation, with the image resolved to a **pinned digest**:
 
 ```bash
-podman run --rm -i --tmpfs /ramdisk:size=512m,exec ghcr.io/nuprl/agnostics:{lang}
+podman run --rm -i --tmpfs /ramdisk:size=512m,exec {image}
 ```
+
+The verifier decides scores, so it is pinned the way a dataset revision is: a tag
+can be moved under a finished leaderboard without anything on disk changing.
+`lang` selects a digest from a table covering upstream's eight published tags
+(`lua`, `r`, `python`, `jl`, `java`, `cpp`, `ml`, `f90` — note these are **file
+extensions**, so Julia is `jl`, OCaml `ml`, Fortran `f90`). A language with no
+pinned digest is **refused** with `infra:unpinned-lang` rather than falling back
+to a floating tag; add it to `_IMAGE_DIGESTS`, or take responsibility via the
+override. All eight are single-platform **linux/amd64** manifests, so the pin
+binds the architecture too — on arm64 the command must be overridden.
+
+The resolved reference comes back as `data.verifier_image` so a caller can record
+which verifier produced a verdict. It is `None` under an override unless the
+override's template actually contains `{image}`: naming a digest that did not run
+is worse than reporting nothing.
 
 Override the whole command with `CODE_EVAL_AGNOSTICS_COMMAND` for a different
 runtime (upstream also supports `apptainer run --contain --writable-tmpfs <x>.sif`),
-a mirrored registry, or a local test double. `lang` must match
-`[a-z0-9][a-z0-9_.+-]{0,31}` since it lands in an argv slot. `memory_limit` and
-`test.fn_name` are ignored: the container owns its own limits, and the protocol
-has no call-based mode.
+a mirrored registry, or a local test double; both `{image}` and `{lang}` are
+substituted. `lang` must match `[a-z0-9][a-z0-9_.+-]{0,31}` since it lands in an
+argv slot. `memory_limit` and `test.fn_name` are ignored: the container owns its
+own limits, and the protocol has no call-based mode.
 
 ## Resource limits and defaults
 
