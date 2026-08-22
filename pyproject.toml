@@ -117,6 +117,14 @@ ruler-gen = [
 ]
 scicode = ["h5py>=3.11", "numpy<=2.2", "scipy>=1.16.3"]
 t-eval = ["numpy<=2.2", "sentence-transformers>=5.1.2"]
+# wikisql: babel backs upstream's `parse_decimal`, which coerces a condition
+# value against a `real`-typed column in lib/dbengine.py. Load-bearing rather
+# than incidental -- that path fires on 414 of the test split's gold conditions,
+# so a missing babel is a scoring change, not a missing nicety. Reached from
+# `sieval.community.wikisql` at import time, which `check_dep_coverage` cannot
+# see (it scans tasks/ and datasets/ only), hence declared here and named as the
+# task's `deps_group`.
+wikisql = ["babel>=2.12"]
 
 [project.scripts]
 sieval = "sieval.cli:main"

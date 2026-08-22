@@ -1234,6 +1234,31 @@
       "deps_group": null,
       "license": "GPL-3.0",
       "checksums": {}
+    },
+    {
+      "name": "wikisql",
+      "display_name": "WikiSQL",
+      "description": "Questions over Wikipedia tables paired with their SQL logical form.",
+      "source": [
+        "url:https://raw.githubusercontent.com/salesforce/WikiSQL/cffb423077756d04c1bac5bcd45167c86903fbcb/data.tar.bz2"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        }
+      ],
+      "tags": [
+        "english",
+        "sql",
+        "tabular",
+        "text-to-sql"
+      ],
+      "deps_group": null,
+      "license": "BSD-3-Clause",
+      "checksums": {
+        "data.tar.bz2": "sha256:755c728ab188e364575705c8641f3fafd86fb089cb8b08e8c03f01832aae0881"
+      }
     }
   ],
   "tasks": [
@@ -2702,6 +2727,29 @@
         "notes": "Prompt and metric definitions mirror upstream's `raw` template and `eval_file` (aacc / eacc / cacc / Delta / RE). The grader does NOT, and cannot: upstream's `judge_rule.py` is GPL-3.0 and would not ship in an Apache-2.0 distribution, so answer comparison is an independent math-verify-based implementation of the same 10 answer types. The `_fixed` variant therefore does not reproduce the paper's numbers, and the unqualified name stays vacant rather than reserved. MEASURED DIVERGENCE: upstream's judge was run as a local instrument (GPL-3.0 restricts distribution, not use; nothing is vendored) over all 15,183 pinned rows, each row's own reference replayed back as a boxed answer. Upstream accepts its own reference on 14,616 rows (96.27%), this task on 15,160 (99.85%); the 552 rows that disagree span 192 of 5,061 problems — an EAcc ceiling difference of 3.79 pp, about 5x the 0.70 pp binomial standard error. 548 of the 552 are rows upstream rejects its OWN reference on, so the gap is repair, not drift; only 4 go the other way (a UOL reference whose top-level commas sit outside any bracket). Dominant cause: upstream normalizes the prediction and the reference by different passes — its extraction-time normalize_answer rewrites sqrt(x) into sqrt{(}x) on the prediction only, which a plain-sympy reference never survives. Contributing: a TF slot whose reference is not a boolean (9 of 1665; upstream asserts it is and swallows the AssertionError into a False, so no answer wins), a zero-valued numeric reference, the declared answer type deciding the rule where upstream's `is_equal` retries every method until one accepts, and three deliberate differences in where commas are split (9 rows): `<` and `>` are the relational operators here, not brackets, so counting them as brackets — which upstream does — swallows the comma after them and the row comes out a slot short (6 rows); the bracket depth clamps at zero instead of going negative, where upstream loses every remaining slot after one unmatched closer (3 rows); and `{}` counts as a bracket, which costs 0 rows on the references but keeps a comma inside a LaTeX group in the model's answer from splitting a slot in two. All enumerated in sieval/community/ugmathbench.py. The figure bounds the GRADER, not a model's score: it is a replay of stored references, so it says nothing about extraction on real model prose. LIVE HEAD-TO-HEAD (the stronger measurement, and the one that promoted this task): over a full 15,183-version run, upstream's judge re-graded the same stored responses; the two agree on the large majority of samples, the disagreements run several-to-one in this task's favour, and it scores above upstream on identical responses. The residual misses are LaTeX interval notation, absolute-value bars, and a `y = ` prefix on an EX answer. Figures are deliberately not quoted here: the grader has changed since that audit (the case-preserving LaTeX reading), so any number carried over would describe a comparison that no longer runs. Note that the replay figure could NOT see the largest defect the live run found — replaying a gold as its own answer short-circuits on string equality and never reaches the symbolic path. GUARDS: since the parsed text is model output, three shapes are refused rather than evaluated — the parse namespace has its builtins removed; an answer containing a quote is refused outright, because a quoted string handed to any callable (eval, sympify, S, N, or any name at all, since auto_symbol makes unknown names callable) is re-sympified with sympy's own default namespace and gets the builtins back; and an answer requiring unbounded arithmetic (a power tower) is screened out by an unevaluated pre-parse. All three grade the answer wrong, and none is reachable by any pinned reference — the largest exponent is three digits and not one of the 42,064 gold slots contains a quote. SAMPLING: upstream generates greedily, one sample per version (temperature 0, max_tokens 2048), and this task issues one rollout per version to match; set temperature via the model config. Upstream also offers a model-as-judge variant (eval_marj.py) which it now recommends over the rule-based path — not implemented here. METRICS: `relative_delta` is upstream's RE scaled by 100 — upstream prints the bare ratio (0.1667) where this reports 16.67; do not compare the two directly."
       },
       "status": "stable",
+      "reference_kind": "value"
+    },
+    {
+      "name": "wikisql_0shot_gen",
+      "display_name": "WikiSQL (0-shot, generative)",
+      "description": "Text-to-SQL over one Wikipedia table, scored by execution and logical-form accuracy.",
+      "dataset": "wikisql",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "sql",
+        "tabular",
+        "text-to-sql"
+      ],
+      "deps_group": "wikisql",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "WikiSQL",
+        "url": "https://github.com/salesforce/WikiSQL/tree/cffb423077756d04c1bac5bcd45167c86903fbcb/",
+        "notes": "0-shot generative port of WikiSQL (Salesforce; Zhong et al. 2017). SCORING IS UPSTREAM'S, UNMODIFIED: predictions are emitted in upstream's own logical-form format ({sel, agg, conds}), so evaluate.py's two metrics are computed by its own code, vendored in sieval.community.wikisql -- lf_accuracy via Query.__eq__ (conditions compared as an UNORDERED set of (col, op, str(val).lower()), upstream's default; the leaderboard marks the ordered reading with *), and ex_accuracy by running both sides through DBEngine and comparing result lists. Headline is ex_accuracy: evaluate.py's first key, and the only column every leaderboard row reports. NO MODEL-AUTHORED SQL IS EXECUTED -- a property of upstream's protocol, not a local hardening: a prediction is three integers plus a value list, so the executed statement is upstream's fixed template with values bound as parameters. TWO DELIBERATE DIVERGENCES. (1) records/SQLAlchemy -> stdlib sqlite3, and tables are rebuilt in memory from the dataset's own types/rows instead of read from the shipped {split}.db. Upstream's own create_table does the rebuilding. Verified, not assumed: all 15,878 test gold queries return identical results from the rebuild and from the shipped test.db (0 mismatches, 0 exceptions); the declared schema matches the types column for all 5,230 test and 2,716 dev tables; and upstream's example predictions score identically both ways to six decimals. Drops ~120 MB of binary SQLite and leaves the engine no filesystem reach. Score impact: 0.00pp, measured. (2) sel/agg/col/op are validated as ints in range before being formatted into the SQL text. Upstream interpolates them unchecked, which is safe for a decoder over a closed output space and not for a chat model: a non-int sel is an injection point, a bool renders as colTrue, and a NEGATIVE index silently wraps (agg_ops[-1] is AVG), scoring a query nobody asked for. An execution-safety stop, so no _fixed variant: a rejected prediction raises into the same `except Exception` evaluate.py already wraps every prediction in, and scores wrong exactly as upstream scores it. op=3 (OP) is deliberately NOT rejected -- it is in upstream's cond_ops, appears in no gold row, and renders as invalid SQL, so SQLite rejects it as upstream lets it. PROMPT IS SIEVAL'S, NECESSARILY: upstream ships no LLM path at all -- no prompt, no API client, no chat template. Its inputs came from annotate.py's Stanza-tokenised streams feeding a trained decoder, and its README declares that path unreproducible since Stanza's deprecation; every leaderboard row is a fine-tuned model. The prompt does carry upstream's constraints: schema only and NO table content (upstream's leaderboard rule, which marks violations with ^), and the documented property that condition values appear verbatim in the question (asserted by upstream's own test/check.py on every row). cond_op 3 (OP) is omitted from the prompt's operator list only. ANCHOR: no published number exists for a 0-shot chat protocol, so the GRADER is anchored instead, on upstream's own shipped test/example.pred.dev.jsonl.bz2 (8,421 predictions in its prediction format). Replayed through the WHOLE task -- reply text, extractor, feedback, report -- this port scores 53.81 ex_accuracy / 45.21 lf_accuracy against 0.538060 / 0.452084 from a faithful transcription of evaluate.py over the shipped dev.db, and matches its 0.441159 for the ordered reading (2026-08-22). Two counts from that replay look like defects and are not: n_unextracted=606 is upstream's own {\"query\": null, \"error\": ...} lines, which evaluate.py also scores wrong on both metrics (its error branch leaves qp None) -- so upstream's error line and an unextracted rollout here are the same state, which is why the totals agree rather than merely approximate; and n_execution_errors=78 is well-formed predictions that do not run (mostly a column index past the table width), which upstream also scores wrong through its except-Exception branch. Hence status=experimental: the grader is upstream's and verified, the protocol is new. EX_ACCURACY'S OWN LIMIT, upstream's and not this port's: 1,279 of 15,878 test gold queries (8.1%) execute to a degenerate empty or [None] result, so any prediction that also returns nothing is credited. lf_accuracy has no such slack, which is why both are reported side by side. SAMPLING: n=1 is this task's default, not a ported protocol -- upstream publishes none (its models are argmax decoders). Decoding params are model-layer, via models:/infer_args. SPLITS: test (15,878) is the default; validation (8,421) is the other published column. train is not materialised by the loader."
+      },
+      "status": "experimental",
       "reference_kind": "value"
     }
   ]
