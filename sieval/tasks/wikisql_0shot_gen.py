@@ -393,7 +393,7 @@ class WikiSQLZeroShotGenTask(
         The engine import is deferred to here, not module scope: it reaches
         ``babel`` through upstream's ``dbengine``, and registering a task must
         not pull its optional grading dependency in — otherwise the ``wikisql``
-        group stops being optional and `sieval task list` needs it. Pinned by
+        group stops being optional and ``sieval task list`` needs it. Pinned by
         ``tests/unit/tasks/test_import_discipline_family.py``.
         """
         from sieval.community.wikisql import DBEngine, Query

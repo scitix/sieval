@@ -1,4 +1,4 @@
-"""Vendored WikiSQL harness: byte-identity, engine semantics, index guard.
+"""Vendored WikiSQL harness: engine semantics and the index guard.
 
 The engine cases are hand-computed against upstream's documented behaviour
 (``lib/table.py`` lowercases string cells on INSERT; ``lib/dbengine.py``
@@ -6,60 +6,28 @@ lowercases string condition values on SELECT and coerces against a ``real``
 column through babel), so a regression shows up as a wrong *value* rather than
 as a crash.
 
+Everything here needs the ``wikisql`` extra, because importing the package
+reaches ``babel`` through upstream's ``dbengine`` — hence the module-level
+``importorskip``. The byte-identity checks deliberately live in
+``test_wikisql_vendor_identity.py`` instead, which imports nothing and so keeps
+running where the extra is absent (CI included).
+
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
-import hashlib
-import pathlib
-
 import pytest
 
-import sieval.community.wikisql as wikisql_pkg
-from sieval.community.wikisql import (
+# Upstream's `dbengine` imports babel at module scope, so the whole vendored
+# package is unimportable without the `wikisql` extra.
+pytest.importorskip("babel", reason="requires the `wikisql` extra")
+
+from sieval.community.wikisql import (  # noqa: E402 - must follow the skip
     DBEngine,
     InvalidQueryIndex,
     Query,
     detokenize,
     get_id,
 )
-
-# --- byte-identity with upstream ------------------------------------------
-
-#: Resolved from the imported package, not from the CWD: a relative path would
-#: make the identity tests silently depend on where pytest was invoked, and the
-#: whole point of them is that they cannot be satisfied by accident.
-_VENDOR_DIR = pathlib.Path(wikisql_pkg.__file__).parent
-
-#: sha256 of upstream's `lib/query.py` at the pinned commit
-#: (cffb423077756d04c1bac5bcd45167c86903fbcb).
-_UPSTREAM_QUERY_SHA = "f539150bea6cd07a5dca226abcced6f9d356d216f5c3d70107693613f1fbeb25"
-#: sha256 of upstream's `lib/common.py` at the same commit.
-_UPSTREAM_COMMON_SHA = (
-    "21079d6e99246eb9bfa8689b7548af9747f1b96c71e45be0522038a3486fde98"
-)
-
-_PATCHED_IMPORT = "from .common import detokenize"
-_UPSTREAM_IMPORT = "from lib.common import detokenize"
-
-
-def test_query_py_is_upstream_verbatim_but_for_the_import():
-    """`query.py` must differ from upstream in exactly one line.
-
-    Asserted by hash rather than by eye: a later "tidy-up" of the vendored
-    scorer is a silent scoring change, and reverting the one adaptation and
-    re-hashing is the only check that notices. `Query.__eq__` IS the
-    lf_accuracy metric, so this is the metric's definition being pinned.
-    """
-    text = (_VENDOR_DIR / "query.py").read_text()
-    assert text.count(_PATCHED_IMPORT) == 1
-    assert _UPSTREAM_IMPORT not in text
-    reverted = text.replace(_PATCHED_IMPORT, _UPSTREAM_IMPORT)
-    assert hashlib.sha256(reverted.encode()).hexdigest() == _UPSTREAM_QUERY_SHA
-
-
-def test_common_py_is_upstream_verbatim():
-    text = (_VENDOR_DIR / "common.py").read_text()
-    assert hashlib.sha256(text.encode()).hexdigest() == _UPSTREAM_COMMON_SHA
 
 
 def test_upstream_op_tables_are_unchanged():
