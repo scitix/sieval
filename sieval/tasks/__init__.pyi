@@ -196,6 +196,9 @@ from .theoremqa_kshot_base_gen import (
 from .ugmathbench_0shot_gen_fixed import (
     UGMathBenchZeroShotGenFixedTask,
 )
+from .wikisql_0shot_gen import (
+    WikiSQLZeroShotGenTask,
+)
 
 __all__ = [
     "AALCRZeroShotGenTask",
@@ -263,4 +266,5 @@ __all__ = [
     "TEvalBeforeCallingZeroShotGenTask",
     "TheoremQAKShotBaseGenTask",
     "UGMathBenchZeroShotGenFixedTask",
+    "WikiSQLZeroShotGenTask",
 ]
