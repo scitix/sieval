@@ -1,0 +1,81 @@
+# ------------------------------------------------------------------------------
+# LiveOIBench — informatics-olympiad problems, graded in C++ by subtask
+# ------------------------------------------------------------------------------
+# 403 problems from 72 contests across 14 olympiads (2023–2025). Scoring is
+# IOI-style: a subtask pays its points only when every test in it passes, and the
+# report ranks the model against the contest's real human contestants.
+#
+# Three-step flow, and step 2 is the one people miss:
+#   1. sieval dataset download liveoibench      # ~33.5 GB — the official tests
+#   2. python scripts/materialize_liveoibench_tests.py
+#   3. sieval eval liveoibench.yaml
+#
+# Step 2 unpacks the test corpus into per-problem directories. The three parquet
+# files each hold a single row group, so there is no cheap per-problem read out
+# of them — the loader refuses to run until they are unpacked, and says so.
+# Already have upstream's `$LIVEOIBENCH_ROOT/data` tree? Point at it instead:
+#   args: {tests_root: /path/to/LIVEOIBENCH_ROOT/data}
+#
+# THIS NEEDS AN EVALUATOR WITH THE C++ SOURCE. Grading compiles the submission
+# with g++ and runs it under the problem's own time and memory limits, which the
+# base evaluator image cannot do — build it from
+# `vendor/code-evaluator/docker/Dockerfile.cpp` and point SIEVAL_CODE_EVAL_API at
+# it. The evaluator also reads the test directory off disk, so it needs the data
+# volume mounted; if it cannot see it, set `inline_tests: true` below and accept
+# ~140 MB per rollout on the wire.
+#
+# Scope: this runs the 380 `batch` problems. The 23 interactive ones need an
+# interactor process the evaluator does not run yet, so the dataset filters them
+# out rather than scoring them zero — which means these numbers are NOT
+# comparable to the paper's 403-problem table. Say which you ran next to a score.
+#
+# Edit these fields to match your setup:
+#   models.local-model.infer.checkpoint   — your model's on-disk path
+#   models.local-model.infer_meta.image   — swap to your own image if you need
+#                                           custom deps, or drop the block to run
+#                                           without a container
+# ------------------------------------------------------------------------------
+
+result_dir: ./outputs/liveoibench
+
+models:
+  local-model:
+    args:
+      concurrency_limit: 32
+      temperature: 1.0
+    infer:
+      backend: sglang
+      checkpoint: /path/to/your/model        # EDIT ME
+    infer_meta:
+      gpu: H100-80G
+      image: lmsysorg/sglang:latest
+
+datasets:
+  liveoibench:
+    class: LiveOIBenchDataset
+    # `sieval dataset download liveoibench` stages the problems repo here; the
+    # tests and contestant repos land beside it and are found from this path.
+    path: "${SIEVAL_DATA_DIR}/LiveOIBench/LiveOIBench"
+    args:
+      # Narrow the sweep while you are setting up — one competition is enough to
+      # prove the toolchain end to end:
+      #   competition: IOI
+      #   year: "2025"
+      task_type: batch
+
+tasks:
+  liveoibench_0shot_gen:
+    class: LiveOIBenchZeroShotGenTask
+    dataset: liveoibench
+    model: local-model
+    args:
+      # Upstream samples 8 candidates per problem and reports the BEST one, which
+      # is what the published percentiles are. At n=1 the score is a different
+      # (lower) quantity — reproduce upstream's protocol or say you did not.
+      n: 8
+      # Set true only if the evaluator cannot read the materialized test tree.
+      inline_tests: false
+    infer_args:
+      # Olympiad solutions are long, and a truncated program compiles to nothing.
+      # Watch `n_truncated` in report.json and raise this if it is non-zero.
+      max_tokens: 32768

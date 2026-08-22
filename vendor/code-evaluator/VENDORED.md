@@ -72,3 +72,37 @@
 - `README.md` — translated from Chinese to English, so the vendored docs match
   the rest of the repo. Content is otherwise unchanged apart from the case-count
   section above.
+- `app/exec_cpp.py`, `app/server.py`, `docker/Dockerfile.cpp` — **C++ execution**,
+  for `source="liveoibench"`. The first non-Python language the evaluator runs as
+  a *compiled* artifact: `g++ -std=gnu++17 -Wall -O2 -pipe -static -g`, then one
+  child per test case under `RLIMIT_CPU` / `RLIMIT_AS`. Both limits carry
+  upstream LiveOIBench's explicit 20% buffer, and a 10 ms poller kills a child
+  whose CPU time passes the buffered limit — the rule its `BatchJudge` applies,
+  ported rather than reinvented, along with its output comparison (strip;
+  single-number outputs compare at `rel_tol=abs_tol=1e-6`; else exact; else line
+  count plus stripped per-line match).
+
+  Three differences from upstream LiveOIBench, all documented in the module:
+  compilation is bounded (`timeout`, default 60 s) where upstream's
+  `subprocess.run` has no timeout; every test always runs, since subtask scoring
+  needs the whole verdict vector; and no checker path exists, because the
+  published dataset ships no `checkers/` directory, so upstream's own judge
+  compares outputs directly on this data.
+
+  `Sample` gains `files` (extra sources compiled alongside — `grader.cpp`,
+  `{task}.h`) and `entry_filename`; the test model gains `names`, used only in
+  the failure message. `ResourceMetrics` gains `case_verdicts` — one bool per
+  case, in request order — because an olympiad subtask scores on its own test
+  group, so `n_passed` alone cannot be attributed. All fields are optional and
+  the other sources are untouched.
+
+  The test model is still named `LiveCodeBenchTest` though two sources now share
+  it; renaming it would widen the diff against upstream without changing the
+  wire format.
+
+  `Dockerfile.cpp` exists because the base image has no toolchain: g++ without
+  `libstdc++-*-dev` / `libc6-dev` links nothing statically, and every submission
+  would fail identically. Verified against g++ 14.2 on Debian: correct, partial,
+  TLE, MLE, compile-error, float-tolerance and grader-linked submissions all
+  produce the expected verdict vectors. Not yet upstream — land in
+  `scitix/code-evaluator` and re-vendor.

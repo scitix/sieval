@@ -7,6 +7,8 @@ from fastapi import FastAPI
 from loguru import logger
 from pydantic import BaseModel
 
+from .exec_cpp import build_cases
+from .exec_cpp import execute_tests as exec_cpp_test
 from .exec_js import execute_code as exec_js
 from .exec_py_code import execute_code as exec_py_code
 from .exec_py_test import execute_test as exec_py_test
@@ -66,6 +68,18 @@ class ResourceMetrics(BaseModel):
     ``None`` only when nothing ran at all, i.e. an unsupported language or
     source, where ``data`` itself is ``None``.
 
+    ``case_verdicts`` is the per-case detail behind ``n_passed``: one bool per
+    case, in request order. Only ``liveoibench`` fills it, because only it needs
+    *which* cases passed -- an olympiad subtask scores on its own test group, so
+    a count cannot be attributed. ``None`` elsewhere means "not reported", which
+    is why the count fields stay rather than being derived from it.
+
+    ``case_names`` is what those verdicts belong to, positionally. It matters
+    when the caller passed ``test_dir`` rather than inline cases: the server
+    decided the order by listing that directory, and a caller that re-derived it
+    would be keeping a second copy of the ordering rule -- the kind that agrees
+    until one side changes.
+
     Kept as one flat model rather than a per-source subclass: FastAPI filters the
     response against this route's declared model, so a subclass returned from one
     branch would have its extra fields silently stripped.
@@ -77,6 +91,8 @@ class ResourceMetrics(BaseModel):
     peak_memory_mb: float
     n_cases: int | None = None
     n_passed: int | None = None
+    case_verdicts: list[bool] | None = None
+    case_names: list[str] | None = None
 
 
 @app.get("/health")
@@ -88,6 +104,10 @@ class LiveCodeBenchTest(BaseModel):
     inputs: list[str]
     outputs: list[str]
     fn_name: str | None = None
+    # `liveoibench` only, and only for the failure message: its test cases have
+    # official names ("boi1a") that a caller reading the log wants back. The
+    # verdict-to-subtask mapping is positional, so nothing depends on it.
+    names: list[str] | None = None
 
 
 class Sample(BaseModel):
@@ -97,6 +117,16 @@ class Sample(BaseModel):
     test: LiveCodeBenchTest | None = None
     lang: str = "python"
     timeout: float | None = None
+    # `liveoibench` only: extra sources written beside the submission before
+    # compiling -- the problem's `grader.cpp` and `{task}.h` -- and the filename
+    # the submission itself is written as, which its `#include` has to match.
+    files: dict[str, str] | None = None
+    entry_filename: str | None = None
+    # `liveoibench` only: a directory of `{name}.in` / `{name}.out` pairs this
+    # evaluator can read, used instead of `test`. A problem averages ~140 MB of
+    # test data, so inlining it would move the corpus over HTTP once per rollout;
+    # a caller whose evaluator cannot see the volume sends `test` instead.
+    test_dir: str | None = None
     # Per-case budget, applied on top of `timeout`, which stays a whole-suite wall.
     # Opt-in: absent keeps the previous behaviour exactly. Official LiveCodeBench
     # budgets per case rather than per suite -- see `exec_py_test.execute_test`.
@@ -216,6 +246,91 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
                 peak_memory_mb=stats.peak_memory_mb,
                 n_cases=n_cases,
                 n_passed=n_passed,
+            ),
+        )
+    elif sample.source == "liveoibench":
+        # 'liveoibench': compile the C++ submission once, then run every official
+        # test case. Unlike the livecodebench path this reports per-case verdicts
+        # and never stops early -- an olympiad subtask is scored on its own test
+        # group, so a submission that fails case 0 and passes the rest still
+        # earns points.
+        if sample.lang != "cpp":
+            return BasicResponse(
+                status=False, msg=f"not supported language: {sample.lang}", data=None
+            )
+        if sample.test is None and not sample.test_dir:
+            return BasicResponse(
+                status=False,
+                msg="'liveoibench' requires either 'test' or 'test_dir'",
+                data=None,
+            )
+        if (
+            sample.test is not None
+            and not sample.test_dir
+            and len(sample.test.inputs) != len(sample.test.outputs)
+        ):
+            return BasicResponse(
+                status=False,
+                msg=(
+                    f"test inputs/outputs length mismatch: "
+                    f"{len(sample.test.inputs)} != {len(sample.test.outputs)}"
+                ),
+                data=None,
+            )
+
+        try:
+            cases = build_cases(
+                inputs=sample.test.inputs if sample.test else None,
+                expect_outputs=sample.test.outputs if sample.test else None,
+                names=sample.test.names if sample.test else None,
+                test_dir=sample.test_dir,
+            )
+        except (FileNotFoundError, OSError) as e:
+            # An unreadable `test_dir` is a deployment problem (the evaluator
+            # cannot see the test volume), not a verdict on the submission.
+            logger.error(f"cannot read tests for sample '{sample.uuid}': {e}")
+            return BasicResponse(status=False, msg=f"cannot read tests: {e}", data=None)
+
+        # The problem's own time limit, in seconds, per case; upstream buffers it
+        # by 20% inside the runner. `timeout` bounds compilation instead -- the
+        # one step with no per-case budget.
+        timeout_per_case = (
+            sample.timeout_per_case if sample.timeout_per_case is not None else 1.0
+        )
+        compile_timeout = sample.timeout if sample.timeout is not None else 60.0
+
+        ok, msg, stats, n_passed, verdicts = await exec_cpp_test(
+            code=sample.code,
+            cases=cases,
+            entry_filename=sample.entry_filename or "solution.cpp",
+            files=sample.files,
+            timeout_per_case=timeout_per_case,
+            memory_limit=sample.memory_limit,
+            compile_timeout=compile_timeout,
+        )
+        n_cases = len(cases)
+
+        logger.info(
+            f"evaluate sample '{sample.uuid}' from '{sample.source}', "
+            f"language: {sample.lang}, timeout_per_case: {timeout_per_case}, "
+            f"compile_timeout: {compile_timeout}, memory_limit: {sample.memory_limit}, "
+            f"kwargs: {sample.kwargs}, status: {ok}, msg: {msg}, "
+            f"cases: {n_passed}/{n_cases}, "
+            f"avg_memory: {stats.memory_mb:.2f}MB, "
+            f"peak_memory: {stats.peak_memory_mb:.2f}MB"
+        )
+        return BasicResponse(
+            status=ok,
+            msg=msg,
+            data=ResourceMetrics(
+                avg_cpu_percent=stats.cpu_percent,
+                peak_cpu_percent=stats.peak_cpu_percent,
+                avg_memory_mb=stats.memory_mb,
+                peak_memory_mb=stats.peak_memory_mb,
+                n_cases=n_cases,
+                n_passed=n_passed,
+                case_verdicts=verdicts,
+                case_names=[case.name for case in cases],
             ),
         )
     else:
