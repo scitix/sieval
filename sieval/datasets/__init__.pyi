@@ -189,6 +189,10 @@ from .smt_2025 import (
     SMT2025Dataset,
     SMT2025DatasetSample,
 )
+from .spider import (
+    SpiderDataset,
+    SpiderDatasetSample,
+)
 from .sysbench import (
     SysBenchDataset,
     SysBenchDatasetSample,
@@ -301,6 +305,8 @@ __all__ = [
     "SciTaRCDatasetSample",
     "SimpleQAVerifiedDataset",
     "SimpleQAVerifiedDatasetSample",
+    "SpiderDataset",
+    "SpiderDatasetSample",
     "SysBenchDataset",
     "SysBenchDatasetSample",
     "TEvalBeforeCallingDataset",

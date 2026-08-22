@@ -120,8 +120,11 @@ def test_load_exposes_both_splits(tmp_path):
 
 def test_db_dir_and_tables_json_point_at_extracted_files(tmp_path):
     dataset = SpiderDataset(str(_make_archive(tmp_path)))
-    assert Path(dataset.db_dir, "concert_singer", "concert_singer.sqlite").is_file()
-    assert Path(dataset.tables_json_path).is_file()
+    db_dir = dataset.db_dir
+    tables_json_path = dataset.tables_json_path
+    assert db_dir is not None and tables_json_path is not None
+    assert Path(db_dir, "concert_singer", "concert_singer.sqlite").is_file()
+    assert Path(tables_json_path).is_file()
 
 
 def test_extraction_is_idempotent(tmp_path):

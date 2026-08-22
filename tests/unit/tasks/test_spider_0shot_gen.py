@@ -63,9 +63,9 @@ def test_extract_takes_the_last_fence_when_several_are_present():
 
 
 def test_extract_handles_a_with_clause():
-    assert extract_sql("```sql\nWITH c AS (SELECT 1) SELECT * FROM c\n```").startswith(
-        "WITH"
-    )
+    extracted = extract_sql("```sql\nWITH c AS (SELECT 1) SELECT * FROM c\n```")
+    assert extracted is not None
+    assert extracted.startswith("WITH")
 
 
 def test_extract_strips_a_trailing_semicolon():
