@@ -13,6 +13,7 @@ matches what you're trying to do, copy it, edit the marked fields, and run
 | [infer-recipe-override.yaml](infer-recipe-override.yaml) | Pin a specific inference recipe or override engine args |
 | [ruler-qwen3-8b-nonthinking.yaml](ruler-qwen3-8b-nonthinking.yaml) | RULER long-context sweep — 13 subtasks × 6 lengths (4k–128k), YaRN for 64k/128k |
 | [ruler-qwen3-8b-thinking.yaml](ruler-qwen3-8b-thinking.yaml) | Same RULER sweep with Qwen3 thinking enabled (adds `think_budget` + reasoning parser) |
+| [liveoibench.yaml](liveoibench.yaml) | LiveOIBench — olympiad C++ problems scored by subtask; needs a C++-capable evaluator and a one-time 33.5 GB test unpack |
 
 ## Hardware-indexed (reference configs)
 
