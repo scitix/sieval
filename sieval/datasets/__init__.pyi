@@ -205,6 +205,10 @@ from .ugmathbench import (
     UGMathBenchDataset,
     UGMathBenchDatasetSample,
 )
+from .wikisql import (
+    WikiSQLDataset,
+    WikiSQLDatasetSample,
+)
 
 __all__ = [
     "AALCRDataset",
@@ -309,4 +313,6 @@ __all__ = [
     "TheoremQADatasetSample",
     "UGMathBenchDataset",
     "UGMathBenchDatasetSample",
+    "WikiSQLDataset",
+    "WikiSQLDatasetSample",
 ]
