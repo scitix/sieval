@@ -88,7 +88,7 @@ def test_load_drops_the_unrepresentable_sql_column(tmp_path):
     nothing. Without the drop, `load_dataset` raises ArrowInvalid outright.
     """
     dataset = SpiderDataset(str(_make_archive(tmp_path)))
-    assert dataset.dataset_dict["validation"].column_names == [
+    assert dataset.dataset_dict["test"].column_names == [
         "db_id",
         "query",
         "query_toks",
@@ -98,10 +98,21 @@ def test_load_drops_the_unrepresentable_sql_column(tmp_path):
     ]
 
 
+def test_dev_is_exposed_as_the_test_split(tmp_path):
+    """The runner evaluates `Dataset.test_set`, which reads only `test`.
+
+    Spider's reported split is its dev set, so dev.json lands under `test`.
+    Any other name evaluates zero samples, silently.
+    """
+    dataset = SpiderDataset(str(_make_archive(tmp_path)))
+    assert dataset.test_set is not None
+    assert len(dataset.test_set) == 1
+
+
 def test_load_exposes_both_splits(tmp_path):
     dataset = SpiderDataset(str(_make_archive(tmp_path)))
-    assert set(dataset.dataset_dict.keys()) == {"train", "validation"}
-    assert dataset.dataset_dict["validation"][0]["question"] == (
+    assert set(dataset.dataset_dict.keys()) == {"train", "test"}
+    assert dataset.dataset_dict["test"][0]["question"] == (
         "How many singers do we have?"
     )
     assert dataset.dataset_dict["train"][0]["question"] == "Train q?"
