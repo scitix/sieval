@@ -83,8 +83,21 @@ def _task(reply: str = "{}") -> WikiSQLZeroShotGenTask:
     return WikiSQLZeroShotGenTask(ds, _StubChatModel(reply))
 
 
+def _require_engine() -> None:
+    """Skip unless the ``wikisql`` extra is installed.
+
+    Only the grading half needs it: `feedback` imports the vendored engine,
+    which reaches babel. Placed at this chokepoint rather than on the module so
+    the prompt, extractor and metadata tests keep running where the extra is
+    absent — CI installs eight dependency groups and not this one, and the
+    no-table-content check is exactly the kind of thing worth gating there.
+    """
+    pytest.importorskip("babel", reason="requires the `wikisql` extra")
+
+
 async def _judge(reply: str, gold=None, n: int = 1):
     """Run postprocess + feedback on one reply, returning the judgement."""
+    _require_engine()
     raw = _sample(gold)
     task = _task(reply)
     task._n = n
@@ -363,3 +376,42 @@ async def test_empty_run_reports_zeroes_and_still_declares():
     assert report["score"] == 0.0
     assert report["score_key"] == "ex_accuracy"
     assert report["denominator_policy"] == DENOMINATOR_REQUESTED
+
+
+# --- all five stages, in order ---------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_all_five_stages_wire_together():
+    """The only test that calls `infer`, so the seam is covered somewhere.
+
+    Every other test starts at `postprocess` with a hand-made reply, which
+    cannot catch a prompt that never reaches the model or a `ModelOutput` the
+    extractor is not given. Runs the real stage sequence against a stub whose
+    reply is the gold form, so a green run means the wiring carries a correct
+    answer all the way to a 100.0 headline.
+    """
+    _require_engine()
+    raw = _sample()
+    task = _task(json.dumps(_GOLD))
+    ctx = TaskContext(sample_id=0, raw_sample=raw)
+
+    pre = await task.preprocess(raw, ctx)
+    inf = await task.infer(pre, ctx)
+    # The prompt built in preprocess is what actually went out.
+    assert raw["question"] in pre["prompt"][0]["content"]
+    assert inf.texts and json.loads(inf.texts[0]) == _GOLD
+
+    post = await task.postprocess(inf, ctx)
+    assert post["rollouts"][0].get("prediction") == _GOLD
+
+    finalize, judgement = await task.feedback(post, ctx)
+    assert finalize is True
+    assert judgement["rollouts"][0]["metrics"] == {"ex": True, "lf": True}
+
+    report = await task.report(
+        [_Final(postprocess_result=post, feedback_result=judgement)], fails=[]
+    )
+    assert report["score"] == 100.0
+    assert report["lf_accuracy"] == 100.0
+    assert report["n_unextracted"] == 0.0
