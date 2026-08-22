@@ -251,13 +251,21 @@ them rather than assert them:
 
 ## 9. Dependencies
 
-Spider 1.0 declares **no extra at all** — loader and grader are stdlib
-(`json`, `zipfile`, `sqlite3`), and an empty optional-dependency group would be a
-declaration that means nothing. Both its dataset and task carry `deps_group=None`.
+**Corrected 2026-08-22 during planning.** An earlier draft of this section said
+Spider 1.0 needed no extra. That was wrong: `process_sql.py:29` is
+`from nltk import word_tokenize`, so the vendored grader pulls in NLTK *and* its
+`punkt_tab` corpus. The dataset loader is genuinely stdlib
+(`json` / `zipfile` / `sqlite3`) and keeps `deps_group=None`; the **task** carries
+`deps_group="spider"`.
 
-Spider 2.0 adds one group:
+The corpus is fetched **on demand at grade time**, never at module scope and
+never baked into an image — module-scope downloads race under parallel test
+collection. `multi_if_0shot_gen._ensure_punkt_tab` is the pattern to copy,
+including its `@cache`d single download attempt per process, so an offline run
+does not pay a network timeout once per sample.
 
 ```toml
+spider = ["nltk>=3.9.2"]
 spider2 = [
   "pandas>=2.0",
   "duckdb>=1.0",
