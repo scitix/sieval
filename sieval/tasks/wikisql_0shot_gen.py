@@ -96,7 +96,6 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 import json
 from typing import override
 
-from sieval.community.wikisql import DBEngine, Query
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
@@ -390,7 +389,15 @@ class WikiSQLZeroShotGenTask(
         scores wrong. The failure reason is kept in ``extra`` rather than
         discarded, since "the model emitted a well-formed query that does not
         run" is a different diagnosis from "the model emitted nothing".
+
+        The engine import is deferred to here, not module scope: it reaches
+        ``babel`` through upstream's ``dbengine``, and registering a task must
+        not pull its optional grading dependency in — otherwise the ``wikisql``
+        group stops being optional and `sieval task list` needs it. Pinned by
+        ``tests/unit/tasks/test_import_discipline_family.py``.
         """
+        from sieval.community.wikisql import DBEngine, Query
+
         raw = ctx.raw_sample
         table_id = raw["table_id"]
         sql = json.loads(raw["sql_json"])
