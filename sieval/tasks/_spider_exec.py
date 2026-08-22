@@ -192,7 +192,9 @@ def grade_one(
         p_sql = get_sql(schema, pred_sql)
     except Exception:
         # Upstream's behaviour: score the empty parse rather than skip the row.
-        p_sql = dict(EMPTY_SQL)
+        # Annotated because the literal's inferred value type would otherwise
+        # narrow `p_sql["from"]` to a union including `list`.
+        p_sql: dict = dict(EMPTY_SQL)
 
     kmap = _kmaps(tables_json_path)[db_id]
     g_valid = build_valid_col_units(g_sql["from"]["table_units"], schema)
