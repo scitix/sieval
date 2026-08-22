@@ -46,14 +46,33 @@ compare, an unparseable prediction is still scored against upstream's empty
 parse rather than skipped, and exact match runs *after* execution because
 ``eval_exact_match`` mutates the parse trees in place.
 
+**Safety delta, measured (2026-08-22).** All three obligations the hardening
+owes are discharged, none of them needing a model:
+
+* **No bound binds.** Over all 1,034 dev golds the largest result is 20,662 rows
+  and the slowest query 0.486 s, against a 100,000-row cap and a 5 s deadline.
+  A gold-vs-gold pass scores 1,034/1,034 on both metrics with zero errors, and
+  its hardness split (248 easy / 446 medium / 174 hard / 166 extra) reproduces
+  Spider's published dev distribution.
+* **Quantified score impact: 99.903% verdict parity.** Over 1,033 comparable
+  pairs — each dev gold graded against a sibling row's gold from the same
+  database, so the mix is realistic and executable without an API — the hardened
+  executor and upstream's own ``eval_exec_match`` (called with its own module
+  globals, not a reimplementation) agree 1,032 times and differ once. Upstream
+  additionally crashed outright on one further pair.
+* **Safety, not repair.** Both of those two cases are ``wta_1`` and both trace to
+  the same cause, the UTF-8 text factory: upstream's decode error surfaces as
+  ``False`` when it hits the prediction (caught by its bare ``except:``) and as a
+  crash when it hits the gold. **The read-only connection, the ATTACH denial,
+  the deadline and the row cap produced zero verdict differences.** Worst-case
+  headline impact is 2 of 1,034 samples, 0.19 pp, and only on models that get
+  those two questions right.
+
 Target: published Spider dev execution accuracy for the model under test.
 
-Measured: not yet — see ``status``. Shipping ``stable`` owes a quantified safety
-delta against upstream's unhardened behaviour on a stored run, and an alignment
-measurement against a published row. The third obligation, evidence that no
-bound binds, is already discharged: over all 1,034 dev golds the largest result
-is 20,662 rows and the slowest query 0.486 s, against a 100,000-row cap and a
-5 s deadline, with the gold-vs-gold pass scoring 1,034/1,034 on both metrics.
+Measured against a published anchor: **not yet**, which is the only reason this
+ships ``experimental`` rather than ``stable``. That run needs model access; the
+safety work above does not, and is already done.
 
 References:
 
@@ -176,7 +195,13 @@ def _ensure_punkt_tab() -> None:
             "(upstream opens read-write; dict equality asserted in tests), and a "
             "surrogateescape text factory, because wta_1.players.last_name is "
             "not valid UTF-8 and upstream fetches gold outside its except, so it "
-            "dies on two dev examples rather than scoring them. Bounds measured "
+            "dies on two dev examples rather than scoring them. SAFETY DELTA "
+            "MEASURED: 99.903% verdict parity against upstream's own "
+            "eval_exec_match over 1,033 comparable pairs (1,032 agree, 1 "
+            "differs, plus 1 upstream crash); all three cases are wta_1 and all "
+            "trace to the text factory — the read-only connection, ATTACH "
+            "denial, deadline and row cap produced zero verdict differences. "
+            "Worst-case headline impact 2/1,034 = 0.19pp. Bounds measured "
             "over all 1,034 dev golds: largest result 20,662 rows, slowest "
             "0.486s, against a 100,000-row cap and a 5s deadline. Prompt follows "
             "Rajkumar et al. 2022 (arXiv:2204.00498) CREATE TABLE + 3 example "
