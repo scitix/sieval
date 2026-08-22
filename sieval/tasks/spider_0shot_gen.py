@@ -333,7 +333,7 @@ class SpiderZeroShotGenTask(
     async def report(self, finals, fails):
         n_exec = 0
         n_exact = 0
-        n_unexecutable = 0
+        n_execution_errors = 0
         by_hardness: dict[str, list[int]] = {level: [0, 0] for level in HARDNESS_LEVELS}
         for final in finals:
             for rollout in (final.feedback_result or {}).get("rollouts", []):
@@ -343,7 +343,7 @@ class SpiderZeroShotGenTask(
                 n_exec += executed
                 n_exact += bool(metrics.get("exact_match"))
                 if extra.get("error"):
-                    n_unexecutable += 1
+                    n_execution_errors += 1
                 bucket = by_hardness.get(extra.get("hardness") or "")
                 if bucket is not None:
                     bucket[0] += executed
@@ -363,7 +363,7 @@ class SpiderZeroShotGenTask(
             # Predictions that would not run at all (syntax error, deadline,
             # row cap). They score 0 either way; the count separates "wrong
             # answer" from "no answer", which the headline cannot.
-            "n_unexecutable": float(n_unexecutable),
+            "n_execution_errors": float(n_execution_errors),
             SCORE_KEY_FIELD: "execution_accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
