@@ -292,21 +292,38 @@ def test_language_has_no_default(language):
 @pytest.mark.parametrize(
     ("language", "expected_tag"),
     [
+        # Tags upstream publishes under the language's own name.
         ("Lua", "lua"),
         ("Lua /nothink", "lua"),
-        ("Julia 1.10", "julia"),
-        ("OCaml", "ocaml"),
+        ("R", "r"),
+        ("Python", "python"),
+        ("Java", "java"),
+        # ...and the ones tagged by FILE EXTENSION instead. Lowercasing the first
+        # word -- the obvious derivation -- names no published image for these,
+        # so every rollout would come back `infra:exit`. Three of the five
+        # languages the paper reports are in this half.
+        ("Julia 1.10", "jl"),
+        ("OCaml", "ml"),
+        ("Fortran", "f90"),
+        ("C++", "cpp"),
     ],
 )
-def test_container_tag_is_derived_from_the_first_word(language, expected_tag):
+def test_container_tag_matches_upstreams_published_tags(language, expected_tag):
+    # ghcr.io/nuprl/agnostics ships exactly: lua, r, python, jl, java, cpp, ml, f90.
     assert _task(language=language)._container_lang == expected_tag
 
 
+def test_an_unknown_language_falls_through_to_its_first_word():
+    # No table entry is not an error: a private registry may publish any tag, and
+    # the first word is the only sensible guess.
+    assert _task(language="Zig 0.13")._container_lang == "zig"
+
+
 def test_container_tag_can_be_overridden():
-    # Upstream warns the two are independent; "C++" is the obvious case where the
-    # derivation cannot be right.
-    task = _task(language="C++", container_lang="cpp")
-    assert task._container_lang == "cpp"
+    # What a private registry or a hand-built container needs; upstream warns the
+    # prompt language and the verifier tag are independent.
+    task = _task(language="Julia", container_lang="julia-1-10-custom")
+    assert task._container_lang == "julia-1-10-custom"
 
 
 @pytest.mark.anyio
