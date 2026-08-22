@@ -1168,6 +1168,33 @@
       }
     },
     {
+      "name": "spider2_lite",
+      "display_name": "Spider 2.0-lite",
+      "description": "Enterprise-scale text-to-SQL; 547 questions over BigQuery, Snowflake and SQLite.",
+      "source": [
+        "url:https://github.com/xlang-ai/Spider2/archive/cafb867313aab4e674652054198f383cf4018943.zip",
+        "url:https://huggingface.co/datasets/xlangai/spider2-localdb/resolve/c700cf8fe4064c745274870ba1c295f33610736a/sqlite.zip"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        }
+      ],
+      "tags": [
+        "english",
+        "text-to-sql",
+        "code-exec",
+        "enterprise"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {
+        "cafb867313aab4e674652054198f383cf4018943.zip": "sha256:1e3cbb6a0eb13d9a397a8a786d9cd9b06ba54df124b6a193dd52f2949580276b",
+        "sqlite.zip": "sha256:d97fc0f3f6bc3f1a83548ad2b32c646bfc67433c23a0c499d3450796196b2776"
+      }
+    },
+    {
       "name": "sysbench",
       "display_name": "SysBench (system-message following)",
       "description": "500 Chinese 5-turn sessions with per-turn constraint checklists, one row per session.",
@@ -2665,6 +2692,29 @@
         "notes": "MathArena-aligned: boxed prompt, last-boxed extraction; equivalence via math-verify. REPEATS: upstream publishes at 4 runs/problem (`--n 4`); this task defaults to n=1, so pass n=4 as `tasks.<name>.args.n` to compare against matharena.ai — setting `n` on the model is overridden call-time, and k>n is rejected at construction. DEVIATION: golds are normalized by sieval.community.math.strip_string; matharena does not. LIST GOLDS: problem 32's gold is a comma-separated list, and upstream joins every box on the final line whenever the gold holds a comma; this task derives that `list_answer` flag as grader.py does. Wiring it moved 0 of 10,875 smt_2025_outputs rollouts — every model that answered problem 32 boxed the whole list, so the flag is parity insurance here, not a fix. PROMPT COHORT: this task sends the pinned config's `instruction`, which upstream later changed without re-running earlier rows — only 5 of 43 models on matharena.ai's SMT table (1,060/10,875 rollouts) match it; the rest carry a leading `Please reason step by step, and `. That confounds any delta against an older row rather than being a defect; measured once, on brumo_2025, at 0.8 pp — below that set's sampling noise. OVERLAP: apex_2025 re-uses problems 8, 42 and 43 verbatim. VALIDATED: replaying MathArena/smt_2025_outputs (10,875 rollouts) reproduces upstream's `correct` on 99.1%, inside the 96.2-99.7% band of the shipped AIME/HMMT ports; residual is un-vendored normalize_string plus math-verify-vs-sympy."
       },
       "status": "stable",
+      "reference_kind": "value"
+    },
+    {
+      "name": "spider2_lite_0shot_gen",
+      "display_name": "Spider 2.0-lite (0-shot, generative)",
+      "description": "Enterprise text-to-SQL over BigQuery, Snowflake and SQLite; 547 questions.",
+      "dataset": "spider2_lite",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "text-to-sql",
+        "code-exec",
+        "enterprise"
+      ],
+      "deps_group": "spider2",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "xlang-ai/Spider2",
+        "url": "https://github.com/xlang-ai/Spider2/tree/cafb867313aab4e674652054198f383cf4018943/spider2-lite/",
+        "notes": "Comparison vendored byte-identical from evaluation_suite/evaluate.py (NOT evaluate_utils.py — the repo ships two compare_pandas_table copies and only evaluate.py's carries the 2025-10-29 fix: NaN normalised to 0, early break, empty-gold guard). Per-instance condition_cols/ignore_order from spider2lite_eval.jsonl, multi-gold via compare_multi_pandas_table over 1,545 gold CSVs. SQL extraction is upstream's extract_sql_query. DIVERGENCE — Snowflake execution is first-party: upstream's current lite evaluator routes only bq/ga and local and rejects every other prefix as 'Unsupported instance id prefix', leaving 207 of 547 unscoreable despite gold shipping for all 547; the stale evaluate_utils.get_snowflake_sql_result was not vendored because its sibling comparison is superseded. Snowflake numbers have no upstream lite counterpart — compare against Spider 2.0-Snow. DIVERGENCE — the local engine is hardened for execution safety (read-only immutable connection, ATTACH/DETACH denied, progress-handler deadline, 100k-row cap) where upstream copies the whole database into memory per query; that stops writes but not runaway queries, and the largest local database is 372 MB. Remote engines are bounded (90s timeout + row cap), not hardened. Local-schema prompts introspect the .sqlite file; cloud-schema prompts read upstream's resource/databases tree. Upstream runs one deterministic pass per question; n=1 is the protocol."
+      },
+      "status": "experimental",
       "reference_kind": "value"
     },
     {
