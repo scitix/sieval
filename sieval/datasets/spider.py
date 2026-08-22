@@ -101,7 +101,15 @@ class SpiderDataset(Dataset[SpiderDatasetSample]):
         return HFDatasetDict(
             {
                 "train": self._read_split(root / "train_spider.json"),
-                "validation": self._read_split(root / "dev.json"),
+                # Upstream's `dev.json`, deliberately exposed as `test`. Two
+                # reasons, and the mismatch is worth the friction: the runner
+                # evaluates `Dataset.test_set`, which reads exactly this key, so
+                # any other name would silently evaluate nothing; and Spider's
+                # dev set is the split the literature reports, because the real
+                # test set was held out for years. The archive does ship
+                # `test.json`, but nothing here reads it — adding it would take
+                # this name and push the reported split somewhere unevaluated.
+                "test": self._read_split(root / "dev.json"),
             }
         )
 
