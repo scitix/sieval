@@ -182,7 +182,7 @@ async def test_unexecutable_predictions_are_counted():
         _final(1, execution=False, exact=False, hardness="easy"),
     ]
     metrics = await _task().report(finals, [])
-    assert metrics["n_unexecutable"] == 1.0
+    assert metrics["n_execution_errors"] == 1.0
 
 
 # --- staged-path resolution -------------------------------------------------
