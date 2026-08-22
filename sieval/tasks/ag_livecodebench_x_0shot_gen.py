@@ -13,10 +13,12 @@ Two knobs, deliberately independent, because upstream keeps them independent:
   ``"Julia 1.10"``, ``"Lua /nothink"`` — upstream's own README suggests appending
   a version or a thinking-disable directive there).
 * ``container_lang`` selects the verifier the evaluator runs. Upstream warns that
-  nothing checks the two against each other; the default here derives the tag
-  from ``language``'s first word, lowercased, which is a convenience and not a
-  guarantee. Override it whenever the derivation is wrong (``"C++"`` is not a
-  container tag).
+  nothing checks the two against each other, and its published tags are **file
+  extensions rather than language names** -- ``ghcr.io/nuprl/agnostics`` ships
+  exactly ``lua, r, python, jl, java, cpp, ml, f90``, so Julia is ``jl``, OCaml
+  is ``ml`` and Fortran is ``f90``. The default maps those through
+  ``_CONTAINER_TAG_BY_LANGUAGE`` and otherwise lowercases ``language``'s first
+  word; override it for a private registry or a hand-built container.
 
 Both are recorded in ``report()``, because the task name cannot hold them: one
 registered task measures a different quantity per language, and a leaderboard
@@ -189,6 +191,36 @@ _OUTPUT_FIELDS = frozenset({"reasoning", "solution"})
 # this string here -- the task reads the response's `status`.
 _INFRA_PREFIX = "infra:"
 
+# Upstream tags its published verifiers by **file extension**, not by language
+# name: `ghcr.io/nuprl/agnostics` ships exactly
+# `lua, r, python, jl, java, cpp, ml, f90`. So lowercasing the language's first
+# word -- the obvious derivation, and the one this task shipped first -- names a
+# tag that does not exist for three of the five languages the paper reports, and
+# every rollout comes back `infra:exit` (no such image). The table is upstream's
+# tag list, keyed by what a `language` string plausibly starts with; anything not
+# in it falls through to the lowercased first word, which is right for `lua` /
+# `r` / `python` / `java` and is the only sensible guess for a container the
+# table has never seen.
+_CONTAINER_TAG_BY_LANGUAGE = {
+    "julia": "jl",
+    "ocaml": "ml",
+    "fortran": "f90",
+    "c++": "cpp",
+    "cplusplus": "cpp",
+}
+
+
+def _derive_container_tag(language: str) -> str:
+    """Upstream's published verifier tag for a prompt-language string.
+
+    Only a default -- ``container_lang`` overrides it, which is what a private
+    registry or a hand-built container needs. Reads the first word, since a
+    ``language`` may carry a version or a directive (``"Julia 1.10"``,
+    ``"Lua /nothink"``).
+    """
+    first_word = language.split()[0].lower()
+    return _CONTAINER_TAG_BY_LANGUAGE.get(first_word, first_word)
+
 
 def _render_prompt(
     language: str, question_content: str
@@ -334,7 +366,11 @@ def _decode_private_test_cases(text: str) -> list[dict[str, str]]:
             "verifier container is run by sieval's code-evaluator rather than "
             "from the harness process, same protocol and same image, different "
             "process boundary; (3) upstream's pre-run 'Say this is a test!' "
-            "smoke call is not reproduced. Upstream defaults: n=1 completion, "
+            "smoke call is not reproduced. Verifier tags are upstream's own, "
+            "which are FILE EXTENSIONS, not language names -- "
+            "ghcr.io/nuprl/agnostics ships lua, r, python, jl, java, cpp, ml, "
+            "f90, so Julia/OCaml/Fortran resolve to jl/ml/f90 and a lowercased "
+            "language name would name no image. Upstream defaults: n=1 completion, "
             "temperature 0.6 / top_p 0.95 / max_tokens 5000, container timeout "
             "supplied per run (README uses 15s, and sends that one number as "
             "BOTH the container's timeout_s and the outer process wall). No "
@@ -372,7 +408,8 @@ class AgLiveCodeBenchXZeroShotGenTask(
         silently would let two runs of the same task name mean different things.
 
         *container_lang* names the Agnostics verifier the evaluator should run;
-        when omitted it is ``language``'s first word, lowercased. *timeout* is
+        when omitted it is derived by :func:`_derive_container_tag`, which knows
+        that upstream tags by file extension (Julia is ``jl``). *timeout* is
         the container budget in seconds, sent as upstream sends it -- one number
         serving as both the container's own ``timeout_s`` and the wall the
         evaluator holds the process to.
@@ -390,7 +427,7 @@ class AgLiveCodeBenchXZeroShotGenTask(
                 "the verifier tag is not `language`'s first word lowercased."
             )
         self._language = language
-        self._container_lang = container_lang or language.split()[0].lower()
+        self._container_lang = container_lang or _derive_container_tag(language)
         self._k = k
         self._n = n
         self._timeout = timeout
