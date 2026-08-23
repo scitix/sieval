@@ -19,6 +19,13 @@ Two rules govern the whole file:
 | `score_key` | Which other key `score` was copied from — `pass@1`, `accuracy`, `exact_match`, … |
 | `fails` | Samples that failed the pipeline (an error, not a wrong answer). |
 | `denominator_policy` | Which population the headline is averaged over. |
+| `score_ci95` | 95% interval on `score`, as `[lo, hi]`, clustered on problems |
+| `n_problems` | Distinct problems the headline was averaged over |
+
+The first four are on every report. The interval pair is on every task that
+computes one, and adoption is still task by task — so a report may carry no
+interval at all, which is not the same as a zero-width one. It is never zeroed to
+stand in for a missing one.
 
 `denominator_policy` is `requested` (`finals + fails`, so a pipeline failure
 counts as **wrong**) or `judged` (`finals` only, failures excluded). The split is
@@ -26,16 +33,130 @@ upstream-convention-driven, and unifying it would change `score` for eight tasks
 — so it is declared rather than resolved. Two tasks are directly comparable only
 when this field agrees; when `fails` is 0 the two coincide.
 
-Both keys are enforced rather than conventional:
+`score_key` and `denominator_policy` are enforced rather than conventional:
 `scripts/check_preflight.py --check check_report_declarations` fails a task whose
 `report()` omits either, whose policy is a word other than the two above, or
 whose `score_key` names a column the report does not contain — nothing reads
-`score_key` at run time, so that last one would otherwise go unnoticed.
+`score_key` at run time, so that last one would otherwise go unnoticed. The same
+check fails a report that writes `score_ci95` without `n_problems`, or the
+reverse.
 
 One task is the documented exception, and only to the `score` half:
 `t_eval_before_calling_0shot_gen` publishes one rate per axis and no headline, so
 it emits neither `score` nor `score_key` — there is nothing for the latter to
 name. It still declares `denominator_policy`.
+
+## The interval on the headline
+
+`score_ci95` is a 95% interval on `score`; `n_problems` is the population it was
+clustered over. They arrive as a **pair or not at all** — an interval whose
+population is unknown cannot be read, and a population with no interval beside it
+is a count nothing asked for — and both are omitted, never zeroed, when there is
+nothing to estimate: fewer than two problems, or no spread between them.
+
+It is a Wilson interval on an effective sample size, so it stays inside 0–100 and
+is asymmetric near a bound; at a `score` of exactly 0 or 100 it falls back to the
+exact one-sided Clopper-Pearson limit over problems, which is where a reader most
+needs a bound. Nothing in it is random, so two readers of the same run compute
+the same interval, and a resumed run computes the same one as a fresh one.
+
+### What it estimates — and the two things it does not
+
+Three different questions get called "the confidence interval". This ships
+exactly one of them:
+
+| Question | Estimand | Shipped |
+| --- | --- | --- |
+| Would this number hold on another problem set from the same distribution? | between-problem variance | **yes — this is `score_ci95`** |
+| Would a re-run of this exact config move the score? | between-invocation variance | no |
+| Is run A different from run B on the same problems? | paired per-problem delta | no |
+
+Re-run variance is absent because **no single run can estimate it**, and that was
+measured rather than assumed. The candidate was the closed-form rollout standard
+error — the within-run quantity that would have had to answer it. It is exactly
+calibrated *within* a run: split-half over 12 real runs gives a mean z² of 1.05,
+against 1.00 for a perfectly calibrated interval. Across runs it is **2.0× too
+narrow**: over 6 identical-config replicate pairs the mean z² is 4.18, and 4 of
+those 6 re-runs landed outside their own nominal 95% interval. An estimator that
+is calibrated inside a run and half the width it should be between runs cannot be
+relabelled as a re-run interval, so `score_ci95` does not claim to be one.
+Run-to-run drift within roughly 3 pp is treated as acceptable and is not pursued.
+
+### Width is not comparable across budgets
+
+At `n = 1` the interval necessarily carries rollout noise as well as
+between-problem noise: one draw per problem cannot separate them. It sheds that
+as `n` rises. Measured on one real 30-problem run:
+
+| `n` | half-width |
+| --- | --- |
+| 1 | ±11.65 |
+| 4 | ±8.51 |
+| 8 | ±7.36 |
+| 64 | ±6.68 |
+
+It converges to a floor set by the problem count, not by the budget — across 12
+runs that floor was 51–65% of the same run's `n = 1` width. So a wider interval
+at low `n` is a property of the estimator, **not** evidence that the model is
+less stable there, and two tasks' widths are comparable only at the same `n`.
+
+### The floor is `n_problems`, not `n`
+
+A 30-problem set carries roughly ±7 pp of irreducible width. More sampling cannot
+shrink it; only more problems can. That is why `n_problems` has to be read beside
+the interval — the same ±7 pp is the floor on a 30-problem set and an alarm on a
+500-problem one — and it is why an interval quoted without its problem count is
+unreadable rather than merely incomplete.
+
+Read it with `denominator_policy` too. The interval covers the same population
+`score` does, so under `requested` the failed samples are in it, entering as
+deterministic zeros: they pull the centre down and add no width.
+
+### Copies of one problem are one problem
+
+`n_problems` is **not** the sample count whenever a task repeats its split.
+`gpqa_diamond_0shot_gen` evaluates every question four times with different answer
+orderings (simple-evals' `n_repeats`), so 198 questions arrive as 792 samples.
+Those four are four draws on one problem: the interval collapses them and
+`n_problems` counts questions. Reading 792 independent problems there would
+narrow the interval by √4 — on one real 30-question run, ±3.48 pp reported where
+±5.36 pp is true — with no other key in the report to disagree. Collapsing leaves
+`score` bit-for-bit unchanged; only the width moves.
+
+### Never infer a paired comparison from two per-run intervals
+
+Two runs' intervals overlapping is not evidence that the runs agree. On one real
+pair of runs the per-run intervals read ±10.5 pp and ±11.7 pp and overlap
+heavily, while the **paired per-problem delta** between those very same two runs
+reads ±1.6–2.2 pp and separates them cleanly. The two answer different questions:
+a per-run interval asks whether the number would hold on another problem set,
+where a paired delta asks whether these two runs differ on the problems both
+scored. Overlapping bars routinely hide a real, consistent regression, so do not
+read them as a null result. No report key carries the paired delta — it needs both
+runs, per problem, and lives outside a single run's `report.json`.
+
+### An interval names the axis it is clustered on
+
+A task publishing rates on two different axes must say which axis each of its
+intervals belongs to. UGMathBench is the case in this tree: `aacc` is a rate per
+*version* and `eacc` a rate per *problem*, so an interval on one is not an
+interval on the other, and each owes its own population. Reusing a problem-level
+population for a version-level rate narrows the interval by the same √times an
+uncollapsed repeat does, wearing a different name.
+
+The per-category keys (`score_<category>` on MMLU and MMLU-Pro) carry **no**
+interval today. Each would need its own population count, and one `n_problems`
+cannot carry 57 of them.
+
+### `hle_0shot_gen`'s `confidence_interval` is a different estimator
+
+It is a Wald half-width pooled over **attempts** — `(finals + fails) × n` of them
+— and therefore *unclustered*: the rollouts of one problem enter as independent
+trials, which understates the width, and understates it more the more the model
+varies per problem. It is kept because it is HLE's published convention, and it
+sits beside `score_ci95` exactly as `accuracy` sits beside `pass@1`: two answers
+to two different questions, not two candidates for one. When the question is
+whether the number would hold on another problem set, read the clustered one.
 
 ## Sampling metrics
 
