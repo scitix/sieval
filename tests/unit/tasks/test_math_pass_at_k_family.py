@@ -157,6 +157,39 @@ async def test_report_key_set_is_identical_when_empty(task_cls, dataset_cls, fie
 
 @pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)
 @pytest.mark.anyio
+async def test_report_carries_an_interval_around_the_headline(
+    task_cls, dataset_cls, field
+):
+    # Two problems split evenly is the smallest case with genuine spread --
+    # `wilson_interval` needs >= 2 problems and 0 < p < 1 to emit anything.
+    task = _build(task_cls, dataset_cls, field)
+    raw = _sample(field)
+    report = await task.report(
+        [
+            TaskContext(
+                sample_id=0,
+                raw_sample=raw,
+                feedback_result=_feedback(1),
+                postprocess_result=build_prediction_record([ANSWER]),
+            ),
+            TaskContext(
+                sample_id=1,
+                raw_sample=raw,
+                feedback_result=build_judgement_record(
+                    ANSWER, [build_rollout_judgement(0, False)]
+                ),
+                postprocess_result=build_prediction_record(["0"]),
+            ),
+        ],
+        [],
+    )
+    lo, hi = report["score_ci95"]
+    assert lo < report["score"] < hi
+    assert report["n_problems"] == 2
+
+
+@pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)
+@pytest.mark.anyio
 async def test_maj_at_k_clusters_equivalent_latex_into_one_vote(
     task_cls, dataset_cls, field
 ):
