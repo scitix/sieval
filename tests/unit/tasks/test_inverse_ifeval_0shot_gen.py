@@ -473,6 +473,24 @@ async def test_report_omits_sampling_block_at_n_1_and_adds_it_above():
 
 
 @pytest.mark.anyio
+async def test_report_carries_an_interval_around_the_headline():
+    # Two problems split evenly is the smallest case with genuine spread --
+    # `wilson_interval` needs >= 2 problems and 0 < p < 1 to emit anything.
+    task, _, _ = _task()
+    finals = _finals(
+        [
+            ("english", "Question Correction", [True]),
+            ("english", "Question Correction", [False]),
+        ]
+    )
+    report = await task.report(finals, [])
+
+    lo, hi = report["score_ci95"]
+    assert lo < report["score"] < hi
+    assert report["n_problems"] == 2
+
+
+@pytest.mark.anyio
 async def test_report_of_an_all_failed_run_still_has_the_key_set():
     task, _, _ = _task()
     report = await task.report([], [TaskContext(sample_id=0)])

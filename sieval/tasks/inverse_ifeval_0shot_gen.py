@@ -65,6 +65,8 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
+    PROBLEM_COUNT_FIELD,
+    SCORE_CI_FIELD,
     SCORE_KEY_FIELD,
     health_metrics,
     sampling_report,
@@ -142,7 +144,8 @@ class InverseIFEvalZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float | str | None],
+        # `list[float]` carries `score_ci95`.
+        dict[str, float | str | None | list[float]],
     ]
 ):
     @classmethod
@@ -308,7 +311,13 @@ class InverseIFEvalZeroShotGenTask(
         # since the paper's cell quantization implies n=6. Withholding the block
         # would hide the spread of a draw already paid for.
         rolled = sampling_report(
-            finals, n=self._n, k=self._k, denominator=total, votes=False
+            finals,
+            n=self._n,
+            k=self._k,
+            denominator=total,
+            votes=False,
+            score_key="pass@1",
+            grouping=self.problem_groups(finals),
         )
         pass_at_1 = rolled["pass@1"]
 
@@ -324,7 +333,7 @@ class InverseIFEvalZeroShotGenTask(
                 if not (verdict.get("extra") or {}).get("grader_parsed", True):
                     n_grader_unparsed += 1
 
-        metrics: dict[str, float | str | None] = {
+        metrics: dict[str, float | str | None | list[float]] = {
             "score": pass_at_1,
             "pass@1": pass_at_1,
             "fails": len(fails),
@@ -342,6 +351,9 @@ class InverseIFEvalZeroShotGenTask(
             SCORE_KEY_FIELD: "pass@1",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        for field in (SCORE_CI_FIELD, PROBLEM_COUNT_FIELD):
+            if field in rolled:
+                metrics[field] = rolled[field]
         if self._n > 1:
             # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)
