@@ -278,8 +278,14 @@ Measured on 12 real runs of the same checkpoint (`qwen3-a3b-sft-v02-dpo-rl-199st
 Rollout sampling noise is therefore fully explained by the closed form, and the
 remaining factor of two is between-invocation drift that no single-run estimator
 can see. Shipping a rollout interval labelled "how much a re-run would move"
-would be wrong in the direction that manufactures false regressions. That drift
-is a delivery-quality signal in its own right and deserves its own issue.
+would be wrong in the direction that manufactures false regressions.
+
+The drift itself is **not pursued here**: it is plausibly the serving engine
+differing between the two days rather than anything the eval side controls, and
+run-to-run movement within roughly 3 pp is treated as acceptable. Recorded because
+it bounds what a rollout interval could ever claim, not as an open action. One
+caveat for whoever uses that 3 pp as a threshold: the six measured pairs average
+−1.70 pp but the largest is −3.54 pp, so a single pair can sit just outside it.
 
 ## 8. Also needs updating
 
