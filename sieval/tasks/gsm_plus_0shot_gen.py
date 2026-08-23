@@ -120,6 +120,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import GSMPlusDatasetSample
@@ -218,8 +219,8 @@ class GSMPlusZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     @override
@@ -289,9 +290,14 @@ class GSMPlusZeroShotGenTask(
         # in the prediction file — so a pipeline failure counts as wrong.
         per_type: dict[str, list[int]] = defaultdict(lambda: [0, 0])  # [correct, total]
         correct_num = 0
+        # The same per-sample verdicts `accuracy` is a mean of, kept as the axis
+        # the interval is estimated on rather than recomputed below.
+        first: list[float] = []
         for ctx in finals:
             perturbation_type = ctx.feedback_result["extra"]["perturbation_type"]
-            if ctx.feedback_result["rollouts"][0]["correct"]:
+            correct = ctx.feedback_result["rollouts"][0]["correct"]
+            first.append(1.0 if correct else 0.0)
+            if correct:
                 correct_num += 1
                 per_type[perturbation_type][0] += 1
             per_type[perturbation_type][1] += 1
@@ -308,7 +314,7 @@ class GSMPlusZeroShotGenTask(
 
         total = len(finals) + len(fails)
         accuracy = 100 * correct_num / total if total else 0.0
-        report: dict[str, float | str] = {
+        report: dict[str, float | str | list[float]] = {
             "score": accuracy,
             "accuracy": accuracy,
             SCORE_KEY_FIELD: "accuracy",
@@ -337,4 +343,14 @@ class GSMPlusZeroShotGenTask(
         # failure mode — a reasoning model returning empty content, scored
         # correct on `critical thinking` — is invisible in report.json.
         report.update(health_metrics(finals))
-        return report
+        # On the headline only, over the same REQUESTED `total`.
+        # `score_wo_critical_thinking` is a co-headline with its OWN population
+        # (`wo_total`, untyped fails included) and the per-perturbation keys have
+        # theirs, so neither may borrow this interval or this `n_problems`.
+        grouping = self.problem_groups(finals)
+        return report | interval_metrics(
+            first,
+            denominator=total,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )

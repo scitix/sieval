@@ -80,6 +80,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    interval_metrics,
 )
 from sieval.core.utils.meta import build_stage_meta
 from sieval.datasets import MMMLUDatasetSample
@@ -196,8 +197,8 @@ class MMMLUKShotClpTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     """Full MMMLU evaluation with weighted locale/category/subject reporting."""
@@ -379,7 +380,7 @@ class MMMLUKShotClpTask(
                 JudgementRecord,
             ]
         ],
-    ) -> dict[str, float | str]:
+    ) -> dict[str, float | str | list[float]]:
         # Infra failures (e.g. transient ReadError) are reported separately and
         # excluded from the denominator, matching cmmlu_kshot_base_gen /
         # theoremqa: a scored-but-degenerate sample stays a final and counts as
@@ -388,7 +389,9 @@ class MMMLUKShotClpTask(
         if total == 0:
             # The declarations belong on this path too: a run that scored nothing
             # still reports which population it would have averaged over, so an
-            # empty report is not silently less readable than a full one.
+            # empty report is not silently less readable than a full one. The
+            # interval pair does NOT: there is nothing to estimate, and a zeroed
+            # `n_problems` would read as a measured population of none.
             return {
                 "score": 0.0,
                 "score_mmmlu": 0.0,
@@ -399,6 +402,10 @@ class MMMLUKShotClpTask(
 
         metric_counts: dict[str, _MetricCounts] = {}
         correct_total = 0
+        # The same per-sample verdicts `score` is a mean of. A `feedback_result`
+        # of None is a real 0 INSIDE the judged population, not a sample excluded
+        # from it -- the loop below already scores it wrong.
+        first: list[float] = []
 
         for ctx in finals:
             if ctx.feedback_result is None:
@@ -411,6 +418,7 @@ class MMMLUKShotClpTask(
                 locale = ctx.feedback_result["extra"]["locale"]
                 category = ctx.feedback_result["extra"]["category"]
                 subject = ctx.feedback_result["extra"]["subject"]
+            first.append(1.0 if correct else 0.0)
             if correct:
                 correct_total += 1
             self._add_group_metrics(
@@ -422,7 +430,7 @@ class MMMLUKShotClpTask(
             )
 
         score = correct_total * 100 / total
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float]] = {
             "score": score,
             "score_mmmlu": score,
             "fails": float(len(fails)),
@@ -431,7 +439,16 @@ class MMMLUKShotClpTask(
         }
         for key, counts in sorted(metric_counts.items()):
             metrics[key] = _metric_score(counts)
-        return metrics
+        # On the headline only. The locale / category / subject breakdown keys are
+        # each their own axis with their own population, and one `n_problems`
+        # cannot carry all of them.
+        grouping = self.problem_groups(finals)
+        return metrics | interval_metrics(
+            first,
+            denominator=total,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )
 
     def _build_train_prompt(self, sample: MMMLUDatasetSample) -> str:
         group = self._group(sample)

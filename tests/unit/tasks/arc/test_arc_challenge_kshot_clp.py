@@ -22,6 +22,7 @@ from sieval.datasets.arc_challenge import (
     ARCChallengeDataset,
     ARCChallengeDatasetSample,
 )
+from sieval.tasks.arc._base import arc_judgement_record
 from sieval.tasks.arc.arc_challenge_kshot_clp import ARCChallengeFewShotClpTask
 from tests.conftest import HandlerTransport
 
@@ -143,6 +144,37 @@ async def test_argmax_over_option_letters():
         "score_key": "acc",
         "denominator_policy": "judged",
     }
+
+
+@pytest.mark.anyio
+async def test_shared_report_pairs_the_interval_with_its_problem_count():
+    """`arc_report` is shared by all four leaves, and reached through a leaf here.
+
+    The grouping cannot be read inside a free function, so the leaf resolves it
+    and passes it in; this exercises that call path rather than the helper alone.
+    """
+    task, _model = _task({" A": -0.1, " B": -2.0, " C": -3.0})
+    raw = _sample()
+
+    def _final(sample_id: int, *, correct: bool) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            raw_sample=raw,
+            feedback_result=arc_judgement_record(0 if correct else 1, raw),
+        )
+
+    report = await task.report(
+        [_final(0, correct=True), _final(1, correct=False)],
+        [TaskContext(sample_id=2, raw_sample=raw)],
+    )
+
+    assert report["score"] == report["acc"] == 50.0
+    # JUDGED: the fail is outside the population, so 2 -- not 3.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
 
 
 @pytest.mark.anyio

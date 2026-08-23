@@ -65,6 +65,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    interval_metrics,
 )
 from sieval.core.utils.ppl import choice_scores_from_top_logprobs
 from sieval.datasets import MMLUDatasetSample
@@ -131,8 +132,8 @@ class MMLUFewShotCLPTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     requires = TaskRequirements(
@@ -275,9 +276,13 @@ class MMLUFewShotCLPTask(
     async def report(self, finals, fails):
         correct_num = 0
         category_metrics = defaultdict(lambda: {"correct": 0, "total": 0})
+        # The same per-sample verdicts `score` is a mean of, kept as the axis the
+        # interval is estimated on rather than recomputed below.
+        first: list[float] = []
         for ctx in finals:
             correct = ctx.feedback_result["rollouts"][0]["correct"]
             category = ctx.feedback_result["extra"]["category"]
+            first.append(1.0 if correct else 0.0)
             if correct:
                 correct_num += 1
                 category_metrics[category]["correct"] += 1
@@ -286,11 +291,12 @@ class MMLUFewShotCLPTask(
         # CLP-family convention (cmmlu / mmmlu): the score denominator is the
         # finalized set; infra failures are reported separately (``fails``), not
         # scored wrong.
-        score = 100 * correct_num / len(finals) if finals else 0.0
+        total = len(finals)
+        score = 100 * correct_num / total if total else 0.0
         # `score` is the headline and has no aliased twin here, so `score_key`
         # names it directly — the per-category `score_<category>` keys are
         # breakdowns, not candidates for the headline.
-        results: dict[str, float | str] = {
+        results: dict[str, float | str | list[float]] = {
             "score": score,
             SCORE_KEY_FIELD: "score",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
@@ -302,4 +308,14 @@ class MMLUFewShotCLPTask(
                 else 0.0
             )
         results["fails"] = len(fails)
-        return results
+        # On the headline only. A per-category interval needs its own population
+        # count per category -- one `n_problems` cannot carry 57 of them -- so
+        # `score_<category>` deliberately ships without one rather than borrow
+        # the headline's.
+        grouping = self.problem_groups(finals)
+        return results | interval_metrics(
+            first,
+            denominator=total,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )

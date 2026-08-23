@@ -104,8 +104,8 @@ class ARCChallengeFewShotPplTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: `arc_report` carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     requires = TaskRequirements(input_scoring=True)
@@ -186,7 +186,9 @@ class ARCChallengeFewShotPplTask(
 
     @override
     async def report(self, finals, fails):
-        return arc_report(finals, fails)
+        # `problem_groups` cannot be reached from `arc_report`, which is a free
+        # function -- so it is resolved here and passed in.
+        return arc_report(finals, fails, self.problem_groups(finals))
 
     def _build_fewshot_prefix(self) -> str:
         examples = sample_arc_fewshot(

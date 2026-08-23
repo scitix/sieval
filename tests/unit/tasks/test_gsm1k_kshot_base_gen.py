@@ -9,7 +9,11 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import ModelOutput, Request, Response, SamplingParams
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.gsm1k import GSM1KDataset, GSM1KDatasetSample
 from sieval.tasks.gsm1k_kshot_base_gen import (
     _GSM8K_FEWSHOT_EXAMPLES,
@@ -206,6 +210,46 @@ async def test_report_counts_pipeline_failures_as_wrong():
     assert report["fails"] == 1
     # 1 correct out of (1 final + 1 fail), not out of 1 final.
     assert report["score"] == 50.0
+
+
+@pytest.mark.anyio
+async def test_report_interval_rides_the_flexible_rule_not_the_strict_one():
+    """The interval must bracket `score`, which is the FLEXIBLE rate.
+
+    The two rules are built to disagree here: every sample is flexible-correct
+    and strict-wrong. Reading `strict_exact_match` would put `p` at 0 and send
+    the interval down the Clopper-Pearson branch, so it would no longer contain
+    the 100.0 printed beside it.
+    """
+    task, _ = _task()
+    raw = _sample()
+
+    def _final(sample_id: int) -> TaskContext:
+        metrics: dict[str, bool | float] = {
+            "flexible_exact_match": True,
+            "strict_exact_match": False,
+        }
+        return TaskContext(
+            sample_id=sample_id,
+            raw_sample=raw,
+            feedback_result=build_judgement_record(
+                "42",
+                [build_rollout_judgement(0, True, metrics=metrics)],
+                metrics=metrics,
+            ),
+        )
+
+    report = await task.report([_final(0), _final(1)], [])
+
+    assert report["score"] == report["flexible_exact_match"] == 100.0
+    assert report["strict_exact_match"] == 0.0
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    # Brackets the flexible headline, not the strict 0.0 beside it.
+    assert lo <= report["score"] <= hi
+    assert lo > report["strict_exact_match"]
 
 
 @pytest.mark.anyio

@@ -738,6 +738,18 @@ async def test_report_sub_and_main_accuracy():
     assert report["main_problem_accuracy"] == pytest.approx(50.0)
     assert report["score"] == report["main_problem_accuracy"]
 
+    # The interval is on the MAIN-problem axis -- the headline -- over
+    # `total_problems`, not on the step-pooled `sub_problem_accuracy` beside it.
+    # 2 problems, not the 5 steps a step-axis reading would report.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
+    # The population is the problem count, not the step count -- a step-axis
+    # interval would report 5 here, and `total_steps` is asserted to be 5 above.
+    assert report["n_problems"] != report["total_steps"]
+
 
 @pytest.mark.anyio
 async def test_report_counts_empty_extractions():

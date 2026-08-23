@@ -70,6 +70,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    interval_metrics,
 )
 from sieval.core.types import JSONValue
 from sieval.core.utils.meta import build_stage_meta
@@ -209,8 +210,8 @@ class SciCodeZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     def __init__(
@@ -534,7 +535,9 @@ class SciCodeZeroShotGenTask(
         total_problems = len(finals) + len(fails)
         if total_problems == 0:
             # Declared on this path too: which population the headline would have
-            # been averaged over is a property of the task, not of the run.
+            # been averaged over is a property of the task, not of the run. The
+            # interval pair is measured rather than declared, so it is omitted
+            # here instead of zeroed.
             return {
                 "score": 0.0,
                 "fails": len(fails),
@@ -545,6 +548,11 @@ class SciCodeZeroShotGenTask(
         correct_steps = 0
         total_steps = 0
         correct_problems = 0
+        # The same per-problem verdicts `main_accuracy` is a mean of -- one
+        # rollout, so `n_correct` is the 0/1 the headline counts. NOT the
+        # step-level counts beside it: `sub_problem_accuracy` pools over steps,
+        # a different unit with a different population.
+        solved: list[float] = []
         empty_extractions = 0
         timeouts = 0
         memory_errors = 0
@@ -559,6 +567,7 @@ class SciCodeZeroShotGenTask(
             # Reads the headline verdict (one rollout, so n_correct is 1 for a solved
             # problem) instead of recomputing it, so the two cannot disagree.
             correct_problems += judgement["n_correct"]
+            solved.append(float(judgement["n_correct"]))
             feedbacks = judgement["rollouts"][0]["extra"]["steps"]
             empty_extractions += sum(
                 1 for fb in feedbacks if fb.get("empty_extraction")
@@ -598,6 +607,7 @@ class SciCodeZeroShotGenTask(
 
         main_accuracy = correct_problems * 100 / total_problems
         sub_accuracy = correct_steps * 100 / total_steps if total_steps else 0.0
+        grouping = self.problem_groups(finals)
         return {
             "score": main_accuracy,
             "main_problem_accuracy": main_accuracy,
@@ -628,7 +638,16 @@ class SciCodeZeroShotGenTask(
             # against `total_problems` rather than being excluded.
             SCORE_KEY_FIELD: "main_problem_accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-        }
+        } | interval_metrics(
+            solved,
+            # On the MAIN-problem headline only, over the same REQUESTED
+            # `total_problems`. `sub_problem_accuracy` pools over steps, whose
+            # denominator moves with which problems were sampled -- a different
+            # axis that must not borrow this `n_problems`.
+            denominator=total_problems,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )
 
     @override
     async def shutdown(self):

@@ -323,3 +323,46 @@ async def test_report_counts_fails_in_denominator():
     assert report["acc_norm"] == 50.0
     assert report["score"] == 50.0
     assert report["fails"] == 1
+
+
+@pytest.mark.anyio
+async def test_report_interval_rides_acc_norm_not_acc():
+    """The interval must be on the LENGTH-NORMALISED axis -- the headline.
+
+    `acc` and `acc_norm` are co-equal published columns, so they are built to
+    disagree here: every sample is `acc`-correct and half are `acc_norm`-correct.
+    An interval read off `acc` would sit at 100.0, bracketing a number this
+    report does not headline; the assertion that it stays strictly below `acc`
+    is what fails if the wrong metric is read.
+    """
+    task, _ = _make_task(n_shot=0)
+
+    def _final(sample_id: int, *, norm: bool) -> TaskContext:
+        metrics: dict[str, bool | float] = {"acc": True, "acc_norm": norm}
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                0,
+                [build_rollout_judgement(0, norm, metrics=metrics)],
+                metrics=metrics,
+            ),
+        )
+
+    finals = [
+        _final(0, norm=True),
+        _final(1, norm=True),
+        _final(2, norm=False),
+        _final(3, norm=False),
+    ]
+    report = await task.report(finals, [])
+
+    assert report["acc"] == 100.0
+    assert report["score"] == report["acc_norm"] == 50.0
+    assert report["n_problems"] == 4
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
+    # Strictly below `acc`: on the `acc` axis every value is 1.0, which would
+    # push the interval to the top of the range instead.
+    assert hi < report["acc"]

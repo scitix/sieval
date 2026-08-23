@@ -403,6 +403,34 @@ async def test_report_counts_fails_in_overall_and_per_type_denominators():
 
 
 @pytest.mark.anyio
+async def test_report_interval_is_quoted_over_the_requested_population():
+    task, _ = _task()
+    finals = [
+        _final(0, "numerical substitution", True),
+        _final(1, "numerical substitution", False),
+    ]
+    fails = [
+        TaskContext(
+            sample_id=2, raw_sample=_sample(perturbation_type="critical thinking")
+        )
+    ]
+
+    report = await task.report(finals, fails)
+
+    # REQUESTED, like the headline: the fail is inside the population, so 3 --
+    # not the 2 samples that produced a verdict.
+    assert report["n_problems"] == 3
+    assert report["score"] == pytest.approx(100 / 3)
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
+    # `score_wo_critical_thinking` is a co-headline over its OWN population, so
+    # it neither gets nor borrows an interval.
+    assert report["score_wo_critical_thinking"] != report["score"]
+
+
+@pytest.mark.anyio
 async def test_report_tolerates_fail_without_raw_sample():
     # A context that failed before its sample was attached has no perturbation
     # type, so it cannot land in a per-type cell.

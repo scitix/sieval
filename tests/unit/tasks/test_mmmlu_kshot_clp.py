@@ -303,6 +303,19 @@ async def test_report_returns_weighted_overall_locale_category_and_subject_score
     assert isinstance(report["fails"], float)
     assert "pass@1" not in report
 
+    # JUDGED, like the headline: the de_de fail is outside the population, so 3
+    # -- not the 4 samples the run asked for. The locale / category / subject
+    # breakdowns are their own axes and get no population of their own.
+    assert report["n_problems"] == 3
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    # Bound and narrowed: this report's values are a `float | str | list[float]`
+    # union, and `<` against the unnarrowed union is a type error.
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+
 
 @pytest.mark.anyio
 async def test_test_split_fewshot_requires_held_out_examples_per_locale_subject():

@@ -168,6 +168,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
 )
 from sieval.datasets import GSM1KDatasetSample
 
@@ -421,7 +422,7 @@ class GSM1KFewShotBaseGenTask(
             if total
             else 0.0
         )
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float]] = {
             "score": flexible,
             "fails": len(fails),
             "flexible_exact_match": flexible,
@@ -445,4 +446,24 @@ class GSM1KFewShotBaseGenTask(
         # expected case here, not an extraction failure, since GSM1k's gold has no
         # `####` and only the response can supply one.
         metrics |= health_metrics(finals)
-        return metrics
+        # The FLEXIBLE flag, which is the rule `score` above is a mean of -- not
+        # `strict_exact_match` beside it, and not rollout 0's `correct`. The two
+        # rules differ on real samples here, so reading the wrong one would print
+        # an interval that brackets a number this report does not headline.
+        # Denominator is the same REQUESTED `total`, unlike the GSM8K sibling's
+        # JUDGED one.
+        flexible_values = [
+            1.0
+            if ((f.feedback_result or {}).get("metrics") or {}).get(
+                "flexible_exact_match"
+            )
+            else 0.0
+            for f in finals
+        ]
+        grouping = self.problem_groups(finals)
+        return metrics | interval_metrics(
+            flexible_values,
+            denominator=total,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )

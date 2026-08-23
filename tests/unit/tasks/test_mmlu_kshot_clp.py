@@ -15,7 +15,12 @@ from sieval.core.models import (
     TopKEntry,
 )
 from sieval.core.models.gen_model import GenModel
-from sieval.core.tasks import TaskContext, build_prediction_record
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.mmlu import MMLUDataset, MMLUDatasetSample
 from sieval.tasks.mmlu_kshot_clp import (
     CHOICES,
@@ -273,6 +278,46 @@ async def test_report_excludes_fails_from_denominator():
     assert report["fails"] == 1
     assert report["score"] == 100.0  # 1/1; a finals+fails denom would give 50.0
     assert report["score_other"] == 100.0  # only the final buckets; fail excluded
+
+
+@pytest.mark.anyio
+async def test_report_interval_is_quoted_over_the_judged_population():
+    good = _sample("anatomy", "Q", 0)
+    task = MMLUFewShotCLPTask(
+        _dataset([_sample("anatomy", "d", 0)], [good]),
+        _ScriptedGenModel(winner="A"),
+        n_shot=1,
+    )
+    await task.setup()
+
+    def _final(sample_id: int, *, correct: bool) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            raw_sample=good,
+            feedback_result=build_judgement_record(
+                "A",
+                [build_rollout_judgement(0, correct)],
+                extra={"subject": "anatomy", "category": "stem"},
+            ),
+        )
+
+    report = await task.report(
+        [_final(0, correct=True), _final(1, correct=False)],
+        [TaskContext(sample_id=2, raw_sample=good)],
+    )
+
+    assert report["score"] == 50.0
+    # JUDGED: the fail is outside the population, so 2 -- not the 3 samples the
+    # run asked for. The CLP family excludes fails from the denominator, and the
+    # interval has to be quoted over the same population the headline is.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
+    # The per-category breakdown deliberately ships without a population of its
+    # own, so nothing invites reading this `n_problems` as covering it.
+    assert "score_stem" in report
 
 
 # --- Validation ---
