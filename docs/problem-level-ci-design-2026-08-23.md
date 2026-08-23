@@ -19,6 +19,8 @@ In scope:
 - Two new report keys: `score_ci95` and `n_problems`.
 - One argument added to each of the 24 `report()` methods that call
   `sampling_report` (§4).
+- One `problem_groups` override in `ugmathbench_0shot_gen_fixed`, whose clustering
+  is by `problem_id` rather than by a repeat column (§4).
 - `docs/guide/metrics.md`, `scripts/check_preflight.py`, tests.
 
 Out of scope, deliberately:
@@ -28,12 +30,23 @@ Out of scope, deliberately:
   paired delta, which is what actually answers "did this run move".
 - **The paired delta** (RFC #94 §D). Reuses this estimator on per-problem
   differences; a separate change with its own verb.
-- **Per-key intervals** (`pass@k_ci95`, `maj@k_ci95`, …). RFC #94 §C proposes
-  them; the headline is what acceptance reads, so ship one and extend on demand.
-- **UGMathBench's version clustering.** One sample is one *(problem, version)*
-  pair — three versions per problem, never routed through `Dataset.repeat`. Same
-  statistical shape, different mechanism; the task owns it. Its EAcc headline is
-  already a per-problem statistic and correctly clustered; its AAcc is not.
+- **Per-subject intervals** (`score_<category>_ci95`) — the *first* follow-up.
+  Same metric, partitioned population, and the more valuable of the two
+  extensions below: eight tasks publish `score_<category>` (`agieval`,
+  `gsm_plus`, `iheval`, `mmlu`, `mmlu_kshot_clp`, `mmlu_pro`, `mmmlu_kshot_clp`,
+  `ruler`) and models get ranked on those tables. Width scales as `1/√m`, so a
+  57-way MMLU split makes each cell roughly `√57 ≈ 7.5x` wider than the headline
+  — arithmetic, not a measurement; no run in `outputs/` carries these keys, so no
+  width is quoted. Deferred only because those eight compute their categories by
+  hand rather than through `sampling_report`, making it real work rather than a
+  second call. The estimator is reusable unchanged.
+- **Per-key intervals** (`pass@k_ci95`, `pass^k_ci95`, `maj@k_ci95`, …) — the
+  second follow-up, and not the same thing as the above: same population,
+  *different metric per key*. `pass@k` and `pass^k` have different dispersions
+  across problems even though both come off the same draws, so each needs its own
+  interval. RFC #94 §C proposes these; mechanically it is one estimator call per
+  key once the estimator exists, so the only cost is key-count growth in
+  `report.json`. Ship the headline first and extend on demand.
 - **Retrofitting stored runs.** Computed inline at report time, matching #74 G.
 - **A pass/fail gate, and any anomaly rule.** A rule rotates `rules_hash` and
   marks every stored `anomalies.json` stale fleet-wide.
@@ -106,7 +119,7 @@ Three properties this buys:
 per-problem values are less dispersed than Bernoulli (measured: 334 for `gpqa`'s
 198 collapsed problems). It is **not** reported. `n_problems` reports `m`.
 
-## 4. Clustering dataset repeats
+## 4. Clustering repeats and pseudo-repeats
 
 `Dataset.repeat(times)` concatenates copies of a split. Treating the copies as
 independent problems inflates `m` by `times` and narrows the interval by `√times`.
@@ -178,6 +191,36 @@ Mechanical, and it makes the dependency explicit rather than implicit — the
 alternative that needs no task edits is the context route, which is the one that
 fails silently on resume.
 
+### The grouping is task-owned, so core and a task cannot disagree
+
+`problem_groups` is an **overridable method on `Task`**, not a core function.
+The base implementation reads `repeat_group`; a task whose clustering comes from
+somewhere else overrides it. There is exactly one grouping key per task and the
+task owns it, so the two mechanisms cannot both fire and produce a
+double-collapse.
+
+`ugmathbench_0shot_gen_fixed` is the case that forces this. One sample is one
+*(problem, version)* pair — three randomized versions per problem, 15,183
+versions over 5,061 problems — and the clustering is inherent to the data:
+the task never calls `Dataset.repeat`, and its `report()` already groups by
+`problem_id` off the judgement's `extra` (with an `_identify(final)` fallback for
+a version that cannot name its problem). So it overrides `problem_groups` to
+return that same `problem_id`, and core's collapse operates on the task's own
+key.
+
+The composition that looks like a conflict resolves itself: repeating a
+UGMathBench split gives copies that **share `problem_id`**, so grouping by
+`problem_id` absorbs the repeat with no special case. A task never needs to
+combine the two keys.
+
+**The rule that must not be left implicit is which axis the interval is over.**
+UGMathBench's AAcc is per *version*; its EAcc — the headline — is per *problem*.
+`score_ci95` is clustered at the problem, matching the headline. An AAcc interval,
+if ever added, must not reuse the version-level `m`: that is the same
+`√times` narrowing as an uncollapsed repeat, wearing a different name. Any task
+publishing metrics on two different axes states, per metric, which axis its
+interval belongs to — or omits the interval.
+
 ## 5. Report keys
 
 Additive; `cli/leaderboard/scanner.py` still reads `report["score"]` only.
@@ -244,7 +287,10 @@ is a delivery-quality signal in its own right and deserves its own issue.
   §2, the "width is not comparable across budgets" rule, the `hle`
   `confidence_interval` distinction, and the pairs rule extended: an interval
   must be read with its `denominator_policy` and its `n_problems`, and a paired
-  delta must never be inferred from two per-run intervals.
+  delta must never be inferred from two per-run intervals. Plus the axis rule from
+  §4: an interval names the axis it is clustered on, and a task publishing metrics
+  on two axes (UGMathBench's per-version AAcc beside its per-problem EAcc) says
+  which axis each interval belongs to.
 - `scripts/check_preflight.py` — `check_report_declarations` is where a
   requirement would be enforced if these become mandatory. Not proposed yet.
 - `.claude/rules/` — nothing; this adds no new protocol.
@@ -260,6 +306,10 @@ is a delivery-quality signal in its own right and deserves its own issue.
 - `tests/unit/core/tasks/test_task.py` — `problem_groups` collapses repeats,
   falls back to per-sample on an unrepeated split, and returns the same grouping
   after `shuffle`.
+- `tests/unit/tasks/test_ugmathbench_0shot_gen_fixed.py` — the override groups by
+  `problem_id`, so `n_problems` is the problem count and not the version count;
+  and a repeated UGMathBench split still yields the problem count, since the
+  copies share `problem_id`. This is the assertion that pins the axis rule.
 - One end-to-end assertion that a repeated split yields `n_problems` equal to the
   pre-repeat row count, since that is the number the silent-failure mode gets
   wrong.
