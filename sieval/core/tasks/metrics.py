@@ -18,6 +18,7 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
 import collections
+import math
 from collections.abc import Callable, Sequence
 
 from loguru import logger
@@ -342,6 +343,69 @@ def aggregate(
         for key, total in totals.items()
         if counts[key] == complete
     }
+
+
+def wilson_interval(
+    values: Sequence[float],
+    denominator: int,
+    *,
+    z: float = 1.96,
+    scale: float = 100.0,
+) -> tuple[float, float] | None:
+    """A 95% interval on ``sum(values) / denominator``, clustered on *values*.
+
+    The resampling unit is one element of *values* -- one PROBLEM. Pooling the
+    rollouts of one problem as independent trials understates the width, and
+    understates it more the more the model varies per problem.
+
+    Wilson on an effective sample size, ``m_eff = p(1-p)/Var``, rather than a Wald
+    half-width: the half-width puts the lower bound below zero exactly where
+    saturated and very hard sets live (a real 1/30 run reads ``3.33 +/- 6.42``),
+    and the asymmetry near a bound is the part worth reporting. With boolean
+    *values* and ``denominator == len(values)`` this reduces EXACTLY to the
+    textbook Wilson interval -- which is why the variance below uses the
+    population divisor, not ``m - 1``.
+
+    *denominator* is the population the headline is averaged over, which is not
+    ``len(values)`` whenever failed samples count as wrong. Those are DETERMINISTIC
+    zeros: they enter the mean but contribute no variance, so the variance of
+    ``sum/D`` over ``m`` random terms is ``m*s**2/D**2`` -- smaller than ``s**2/m``,
+    while the mean is pulled down by the same zeros. Spelling it ``s**2/m`` would
+    overstate the width on any run with failures (67% at ``D=50, m=30``).
+
+    Returns ``None`` -- omitted, never zeroed -- when there is nothing to estimate:
+    fewer than two problems, or no dispersion between them. At ``p`` exactly 0 or 1
+    there is no dispersion either, but that is when a reader most needs the bound,
+    so those fall back to the exact one-sided Clopper-Pearson limit over problems.
+
+    No randomness, so two readers of the same values compute the same interval
+    (RFC #74 D refused a seed in this layer). Order-independent, which matters
+    because a resumed run rebuilds its finals in manifest order.
+    """
+    m = len(values)
+    if m < 2 or denominator <= 0:
+        return None
+    total = sum(values)
+    p = total / denominator
+    if p <= 0.0:
+        return 0.0, scale * (1.0 - 0.025 ** (1 / m))
+    if p >= 1.0:
+        return scale * 0.025 ** (1 / m), scale
+    mean = total / m
+    # Population divisor: with the sample divisor `m_eff` lands on `m - 1` and the
+    # reduction to plain Wilson is off by 0.34pp at 1/30.
+    spread = sum((v - mean) ** 2 for v in values) / m
+    variance = m * spread / (denominator * denominator)
+    if variance <= 0.0:
+        return None
+    m_eff = p * (1.0 - p) / variance
+    centre = (p + z * z / (2 * m_eff)) / (1 + z * z / m_eff)
+    half = (
+        z
+        / (1 + z * z / m_eff)
+        * math.sqrt(p * (1 - p) / m_eff + z * z / (4 * m_eff * m_eff))
+    )
+    return scale * max(0.0, centre - half), scale * min(1.0, centre + half)
 
 
 def first_rollout_correct(finals) -> int:

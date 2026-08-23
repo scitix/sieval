@@ -5,6 +5,8 @@ pass@1 is c/n and not "the first sample", pass@k is "solved at least once", and 
 votes on ANSWERS so it can disagree with a verdict tally in both directions.
 """
 
+import math
+
 import pytest
 from loguru import logger
 
@@ -30,6 +32,7 @@ from sieval.core.tasks.metrics import (
     sampling_report,
     self_consistency,
     warn_unscored_rollouts,
+    wilson_interval,
     zero_metrics,
 )
 
@@ -681,3 +684,88 @@ def test_one_short_draw_does_not_cost_the_run_its_majority_column():
     out = sampling_report([*clean, short], n=4, k=4, denominator=501)
     assert out["n_short"] == 1.0
     assert out["maj@k"] == pytest.approx(100.0)
+
+
+# --------------------------------------------------------------------------- #
+# wilson_interval -- a clustered 95% interval over problems
+# --------------------------------------------------------------------------- #
+
+
+def _plain_wilson(k: int, m: int, z: float = 1.96) -> tuple[float, float]:
+    """Textbook Wilson score interval, as the reduction target."""
+    p = k / m
+    centre = (p + z * z / (2 * m)) / (1 + z * z / m)
+    half = z / (1 + z * z / m) * math.sqrt(p * (1 - p) / m + z * z / (4 * m * m))
+    return 100 * max(0.0, centre - half), 100 * min(1.0, centre + half)
+
+
+@pytest.mark.parametrize(
+    "correct,m", [(1, 30), (5, 30), (15, 30), (29, 30), (391, 500), (101, 198), (3, 7)]
+)
+def test_wilson_interval_reduces_to_plain_wilson_on_booleans(correct, m):
+    # The population SD divisor is what makes this EXACT rather than off by the
+    # m/(m-1) factor -- a sample divisor puts m_eff at m-1 and misses by 0.34pp
+    # at 1/30.
+    values = [1.0] * correct + [0.0] * (m - correct)
+    got = wilson_interval(values, m)
+    assert got is not None
+    want = _plain_wilson(correct, m)
+    assert got[0] == pytest.approx(want[0], abs=1e-9)
+    assert got[1] == pytest.approx(want[1], abs=1e-9)
+
+
+def test_wilson_interval_stays_inside_the_unit_range_at_the_extremes():
+    # A Wald half-width would put the lower bound at -3.09 for 1/30. The bound
+    # is exactly where saturated and very hard sets live, so it must hold.
+    got = wilson_interval([1.0] + [0.0] * 29, 30)
+    assert got is not None
+    lo, hi = got
+    assert lo > 0.0
+    assert hi < 100.0
+
+
+def test_wilson_interval_uses_clopper_pearson_when_nothing_was_correct():
+    # p=0 leaves no dispersion to estimate, and m_eff is undefined -- but a 0.0
+    # headline is exactly when a reader needs the upper bound.
+    got = wilson_interval([0.0] * 30, 30)
+    assert got is not None
+    lo, hi = got
+    assert lo == 0.0
+    assert hi == pytest.approx(100 * (1 - 0.025 ** (1 / 30)), abs=1e-9)
+
+
+def test_wilson_interval_uses_clopper_pearson_when_everything_was_correct():
+    got = wilson_interval([1.0] * 30, 30)
+    assert got is not None
+    lo, hi = got
+    assert lo == pytest.approx(100 * 0.025 ** (1 / 30), abs=1e-9)
+    assert hi == 100.0
+
+
+def test_wilson_interval_narrows_when_failures_pad_the_denominator():
+    # Failed samples are FIXED ZEROS carrying no variance, so the estimator's
+    # variance is m*s^2/D^2, not s^2/m. Using s^2/m would overstate the width
+    # by 67% at D=50, m=30.
+    values = [1.0] * 15 + [0.0] * 15
+    tight = wilson_interval(values, 50)
+    loose = wilson_interval(values, 30)
+    assert tight is not None
+    assert loose is not None
+    assert tight[1] - tight[0] < loose[1] - loose[0]
+
+
+def test_wilson_interval_omitted_below_two_problems():
+    assert wilson_interval([1.0], 1) is None
+    assert wilson_interval([], 0) is None
+
+
+def test_wilson_interval_omitted_when_every_problem_scored_alike():
+    # Zero observed dispersion at m >= 2 is a real signal, but not a variance
+    # estimate; a zero-width interval would claim certainty the run lacks.
+    assert wilson_interval([0.5] * 8, 8) is None
+
+
+def test_wilson_interval_is_order_independent():
+    a = wilson_interval([1.0, 0.0, 0.5, 0.25], 4)
+    b = wilson_interval([0.25, 0.5, 0.0, 1.0], 4)
+    assert a == b
