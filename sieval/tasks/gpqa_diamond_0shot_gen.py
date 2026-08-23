@@ -26,6 +26,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     first_rollout_correct,
     health_metrics,
+    interval_metrics,
     warn_unscored_rollouts,
 )
 from sieval.datasets import GPQADiamondDatasetSample
@@ -54,8 +55,8 @@ class GPQADiamondZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     """GPQA-Diamond 0-shot chat generation with shuffled answer choices.
@@ -145,11 +146,30 @@ class GPQADiamondZeroShotGenTask(
         # bool, and would silently become pass@n. This benchmark publishes a
         # single-draw number, so scoring the whole draw would restate it.
         warn_unscored_rollouts(finals, task="gpqa_diamond_0shot_gen")
+        total = len(finals)
         count = first_rollout_correct(finals)
-        score = 100 * count / len(finals) if finals else 0.0
-        return {
+        score = 100 * count / total if total else 0.0
+        metrics: dict[str, float | str | list[float]] = {
             "score": score,
             "fails": len(fails),
             SCORE_KEY_FIELD: "score",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         } | health_metrics(finals)
+        # Same axis as `score` -- the first rollout's verdict, per judged sample
+        # -- over the same denominator, so the interval brackets the number it is
+        # printed beside. The `n_repeats` copies of one question are samples of
+        # ONE problem: `problem_groups` collapses them, which widens the interval
+        # and leaves `score` bit-for-bit unchanged.
+        first = [
+            1.0
+            if ((f.feedback_result or {}).get("rollouts") or [{}])[0].get("correct")
+            else 0.0
+            for f in finals
+        ]
+        grouping = self.problem_groups(finals)
+        return metrics | interval_metrics(
+            first,
+            denominator=total,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )
