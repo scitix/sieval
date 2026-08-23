@@ -23,9 +23,12 @@ Two rules govern the whole file:
 | `n_problems` | Declared problem population the headline is averaged over |
 
 The first four are on every report (one documented exception below). The interval
-pair is on every task that computes one, and adoption is still task by task — so a
-report may carry no interval at all, which is not the same as a zero-width one. It
-is never zeroed to stand in for a missing one.
+pair is on every task whose headline is a mean over problems, which is most of
+them but not all: a headline that is a **macro-average over strata**, a rate
+**pooled over constraints**, a **nonlinear ratio of aggregates**, or **absent
+altogether** is not such a mean, and those reports carry no interval. So a report
+may carry none at all, which is not the same as a zero-width one. It is never
+zeroed to stand in for a missing one.
 
 `denominator_policy` is `requested` (`finals + fails`, so a pipeline failure
 counts as **wrong**) or `judged` (`finals` only, failures excluded). The split is

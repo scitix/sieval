@@ -124,10 +124,26 @@ def test_the_notes_do_not_imply_all_four_repairs_moved_the_number():
     assert "flip nothing here" in reference_impl.notes
 
 
+class _UnrepeatedDataset:
+    """Just enough dataset for `Task.problem_groups` to answer "not repeated".
+
+    `report` reaches the LIVE dataset now, because the headline interval is
+    clustered on the problem and `problem_groups` reads the repeat column off the
+    split rather than off the contexts. `test_set = None` is the honest answer
+    here: these tests build their finals by hand, so there is no split to group
+    against, and `problem_groups` returns None -- each sample is its own problem.
+    """
+
+    test_set = None
+
+
 def _task(cls):
     # `__new__`: the constructor requires a model with a bound dialect_id, and
-    # nothing below reaches the model.
-    return cls.__new__(cls)
+    # nothing below reaches the model. It does reach the DATASET, though, via
+    # `report` -> `problem_groups`, so that one field is supplied.
+    task = cls.__new__(cls)
+    task._dataset = _UnrepeatedDataset()
+    return task
 
 
 class _Ctx:
