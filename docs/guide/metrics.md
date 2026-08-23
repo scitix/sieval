@@ -20,12 +20,12 @@ Two rules govern the whole file:
 | `fails` | Samples that failed the pipeline (an error, not a wrong answer). |
 | `denominator_policy` | Which population the headline is averaged over. |
 | `score_ci95` | 95% interval on `score`, as `[lo, hi]`, clustered on problems |
-| `n_problems` | Distinct problems the headline was averaged over |
+| `n_problems` | Declared problem population the headline is averaged over |
 
-The first four are on every report. The interval pair is on every task that
-computes one, and adoption is still task by task — so a report may carry no
-interval at all, which is not the same as a zero-width one. It is never zeroed to
-stand in for a missing one.
+The first four are on every report (one documented exception below). The interval
+pair is on every task that computes one, and adoption is still task by task — so a
+report may carry no interval at all, which is not the same as a zero-width one. It
+is never zeroed to stand in for a missing one.
 
 `denominator_policy` is `requested` (`finals + fails`, so a pipeline failure
 counts as **wrong**) or `judged` (`finals` only, failures excluded). The split is
@@ -48,11 +48,18 @@ name. It still declares `denominator_policy`.
 
 ## The interval on the headline
 
-`score_ci95` is a 95% interval on `score`; `n_problems` is the population it was
-clustered over. They arrive as a **pair or not at all** — an interval whose
-population is unknown cannot be read, and a population with no interval beside it
-is a count nothing asked for — and both are omitted, never zeroed, when there is
-nothing to estimate: fewer than two problems, or no spread between them.
+`score_ci95` is a 95% interval on `score`; `n_problems` is the **declared** problem
+population it is clustered over — the denominator of the estimand, reported as it
+was declared. The width itself is measured over the problems the run actually
+observed, which is the same set on a clean run and a smaller one when every copy
+of some problem failed: gpqa with 8 wholly-failed questions still reports
+`n_problems` 198, over a width measured on the 190 that came back. Read it as the
+population the number is *about*, not as a count of what was measured.
+
+They arrive as a **pair or not at all** — an interval whose population is unknown
+cannot be read, and a population with no interval beside it is a count nothing
+asked for — and both are omitted, never zeroed, when there is nothing to estimate:
+fewer than two problems, or no spread between them.
 
 It is a Wilson interval on an effective sample size, so it stays inside 0–100 and
 is asymmetric near a bound; at a `score` of exactly 0 or 100 it falls back to the
@@ -98,10 +105,12 @@ as `n` rises. Measured on one real 30-problem run:
 | 8 | ±7.36 |
 | 64 | ±6.68 |
 
-It converges to a floor set by the problem count, not by the budget — across 12
-runs that floor was 51–65% of the same run's `n = 1` width. So a wider interval
-at low `n` is a property of the estimator, **not** evidence that the model is
-less stable there.
+It flattens out as `n` rises, at a level set by the problem count *and* by how much
+those problems disagreed — not by the budget. On the 12 runs this was measured on,
+the high-`n` width came in at 51–65% of the same run's `n = 1` width. That range
+describes those 12 runs; it is not a ratio the estimator enforces. Either way, a
+wider interval at low `n` is a property of the estimator, **not** evidence that the
+model is less stable there.
 
 Across **tasks**, widths are not comparable at all, at any `n`: `n_problems` moves
 them (roughly `1/√m`) and so does the score level, which is why a 198-problem
@@ -109,13 +118,28 @@ them (roughly `1/√m`) and so does the score level, which is why a 198-problem
 the same task at the same `n` and the same problem count puts two widths on one
 scale.
 
-### The floor is `n_problems`, not `n`
+### Width is set by the problem count *and* the spread between problems
 
-A 30-problem set carries roughly ±7 pp of irreducible width. More sampling cannot
-shrink it; only more problems can. That is why `n_problems` has to be read beside
-the interval — the same ±7 pp is the floor on a 30-problem set and an alarm on a
-500-problem one — and it is why an interval quoted without its problem count is
-unreadable rather than merely incomplete.
+The half-width is `z·√Var`, with `Var = m·s²/D²` over `m` problems, denominator `D`
+and between-problem spread `s²` — and **nothing puts a floor under `s²`**. The
+problem count decides how much a given spread is worth; it does not on its own
+bound the width from below. Two cases on 30 problems:
+
+- Near-saturated — 29 problems at 1.0 and one at 1 − 1/64 — reports **±0.139 pp**.
+- A flat 0.5 with one problem at 0.25 reports **±1.605 pp**. The widest 30-problem
+  set at that score level is the `n = 1` boolean one, 15 right and 15 wrong, at
+  **±16.85 pp** — so this is under a tenth of it, on the same problem count.
+
+So the ±6.68 pp the table lands on is what that run's 30 problems disagreed by, not
+a bound 30 problems cannot beat. As between-problem dispersion vanishes the
+interval narrows without limit, which makes the reading rule the opposite of
+reassuring: **a very narrow interval on a small set says the problems behaved
+alike, not that the set is large.** For size, read `n_problems`; the width alone
+never reports it.
+
+That is exactly why the two have to be read together — the same ±6.68 pp means one
+thing on a 30-problem set and another on a 500-problem one — and why an interval
+quoted without its problem count is unreadable rather than merely incomplete.
 
 Read it with `denominator_policy` too, because the two together are what say
 *which* problems `n_problems` counted. The interval covers the same population
@@ -127,10 +151,13 @@ Under `judged`, whether `n_problems` holds steady depends on whether the split w
 repeated, because that decides where the population is read from:
 
 - **Not repeated** (`mmlu_0shot_gen`, `mmlu_pro_0shot_gen`,
-  `openbookqa_kshot_gen`) — there is nothing to collapse, so the population is the
-  declared denominator, which under `judged` is `len(finals)`. It shrinks
-  one-for-one with `fails`: an MMLU run with 3 failures reports 3 fewer problems
-  than the split holds.
+  `openbookqa_kshot_gen`, as configured by default) — there is nothing to collapse,
+  so the population is the declared denominator, which under `judged` is
+  `len(finals)`. It shrinks one-for-one with `fails`: an MMLU run with 3 failures
+  reports 3 fewer problems than the split holds. This is a property of the run, not
+  of the task: `repeat` is a dataset transform any config can ask for, and one of
+  these configured with it takes the branch below instead, at which point
+  `n_problems` stops tracking `fails`.
 - **Repeated** (`gpqa_diamond_0shot_gen`, at its default `n_repeats=4`) — the
   population is the count of distinct problems in the **whole split**, so it does
   not move with run health at all. A question whose every copy failed keeps its

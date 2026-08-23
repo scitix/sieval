@@ -65,12 +65,17 @@ At `n = 1` the first is not separable from rollout noise: a single draw per prob
 gives `x_i ∈ {0,1}`, so the interval necessarily carries both. That is the honest
 total for a single run and is what a paper reports, but it means the interval
 **narrows with `n`** — measured on real runs at `m = 30`, `n = 1 → 64` shrinks it
-from ±11.65 to ±6.68 pp, most of it by `n = 8` (±7.36). It converges to a non-zero
-floor set by the problem count, not by the budget:
+from ±11.65 to ±6.68 pp, most of it by `n = 8` (±7.36). It converges to a limit set
+by the problem count and by `σ²_between`, not by the budget:
 
 ```text
 s²(n) = σ²_between + E[p(1-p)] / n
 ```
+
+Read that limit off the formula and not off the measured runs: it is non-zero only
+while `σ²_between` is, so a set whose problems all behave alike — saturated, or
+uniformly hard — converges toward zero width at any `m`. The problem count sets
+what a given `σ²_between` is worth; it puts no floor under the width by itself.
 
 Consequence for the guide: **two runs at different `n` have differently-wide
 intervals for estimator reasons, not model-stability reasons.** Width is not
@@ -117,7 +122,15 @@ Three properties this buys:
 
 `m_eff` is a variance-matching device, not a count, and can exceed `m` when the
 per-problem values are less dispersed than Bernoulli (measured: 334 for `gpqa`'s
-198 collapsed problems). It is **not** reported. `n_problems` reports `m`.
+198 collapsed problems). It is **not** reported.
+
+`n_problems` reports the **declared** problem population — the denominator of the
+estimand, passed in by the task and reported as given. It is not `m`: `m` is the
+count of groups actually observed, and it is `m` that sets the width. The two
+coincide on a clean run and diverge when every copy of some problem failed, which
+drops that problem out of `m` while `n_problems` keeps its slot. The declared count
+is also inert in the arithmetic — it scales the units by `G/D` and divides by `G`,
+so it cancels out of both `p` and the variance.
 
 ## 4. Clustering repeats and pseudo-repeats
 
@@ -228,11 +241,11 @@ Additive; `cli/leaderboard/scanner.py` still reads `report["score"]` only.
 | Key | Shape | Meaning |
 | --- | --- | --- |
 | `score_ci95` | `[lo, hi]` | 95% interval on `score`, same unit, problem-clustered |
-| `n_problems` | count | Distinct problems behind the headline (post-collapse) |
+| `n_problems` | count | Declared problem population behind the headline (post-collapse) |
 
 `[lo, hi]` rather than a half-width: the Wilson interval is asymmetric, and the
 asymmetry is largest exactly where it matters. `n_problems` is not cosmetic — the
-interval's floor is set by `m` and no current key carries it (`n` is the budget,
+interval's width scales with `m` and no current key carries it (`n` is the budget,
 `n_scored_rollouts / n` misestimates under short draws, and only three tasks
 report an `n_graded` that counts attempts rather than problems). An interval
 without `m` is unreadable.
