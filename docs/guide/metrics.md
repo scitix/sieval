@@ -123,11 +123,22 @@ Read it with `denominator_policy` too, because the two together are what say
 deterministic zeros: they pull the centre down and contribute no variance of their
 own, which narrows the interval rather than widening it.
 
-Under `judged` the population is the problems that were **judged**. On a task with
-no repeated split — the MCQ four — that is `len(finals)`, so `n_problems` shrinks
-with run health: an MMLU run with 3 `fails` reports 3 fewer problems than the
-split holds. It is therefore not comparable across policies, nor across two runs
-of the same task with different `fails`. Read `fails` beside it.
+Under `judged`, whether `n_problems` holds steady depends on whether the split was
+repeated, because that decides where the population is read from:
+
+- **Not repeated** (`mmlu_0shot_gen`, `mmlu_pro_0shot_gen`,
+  `openbookqa_kshot_gen`) — there is nothing to collapse, so the population is the
+  declared denominator, which under `judged` is `len(finals)`. It shrinks
+  one-for-one with `fails`: an MMLU run with 3 failures reports 3 fewer problems
+  than the split holds.
+- **Repeated** (`gpqa_diamond_0shot_gen`, at its default `n_repeats=4`) — the
+  population is the count of distinct problems in the **whole split**, so it does
+  not move with run health at all. A question whose every copy failed keeps its
+  slot, and `n_problems` is 198 however the run went.
+
+So `n_problems` is not comparable across `denominator_policy` values, and on an
+unrepeated split it is not comparable across two runs of the same task with
+different `fails` either. Read `fails` beside it.
 
 ### Copies of one problem are one problem
 
