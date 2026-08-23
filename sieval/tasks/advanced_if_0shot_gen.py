@@ -74,6 +74,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import AdvancedIFDatasetSample
@@ -191,8 +192,8 @@ class AdvancedIFZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     @classmethod
@@ -373,8 +374,13 @@ class AdvancedIFZeroShotGenTask(
         """
         by_benchmark: dict[str, list[dict]] = {}
         verdicts: list[dict] = []
+        # `verdicts` is flattened for `aggregate_metrics`; this keeps the same
+        # entries grouped by sample, because the headline's denominator counts
+        # ROLLOUTS and a sample's contribution is its COUNT of passing ones.
+        by_sample: list[list[dict]] = []
         for final in finals:
             judgement = final.feedback_result or {}
+            sample_verdicts: list[dict] = []
             benchmark_name = judgement.get("extra", {}).get("benchmark_name", "unknown")
             for rollout in judgement.get("rollouts", []):
                 extra = rollout.get("extra", {})
@@ -393,7 +399,9 @@ class AdvancedIFZeroShotGenTask(
                     "grader_unparsed": not extra.get("grader_parsed", True),
                 }
                 verdicts.append(verdict)
+                sample_verdicts.append(verdict)
                 by_benchmark.setdefault(benchmark_name, []).append(verdict)
+            by_sample.append(sample_verdicts)
 
         n_graded = len(verdicts)
         # A failed sample has no verdict to attribute to an aspect, so it lands
@@ -412,7 +420,19 @@ class AdvancedIFZeroShotGenTask(
         ] * (self._n * len(fails))
 
         overall = aggregate_metrics(verdicts + failed)
-        results: dict[str, float | str] = {
+        # Exactly `overall_pass_rate`'s own per-verdict test -- `satisfied_all`,
+        # which is that rollout's `correct` -- counted per sample, over the same
+        # rollout population `overall` was pooled across. NOT `micro_pass_rate`,
+        # which pools over RUBRIC CHECKS and whose denominator moves when the
+        # samples are resampled; not `macro_pass_rate`, a per-rollout mean that is
+        # not the headline; and not the per-aspect keys, which are their own axes.
+        # The failed samples' stand-in verdicts are deterministic zeros inside the
+        # population, so they stay out of `values`.
+        passed_per_sample = [
+            float(sum(1 for v in sample if v["satisfied_all"])) for sample in by_sample
+        ]
+        grouping = self.problem_groups(finals)
+        results: dict[str, float | str | list[float]] = {
             "score": overall["overall_pass_rate"],
             "overall_pass_rate": overall["overall_pass_rate"],
             "micro_pass_rate": overall["micro_pass_rate"],
@@ -431,6 +451,12 @@ class AdvancedIFZeroShotGenTask(
         # defers `pass@k` / `maj@k` for the LLM-judged family, while this one
         # measures extraction rather than the draw and is outside that gate.
         results |= health_metrics(finals)
+        results |= interval_metrics(
+            passed_per_sample,
+            denominator=len(verdicts) + len(failed),
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )
         for benchmark_name, group in sorted(by_benchmark.items()):
             aspect = aggregate_metrics(group)
             results[f"{benchmark_name}_pass_rate"] = aspect["overall_pass_rate"]

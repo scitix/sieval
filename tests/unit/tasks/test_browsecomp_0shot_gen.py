@@ -278,6 +278,52 @@ async def test_report_fails_weighted_by_n():
 
 
 @pytest.mark.anyio
+async def test_report_interval_is_quoted_over_the_rollout_population():
+    """The denominator counts ROLLOUTS, so `n_problems` is the rollout count.
+
+    Two samples at n=2 plus one fail: 4 graded + 2 stand-ins = 6. A per-sample
+    reading would report 2 (or 3 with the fail), so this assertion is what fails
+    if the population is taken off `finals` instead of off `grades`.
+    """
+    dataset = BrowseCompDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
+    )
+    model = _ScriptedChatModel(reply="x", model="candidate")
+    grader = _ScriptedChatModel(reply="correct: yes", model="grader")
+    task = BrowseCompZeroShotGenTask(dataset, model, grader=grader, n=2)
+
+    def _final(sample_id: int, *, grade: str) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        i,
+                        grade == "CORRECT",
+                        extra={"grade": grade, "confidence": 100},
+                    )
+                    for i in range(2)
+                ],
+            ),
+        )
+
+    report = await task.report(
+        [_final(0, grade="CORRECT"), _final(1, grade="INCORRECT")],
+        [TaskContext(sample_id=2)],
+    )
+
+    assert report["accuracy"] == pytest.approx(100 * 2 / 6)
+    assert report["n_problems"] == 6
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+
+
+@pytest.mark.anyio
 async def test_report_separates_an_empty_response_from_a_wrong_answer():
     # BrowseComp has no NOT_ATTEMPTED bucket, so a blank response and a wrong
     # answer both score INCORRECT and both land in `n_graded`. Only

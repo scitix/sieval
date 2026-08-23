@@ -129,6 +129,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import SciTaRCDataset, SciTaRCDatasetSample
@@ -243,8 +244,8 @@ class SciTaRCZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     @classmethod
@@ -408,11 +409,18 @@ class SciTaRCZeroShotGenTask(
         n_exact = 0
         n_graded = 0
         n_grader_unparsed = 0
+        # Per SAMPLE, not per rollout: the headline's denominator counts rollouts,
+        # so a sample's contribution is its COUNT of correct rollouts rather than
+        # a rate. Read per-sample here because the loop below otherwise flattens
+        # every rollout into one total and the clustering would be lost.
+        correct_per_sample: list[float] = []
         for final in finals:
+            sample_correct = 0
             for rollout in (final.feedback_result or {}).get("rollouts", []):
                 extra = rollout.get("extra") or {}
                 if rollout["correct"]:
                     n_correct += 1
+                    sample_correct += 1
                 elif rollout.get("score") == PARTIAL_SCORE:
                     n_partial += 1
                 if (rollout.get("metrics") or {}).get("exact_match"):
@@ -422,37 +430,56 @@ class SciTaRCZeroShotGenTask(
                 n_graded += 1
                 if not extra.get("grader_parsed"):
                     n_grader_unparsed += 1
+            correct_per_sample.append(float(sample_correct))
 
         # Denominator spans the full requested set: a pipeline failure produced
         # no gradeable answer and counts as wrong, matching upstream (whose
         # total is every generated row) and the *_gen family.
         n = (len(finals) + len(fails)) * self._n
+        # `rate` rounds to 2 dp; the interval brackets the UNROUNDED mean, which
+        # is at most 0.005 pp away. Said here rather than left for a reader to
+        # infer the interval was computed on the rounded value.
         rate = (lambda c: round(100 * c / n, 2)) if n else (lambda c: 0.0)
-        return {
-            "score": rate(n_correct),
-            "accuracy": rate(n_correct),
-            "exact_match": rate(n_exact),
-            # Upstream's middle grade. It is not in its summary, but it is on
-            # its scale, and a run that moved 0.0 -> 0.5 has changed without
-            # changing the headline.
-            "partial": rate(n_partial),
-            "n": float(n),
-            # Rollouts the grader was CALLED on: `grader_skipped` excluded,
-            # unparsed included — the denominator `n_grader_unparsed` is a rate
-            # over. Spelled out because the judged family splits three ways:
-            # hle/sysbench count parsed replies only, simpleqa_verified/
-            # complex_constraints count every rollout in `finals`.
-            "n_graded": float(n_graded),
-            "fails": float(len(fails)),
-            "n_grader_unparsed": float(n_grader_unparsed),
-            SCORE_KEY_FIELD: "accuracy",
-            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-            # `n_grader_unparsed` counts the GRADER failing to answer;
-            # `n_unextracted` counts the candidate producing nothing to grade,
-            # which is also the count of rollouts the grader was never asked
-            # about. Both score 0.0, and without the pair they are
-            # indistinguishable in the report. Deliberately only
-            # `health_metrics` and not the rest of the sampling block: RFC #74
-            # defers pass@k / maj@k for the LLM-graded family, while this one
-            # measures extraction rather than the draw and is outside that gate.
-        } | health_metrics(finals)
+        grouping = self.problem_groups(finals)
+        return (
+            {
+                "score": rate(n_correct),
+                "accuracy": rate(n_correct),
+                "exact_match": rate(n_exact),
+                # Upstream's middle grade. It is not in its summary, but it is on
+                # its scale, and a run that moved 0.0 -> 0.5 has changed without
+                # changing the headline.
+                "partial": rate(n_partial),
+                "n": float(n),
+                # Rollouts the grader was CALLED on: `grader_skipped` excluded,
+                # unparsed included — the denominator `n_grader_unparsed` is a rate
+                # over. Spelled out because the judged family splits three ways:
+                # hle/sysbench count parsed replies only, simpleqa_verified/
+                # complex_constraints count every rollout in `finals`.
+                "n_graded": float(n_graded),
+                "fails": float(len(fails)),
+                "n_grader_unparsed": float(n_grader_unparsed),
+                SCORE_KEY_FIELD: "accuracy",
+                DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+                # `n_grader_unparsed` counts the GRADER failing to answer;
+                # `n_unextracted` counts the candidate producing nothing to grade,
+                # which is also the count of rollouts the grader was never asked
+                # about. Both score 0.0, and without the pair they are
+                # indistinguishable in the report. Deliberately only
+                # `health_metrics` and not the rest of the sampling block: RFC #74
+                # defers pass@k / maj@k for the LLM-graded family, while this one
+                # measures extraction rather than the draw and is outside that gate.
+            }
+            | health_metrics(finals)
+            | interval_metrics(
+                correct_per_sample,
+                # The rollout population. `fails` produced no rollouts, so they are
+                # deterministic zeros inside `n` but contribute no variance -- exactly
+                # the case `wilson_interval` derives. `partial` and `exact_match` are
+                # separate axes and get no interval: a PARTIAL_SCORE rollout counts as
+                # NOT correct in the headline.
+                denominator=n,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            )
+        )

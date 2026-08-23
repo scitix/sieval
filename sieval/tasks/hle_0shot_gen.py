@@ -87,6 +87,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import HLEDataset, HLEDatasetSample
@@ -143,7 +144,10 @@ class HLEZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float | str | None],
+        # `None`: `calibration_error` is omitted-as-None when it cannot be
+        # computed. `list[float]` carries `score_ci95`, which is a PAIR and so
+        # cannot share a key shape with the scalar `confidence_interval`.
+        dict[str, float | str | list[float] | None],
     ]
 ):
     @classmethod
@@ -307,18 +311,28 @@ class HLEZeroShotGenTask(
         correct: list[bool] = []
         confidence: list[int] = []
         n_grader_unparsed = 0
+        # Per sample, and counting the SAME rollouts `correct` collects -- parsed
+        # and correct. The headline's denominator counts rollouts, so a sample's
+        # contribution is a count; an unparsed rollout stays in `n` but is not one
+        # of the successes, exactly as `accuracy` treats it.
+        correct_per_sample: list[float] = []
         for f in finals:
+            sample_correct = 0
             for fb in (f.feedback_result or {}).get("rollouts", []):
                 if fb["extra"]["grader_parsed"]:
                     correct.append(fb["correct"])
                     confidence.append(fb["extra"]["confidence"])
+                    if fb["correct"]:
+                        sample_correct += 1
                 else:
                     n_grader_unparsed += 1
+            correct_per_sample.append(float(sample_correct))
         # Denominator spans the full requested set; pipeline failures (candidate
         # produced no gradeable answer) count as incorrect — matching upstream
         # (n = total questions) and the *_gen family, not just graded attempts.
         n = (len(finals) + len(fails)) * self._n
         m = aggregate_metrics(correct, confidence, n)
+        grouping = self.problem_groups(finals)
         # `n_grader_unparsed` is a count over the graded attempts in `finals`, not a
         # rate over `n` (which also spans `fails`). `subset` records which set
         # was evaluated so a text-only run is distinguishable from a full-set one
@@ -326,9 +340,17 @@ class HLEZeroShotGenTask(
         # `gen`-scoped truncation detection rule already reports them per sample
         # (it also covers max_tokens / content_filter, which a finish_reasons
         # tally in this method would miss).
-        return {
+        results: dict[str, float | str | list[float] | None] = {
             "score": m["accuracy"],
             "accuracy": m["accuracy"],
+            # TWO interval-ish keys, and they are different objects. This one is
+            # upstream's: a pooled 95% WALD HALF-WIDTH in percentage points over
+            # `n`, treating every rollout as an independent trial. It is the
+            # upstream-comparable number and stays exactly as `dump_metrics`
+            # computes it. `score_ci95` below is a PAIR of bounds, clustered on
+            # the problem so repeated rollouts of one question do not read as
+            # independent evidence. Neither replaces the other -- they sit side
+            # by side the way `accuracy` sits beside `pass@1`.
             "confidence_interval": m["confidence_interval"],
             "calibration_error": m["calibration_error"],
             "n": n,
@@ -338,11 +360,21 @@ class HLEZeroShotGenTask(
             "subset": "text_only" if self._text_only else "full",
             SCORE_KEY_FIELD: "accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-            # `n_grader_unparsed` counts the GRADER failing to answer; `n_unextracted`
-            # counts the candidate producing nothing to grade. Both grade
-            # incorrect, and without the second one they are indistinguishable in
-            # the report. Deliberately only `health_metrics` and not the rest of
-            # the sampling block: RFC #74 defers `pass@k` / `maj@k` for the
-            # LLM-judged family, while this one measures extraction rather than
-            # the draw and is outside that gate.
-        } | health_metrics(finals)
+            # `n_grader_unparsed` counts the GRADER failing to answer;
+            # `n_unextracted` counts the candidate producing nothing to grade.
+            # Both grade incorrect, and without the second one they are
+            # indistinguishable in the report. Deliberately only
+            # `health_metrics` and not the rest of the sampling block: RFC #74
+            # defers `pass@k` / `maj@k` for the LLM-judged family, while this one
+            # measures extraction rather than the draw and is outside that gate.
+        }
+        results |= health_metrics(finals)
+        # Clustered on the problem, over the rollout population `accuracy` uses.
+        # Sits beside `confidence_interval`, which is deliberately left alone.
+        results |= interval_metrics(
+            correct_per_sample,
+            denominator=n,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )
+        return results

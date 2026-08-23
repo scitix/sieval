@@ -321,6 +321,44 @@ async def test_report_counts_fails_in_the_denominator():
     assert report["score_key"] == "accuracy"
     assert report["denominator_policy"] == "requested"
 
+    # The interval is quoted over the ROLLOUT population -- the same `n` the
+    # headline divides by, fails included -- not over the 2 judged samples.
+    assert report["n_problems"] == 3
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+
+
+@pytest.mark.anyio
+async def test_report_interval_excludes_partial_scores_like_the_headline():
+    """A PARTIAL_SCORE rollout is NOT correct in `accuracy`, so not in the axis.
+
+    Both samples score 0.5, so `accuracy` is 0.0 while `partial` is 100.0. An
+    interval built off `partial` would sit at the top of the range; on the
+    headline axis every value is zero and the bound comes from the exact
+    one-sided limit instead.
+    """
+    task, _, _ = _task()
+    finals = [
+        _final(0, correct=False, score=0.5, em=False),
+        _final(1, correct=False, score=0.5, em=False),
+    ]
+    report = await task.report(finals, [])
+
+    assert report["accuracy"] == 0.0
+    assert report["partial"] == 100.0
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    # Pinned at zero because no rollout was correct -- the `partial` axis would
+    # have put the lower bound far above it.
+    assert lo == 0.0
+    assert hi < report["partial"]
+
 
 @pytest.mark.anyio
 async def test_report_separates_partial_from_wrong():

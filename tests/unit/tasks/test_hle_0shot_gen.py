@@ -3,6 +3,7 @@
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
+import math
 from unittest.mock import patch
 
 import numpy as np
@@ -282,6 +283,23 @@ async def test_report_accuracy_and_counts_fails_in_denominator():
     assert report["accuracy"] == pytest.approx(33.33, abs=1e-2)
     assert report["score"] == report["accuracy"]
 
+    # Upstream's pooled Wald HALF-WIDTH survives untouched beside the new
+    # clustered pair. Two different objects: a scalar in percentage points, and
+    # a [lo, hi] pair. Neither replaces the other.
+    half_width = report["confidence_interval"]
+    assert isinstance(half_width, float)
+    assert half_width == pytest.approx(
+        1.96 * math.sqrt(33.33 * (100 - 33.33) / 3), abs=1e-2
+    )
+    # Quoted over the ROLLOUT population, which at n=1 is finals + fails.
+    assert report["n_problems"] == 3
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+
 
 @pytest.mark.anyio
 async def test_report_fails_weighted_by_n():
@@ -338,6 +356,15 @@ async def test_report_drops_unparsed_judge_from_grading():
     assert report["n"] == 2  # both stay in the denominator
     # 1 correct / 2 => 50.0; the dropped record counts as incorrect via `n`.
     assert report["accuracy"] == pytest.approx(50.0)
+    # The interval axis applies the same `grader_parsed` filter `accuracy` does:
+    # the unparsed rollout is a deterministic zero inside `n`, never a success.
+    # Counting it would put the mean at 100 and saturate the interval.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < 50.0 < hi
+    assert hi < 100.0
 
 
 @pytest.mark.anyio

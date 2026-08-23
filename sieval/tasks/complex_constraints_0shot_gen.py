@@ -143,6 +143,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import ComplexConstraintsDatasetSample
@@ -220,8 +221,8 @@ class ComplexConstraintsZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     @classmethod
@@ -406,11 +407,13 @@ class ComplexConstraintsZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
-        graded = [
-            rollout
-            for f in finals
-            for rollout in (f.feedback_result or {}).get("rollouts", [])
+        # Kept per sample as well as flattened: the headline's denominator counts
+        # ROLLOUTS, so a sample's contribution is its COUNT of fully-satisfied
+        # rollouts, and that count is only visible before the flattening.
+        by_sample = [
+            list((f.feedback_result or {}).get("rollouts", [])) for f in finals
         ]
+        graded = [rollout for sample in by_sample for rollout in sample]
         # Pooled from raw per-rollout counts rather than averaged from the
         # per-rollout rates -- the two differ when prompts carry different
         # criteria counts, which is exactly the macro/micro split below.
@@ -428,24 +431,54 @@ class ComplexConstraintsZeroShotGenTask(
             units.extend([(0, n_criteria)] * self._n)
 
         m = aggregate_metrics(units)
-        return {
-            "score": m["task_pass_rate"] * 100,
-            "task_pass_rate": m["task_pass_rate"] * 100,
-            "criterion_pass_rate_macro": m["criterion_pass_rate_macro"] * 100,
-            "criterion_pass_rate_micro": m["criterion_pass_rate_micro"] * 100,
-            "n_graded": len(graded),
-            "n_criteria_graded": sum(r["extra"]["n_criteria"] for r in graded),
-            # Judge format drift, kept out of the rates it would otherwise be
-            # invisible inside: these criteria scored not-satisfied.
-            "n_grader_unparsed": sum(r["extra"]["n_grader_unparsed"] for r in graded),
-            "fails": len(fails),
-            SCORE_KEY_FIELD: "task_pass_rate",
-            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-            # `n_graded` counts the short-circuited empty responses too, so it
-            # cannot separate "the judge failed every criterion" from "the model
-            # returned nothing". `n_unextracted` is that second count, and the
-            # two failure modes read identically without it. Deliberately only
-            # `health_metrics` and not the rest of the sampling block: RFC #74
-            # defers `pass@k` / `maj@k` for the LLM-judged family, while this one
-            # measures the parser rather than the draw and is outside that gate.
-        } | health_metrics(finals)
+        # Exactly `task_pass_rate`'s own per-unit test -- `count > 0 and
+        # satisfied == count` -- counted per sample, over the same `len(units)`
+        # population. NOT `criterion_pass_rate_micro`, which pools over CRITERIA
+        # (10-40 per prompt) and whose denominator moves when the prompts are
+        # resampled; and not the macro rate, which is a per-rollout mean and not
+        # the headline. The failed samples' stand-in units are deterministic zeros
+        # inside the population, so they stay out of `values`.
+        passed_per_sample = [
+            float(
+                sum(
+                    1
+                    for r in sample
+                    if r["extra"]["n_criteria"] > 0
+                    and r["extra"]["n_satisfied"] == r["extra"]["n_criteria"]
+                )
+            )
+            for sample in by_sample
+        ]
+        grouping = self.problem_groups(finals)
+        return (
+            {
+                "score": m["task_pass_rate"] * 100,
+                "task_pass_rate": m["task_pass_rate"] * 100,
+                "criterion_pass_rate_macro": m["criterion_pass_rate_macro"] * 100,
+                "criterion_pass_rate_micro": m["criterion_pass_rate_micro"] * 100,
+                "n_graded": len(graded),
+                "n_criteria_graded": sum(r["extra"]["n_criteria"] for r in graded),
+                # Judge format drift, kept out of the rates it would otherwise be
+                # invisible inside: these criteria scored not-satisfied.
+                "n_grader_unparsed": sum(
+                    r["extra"]["n_grader_unparsed"] for r in graded
+                ),
+                "fails": len(fails),
+                SCORE_KEY_FIELD: "task_pass_rate",
+                DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+                # `n_graded` counts the short-circuited empty responses too, so it
+                # cannot separate "the judge failed every criterion" from "the model
+                # returned nothing". `n_unextracted` is that second count, and the
+                # two failure modes read identically without it. Deliberately only
+                # `health_metrics` and not the rest of the sampling block: RFC #74
+                # defers `pass@k` / `maj@k` for the LLM-judged family, while this one
+                # measures the parser rather than the draw and is outside that gate.
+            }
+            | health_metrics(finals)
+            | interval_metrics(
+                passed_per_sample,
+                denominator=len(units),
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            )
+        )

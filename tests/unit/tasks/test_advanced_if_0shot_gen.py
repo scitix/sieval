@@ -354,9 +354,34 @@ async def test_report_pools_both_published_rates():
     assert report["n_grader_unparsed"] == 0.0
     assert report["fails"] == 0
 
+    # The interval rides `overall_pass_rate` over the 2 ROLLOUT units -- not
+    # `micro_pass_rate`, which pools over the 8 rubric checks. `n_problems` is
+    # the rollout count, so it must not equal `n_rubric_checks`.
+    assert report["n_problems"] == 2
+    assert report["n_problems"] != report["n_rubric_checks"]
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+
 
 @pytest.mark.anyio
-async def test_report_macro_rate_reaches_the_report():
+async def test_report_counts_failed_rollouts_in_the_interval_population():
+    """A fail contributes `n` deterministic zeros to the denominator.
+
+    Two samples at n=1 plus one fail: 2 graded + 1 stand-in = 3, so the interval
+    is quoted over 3 rather than the 2 that were graded.
+    """
+    task, _ = _task()
+    report = await task.report(
+        [_final(COMPLEX, True, 2, 2), _final(COMPLEX, False, 2, 0)],
+        [TaskContext(sample_id=9)],
+    )
+
+    assert report["overall_pass_rate"] == pytest.approx(100 / 3)
+    assert report["n_problems"] == 3
     """The per-rollout rubric rate is pooled, not left in the shard data.
 
     Equal rubric counts make micro == macro, so the two are separated with

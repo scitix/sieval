@@ -331,6 +331,52 @@ async def test_report_fails_weighted_by_n():
 
 
 @pytest.mark.anyio
+async def test_report_interval_is_quoted_over_the_rollout_population():
+    """The denominator counts ROLLOUTS, so `n_problems` is the rollout count.
+
+    Two samples at n=2 plus one fail: 4 graded + 2 stand-ins = 6. A per-sample
+    reading would report 2 (or 3 with the fail), so this assertion is what fails
+    if the population is taken off `finals` instead of off `grades`.
+    """
+    dataset = AALCRDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
+    )
+    model = _ScriptedChatModel(reply="x", model="candidate")
+    grader = _ScriptedChatModel(reply="CORRECT", model="grader")
+    task = AALCRZeroShotGenTask(dataset, model, grader=grader, n=2)
+
+    def _final(sample_id: int, *, grade: str) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        i, grade == "CORRECT", extra={"grade": grade}
+                    )
+                    for i in range(2)
+                ],
+                extra={"question_id": sample_id},
+            ),
+        )
+
+    report = await task.report(
+        [_final(0, grade="CORRECT"), _final(1, grade="INCORRECT")],
+        [TaskContext(sample_id=2)],
+    )
+
+    # 2 correct of 6 units.
+    assert report["accuracy"] == pytest.approx(100 * 2 / 6)
+    assert report["n_problems"] == 6
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+
+
+@pytest.mark.anyio
 async def test_report_separates_an_empty_response_from_a_wrong_answer():
     # Two rollouts graded INCORRECT, reached two different ways: one the grader
     # read and failed, one that had no answer to grade. Both land in `n_graded`

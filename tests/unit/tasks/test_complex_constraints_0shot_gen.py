@@ -325,6 +325,18 @@ async def test_report_headline_is_the_task_pass_rate():
     assert report["n_grader_unparsed"] == 0
     assert report["fails"] == 0
 
+    # The interval rides `task_pass_rate`, over the 4 ROLLOUT units -- not the
+    # criterion axes, which pool over the 70 criteria asserted above. Reading
+    # `criterion_pass_rate_micro` would quote the interval over 70.
+    assert report["n_problems"] == 4
+    assert report["n_problems"] != report["n_criteria_graded"]
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+
 
 @pytest.mark.anyio
 async def test_report_macro_and_micro_criterion_rates_both_reported():
