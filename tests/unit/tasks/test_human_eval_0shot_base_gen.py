@@ -147,3 +147,32 @@ async def test_report_counts_finals_and_fails_like_chat_human_eval_task():
         assert "pass@2" not in report  # the key carries a literal `k`
     finally:
         await task.shutdown()
+
+
+@pytest.mark.anyio
+async def test_report_carries_an_interval_around_the_headline():
+    # Two problems with different pass@1 rates is the smallest case with
+    # genuine spread -- `wilson_interval` needs >= 2 problems and 0 < p < 1.
+    task, _, _ = _task(k=2, n=2)
+    try:
+        report = await task.report(
+            [
+                TaskContext(
+                    sample_id=0,
+                    raw_sample=_sample(),
+                    feedback_result=_judgement((True, "passed"), (False, "timeout")),
+                ),
+                TaskContext(
+                    sample_id=1,
+                    raw_sample=_sample(),
+                    feedback_result=_judgement((False, "failed"), (False, "failed")),
+                ),
+            ],
+            [],
+        )
+
+        lo, hi = report["score_ci95"]
+        assert lo < report["score"] < hi
+        assert report["n_problems"] == 2
+    finally:
+        await task.shutdown()
