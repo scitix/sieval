@@ -35,6 +35,14 @@ def _final(feedback, *, postprocess=None, preprocess=None) -> TaskContext:
     return ctx.to_final()
 
 
+class _NoDataset:
+    """Stands in for `self._dataset` so `problem_groups()` (which reads
+    `self._dataset.test_set`) resolves to "no grouping" instead of raising.
+    """
+
+    test_set = None
+
+
 def _task(cls, **kwargs):
     """Build a task without touching a dataset or model.
 
@@ -42,6 +50,7 @@ def _task(cls, **kwargs):
     bypassing ``__init__`` keeps these tests free of dataset/model fixtures.
     """
     task = object.__new__(cls)
+    task._dataset = _NoDataset()
     for key, value in kwargs.items():
         setattr(task, key, value)
     return task

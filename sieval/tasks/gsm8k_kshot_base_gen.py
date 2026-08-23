@@ -44,6 +44,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
     sampling_report,
 )
 from sieval.datasets import GSM8KDatasetSample
@@ -145,8 +146,8 @@ class GSM8KFewShotBaseGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     def __init__(
@@ -262,7 +263,7 @@ class GSM8KFewShotBaseGenTask(
         flexible_correct_num = _named(finals, "flexible_exact_match")
         exact_match = 100 * correct_num / count if count else 0.0
         flexible_exact_match = 100 * flexible_correct_num / count if count else 0.0
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float]] = {
             "score": exact_match,
             "fails": len(fails),
             "exact_match": exact_match,
@@ -273,6 +274,24 @@ class GSM8KFewShotBaseGenTask(
         # Outside the gate: extraction health is a fact about the parser,
         # not the draw, and n=1 is where a stopped extractor hides longest.
         metrics |= health_metrics(finals)
+        # Same axis `_named` reads for `correct_num` above -- the strict
+        # `exact_match` flag on the sample-level `metrics` block, not
+        # `flexible_exact_match` and not a blind re-read of rollout 0's
+        # `correct` -- over the same `count` denominator this task excludes
+        # fails from.
+        strict = [
+            1.0
+            if ((f.feedback_result or {}).get("metrics") or {}).get("exact_match")
+            else 0.0
+            for f in finals
+        ]
+        grouping = self.problem_groups(finals)
+        metrics |= interval_metrics(
+            strict,
+            denominator=count,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )
         if self._n <= 1:
             return metrics
         # The sampling family rides on `correct`, derived from the strict

@@ -405,7 +405,15 @@ async def test_report_emits_accuracy_and_error_count():
     # the model got wrong — so results are directly comparable to its tables.
     task, _ = make_task(PlatinumGSM8KZeroShotGenTask)
     finals = [_final(0, True), _final(1, True), _final(2, False), _final(3, False)]
-    assert await task.report(finals, []) == {
+    report = await task.report(finals, [])
+    # Popped rather than hardcoded: the interval is asserted for shape in
+    # test_report_carries_an_interval_around_the_headline below, not pinned to a
+    # float here.
+    lo, hi = report.pop("score_ci95")
+    n_problems = report.pop("n_problems")
+    assert lo < report["score"] < hi
+    assert n_problems == 4
+    assert report == {
         "score": 50.0,
         "fails": 0,
         "accuracy": 50.0,
@@ -416,6 +424,19 @@ async def test_report_emits_accuracy_and_error_count():
         "denominator_policy": "requested",
         "n_unextracted": 0.0,
     }
+
+
+@pytest.mark.anyio
+async def test_report_carries_an_interval_around_the_headline():
+    # Two problems split evenly is the smallest case with genuine spread --
+    # `wilson_interval` needs >= 2 problems and 0 < p < 1 to emit anything.
+    task, _ = make_task(PlatinumGSM8KZeroShotGenTask)
+    finals = [_final(0, True), _final(1, False)]
+    report = await task.report(finals, [])
+
+    lo, hi = report["score_ci95"]
+    assert lo < report["score"] < hi
+    assert report["n_problems"] == 2
 
 
 @pytest.mark.anyio

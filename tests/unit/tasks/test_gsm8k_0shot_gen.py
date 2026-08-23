@@ -212,6 +212,12 @@ async def test_report_accuracy():
         ),
     ]
     report = await task.report(finals, [])
+    # Popped rather than hardcoded: the interval's exact bounds aren't the point
+    # of this test, only that `score` falls inside them.
+    lo, hi = report.pop("score_ci95")
+    n_problems = report.pop("n_problems")
+    assert lo < report["score"] < hi
+    assert n_problems == 2
     assert report == {
         "score": 50.0,
         "fails": 0,

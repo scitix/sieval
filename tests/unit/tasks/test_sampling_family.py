@@ -432,3 +432,50 @@ async def test_report_declares_which_population_it_averages_over(case):
     task, _ = case.build(["x"], k=1, n=1)
     report = await task.report([], [])
     assert report["denominator_policy"] == case.denominator
+
+
+# --------------------------------------------------------------------------- #
+# The interval around the headline
+# --------------------------------------------------------------------------- #
+
+
+async def _final_for(case, text: str, sample_id: int) -> TaskContext:
+    """One judged final built through the real pipeline, so it carries whichever
+    axis this task's own `report` reads back off `feedback_result` -- rollout 0's
+    `correct`, or (gsm8k_kshot_base_gen) the sample-level `exact_match` metric.
+    """
+    pre, raw, _, _ = await case.responses()
+    task, _ = case.build([text], k=1, n=1)
+    ctx = TaskContext(sample_id=sample_id, raw_sample=raw, preprocess_result=pre)
+    inf = await task.infer(pre, ctx)
+    post = await task.postprocess(inf, ctx)
+    ctx = TaskContext(
+        sample_id=sample_id,
+        raw_sample=raw,
+        preprocess_result=pre,
+        postprocess_result=post,
+    )
+    _, judgement = await task.feedback(post, ctx)
+    return TaskContext(
+        sample_id=sample_id,
+        raw_sample=raw,
+        preprocess_result=pre,
+        postprocess_result=post,
+        feedback_result=judgement,
+    )
+
+
+@pytest.mark.parametrize("case", SAMPLING, ids=SAMPLING_IDS)
+@pytest.mark.anyio
+async def test_report_carries_an_interval_around_the_headline(case):
+    # Two problems split evenly is the smallest case with genuine spread --
+    # `wilson_interval` needs >= 2 problems and 0 < p < 1 to emit anything.
+    _, _, right, wrong = await case.responses()
+    correct_final = await _final_for(case, right, 0)
+    wrong_final = await _final_for(case, wrong, 1)
+    task, _ = case.build(["x"], k=1, n=1)
+    report = await task.report([correct_final, wrong_final], [])
+
+    lo, hi = report["score_ci95"]
+    assert lo < report["score"] < hi
+    assert report["n_problems"] == 2
