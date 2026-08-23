@@ -123,6 +123,13 @@ comparable only when the field agrees. Neither key is inferable from the values,
 and both are additive, so a bare report scores correctly and stays silent about
 what it measured.
 
+A third pair is checked by the same rule set, though it is measured rather than
+declared: `SCORE_CI_FIELD` (`score_ci95`) and `PROBLEM_COUNT_FIELD`
+(`n_problems`) are emitted **together or not at all**. An interval whose
+population is unknown cannot be read, and a population with no interval beside it
+is a count nothing asked for. Merge them from `metrics.py` — `interval_metrics`
+or `sampling_report(score_key=...)` — rather than spelling either key here.
+
 Machine-checked over every class defining `report` under `sieval/tasks/`:
 `check_preflight.py --check check_report_declarations`. A `report` that is a
 single `return helper(...)` is judged on the helper, so a shared report
