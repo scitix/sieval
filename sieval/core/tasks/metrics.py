@@ -21,6 +21,7 @@ import collections
 import math
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
+from typing import cast
 
 from loguru import logger
 
@@ -517,7 +518,9 @@ def sampling_report(
     normalize: Callable[[str], str] | None = None,
     votes: bool = True,
     unit: str = "sample",
-) -> dict[str, float]:
+    score_key: str | None = None,
+    grouping: ProblemGrouping | None = None,
+) -> dict[str, float | list[float]]:
     """Every sampling key a task reports, for one run's judged samples.
 
     The whole block, not a piece of it: read each sample, estimate per problem,
@@ -530,6 +533,27 @@ def sampling_report(
 
     *votes* off omits ``maj@k`` end to end -- including on the empty path, or a
     failed run grows a column a scored one never had.
+
+    *score_key* names which of this block's OWN columns -- ``pass@1``, ``avg@n``,
+    and so on -- the task's headline is a mean of, so :func:`interval_metrics` can
+    be run on that same per-problem quantity. Passed in rather than picked here,
+    because only the caller knows which axis its headline is on. Left ``None``,
+    this function behaves exactly as it did before the parameter existed --
+    no ``score_ci95``, no ``n_problems``. Given a name this block did NOT
+    compute, it RAISES rather than guessing: an interval silently attached to
+    the wrong column would be a plausible-looking wrong number, worse than no
+    number at all.
+
+    The interval is reported at EVERY budget the block runs at, including
+    ``n = 1`` -- deliberately NOT gated behind ``n > 1`` the way most of this
+    file's per-run keys are. It is at its WIDEST at ``n = 1``, which is exactly
+    where a reader most needs it; gating it would withhold it from the default
+    configuration. :func:`health_metrics` makes the same argument for
+    ``n_unextracted``.
+
+    *grouping* collapses samples that are repeat copies of one problem before
+    estimating -- see :func:`interval_metrics`. ``None`` when each sample is
+    already its own problem.
     """
     per_problem: list[dict[str, float]] = []
     observed: list[int] = []
@@ -555,7 +579,30 @@ def sampling_report(
         if per_problem
         else zero_metrics(n=n, k=k, votes=votes)
     )
-    return rolled | budget_metrics(observed, n=n, k=k, unit=unit)
+    budget = budget_metrics(observed, n=n, k=k, unit=unit)
+    if score_key is None:
+        # `rolled | budget` is `dict[str, float]` -- narrower than this
+        # function's own return type, which widens only for the branch below.
+        # No `score_ci95` reaches a caller from here, so the cast adds nothing
+        # a reader could get wrong.
+        return cast(dict[str, float | list[float]], rolled | budget)
+    if score_key not in rolled:
+        raise ValueError(
+            f"sampling_report: score_key {score_key!r} names a column this block "
+            f"does not compute; got {sorted(rolled)}. A headline pointing at a "
+            f"missing column would report an interval on a different metric."
+        )
+    values = [metrics.get(score_key, 0.0) for metrics in per_problem]
+    return (
+        rolled
+        | budget
+        | interval_metrics(
+            values,
+            denominator=denominator,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )
+    )
 
 
 def health_metrics(finals) -> dict[str, float]:

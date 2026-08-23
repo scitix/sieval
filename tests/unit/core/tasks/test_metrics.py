@@ -408,6 +408,31 @@ def _ctx(judgement, postprocess) -> TaskContext:
     return ctx.to_feedback(judgement).to_final()
 
 
+@pytest.fixture
+def _finals_factory():
+    """Judged finals from per-sample lists of per-rollout verdicts.
+
+    One judged final per inner list, one rollout per verdict in it -- the
+    shape `sampling_report`'s interval tests need without each spelling out a
+    judgement/prediction pair by hand.
+    """
+
+    def make(samples) -> list[TaskContext]:
+        finals = []
+        for verdicts in samples:
+            judgement = build_judgement_record(
+                "42",
+                [build_rollout_judgement(i, ok) for i, ok in enumerate(verdicts)],
+            )
+            prediction = build_prediction_record(
+                ["42" if ok else "0" for ok in verdicts]
+            )
+            finals.append(_ctx(judgement, prediction))
+        return finals
+
+    return make
+
+
 def test_rollout_view_pairs_verdicts_with_answers():
     correct, answers = rollout_view(
         _ctx(
@@ -685,6 +710,46 @@ def test_one_short_draw_does_not_cost_the_run_its_majority_column():
     out = sampling_report([*clean, short], n=4, k=4, denominator=501)
     assert out["n_short"] == 1.0
     assert out["maj@k"] == pytest.approx(100.0)
+
+
+def test_sampling_report_adds_no_interval_without_a_score_key(_finals_factory):
+    got = sampling_report(_finals_factory([[True], [False]]), n=1, k=1, denominator=2)
+    assert "score_ci95" not in got
+    assert "n_problems" not in got
+
+
+def test_sampling_report_intervals_the_named_key(_finals_factory):
+    finals = _finals_factory([[True], [False], [True], [False], [True]])
+    got = sampling_report(finals, n=1, k=1, denominator=5, score_key="pass@1")
+    assert got["n_problems"] == 5.0
+    ci = got["score_ci95"]
+    assert isinstance(ci, list)
+    lo, hi = ci
+    pass_at_1 = got["pass@1"]
+    assert not isinstance(pass_at_1, list)
+    assert lo < pass_at_1 < hi
+
+
+def test_sampling_report_refuses_a_score_key_it_did_not_compute(_finals_factory):
+    # `accuracy`, deliberately: it is never in this block's key set. `maj@k` would
+    # be the wrong probe -- it IS computed whenever k == n_requested, so the test
+    # would pass or fail on a fixture detail instead of on the guard.
+    with pytest.raises(ValueError, match="does not compute"):
+        sampling_report(
+            _finals_factory([[True], [False]]),
+            n=1,
+            k=1,
+            denominator=2,
+            score_key="accuracy",
+        )
+
+
+def test_sampling_report_interval_is_reported_at_n_equals_one(_finals_factory):
+    # Not gated on n > 1: the interval is WIDEST at n=1, which is where a reader
+    # most needs it -- the same argument health_metrics already makes.
+    finals = _finals_factory([[True], [False], [True], [False]])
+    got = sampling_report(finals, n=1, k=1, denominator=4, score_key="pass@1")
+    assert "score_ci95" in got
 
 
 # --------------------------------------------------------------------------- #
