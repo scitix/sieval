@@ -9,7 +9,11 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models import Request, Response
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.drop import DROPDataset, DROPDatasetSample
 from sieval.tasks.drop_kshot_gen import DROPFewShotGenTask
 from tests.conftest import HandlerTransport
@@ -125,3 +129,46 @@ async def test_repeated_preprocess_is_stable():
     first = await task.preprocess(raw, ctx)
     second = await task.preprocess(raw, ctx)
     assert first == second
+
+
+# --- the headline interval rides the per-question F1, rescaled to 0-1 -------
+
+
+@pytest.mark.anyio
+async def test_report_interval_rides_per_question_f1_on_the_right_scale():
+    """`f1` is stored on 0-100, so it must be divided by 100 going in.
+
+    Passed raw, every value would be 100x over, `p` would exceed 1.0, and
+    `wilson_interval` would take its saturated Clopper-Pearson branch -- which
+    returns a bound near the top of the range regardless of the data. The upper
+    bound staying below 100 is what fails if the rescale is dropped.
+    """
+    task = DROPFewShotGenTask(_dataset(None), _StubChatModel(), n_shot=0)
+
+    def _final(sample_id: int, *, f1: float, em: float) -> TaskContext:
+        metrics: dict[str, bool | float] = {"em": em, "f1": f1}
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                ["ans"],
+                [build_rollout_judgement(0, em == 1.0, metrics=metrics)],
+                metrics=metrics,
+            ),
+        )
+
+    # Partial credit, which is the shape DROP's mean-of-per-question-F1 exists
+    # for: 100.0 and 50.0 on the stored 0-100 scale.
+    finals = [_final(0, f1=100.0, em=1.0), _final(1, f1=50.0, em=0.0)]
+    report = await task.report(finals, [])
+
+    assert report["f1"] == pytest.approx(75.0)
+    assert report["score"] == report["f1"]
+    assert report["em"] == pytest.approx(50.0)
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
+    # On the right scale the mean is 0.75, not 75. Unrescaled it saturates and
+    # the upper bound pins to the top of the range.
+    assert hi < 100.0

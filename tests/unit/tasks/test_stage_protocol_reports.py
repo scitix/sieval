@@ -407,6 +407,18 @@ class TestIFEvalReport:
         assert report["score"] == pytest.approx(50.0)
         assert report["fails"] == 0
 
+        # The interval is on the STRICT PROMPT axis -- the headline. Two things
+        # pin it there: the population is the 2 prompts, not the 4 instructions an
+        # instruction-level reading would pool over; and it stays strictly below
+        # the loose prompt-level 100.0, which is what a loose-axis interval would
+        # bracket instead.
+        assert report["n_problems"] == 2
+        interval = report["score_ci95"]
+        assert isinstance(interval, list)
+        lo, hi = interval
+        assert lo < report["score"] < hi
+        assert hi < report["loose_prompt_level_accuracy"]
+
     async def test_instruction_level_pools_counts_rather_than_averaging_samples(self):
         from sieval.tasks.ifeval_0shot_gen import IFEvalZeroShotGenTask
 

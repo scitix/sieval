@@ -20,6 +20,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    interval_metrics,
 )
 from sieval.datasets import DROPDatasetSample
 
@@ -51,8 +52,8 @@ class DROPFewShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     def __init__(
@@ -176,6 +177,17 @@ class DROPFewShotGenTask(
         total_f1 = sum(ctx.feedback_result["metrics"]["f1"] for ctx in finals)
         avg_em = total_em / count * 100 if count > 0 else 0
         avg_f1 = total_f1 / count if count > 0 else 0
+        # DROP's official metric is the MEAN OF PER-QUESTION F1s, so the headline
+        # is a genuine mean over problems -- not the pooled precision/recall ratio
+        # an "F1" usually names, which would have no per-problem value at all.
+        #
+        # `/ 100` is load-bearing: `drop_metric` returns `em` on 0-1 but `f1` on
+        # 0-100 (`_compute_f1` scales by 100), which is why `avg_f1` above needs no
+        # `* 100` where `avg_em` does. Passed raw, every value would be 100x over,
+        # `p` would exceed 1.0, and the interval would land silently on the
+        # saturated Clopper-Pearson branch.
+        per_question_f1 = [ctx.feedback_result["metrics"]["f1"] / 100 for ctx in finals]
+        grouping = self.problem_groups(finals)
         # `em` and `f1` are co-equal partial-credit metrics; `score_key` records
         # which of the two the headline was taken from. The denominator is the
         # judged set — a pipeline failure is reported in `fails`, not averaged in
@@ -187,4 +199,9 @@ class DROPFewShotGenTask(
             "f1": avg_f1,
             SCORE_KEY_FIELD: "f1",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
-        }
+        } | interval_metrics(
+            per_question_f1,
+            denominator=count,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )

@@ -12,7 +12,12 @@ from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext, build_prediction_record
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_prediction_record,
+    build_rollout_judgement,
+)
 from sieval.datasets.ifbench import IFBenchDataset
 from sieval.tasks import ifbench_0shot_gen as module
 from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
@@ -171,6 +176,50 @@ async def test_report_scores_finals_and_counts_fails(monkeypatch: pytest.MonkeyP
         "score_key": "loose_prompt_level_accuracy",
         "denominator_policy": "judged",
     }
+
+
+@pytest.mark.anyio
+async def test_report_interval_rides_the_loose_prompt_axis():
+    """IFBench's headline is the LOOSE prompt-level rate, not IFEval's strict one.
+
+    The two modules differ only in that key, so the grades are built to disagree
+    here: every prompt fails strict, half pass loose. A strict-axis interval
+    would sit at 0.0, and the lower bound staying above the strict rate is what
+    fails if this module were given IFEval's edit verbatim.
+    """
+    task = _task()
+
+    def _final(sample_id: int, *, loose: bool) -> TaskContext:
+        metrics: dict[str, bool | float] = {
+            "strict_follow_all": False,
+            "loose_follow_all": loose,
+        }
+        detail = {
+            "strict": {"follow_instruction_list": [True, False]},
+            "loose": {"follow_instruction_list": [loose, loose]},
+        }
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                ["a", "b"],
+                [build_rollout_judgement(0, loose, metrics=metrics)],
+                metrics=metrics,
+                extra=detail,
+            ),
+        )
+
+    report = await task.report([_final(0, loose=True), _final(1, loose=False)], [])
+
+    assert report["strict_prompt_level_accuracy"] == 0.0
+    assert report["score"] == report["loose_prompt_level_accuracy"] == 50.0
+    # The 2 prompts, not the 4 instructions an instruction-level axis would pool.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
+    # Strictly above the strict rate, which a strict-axis interval would bracket.
+    assert lo > report["strict_prompt_level_accuracy"]
 
 
 def test_ensure_nltk_resources_passes_when_every_resource_is_staged(

@@ -47,6 +47,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    interval_metrics,
 )
 from sieval.datasets import IFBenchDatasetSample
 
@@ -161,8 +162,8 @@ class IFBenchZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     def __init__(self, dataset, model, name: str | None = None):
@@ -266,7 +267,7 @@ class IFBenchZeroShotGenTask(
     async def report(self, finals, fails):
         # Aggregation only -- grading moved to feedback(). Reading the persisted
         # verdicts also drops report()'s dependency on raw_sample being present.
-        results: dict[str, float | str] = {"fails": len(fails)}
+        results: dict[str, float | str | list[float]] = {"fails": len(fails)}
         judgements = [f.feedback_result for f in finals]
 
         for grade in _GRADES:
@@ -300,7 +301,22 @@ class IFBenchZeroShotGenTask(
         # is reported in `fails` rather than scored as a followed-nothing prompt.
         results[SCORE_KEY_FIELD] = "loose_prompt_level_accuracy"
         results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
-        return results
+        # The PROMPT axis of the LOOSE grade -- IFBench's headline, where the
+        # IFEval sibling's is strict. The two modules differ only in this key, so
+        # copying that one's interval verbatim would attach a strict interval to a
+        # loose headline and no value inspection would catch it. The
+        # `*_instruction_level_accuracy` siblings pool over CONSTRAINTS, a
+        # different resampling unit, and deliberately get no interval.
+        loose_prompt = [
+            1.0 if j["metrics"]["loose_follow_all"] else 0.0 for j in judgements
+        ]
+        grouping = self.problem_groups(finals)
+        return results | interval_metrics(
+            loose_prompt,
+            denominator=len(judgements),
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )
 
     def _clean_kwargs(self, kwargs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # Avoid HF Datasets' Arrow sparse-struct representation for None fields.

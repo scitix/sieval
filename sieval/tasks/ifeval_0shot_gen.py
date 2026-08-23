@@ -18,6 +18,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    interval_metrics,
 )
 from sieval.datasets import IFEvalDatasetSample
 
@@ -61,8 +62,8 @@ class IFEvalZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ]
 ):
     def __init__(self, dataset, model, name: str | None = None):
@@ -161,7 +162,7 @@ class IFEvalZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
-        results: dict[str, float | str] = {"fails": len(fails)}
+        results: dict[str, float | str | list[float]] = {"fails": len(fails)}
         judgements = [f.feedback_result for f in finals]
         for grade in _GRADES:
             prompt_total = len(judgements)
@@ -196,7 +197,21 @@ class IFEvalZeroShotGenTask(
         # followed-nothing prompt.
         results[SCORE_KEY_FIELD] = "strict_prompt_level_accuracy"
         results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
-        return results
+        # The PROMPT axis of the STRICT grade -- exactly the quantity `score` is a
+        # mean of, over the same `len(judgements)` denominator. The
+        # `*_instruction_level_accuracy` siblings deliberately get no interval:
+        # they pool over CONSTRAINTS, and a constraint count moves with which
+        # prompts were sampled, so their resampling unit is not the problem.
+        strict_prompt = [
+            1.0 if j["metrics"]["strict_follow_all"] else 0.0 for j in judgements
+        ]
+        grouping = self.problem_groups(finals)
+        return results | interval_metrics(
+            strict_prompt,
+            denominator=len(judgements),
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+        )
 
     def _clean_kwargs(self, kwargs):
         # avoid hf datasets underlying Arrow sparse struct problem
