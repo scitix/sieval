@@ -2249,11 +2249,13 @@ class TestCheckReportDeclarations:
     #: rules must follow: `sampling_report` reaches `pass@k` only through a call
     #: and a `|`, so reading one body sees none of its keys; the interval keys are
     #: written through module constants rather than literals, so a scan that
-    #: understands only literal keys sees none of them; and `merge_metrics` folds
-    #: its ARGUMENTS, so the keys of a fragment inside it belong to the report.
+    #: understands only literal keys sees none of them; `merge_metrics` folds its
+    #: ARGUMENTS, so the keys of a fragment inside it belong to the report; and
+    #: `ungated_intervals` writes its keys through a loop over those constants.
     _METRICS = (
         "SCORE_CI_FIELD = 'score_ci95'\n"
         "PROBLEM_COUNT_FIELD = 'n_problems'\n"
+        "PASS_AT_1_CI_FIELD = 'pass@1_ci95'\n"
         "CI_SUFFIX = '_ci95'\n"
         "CI_UNITS_FIELD = 'ci95_units'\n"
         "def health_metrics(finals):\n"
@@ -2273,9 +2275,14 @@ class TestCheckReportDeclarations:
         "CI_UNITS_FIELD: {metric: unit}}\n"
         "def merge_metrics(*fragments):\n"
         "    return {}\n"
+        "def ungated_intervals(block):\n"
+        "    out = {}\n"
+        "    for field in (SCORE_CI_FIELD, PROBLEM_COUNT_FIELD, PASS_AT_1_CI_FIELD):\n"
+        "        out[field] = block[field]\n"
+        "    out[CI_UNITS_FIELD] = {}\n"
+        "    return out\n"
         "def sampling_report(correct, k=1):\n"
-        "    return (rollout_metrics(correct, k=k) | budget_metrics(k=k)\n"
-        "            | interval_metrics(correct))\n"
+        "    return rollout_metrics(correct, k=k) | budget_metrics(k=k)\n"
     )
 
     def _run(
@@ -2683,11 +2690,11 @@ class TestCheckReportDeclarations:
     def test_a_pair_written_through_a_loop_over_the_constants_counts(
         self, tmp_path: Path
     ):
-        # The shape the sampling family uses to lift the pair out of a block it
-        # merges only at n>1. The subscript is a loop VARIABLE, so without
-        # resolving the loop the whole report reads as writing an unnameable key
-        # and rules 4-5 both go silent on it -- rule 4's real coverage dropped by
-        # 19 reports the day this shape landed.
+        # The shape the sampling family uses to lift its always-published
+        # intervals out of a block it merges only at n>1: `ungated_intervals`
+        # writes them through a loop over the field constants, so the subscript
+        # is a loop VARIABLE. Without resolving that loop the helper reads as
+        # writing an unnameable key and rules 5-6 both go silent on 19 reports.
         r = self._run(
             tmp_path,
             "class DemoTask:\n"
@@ -2699,11 +2706,8 @@ class TestCheckReportDeclarations:
             "            SCORE_KEY_FIELD: 'avg@n',\n"
             "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
             "        }\n"
-            "        for field in (SCORE_CI_FIELD, PROBLEM_COUNT_FIELD):\n"
-            "            if field in rolled:\n"
-            "                metrics[field] = rolled[field]\n"
-            "        metrics.update(rolled)\n"
-            "        return metrics | health_metrics(finals)\n",
+            "        metrics |= ungated_intervals(rolled)\n"
+            "        return metrics\n",
             metrics=self._METRICS,
         )
         assert r.status == "PASS"

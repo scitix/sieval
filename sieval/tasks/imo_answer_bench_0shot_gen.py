@@ -45,11 +45,10 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
-    PROBLEM_COUNT_FIELD,
-    SCORE_CI_FIELD,
     SCORE_KEY_FIELD,
     health_metrics,
     sampling_report,
+    ungated_intervals,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import IMOAnswerBenchDatasetSample
@@ -239,9 +238,9 @@ class IMOAnswerBenchZeroShotGenTask(
             SCORE_KEY_FIELD: "pass@1",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
-        for field in (SCORE_CI_FIELD, PROBLEM_COUNT_FIELD):
-            if field in rolled:
-                metrics[field] = rolled[field]
+        # Outside the n>1 gate, because the metrics they bracket are: `pass@1`
+        # is published at every budget, and so is the headline copied from it.
+        metrics |= ungated_intervals(rolled)
         if self._n > 1:
             # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)

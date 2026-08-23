@@ -19,6 +19,7 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     CI_SUFFIX,
     CI_UNITS_FIELD,
+    PASS_AT_1_CI_FIELD,
     PROBLEM_COUNT_FIELD,
     SCORE_CI_FIELD,
     ProblemGrouping,
@@ -41,6 +42,7 @@ from sieval.core.tasks.metrics import (
     rollout_view,
     sampling_report,
     self_consistency,
+    ungated_intervals,
     warn_unscored_rollouts,
     wilson_interval,
     zero_metrics,
@@ -721,10 +723,17 @@ def test_one_short_draw_does_not_cost_the_run_its_majority_column():
     assert out["maj@k"] == pytest.approx(100.0)
 
 
-def test_sampling_report_adds_no_interval_without_a_score_key(_finals_factory):
+def test_sampling_report_adds_no_headline_interval_without_a_score_key(_finals_factory):
+    # No `score_ci95`: only the caller knows which column its headline is. The
+    # block's own metrics still carry theirs -- they need no headline to exist --
+    # so the population key comes along with them.
     got = sampling_report(_finals_factory([[True], [False]]), n=1, k=1, denominator=2)
     assert "score_ci95" not in got
-    assert "n_problems" not in got
+    assert "pass@1_ci95" in got
+    assert got["n_problems"] == 2.0
+    assert got["ci95_units"] == dict.fromkeys(
+        ("pass@1", "avg@n", "self_consistency", "maj@k"), "n_problems"
+    )
 
 
 def test_sampling_report_intervals_the_named_key(_finals_factory):
@@ -737,6 +746,9 @@ def test_sampling_report_intervals_the_named_key(_finals_factory):
     pass_at_1 = got["pass@1"]
     assert isinstance(pass_at_1, float)
     assert lo < pass_at_1 < hi
+    # The headline interval is the SAME estimate as the column it was copied
+    # from, published under a second name -- not a second measurement.
+    assert got["pass@1_ci95"] == ci
 
 
 def test_sampling_report_refuses_a_score_key_it_did_not_compute(_finals_factory):
@@ -759,6 +771,105 @@ def test_sampling_report_interval_is_reported_at_n_equals_one(_finals_factory):
     finals = _finals_factory([[True], [False], [True], [False]])
     got = sampling_report(finals, n=1, k=1, denominator=4, score_key="pass@1")
     assert "score_ci95" in got
+
+
+def test_sampling_report_intervals_every_metric_it_publishes(_finals_factory):
+    # 9 problems at n=4, k=4, voting: all six keys present, so all six owe an
+    # interval. The set equality is the point -- one interval for a block of six
+    # would let five columns read as measured when only one was.
+    finals = _finals_factory([[True, False, True, True], [False] * 4, [True] * 4] * 3)
+    got = sampling_report(finals, n=4, k=4, denominator=9, score_key="pass@1")
+    metrics = {
+        "pass@1",
+        "avg@n",
+        "pass@k",
+        "pass^k",
+        "maj@k",
+        "self_consistency",
+    }
+    assert metrics <= set(got)
+    assert {key for key in got if key.endswith(CI_SUFFIX)} == {
+        ci_field(metric) for metric in metrics | {"score"}
+    }
+    assert got[CI_UNITS_FIELD] == dict.fromkeys(
+        metrics | {"score"}, PROBLEM_COUNT_FIELD
+    )
+    # One population for the block: they are all means over the same problems.
+    assert got[PROBLEM_COUNT_FIELD] == 9.0
+
+
+def test_sampling_report_gives_each_metric_its_own_estimate(_finals_factory):
+    # Discriminating: `pass@k` must NOT get `pass@1`'s interval. On this draw the
+    # two metrics differ per problem, so a reused interval would be visible.
+    finals = _finals_factory(
+        [[True, False, False, False], [False] * 4, [True, True, False, False]] * 3
+    )
+    got = sampling_report(finals, n=4, k=2, denominator=9)
+    assert got[ci_field("pass@k")] != got[ci_field("pass@1")]
+    # And each equals the interval computed from that metric's OWN per-problem
+    # values, which is what pins the wiring rather than only its direction.
+    for metric, per_problem in (
+        ("pass@1", [pass_at_k(4, 1, 1), 0.0, pass_at_k(4, 2, 1)] * 3),
+        ("pass@k", [pass_at_k(4, 1, 2), 0.0, pass_at_k(4, 2, 2)] * 3),
+        ("pass^k", [pass_pow_k(4, 1, 2), 0.0, pass_pow_k(4, 2, 2)] * 3),
+    ):
+        want = metric_interval(metric, per_problem, denominator=9)
+        assert got[ci_field(metric)] == want[ci_field(metric)]
+
+
+@pytest.mark.parametrize(
+    "k,votes,absent",
+    [
+        (1, True, ("pass@k", "pass^k")),
+        (4, False, ("maj@k", "self_consistency")),
+        (2, False, ("maj@k", "self_consistency")),
+    ],
+)
+def test_sampling_report_omits_the_interval_of_an_absent_metric(
+    _finals_factory, k, votes, absent
+):
+    # An interval appears exactly when its metric does. `maj@k` at k=2 is the
+    # sharper case: it is withheld for the budget reason, not for a missing input.
+    finals = _finals_factory([[True, False, True, True], [False] * 4, [True] * 4] * 3)
+    got = sampling_report(finals, n=4, k=k, denominator=9, votes=votes)
+    units = got[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    for metric in absent:
+        assert metric not in got
+        assert ci_field(metric) not in got
+        assert metric not in units
+    # ... and every metric that IS there has one.
+    assert {ci_field(metric) for metric in units} == {
+        key for key in got if key.endswith(CI_SUFFIX)
+    }
+
+
+def test_sampling_report_adds_no_intervals_when_nothing_was_scored():
+    # Every sample failed: the full key set from `zero_metrics`, and no interval
+    # keys at all -- a zero-width interval over no problems would read as a
+    # measurement.
+    got = sampling_report([], n=4, k=4, denominator=6, score_key="pass@1")
+    assert got["pass@1"] == 0.0
+    assert not [key for key in got if key.endswith(CI_SUFFIX)]
+    assert CI_UNITS_FIELD not in got
+    assert PROBLEM_COUNT_FIELD not in got
+
+
+def test_sampling_report_wires_grouping_into_every_metric_interval(_finals_factory):
+    # The grouping has to reach the per-metric intervals too, not just the
+    # headline: an uncollapsed repeat narrows each of them by the same root-times.
+    pattern = [[True, False, True, True], [False] * 4, [True] * 4]
+    finals = _finals_factory(pattern * 4)
+    keys = [g for _ in range(4) for g in range(3)]
+    grouping = ProblemGrouping(keys=keys, n_problems=3)
+    flat = sampling_report(finals, n=4, k=4, denominator=12)
+    grouped = sampling_report(finals, n=4, k=4, denominator=12, grouping=grouping)
+    assert grouped[PROBLEM_COUNT_FIELD] == 3.0
+    for metric in ("pass@1", "avg@n", "pass@k", "pass^k"):
+        flat_ci, grouped_ci = flat[ci_field(metric)], grouped[ci_field(metric)]
+        assert isinstance(flat_ci, list)
+        assert isinstance(grouped_ci, list)
+        assert (grouped_ci[1] - grouped_ci[0]) > (flat_ci[1] - flat_ci[0])
 
 
 def test_sampling_report_wires_grouping_into_the_interval(_finals_factory):
@@ -983,12 +1094,13 @@ def test_interval_metrics_needs_the_problem_count_with_the_keys():
 
 
 def test_the_interval_field_names_are_the_suffix_rule_applied():
-    """The spelled-out headline constant must BE what `ci_field` derives.
+    """The two spelled-out constants must BE what `ci_field` derives.
 
-    It is a literal because a static reader has to name it; that is exactly what
-    lets it drift from the rule everything else follows.
+    They are literals because a static reader has to name them; that is exactly
+    what lets them drift from the rule everything else follows.
     """
     assert ci_field("score") == SCORE_CI_FIELD
+    assert ci_field("pass@1") == PASS_AT_1_CI_FIELD
     assert ci_field("pass@k") == f"pass@k{CI_SUFFIX}"
 
 
@@ -1092,6 +1204,51 @@ def test_merge_metrics_refuses_one_metric_on_two_populations():
 def test_merge_metrics_refuses_a_declaration_that_is_not_a_map():
     with pytest.raises(ValueError, match="map of metric"):
         merge_metrics({CI_UNITS_FIELD: 1.0})
+
+
+def test_ungated_intervals_carries_nothing_from_a_block_with_no_intervals():
+    # The empty path: `zero_metrics`' key set describes no problems, so it has
+    # no interval to lift out of the gate and nothing to declare.
+    block = sampling_report([], n=4, k=4, denominator=6, score_key="pass@1")
+    assert "pass@1" in block
+    assert ungated_intervals(block) == {}
+
+
+def test_ungated_intervals_trims_the_declaration_to_the_intervals_it_carries(
+    _finals_factory,
+):
+    finals = _finals_factory([[True, False, True, True], [False] * 4, [True] * 4] * 3)
+    block = sampling_report(finals, n=4, k=4, denominator=9, score_key="pass@1")
+    carried = ungated_intervals(block)
+
+    # `pass@1` and the headline travel; `avg@n` and the rest stay behind the gate
+    # with the metrics they bracket.
+    assert set(carried) == {
+        SCORE_CI_FIELD,
+        PROBLEM_COUNT_FIELD,
+        PASS_AT_1_CI_FIELD,
+        CI_UNITS_FIELD,
+    }
+    assert carried[CI_UNITS_FIELD] == {
+        "score": PROBLEM_COUNT_FIELD,
+        "pass@1": PROBLEM_COUNT_FIELD,
+    }
+    assert carried[SCORE_CI_FIELD] == block[SCORE_CI_FIELD]
+    assert carried[PASS_AT_1_CI_FIELD] == block[PASS_AT_1_CI_FIELD]
+    # Every entry it kept is the block's own, so merging the whole block later
+    # restores the trimmed ones rather than losing one.
+    units = block[CI_UNITS_FIELD]
+    kept_units = carried[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    assert isinstance(kept_units, dict)
+    assert kept_units.items() <= units.items()
+
+
+def test_ungated_intervals_publishes_no_population_without_an_interval():
+    # A population with no interval beside it is a count nothing asked for, so
+    # the whole fragment is withheld rather than half of it.
+    assert ungated_intervals({PROBLEM_COUNT_FIELD: 30.0}) == {}
+    assert ungated_intervals({}) == {}
 
 
 class _Final:

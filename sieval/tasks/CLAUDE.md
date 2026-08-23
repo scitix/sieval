@@ -132,7 +132,9 @@ carry an interval per metric — an interval whose unit is undeclared cannot be
 told from one clustered on something else. Merge them from `metrics.py` rather
 than spelling any of the keys here: `interval_metrics` for the headline,
 `metric_interval` for any other metric (it takes the population key as `unit`),
-or `sampling_report(score_key=...)`.
+`sampling_report`, which does this for every key of the sampling block, and
+`ungated_intervals`, which lifts the block's always-published intervals out of an
+`n > 1` gate and trims the declaration to what came with them.
 
 Two fragments that each carry intervals are folded with `merge_metrics`, never
 with `|`: a plain merge replaces `ci95_units` wholesale, so one fragment's

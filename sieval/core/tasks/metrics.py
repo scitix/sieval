@@ -21,7 +21,6 @@ import collections
 import math
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
 
 from loguru import logger
 
@@ -473,6 +472,11 @@ PROBLEM_COUNT_FIELD = "n_problems"
 #: ``score``, which is why the headline pair keeps its spelling.
 CI_SUFFIX = "_ci95"
 
+#: ``pass@1``'s interval. Spelled out rather than derived because it is one of the
+#: keys a static reader has to be able to name (see :func:`ungated_intervals`);
+#: ``test_metrics`` pins it against :func:`ci_field`.
+PASS_AT_1_CI_FIELD = "pass@1_ci95"
+
 #: Report key declaring, per metric, WHICH population key that metric's interval
 #: is clustered on -- ``{"pass@1": "n_problems"}``. The report's one nested
 #: object, and the reason a report can carry more than one interval at all: two
@@ -700,6 +704,45 @@ def merge_metrics(
     return merged
 
 
+def ungated_intervals(
+    block: Mapping[str, float | list[float] | dict[str, str]],
+) -> dict[str, float | list[float] | dict[str, str]]:
+    """The intervals of *block* a task publishes at EVERY budget, declarations included.
+
+    :func:`sampling_report`'s block is merged into a report only at ``n > 1``,
+    because at ``n = 1`` the rest of it only restates ``pass@1``. But ``pass@1``
+    itself, and the headline copied from it, ARE published at every budget -- so
+    their intervals are lifted out of that gate with them, since an interval is
+    published exactly when the metric it brackets is. Every other key's interval
+    stays inside the gate, with the metric it brackets.
+
+    ``ci95_units`` is trimmed to the metrics whose intervals came along: a
+    declaration naming a metric the report withheld describes a key that is not
+    there. Every entry kept is *block*'s own, so a caller that later merges the
+    whole block cannot lose one -- the block declares a superset.
+
+    A loop over the field constants rather than a comprehension over *block*, for
+    the same reason :func:`interval_metrics` spells its keys out: the keys this
+    produces have to be nameable by a reader that only parses the source.
+    """
+    out: dict[str, float | list[float] | dict[str, str]] = {}
+    for field in (SCORE_CI_FIELD, PROBLEM_COUNT_FIELD, PASS_AT_1_CI_FIELD):
+        if field in block:
+            out[field] = block[field]
+    declared = block.get(CI_UNITS_FIELD)
+    kept = (
+        {metric: unit for metric, unit in declared.items() if ci_field(metric) in out}
+        if isinstance(declared, dict)
+        else {}
+    )
+    if not kept:
+        # Whole or not at all: a population with no interval beside it is a count
+        # nothing asked for, and an undeclared interval cannot be read.
+        return {}
+    out[CI_UNITS_FIELD] = kept
+    return out
+
+
 def first_rollout_correct(finals) -> int:
     """How many judged samples the FIRST rollout got right.
 
@@ -743,22 +786,37 @@ def sampling_report(
     *votes* off omits ``maj@k`` end to end -- including on the empty path, or a
     failed run grows a column a scored one never had.
 
-    *score_key* names which of this block's OWN columns -- ``pass@1``, ``avg@n``,
-    and so on -- the task's headline is a mean of, so :func:`interval_metrics` can
-    be run on that same per-problem quantity. Passed in rather than picked here,
-    because only the caller knows which axis its headline is on. Left ``None``,
-    this function behaves exactly as it did before the parameter existed --
-    no ``score_ci95``, no ``n_problems``. Given a name this block did NOT
-    compute, it RAISES rather than guessing: an interval silently attached to
-    the wrong column would be a plausible-looking wrong number, worse than no
-    number at all.
+    EVERY key here carries its own interval, on the very per-problem values
+    :func:`aggregate` folded into it. All six are exact means over problems of a
+    per-problem value, so none of them has to borrow another's: ``pass@k`` is not
+    a rescaled ``pass@1``, and publishing one interval for a block of six would
+    make five of them read as measured when only one was. They all sit on the same
+    population, so the block still declares one ``n_problems``.
 
-    The interval is reported at EVERY budget the block runs at, including
+    An interval appears exactly when its metric does, because it is derived from
+    the metric's own key: ``pass@k`` / ``pass^k`` only at ``k > 1``, ``maj@k``
+    only when the task votes over the whole budget, ``self_consistency`` only when
+    it votes. On the empty path there are no per-problem values, so
+    :func:`zero_metrics`' key set arrives with no intervals rather than with
+    zero-width ones.
+
+    *score_key* names which of this block's OWN columns -- ``pass@1``, ``avg@n``,
+    and so on -- the task's headline is a mean of, so its interval can be
+    published under ``score_ci95`` as well, for a reader keyed on the headline
+    rather than on the column it came from. The two are the same estimate on the
+    same values, not two measurements. Passed in rather than picked here, because
+    only the caller knows which axis its headline is on; left ``None``, no
+    ``score_ci95`` is emitted. Given a name this block did NOT compute, it RAISES
+    rather than guessing: an interval silently attached to the wrong column would
+    be a plausible-looking wrong number, worse than no number at all.
+
+    The intervals are reported at EVERY budget the block runs at, including
     ``n = 1`` -- deliberately NOT gated behind ``n > 1`` the way most of this
-    file's per-run keys are. It is at its WIDEST at ``n = 1``, which is exactly
-    where a reader most needs it; gating it would withhold it from the default
-    configuration. :func:`health_metrics` makes the same argument for
-    ``n_unextracted``.
+    file's per-run keys are. They are at their WIDEST at ``n = 1``, which is
+    exactly where a reader most needs them; gating them would withhold them from
+    the default configuration. :func:`health_metrics` makes the same argument for
+    ``n_unextracted``. A task that withholds the block itself at ``n = 1`` lifts
+    the always-published ones out with :func:`ungated_intervals`.
 
     *grouping* collapses samples that are repeat copies of one problem before
     estimating -- see :func:`interval_metrics`. ``None`` when each sample is
@@ -789,33 +847,48 @@ def sampling_report(
         else zero_metrics(n=n, k=k, votes=votes)
     )
     budget = budget_metrics(observed, n=n, k=k, unit=unit)
-    if score_key is None:
-        # `rolled | budget` is `dict[str, float]` -- narrower than this
-        # function's own return type, which widens only for the branch below.
-        # No `score_ci95` reaches a caller from here, so the cast adds nothing
-        # a reader could get wrong.
-        return cast(dict[str, float | list[float] | dict[str, str]], rolled | budget)
-    if score_key not in rolled:
+    if score_key is not None and score_key not in rolled:
         raise ValueError(
             f"sampling_report: score_key {score_key!r} names a column this block "
             f"does not compute; got {sorted(rolled)}. A headline pointing at a "
             f"missing column would report an interval on a different metric."
         )
-    # Subscript, not `.get(..., 0.0)`: the guard above proved the key is in
-    # `rolled`, and `aggregate` drops a key absent from any entry -- so every
-    # entry has it. If that ever stops holding, raise instead of padding the
-    # gap with the 0.0 this module refuses everywhere else.
-    values = [metrics[score_key] for metrics in per_problem]
-    return (
-        rolled
-        | budget
-        | interval_metrics(
-            values,
-            denominator=denominator,
-            group_keys=None if grouping is None else grouping.keys,
-            n_problems=None if grouping is None else grouping.n_problems,
+    group_keys = None if grouping is None else grouping.keys
+    n_problems = None if grouping is None else grouping.n_problems
+    intervals: list[dict[str, float | list[float] | dict[str, str]]] = []
+    if score_key is not None:
+        # Subscript, not `.get(..., 0.0)`: the guard above proved the key is in
+        # `rolled`, and `aggregate` drops a key absent from any entry -- so every
+        # entry has it. If that ever stops holding, raise instead of padding the
+        # gap with the 0.0 this module refuses everywhere else. Same for the
+        # per-metric loop below, which reads only keys `rolled` kept.
+        intervals.append(
+            interval_metrics(
+                [metrics[score_key] for metrics in per_problem],
+                denominator=denominator,
+                group_keys=group_keys,
+                n_problems=n_problems,
+            )
         )
-    )
+    # `per_problem`, not `rolled`: on the empty path `rolled` is `zero_metrics`'
+    # key set, which describes no problems at all and has no values to estimate
+    # from. Iterating `rolled` otherwise is what makes an interval appear exactly
+    # when its metric does -- the gates on `pass@k`, `maj@k` and
+    # `self_consistency` are already in the keys.
+    if per_problem:
+        for metric in rolled:
+            intervals.append(
+                metric_interval(
+                    metric,
+                    [metrics[metric] for metrics in per_problem],
+                    denominator=denominator,
+                    group_keys=group_keys,
+                    n_problems=n_problems,
+                )
+            )
+    # `merge_metrics`, not `|`: every fragment above declares the unit of the one
+    # metric it estimated, and a plain merge would keep only the last one's.
+    return merge_metrics(rolled, budget, *intervals)
 
 
 def health_metrics(finals) -> dict[str, float]:

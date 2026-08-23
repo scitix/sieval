@@ -45,6 +45,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     interval_metrics,
+    merge_metrics,
     sampling_report,
 )
 from sieval.datasets import GSM8KDatasetSample
@@ -264,7 +265,7 @@ class GSM8KFewShotBaseGenTask(
         flexible_correct_num = _named(finals, "flexible_exact_match")
         exact_match = 100 * correct_num / count if count else 0.0
         flexible_exact_match = 100 * flexible_correct_num / count if count else 0.0
-        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
+        metrics: dict[str, float | str | list[float]] = {
             "score": exact_match,
             "fails": len(fails),
             "exact_match": exact_match,
@@ -287,24 +288,33 @@ class GSM8KFewShotBaseGenTask(
             for f in finals
         ]
         grouping = self.problem_groups(finals)
-        metrics |= interval_metrics(
+        headline = interval_metrics(
             strict,
             denominator=count,
             group_keys=None if grouping is None else grouping.keys,
             n_problems=None if grouping is None else grouping.n_problems,
         )
         if self._n <= 1:
-            return metrics
+            return metrics | headline
         # The sampling family rides on `correct`, derived from the strict
         # `exact_match`, so it describes the HEADLINE metric only --
         # `flexible_exact_match` would need its own verdict axis.
         # Over `len(finals)`: this task excludes failed samples.
-        return metrics | sampling_report(
-            finals,
-            n=self._n,
-            k=self._k,
-            denominator=count,
-            normalize=normalize_vote,
+        #
+        # One fold, not two merges: a plain merge replaces `ci95_units` wholesale,
+        # so folding the sampling block over the headline's interval would leave
+        # `score_ci95` with no unit declared. Same grouping and same `count` on
+        # both sides, so the two declare one `n_problems`, not two.
+        return metrics | merge_metrics(
+            headline,
+            sampling_report(
+                finals,
+                n=self._n,
+                k=self._k,
+                denominator=count,
+                normalize=normalize_vote,
+                grouping=grouping,
+            ),
         )
 
     def _get_fewshot_examples(self) -> list[GSM8KDatasetSample]:

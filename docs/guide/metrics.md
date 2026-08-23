@@ -107,9 +107,11 @@ count. The value of every `ci95_units` entry is a key in the same report, so a
 reader that finds an interval can always find the population it is quoted over.
 
 **Which metrics have one today is partial, and this is where it stands.** The
-headline of 49 of the 58 task reports, exactly as before. No other metric carries
-one yet. A missing `<metric>_ci95` therefore means "not published for that
-metric", not "no spread".
+headline of 49 of the 58 task reports, exactly as before; plus every sampling key
+the shared block publishes — `pass@1`, `avg@n`, `pass@k`, `pass^k`, `maj@k`,
+`self_consistency` — on the 28 tasks that route through it. Every other metric in
+the tree carries none yet. A missing `<metric>_ci95` therefore means "not
+published for that metric", not "no spread".
 
 Three rules decide whether a metric is a candidate at all:
 
@@ -122,12 +124,13 @@ Three rules decide whether a metric is a candidate at all:
   the other metric's mirrored, which reads as two independent measurements of one
   thing.
 - A true **alias** — the same number under a second key name — does get one, so a
-  consumer keyed on either name finds a companion. `score` is that case whenever
-  it is a copy of another published column: the two keys carry the same two
-  bounds, not two measurements.
+  consumer keyed on either name finds a companion. `score_ci95` and
+  `pass@1_ci95` on a `pass@1`-headline task are exactly this case: the same two
+  bounds, published twice, because `score` is a copy of `pass@1`.
 
-An interval is published **exactly when its metric is** — never for a metric the
-report withheld, and never missing for one it published.
+An interval is published **exactly when its metric is**. A task that withholds the
+sampling block at `n = 1` withholds those metrics' intervals with them, and keeps
+the ones for what it still publishes.
 
 `hle_0shot_gen`'s `confidence_interval` is not part of this and is not listed in
 `ci95_units` — it is upstream's own pooled half-width, described below.
@@ -326,6 +329,17 @@ reporting a `pass@k` of `0.0`.
 Rates are percentages (0–100) over the task's declared denominator; `n`, `k` and
 `n_short` are counts.
 
+Each of the six rates carries **its own** 95% interval — `pass@1_ci95`,
+`avg@n_ci95`, `pass@k_ci95`, `pass^k_ci95`, `maj@k_ci95`,
+`self_consistency_ci95` — clustered on problems and declared over the block's one
+`n_problems`. All six are exact means over problems of a per-problem value, so
+none of them borrows another's: `pass@k` is not a rescaled `pass@1`, and one
+interval for a block of six would make five of them read as measured when only one
+was. Each appears under exactly the condition its metric does, so an interval is
+never there for a column that is not. On a task whose headline is `pass@1`,
+`score_ci95` and `pass@1_ci95` hold the same two bounds — one estimate, published
+under the name a leaderboard reads and under the name of the column it came from.
+
 **`avg@n` is spelled `@n`, not `@k`, on purpose:** it takes no `k` and does not
 move with one — at `n=4, k=2` it averages four verdicts where `pass@k` estimates
 over two. It coincides with `pass@1` on every boolean draw, and both are still
@@ -452,9 +466,9 @@ unit), `timeouts` (the code family), `exact_match` / `flexible_exact_match`
 Adding a key is non-destructive: `sieval leaderboard report` reads `score` and
 nothing else, so older runs stay readable and comparable on the headline. They
 are **not** backfilled — metrics are computed inline at report time, so a stored
-`report.json` remains a function of the run that produced it. `ci95_units` is an
-addition of this kind: a report written before it has none, and no number in it
-moved when it arrived.
+`report.json` remains a function of the run that produced it. The per-metric
+interval keys and `ci95_units` are additions of this kind: a report written before
+them has neither, and no number in it moved when they arrived.
 
 Two migrations: the `pass@<k>` → `pass@k` rename, where a dashboard keyed on the
 literal `pass@4` needs updating and should read the budget from `n` / `k`; and

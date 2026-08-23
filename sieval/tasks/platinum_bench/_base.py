@@ -119,6 +119,7 @@ from sieval.core.tasks.metrics import (
     first_rollout_correct,
     health_metrics,
     interval_metrics,
+    merge_metrics,
     sampling_report,
 )
 from sieval.datasets import PlatinumBenchDatasetSample
@@ -376,7 +377,7 @@ class PlatinumMathGenTask(
         # additive and never touch them.
         correct_num = first_rollout_correct(finals)
         accuracy = 100 * correct_num / total
-        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
+        metrics: dict[str, float | str | list[float]] = {
             "score": accuracy,
             "fails": len(fails),
             "accuracy": accuracy,
@@ -399,18 +400,24 @@ class PlatinumMathGenTask(
             for f in finals
         ]
         grouping = self.problem_groups(finals)
-        metrics.update(
-            interval_metrics(
-                first,
-                denominator=total,
-                group_keys=None if grouping is None else grouping.keys,
-                n_problems=None if grouping is None else grouping.n_problems,
-            )
+        headline = interval_metrics(
+            first,
+            denominator=total,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
         )
         if self._n <= 1:
-            return metrics
+            return metrics | headline
 
-        # Over `total`, the denominator `accuracy` uses, so a failed sample
-        # counts as wrong in both.
-        metrics.update(sampling_report(finals, n=self._n, k=self._k, denominator=total))
-        return metrics
+        # One fold, not two merges: a plain merge replaces `ci95_units` wholesale,
+        # so folding the sampling block over the headline's interval would leave
+        # `score_ci95` with no unit declared. The same grouping and the same
+        # `total` on both sides, so they declare one `n_problems`, not two --
+        # over `total`, the denominator `accuracy` uses, so a failed sample counts
+        # as wrong in both.
+        return metrics | merge_metrics(
+            headline,
+            sampling_report(
+                finals, n=self._n, k=self._k, denominator=total, grouping=grouping
+            ),
+        )
