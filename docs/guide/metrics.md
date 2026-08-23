@@ -120,8 +120,9 @@ scale.
 
 ### Width is set by the problem count *and* the spread between problems
 
-The half-width is `z·√Var`, with `Var = m·s²/D²` over `m` problems, denominator `D`
-and between-problem spread `s²` — and **nothing puts a floor under `s²`**. The
+The half-width *scales with* `z·√Var` — Wilson on `m_eff = p(1−p)/Var` rather than
+that Wald form — with `Var = m·s²/D²` over `m` problems, denominator `D` and
+between-problem spread `s²` — and **nothing puts a floor under `s²`**. The
 problem count decides how much a given spread is worth; it does not on its own
 bound the width from below. Two cases on 30 problems:
 
