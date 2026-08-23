@@ -17,6 +17,8 @@ from sieval.core.tasks import (
     build_rollout_judgement,
 )
 from sieval.core.tasks.metrics import (
+    PROBLEM_COUNT_FIELD,
+    SCORE_CI_FIELD,
     ProblemGrouping,
     aggregate,
     avg_at_n,
@@ -29,6 +31,7 @@ from sieval.core.tasks.metrics import (
     majority_at_k,
     pass_at_k,
     pass_pow_k,
+    problem_population,
     rollout_metrics,
     rollout_view,
     sampling_report,
@@ -967,3 +970,58 @@ def test_interval_metrics_rejects_a_grouping_that_does_not_align():
 def test_interval_metrics_needs_the_problem_count_with_the_keys():
     with pytest.raises(ValueError, match="n_problems"):
         interval_metrics([1.0, 0.0], denominator=2, group_keys=[0, 0])
+
+
+class _Final:
+    def __init__(self, sample_id):
+        self.sample_id = sample_id
+
+
+def test_problem_population_passes_a_real_grouping_through():
+    """A repeated split already counts problems, so it is returned untouched."""
+    grouping = ProblemGrouping([7, 7, 8], 2)
+    out = problem_population(grouping, [], n_problems=999)
+    assert out is grouping
+
+
+def test_problem_population_gives_one_group_per_sample_when_unrepeated():
+    out = problem_population(None, [_Final(4), _Final(9)], n_problems=3)
+    assert out.n_problems == 3
+    # One key per sample, and DISTINCT -- "each sample is its own problem".
+    assert len(out.keys) == 2
+    assert len(set(out.keys)) == 2
+
+
+def test_problem_population_does_not_collapse_samples_sharing_a_sample_id():
+    """Positional keys, not `sample_id`.
+
+    Keying on `sample_id` would merge these two into one group, which drops the
+    interval entirely at two samples -- and a task whose contexts happen to
+    repeat an id is a fixture away, not a hypothetical.
+    """
+    out = problem_population(None, [_Final(0), _Final(0)], n_problems=2)
+    assert len(set(out.keys)) == 2
+
+
+def test_problem_population_leaves_the_interval_untouched():
+    """The whole point: it corrects what `n_problems` REPORTS, nothing else.
+
+    4 problems at n=4 with one wholly-failed problem. `n_problems` moves from the
+    rollout count to the problem count; `score_ci95` must not move at all,
+    because the factor cancels out of both `p` and the variance.
+    """
+    values = [4.0, 0.0, 2.0]
+    denominator = 4 * 4
+
+    ungrouped = interval_metrics(values, denominator=denominator)
+    grouping = problem_population(None, [_Final(i) for i in range(3)], n_problems=4)
+    grouped = interval_metrics(
+        values,
+        denominator=denominator,
+        group_keys=grouping.keys,
+        n_problems=grouping.n_problems,
+    )
+
+    assert ungrouped[PROBLEM_COUNT_FIELD] == 16.0  # rollouts — the old, wrong unit
+    assert grouped[PROBLEM_COUNT_FIELD] == 4.0  # problems
+    assert grouped[SCORE_CI_FIELD] == ungrouped[SCORE_CI_FIELD]

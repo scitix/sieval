@@ -278,12 +278,13 @@ async def test_report_fails_weighted_by_n():
 
 
 @pytest.mark.anyio
-async def test_report_interval_is_quoted_over_the_rollout_population():
-    """The denominator counts ROLLOUTS, so `n_problems` is the rollout count.
+async def test_report_interval_is_averaged_over_rollouts_but_sized_in_problems():
+    """Two different counts, and they must not be confused.
 
-    Two samples at n=2 plus one fail: 4 graded + 2 stand-ins = 6. A per-sample
-    reading would report 2 (or 3 with the fail), so this assertion is what fails
-    if the population is taken off `finals` instead of off `grades`.
+    The headline is averaged over ROLLOUTS: 2 samples at n=2 plus one fail is
+    4 graded + 2 stand-ins = 6, which is the denominator. `n_problems` is the
+    PROBLEM count, 3 -- the field a reader sizes the evidence by, and the one
+    that has to mean the same noun here as on every other task.
     """
     dataset = BrowseCompDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
@@ -313,8 +314,10 @@ async def test_report_interval_is_quoted_over_the_rollout_population():
         [TaskContext(sample_id=2)],
     )
 
+    # 2 correct of 6 rollout units — the headline's own denominator.
     assert report["accuracy"] == pytest.approx(100 * 2 / 6)
-    assert report["n_problems"] == 6
+    # The population is 3 problems, NOT the 6 rollouts it was averaged over.
+    assert report["n_problems"] == 3
     interval = report["score_ci95"]
     assert isinstance(interval, list)
     lo, hi = interval

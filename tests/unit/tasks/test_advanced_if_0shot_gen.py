@@ -354,9 +354,10 @@ async def test_report_pools_both_published_rates():
     assert report["n_grader_unparsed"] == 0.0
     assert report["fails"] == 0
 
-    # The interval rides `overall_pass_rate` over the 2 ROLLOUT units -- not
-    # `micro_pass_rate`, which pools over the 8 rubric checks. `n_problems` is
-    # the rollout count, so it must not equal `n_rubric_checks`.
+    # The interval rides `overall_pass_rate`, pooled over the 2 rollout units --
+    # not `micro_pass_rate`, which pools over the 8 rubric checks. `n_problems`
+    # counts PROBLEMS, so it must not equal `n_rubric_checks`; at n=1 it happens
+    # to equal the rollout count too (see the n=2 case below, where it does not).
     assert report["n_problems"] == 2
     assert report["n_problems"] != report["n_rubric_checks"]
     interval = report["score_ci95"]
@@ -382,6 +383,75 @@ async def test_report_counts_failed_rollouts_in_the_interval_population():
 
     assert report["overall_pass_rate"] == pytest.approx(100 / 3)
     assert report["n_problems"] == 3
+
+
+@pytest.mark.anyio
+async def test_report_n_problems_counts_problems_not_rollouts():
+    """At n=2 the two counts diverge, and `n_problems` must be the smaller one.
+
+    The headline is pooled over ROLLOUTS, so the denominator is 2 problems x 2
+    rollouts = 4. `n_problems` is the field a reader sizes the evidence by, and
+    reporting 4 there would overstate it two-fold and make the number
+    uncomparable against a task that reports questions.
+    """
+    sample = _sample()
+    dataset = AdvancedIFDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(sample)])})
+    )
+    task = AdvancedIFZeroShotGenTask(
+        dataset,
+        _ScriptedChatModel(reply="x", model="candidate"),
+        grader=_ScriptedChatModel(reply="{}", model="o3-mini"),
+        n=2,
+    )
+
+    def _two_rollout_final(sample_id: int, *, passed: tuple[bool, bool]):
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                None,
+                [
+                    build_rollout_judgement(
+                        i,
+                        ok,
+                        score=1.0 if ok else 0.0,
+                        metrics={
+                            "satisfied_all": ok,
+                            "rubric_level_pass_rate": 1.0 if ok else 0.0,
+                        },
+                        extra={
+                            "n_checks": 1,
+                            "n_checks_passed": 1 if ok else 0,
+                            "grader_parsed": True,
+                        },
+                    )
+                    for i, ok in enumerate(passed)
+                ],
+                extra={"benchmark_name": COMPLEX},
+            ),
+        )
+
+    report = await task.report(
+        [
+            _two_rollout_final(0, passed=(True, True)),
+            _two_rollout_final(1, passed=(False, False)),
+        ],
+        [],
+    )
+
+    # 2 of 4 rollouts passed: the headline is over rollouts.
+    assert report["overall_pass_rate"] == pytest.approx(50.0)
+    assert report["n_graded"] == 4.0
+    # ...but the population is 2 PROBLEMS, not the 4 rollouts.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < 50.0 < hi
+
+
+@pytest.mark.anyio
+async def test_report_macro_rate_reaches_the_report():
     """The per-rollout rubric rate is pooled, not left in the shard data.
 
     Equal rubric counts make micro == macro, so the two are separated with

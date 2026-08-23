@@ -130,6 +130,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     interval_metrics,
+    problem_population,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import SciTaRCDataset, SciTaRCDatasetSample
@@ -440,7 +441,12 @@ class SciTaRCZeroShotGenTask(
         # is at most 0.005 pp away. Said here rather than left for a reader to
         # infer the interval was computed on the rounded value.
         rate = (lambda c: round(100 * c / n, 2)) if n else (lambda c: 0.0)
-        grouping = self.problem_groups(finals)
+        # Always supplied, never left None: this headline is averaged over
+        # ROLLOUTS, so an absent grouping would publish the ROLLOUT count as
+        # `n_problems`. Does not move the interval -- see `problem_population`.
+        grouping = problem_population(
+            self.problem_groups(finals), finals, n_problems=len(finals) + len(fails)
+        )
         return (
             {
                 "score": rate(n_correct),
@@ -479,7 +485,7 @@ class SciTaRCZeroShotGenTask(
                 # separate axes and get no interval: a PARTIAL_SCORE rollout counts as
                 # NOT correct in the headline.
                 denominator=n,
-                group_keys=None if grouping is None else grouping.keys,
-                n_problems=None if grouping is None else grouping.n_problems,
+                group_keys=grouping.keys,
+                n_problems=grouping.n_problems,
             )
         )

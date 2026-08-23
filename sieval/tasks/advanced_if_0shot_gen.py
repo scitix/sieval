@@ -75,6 +75,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     interval_metrics,
+    problem_population,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import AdvancedIFDatasetSample
@@ -431,7 +432,12 @@ class AdvancedIFZeroShotGenTask(
         passed_per_sample = [
             float(sum(1 for v in sample if v["satisfied_all"])) for sample in by_sample
         ]
-        grouping = self.problem_groups(finals)
+        # Always supplied, never left None: this headline is averaged over
+        # ROLLOUTS, so an absent grouping would publish the ROLLOUT count as
+        # `n_problems`. Does not move the interval -- see `problem_population`.
+        grouping = problem_population(
+            self.problem_groups(finals), finals, n_problems=len(finals) + len(fails)
+        )
         results: dict[str, float | str | list[float]] = {
             "score": overall["overall_pass_rate"],
             "overall_pass_rate": overall["overall_pass_rate"],
@@ -454,8 +460,8 @@ class AdvancedIFZeroShotGenTask(
         results |= interval_metrics(
             passed_per_sample,
             denominator=len(verdicts) + len(failed),
-            group_keys=None if grouping is None else grouping.keys,
-            n_problems=None if grouping is None else grouping.n_problems,
+            group_keys=grouping.keys,
+            n_problems=grouping.n_problems,
         )
         for benchmark_name, group in sorted(by_benchmark.items()):
             aspect = aggregate_metrics(group)

@@ -361,6 +361,44 @@ class ProblemGrouping:
     n_problems: int
 
 
+def problem_population(
+    grouping: ProblemGrouping | None, finals, *, n_problems: int
+) -> ProblemGrouping:
+    """A grouping that reports ``n_problems`` in PROBLEMS, repeated split or not.
+
+    For the tasks whose headline is averaged over ROLLOUTS rather than over
+    samples. Their ``denominator`` is a rollout count, and passing it to
+    :func:`interval_metrics` with no grouping would publish that rollout count as
+    ``n_problems`` -- so the field would mean "problems x n" on an unrepeated
+    split and "problems" once ``Dataset.repeat`` was applied, i.e. a different
+    NOUN for the same task depending on its config. One field, two units, is what
+    makes it uncomparable against a task reporting questions.
+
+    So the grouping is always supplied for those tasks: *grouping* when the split
+    is repeated (its ``n_problems`` already counts distinct problems), and
+    otherwise one key per judged sample with *n_problems* given by the caller --
+    the sample population, which is what one problem is there.
+
+    This does NOT move any interval. ``n_problems`` is inert in the arithmetic:
+    :func:`interval_metrics` scales each group's sum by ``n_problems/denominator``
+    and then divides by ``n_problems``, so the factor cancels out of both ``p``
+    and the variance. It corrects only what the field REPORTS.
+
+    Its own function rather than four lines at each of the six call sites: they
+    have to agree on the unit to stay comparable with each other and with the
+    sample-denominator tasks, so the agreement lives in one place.
+    """
+    if grouping is not None:
+        return grouping
+    # POSITIONAL keys, not `sample_id`: `problem_groups` returning None means
+    # "each judged sample is its own problem", and one key per position says
+    # exactly that. Keying on `sample_id` would say "group by sample identity" --
+    # the same thing only while those ids are distinct, and silently collapsing
+    # two samples into one problem (halving the group count, and dropping the
+    # interval entirely at two samples) if they ever are not.
+    return ProblemGrouping(list(range(len(finals))), n_problems)
+
+
 def wilson_interval(
     values: Sequence[float],
     denominator: int,

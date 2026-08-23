@@ -339,6 +339,58 @@ async def test_report_headline_is_the_task_pass_rate():
 
 
 @pytest.mark.anyio
+async def test_report_n_problems_counts_problems_not_rollouts():
+    """At n=2 the two counts diverge, and `n_problems` must be the smaller one.
+
+    `task_pass_rate` is averaged over ROLLOUT units -- 2 problems x 2 rollouts =
+    4 -- while `n_problems` is the field a reader sizes the evidence by.
+    Reporting 4 there would overstate it two-fold and put it in a different unit
+    from every sample-denominator task's `n_problems`.
+    """
+    task, _, _ = _task(n=2)
+
+    def _final_n2(sample_id: int, *, passed: tuple[bool, bool]) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                None,
+                [
+                    build_rollout_judgement(
+                        i,
+                        ok,
+                        score=1.0 if ok else 0.0,
+                        metrics={
+                            "task_pass": ok,
+                            "criterion_pass_rate": 1.0 if ok else 0.0,
+                        },
+                        extra={
+                            "n_criteria": 3,
+                            "n_satisfied": 3 if ok else 0,
+                            "n_grader_unparsed": 0,
+                        },
+                    )
+                    for i, ok in enumerate(passed)
+                ],
+            ),
+        )
+
+    report = await task.report(
+        [_final_n2(0, passed=(True, True)), _final_n2(1, passed=(False, False))],
+        fails=[],
+    )
+
+    # 2 of 4 rollout units: the headline is over rollouts.
+    assert report["n_graded"] == 4
+    assert report["task_pass_rate"] == pytest.approx(50.0)
+    # ...but the population is 2 PROBLEMS, not the 4 rollouts.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < 50.0 < hi
+
+
+@pytest.mark.anyio
 async def test_report_macro_and_micro_criterion_rates_both_reported():
     task, _, _ = _task()
     # 5/10 and 30/40: macro = mean(0.5, 0.75) = 0.625; micro = 35/50 = 0.70.

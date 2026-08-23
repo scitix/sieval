@@ -185,6 +185,17 @@ permutes the answer choices per copy, which leaves an effective 334 problems
 rather than 198. Collapsing leaves `score` bit-for-bit unchanged; only the width
 moves.
 
+**Nor is it the rollout count.** Some headlines are averaged over rollouts rather
+than over samples — `hle_0shot_gen`, `scitarc_0shot_gen`, `aa_lcr_0shot_gen`,
+`browsecomp_0shot_gen`, `complex_constraints_0shot_gen`,
+`advanced_if_0shot_gen`, whose denominator is `(finals + fails) × n`. Their
+`denominator_policy` describes that population, but `n_problems` still counts
+**problems**: at `n = 4` a 500-question set reports 500, not 2000. One field
+cannot carry two nouns and still be comparable against a task that reports
+questions, so the interval is clustered on the problem there too. This does not
+move the interval — the problem count cancels out of both the centre and the
+variance — it only makes the reported population mean the same thing everywhere.
+
 ### Never infer a paired comparison from two per-run intervals
 
 Two runs' intervals overlapping is not evidence that the runs agree. On one real

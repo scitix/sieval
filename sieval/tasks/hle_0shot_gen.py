@@ -88,6 +88,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     interval_metrics,
+    problem_population,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import HLEDataset, HLEDatasetSample
@@ -332,7 +333,12 @@ class HLEZeroShotGenTask(
         # (n = total questions) and the *_gen family, not just graded attempts.
         n = (len(finals) + len(fails)) * self._n
         m = aggregate_metrics(correct, confidence, n)
-        grouping = self.problem_groups(finals)
+        # Always supplied, never left None: this headline is averaged over
+        # ROLLOUTS, so an absent grouping would publish the ROLLOUT count as
+        # `n_problems`. Does not move the interval -- see `problem_population`.
+        grouping = problem_population(
+            self.problem_groups(finals), finals, n_problems=len(finals) + len(fails)
+        )
         # `n_grader_unparsed` is a count over the graded attempts in `finals`, not a
         # rate over `n` (which also spans `fails`). `subset` records which set
         # was evaluated so a text-only run is distinguishable from a full-set one
@@ -374,7 +380,7 @@ class HLEZeroShotGenTask(
         results |= interval_metrics(
             correct_per_sample,
             denominator=n,
-            group_keys=None if grouping is None else grouping.keys,
-            n_problems=None if grouping is None else grouping.n_problems,
+            group_keys=grouping.keys,
+            n_problems=grouping.n_problems,
         )
         return results

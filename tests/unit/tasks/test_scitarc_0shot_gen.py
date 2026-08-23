@@ -333,6 +333,52 @@ async def test_report_counts_fails_in_the_denominator():
 
 
 @pytest.mark.anyio
+async def test_report_n_problems_counts_problems_not_rollouts():
+    """At n=2 the two counts diverge, and `n_problems` must be the smaller one.
+
+    `accuracy` is averaged over ROLLOUTS -- 2 problems x 2 rollouts = 4 -- while
+    `n_problems` is the field a reader sizes the evidence by. Reporting 4 there
+    would overstate it two-fold and put it in a different unit from every
+    sample-denominator task's `n_problems`.
+    """
+    task, _, _ = _task(n=2)
+
+    def _final_n2(sample_id: int, *, correct: tuple[bool, bool]) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                "gold",
+                [
+                    build_rollout_judgement(
+                        i,
+                        ok,
+                        score=1.0 if ok else 0.0,
+                        metrics={"exact_match": ok},
+                        extra={"grader_skipped": False, "grader_parsed": True},
+                    )
+                    for i, ok in enumerate(correct)
+                ],
+            ),
+            postprocess_result=build_prediction_record(["x", "x"]),
+        )
+
+    report = await task.report(
+        [_final_n2(0, correct=(True, True)), _final_n2(1, correct=(False, False))],
+        [],
+    )
+
+    # 2 of 4 rollouts: the headline is over rollouts.
+    assert report["n"] == 4
+    assert report["accuracy"] == pytest.approx(50.0)
+    # ...but the population is 2 PROBLEMS, not the 4 rollouts.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < 50.0 < hi
+
+
+@pytest.mark.anyio
 async def test_report_interval_excludes_partial_scores_like_the_headline():
     """A PARTIAL_SCORE rollout is NOT correct in `accuracy`, so not in the axis.
 

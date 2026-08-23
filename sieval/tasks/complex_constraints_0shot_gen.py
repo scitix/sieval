@@ -144,6 +144,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     interval_metrics,
+    problem_population,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import ComplexConstraintsDatasetSample
@@ -449,7 +450,12 @@ class ComplexConstraintsZeroShotGenTask(
             )
             for sample in by_sample
         ]
-        grouping = self.problem_groups(finals)
+        # Always supplied, never left None: this headline is averaged over
+        # ROLLOUTS, so an absent grouping would publish the ROLLOUT count as
+        # `n_problems`. Does not move the interval -- see `problem_population`.
+        grouping = problem_population(
+            self.problem_groups(finals), finals, n_problems=len(finals) + len(fails)
+        )
         return (
             {
                 "score": m["task_pass_rate"] * 100,
@@ -478,7 +484,7 @@ class ComplexConstraintsZeroShotGenTask(
             | interval_metrics(
                 passed_per_sample,
                 denominator=len(units),
-                group_keys=None if grouping is None else grouping.keys,
-                n_problems=None if grouping is None else grouping.n_problems,
+                group_keys=grouping.keys,
+                n_problems=grouping.n_problems,
             )
         )
