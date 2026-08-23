@@ -19,7 +19,6 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     CI_SUFFIX,
     CI_UNITS_FIELD,
-    PASS_AT_1_CI_FIELD,
     PROBLEM_COUNT_FIELD,
     SCORE_CI_FIELD,
     ProblemGrouping,
@@ -31,6 +30,7 @@ from sieval.core.tasks.metrics import (
     count_unextracted,
     first_rollout_correct,
     health_metrics,
+    interval_declaration_problems,
     interval_metrics,
     majority_at_k,
     merge_metrics,
@@ -1094,13 +1094,13 @@ def test_interval_metrics_needs_the_problem_count_with_the_keys():
 
 
 def test_the_interval_field_names_are_the_suffix_rule_applied():
-    """The two spelled-out constants must BE what `ci_field` derives.
+    """The one spelled-out constant must BE what `ci_field` derives.
 
-    They are literals because a static reader has to name them; that is exactly
-    what lets them drift from the rule everything else follows.
+    `SCORE_CI_FIELD` is a literal because the preflight resolves it by name out of
+    this module; that is exactly what lets it drift from the rule every other
+    interval key follows.
     """
     assert ci_field("score") == SCORE_CI_FIELD
-    assert ci_field("pass@1") == PASS_AT_1_CI_FIELD
     assert ci_field("pass@k") == f"pass@k{CI_SUFFIX}"
 
 
@@ -1211,7 +1211,7 @@ def test_ungated_intervals_carries_nothing_from_a_block_with_no_intervals():
     # no interval to lift out of the gate and nothing to declare.
     block = sampling_report([], n=4, k=4, denominator=6, score_key="pass@1")
     assert "pass@1" in block
-    assert ungated_intervals(block) == {}
+    assert ungated_intervals(block, metrics=("score", "pass@1")) == {}
 
 
 def test_ungated_intervals_trims_the_declaration_to_the_intervals_it_carries(
@@ -1219,14 +1219,14 @@ def test_ungated_intervals_trims_the_declaration_to_the_intervals_it_carries(
 ):
     finals = _finals_factory([[True, False, True, True], [False] * 4, [True] * 4] * 3)
     block = sampling_report(finals, n=4, k=4, denominator=9, score_key="pass@1")
-    carried = ungated_intervals(block)
+    carried = ungated_intervals(block, metrics=("score", "pass@1"))
 
     # `pass@1` and the headline travel; `avg@n` and the rest stay behind the gate
     # with the metrics they bracket.
     assert set(carried) == {
         SCORE_CI_FIELD,
         PROBLEM_COUNT_FIELD,
-        PASS_AT_1_CI_FIELD,
+        ci_field("pass@1"),
         CI_UNITS_FIELD,
     }
     assert carried[CI_UNITS_FIELD] == {
@@ -1234,7 +1234,7 @@ def test_ungated_intervals_trims_the_declaration_to_the_intervals_it_carries(
         "pass@1": PROBLEM_COUNT_FIELD,
     }
     assert carried[SCORE_CI_FIELD] == block[SCORE_CI_FIELD]
-    assert carried[PASS_AT_1_CI_FIELD] == block[PASS_AT_1_CI_FIELD]
+    assert carried[ci_field("pass@1")] == block[ci_field("pass@1")]
     # Every entry it kept is the block's own, so merging the whole block later
     # restores the trimmed ones rather than losing one.
     units = block[CI_UNITS_FIELD]
@@ -1244,11 +1244,132 @@ def test_ungated_intervals_trims_the_declaration_to_the_intervals_it_carries(
     assert kept_units.items() <= units.items()
 
 
+def test_ungated_intervals_carries_the_population_of_each_metric_it_keeps():
+    """A two-unit block must not leave a declaration pointing at nothing.
+
+    The failure this shape replaces: keyed on a fixed tuple of FIELD names it
+    could only ever copy `n_problems`, while trimming the declaration by interval
+    presence -- so a block whose second metric sits on another unit produced
+    `pass@1: n_graded` with `n_graded` absent. An orphan entry is worse than no
+    entry, and `t_eval`'s `n_graded` / `n_parsed` pair is exactly this shape.
+    """
+    block: dict[str, float | list[float] | dict[str, str]] = {
+        SCORE_CI_FIELD: [1.0, 2.0],
+        PROBLEM_COUNT_FIELD: 12.0,
+        ci_field("pass@1"): [3.0, 4.0],
+        "n_graded": 9.0,
+        ci_field("avg@n"): [5.0, 6.0],
+        CI_UNITS_FIELD: {
+            "score": PROBLEM_COUNT_FIELD,
+            "pass@1": "n_graded",
+            "avg@n": PROBLEM_COUNT_FIELD,
+        },
+    }
+    carried = ungated_intervals(block, metrics=("score", "pass@1"))
+    assert carried == {
+        SCORE_CI_FIELD: [1.0, 2.0],
+        PROBLEM_COUNT_FIELD: 12.0,
+        ci_field("pass@1"): [3.0, 4.0],
+        "n_graded": 9.0,
+        CI_UNITS_FIELD: {"score": PROBLEM_COUNT_FIELD, "pass@1": "n_graded"},
+    }
+    # And the withheld metric's interval and entry stayed behind.
+    assert ci_field("avg@n") not in carried
+    units = carried[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    assert "avg@n" not in units
+    # The contract on what it returned: every declared unit is a key in it.
+    assert all(unit in carried for unit in units.values())
+
+
+def test_ungated_intervals_refuses_an_interval_it_cannot_declare():
+    # A block not built by these estimators. Carrying the interval anyway would
+    # publish exactly the unreadable key the contract exists to prevent.
+    with pytest.raises(ValueError, match="no unit declared"):
+        ungated_intervals(
+            {SCORE_CI_FIELD: [1.0, 2.0], PROBLEM_COUNT_FIELD: 4.0},
+            metrics=("score",),
+        )
+    with pytest.raises(ValueError, match="does not write"):
+        ungated_intervals(
+            {
+                SCORE_CI_FIELD: [1.0, 2.0],
+                CI_UNITS_FIELD: {"score": "n_versions"},
+            },
+            metrics=("score",),
+        )
+
+
 def test_ungated_intervals_publishes_no_population_without_an_interval():
     # A population with no interval beside it is a count nothing asked for, so
     # the whole fragment is withheld rather than half of it.
-    assert ungated_intervals({PROBLEM_COUNT_FIELD: 30.0}) == {}
-    assert ungated_intervals({}) == {}
+    assert ungated_intervals({PROBLEM_COUNT_FIELD: 30.0}, metrics=("score",)) == {}
+    assert ungated_intervals({}, metrics=("score", "pass@1")) == {}
+
+
+def test_interval_declaration_problems_accepts_a_report_the_estimators_built(
+    _finals_factory,
+):
+    finals = _finals_factory([[True, False, True, True], [False] * 4, [True] * 4] * 3)
+    block = sampling_report(finals, n=4, k=4, denominator=9, score_key="pass@1")
+    report: dict[str, object] = {"score": block["pass@1"], **block}
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.parametrize(
+    "report,expected",
+    [
+        # An interval nothing declares: the case a source scan cannot see, since
+        # a per-metric key is built from a metric name rather than a literal.
+        (
+            {
+                "accuracy": 50.0,
+                "accuracy_ci95": [1.0, 2.0],
+                PROBLEM_COUNT_FIELD: 4.0,
+            },
+            "no ci95_units entry for 'accuracy'",
+        ),
+        # A declaration whose population is not in the report.
+        (
+            {
+                "aacc": 50.0,
+                "aacc_ci95": [1.0, 2.0],
+                CI_UNITS_FIELD: {"aacc": "n_versions"},
+            },
+            "over 'n_versions', which the report does not write",
+        ),
+        # A declaration about a metric the report never published.
+        (
+            {
+                "score": 50.0,
+                SCORE_CI_FIELD: [1.0, 2.0],
+                PROBLEM_COUNT_FIELD: 4.0,
+                CI_UNITS_FIELD: {
+                    "score": PROBLEM_COUNT_FIELD,
+                    "avg@n": PROBLEM_COUNT_FIELD,
+                },
+            },
+            "declares 'avg@n', which the report does not publish",
+        ),
+        # Not a map at all.
+        ({"score": 1.0, CI_UNITS_FIELD: 4.0}, "not a map of metric"),
+    ],
+)
+def test_interval_declaration_problems_names_each_unreadable_key(report, expected):
+    problems = interval_declaration_problems(report)
+    assert any(expected in problem for problem in problems), problems
+
+
+def test_interval_declaration_problems_ignores_a_report_with_no_intervals():
+    # The nine reports that publish no interval at all must stay silent, and
+    # `hle`'s `confidence_interval` is not an interval key: it does not end in
+    # the suffix, and it is deliberately undeclared.
+    assert (
+        interval_declaration_problems(
+            {"score": 1.0, "accuracy": 1.0, "confidence_interval": 6.4}
+        )
+        == []
+    )
 
 
 class _Final:

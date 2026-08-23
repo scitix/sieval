@@ -139,7 +139,11 @@ than spelling any of the keys here: `interval_metrics` for the headline,
 Two fragments that each carry intervals are folded with `merge_metrics`, never
 with `|`: a plain merge replaces `ci95_units` wholesale, so one fragment's
 declarations survive and the other's intervals are left with no unit — silently,
-because the intervals themselves are all still there.
+because the intervals themselves are all still there. The preflight cannot catch
+that (a per-metric interval key is built from a metric name, not a literal, so its
+key set is not the runtime one); the **runner** does, at report-write time, by
+saving `report.json` and then raising on any interval whose unit is missing or
+unresolvable.
 
 Machine-checked over every class defining `report` under `sieval/tasks/`:
 `check_preflight.py --check check_report_declarations`. A `report` that is a

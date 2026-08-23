@@ -472,11 +472,6 @@ PROBLEM_COUNT_FIELD = "n_problems"
 #: ``score``, which is why the headline pair keeps its spelling.
 CI_SUFFIX = "_ci95"
 
-#: ``pass@1``'s interval. Spelled out rather than derived because it is one of the
-#: keys a static reader has to be able to name (see :func:`ungated_intervals`);
-#: ``test_metrics`` pins it against :func:`ci_field`.
-PASS_AT_1_CI_FIELD = "pass@1_ci95"
-
 #: Report key declaring, per metric, WHICH population key that metric's interval
 #: is clustered on -- ``{"pass@1": "n_problems"}``. The report's one nested
 #: object, and the reason a report can carry more than one interval at all: two
@@ -706,41 +701,123 @@ def merge_metrics(
 
 def ungated_intervals(
     block: Mapping[str, float | list[float] | dict[str, str]],
+    *,
+    metrics: Sequence[str],
 ) -> dict[str, float | list[float] | dict[str, str]]:
-    """The intervals of *block* a task publishes at EVERY budget, declarations included.
+    """*metrics*' intervals out of *block*, with their populations and their units.
 
-    :func:`sampling_report`'s block is merged into a report only at ``n > 1``,
-    because at ``n = 1`` the rest of it only restates ``pass@1``. But ``pass@1``
-    itself, and the headline copied from it, ARE published at every budget -- so
-    their intervals are lifted out of that gate with them, since an interval is
-    published exactly when the metric it brackets is. Every other key's interval
-    stays inside the gate, with the metric it brackets.
+    For a report that publishes only SOME of a block's columns. The sampling block
+    is merged in only at ``n > 1``, because at ``n = 1`` the rest of it restates
+    ``pass@1``; but ``pass@1`` itself and the headline copied from it ARE published
+    at every budget, so their intervals are lifted out of that gate with them --
+    ``ungated_intervals(rolled, metrics=("score", "pass@1"))``. Every other key's
+    interval stays inside the gate with the metric it brackets, since an interval
+    is never published for a metric that is not.
 
-    ``ci95_units`` is trimmed to the metrics whose intervals came along: a
-    declaration naming a metric the report withheld describes a key that is not
-    there. Every entry kept is *block*'s own, so a caller that later merges the
-    whole block cannot lose one -- the block declares a superset.
+    Keyed on METRIC NAMES, not on interval keys: the interval key is derived with
+    :func:`ci_field` and the population key is read off the kept ``ci95_units``
+    entry, so a block spanning two units carries the right count for each. Keying
+    on a fixed set of field names cannot -- it would copy one population and
+    declare another, publishing an entry naming a count that is not there.
 
-    A loop over the field constants rather than a comprehension over *block*, for
-    the same reason :func:`interval_metrics` spells its keys out: the keys this
-    produces have to be nameable by a reader that only parses the source.
+    ``ci95_units`` is trimmed to the metrics that came along: an entry for a
+    withheld metric describes a key the report does not have. Every entry kept is
+    *block*'s own, so a caller that later merges the whole block cannot lose one --
+    the block declares a superset.
+
+    Raises:
+        ValueError: if *block* carries a requested interval with no unit declared,
+            or declares one over a population key *block* itself does not write.
+            Both mean the block was not built by the estimators here, and both
+            would put an unreadable interval in a report.
     """
-    out: dict[str, float | list[float] | dict[str, str]] = {}
-    for field in (SCORE_CI_FIELD, PROBLEM_COUNT_FIELD, PASS_AT_1_CI_FIELD):
-        if field in block:
-            out[field] = block[field]
     declared = block.get(CI_UNITS_FIELD)
-    kept = (
-        {metric: unit for metric, unit in declared.items() if ci_field(metric) in out}
-        if isinstance(declared, dict)
-        else {}
-    )
+    units = declared if isinstance(declared, dict) else {}
+    out: dict[str, float | list[float] | dict[str, str]] = {}
+    kept: dict[str, str] = {}
+    for metric in metrics:
+        field = ci_field(metric)
+        if field not in block:
+            continue
+        unit = units.get(metric)
+        if unit is None:
+            raise ValueError(
+                f"ungated_intervals: {field!r} is in the block with no unit "
+                f"declared for {metric!r}; an interval whose population is "
+                "unnamed cannot be read."
+            )
+        if unit not in block:
+            raise ValueError(
+                f"ungated_intervals: {metric!r} is declared over {unit!r}, which "
+                "the block does not write -- there would be no population to "
+                "read the interval against."
+            )
+        out[field] = block[field]
+        out[unit] = block[unit]
+        kept[metric] = unit
     if not kept:
         # Whole or not at all: a population with no interval beside it is a count
         # nothing asked for, and an undeclared interval cannot be read.
         return {}
     out[CI_UNITS_FIELD] = kept
     return out
+
+
+def interval_declaration_problems(report: Mapping[str, object]) -> list[str]:
+    """Every way *report*'s intervals and their unit declarations disagree.
+
+    The run-time half of the contract, for what no static reader can check: a
+    per-metric interval key is built from a metric NAME
+    (``metric_interval`` writes ``ci_field(metric)``), so a source scan cannot
+    enumerate the keys a report will actually publish and cannot tell an
+    undeclared interval from one it simply could not see. ``check_preflight.py``
+    checks the declaration EXISTS; this checks it is complete and resolvable, on
+    the finished dict, where a fragment folded with a plain ``|`` has already lost
+    whatever it was going to lose.
+
+    Three ways it can be wrong, all of them a key a reader cannot use:
+
+    * an interval with no entry -- nothing says which population it is over;
+    * an entry naming a population key the report does not write;
+    * an entry naming a metric the report does not publish -- a declaration about
+      a column that is not there.
+
+    Returned rather than raised, so the caller decides when: the report is worth
+    saving before anything about it is refused.
+    """
+    problems: list[str] = []
+    declared = report.get(CI_UNITS_FIELD)
+    units: dict[str, object] = {}
+    if declared is not None:
+        if not isinstance(declared, Mapping):
+            return [
+                f"{CI_UNITS_FIELD!r} is {type(declared).__name__}, not a map of "
+                "metric to population key"
+            ]
+        # `str(metric)`: the report is about to be read back off disk as JSON,
+        # where every key is a string anyway.
+        units = {str(metric): unit for metric, unit in declared.items()}
+    for key in report:
+        if key == CI_UNITS_FIELD or not key.endswith(CI_SUFFIX):
+            continue
+        metric = key[: -len(CI_SUFFIX)]
+        if metric not in units:
+            problems.append(
+                f"{key!r} has no {CI_UNITS_FIELD} entry for {metric!r}, so nothing "
+                "says which population it is clustered on"
+            )
+    for metric, unit in units.items():
+        if not isinstance(unit, str) or unit not in report:
+            problems.append(
+                f"{CI_UNITS_FIELD} declares {metric!r} over {unit!r}, which the "
+                "report does not write"
+            )
+        if metric not in report:
+            problems.append(
+                f"{CI_UNITS_FIELD} declares {metric!r}, which the report does not "
+                "publish"
+            )
+    return problems
 
 
 def first_rollout_correct(finals) -> int:
@@ -793,12 +870,18 @@ def sampling_report(
     make five of them read as measured when only one was. They all sit on the same
     population, so the block still declares one ``n_problems``.
 
-    An interval appears exactly when its metric does, because it is derived from
-    the metric's own key: ``pass@k`` / ``pass^k`` only at ``k > 1``, ``maj@k``
-    only when the task votes over the whole budget, ``self_consistency`` only when
-    it votes. On the empty path there are no per-problem values, so
-    :func:`zero_metrics`' key set arrives with no intervals rather than with
-    zero-width ones.
+    No interval reaches a metric this block did not compute: each one is derived
+    from the metric's own key, so the gates already in that key set -- ``pass@k``
+    / ``pass^k`` at ``k > 1``, ``maj@k`` on a vote over the whole budget,
+    ``self_consistency`` on votes -- are not restated and cannot fall out of step.
+
+    The converse does NOT hold, and must not: a metric here can be published with
+    no interval, because :func:`wilson_interval` has nothing to estimate from a
+    single unit or from units that all agree. That is the older rule of this
+    module -- omitted, never zeroed -- and it wins, since a zero-width interval
+    would claim a certainty the run does not have. So a run with no dispersion
+    reports six metrics and five intervals, and the empty path reports the full
+    key set with none at all.
 
     *score_key* names which of this block's OWN columns -- ``pass@1``, ``avg@n``,
     and so on -- the task's headline is a mean of, so its interval can be

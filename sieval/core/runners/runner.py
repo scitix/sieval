@@ -37,6 +37,7 @@ from sieval.core.tasks.context import (
 )
 from sieval.core.tasks.loader import TaskLoader
 from sieval.core.tasks.meta import EvalMode, get_task_run_identity
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
 from sieval.core.tasks.records import iter_grader_outputs
@@ -1043,7 +1044,25 @@ class TaskRunner:
         FINAL) and ``n_unextracted``: a FAILED sample has no score for a truncation
         to explain.
 
+        Then the finished dict's interval declarations are checked, and a report
+        that publishes an interval a reader cannot use RAISES -- see
+        :func:`interval_declaration_problems`. Here because this is the one place
+        every report passes through whole: a task assembles its report out of
+        fragments, and a plain ``|`` between two of them drops one's ``ci95_units``
+        silently, which no source scan can see (the per-metric keys are built from
+        metric names, not literals).
+
+        **Saved first, then refused.** The artifacts of a finished run are worth
+        keeping for inspection, and the ordering makes the failure loud without
+        making it destructive; a log line would be ignorable, which is what let
+        every earlier undeclared-key defect ship.
+
         Non-dict reports are saved unchanged; ``None`` skips the save.
+
+        Raises:
+            ValueError: if the saved report publishes a ``*_ci95`` key with no
+                ``ci95_units`` entry, or an entry naming a metric or a population
+                key the report does not write.
         """
         if report is None:
             return
@@ -1061,6 +1080,19 @@ class TaskRunner:
                     as_dict["n_truncated"] = truncated
                     as_dict["n_scored_rollouts"] = scored
         await self._saver.save_report(report)
+        if isinstance(report, dict):
+            problems = interval_declaration_problems(cast(dict[str, JSONValue], report))
+            if problems:
+                raise ValueError(
+                    f"{self._task.name}: report.json was saved, but it publishes "
+                    "interval(s) no reader can use:\n  - "
+                    + "\n  - ".join(problems)
+                    + "\nEvery interval travels with a `ci95_units` entry naming a "
+                    "population key the same report writes. Emit intervals through "
+                    "`sieval.core.tasks.metrics` and fold two interval-bearing "
+                    "fragments with `merge_metrics`, not `|` -- a plain merge "
+                    "replaces the whole declaration."
+                )
 
     def _resolve_result_dir(
         self, result_dir: str | None, task: Task, auto_resume: bool

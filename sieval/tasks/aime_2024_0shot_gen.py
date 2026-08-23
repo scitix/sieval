@@ -143,7 +143,7 @@ class AIME2024ZeroShotGenTask(
         }
         # Outside the n>1 gate, because the metrics they bracket are: `pass@1`
         # is published at every budget, and so is the headline copied from it.
-        metrics |= ungated_intervals(rolled)
+        metrics |= ungated_intervals(rolled, metrics=("score", "pass@1"))
         if self._n > 1:
             # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)

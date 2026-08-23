@@ -33,9 +33,11 @@ not the same as a zero-width one. It is never zeroed to stand in for a missing
 one. `ci95_units` is there whenever the report carries **any** interval, and
 absent when it carries none.
 
-`ci95_units` is the one **nested object** in `report.json`; every other value is a
-number, a string, or a two-element interval. Consumers that read `score` and pass
-the rest through are unaffected.
+`ci95_units` is the one **nested object** in `report.json`. Every other value is a
+scalar or a flat list — a number, a string, an interval as `[lo, hi]`, the
+variable-length `sieval_versions`, and `null` where a task omits a value in band
+(`hle_0shot_gen`'s `calibration_error`). Consumers that read `score` and pass the
+rest through are unaffected.
 
 `denominator_policy` is `requested` (`finals + fails`, so a pipeline failure
 counts as **wrong**) or `judged` (`finals` only, failures excluded). The split is
@@ -49,8 +51,15 @@ when this field agrees; when `fails` is 0 the two coincide.
 whose `score_key` names a column the report does not contain — nothing reads
 `score_key` at run time, so that last one would otherwise go unnoticed. The same
 check fails a report that writes `score_ci95` without `n_problems`, or the
-reverse; a report that writes any `*_ci95` key without a `ci95_units` entry for
-it; and a `ci95_units` entry naming a population key the report never writes.
+reverse, and one that writes any `*_ci95` key without writing `ci95_units` at all.
+
+Whether that map is *complete* is checked at run time instead, when the report is
+finished: a per-metric interval key is built from a metric name, so no source scan
+can enumerate the keys a report will publish. The run **saves `report.json` and
+then fails** if any `*_ci95` key has no `ci95_units` entry, or an entry names a
+metric or a population key the report does not write. Saved first on purpose — the
+artifacts of a finished run are worth keeping — and raised rather than logged,
+because an ignorable warning is how every earlier undeclared-key defect shipped.
 
 One task is the documented exception, and only to the `score` half:
 `t_eval_before_calling_0shot_gen` publishes one rate per axis and no headline, so
@@ -110,8 +119,17 @@ reader that finds an interval can always find the population it is quoted over.
 headline of 49 of the 58 task reports, exactly as before; plus every sampling key
 the shared block publishes — `pass@1`, `avg@n`, `pass@k`, `pass^k`, `maj@k`,
 `self_consistency` — on the 28 tasks that route through it. Every other metric in
-the tree carries none yet. A missing `<metric>_ci95` therefore means "not
-published for that metric", not "no spread".
+the tree carries none yet.
+
+So **`<metric>_ci95` is optional even when `<metric>` is there**, and a consumer
+has to treat it that way. A metric can be published with no interval for two
+reasons: no estimator has been wired to it yet (every metric outside the two
+groups above), or there was nothing to estimate on this run — fewer than two units,
+or no dispersion between them, which is when `wilson_interval` returns nothing
+rather than a zero-width interval claiming certainty the run does not have. A run
+where every sample failed publishes all six sampling metrics and no interval at
+all. The implication only runs one way: an interval is **never** present for a
+metric that is absent.
 
 Three rules decide whether a metric is a candidate at all:
 
@@ -128,9 +146,10 @@ Three rules decide whether a metric is a candidate at all:
   `pass@1_ci95` on a `pass@1`-headline task are exactly this case: the same two
   bounds, published twice, because `score` is a copy of `pass@1`.
 
-An interval is published **exactly when its metric is**. A task that withholds the
-sampling block at `n = 1` withholds those metrics' intervals with them, and keeps
-the ones for what it still publishes.
+A withheld metric takes its interval with it: a task that withholds the sampling
+block at `n = 1` withholds those metrics' intervals too, and keeps the ones for
+what it still publishes. The converse does not hold — a published metric may have
+no interval, per the reading above.
 
 `hle_0shot_gen`'s `confidence_interval` is not part of this and is not listed in
 `ci95_units` — it is upstream's own pooled half-width, described below.
@@ -335,10 +354,14 @@ Each of the six rates carries **its own** 95% interval — `pass@1_ci95`,
 `n_problems`. All six are exact means over problems of a per-problem value, so
 none of them borrows another's: `pass@k` is not a rescaled `pass@1`, and one
 interval for a block of six would make five of them read as measured when only one
-was. Each appears under exactly the condition its metric does, so an interval is
-never there for a column that is not. On a task whose headline is `pass@1`,
-`score_ci95` and `pass@1_ci95` hold the same two bounds — one estimate, published
-under the name a leaderboard reads and under the name of the column it came from.
+was. None is ever there for a column that is not — each is derived from its
+metric's own key — but any of them can be **absent while its metric is present**,
+when that metric's per-problem values had no spread: an all-identical draw
+publishes `self_consistency` and no `self_consistency_ci95`, and a run where every
+sample failed publishes all six rates and no interval at all. On a task whose
+headline is `pass@1`, `score_ci95` and `pass@1_ci95` hold the same two bounds —
+one estimate, published under the name a leaderboard reads and under the name of
+the column it came from.
 
 **`avg@n` is spelled `@n`, not `@k`, on purpose:** it takes no `k` and does not
 move with one — at `n=4, k=2` it averages four verdicts where `pass@k` estimates
