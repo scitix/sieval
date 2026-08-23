@@ -35,11 +35,14 @@ the estimator needs no `scipy`.
   no "spec §X". Refer to RFC #94 by number only, as `metrics.py` already does for #74.
 - Run `pdm run ruff format . && pdm run ruff check . && pdm run ty check` before each
   commit. `ty` must be run bare (a relative `python = "./.venv"` aborts in a worktree).
-- **`ty` rejects unpacking or subscripting a `tuple | None` without narrowing it
-  first.** Every test that consumes an optional return — `wilson_interval`'s, and
-  anything built on it — must `assert ... is not None` before `lo, hi = …` or
-  `result[0]`. Where a code block below omits that line, add it; the assertion is
-  part of the test, not a deviation from the plan.
+- **`ty` rejects reaching into a union without narrowing it first.** Two shapes recur
+  in this plan's own test snippets, and both must be narrowed wherever a code block
+  below omits it — the narrowing is part of the test, not a deviation from the plan:
+    - an optional return (`wilson_interval`'s `tuple | None`) needs
+      `assert ... is not None` before `lo, hi = …` or `result[0]`;
+    - a report value (`float | list[float]`, what `interval_metrics` and
+      `sampling_report` return) needs an `isinstance(x, list)` check before
+      subscripting `report["score_ci95"][1]`.
 - A fresh worktree has no `.venv`. Symlink the primary checkout's, then run with
   `PDM_IGNORE_ACTIVE_VENV=1` and `PYTHONPATH=<worktree>`, and confirm
   `sieval.__file__` resolves inside the worktree before trusting any result —
