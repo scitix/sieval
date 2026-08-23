@@ -430,12 +430,13 @@ _INTERVAL_KEY_CONSTANT = "SCORE_CI_FIELD"
 _PROBLEM_COUNT_CONSTANT = "PROBLEM_COUNT_FIELD"
 
 #: Task modules that publish an interval's population with no interval beside it.
-#: A handoff, not an exemption: ugmathbench's ``n_problems`` predates the interval
-#: and counts the problems its per-problem rate was averaged over, so the pair
-#: closes when that task declares which of its two axes each of its rates belongs
-#: to. An entry that has become unnecessary is itself reported (rule 5), so the
-#: list cannot outlive its reason.
-_UNPAIRED_PROBLEM_COUNT = frozenset({"sieval/tasks/ugmathbench_0shot_gen_fixed.py"})
+#: A handoff, not an exemption — and **empty**: ugmathbench's ``n_problems``
+#: predated the interval, and the pair closed once that task said which of its two
+#: axes each of its rates belongs to (its ``score_ci95`` is clustered on problems,
+#: EAcc's unit, and its per-version AAcc deliberately gets none). An entry that has
+#: become unnecessary is itself reported (rule 5), so the list cannot outlive its
+#: reason — which is how this one expired.
+_UNPAIRED_PROBLEM_COUNT: frozenset[str] = frozenset()
 
 
 def _report_of(cls: ast.ClassDef) -> ast.FunctionDef | ast.AsyncFunctionDef | None:

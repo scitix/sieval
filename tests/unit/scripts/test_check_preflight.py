@@ -2773,7 +2773,7 @@ class TestCheckReportDeclarations:
         (result,) = PreflightRunner().check_report_declarations()
         match = re.search(r"(\d+) report\(s\) pair the headline", result.message)
         assert match is not None, result.message
-        assert int(match.group(1)) >= 28
+        assert int(match.group(1)) >= 29
 
     def test_interval_constants_match_the_metrics_module(self):
         """Rule 5 looks the pair up by CONSTANT NAME, so a rename must fail here.
