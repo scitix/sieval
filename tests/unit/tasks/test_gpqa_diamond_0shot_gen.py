@@ -76,9 +76,10 @@ def _final(sample_id: int, raw: dict[str, str], *, correct: bool) -> TaskContext
 @pytest.mark.anyio
 async def test_report_counts_questions_not_copies():
     # `n_repeats=4` puts four copies of every question in the split. They are
-    # four samples of ONE problem: counting them as four problems would narrow
-    # the interval by sqrt(4) -- on a real 30-question run, +/-3.48pp reported
-    # where +/-5.36pp is true -- and no key in the report would disagree.
+    # four samples of ONE problem: counting them as four problems narrows the
+    # interval by up to sqrt(4) -- on a real 198-question run (792 samples), by
+    # 1.54x: +/-3.48pp reported where +/-5.36pp is true -- and no key in the
+    # report would disagree.
     dataset = _dataset(QUESTIONS)
     task = GPQADiamondZeroShotGenTask(dataset, _StubChatModel(), n_repeats=N_REPEATS)
 

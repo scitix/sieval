@@ -80,7 +80,10 @@ narrow**: over 6 identical-config replicate pairs the mean z² is 4.18, and 4 of
 those 6 re-runs landed outside their own nominal 95% interval. An estimator that
 is calibrated inside a run and half the width it should be between runs cannot be
 relabelled as a re-run interval, so `score_ci95` does not claim to be one.
-Run-to-run drift within roughly 3 pp is treated as acceptable and is not pursued.
+Run-to-run drift within roughly 3 pp is treated as acceptable and is not pursued
+— but read that as a working tolerance, not a bound: those 6 replicate pairs
+averaged −1.70 pp and the largest was −3.54 pp, so a gate set at 3 pp will fire
+on a genuine identical-config re-run.
 
 ### Width is not comparable across budgets
 
@@ -98,7 +101,13 @@ as `n` rises. Measured on one real 30-problem run:
 It converges to a floor set by the problem count, not by the budget — across 12
 runs that floor was 51–65% of the same run's `n = 1` width. So a wider interval
 at low `n` is a property of the estimator, **not** evidence that the model is
-less stable there, and two tasks' widths are comparable only at the same `n`.
+less stable there.
+
+Across **tasks**, widths are not comparable at all, at any `n`: `n_problems` moves
+them (roughly `1/√m`) and so does the score level, which is why a 198-problem
+±5.36 beside a 30-problem ±6.68 says nothing about which model is steadier. Only
+the same task at the same `n` and the same problem count puts two widths on one
+scale.
 
 ### The floor is `n_problems`, not `n`
 
@@ -108,9 +117,17 @@ the interval — the same ±7 pp is the floor on a 30-problem set and an alarm o
 500-problem one — and it is why an interval quoted without its problem count is
 unreadable rather than merely incomplete.
 
-Read it with `denominator_policy` too. The interval covers the same population
+Read it with `denominator_policy` too, because the two together are what say
+*which* problems `n_problems` counted. The interval covers the same population
 `score` does, so under `requested` the failed samples are in it, entering as
-deterministic zeros: they pull the centre down and add no width.
+deterministic zeros: they pull the centre down and contribute no variance of their
+own, which narrows the interval rather than widening it.
+
+Under `judged` the population is the problems that were **judged**. On a task with
+no repeated split — the MCQ four — that is `len(finals)`, so `n_problems` shrinks
+with run health: an MMLU run with 3 `fails` reports 3 fewer problems than the
+split holds. It is therefore not comparable across policies, nor across two runs
+of the same task with different `fails`. Read `fails` beside it.
 
 ### Copies of one problem are one problem
 
@@ -118,10 +135,13 @@ deterministic zeros: they pull the centre down and add no width.
 `gpqa_diamond_0shot_gen` evaluates every question four times with different answer
 orderings (simple-evals' `n_repeats`), so 198 questions arrive as 792 samples.
 Those four are four draws on one problem: the interval collapses them and
-`n_problems` counts questions. Reading 792 independent problems there would
-narrow the interval by √4 — on one real 30-question run, ±3.48 pp reported where
-±5.36 pp is true — with no other key in the report to disagree. Collapsing leaves
-`score` bit-for-bit unchanged; only the width moves.
+`n_problems` counts questions. Reading 792 independent problems there would narrow
+the interval by up to √4 — measured on a real 198-question run (792 samples), by
+1.54×: ±3.48 pp reported where ±5.36 pp is true, with no other key in the report
+to disagree. Short of √4 because the copies are only partly correlated: gpqa
+permutes the answer choices per copy, which leaves an effective 334 problems
+rather than 198. Collapsing leaves `score` bit-for-bit unchanged; only the width
+moves.
 
 ### Never infer a paired comparison from two per-run intervals
 
