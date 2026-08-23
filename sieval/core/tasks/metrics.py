@@ -19,7 +19,8 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 
 import collections
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Sequence
+from dataclasses import dataclass
 
 from loguru import logger
 
@@ -343,6 +344,20 @@ def aggregate(
         for key, total in totals.items()
         if counts[key] == complete
     }
+
+
+@dataclass(frozen=True)
+class ProblemGrouping:
+    """Which problem each judged sample belongs to, and how many there are.
+
+    The two travel together because neither is usable alone: the keys say how to
+    collapse the samples, and *n_problems* says what to divide by afterwards --
+    read off the whole split, so a problem whose every copy failed still occupies
+    a slot and the population does not shrink with run health.
+    """
+
+    keys: list[Hashable]
+    n_problems: int
 
 
 def wilson_interval(

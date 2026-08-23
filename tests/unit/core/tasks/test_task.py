@@ -527,6 +527,76 @@ class TestMakeContext:
 
 
 # ===================================================================
+# problem_groups
+# ===================================================================
+@pytest.fixture
+def _dummy_task_factory():
+    """Build a minimal concrete `Task` over an in-memory dataset.
+
+    `repeat` and `shuffle`, when given, run the matching `Dataset` transform
+    before the task is constructed -- the same seams a real task's dataset
+    pipeline would go through.
+    """
+
+    def factory(
+        *, rows: list[dict], repeat: int | None = None, shuffle: int | None = None
+    ) -> _ConcreteTask:
+        dataset = _SimpleDataset(rows)
+        if repeat is not None:
+            dataset = dataset.repeat(repeat)
+        if shuffle is not None:
+            dataset = dataset.shuffle(seed=shuffle)
+        return _ConcreteTask(dataset, _MockChatModel())
+
+    return factory
+
+
+def test_problem_groups_returns_none_on_an_unrepeated_split(_dummy_task_factory):
+    task = _dummy_task_factory(rows=[{"id": i} for i in range(4)])
+    finals = [task.make_context(i) for i in range(4)]
+    assert task.problem_groups(finals) is None
+
+
+def test_problem_groups_collapses_repeat_copies(_dummy_task_factory):
+    task = _dummy_task_factory(rows=[{"id": i} for i in range(3)], repeat=2)
+    finals = [task.make_context(i) for i in range(6)]
+    grouping = task.problem_groups(finals)
+    assert grouping is not None
+    assert grouping.keys == [0, 1, 2, 0, 1, 2]
+    assert grouping.n_problems == 3
+
+
+def test_problem_groups_counts_problems_over_the_whole_split(_dummy_task_factory):
+    # n_problems spans the REQUESTED population, so a problem whose every copy
+    # failed still occupies a slot -- the denominator must not shrink with run
+    # health.
+    task = _dummy_task_factory(rows=[{"id": i} for i in range(3)], repeat=2)
+    finals = [task.make_context(i) for i in (0, 1, 3)]
+    grouping = task.problem_groups(finals)
+    assert grouping is not None
+    assert grouping.keys == [0, 1, 0]
+    assert grouping.n_problems == 3
+
+
+def test_problem_groups_survives_a_shuffle(_dummy_task_factory):
+    task = _dummy_task_factory(rows=[{"id": i} for i in range(4)], repeat=2, shuffle=11)
+    finals = [task.make_context(i) for i in range(8)]
+    grouping = task.problem_groups(finals)
+    assert grouping is not None
+    assert sorted(grouping.keys) == [0, 0, 1, 1, 2, 2, 3, 3]
+    assert grouping.n_problems == 4
+
+
+def test_problem_groups_raises_when_a_final_cannot_be_placed(_dummy_task_factory):
+    # Loud, not silent: an unplaceable sample on a repeated split would narrow
+    # every interval by sqrt(times) with nothing in the report to say so.
+    task = _dummy_task_factory(rows=[{"id": i} for i in range(3)], repeat=2)
+    finals = [task.make_context("not-an-index")]
+    with pytest.raises(ValueError, match="cannot be grouped"):
+        task.problem_groups(finals)
+
+
+# ===================================================================
 # setup / shutdown hooks
 # ===================================================================
 class TestSetupShutdown:

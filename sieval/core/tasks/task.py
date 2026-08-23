@@ -5,12 +5,17 @@ AI-Generated Code - Claude Fable 5 (Anthropic)
 
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import replace
 from typing import ClassVar, Literal, Protocol, cast
 
-from sieval.core.datasets import Dataset, repeat_index_of
+from sieval.core.datasets import (
+    REPEAT_GROUP_COLUMN,
+    Dataset,
+    repeat_group_of,
+    repeat_index_of,
+)
 from sieval.core.models import Model
 from sieval.core.models.requirements import (
     InputKind,
@@ -21,6 +26,7 @@ from sieval.core.models.requirements import (
 from sieval.core.types import JSONValue
 
 from .context import TaskContext
+from .metrics import ProblemGrouping
 
 
 class _RuntimeBindingView(Protocol):
@@ -368,6 +374,55 @@ class Task[
         ):
             raw = cast(TRawSample, self._dataset.test_set[sample_id])
         return TaskContext(sample_id, raw, repeat_index=repeat_index_of(raw))
+
+    def problem_groups(self, finals: Sequence[TaskContext]) -> ProblemGrouping | None:
+        """Which problem each of *finals* belongs to, or ``None`` if each is its own.
+
+        The clustering unit for an interval on this task's headline. ``None`` means
+        no collapsing is needed -- the ordinary case, where one sample is one
+        problem.
+
+        Read off the LIVE DATASET rather than off the contexts, and that is the
+        load-bearing choice: ``repeat_index`` is written by
+        ``TaskContext.serialize`` but never read back, and the runner's resume
+        backfill covers only non-terminal samples -- so on a resumed run the
+        samples a report aggregates carry no copy number at all. A grouping keyed
+        on the context would disable itself on every resume and narrow every
+        interval by ``sqrt(times)`` with nothing to say it had. ``sample_id``
+        indexes the post-transform test set, the same relation the runner's backfill
+        relies on, so this resolves identically fresh and resumed.
+
+        Override this in a task whose clustering comes from somewhere other than
+        ``Dataset.repeat``. There is exactly one grouping per task and the task owns
+        it, so core and a task cannot both collapse the same samples. A task
+        publishing metrics on two different axes -- a per-version rate beside a
+        per-problem one -- must say per metric which axis its interval belongs to.
+
+        Raises:
+            ValueError: if the split is repeated but a sample cannot be placed in
+                it. Silence here is the failure that cannot be seen in the report.
+        """
+        test_set = self._dataset.test_set
+        if not test_set or REPEAT_GROUP_COLUMN not in test_set.column_names:
+            return None
+        keys: list[Hashable] = []
+        for final in finals:
+            sample_id = final.sample_id
+            group = (
+                repeat_group_of(test_set[sample_id])
+                if isinstance(sample_id, int) and 0 <= sample_id < len(test_set)
+                else None
+            )
+            if group is None:
+                raise ValueError(
+                    f"sample {sample_id!r} cannot be grouped: this split carries a "
+                    f"{REPEAT_GROUP_COLUMN!r} column, so every judged sample must "
+                    f"resolve to one of its rows. Leaving it ungrouped would treat "
+                    f"the copies of one problem as independent problems and narrow "
+                    f"every interval."
+                )
+            keys.append(group)
+        return ProblemGrouping(keys, len(set(test_set[REPEAT_GROUP_COLUMN])))
 
     @abstractmethod
     async def preprocess(

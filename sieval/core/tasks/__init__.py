@@ -10,6 +10,7 @@ from .anomaly import sieval_detection_rule
 from .consts import NonRetriableSampleError, TaskAction, TaskStage
 from .context import TaskContext, TaskStageMeta, TaskStageOutput
 from .meta import EvalMode, ReferenceImpl, TaskMeta, sieval_task
+from .metrics import ProblemGrouping
 from .records import (
     GRADER_OUTPUT_KEY,
     JudgementRecord,
@@ -35,6 +36,7 @@ __all__ = [
     "JudgementRecord",
     "NonRetriableSampleError",
     "PredictionRecord",
+    "ProblemGrouping",
     "PromptRecord",
     "ReferenceImpl",
     "RequirementContext",
