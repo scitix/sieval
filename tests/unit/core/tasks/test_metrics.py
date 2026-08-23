@@ -17,6 +17,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
 )
 from sieval.core.tasks.metrics import (
+    ProblemGrouping,
     aggregate,
     avg_at_n,
     budget_metrics,
@@ -750,6 +751,43 @@ def test_sampling_report_interval_is_reported_at_n_equals_one(_finals_factory):
     finals = _finals_factory([[True], [False], [True], [False]])
     got = sampling_report(finals, n=1, k=1, denominator=4, score_key="pass@1")
     assert "score_ci95" in got
+
+
+def test_sampling_report_wires_grouping_into_the_interval(_finals_factory):
+    # 4 repeat copies of a 50-problem 50/50 split -- the same shape as
+    # `test_interval_metrics_widens_by_root_times_on_a_pure_repeat`, but driven
+    # through the production entry point (a ProblemGrouping) instead of calling
+    # interval_metrics with raw values.
+    pattern = [True, False] * 25
+    verdicts = pattern * 4
+    finals = _finals_factory([[v] for v in verdicts])
+    keys = [g for _ in range(4) for g in range(50)]
+    grouping = ProblemGrouping(keys=keys, n_problems=50)
+
+    ungrouped = sampling_report(finals, n=1, k=1, denominator=200, score_key="pass@1")
+    grouped = sampling_report(
+        finals, n=1, k=1, denominator=200, score_key="pass@1", grouping=grouping
+    )
+
+    # The GROUPING's count, not len(finals) -- the tell if `keys` and
+    # `n_problems` were swapped at the call site: swapped, this line either
+    # reads back 200 (n_problems silently defaulted past a broken group_keys)
+    # or the call raises before returning at all (`len()` on an int).
+    assert grouped["n_problems"] == 50.0
+
+    ungrouped_ci, grouped_ci = ungrouped["score_ci95"], grouped["score_ci95"]
+    assert isinstance(ungrouped_ci, list)
+    assert isinstance(grouped_ci, list)
+    # Collapsing 200 samples into the 50 problems they are repeats of must
+    # WIDEN the interval -- the whole point of passing a grouping through.
+    assert (grouped_ci[1] - grouped_ci[0]) > (ungrouped_ci[1] - ungrouped_ci[0])
+
+    # Not just "wider than ungrouped": the SAME numbers interval_metrics would
+    # compute if handed these keys directly -- pinning the field wiring, not
+    # only its direction.
+    values = [1.0 if v else 0.0 for v in verdicts]
+    want = interval_metrics(values, denominator=200, group_keys=keys, n_problems=50)
+    assert grouped_ci == pytest.approx(want["score_ci95"])
 
 
 # --------------------------------------------------------------------------- #
