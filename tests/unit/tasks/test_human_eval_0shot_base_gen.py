@@ -149,23 +149,26 @@ async def test_report_counts_finals_and_fails_like_chat_human_eval_task():
         await task.shutdown()
 
 
+@pytest.mark.parametrize(("k", "n"), [(1, 1), (2, 2)])
 @pytest.mark.anyio
-async def test_report_carries_an_interval_around_the_headline():
+async def test_report_carries_an_interval_around_the_headline(k, n):
     # Two problems with different pass@1 rates is the smallest case with
     # genuine spread -- `wilson_interval` needs >= 2 problems and 0 < p < 1.
-    task, _, _ = _task(k=2, n=2)
+    # The default `n = 1` is covered as well: the interval is deliberately NOT
+    # gated on a repeated budget, and that is the path the rule protects.
+    task, _, _ = _task(k=k, n=n)
     try:
         report = await task.report(
             [
                 TaskContext(
                     sample_id=0,
                     raw_sample=_sample(),
-                    feedback_result=_judgement((True, "passed"), (False, "timeout")),
+                    feedback_result=_judgement(*(((True, "passed"),) * n)),
                 ),
                 TaskContext(
                     sample_id=1,
                     raw_sample=_sample(),
-                    feedback_result=_judgement((False, "failed"), (False, "failed")),
+                    feedback_result=_judgement(*(((False, "failed"),) * n)),
                 ),
             ],
             [],

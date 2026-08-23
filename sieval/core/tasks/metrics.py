@@ -427,7 +427,7 @@ def wilson_interval(
 #: Report key carrying the interval on the headline, as ``[lo, hi]``.
 SCORE_CI_FIELD = "score_ci95"
 
-#: Report key carrying the population the interval was clustered over.
+#: Report key carrying the declared problem population the interval is quoted over.
 PROBLEM_COUNT_FIELD = "n_problems"
 
 
@@ -438,7 +438,14 @@ def interval_metrics(
     group_keys: Sequence[Hashable] | None = None,
     n_problems: int | None = None,
 ) -> dict[str, float | list[float]]:
-    """The headline's interval and the population it was measured over.
+    """The headline's interval and the problem population it is declared over.
+
+    ``n_problems`` is that DECLARED population -- the denominator of the estimand,
+    reported as given. It is inert in the arithmetic: ``G/D`` scales the units and
+    ``G`` is the divisor, so the factor cancels out of both ``p`` and the variance.
+    The width is set by the number of groups actually observed, ``len(sums)``,
+    which is smaller than ``n_problems`` on a run where every copy of some problem
+    failed. The two coincide on a clean run.
 
     *values* are the PER-SAMPLE contributions to the headline, in the caller's own
     units -- whichever quantity that task's ``score`` is a mean of. Passed in rather
@@ -455,7 +462,9 @@ def interval_metrics(
 
     The two keys are emitted as a **pair or not at all**: an interval whose
     population is unknown cannot be read, and a population with no interval beside
-    it is a count nothing asked for.
+    it is a count nothing asked for. Both are omitted -- never zeroed -- whenever
+    :func:`wilson_interval` has nothing to estimate, and on a *denominator* of
+    zero, which is the one case the grouped path has to refuse for itself.
 
     Raises:
         ValueError: if *group_keys* is given without *n_problems*, or does not carry
@@ -473,10 +482,17 @@ def interval_metrics(
                 f"interval_metrics: group_keys must carry one key per value; got "
                 f"{len(group_keys)} keys for {len(values)} values."
             )
+        if denominator <= 0:
+            # Both paths must agree that an empty population has no interval.
+            # `wilson_interval` refuses one ungrouped, but it is handed
+            # `population` here, not `denominator` -- so scaling by anything at
+            # all would zero every unit, land on `p == 0`, and let the
+            # Clopper-Pearson branch invent a bound over a mean of nothing.
+            return {}
         sums: dict[Hashable, float] = collections.defaultdict(float)
         for key, value in zip(group_keys, values, strict=True):
             sums[key] += value
-        scale = n_problems / denominator if denominator else 0.0
+        scale = n_problems / denominator
         units = [total * scale for total in sums.values()]
         population = n_problems
     else:
@@ -592,7 +608,11 @@ def sampling_report(
             f"does not compute; got {sorted(rolled)}. A headline pointing at a "
             f"missing column would report an interval on a different metric."
         )
-    values = [metrics.get(score_key, 0.0) for metrics in per_problem]
+    # Subscript, not `.get(..., 0.0)`: the guard above proved the key is in
+    # `rolled`, and `aggregate` drops a key absent from any entry -- so every
+    # entry has it. If that ever stops holding, raise instead of padding the
+    # gap with the 0.0 this module refuses everywhere else.
+    values = [metrics[score_key] for metrics in per_problem]
     return (
         rolled
         | budget

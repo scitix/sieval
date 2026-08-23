@@ -888,15 +888,26 @@ def test_interval_metrics_reports_the_problem_count_and_a_pair():
 
 
 def test_interval_metrics_collapsing_does_not_move_the_mean():
-    # The whole change is additive: collapsing must leave `score` alone.
+    # The whole change is additive: collapsing must leave `score` alone. Each
+    # group's summed value becomes its per-problem SHARE, so
+    # `sum(units) / n_problems` is still `sum(values) / denominator` -- here
+    # 1.5/3 == 3/6. Stated as an equality against the UNGROUPED branch fed those
+    # shares directly: that branch applies no scale of its own, so it cannot
+    # agree by accident.
     values = [1.0, 0.0, 1.0, 1.0, 0.0, 0.0]
     keys = [0, 1, 2, 0, 1, 2]
-    flat = interval_metrics(values, denominator=6)
     grouped = interval_metrics(values, denominator=6, group_keys=keys, n_problems=3)
+    assert grouped == interval_metrics([1.0, 0.0, 0.5], denominator=3)
     assert grouped["n_problems"] == 3.0
-    flat_ci, grouped_ci = flat["score_ci95"], grouped["score_ci95"]
-    assert isinstance(flat_ci, list)
+    grouped_ci = grouped["score_ci95"]
     assert isinstance(grouped_ci, list)
+    # And the mean itself, read straight off the interval: at `p` exactly 0.5
+    # Wilson is symmetric, so the midpoint IS the headline. A mis-scaled unit
+    # moves `p` and takes the whole interval with it.
+    assert (grouped_ci[0] + grouped_ci[1]) / 2 == pytest.approx(50.0)
+    flat = interval_metrics(values, denominator=6)
+    flat_ci = flat["score_ci95"]
+    assert isinstance(flat_ci, list)
     # Same headline, wider interval -- three problems, not six.
     assert (grouped_ci[1] - grouped_ci[0]) > (flat_ci[1] - flat_ci[0])
 
@@ -919,6 +930,33 @@ def test_interval_metrics_widens_by_root_times_on_a_pure_repeat():
 def test_interval_metrics_omits_both_keys_together_when_it_cannot_estimate():
     assert interval_metrics([0.5] * 4, denominator=4) == {}
     assert interval_metrics([1.0], denominator=1) == {}
+
+
+def test_interval_metrics_omits_the_pair_on_an_empty_denominator_when_grouped():
+    # The two paths must not disagree about an impossible input. Ungrouped,
+    # `wilson_interval`'s own `denominator <= 0` guard refuses it -- but the
+    # grouped path hands that function `n_problems`, not the denominator, so the
+    # guard never sees this. Scaling the units to zero would then read as
+    # `p == 0` and draw a Clopper-Pearson bound over a mean of nothing.
+    values = [1.0, 0.0, 1.0, 0.0]
+    assert interval_metrics(values, denominator=0) == {}
+    assert (
+        interval_metrics(values, denominator=0, group_keys=[0, 1, 2, 3], n_problems=4)
+        == {}
+    )
+
+
+def test_interval_metrics_keeps_the_slot_of_a_wholly_failed_problem():
+    # 4 problems x 2 copies under `requested`, and both copies of problem 3
+    # failed: 6 finals, denominator still 8. The DECLARED population is what the
+    # interval is quoted over, so `n_problems` stays 4 and the width is the
+    # 4-problem width -- not the 3-problem one the observed groups would give.
+    values = [1.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+    keys = [0, 0, 1, 1, 2, 2]
+    got = interval_metrics(values, denominator=8, group_keys=keys, n_problems=4)
+    assert got["n_problems"] == 4.0
+    # scale is 4/8, so the shares are exact: 1.0, 2.0 and 0.0 halved.
+    assert got == interval_metrics([0.5, 1.0, 0.0], denominator=4)
 
 
 def test_interval_metrics_rejects_a_grouping_that_does_not_align():

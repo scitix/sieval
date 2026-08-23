@@ -185,32 +185,30 @@ def _final(judgement, sample_id: int = 0):
 
 
 @pytest.mark.parametrize(("task_cls", "dataset", "model"), FAMILY, ids=IDS)
+@pytest.mark.parametrize(("k", "n"), [(1, 1), (2, 2)])
 @pytest.mark.anyio
-async def test_report_carries_an_interval_around_the_headline(task_cls, dataset, model):
+async def test_report_carries_an_interval_around_the_headline(
+    task_cls, dataset, model, k, n
+):
     # Two problems split evenly is the smallest case with genuine spread --
     # `wilson_interval` needs >= 2 problems and 0 < p < 1 to emit anything.
-    task = _build(task_cls, dataset, model, k=2, n=2)
+    # The default `n = 1` is covered as well: the interval is deliberately NOT
+    # gated on a repeated budget, and that is the path the rule protects.
+    task = _build(task_cls, dataset, model, k=k, n=n)
     finals = [
         _final(
             build_judgement_record(
                 None,
                 [
-                    build_rollout_judgement(0, True, extra={"msg": "passed"}),
-                    build_rollout_judgement(1, True, extra={"msg": "passed"}),
+                    build_rollout_judgement(
+                        i, passed, extra={"msg": "passed" if passed else "failed"}
+                    )
+                    for i in range(n)
                 ],
             ),
-            sample_id=0,
-        ),
-        _final(
-            build_judgement_record(
-                None,
-                [
-                    build_rollout_judgement(0, False, extra={"msg": "failed"}),
-                    build_rollout_judgement(1, False, extra={"msg": "failed"}),
-                ],
-            ),
-            sample_id=1,
-        ),
+            sample_id=sample_id,
+        )
+        for sample_id, passed in ((0, True), (1, False))
     ]
     try:
         report = await task.report(finals, [])
