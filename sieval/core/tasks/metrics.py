@@ -423,6 +423,73 @@ def wilson_interval(
     return scale * max(0.0, centre - half), scale * min(1.0, centre + half)
 
 
+#: Report key carrying the interval on the headline, as ``[lo, hi]``.
+SCORE_CI_FIELD = "score_ci95"
+
+#: Report key carrying the population the interval was clustered over.
+PROBLEM_COUNT_FIELD = "n_problems"
+
+
+def interval_metrics(
+    values: Sequence[float],
+    *,
+    denominator: int,
+    group_keys: Sequence[Hashable] | None = None,
+    n_problems: int | None = None,
+) -> dict[str, float | list[float]]:
+    """The headline's interval and the population it was measured over.
+
+    *values* are the PER-SAMPLE contributions to the headline, in the caller's own
+    units -- whichever quantity that task's ``score`` is a mean of. Passed in rather
+    than picked here, because only the task knows which of its metrics the interval
+    belongs to, and a task publishing rates on two different axes must not have one
+    guessed for it.
+
+    *group_keys* collapses samples that are not independent problems -- the copies
+    ``Dataset.repeat`` makes. With ``G`` problems and declared denominator ``D``, a
+    group's summed value ``v`` becomes the per-problem unit ``v * G / D``, so the
+    mean is ``sum(values) / D`` either way: collapsing widens the interval and
+    leaves ``score`` bit-for-bit unchanged. Unrepeated, ``G == D`` and each unit is
+    its own value.
+
+    The two keys are emitted as a **pair or not at all**: an interval whose
+    population is unknown cannot be read, and a population with no interval beside
+    it is a count nothing asked for.
+
+    Raises:
+        ValueError: if *group_keys* is given without *n_problems*, or does not carry
+            one key per value. Both would silently mis-scale the interval.
+    """
+    if group_keys is not None:
+        if n_problems is None:
+            raise ValueError(
+                "interval_metrics: group_keys needs n_problems beside it -- the "
+                "collapsed values are scaled by it, so guessing would mis-scale "
+                "the interval."
+            )
+        if len(group_keys) != len(values):
+            raise ValueError(
+                f"interval_metrics: group_keys must carry one key per value; got "
+                f"{len(group_keys)} keys for {len(values)} values."
+            )
+        sums: dict[Hashable, float] = collections.defaultdict(float)
+        for key, value in zip(group_keys, values, strict=True):
+            sums[key] += value
+        scale = n_problems / denominator if denominator else 0.0
+        units = [total * scale for total in sums.values()]
+        population = n_problems
+    else:
+        units = list(values)
+        population = denominator
+    interval = wilson_interval(units, population)
+    if interval is None:
+        return {}
+    return {
+        SCORE_CI_FIELD: [interval[0], interval[1]],
+        PROBLEM_COUNT_FIELD: float(population),
+    }
+
+
 def first_rollout_correct(finals) -> int:
     """How many judged samples the FIRST rollout got right.
 

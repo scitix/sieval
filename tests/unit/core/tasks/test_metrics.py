@@ -24,6 +24,7 @@ from sieval.core.tasks.metrics import (
     count_unextracted,
     first_rollout_correct,
     health_metrics,
+    interval_metrics,
     majority_at_k,
     pass_at_k,
     pass_pow_k,
@@ -769,3 +770,59 @@ def test_wilson_interval_is_order_independent():
     a = wilson_interval([1.0, 0.0, 0.5, 0.25], 4)
     b = wilson_interval([0.25, 0.5, 0.0, 1.0], 4)
     assert a == b
+
+
+# --------------------------------------------------------------------------- #
+# interval_metrics -- collapse repeat copies, then estimate
+# --------------------------------------------------------------------------- #
+
+
+def test_interval_metrics_reports_the_problem_count_and_a_pair():
+    got = interval_metrics([1.0] * 10 + [0.0] * 10, denominator=20)
+    assert got["n_problems"] == 20.0
+    assert isinstance(got["score_ci95"], list)
+    assert len(got["score_ci95"]) == 2
+
+
+def test_interval_metrics_collapsing_does_not_move_the_mean():
+    # The whole change is additive: collapsing must leave `score` alone.
+    values = [1.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+    keys = [0, 1, 2, 0, 1, 2]
+    flat = interval_metrics(values, denominator=6)
+    grouped = interval_metrics(values, denominator=6, group_keys=keys, n_problems=3)
+    assert grouped["n_problems"] == 3.0
+    flat_ci, grouped_ci = flat["score_ci95"], grouped["score_ci95"]
+    assert isinstance(flat_ci, list)
+    assert isinstance(grouped_ci, list)
+    # Same headline, wider interval -- three problems, not six.
+    assert (grouped_ci[1] - grouped_ci[0]) > (flat_ci[1] - flat_ci[0])
+
+
+def test_interval_metrics_widens_by_root_times_on_a_pure_repeat():
+    # A 4x repeat of the same 50/50 split: the honest interval is ~2x wider.
+    per_problem = [1.0, 0.0] * 25
+    flat = interval_metrics(per_problem * 4, denominator=200)
+    keys = [g for _ in range(4) for g in range(50)]
+    grouped = interval_metrics(
+        per_problem * 4, denominator=200, group_keys=keys, n_problems=50
+    )
+    flat_ci, grouped_ci = flat["score_ci95"], grouped["score_ci95"]
+    assert isinstance(flat_ci, list)
+    assert isinstance(grouped_ci, list)
+    ratio = (grouped_ci[1] - grouped_ci[0]) / (flat_ci[1] - flat_ci[0])
+    assert 1.8 < ratio < 2.2
+
+
+def test_interval_metrics_omits_both_keys_together_when_it_cannot_estimate():
+    assert interval_metrics([0.5] * 4, denominator=4) == {}
+    assert interval_metrics([1.0], denominator=1) == {}
+
+
+def test_interval_metrics_rejects_a_grouping_that_does_not_align():
+    with pytest.raises(ValueError, match="one key per value"):
+        interval_metrics([1.0, 0.0], denominator=2, group_keys=[0], n_problems=1)
+
+
+def test_interval_metrics_needs_the_problem_count_with_the_keys():
+    with pytest.raises(ValueError, match="n_problems"):
+        interval_metrics([1.0, 0.0], denominator=2, group_keys=[0, 0])
