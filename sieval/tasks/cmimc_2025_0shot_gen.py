@@ -25,6 +25,8 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
+    PROBLEM_COUNT_FIELD,
+    SCORE_CI_FIELD,
     SCORE_KEY_FIELD,
     health_metrics,
     sampling_report,
@@ -86,8 +88,8 @@ class CMIMC2025ZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries `score_ci95`.
+        dict[str, float | str | list[float]],
     ],
 ):
     def __init__(self, dataset, model, name: str | None = None, k: int = 1, n: int = 1):
@@ -162,16 +164,21 @@ class CMIMC2025ZeroShotGenTask(
             k=self._k,
             denominator=total,
             normalize=normalize_vote,
+            score_key="pass@1",
+            grouping=self.problem_groups(finals),
         )
         # Read back out of the shared block, so `score` cannot drift from it.
         pass_at_1 = rolled["pass@1"]
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float]] = {
             "score": pass_at_1,
             "fails": len(fails),
             "pass@1": pass_at_1,
             SCORE_KEY_FIELD: "pass@1",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        for field in (SCORE_CI_FIELD, PROBLEM_COUNT_FIELD):
+            if field in rolled:
+                metrics[field] = rolled[field]
         if self._n > 1:
             # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)
