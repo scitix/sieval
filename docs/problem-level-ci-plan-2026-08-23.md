@@ -35,6 +35,17 @@ the estimator needs no `scipy`.
   no "spec §X". Refer to RFC #94 by number only, as `metrics.py` already does for #74.
 - Run `pdm run ruff format . && pdm run ruff check . && pdm run ty check` before each
   commit. `ty` must be run bare (a relative `python = "./.venv"` aborts in a worktree).
+- **`ty` rejects unpacking or subscripting a `tuple | None` without narrowing it
+  first.** Every test that consumes an optional return — `wilson_interval`'s, and
+  anything built on it — must `assert ... is not None` before `lo, hi = …` or
+  `result[0]`. Where a code block below omits that line, add it; the assertion is
+  part of the test, not a deviation from the plan.
+- A fresh worktree has no `.venv`. Symlink the primary checkout's, then run with
+  `PDM_IGNORE_ACTIVE_VENV=1` and `PYTHONPATH=<worktree>`, and confirm
+  `sieval.__file__` resolves inside the worktree before trusting any result —
+  otherwise the tests import the *primary* checkout's `sieval` and pass against
+  code you did not write. `.venv` is git-ignored, so the symlink never reaches a
+  commit.
 - Do not touch `--resume` behaviour: no changes to `loader.py`, and no change to the
   `if not ctx.is_terminal()` condition in `runner.py`.
 
@@ -213,7 +224,7 @@ def wilson_interval(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pdm run pytest tests/unit/core/tasks/test_metrics.py -k wilson -v`
-Expected: PASS, 13 tests.
+Expected: PASS, 14 collected (7 parametrize cases + 7 functions).
 
 - [ ] **Step 5: Lint, type-check, commit**
 
@@ -407,6 +418,13 @@ git commit -m "feat(datasets): stamp the original row index alongside the copy n
 - Produces: `ProblemGrouping` (frozen dataclass, fields `keys: list[Hashable]`,
   `n_problems: int`) and `Task.problem_groups(finals) -> ProblemGrouping | None`.
 
+**`ProblemGrouping` is declared in `sieval/core/tasks/metrics.py`, not in `task.py`.**
+`metrics.py` has to annotate it (Task 5's `grouping` parameter) and a
+metrics → task import would be new coupling in the wrong direction; `task.py` →
+`metrics.py` is acyclic, verified — `task.py` does not import `.metrics`, and
+`metrics.py` imports only stdlib plus loguru. So `task.py` adds
+`from .metrics import ProblemGrouping` and `metrics.py` owns the definition.
+
 - [ ] **Step 1: Write the failing tests**
 
 Add to `tests/unit/core/tasks/test_task.py`:
@@ -466,12 +484,13 @@ Expected: FAIL — `AttributeError: 'Task' object has no attribute 'problem_grou
 
 - [ ] **Step 3: Write the implementation**
 
-In `task.py`, add to the imports: `from collections.abc import Hashable, Sequence`,
-`from dataclasses import dataclass`, and extend the existing
-`from sieval.core.datasets import Dataset, repeat_index_of` to also bring
-`REPEAT_GROUP_COLUMN, repeat_group_of`.
+In `task.py`, extend `from collections.abc import Callable, Mapping` with `Sequence`,
+extend `from sieval.core.datasets import Dataset, repeat_index_of` to also bring
+`REPEAT_GROUP_COLUMN, repeat_group_of`, and add `from .metrics import ProblemGrouping`
+beside the existing `from .context import TaskContext`.
 
-Above the `Task` class:
+Put the dataclass in `metrics.py` (above `wilson_interval`), adding
+`Hashable` to its `collections.abc` import and `from dataclasses import dataclass`:
 
 ```python
 @dataclass(frozen=True)
@@ -491,7 +510,9 @@ class ProblemGrouping:
 After `make_context`:
 
 ```python
-    def problem_groups(self, finals: Sequence[object]) -> ProblemGrouping | None:
+    def problem_groups(
+        self, finals: Sequence[TaskContext]
+    ) -> ProblemGrouping | None:
         """Which problem each of *finals* belongs to, or ``None`` if each is its own.
 
         The clustering unit for an interval on this task's headline. ``None`` means
@@ -523,7 +544,7 @@ After `make_context`:
             return None
         keys: list[Hashable] = []
         for final in finals:
-            sample_id = getattr(final, "sample_id", None)
+            sample_id = final.sample_id
             group = (
                 repeat_group_of(test_set[sample_id])
                 if isinstance(sample_id, int) and 0 <= sample_id < len(test_set)
@@ -735,9 +756,13 @@ git commit -m "feat(core): collapse repeat copies before estimating the interval
 
 **Interfaces:**
 
-- Consumes: `interval_metrics` (Task 4), `ProblemGrouping` (Task 3, structurally).
-- Produces: `sampling_report(..., score_key: str | None = None, grouping=None)`
+- Consumes: `interval_metrics` and `ProblemGrouping` (both in `metrics.py`).
+- Produces: `sampling_report(..., score_key: str | None = None, grouping: ProblemGrouping | None = None)`
   merging `interval_metrics`' keys when *score_key* names a key it computed.
+
+**Widen the return annotation** to `dict[str, float | list[float]]` — the merged
+`score_ci95` is a two-element list, and `ty` fails the commit otherwise. Callers
+that build their own dict widen the same way (Task 6).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -757,10 +782,13 @@ def test_sampling_report_intervals_the_named_key(_finals_factory):
 
 
 def test_sampling_report_refuses_a_score_key_it_did_not_compute(_finals_factory):
+    # `accuracy`, deliberately: it is never in this block's key set. `maj@k` would
+    # be the wrong probe -- it IS computed whenever k == n_requested, so the test
+    # would pass or fail on a fixture detail instead of on the guard.
     with pytest.raises(ValueError, match="does not compute"):
         sampling_report(
             _finals_factory([[True], [False]]), n=1, k=1, denominator=2,
-            score_key="maj@k",
+            score_key="accuracy",
         )
 
 
