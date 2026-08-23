@@ -15,7 +15,13 @@ from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 from loguru import logger
 
-from sieval.core.datasets import REPEAT_INDEX_COLUMN, Dataset, repeat_index_of
+from sieval.core.datasets import (
+    REPEAT_GROUP_COLUMN,
+    REPEAT_INDEX_COLUMN,
+    Dataset,
+    repeat_group_of,
+    repeat_index_of,
+)
 
 
 def _capture_logs(fn) -> str:
@@ -223,6 +229,50 @@ class TestRepeat:
         with pytest.raises(ValueError, match="at least 1"):
             ds.repeat(times, split="train")
 
+    def test_repeat_stamps_the_original_row_index(self):
+        # Row-major within a copy, so copy c's row j sits at c*n_rows + j and
+        # carries group j. This is the ONLY key that groups copies of one
+        # problem: content cannot (gpqa permutes choices per copy) and position
+        # cannot (shuffle breaks the arithmetic).
+        ds = _make(3)
+        rows = list(ds.repeat(2).test_set)
+        assert [r[REPEAT_GROUP_COLUMN] for r in rows] == [0, 1, 2, 0, 1, 2]
+
+    def test_repeat_group_pairs_with_the_copy_index(self):
+        ds = _make(3)
+        rows = list(ds.repeat(2).test_set)
+        assert [(r[REPEAT_INDEX_COLUMN], r[REPEAT_GROUP_COLUMN]) for r in rows] == [
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (1, 0),
+            (1, 1),
+            (1, 2),
+        ]
+
+    def test_repeat_once_still_stamps_the_group(self):
+        ds = _make(2)
+        rows = list(ds.repeat(1).test_set)
+        assert [r[REPEAT_GROUP_COLUMN] for r in rows] == [0, 1]
+
+    def test_repeat_group_survives_shuffle(self):
+        # The whole point of a column over position arithmetic.
+        ds = _make(4)
+        shuffled = ds.repeat(2).shuffle(seed=7)
+        pairs = [
+            (r[REPEAT_INDEX_COLUMN], r[REPEAT_GROUP_COLUMN]) for r in shuffled.test_set
+        ]
+        assert sorted(pairs) == [(c, j) for c in range(2) for j in range(4)]
+
+    def test_repeat_refuses_a_split_already_carrying_the_group_column(self):
+        ds = _BypassLoadDataset(
+            _hf_dict=HFDatasetDict(
+                {"test": HFDataset.from_list([{REPEAT_GROUP_COLUMN: 0}])}
+            )
+        )
+        with pytest.raises(ValueError, match=REPEAT_GROUP_COLUMN):
+            ds.repeat(2)
+
 
 class TestRepeatIndexOf:
     """The one definition both stamping seams share."""
@@ -246,6 +296,19 @@ class TestRepeatIndexOf:
     def test_non_mapping_reads_as_not_repeated(self, raw):
         # A raw sample is whatever the dataset yields, so this tolerates.
         assert repeat_index_of(raw) is None
+
+
+class TestRepeatGroupOf:
+    def test_reads_the_column_repeat_stamped(self):
+        ds = _make(2)
+        assert repeat_group_of(ds.repeat(2).test_set[3]) == 1
+
+    def test_absent_column_is_not_grouped(self):
+        assert repeat_group_of({"id": 1}) is None
+
+    @pytest.mark.parametrize("bad", [None, "0", 1.5, True, [0]])
+    def test_non_integer_reads_as_not_grouped(self, bad):
+        assert repeat_group_of({REPEAT_GROUP_COLUMN: bad}) is None
 
 
 # ===================================================================

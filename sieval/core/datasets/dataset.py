@@ -26,6 +26,14 @@ TFilterKey = str | list[str] | Callable[[Mapping[str, object]], object]
 #: to group by it.
 REPEAT_INDEX_COLUMN = "repeat_index"
 
+#: Column :meth:`Dataset.repeat` stamps on every row, naming which ORIGINAL row the
+#: copy came from. Separate from :data:`REPEAT_INDEX_COLUMN`, which says *which copy*
+#: a row is: grouping the copies of one problem needs *which problem*, and nothing
+#: downstream can recover it. Content cannot -- a task may legitimately vary the
+#: prompt per copy (gpqa_diamond permutes the answer choices) -- and position cannot,
+#: for the same reason the copy number is stamped rather than derived.
+REPEAT_GROUP_COLUMN = "repeat_group"
+
 
 def repeat_index_of(raw: object) -> int | None:
     """Read a repeated row's copy number, or ``None`` if the split was not repeated.
@@ -43,6 +51,20 @@ def repeat_index_of(raw: object) -> int | None:
     # The cast only says "keys are strings"; the value is still checked below, so a
     # row carrying something other than an int under this key cannot slip through.
     value = cast("Mapping[str, object]", raw).get(REPEAT_INDEX_COLUMN)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def repeat_group_of(raw: object) -> int | None:
+    """Read a repeated row's ORIGINAL row index, or ``None`` if it carries none.
+
+    Tolerant on the same terms as :func:`repeat_index_of`, and for the same reason:
+    a raw sample is whatever the dataset yields. A bool is rejected explicitly.
+    """
+    if not isinstance(raw, Mapping):
+        return None
+    value = cast("Mapping[str, object]", raw).get(REPEAT_GROUP_COLUMN)
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
@@ -120,9 +142,10 @@ class Dataset[TSample](ABC):
             ValueError: if *times* is less than 1 — HuggingFace answers zero and
                 negatives with an empty split, which surfaces later as a run that
                 silently scored zero samples, the failure :meth:`filter` also
-                refuses. Or if *split* already carries a ``repeat_index`` column:
-                overwriting it redefines a column the caller is presumably reading,
-                and repeating twice needs a composite index one column cannot hold.
+                refuses. Or if *split* already carries a ``repeat_index`` or
+                ``repeat_group`` column: overwriting it redefines a column the
+                caller is presumably reading, and repeating twice needs a
+                composite index one column cannot hold.
         """
         if times < 1:
             raise ValueError(
@@ -134,21 +157,29 @@ class Dataset[TSample](ABC):
             return self
         new_dict = HFDatasetDict(self.dataset_dict)
         original = new_dict[split]
-        if REPEAT_INDEX_COLUMN in original.column_names:
-            raise ValueError(
-                f"split {split!r} already has a {REPEAT_INDEX_COLUMN!r} column; "
-                f"repeating twice needs a composite index one column cannot carry. "
-                f"Repeat once: if the task repeats this split itself (those taking "
-                f"an 'n_repeats' argument), drop the repeat around it or set that to "
-                f"1; otherwise rename the column, or drop an earlier repeat()'s."
-            )
+        for column in (REPEAT_INDEX_COLUMN, REPEAT_GROUP_COLUMN):
+            if column in original.column_names:
+                raise ValueError(
+                    f"split {split!r} already has a {column!r} column; "
+                    f"repeating twice needs a composite index one column cannot "
+                    f"carry. Repeat once: if the task repeats this split itself "
+                    f"(those taking an 'n_repeats' argument), drop the repeat "
+                    f"around it or set that to 1; otherwise rename the column, or "
+                    f"drop an earlier repeat()'s."
+                )
         n_rows = len(original)
         # Copy-major, matching what HuggingFace's own `repeat` concatenates: copy 0
         # in full, then copy 1. Built from `times`/`n_rows` rather than read back off
         # the result so the stamp cannot agree with a reordering that already
         # happened.
-        new_dict[split] = original.repeat(times).add_column(
-            REPEAT_INDEX_COLUMN, [i for i in range(times) for _ in range(n_rows)]
+        new_dict[split] = (
+            original.repeat(times)
+            .add_column(
+                REPEAT_INDEX_COLUMN, [i for i in range(times) for _ in range(n_rows)]
+            )
+            .add_column(
+                REPEAT_GROUP_COLUMN, [j for _ in range(times) for j in range(n_rows)]
+            )
         )
         return self._clone_with_new_dict(new_dict)
 
