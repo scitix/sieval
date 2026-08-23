@@ -127,8 +127,9 @@ class HendrycksMathFewShotBaseGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one; `list[float]` carries `score_ci95`.
-        dict[str, float | str | list[float]],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -260,7 +261,7 @@ class HendrycksMathFewShotBaseGenTask(
         # First-rollout, because that is what DeepSeek-Math published (one
         # greedy draw). The sampling metrics below never touch it.
         accuracy = 100 * first_rollout_correct(finals) / total if total else 0.0
-        metrics: dict[str, float | str | list[float]] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": accuracy,
             "fails": len(fails),
             "accuracy": accuracy,

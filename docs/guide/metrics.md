@@ -21,14 +21,21 @@ Two rules govern the whole file:
 | `denominator_policy` | Which population the headline is averaged over. |
 | `score_ci95` | 95% interval on `score`, as `[lo, hi]`, clustered on problems |
 | `n_problems` | Declared problem population the headline is averaged over |
+| `ci95_units` | Which population key each interval in the report is clustered on |
 
-The first four are on every report (one documented exception below). The interval
-pair is on every task whose headline is a mean over problems, which is most of
-them but not all: a headline that is a **macro-average over strata**, a rate
-**pooled over constraints**, a **nonlinear ratio of aggregates**, or **absent
-altogether** is not such a mean, and those reports carry no interval. So a report
-may carry none at all, which is not the same as a zero-width one. It is never
-zeroed to stand in for a missing one.
+The first four are on every report (one documented exception below).
+`score_ci95` / `n_problems` are on every task whose headline is a mean over
+problems, which is most of them but not all: a headline that is a
+**macro-average over strata**, a rate **pooled over constraints**, a **nonlinear
+ratio of aggregates**, or **absent altogether** is not such a mean, and those
+reports carry no headline interval. So a report may carry none at all, which is
+not the same as a zero-width one. It is never zeroed to stand in for a missing
+one. `ci95_units` is there whenever the report carries **any** interval, and
+absent when it carries none.
+
+`ci95_units` is the one **nested object** in `report.json`; every other value is a
+number, a string, or a two-element interval. Consumers that read `score` and pass
+the rest through are unaffected.
 
 `denominator_policy` is `requested` (`finals + fails`, so a pipeline failure
 counts as **wrong**) or `judged` (`finals` only, failures excluded). The split is
@@ -42,14 +49,17 @@ when this field agrees; when `fails` is 0 the two coincide.
 whose `score_key` names a column the report does not contain — nothing reads
 `score_key` at run time, so that last one would otherwise go unnoticed. The same
 check fails a report that writes `score_ci95` without `n_problems`, or the
-reverse.
+reverse; a report that writes any `*_ci95` key without a `ci95_units` entry for
+it; and a `ci95_units` entry naming a population key the report never writes.
 
 One task is the documented exception, and only to the `score` half:
 `t_eval_before_calling_0shot_gen` publishes one rate per axis and no headline, so
 it emits neither `score` nor `score_key` — there is nothing for the latter to
 name. It still declares `denominator_policy`.
 
-## The interval on the headline
+## Intervals
+
+### The interval on the headline
 
 `score_ci95` is a 95% interval on `score`; `n_problems` is the **declared** problem
 population it is clustered over — the denominator of the estimand, reported as it
@@ -59,16 +69,68 @@ of some problem failed: gpqa with 8 wholly-failed questions still reports
 `n_problems` 198, over a width measured on the 190 that came back. Read it as the
 population the number is *about*, not as a count of what was measured.
 
-They arrive as a **pair or not at all** — an interval whose population is unknown
-cannot be read, and a population with no interval beside it is a count nothing
-asked for — and both are omitted, never zeroed, when there is nothing to estimate:
-fewer than two problems, or no spread between them.
+They arrive **whole or not at all** — an interval whose population is unknown
+cannot be read, a population with no interval beside it is a count nothing asked
+for, and an interval whose unit is undeclared cannot be told from one clustered on
+something else — so `score_ci95`, `n_problems` and the `ci95_units` entry naming
+that population appear together. All are omitted, never zeroed, when there is
+nothing to estimate: fewer than two problems, or no spread between them.
 
 It is a Wilson interval on an effective sample size, so it stays inside 0–100 and
 is asymmetric near a bound; at a `score` of exactly 0 or 100 it falls back to the
 exact one-sided Clopper-Pearson limit over problems, which is where a reader most
 needs a bound. Nothing in it is random, so two readers of the same run compute
 the same interval, and a resumed run computes the same one as a fresh one.
+
+### One interval per metric
+
+`score_ci95` is not the only interval a report can carry. A metric that can carry
+one carries **its own**, under its own key: `<metric>_ci95`, so `pass@k` gets
+`pass@k_ci95`. `score_ci95` is that same rule applied to `score`.
+
+Each of those needs to say which population it was clustered on, and one
+`n_problems` cannot answer for several metrics at once — a rate per problem and a
+rate per graded turn are not the same estimand. So the report declares it, one
+entry per metric:
+
+```json
+{
+  "pass@1": 41.2, "pass@1_ci95": [36.1, 46.5],
+  "pass@k": 63.8, "pass@k_ci95": [58.2, 69.1],
+  "n_problems": 500,
+  "ci95_units": {"pass@1": "n_problems", "pass@k": "n_problems"}
+}
+```
+
+One population key per **unit**, not per metric: metrics sharing a unit share the
+count. The value of every `ci95_units` entry is a key in the same report, so a
+reader that finds an interval can always find the population it is quoted over.
+
+**Which metrics have one today is partial, and this is where it stands.** The
+headline of 49 of the 58 task reports, exactly as before. No other metric carries
+one yet. A missing `<metric>_ci95` therefore means "not published for that
+metric", not "no spread".
+
+Three rules decide whether a metric is a candidate at all:
+
+- It has to be **exactly** a mean over some unit of a per-unit value. A rate
+  **pooled over two sums** (SysBench's `csr`, the IFEval-family
+  `*_instruction_level_accuracy`) and a **nonlinear combination of aggregates**
+  (SimpleQA-Verified's `f1`, HLE's `calibration_error`, UGMathBench's `delta`) are
+  neither, and get no interval rather than an estimator that does not fit them.
+- A **deterministic transform** of another metric gets none. Its bounds would be
+  the other metric's mirrored, which reads as two independent measurements of one
+  thing.
+- A true **alias** — the same number under a second key name — does get one, so a
+  consumer keyed on either name finds a companion. `score` is that case whenever
+  it is a copy of another published column: the two keys carry the same two
+  bounds, not two measurements.
+
+An interval is published **exactly when its metric is** — never for a metric the
+report withheld, and never missing for one it published.
+
+`hle_0shot_gen`'s `confidence_interval` is not part of this and is not listed in
+`ci95_units` — it is upstream's own pooled half-width, described below.
 
 ### What it estimates — and the two things it does not
 
@@ -211,11 +273,13 @@ runs, per problem, and lives outside a single run's `report.json`.
 ### An interval names the axis it is clustered on
 
 A task publishing rates on two different axes must say which axis each of its
-intervals belongs to. UGMathBench is the case in this tree: `aacc` is a rate per
-*version* and `eacc` a rate per *problem*, so an interval on one is not an
-interval on the other, and each owes its own population. Reusing a problem-level
-population for a version-level rate narrows the interval by the same √times an
-uncollapsed repeat does, wearing a different name.
+intervals belongs to, which is what `ci95_units` records. UGMathBench is the case
+in this tree: `aacc` is a rate per *version* and `eacc` a rate per *problem*, so
+an interval on one is not an interval on the other, and each owes its own
+population. Reusing a problem-level population for a version-level rate narrows
+the interval by the same √times an uncollapsed repeat does, wearing a different
+name. Its `score_ci95` is EAcc's, clustered on problems and declared over
+`n_problems`; `aacc` carries no interval, so nothing declares one for it.
 
 The per-category keys (`score_<category>` on MMLU and MMLU-Pro) carry **no**
 interval today. Each would need its own population count, and one `n_problems`
@@ -388,7 +452,9 @@ unit), `timeouts` (the code family), `exact_match` / `flexible_exact_match`
 Adding a key is non-destructive: `sieval leaderboard report` reads `score` and
 nothing else, so older runs stay readable and comparable on the headline. They
 are **not** backfilled — metrics are computed inline at report time, so a stored
-`report.json` remains a function of the run that produced it.
+`report.json` remains a function of the run that produced it. `ci95_units` is an
+addition of this kind: a report written before it has none, and no number in it
+moved when it arrived.
 
 Two migrations: the `pass@<k>` → `pass@k` rename, where a dashboard keyed on the
 literal `pass@4` needs updating and should read the budget from `n` / `k`; and

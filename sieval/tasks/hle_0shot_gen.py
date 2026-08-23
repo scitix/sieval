@@ -148,7 +148,7 @@ class HLEZeroShotGenTask(
         # `None`: `calibration_error` is omitted-as-None when it cannot be
         # computed. `list[float]` carries `score_ci95`, which is a PAIR and so
         # cannot share a key shape with the scalar `confidence_interval`.
-        dict[str, float | str | list[float] | None],
+        dict[str, float | str | list[float] | dict[str, str] | None],
     ]
 ):
     @classmethod
@@ -346,7 +346,7 @@ class HLEZeroShotGenTask(
         # `gen`-scoped truncation detection rule already reports them per sample
         # (it also covers max_tokens / content_filter, which a finish_reasons
         # tally in this method would miss).
-        results: dict[str, float | str | list[float] | None] = {
+        results: dict[str, float | str | list[float] | dict[str, str] | None] = {
             "score": m["accuracy"],
             "accuracy": m["accuracy"],
             # TWO interval-ish keys, and they are different objects. This one is

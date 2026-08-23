@@ -289,8 +289,9 @@ class UGMathBenchZeroShotGenFixedTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one; `list[float]` carries `score_ci95`.
-        dict[str, float | str | list[float]],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -572,7 +573,7 @@ class UGMathBenchZeroShotGenFixedTask(
                 unattributed,
             )
 
-        metrics: dict[str, float | str | list[float]] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": eacc,
             # `score` is EAcc, not one of the sampling metrics — say which column
             # the headline number came from rather than leave it to be inferred.

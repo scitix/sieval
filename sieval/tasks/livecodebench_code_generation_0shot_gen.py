@@ -70,8 +70,9 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one; `list[float]` carries `score_ci95`.
-        dict[str, float | str | list[float]],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -270,7 +271,7 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         )
         # Read back out of the shared block, so `score` cannot drift from it.
         pass_at_1 = rolled["pass@1"]
-        metrics: dict[str, float | str | list[float]] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": pass_at_1,
             "fails": len(fails),
             "timeouts": timeouts,

@@ -197,8 +197,9 @@ class MMMLUKShotClpTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one; `list[float]` carries `score_ci95`.
-        dict[str, float | str | list[float]],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     """Full MMMLU evaluation with weighted locale/category/subject reporting."""
@@ -380,7 +381,7 @@ class MMMLUKShotClpTask(
                 JudgementRecord,
             ]
         ],
-    ) -> dict[str, float | str | list[float]]:
+    ) -> dict[str, float | str | list[float] | dict[str, str]]:
         # Infra failures (e.g. transient ReadError) are reported separately and
         # excluded from the denominator, matching cmmlu_kshot_base_gen /
         # theoremqa: a scored-but-degenerate sample stays a final and counts as
@@ -430,7 +431,7 @@ class MMMLUKShotClpTask(
             )
 
         score = correct_total * 100 / total
-        metrics: dict[str, float | str | list[float]] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": score,
             "score_mmmlu": score,
             "fails": float(len(fails)),

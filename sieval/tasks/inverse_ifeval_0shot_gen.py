@@ -333,7 +333,7 @@ class InverseIFEvalZeroShotGenTask(
                 if not (verdict.get("extra") or {}).get("grader_parsed", True):
                     n_grader_unparsed += 1
 
-        metrics: dict[str, float | str | None | list[float]] = {
+        metrics: dict[str, float | str | None | list[float] | dict[str, str]] = {
             "score": pass_at_1,
             "pass@1": pass_at_1,
             "fails": len(fails),

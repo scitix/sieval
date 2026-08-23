@@ -146,8 +146,9 @@ class GSM8KFewShotBaseGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one; `list[float]` carries `score_ci95`.
-        dict[str, float | str | list[float]],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -263,7 +264,7 @@ class GSM8KFewShotBaseGenTask(
         flexible_correct_num = _named(finals, "flexible_exact_match")
         exact_match = 100 * correct_num / count if count else 0.0
         flexible_exact_match = 100 * flexible_correct_num / count if count else 0.0
-        metrics: dict[str, float | str | list[float]] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": exact_match,
             "fails": len(fails),
             "exact_match": exact_match,

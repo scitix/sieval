@@ -20,8 +20,11 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from check_preflight import (  # noqa: E402  # type: ignore[unresolved-import]  # scripts/ added to sys.path at runtime
+    _CI_SUFFIX_CONSTANT,
+    _CI_UNITS_CONSTANT,
     _DENOMINATOR_CONSTANTS,
     _DENOMINATOR_VALUES,
+    _FOLD_HELPERS,
     _INTERVAL_KEY_CONSTANT,
     _PROBLEM_COUNT_CONSTANT,
     _TASK_FILE_PATTERN,
@@ -2242,14 +2245,17 @@ class TestCheckTaskShotKnobs:
 class TestCheckReportDeclarations:
     """The guard on `score_key` / `denominator_policy` in every task report."""
 
-    #: Stand-in for `sieval/core/tasks/metrics.py`, reduced to the two shapes the
+    #: Stand-in for `sieval/core/tasks/metrics.py`, reduced to the shapes the
     #: rules must follow: `sampling_report` reaches `pass@k` only through a call
-    #: and a `|`, so reading one body sees none of its keys; and the interval pair
-    #: is written through module constants rather than literals, so a scan that
-    #: understands only literal keys sees neither of them.
+    #: and a `|`, so reading one body sees none of its keys; the interval keys are
+    #: written through module constants rather than literals, so a scan that
+    #: understands only literal keys sees none of them; and `merge_metrics` folds
+    #: its ARGUMENTS, so the keys of a fragment inside it belong to the report.
     _METRICS = (
         "SCORE_CI_FIELD = 'score_ci95'\n"
         "PROBLEM_COUNT_FIELD = 'n_problems'\n"
+        "CI_SUFFIX = '_ci95'\n"
+        "CI_UNITS_FIELD = 'ci95_units'\n"
         "def health_metrics(finals):\n"
         "    return {'n_unextracted': 0.0}\n"
         "def rollout_metrics(correct, k=1):\n"
@@ -2257,9 +2263,19 @@ class TestCheckReportDeclarations:
         "def budget_metrics(k=1):\n"
         "    return {'n': 1.0, 'k': 1.0}\n"
         "def interval_metrics(values):\n"
-        "    return {SCORE_CI_FIELD: [1.0, 2.0], PROBLEM_COUNT_FIELD: 3.0}\n"
+        "    return {\n"
+        "        SCORE_CI_FIELD: [1.0, 2.0],\n"
+        "        PROBLEM_COUNT_FIELD: 3.0,\n"
+        "        CI_UNITS_FIELD: {'score': PROBLEM_COUNT_FIELD},\n"
+        "    }\n"
+        "def metric_interval(metric, values, unit=PROBLEM_COUNT_FIELD):\n"
+        "    return {metric + CI_SUFFIX: [1.0, 2.0], unit: 3.0, "
+        "CI_UNITS_FIELD: {metric: unit}}\n"
+        "def merge_metrics(*fragments):\n"
+        "    return {}\n"
         "def sampling_report(correct, k=1):\n"
-        "    return rollout_metrics(correct, k=k) | budget_metrics(k=k)\n"
+        "    return (rollout_metrics(correct, k=k) | budget_metrics(k=k)\n"
+        "            | interval_metrics(correct))\n"
     )
 
     def _run(
@@ -2624,7 +2640,12 @@ class TestCheckReportDeclarations:
             metrics=self._METRICS,
         )
         assert r.status == "FAIL"
-        assert "writes 'score_ci95' but no 'n_problems'" in r.details[0]
+        # `any`, not `details[0]`: an interval with no population also has no
+        # unit it could name, so rule 6 reports this report as well. Both
+        # readings are true, and this test is about the pair.
+        assert any(
+            "writes 'score_ci95' but no 'n_problems'" in detail for detail in r.details
+        )
 
     def test_population_without_its_interval_fails(self, tmp_path: Path):
         r = self._run(
@@ -2681,11 +2702,13 @@ class TestCheckReportDeclarations:
             "        for field in (SCORE_CI_FIELD, PROBLEM_COUNT_FIELD):\n"
             "            if field in rolled:\n"
             "                metrics[field] = rolled[field]\n"
-            "        return metrics\n",
+            "        metrics.update(rolled)\n"
+            "        return metrics | health_metrics(finals)\n",
             metrics=self._METRICS,
         )
         assert r.status == "PASS"
         assert "1 report(s) pair the headline interval" in r.message
+        assert "1 declare the unit of every interval" in r.message
         # And rule 4 still resolved the score_key rather than skipping the report.
         assert "1 score_key(s) also resolved" in r.message
 
@@ -2757,10 +2780,165 @@ class TestCheckReportDeclarations:
         assert "_UNPAIRED_PROBLEM_COUNT" in r.details[0]
         assert "delete the entry" in r.details[0]
 
+    # --- rule 6: every interval declares the unit it is clustered on ---------
+
+    def test_an_interval_without_a_declared_unit_fails(self, tmp_path: Path):
+        # A report may carry one interval per metric, so `n_problems` alone no
+        # longer says what any single one is clustered on.
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'aacc': 1.0,\n"
+            "            'aacc_ci95': [0.0, 2.0],\n"
+            "            'n_versions': 30.0,\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "FAIL"
+        assert "writes aacc_ci95 but no 'ci95_units'" in r.details[0]
+
+    def test_an_fstring_interval_key_needs_a_declaration(self, tmp_path: Path):
+        # Where rule 5 refuses patterns, this one takes them when the literal
+        # TAIL is the suffix: `f"{axis}_ci95"` can only produce interval keys.
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        results = {'score': 1.0}\n"
+            "        for axis in ('thought', 'name'):\n"
+            "            results[f'{axis}_ci95'] = [0.0, 2.0]\n"
+            "        results['n_graded'] = 30.0\n"
+            "        results[SCORE_KEY_FIELD] = 'score'\n"
+            "        results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED\n"
+            "        return results\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "FAIL"
+        assert "but no 'ci95_units'" in r.details[0]
+
+    def test_a_declaration_naming_an_absent_population_fails(self, tmp_path: Path):
+        # The other half: an entry pointing at a key the report never writes is
+        # worse than no entry, because it reads as a population that is there.
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'aacc': 1.0,\n"
+            "            'aacc_ci95': [0.0, 2.0],\n"
+            "            'ci95_units': {'aacc': 'n_versions'},\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "FAIL"
+        assert "declares 'aacc' on population 'n_versions'" in r.details[0]
+
+    def test_a_declaration_naming_a_key_the_report_writes_passes(self, tmp_path: Path):
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'aacc': 1.0,\n"
+            "            'aacc_ci95': [0.0, 2.0],\n"
+            "            'n_versions': 30.0,\n"
+            "            'ci95_units': {'aacc': 'n_versions'},\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+        assert "1 declare the unit of every interval" in r.message
+
+    def test_a_score_category_key_is_not_an_interval_for_rule_6(self, tmp_path: Path):
+        # `f"score_{category}"` matches nothing this rule wants: its literal tail
+        # is not the suffix, so a per-category task is not asked to declare units
+        # for intervals it never estimated.
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        results = {'score': 1.0}\n"
+            "        for category in ('stem', 'other'):\n"
+            "            results[f'score_{category}'] = 1.0\n"
+            "        results[SCORE_KEY_FIELD] = 'score'\n"
+            "        results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED\n"
+            "        return results\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+        assert "0 declare the unit of every interval" in r.message
+
+    def test_a_declaration_merged_from_metrics_counts(self, tmp_path: Path):
+        # `interval_metrics` writes `ci95_units` through a constant, so a rule
+        # reading only literal keys would call this report undeclared.
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        } | interval_metrics(finals)\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+        assert "1 declare the unit of every interval" in r.message
+
+    def test_a_fold_credits_the_fragments_inside_it(self, tmp_path: Path):
+        """`merge_metrics(a, b)` publishes the keys of a and b, not its own.
+
+        The additive sampling tasks fold their headline interval and the sampling
+        block together, so a rule reading only the outermost call sees a helper
+        that returns nothing and reports the report as carrying no interval at
+        all -- rules 5 and 6 both go quiet on five real modules.
+        """
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        metrics = {\n"
+            "            'score': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n"
+            "        return metrics | merge_metrics(\n"
+            "            interval_metrics(finals), sampling_report(finals)\n"
+            "        )\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+        assert "1 report(s) pair the headline interval" in r.message
+        assert "1 declare the unit of every interval" in r.message
+
     def test_real_tasks_pass(self):
         """Integration: every shipped report declares both fields."""
         results = PreflightRunner().check_report_declarations()
         assert [r.status for r in results] == ["PASS"]
+
+    def test_real_tasks_declare_the_unit_of_every_interval(self):
+        """Rule 6 has real coverage, not just fixtures.
+
+        A report with no interval at all satisfies it, so a rule that resolved
+        neither `ci95_units` nor the suffix would pass `test_real_tasks_pass` on
+        every task in the tree. Pin the count instead: a DROP means either a task
+        stopped declaring a unit or the checker stopped being able to see one.
+        """
+        (result,) = PreflightRunner().check_report_declarations()
+        match = re.search(r"(\d+) declare the unit", result.message)
+        assert match is not None, result.message
+        assert int(match.group(1)) >= 49
 
     def test_real_tasks_pair_the_interval(self):
         """Rule 5 has real coverage, not just fixtures.
@@ -2787,6 +2965,13 @@ class TestCheckReportDeclarations:
 
         assert hasattr(metrics, _INTERVAL_KEY_CONSTANT)
         assert hasattr(metrics, _PROBLEM_COUNT_CONSTANT)
+        # Rule 6's two, on the same terms.
+        assert hasattr(metrics, _CI_SUFFIX_CONSTANT)
+        assert hasattr(metrics, _CI_UNITS_CONSTANT)
+        # And the fold helper, whose arguments rules 5-6 read through: renamed
+        # without updating the list, both rules quietly stop seeing five reports.
+        for name in _FOLD_HELPERS:
+            assert hasattr(metrics, name)
 
     def test_real_tasks_resolve_their_score_key(self):
         """Rule 4 has real coverage, not just fixtures.

@@ -19,7 +19,7 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 
 import collections
 import math
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -468,6 +468,76 @@ SCORE_CI_FIELD = "score_ci95"
 #: Report key carrying the declared problem population the interval is quoted over.
 PROBLEM_COUNT_FIELD = "n_problems"
 
+#: Suffix that turns a metric's key into the key carrying THAT metric's interval:
+#: ``pass@k`` -> ``pass@k_ci95``. ``SCORE_CI_FIELD`` is this rule applied to
+#: ``score``, which is why the headline pair keeps its spelling.
+CI_SUFFIX = "_ci95"
+
+#: Report key declaring, per metric, WHICH population key that metric's interval
+#: is clustered on -- ``{"pass@1": "n_problems"}``. The report's one nested
+#: object, and the reason a report can carry more than one interval at all: two
+#: metrics on two units both need a population, and one ``n_problems`` cannot say
+#: which is whose. An interval whose unit is undeclared cannot be read, so the
+#: estimators here emit the declaration WITH the interval, never beside it.
+CI_UNITS_FIELD = "ci95_units"
+
+
+def ci_field(metric: str) -> str:
+    """The report key carrying *metric*'s interval."""
+    return f"{metric}{CI_SUFFIX}"
+
+
+def _clustered_interval(
+    values: Sequence[float],
+    *,
+    denominator: int,
+    group_keys: Sequence[Hashable] | None,
+    n_problems: int | None,
+) -> tuple[tuple[float, float], int] | None:
+    """The interval and the population it is declared over, or ``None``.
+
+    The estimation half of :func:`interval_metrics` / :func:`metric_interval`,
+    which differ only in the KEYS they publish it under. Sharing the arithmetic
+    is what keeps a per-metric interval identical to the headline interval on the
+    metric the headline was copied from.
+
+    Raises:
+        ValueError: if *group_keys* is given without *n_problems*, or does not
+            carry one key per value. Both would silently mis-scale the interval.
+    """
+    if group_keys is not None:
+        if n_problems is None:
+            raise ValueError(
+                "interval_metrics: group_keys needs n_problems beside it -- the "
+                "collapsed values are scaled by it, so guessing would mis-scale "
+                "the interval."
+            )
+        if len(group_keys) != len(values):
+            raise ValueError(
+                f"interval_metrics: group_keys must carry one key per value; got "
+                f"{len(group_keys)} keys for {len(values)} values."
+            )
+        if denominator <= 0:
+            # Both paths must agree that an empty population has no interval.
+            # `wilson_interval` refuses one ungrouped, but it is handed
+            # `population` here, not `denominator` -- so scaling by anything at
+            # all would zero every unit, land on `p == 0`, and let the
+            # Clopper-Pearson branch invent a bound over a mean of nothing.
+            return None
+        sums: dict[Hashable, float] = collections.defaultdict(float)
+        for key, value in zip(group_keys, values, strict=True):
+            sums[key] += value
+        scale = n_problems / denominator
+        units = [total * scale for total in sums.values()]
+        population = n_problems
+    else:
+        units = list(values)
+        population = denominator
+    interval = wilson_interval(units, population)
+    if interval is None:
+        return None
+    return interval, population
+
 
 def interval_metrics(
     values: Sequence[float],
@@ -475,7 +545,7 @@ def interval_metrics(
     denominator: int,
     group_keys: Sequence[Hashable] | None = None,
     n_problems: int | None = None,
-) -> dict[str, float | list[float]]:
+) -> dict[str, float | list[float] | dict[str, str]]:
     """The headline's interval and the problem population it is declared over.
 
     ``n_problems`` is that DECLARED population -- the denominator of the estimand,
@@ -498,51 +568,136 @@ def interval_metrics(
     leaves ``score`` bit-for-bit unchanged. Unrepeated, ``G == D`` and each unit is
     its own value.
 
-    The two keys are emitted as a **pair or not at all**: an interval whose
-    population is unknown cannot be read, and a population with no interval beside
-    it is a count nothing asked for. Both are omitted -- never zeroed -- whenever
-    :func:`wilson_interval` has nothing to estimate, and on a *denominator* of
-    zero, which is the one case the grouped path has to refuse for itself.
+    The three keys are emitted **whole or not at all**: an interval whose
+    population is unknown cannot be read, a population with no interval beside it
+    is a count nothing asked for, and an interval whose unit is undeclared cannot
+    be told from one clustered on something else. All are omitted -- never
+    zeroed -- whenever :func:`wilson_interval` has nothing to estimate, and on a
+    *denominator* of zero, which is the one case the grouped path has to refuse
+    for itself.
+
+    This is :func:`metric_interval` pinned to the headline: metric ``score``,
+    unit ``n_problems``. It spells those two out as its own literals rather than
+    delegating, so the keys it publishes can be named by a reader that only parses
+    the source -- which is how ``scripts/check_preflight.py`` checks that every
+    task pairs its interval with a population. ``test_metrics`` pins the two
+    functions against each other, so the second spelling cannot drift.
 
     Raises:
         ValueError: if *group_keys* is given without *n_problems*, or does not carry
             one key per value. Both would silently mis-scale the interval.
     """
-    if group_keys is not None:
-        if n_problems is None:
-            raise ValueError(
-                "interval_metrics: group_keys needs n_problems beside it -- the "
-                "collapsed values are scaled by it, so guessing would mis-scale "
-                "the interval."
-            )
-        if len(group_keys) != len(values):
-            raise ValueError(
-                f"interval_metrics: group_keys must carry one key per value; got "
-                f"{len(group_keys)} keys for {len(values)} values."
-            )
-        if denominator <= 0:
-            # Both paths must agree that an empty population has no interval.
-            # `wilson_interval` refuses one ungrouped, but it is handed
-            # `population` here, not `denominator` -- so scaling by anything at
-            # all would zero every unit, land on `p == 0`, and let the
-            # Clopper-Pearson branch invent a bound over a mean of nothing.
-            return {}
-        sums: dict[Hashable, float] = collections.defaultdict(float)
-        for key, value in zip(group_keys, values, strict=True):
-            sums[key] += value
-        scale = n_problems / denominator
-        units = [total * scale for total in sums.values()]
-        population = n_problems
-    else:
-        units = list(values)
-        population = denominator
-    interval = wilson_interval(units, population)
-    if interval is None:
+    estimated = _clustered_interval(
+        values,
+        denominator=denominator,
+        group_keys=group_keys,
+        n_problems=n_problems,
+    )
+    if estimated is None:
         return {}
+    (low, high), population = estimated
     return {
-        SCORE_CI_FIELD: [interval[0], interval[1]],
+        SCORE_CI_FIELD: [low, high],
         PROBLEM_COUNT_FIELD: float(population),
+        CI_UNITS_FIELD: {"score": PROBLEM_COUNT_FIELD},
     }
+
+
+def metric_interval(
+    metric: str,
+    values: Sequence[float],
+    *,
+    denominator: int,
+    group_keys: Sequence[Hashable] | None = None,
+    n_problems: int | None = None,
+    unit: str = PROBLEM_COUNT_FIELD,
+) -> dict[str, float | list[float] | dict[str, str]]:
+    """One metric's own interval, its population, and the unit it is clustered on.
+
+    The general form of :func:`interval_metrics`, for every metric a report
+    publishes beside its headline. *values* are that metric's PER-UNIT values --
+    the quantity it is the mean of -- so a metric is a candidate here only when it
+    is exactly ``sum(values) / denominator``. A pooled ratio of two sums and a
+    nonlinear combination of aggregates are not, and get no interval rather than a
+    plausible-looking wrong one.
+
+    *unit* names the population key the interval is clustered on, and is what the
+    report declares under ``ci95_units``. It defaults to ``n_problems`` because
+    that is the unit of most metrics in this tree, but it is a parameter and not a
+    constant: a rate per version, per graded sample or per session is a different
+    population, and reusing a problem count for one of those narrows the interval
+    by the same root-times an uncollapsed repeat does.
+
+    The interval, the population and the declaration are one return value, never
+    three steps a caller can half-complete -- a ``<metric>_ci95`` whose unit
+    nothing recorded is unreadable, and that is the failure this shape exists to
+    make impossible.
+    """
+    estimated = _clustered_interval(
+        values,
+        denominator=denominator,
+        group_keys=group_keys,
+        n_problems=n_problems,
+    )
+    if estimated is None:
+        return {}
+    (low, high), population = estimated
+    return {
+        ci_field(metric): [low, high],
+        unit: float(population),
+        CI_UNITS_FIELD: {metric: unit},
+    }
+
+
+def merge_metrics(
+    *fragments: Mapping[str, float | list[float] | dict[str, str]],
+) -> dict[str, float | list[float] | dict[str, str]]:
+    """Fold report fragments left to right, UNIONING their unit declarations.
+
+    ``a | b`` replaces ``ci95_units`` wholesale, so a report that merges two
+    fragments each carrying intervals keeps only the last one's declarations and
+    every interval from the other loses its unit. That is silent -- the intervals
+    are all still there -- so any report folding more than one interval-bearing
+    fragment goes through here instead. Every other key keeps plain merge
+    semantics: later wins.
+
+    Fragments as the estimators return them. A report dict also carries its
+    declaration STRINGS (``score_key``, ``denominator_policy``), which are not
+    metrics and have no place in a fold; put that dict on the left of a plain
+    ``|`` over this function's result.
+
+    Raises:
+        ValueError: when two fragments declare the same metric on two different
+            population keys, or hand ``ci95_units`` something other than a map.
+            One metric cannot be clustered on two units, and keeping the later
+            one would publish an interval over a population it was not computed
+            over.
+    """
+    merged: dict[str, float | list[float] | dict[str, str]] = {}
+    units: dict[str, str] = {}
+    for fragment in fragments:
+        for key, value in fragment.items():
+            if key != CI_UNITS_FIELD:
+                merged[key] = value
+                continue
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"merge_metrics: {CI_UNITS_FIELD!r} must be a map of metric "
+                    f"to population key; got {value!r}."
+                )
+            for metric, unit in value.items():
+                declared = units.get(metric)
+                if declared is not None and declared != unit:
+                    raise ValueError(
+                        f"merge_metrics: {metric!r} is declared on both "
+                        f"{declared!r} and {unit!r}. One metric has one "
+                        "population; two mean one of the intervals is quoted "
+                        "over a unit it was not computed over."
+                    )
+                units[metric] = unit
+    if units:
+        merged[CI_UNITS_FIELD] = units
+    return merged
 
 
 def first_rollout_correct(finals) -> int:
@@ -574,7 +729,7 @@ def sampling_report(
     unit: str = "sample",
     score_key: str | None = None,
     grouping: ProblemGrouping | None = None,
-) -> dict[str, float | list[float]]:
+) -> dict[str, float | list[float] | dict[str, str]]:
     """Every sampling key a task reports, for one run's judged samples.
 
     The whole block, not a piece of it: read each sample, estimate per problem,
@@ -639,7 +794,7 @@ def sampling_report(
         # function's own return type, which widens only for the branch below.
         # No `score_ci95` reaches a caller from here, so the cast adds nothing
         # a reader could get wrong.
-        return cast(dict[str, float | list[float]], rolled | budget)
+        return cast(dict[str, float | list[float] | dict[str, str]], rolled | budget)
     if score_key not in rolled:
         raise ValueError(
             f"sampling_report: score_key {score_key!r} names a column this block "

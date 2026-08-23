@@ -123,12 +123,21 @@ comparable only when the field agrees. Neither key is inferable from the values,
 and both are additive, so a bare report scores correctly and stays silent about
 what it measured.
 
-A third pair is checked by the same rule set, though it is measured rather than
-declared: `SCORE_CI_FIELD` (`score_ci95`) and `PROBLEM_COUNT_FIELD`
-(`n_problems`) are emitted **together or not at all**. An interval whose
-population is unknown cannot be read, and a population with no interval beside it
-is a count nothing asked for. Merge them from `metrics.py` — `interval_metrics`
-or `sampling_report(score_key=...)` — rather than spelling either key here.
+A third group is checked by the same rule set, though it is measured rather than
+declared: `SCORE_CI_FIELD` (`score_ci95`), `PROBLEM_COUNT_FIELD` (`n_problems`)
+and `CI_UNITS_FIELD` (`ci95_units`) are emitted **together or not at all**. An
+interval whose population is unknown cannot be read, a population with no
+interval beside it is a count nothing asked for, and — now that a report can
+carry an interval per metric — an interval whose unit is undeclared cannot be
+told from one clustered on something else. Merge them from `metrics.py` rather
+than spelling any of the keys here: `interval_metrics` for the headline,
+`metric_interval` for any other metric (it takes the population key as `unit`),
+or `sampling_report(score_key=...)`.
+
+Two fragments that each carry intervals are folded with `merge_metrics`, never
+with `|`: a plain merge replaces `ci95_units` wholesale, so one fragment's
+declarations survive and the other's intervals are left with no unit — silently,
+because the intervals themselves are all still there.
 
 Machine-checked over every class defining `report` under `sieval/tasks/`:
 `check_preflight.py --check check_report_declarations`. A `report` that is a

@@ -97,8 +97,9 @@ class ApexShortlist2025ZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one; `list[float]` carries `score_ci95`.
-        dict[str, float | str | list[float]],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ],
 ):
     def __init__(self, dataset, model, name: str | None = None, k: int = 1, n: int = 1):
@@ -178,7 +179,7 @@ class ApexShortlist2025ZeroShotGenTask(
         )
         # Read back out of the shared block, so `score` cannot drift from it.
         pass_at_1 = rolled["pass@1"]
-        metrics: dict[str, float | str | list[float]] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": pass_at_1,
             "fails": len(fails),
             "pass@1": pass_at_1,

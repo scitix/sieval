@@ -220,8 +220,9 @@ class PlatinumMathGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one; `list[float]` carries `score_ci95`.
-        dict[str, float | str | list[float]],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     """Base for one PlatinumBench math subset; leaves set :attr:`subset`."""
@@ -375,7 +376,7 @@ class PlatinumMathGenTask(
         # additive and never touch them.
         correct_num = first_rollout_correct(finals)
         accuracy = 100 * correct_num / total
-        metrics: dict[str, float | str | list[float]] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": accuracy,
             "fails": len(fails),
             "accuracy": accuracy,

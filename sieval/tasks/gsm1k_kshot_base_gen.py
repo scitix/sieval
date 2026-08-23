@@ -314,7 +314,7 @@ class GSM1KFewShotBaseGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float | str],
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(

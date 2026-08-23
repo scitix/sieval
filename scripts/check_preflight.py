@@ -429,6 +429,21 @@ _DECLARATION_CONSTANTS = frozenset({"SCORE_KEY_FIELD", "DENOMINATOR_FIELD"})
 _INTERVAL_KEY_CONSTANT = "SCORE_CI_FIELD"
 _PROBLEM_COUNT_CONSTANT = "PROBLEM_COUNT_FIELD"
 
+#: The per-metric interval contract, also read out of ``metrics.py`` by name:
+#: the suffix every interval key carries (``pass@1`` -> ``pass@1_ci95``) and the
+#: key mapping each of those back to the population it is clustered on. Rule 6
+#: is off, silently, if either name stops resolving — which is what
+#: `test_interval_constants_match_the_metrics_module` pins.
+_CI_SUFFIX_CONSTANT = "CI_SUFFIX"
+_CI_UNITS_CONSTANT = "CI_UNITS_FIELD"
+
+#: ``metrics.py`` helpers that fold their ARGUMENTS into one dict, so the keys
+#: they publish are their operands' and not their own
+#: (:func:`_merged_sources`). Renaming one without updating this reads as a task
+#: that stopped publishing an interval — which `test_real_tasks_pair_the_interval`
+#: reports as a drop rather than letting it pass quietly.
+_FOLD_HELPERS = frozenset({"merge_metrics"})
+
 #: Task modules that publish an interval's population with no interval beside it.
 #: A handoff, not an exemption — and **empty**: ugmathbench's ``n_problems``
 #: predated the interval, and the pair closed once that task said which of its two
@@ -619,13 +634,19 @@ def _names_a_key_statically(
 def _merged_sources(fn: ast.AST) -> set[str] | None:
     """The ``metrics.py`` helpers *fn* folds whole dicts in from, by name.
 
-    Three spellings in the tree: ``| health_metrics(finals)``,
-    ``|= sampling_report(...)``, ``metrics.update(rolled)``. Naming the helper
-    rather than just noting that a merge happened is what keeps rule 4 sharp —
-    widening to every key ``metrics.py`` can emit would accept
-    ``score_key: "pass@1"`` on a task that never computed one.
+    Four spellings in the tree: ``| health_metrics(finals)``,
+    ``|= sampling_report(...)``, ``metrics.update(rolled)``, and one fold helper
+    whose ARGUMENTS are the operands — ``merge_metrics(a, b)`` publishes the keys
+    of both, so a rule reading only the outermost call would credit the fold and
+    lose the two fragments inside it. Naming the helper rather than just noting
+    that a merge happened is what keeps rule 4 sharp — widening to every key
+    ``metrics.py`` can emit would accept ``score_key: "pass@1"`` on a task that
+    never computed one.
 
-    ``None`` when a merge cannot be traced to a name, which widens it anyway.
+    ``None`` when a merge cannot be traced to a name, which widens it anyway. A
+    fold ARGUMENT that cannot be traced is skipped instead: it is a dict built
+    here, whose literal keys are already read straight off the tree.
+
     Narrow about ``|`` on purpose: ``dict[str, float | str]`` is a type
     annotation in the same tree, so only a call operand counts as a merge.
     """
@@ -648,6 +669,14 @@ def _merged_sources(fn: ast.AST) -> set[str] | None:
         """Record the helper *value* came from; False if it cannot be named."""
         if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
             sources.add(value.func.id)
+            if value.func.id in _FOLD_HELPERS:
+                for argument in value.args:
+                    inner = (
+                        argument.value
+                        if isinstance(argument, ast.Starred)
+                        else argument
+                    )
+                    _resolve(inner)
             return True
         if isinstance(value, ast.Name) and value.id in produced_by:
             sources.add(produced_by[value.id])
@@ -767,6 +796,20 @@ def _declared_field_values(fn: ast.AST, constant: str, literal: str) -> list[ast
                 if isinstance(target, ast.Subscript) and _matches(target.slice):
                     found.append(node.value)
     return found
+
+
+def _resolved_string(value: ast.expr, constants: dict[str, str]) -> str | None:
+    """The string *value* names, literally or through a ``metrics.py`` constant.
+
+    ``None`` when nothing static can say — a computed unit name, which rule 6
+    skips rather than guesses at, on the same terms as
+    :func:`_has_unknowable_key`.
+    """
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return value.value
+    if isinstance(value, ast.Name):
+        return constants.get(value.id)
+    return None
 
 
 def _policy_text(value: ast.expr) -> str:
@@ -1988,6 +2031,18 @@ class PreflightRunner:
            :data:`_UNPAIRED_PROBLEM_COUNT` as publishing a count that predates the
            interval; the listing expires loudly, since a listed module that pairs
            the two is reported as well.
+        6. every interval declares its UNIT. A report may carry one interval per
+           metric, so ``n_problems`` alone no longer says what any single one is
+           clustered on: a report writing any ``*_ci95`` key writes
+           ``ci95_units`` too, and every population key that map names is a key
+           the same report writes. Two halves, because they fail differently — an
+           interval with no entry is unreadable, and an entry naming a key that
+           is not there points at nothing. Here an f-string key *does* count when
+           its literal tail is the suffix (``f"{axis}_ci95"`` produces
+           intervals; ``f"score_{category}"`` does not, which is why rule 5
+           cannot take patterns), and a hand-written ``ci95_units`` is read for
+           its values — one built inside ``metrics.py`` names its own population
+           key by construction, so there is nothing there to check.
 
         A ``report`` that is a single ``return helper(...)`` is judged on the
         helper, resolved through the module's own imports — ``arc/``'s four leaves
@@ -2013,10 +2068,13 @@ class PreflightRunner:
         constants = _module_constants(metrics_tree)
         interval_key = constants.get(_INTERVAL_KEY_CONSTANT)
         population_key = constants.get(_PROBLEM_COUNT_CONSTANT)
+        ci_suffix = constants.get(_CI_SUFFIX_CONSTANT)
+        units_key = constants.get(_CI_UNITS_CONSTANT)
         violations: list[str] = []
         checked = 0
         verified = 0
         paired = 0
+        declared_units = 0
         for py_file in py_files:
             rel = py_file.relative_to(self.project_root)
             tree = self._parse_task_module(py_file, violations)
@@ -2048,12 +2106,17 @@ class PreflightRunner:
                 names: set[str] = set()
                 policies: list[ast.expr] = []
                 score_keys: list[ast.expr] = []
+                unit_maps: list[ast.expr] = []
                 merged: set[str] | None = set()
                 unknowable = False
                 for scope in scopes:
                     keys |= _dict_keys_written(scope, constants)
                     patterns |= _dict_key_patterns(scope)
                     names |= _names_read(scope)
+                    if units_key is not None:
+                        unit_maps += _declared_field_values(
+                            scope, _CI_UNITS_CONSTANT, units_key
+                        )
                     policies += _declared_field_values(
                         scope, "DENOMINATOR_FIELD", "denominator_policy"
                     )
@@ -2129,6 +2192,44 @@ class PreflightRunner:
                             "points nowhere"
                         )
 
+                if ci_suffix is not None and units_key is not None:
+                    # An f-string counts here, unlike in rule 5, when its literal
+                    # TAIL is the suffix: `f"{axis}_ci95"` can only produce
+                    # interval keys, where `f"score_{category}"` produces none.
+                    interval_fields = sorted(
+                        {key for key in keys if key.endswith(ci_suffix)}
+                        | {
+                            pattern
+                            for pattern in patterns
+                            if pattern.endswith(re.escape(ci_suffix))
+                        }
+                    )
+                    if units_key in keys:
+                        declared_units += 1
+                    elif interval_fields:
+                        violations.append(
+                            f"{where}: report() writes {', '.join(interval_fields)} "
+                            f"but no {units_key!r}, so nothing says which "
+                            "population each of those intervals is clustered on "
+                            "— one report can carry an interval per metric, and "
+                            "they need not share a unit"
+                        )
+                    for value in unit_maps:
+                        if not isinstance(value, ast.Dict):
+                            continue
+                        for metric, unit in zip(value.keys, value.values, strict=True):
+                            named = _resolved_string(unit, constants)
+                            if named is None or named in keys:
+                                continue
+                            declared_for = _resolved_string(metric, constants)
+                            violations.append(
+                                f"{where}: {units_key} declares "
+                                f"{declared_for or ast.unparse(metric)!r} on "
+                                f"population {named!r}, which this report never "
+                                "writes — the unit an interval is quoted over has "
+                                "to be a key a reader can find beside it"
+                            )
+
                 if interval_key is None or population_key is None:
                     continue
                 module = rel.as_posix()
@@ -2176,7 +2277,8 @@ class PreflightRunner:
                 f"all {checked} task report(s) declare their score key and "
                 f"denominator policy ({verified} score_key(s) also resolved to a "
                 f"key the report writes; {paired} report(s) pair the headline "
-                "interval with its problem count)",
+                f"interval with its problem count; {declared_units} declare the "
+                "unit of every interval they publish)",
             )
         ]
 

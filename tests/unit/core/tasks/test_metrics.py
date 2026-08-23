@@ -17,18 +17,23 @@ from sieval.core.tasks import (
     build_rollout_judgement,
 )
 from sieval.core.tasks.metrics import (
+    CI_SUFFIX,
+    CI_UNITS_FIELD,
     PROBLEM_COUNT_FIELD,
     SCORE_CI_FIELD,
     ProblemGrouping,
     aggregate,
     avg_at_n,
     budget_metrics,
+    ci_field,
     count_short,
     count_unextracted,
     first_rollout_correct,
     health_metrics,
     interval_metrics,
     majority_at_k,
+    merge_metrics,
+    metric_interval,
     pass_at_k,
     pass_pow_k,
     problem_population,
@@ -730,7 +735,7 @@ def test_sampling_report_intervals_the_named_key(_finals_factory):
     assert isinstance(ci, list)
     lo, hi = ci
     pass_at_1 = got["pass@1"]
-    assert not isinstance(pass_at_1, list)
+    assert isinstance(pass_at_1, float)
     assert lo < pass_at_1 < hi
 
 
@@ -970,6 +975,123 @@ def test_interval_metrics_rejects_a_grouping_that_does_not_align():
 def test_interval_metrics_needs_the_problem_count_with_the_keys():
     with pytest.raises(ValueError, match="n_problems"):
         interval_metrics([1.0, 0.0], denominator=2, group_keys=[0, 0])
+
+
+# --------------------------------------------------------------------------- #
+# the per-metric contract -- an interval, its population, and its unit
+# --------------------------------------------------------------------------- #
+
+
+def test_the_interval_field_names_are_the_suffix_rule_applied():
+    """The spelled-out headline constant must BE what `ci_field` derives.
+
+    It is a literal because a static reader has to name it; that is exactly what
+    lets it drift from the rule everything else follows.
+    """
+    assert ci_field("score") == SCORE_CI_FIELD
+    assert ci_field("pass@k") == f"pass@k{CI_SUFFIX}"
+
+
+@pytest.mark.parametrize(
+    "values,denominator,keys,problems",
+    [
+        ([1.0, 0.0, 1.0, 1.0, 0.0], 5, None, None),
+        ([1.0, 0.0, 1.0, 1.0, 0.0], 8, None, None),
+        ([0.25, 0.5, 0.75, 0.0], 4, None, None),
+        ([1.0, 0.0] * 4, 8, [0, 1, 2, 3] * 2, 4),
+        ([0.5] * 4, 4, None, None),  # nothing to estimate -> both empty
+    ],
+)
+def test_interval_metrics_is_metric_interval_pinned_to_the_headline(
+    values, denominator, keys, problems
+):
+    """The duplicated three-key dict cannot drift: it is pinned by equality.
+
+    `interval_metrics` spells `score_ci95` / `n_problems` out as literals so the
+    preflight can name them, which means the same fragment is now built in two
+    places. Byte-equality with the general function is what keeps the second
+    spelling honest.
+    """
+    assert interval_metrics(
+        values, denominator=denominator, group_keys=keys, n_problems=problems
+    ) == metric_interval(
+        "score", values, denominator=denominator, group_keys=keys, n_problems=problems
+    )
+
+
+def test_interval_metrics_declares_the_unit_its_interval_is_clustered_on():
+    got = interval_metrics([1.0] * 6 + [0.0] * 6, denominator=12)
+    assert got[CI_UNITS_FIELD] == {"score": PROBLEM_COUNT_FIELD}
+    # The declaration names a key the same fragment writes: an entry pointing at
+    # a population nothing published is unreadable.
+    units = got[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    assert all(unit in got for unit in units.values())
+
+
+def test_metric_interval_publishes_a_rate_on_its_own_population_key():
+    got = metric_interval(
+        "aacc", [1.0, 0.0, 1.0, 1.0], denominator=4, unit="n_versions"
+    )
+    assert set(got) == {"aacc_ci95", "n_versions", CI_UNITS_FIELD}
+    assert got[CI_UNITS_FIELD] == {"aacc": "n_versions"}
+    # The problem count is NOT written: a version-level rate borrowing it would
+    # quote a per-version interval over a population of problems.
+    assert PROBLEM_COUNT_FIELD not in got
+
+
+def test_metric_interval_omits_the_declaration_with_the_interval():
+    # No interval, no population, no unit entry -- a declaration for a key that
+    # is not there describes nothing.
+    assert metric_interval("pass@k", [0.5] * 4, denominator=4) == {}
+    assert metric_interval("pass@k", [1.0], denominator=1) == {}
+
+
+def test_merge_metrics_unions_declarations_a_plain_merge_would_drop():
+    headline = interval_metrics([1.0, 0.0, 1.0, 1.0], denominator=4)
+    versions = metric_interval(
+        "aacc", [1.0, 0.0, 0.0, 1.0], denominator=4, unit="n_versions"
+    )
+    # The failure this function exists to prevent: `|` keeps only the LAST
+    # declaration, so `score_ci95` survives with no unit recorded anywhere.
+    plain = headline | versions
+    plain_units = plain[CI_UNITS_FIELD]
+    assert isinstance(plain_units, dict)
+    assert plain_units == {"aacc": "n_versions"}
+    assert "score" not in plain_units
+
+    merged = merge_metrics(headline, versions)
+    assert merged[CI_UNITS_FIELD] == {
+        "score": PROBLEM_COUNT_FIELD,
+        "aacc": "n_versions",
+    }
+    # Everything else is a plain merge: both intervals and both populations.
+    assert merged[SCORE_CI_FIELD] == headline[SCORE_CI_FIELD]
+    assert merged["aacc_ci95"] == versions["aacc_ci95"]
+    assert merged["n_versions"] == versions["n_versions"]
+
+
+def test_merge_metrics_lets_a_later_fragment_win_every_other_key():
+    assert merge_metrics({"a": 1.0, "b": 2.0}, {"b": 3.0}) == {"a": 1.0, "b": 3.0}
+
+
+def test_merge_metrics_refuses_one_metric_on_two_populations():
+    with pytest.raises(ValueError, match="one population"):
+        merge_metrics(
+            {CI_UNITS_FIELD: {"eacc": PROBLEM_COUNT_FIELD}},
+            {CI_UNITS_FIELD: {"eacc": "n_versions"}},
+        )
+    # Re-declaring the SAME unit is not a conflict -- every fragment of one
+    # block declares the population it shares.
+    assert merge_metrics(
+        {CI_UNITS_FIELD: {"eacc": PROBLEM_COUNT_FIELD}},
+        {CI_UNITS_FIELD: {"eacc": PROBLEM_COUNT_FIELD}},
+    ) == {CI_UNITS_FIELD: {"eacc": PROBLEM_COUNT_FIELD}}
+
+
+def test_merge_metrics_refuses_a_declaration_that_is_not_a_map():
+    with pytest.raises(ValueError, match="map of metric"):
+        merge_metrics({CI_UNITS_FIELD: 1.0})
 
 
 class _Final:

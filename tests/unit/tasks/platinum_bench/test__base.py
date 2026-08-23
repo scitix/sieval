@@ -411,6 +411,9 @@ async def test_report_emits_accuracy_and_error_count():
     # float here.
     lo, hi = report.pop("score_ci95")
     n_problems = report.pop("n_problems")
+    # The unit that interval is clustered on, popped with it: the three are one
+    # fragment, and a report carrying an interval always declares its population.
+    assert report.pop("ci95_units") == {"score": "n_problems"}
     assert lo < report["score"] < hi
     assert n_problems == 4
     assert report == {

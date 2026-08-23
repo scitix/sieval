@@ -229,7 +229,7 @@ def arc_report(
     finals,
     fails,
     grouping: ProblemGrouping | None = None,
-) -> dict[str, float | str | list[float]]:
+) -> dict[str, float | str | list[float] | dict[str, str]]:
     """The shared report for all four ARC tasks, declarations included.
 
     Both PPL and CLP leaves delegate here, so the declarations live here too --

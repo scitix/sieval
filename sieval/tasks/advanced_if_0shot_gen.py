@@ -193,8 +193,9 @@ class AdvancedIFZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one; `list[float]` carries `score_ci95`.
-        dict[str, float | str | list[float]],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     @classmethod
@@ -438,7 +439,7 @@ class AdvancedIFZeroShotGenTask(
         grouping = problem_population(
             self.problem_groups(finals), finals, n_problems=len(finals) + len(fails)
         )
-        results: dict[str, float | str | list[float]] = {
+        results: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": overall["overall_pass_rate"],
             "overall_pass_rate": overall["overall_pass_rate"],
             "micro_pass_rate": overall["micro_pass_rate"],

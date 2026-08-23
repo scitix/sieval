@@ -849,8 +849,9 @@ class TheoremQAKShotBaseGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one; `list[float]` carries `score_ci95`.
-        dict[str, float | str | list[float]],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -975,7 +976,9 @@ class TheoremQAKShotBaseGenTask(
         return bool(correct)
 
     @override
-    async def report(self, finals, fails) -> dict[str, float | str | list[float]]:
+    async def report(
+        self, finals, fails
+    ) -> dict[str, float | str | list[float] | dict[str, str]]:
         count = len(finals)
         # First-rollout, because that is what this port was validated against.
         # `empty` reads the same population as the old `pred == ""` check:
@@ -988,7 +991,7 @@ class TheoremQAKShotBaseGenTask(
             )
         )
         accuracy = 100 * first_rollout_correct(finals) / count if count else 0.0
-        metrics: dict[str, float | str | list[float]] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": accuracy,
             "accuracy": accuracy,
             "fails": len(fails),
