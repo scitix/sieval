@@ -35,6 +35,14 @@ the estimator needs no `scipy`.
   no "spec §X". Refer to RFC #94 by number only, as `metrics.py` already does for #74.
 - Run `pdm run ruff format . && pdm run ruff check . && pdm run ty check` before each
   commit. `ty` must be run bare (a relative `python = "./.venv"` aborts in a worktree).
+- **What "`ty` clean" means, per task.** Widening `sampling_report`'s return type in
+  Task 5 makes 21 `sieval/tasks/` modules fail `invalid-return-type`, because their
+  own `report()` annotations are narrower. That is an accepted intermediate state, not
+  a defect: Task 6 widens exactly those annotations. So — Tasks 1-5 require the files
+  they *touch* to be `ty`-clean; **Task 6 must return the whole repository to zero
+  diagnostics** and its review must verify that; Tasks 7-8 inherit a zero baseline and
+  are held to it repo-wide. The 21 modules are the `sampling_report` callers listed in
+  Task 6, minus the three that already declare a wide enough return.
 - **`ty` rejects reaching into a union without narrowing it first.** Two shapes recur
   in this plan's own test snippets, and both must be narrowed wherever a code block
   below omits it — the narrowing is part of the test, not a deviation from the plan:
