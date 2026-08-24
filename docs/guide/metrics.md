@@ -185,6 +185,15 @@ Not yet: the pooled-ratio and nonlinear families below, every
 context lengths or 9 subtasks the interval would describe between-stratum spread
 over a handful of terms.
 
+The line between those and the stratum macros that *do* carry one is the **number
+of strata**, not their nature: AGIEval's 20 subsets, C-Eval's 52 subjects and
+CMMLU's 67 are designed taxonomies exactly as `ruler`'s context lengths are, so
+"a designed grid is not a random draw" cannot be what separates them — it would
+withhold all five. What separates them is that a variance over 5 or 9 terms is
+too noisy to publish, and the tree's practice is to want a couple of dozen. A new
+stratum macro landing between those counts is a judgement call, and should say in
+its `report` which way it went and why.
+
 So **`<metric>_ci95` is optional even when `<metric>` is there**, and a consumer
 has to treat it that way. A metric can be published with no interval for two
 reasons: no estimator has been wired to it yet (every metric outside the groups
