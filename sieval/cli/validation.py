@@ -29,6 +29,7 @@ from sieval.cli.resolution import (
     binding_resource_argument_paths,
     resolve_dataset_class,
     resolve_task_class,
+    validate_configured_engine_id,
     validate_task_config_args,
 )
 from sieval.core.models.capabilities import (
@@ -198,10 +199,14 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                     f"Model '{name}': derived models cannot set 'engine'; it is "
                     "inherited from the base model. Set it on the base instead."
                 )
-            elif not isinstance(engine, str) or not engine:
-                result.errors.append(
-                    f"Model '{name}': 'engine' must be a non-empty string"
-                )
+            else:
+                try:
+                    validate_configured_engine_id(
+                        engine,
+                        context=f"Model '{name}'",
+                    )
+                except (TypeError, ValueError) as exc:
+                    result.errors.append(str(exc))
 
         if has_base:
             base_ref = mcfg["base"]

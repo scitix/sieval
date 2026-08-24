@@ -2652,10 +2652,39 @@ tasks: {}
         assert deployment.engine.engine_id == "hosted-vendor"
         assert deployment.engine_source == "config"
 
+    def test_reserved_unknown_engine_is_rejected_before_reconcile_or_client_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: unknown
+    dialect: sglang_legacy
+tasks: {}
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch("sieval.cli.leaderboard.session.reconcile") as reconcile_mock,
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(ValueError, match="'unknown' is reserved"),
+        ):
+            session.prepare_prelaunch()
+
+        reconcile_mock.assert_not_called()
+        client_factory.assert_not_called()
+
     @pytest.mark.parametrize(
         ("field", "error_type", "expected"),
         [
-            ("engine", TypeError, "engine must be a non-empty string"),
+            ("engine", TypeError, "'engine' must be a non-empty string"),
             ("service_role", ValueError, "service_role must be a non-empty string"),
         ],
     )

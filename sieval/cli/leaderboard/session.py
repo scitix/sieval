@@ -49,6 +49,7 @@ from sieval.cli.resolution import (
     resolve_dataset_class,
     resolve_key_function,
     resolve_task_class,
+    validate_configured_engine_id,
     validate_model_type_dialect,
     validate_named_config_map,
     validate_omitted_dialect_migration,
@@ -1491,6 +1492,11 @@ class EvalSession:
         chain = self._model_config_chain(model_name, models_cfg)
         self._validate_named_resource_config(model_name, chain[-1][1])
         root_name, root_config = chain[0]
+        if "engine" in root_config:
+            validate_configured_engine_id(
+                root_config.get("engine"),
+                context=f"Model '{root_name}'",
+            )
         requested_model_id = self.model_override or root_config.get("name")
         if not requested_model_id:
             infer_config = root_config.get("infer")
@@ -2294,10 +2300,10 @@ class EvalSession:
         if isinstance(binding, InlineModelBinding):
             engine_declared = "engine" in binding.config
             raw_engine = binding.config.get("engine")
-            if engine_declared and (not isinstance(raw_engine, str) or not raw_engine):
-                raise TypeError(
-                    f"Inline binding '{binding.binding_id}' engine must be a "
-                    "non-empty string"
+            if engine_declared:
+                raw_engine = validate_configured_engine_id(
+                    raw_engine,
+                    context=f"Inline binding '{binding.binding_id}'",
                 )
             if binding.dialect_id is None:
                 raise ValueError(f"Model binding '{binding.binding_id}' has no dialect")
@@ -2315,8 +2321,11 @@ class EvalSession:
         projection = self._plan_projection(raw_plan) if raw_plan is not None else None
         engine_declared = "engine" in root_config
         raw_engine = root_config.get("engine")
-        if engine_declared and (not isinstance(raw_engine, str) or not raw_engine):
-            raise TypeError(f"Model '{root_name}' engine must be a non-empty string")
+        if engine_declared:
+            raw_engine = validate_configured_engine_id(
+                raw_engine,
+                context=f"Model '{root_name}'",
+            )
         if projection is not None:
             if engine_declared and raw_engine != projection.engine_id:
                 raise ValueError(

@@ -831,6 +831,103 @@ class TestResolveConfigModelTypes:
             result = resolve_config_model_types(config)
         assert result.model_types_by_config == {"m": "chat"}
 
+    def test_unresolvable_task_preserves_fail_soft_dialect_fallback(self):
+        config = {
+            "models": {
+                "m": {
+                    "name": "org/model",
+                    "dialect": "openai_completions",
+                }
+            },
+            "tasks": {"task": {"model": "m", "class": "missing.Task"}},
+        }
+
+        with patch(
+            "sieval.cli.resolution.resolve_task_class",
+            side_effect=ImportError("module not found"),
+        ):
+            result = resolve_config_model_types(config)
+
+        assert result.model_types_by_config == {"m": "chat"}
+
+    def test_resolved_zero_input_task_still_checks_fallback_against_dialect(self):
+        config = {
+            "models": {
+                "m": {
+                    "name": "org/model",
+                    "dialect": "openai_completions",
+                }
+            },
+            "tasks": {"task": {"model": "m", "class": "fake.NoInputTask"}},
+        }
+
+        with (
+            patch(
+                "sieval.cli.resolution.resolve_task_class",
+                return_value=self.NoInputTask,
+            ),
+            pytest.raises(
+                ValueError,
+                match=r"legacy type 'chat'.*openai_completions.*must agree",
+            ),
+        ):
+            resolve_config_model_types(config)
+
+    def test_unresolvable_task_does_not_hide_explicit_type_conflict(self):
+        config = {
+            "models": {
+                "m": {
+                    "name": "org/model",
+                    "type": "chat",
+                    "dialect": "openai_completions",
+                }
+            },
+            "tasks": {"task": {"model": "m", "class": "missing.Task"}},
+        }
+
+        with (
+            patch(
+                "sieval.cli.resolution.resolve_task_class",
+                side_effect=ImportError("module not found"),
+            ),
+            pytest.raises(
+                ValueError,
+                match=r"legacy type 'chat'.*openai_completions.*must agree",
+            ),
+        ):
+            resolve_config_model_types(config)
+
+    def test_unresolvable_task_does_not_hide_resolved_input_conflict(self):
+        config = {
+            "models": {
+                "m": {
+                    "name": "org/model",
+                    "dialect": "openai_completions",
+                }
+            },
+            "tasks": {
+                "missing": {"model": "m", "class": "missing.Task"},
+                "chat": {"model": "m", "class": "fake.ChatTask"},
+            },
+        }
+
+        def resolve(class_spec: str):
+            if class_spec == "missing.Task":
+                raise ImportError("module not found")
+            return self.ChatTask
+
+        with (
+            patch(
+                "sieval.cli.resolution.resolve_task_class",
+                side_effect=resolve,
+            ),
+            pytest.raises(
+                ValueError,
+                match=r"legacy type 'chat'.*openai_completions.*must agree",
+            ),
+        ):
+            resolve_config_model_types(config)
+
     def test_unresolvable_task_does_not_block_resolvable_task(self):
         config = {
             "models": {"m": {}},
@@ -997,8 +1094,16 @@ class TestNormalizeInlineModelBinding:
 
     @pytest.mark.parametrize("engine", [None, "", 7])
     def test_invalid_engine_is_rejected(self, engine):
-        with pytest.raises(TypeError, match="engine must be a non-empty string"):
+        with pytest.raises(TypeError, match="'engine' must be a non-empty string"):
             normalize_inline_model_binding("t", "grader", self._config(engine=engine))
+
+    def test_internal_unknown_engine_is_rejected(self):
+        with pytest.raises(ValueError, match="'unknown' is reserved"):
+            normalize_inline_model_binding(
+                "t",
+                "grader",
+                self._config(engine="unknown"),
+            )
 
     @pytest.mark.parametrize("service_role", [None, "", 7])
     def test_invalid_service_role_is_rejected(self, service_role):

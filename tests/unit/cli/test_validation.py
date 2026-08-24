@@ -241,6 +241,24 @@ class TestValidateModels:
         assert not result.ok
         assert any("'engine' must be a non-empty string" in e for e in result.errors)
 
+    def test_internal_unknown_engine_value_is_rejected(self):
+        cfg = {
+            "models": {
+                "m": {
+                    "name": "x",
+                    "type": "gen",
+                    "engine": "unknown",
+                }
+            },
+            "datasets": {},
+            "tasks": {},
+        }
+
+        result = validate_eval_config(cfg)
+
+        assert not result.ok
+        assert any("'unknown' is reserved" in error for error in result.errors)
+
     def test_engine_identity_is_independent_of_chat_model_type(self):
         cfg = {
             "models": {"m": {"name": "claude", "type": "chat", "engine": "anthropic"}},

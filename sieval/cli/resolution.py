@@ -126,6 +126,24 @@ def binding_resource_argument_paths(
     return tuple(sorted(paths))
 
 
+def validate_configured_engine_id(engine: object, *, context: str) -> str:
+    """Validate a user-declared engine identity.
+
+    ``"unknown"`` is reserved for the internal representation of an omitted
+    engine assertion. Accepting it from configuration would make an explicit
+    value indistinguishable from absence and bypass engine-specific checks.
+    """
+
+    if not isinstance(engine, str) or not engine:
+        raise TypeError(f"{context}: 'engine' must be a non-empty string")
+    if engine == "unknown":
+        raise ValueError(
+            f"{context}: 'engine' value 'unknown' is reserved; omit 'engine' "
+            "when the deployment engine identity is unavailable"
+        )
+    return engine
+
+
 def _safe_inline_model_config(
     config: Mapping[str, object],
 ) -> dict[str, JSONValue]:
@@ -211,11 +229,10 @@ def normalize_inline_model_binding(
             "sglang_legacy bypass; configure a named model or use a bindable dialect"
         )
     if "engine" in raw_config:
-        engine = raw_config.get("engine")
-        if not isinstance(engine, str) or not engine:
-            raise TypeError(
-                f"Inline binding '{binding_id}' engine must be a non-empty string"
-            )
+        validate_configured_engine_id(
+            raw_config.get("engine"),
+            context=f"Inline binding '{binding_id}'",
+        )
     if "service_role" in raw_config:
         service_role = raw_config.get("service_role")
         if not isinstance(service_role, str) or not service_role:
@@ -676,14 +693,30 @@ def resolve_config_model_types(
     chains = {name: _config_model_chain(name, models) for name in models}
     bindings = {name: _config_named_binding(name, chains[name]) for name in models}
     records: list[TaskModelRequirement] = []
+    roots_with_unresolved_task_classes: set[str] = set()
+
+    def mark_unresolved_task_root(
+        task_name: str,
+        task_config: Mapping[str, Any],
+    ) -> None:
+        """Remember where missing task evidence could change model-kind choice."""
+
+        try:
+            model_name = _config_task_model_name(task_name, task_config, models)
+        except ValueError:
+            # Normal configuration validation owns malformed/missing references.
+            return
+        roots_with_unresolved_task_classes.add(bindings[model_name].root_deployment_key)
 
     for task_name, task_config in tasks.items():
         class_spec = task_config.get("class")
         if not isinstance(class_spec, str) or not class_spec:
+            mark_unresolved_task_root(task_name, task_config)
             continue
         try:
             task_class = resolve_task_class(class_spec)
         except (ImportError, AttributeError):
+            mark_unresolved_task_root(task_name, task_config)
             continue
 
         model_name = _config_task_model_name(task_name, task_config, models)
@@ -727,6 +760,9 @@ def resolve_config_model_types(
         )
         model_type = derive_model_type(root_name, explicit_type, requirements)
         by_root[root_key] = model_type
+        type_has_independent_evidence = explicit_type is not None or bool(
+            requirements.input
+        )
         for binding in root_bindings:
             chain = chains[binding.config_name]
             dialect_declared = any("dialect" in config for _, config in chain)
@@ -737,11 +773,15 @@ def resolve_config_model_types(
                         f"Model '{binding.config_name}' dialect must be a "
                         "non-empty string"
                     )
-                validate_model_type_dialect(
-                    binding.config_name,
-                    model_type,
-                    dialect_id,
-                )
+                if (
+                    type_has_independent_evidence
+                    or root_key not in roots_with_unresolved_task_classes
+                ):
+                    validate_model_type_dialect(
+                        binding.config_name,
+                        model_type,
+                        dialect_id,
+                    )
             by_config[binding.config_name] = model_type
 
     inline_bindings = {
