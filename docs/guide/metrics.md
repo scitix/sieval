@@ -120,17 +120,27 @@ headline of 49 of the 58 task reports; the column `score_key` names it was copie
 from, under that column's own name; every sampling key the shared block publishes
 — `pass@1`, `avg@n`, `pass@k`, `pass^k`, `maj@k`, `self_consistency` — on the 28
 tasks that route through it; and the co-equal second rate of the tasks that
-publish one on the problem unit (HellaSwag's `acc`, DROP's `em`, the two
-`exact_match` rules of the GSM8K/GSM1k base tasks, IFEval's and IFBench's other
+publish one on the problem unit (HellaSwag's `acc`, DROP's `em`, the second
+extraction rule on each of the GSM8K and GSM1k base tasks —
+`flexible_exact_match` beside GSM8K's `exact_match`, `strict_exact_match` beside
+GSM1k's `flexible_exact_match` — IFEval's and IFBench's other
 grade, UGMathBench's `cacc`, AdvancedIF's `macro_pass_rate`,
 ComplexConstraints' `criterion_pass_rate_macro`, SciTaRC's `exact_match` and
 `partial`).
 
-Not yet: everything on a population key the report does not write today (SysBench,
-`t_eval_before_calling`, SimpleQA-Verified, UGMathBench's per-version `aacc`,
-GSM+'s `score_wo_critical_thinking`), the pooled-ratio and nonlinear families
-below, every `score_<category>` / per-subject breakdown key, and the
-stratum macros of `ruler` / `iheval`.
+Not yet, and for two different reasons. **Counted already, not yet estimated**:
+SysBench's per-turn and per-session rates (`csr_macro`, `isr`,
+`ungradeable_rate`, `ssr`), whose report already writes `n_turns` and
+`n_sessions`, and every axis of `t_eval_before_calling`, whose report already
+writes `n_graded` and `n_parsed`. Those need an estimator, not a new count.
+**Missing the count itself**: SimpleQA-Verified, whose report carries no problem
+count at all (only
+`n_graded`, a rollout count); UGMathBench's per-version `aacc`, whose denominator
+counts requested versions where the reported `n_versions_judged` counts judged
+ones; and GSM+'s `score_wo_critical_thinking`, whose non-critical-thinking subset
+size is computed but never reported. Then the pooled-ratio and nonlinear families
+below, every `score_<category>` / per-subject breakdown key, and the stratum
+macros of `ruler` / `iheval`.
 
 So **`<metric>_ci95` is optional even when `<metric>` is there**, and a consumer
 has to treat it that way. A metric can be published with no interval for two
@@ -162,9 +172,12 @@ Three rules decide whether a metric is a candidate at all:
   consumer keyed on either name finds a companion. That covers `score_ci95` and
   `<column>_ci95` on every task whose `score` is a copy of another column
   (`accuracy`, `acc_norm`, `exact_match`, `pass@1`, …), and IFEval's
-  `strict_accuracy` beside `strict_prompt_level_accuracy`. The bounds are not
-  merely equal but identical: the emitter takes the alias names as a parameter and
-  publishes one estimate under all of them, so the two cannot drift apart.
+  `strict_accuracy` beside `strict_prompt_level_accuracy`. There is **one
+  estimate, published under every name**: the emitter takes the alias names as a
+  parameter, so the bounds are computed once rather than once per key and cannot
+  drift apart. Each key still carries its own list, so they are equal values and
+  not a shared object — nothing that reads the report back and edits one bound
+  changes another.
 
 A withheld metric takes its interval with it: a task that withholds the sampling
 block at `n = 1` withholds those metrics' intervals too, and keeps the ones for
