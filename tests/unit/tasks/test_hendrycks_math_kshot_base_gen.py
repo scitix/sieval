@@ -17,6 +17,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.hendrycks_math import (
     HendrycksMathDataset,
@@ -270,6 +271,17 @@ async def test_report_counts_fails_as_wrong():
     assert report["fails"] == 1
     assert report["score"] == pytest.approx(100 / 3)
     assert report["accuracy"] == pytest.approx(100 / 3)
+    # REQUESTED, like the headline: the fail is inside the population, so 3.
+    assert report["n_problems"] == 3
+    lo, hi = report["score_ci95"]
+    assert lo < report["score"] < hi
+    # `accuracy` is `score` under its own name, so it carries the same bounds --
+    # a reader keyed on the column `score_key` names finds its companion.
+    assert report["accuracy_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {"score": "n_problems", "accuracy": "n_problems"}
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

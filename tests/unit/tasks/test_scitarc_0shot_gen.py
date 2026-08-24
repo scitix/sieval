@@ -19,8 +19,9 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.scitarc import SciTaRCDataset
-from sieval.tasks.scitarc_0shot_gen import SciTaRCZeroShotGenTask
+from sieval.tasks.scitarc_0shot_gen import PARTIAL_SCORE, SciTaRCZeroShotGenTask
 from tests.conftest import HandlerTransport
 
 TABLES = [["\\begin{table}\n", "NLLB 64.71\n", "\\end{table}\n"]]
@@ -320,6 +321,137 @@ async def test_report_counts_fails_in_the_denominator():
     assert report["exact_match"] == pytest.approx(33.33, abs=1e-2)
     assert report["score_key"] == "accuracy"
     assert report["denominator_policy"] == "requested"
+
+    # The interval is quoted over the ROLLOUT population -- the same `n` the
+    # headline divides by, fails included -- not over the 2 judged samples.
+    assert report["n_problems"] == 3
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_report_brackets_each_of_its_three_rates_on_its_own_axis():
+    """`accuracy`, `exact_match` and `partial` are three axes, three intervals.
+
+    Built so all three read a different number -- 3, 2 and 1 of 6 rollouts -- so
+    an interval copied from the headline onto either of the others fails to
+    contain the number it is printed beside.
+    """
+    task, _, _ = _task()
+    finals = [
+        _final(0, correct=True, score=1.0, em=True),
+        _final(1, correct=True, score=1.0, em=True),
+        _final(2, correct=True, score=1.0, em=False),
+        _final(3, correct=False, score=PARTIAL_SCORE, em=False),
+        _final(4, correct=False, score=0.0, em=False),
+        _final(5, correct=False, score=0.0, em=False),
+    ]
+    report = await task.report(finals, [])
+
+    assert report["n"] == 6
+    assert report["score"] == report["accuracy"] == pytest.approx(50.0)
+    assert report["exact_match"] == pytest.approx(33.33, abs=1e-2)
+    assert report["partial"] == pytest.approx(16.67, abs=1e-2)
+    assert report["n_problems"] == 6
+
+    lo, hi = report["score_ci95"]
+    # `accuracy` is `score` under its own name, so it repeats the headline bounds.
+    assert report["accuracy_ci95"] == [lo, hi]
+    for metric in ("exact_match", "partial"):
+        own = report[f"{metric}_ci95"]
+        assert isinstance(own, list)
+        assert own != [lo, hi]
+        value = report[metric]
+        assert isinstance(value, float)
+        assert own[0] < value < own[1]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "accuracy": "n_problems",
+        "exact_match": "n_problems",
+        "partial": "n_problems",
+    }
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_report_n_problems_counts_problems_not_rollouts():
+    """At n=2 the two counts diverge, and `n_problems` must be the smaller one.
+
+    `accuracy` is averaged over ROLLOUTS -- 2 problems x 2 rollouts = 4 -- while
+    `n_problems` is the field a reader sizes the evidence by. Reporting 4 there
+    would overstate it two-fold and put it in a different unit from every
+    sample-denominator task's `n_problems`.
+    """
+    task, _, _ = _task(n=2)
+
+    def _final_n2(sample_id: int, *, correct: tuple[bool, bool]) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                "gold",
+                [
+                    build_rollout_judgement(
+                        i,
+                        ok,
+                        score=1.0 if ok else 0.0,
+                        metrics={"exact_match": ok},
+                        extra={"grader_skipped": False, "grader_parsed": True},
+                    )
+                    for i, ok in enumerate(correct)
+                ],
+            ),
+            postprocess_result=build_prediction_record(["x", "x"]),
+        )
+
+    report = await task.report(
+        [_final_n2(0, correct=(True, True)), _final_n2(1, correct=(False, False))],
+        [],
+    )
+
+    # 2 of 4 rollouts: the headline is over rollouts.
+    assert report["n"] == 4
+    assert report["accuracy"] == pytest.approx(50.0)
+    # ...but the population is 2 PROBLEMS, not the 4 rollouts.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < 50.0 < hi
+
+
+@pytest.mark.anyio
+async def test_report_interval_excludes_partial_scores_like_the_headline():
+    """A PARTIAL_SCORE rollout is NOT correct in `accuracy`, so not in the axis.
+
+    Both samples score 0.5, so `accuracy` is 0.0 while `partial` is 100.0. An
+    interval built off `partial` would sit at the top of the range; on the
+    headline axis every value is zero and the bound comes from the exact
+    one-sided limit instead.
+    """
+    task, _, _ = _task()
+    finals = [
+        _final(0, correct=False, score=0.5, em=False),
+        _final(1, correct=False, score=0.5, em=False),
+    ]
+    report = await task.report(finals, [])
+
+    assert report["accuracy"] == 0.0
+    assert report["partial"] == 100.0
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    # Pinned at zero because no rollout was correct -- the `partial` axis would
+    # have put the lower bound far above it.
+    assert lo == 0.0
+    assert hi < report["partial"]
 
 
 @pytest.mark.anyio

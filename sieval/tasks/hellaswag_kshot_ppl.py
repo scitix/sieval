@@ -78,6 +78,9 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.core.utils.ppl import total_logprob
 from sieval.datasets import HellaSwagDatasetSample
@@ -177,8 +180,9 @@ class HellaSwagFewShotPPLTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     requires = TaskRequirements(input_scoring=True)
@@ -287,7 +291,9 @@ class HellaSwagFewShotPPLTask(
         total = len(finals) + len(fails)
         if total == 0:
             # Declared on this path too: which population the headline would have
-            # been averaged over is a property of the task, not of the run.
+            # been averaged over is a property of the task, not of the run. The
+            # interval pair is NOT declared here -- it is measured, and there is
+            # nothing to measure.
             return {
                 "score": 0.0,
                 "acc": 0.0,
@@ -296,12 +302,21 @@ class HellaSwagFewShotPPLTask(
                 SCORE_KEY_FIELD: "acc_norm",
                 DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             }
-        acc_num = sum(1 for ctx in finals if ctx.feedback_result["metrics"]["acc"])
-        acc_norm_num = sum(
-            1 for ctx in finals if ctx.feedback_result["metrics"]["acc_norm"]
-        )
+        # The two co-equal published columns, each as its own per-problem values:
+        # the LENGTH-NORMALISED flag the headline is a mean of, and the raw one
+        # beside it. They disagree on real samples, so each brackets its own
+        # column and neither borrows the other's interval.
+        acc_values = [
+            1.0 if ctx.feedback_result["metrics"]["acc"] else 0.0 for ctx in finals
+        ]
+        norm_values = [
+            1.0 if ctx.feedback_result["metrics"]["acc_norm"] else 0.0 for ctx in finals
+        ]
+        acc_num = sum(acc_values)
+        acc_norm_num = sum(norm_values)
         acc = 100 * acc_num / total
         acc_norm = 100 * acc_norm_num / total
+        grouping = self.problem_groups(finals)
         return {
             "score": acc_norm,
             "acc": acc,
@@ -312,7 +327,28 @@ class HellaSwagFewShotPPLTask(
             # so without a reader having to know the family convention.
             SCORE_KEY_FIELD: "acc_norm",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-        }
+        } | merge_metrics(
+            interval_metrics(
+                norm_values,
+                # REQUESTED, like the headline: a failed sample is a deterministic
+                # zero inside the denominator and contributes no variance.
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `acc_norm` is `score` under its own name, so it carries the same
+                # interval.
+                aliases=("acc_norm",),
+            ),
+            # `acc` is the co-equal column, not an alias: a different number on the
+            # same problems, so it is estimated over its own values.
+            metric_interval(
+                "acc",
+                acc_values,
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            ),
+        )
 
     def _build_fewshot_prefix(self) -> str:
         if self.n_shot == 0:

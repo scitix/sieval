@@ -47,6 +47,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     sampling_report,
+    ungated_intervals,
 )
 from sieval.datasets import HumanEvalDatasetSample
 
@@ -88,8 +89,9 @@ class HumanEvalZeroShotBaseGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -223,11 +225,17 @@ class HumanEvalZeroShotBaseGenTask(
         # `votes=False`: two correct programs are not one answer, so there is
         # nothing well-defined to take a majority over (RFC #74).
         rolled = sampling_report(
-            finals, n=self._n, k=self._k, denominator=total, votes=False
+            finals,
+            n=self._n,
+            k=self._k,
+            denominator=total,
+            votes=False,
+            score_key="pass@1",
+            grouping=self.problem_groups(finals),
         )
         # Read back out of the shared block, so `score` cannot drift from it.
         pass_at_1 = rolled["pass@1"]
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": pass_at_1,
             "fails": len(fails),
             "timeouts": timeouts,
@@ -235,6 +243,9 @@ class HumanEvalZeroShotBaseGenTask(
             SCORE_KEY_FIELD: "pass@1",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        # Outside the n>1 gate, because the metrics they bracket are: `pass@1`
+        # is published at every budget, and so is the headline copied from it.
+        metrics |= ungated_intervals(rolled, metrics=("score", "pass@1"))
         if self._n > 1:
             # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)

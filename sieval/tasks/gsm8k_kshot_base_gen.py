@@ -44,6 +44,9 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
+    merge_metrics,
+    metric_interval,
     sampling_report,
 )
 from sieval.datasets import GSM8KDatasetSample
@@ -98,18 +101,26 @@ def _extract_flexible_match(text: str) -> tuple[str, str]:
     return "", "none"
 
 
-def _named(finals, metric: str) -> int:
-    """How many judged samples the FIRST rollout got right on *metric*.
+def _named_values(finals, metric: str) -> list[float]:
+    """Per-sample 0/1 values of *metric*, read off the FIRST rollout.
 
     Reads the sample-level `metrics` block, which `feedback` fills from rollout 0
     -- the axis lm-eval-harness measured. Tolerant of a missing block so a run
     interrupted mid-feedback reports a number rather than a KeyError.
+
+    The units each rate's interval is estimated over, and the values :func:`_named`
+    counts. One function rather than two, so a rate and the interval printed
+    beside it cannot come to read two different axes.
     """
-    return sum(
-        1
+    return [
+        1.0 if ((ctx.feedback_result or {}).get("metrics") or {}).get(metric) else 0.0
         for ctx in finals
-        if ((ctx.feedback_result or {}).get("metrics") or {}).get(metric)
-    )
+    ]
+
+
+def _named(finals, metric: str) -> int:
+    """How many judged samples the FIRST rollout got right on *metric*."""
+    return int(sum(_named_values(finals, metric)))
 
 
 @sieval_task(
@@ -145,8 +156,9 @@ class GSM8KFewShotBaseGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -262,7 +274,7 @@ class GSM8KFewShotBaseGenTask(
         flexible_correct_num = _named(finals, "flexible_exact_match")
         exact_match = 100 * correct_num / count if count else 0.0
         flexible_exact_match = 100 * flexible_correct_num / count if count else 0.0
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float]] = {
             "score": exact_match,
             "fails": len(fails),
             "exact_match": exact_match,
@@ -273,18 +285,55 @@ class GSM8KFewShotBaseGenTask(
         # Outside the gate: extraction health is a fact about the parser,
         # not the draw, and n=1 is where a stopped extractor hides longest.
         metrics |= health_metrics(finals)
+        # The very lists `_named` counted above -- the strict `exact_match` flag on
+        # the sample-level `metrics` block and the flexible one beside it, not a
+        # blind re-read of rollout 0's `correct` -- over the same `count`
+        # denominator this task excludes fails from.
+        strict = _named_values(finals, "exact_match")
+        flexible = _named_values(finals, "flexible_exact_match")
+        grouping = self.problem_groups(finals)
+        headline = merge_metrics(
+            interval_metrics(
+                strict,
+                denominator=count,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `exact_match` is `score` under its own name, so it carries the
+                # same interval.
+                aliases=("exact_match",),
+            ),
+            # `flexible_exact_match` is the co-equal extraction rule, not an
+            # alias: the two disagree on real samples, which is the whole reason
+            # both are published.
+            metric_interval(
+                "flexible_exact_match",
+                flexible,
+                denominator=count,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            ),
+        )
         if self._n <= 1:
-            return metrics
+            return metrics | headline
         # The sampling family rides on `correct`, derived from the strict
         # `exact_match`, so it describes the HEADLINE metric only --
         # `flexible_exact_match` would need its own verdict axis.
         # Over `len(finals)`: this task excludes failed samples.
-        return metrics | sampling_report(
-            finals,
-            n=self._n,
-            k=self._k,
-            denominator=count,
-            normalize=normalize_vote,
+        #
+        # One fold, not two merges: a plain merge replaces `ci95_units` wholesale,
+        # so folding the sampling block over the headline's interval would leave
+        # `score_ci95` with no unit declared. Same grouping and same `count` on
+        # both sides, so the two declare one `n_problems`, not two.
+        return metrics | merge_metrics(
+            headline,
+            sampling_report(
+                finals,
+                n=self._n,
+                k=self._k,
+                denominator=count,
+                normalize=normalize_vote,
+                grouping=grouping,
+            ),
         )
 
     def _get_fewshot_examples(self) -> list[GSM8KDatasetSample]:

@@ -15,6 +15,7 @@ from sieval.core.tasks import (
     build_judgement_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.gsm8k import GSM8KDataset, GSM8KDatasetSample
 from sieval.tasks import gsm8k_0shot_gen as module
@@ -212,6 +213,23 @@ async def test_report_accuracy():
         ),
     ]
     report = await task.report(finals, [])
+    assert interval_declaration_problems(report) == []
+    # Popped rather than hardcoded: the interval's exact bounds aren't the point
+    # of this test, only that `score` falls inside them.
+    lo, hi = report.pop("score_ci95")
+    # `accuracy` is `score` under its own name, so it carries the SAME bounds --
+    # a consumer keyed on the column name finds its companion without knowing
+    # the headline's spelling.
+    assert report.pop("accuracy_ci95") == [lo, hi]
+    n_problems = report.pop("n_problems")
+    # The unit each interval is clustered on, popped with them: an interval and
+    # its declaration are one fragment, and both names sit on one population.
+    assert report.pop("ci95_units") == {
+        "score": "n_problems",
+        "accuracy": "n_problems",
+    }
+    assert lo < report["score"] < hi
+    assert n_problems == 2
     assert report == {
         "score": 50.0,
         "fails": 0,

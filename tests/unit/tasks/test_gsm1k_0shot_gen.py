@@ -10,7 +10,12 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.community.deepseek_math import is_correct
 from sieval.core.models import ModelOutput, Request, Response
 from sieval.core.models.chat_model import ChatModel
-from sieval.core.tasks import TaskContext
+from sieval.core.tasks import (
+    TaskContext,
+    build_judgement_record,
+    build_rollout_judgement,
+)
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.gsm1k import GSM1KDataset, GSM1KDatasetSample
 from sieval.tasks import gsm1k_0shot_gen as module
@@ -107,6 +112,43 @@ async def test_report_counts_pipeline_failures_as_wrong():
     # treat a pipeline failure identically.
     assert report["fails"] == 1
     assert report["score"] == report["accuracy"] == 50.0
+
+
+@pytest.mark.anyio
+async def test_report_interval_is_quoted_over_the_requested_population():
+    task, _ = _task("")
+    raw = _sample()
+
+    def _final(sample_id: int, *, correct: bool) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            raw_sample=raw,
+            feedback_result=build_judgement_record(
+                "42", [build_rollout_judgement(0, correct)]
+            ),
+        )
+
+    report = await task.report(
+        [_final(0, correct=True), _final(1, correct=False)],
+        [TaskContext(sample_id=2, raw_sample=raw)],
+    )
+
+    # REQUESTED, so the fail is inside the population the interval is quoted
+    # over: 3, not the 2 samples that produced a verdict. Reading `len(finals)`
+    # here would be the denominator artifact the paired diff exists to avoid.
+    assert report["n_problems"] == 3
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
+    # `accuracy` is `score` under its own name, so it carries the same bounds --
+    # on both halves of the GSM8K/GSM1k pair, for the same reason the denominator
+    # policy is declared on both: a diff is unreadable if one side has no bound.
+    assert report["accuracy_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {"score": "n_problems", "accuracy": "n_problems"}
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 # --- grading is offloaded, and a timeout scores wrong rather than failing ---

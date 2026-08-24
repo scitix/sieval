@@ -5,6 +5,8 @@ pass@1 is c/n and not "the first sample", pass@k is "solved at least once", and 
 votes on ANSWERS so it can disagree with a verdict tally in both directions.
 """
 
+import math
+
 import pytest
 from loguru import logger
 
@@ -15,21 +17,36 @@ from sieval.core.tasks import (
     build_rollout_judgement,
 )
 from sieval.core.tasks.metrics import (
+    ALIAS_VALUE_TOLERANCE,
+    CI_SUFFIX,
+    CI_UNITS_FIELD,
+    COUNT_KEY_PREFIX,
+    PROBLEM_COUNT_FIELD,
+    SCORE_CI_FIELD,
+    ProblemGrouping,
     aggregate,
     avg_at_n,
     budget_metrics,
+    ci_field,
     count_short,
     count_unextracted,
     first_rollout_correct,
     health_metrics,
+    interval_declaration_problems,
+    interval_metrics,
     majority_at_k,
+    merge_metrics,
+    metric_interval,
     pass_at_k,
     pass_pow_k,
+    problem_population,
     rollout_metrics,
     rollout_view,
     sampling_report,
     self_consistency,
+    ungated_intervals,
     warn_unscored_rollouts,
+    wilson_interval,
     zero_metrics,
 )
 
@@ -404,6 +421,31 @@ def _ctx(judgement, postprocess) -> TaskContext:
     return ctx.to_feedback(judgement).to_final()
 
 
+@pytest.fixture
+def _finals_factory():
+    """Judged finals from per-sample lists of per-rollout verdicts.
+
+    One judged final per inner list, one rollout per verdict in it -- the
+    shape `sampling_report`'s interval tests need without each spelling out a
+    judgement/prediction pair by hand.
+    """
+
+    def make(samples) -> list[TaskContext]:
+        finals = []
+        for verdicts in samples:
+            judgement = build_judgement_record(
+                "42",
+                [build_rollout_judgement(i, ok) for i, ok in enumerate(verdicts)],
+            )
+            prediction = build_prediction_record(
+                ["42" if ok else "0" for ok in verdicts]
+            )
+            finals.append(_ctx(judgement, prediction))
+        return finals
+
+    return make
+
+
 def test_rollout_view_pairs_verdicts_with_answers():
     correct, answers = rollout_view(
         _ctx(
@@ -681,3 +723,927 @@ def test_one_short_draw_does_not_cost_the_run_its_majority_column():
     out = sampling_report([*clean, short], n=4, k=4, denominator=501)
     assert out["n_short"] == 1.0
     assert out["maj@k"] == pytest.approx(100.0)
+
+
+def test_sampling_report_adds_no_headline_interval_without_a_score_key(_finals_factory):
+    # No `score_ci95`: only the caller knows which column its headline is. The
+    # block's own metrics still carry theirs -- they need no headline to exist --
+    # so the population key comes along with them.
+    got = sampling_report(_finals_factory([[True], [False]]), n=1, k=1, denominator=2)
+    assert "score_ci95" not in got
+    assert "pass@1_ci95" in got
+    assert got["n_problems"] == 2.0
+    assert got["ci95_units"] == dict.fromkeys(
+        ("pass@1", "avg@n", "self_consistency", "maj@k"), "n_problems"
+    )
+
+
+def test_sampling_report_intervals_the_named_key(_finals_factory):
+    finals = _finals_factory([[True], [False], [True], [False], [True]])
+    got = sampling_report(finals, n=1, k=1, denominator=5, score_key="pass@1")
+    assert got["n_problems"] == 5.0
+    ci = got["score_ci95"]
+    assert isinstance(ci, list)
+    lo, hi = ci
+    pass_at_1 = got["pass@1"]
+    assert isinstance(pass_at_1, float)
+    assert lo < pass_at_1 < hi
+    # The headline interval is the SAME estimate as the column it was copied
+    # from, published under a second name -- not a second measurement.
+    assert got["pass@1_ci95"] == ci
+
+
+def test_sampling_report_refuses_a_score_key_it_did_not_compute(_finals_factory):
+    # `accuracy`, deliberately: it is never in this block's key set. `maj@k` would
+    # be the wrong probe -- it IS computed whenever k == n_requested, so the test
+    # would pass or fail on a fixture detail instead of on the guard.
+    with pytest.raises(ValueError, match="does not compute"):
+        sampling_report(
+            _finals_factory([[True], [False]]),
+            n=1,
+            k=1,
+            denominator=2,
+            score_key="accuracy",
+        )
+
+
+def test_sampling_report_interval_is_reported_at_n_equals_one(_finals_factory):
+    # Not gated on n > 1: the interval is WIDEST at n=1, which is where a reader
+    # most needs it -- the same argument health_metrics already makes.
+    finals = _finals_factory([[True], [False], [True], [False]])
+    got = sampling_report(finals, n=1, k=1, denominator=4, score_key="pass@1")
+    assert "score_ci95" in got
+
+
+def test_sampling_report_intervals_every_metric_it_publishes(_finals_factory):
+    # 9 problems at n=4, k=4, voting: all six keys present, so all six owe an
+    # interval. The set equality is the point -- one interval for a block of six
+    # would let five columns read as measured when only one was.
+    finals = _finals_factory([[True, False, True, True], [False] * 4, [True] * 4] * 3)
+    got = sampling_report(finals, n=4, k=4, denominator=9, score_key="pass@1")
+    metrics = {
+        "pass@1",
+        "avg@n",
+        "pass@k",
+        "pass^k",
+        "maj@k",
+        "self_consistency",
+    }
+    assert metrics <= set(got)
+    assert {key for key in got if key.endswith(CI_SUFFIX)} == {
+        ci_field(metric) for metric in metrics | {"score"}
+    }
+    assert got[CI_UNITS_FIELD] == dict.fromkeys(
+        metrics | {"score"}, PROBLEM_COUNT_FIELD
+    )
+    # One population for the block: they are all means over the same problems.
+    assert got[PROBLEM_COUNT_FIELD] == 9.0
+
+
+def test_sampling_report_gives_each_metric_its_own_estimate(_finals_factory):
+    # Discriminating: `pass@k` must NOT get `pass@1`'s interval. On this draw the
+    # two metrics differ per problem, so a reused interval would be visible.
+    finals = _finals_factory(
+        [[True, False, False, False], [False] * 4, [True, True, False, False]] * 3
+    )
+    got = sampling_report(finals, n=4, k=2, denominator=9)
+    assert got[ci_field("pass@k")] != got[ci_field("pass@1")]
+    # And each equals the interval computed from that metric's OWN per-problem
+    # values, which is what pins the wiring rather than only its direction.
+    for metric, per_problem in (
+        ("pass@1", [pass_at_k(4, 1, 1), 0.0, pass_at_k(4, 2, 1)] * 3),
+        ("pass@k", [pass_at_k(4, 1, 2), 0.0, pass_at_k(4, 2, 2)] * 3),
+        ("pass^k", [pass_pow_k(4, 1, 2), 0.0, pass_pow_k(4, 2, 2)] * 3),
+    ):
+        want = metric_interval(metric, per_problem, denominator=9)
+        assert got[ci_field(metric)] == want[ci_field(metric)]
+
+
+@pytest.mark.parametrize(
+    "k,votes,absent",
+    [
+        (1, True, ("pass@k", "pass^k")),
+        (4, False, ("maj@k", "self_consistency")),
+        (2, False, ("maj@k", "self_consistency")),
+    ],
+)
+def test_sampling_report_omits_the_interval_of_an_absent_metric(
+    _finals_factory, k, votes, absent
+):
+    # An interval appears exactly when its metric does. `maj@k` at k=2 is the
+    # sharper case: it is withheld for the budget reason, not for a missing input.
+    finals = _finals_factory([[True, False, True, True], [False] * 4, [True] * 4] * 3)
+    got = sampling_report(finals, n=4, k=k, denominator=9, votes=votes)
+    units = got[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    for metric in absent:
+        assert metric not in got
+        assert ci_field(metric) not in got
+        assert metric not in units
+    # ... and every metric that IS there has one.
+    assert {ci_field(metric) for metric in units} == {
+        key for key in got if key.endswith(CI_SUFFIX)
+    }
+
+
+def test_sampling_report_adds_no_intervals_when_nothing_was_scored():
+    # Every sample failed: the full key set from `zero_metrics`, and no interval
+    # keys at all -- a zero-width interval over no problems would read as a
+    # measurement.
+    got = sampling_report([], n=4, k=4, denominator=6, score_key="pass@1")
+    assert got["pass@1"] == 0.0
+    assert not [key for key in got if key.endswith(CI_SUFFIX)]
+    assert CI_UNITS_FIELD not in got
+    assert PROBLEM_COUNT_FIELD not in got
+
+
+def test_sampling_report_wires_grouping_into_every_metric_interval(_finals_factory):
+    # The grouping has to reach the per-metric intervals too, not just the
+    # headline: an uncollapsed repeat narrows each of them by the same root-times.
+    pattern = [[True, False, True, True], [False] * 4, [True] * 4]
+    finals = _finals_factory(pattern * 4)
+    keys = [g for _ in range(4) for g in range(3)]
+    grouping = ProblemGrouping(keys=keys, n_problems=3)
+    flat = sampling_report(finals, n=4, k=4, denominator=12)
+    grouped = sampling_report(finals, n=4, k=4, denominator=12, grouping=grouping)
+    assert grouped[PROBLEM_COUNT_FIELD] == 3.0
+    for metric in ("pass@1", "avg@n", "pass@k", "pass^k"):
+        flat_ci, grouped_ci = flat[ci_field(metric)], grouped[ci_field(metric)]
+        assert isinstance(flat_ci, list)
+        assert isinstance(grouped_ci, list)
+        assert (grouped_ci[1] - grouped_ci[0]) > (flat_ci[1] - flat_ci[0])
+
+
+def test_sampling_report_wires_grouping_into_the_interval(_finals_factory):
+    # 4 repeat copies of a 50-problem 50/50 split -- the same shape as
+    # `test_interval_metrics_widens_by_root_times_on_a_pure_repeat`, but driven
+    # through the production entry point (a ProblemGrouping) instead of calling
+    # interval_metrics with raw values.
+    pattern = [True, False] * 25
+    verdicts = pattern * 4
+    finals = _finals_factory([[v] for v in verdicts])
+    keys = [g for _ in range(4) for g in range(50)]
+    grouping = ProblemGrouping(keys=keys, n_problems=50)
+
+    ungrouped = sampling_report(finals, n=1, k=1, denominator=200, score_key="pass@1")
+    grouped = sampling_report(
+        finals, n=1, k=1, denominator=200, score_key="pass@1", grouping=grouping
+    )
+
+    # The GROUPING's count, not len(finals) -- the tell if `keys` and
+    # `n_problems` were swapped at the call site: swapped, this line either
+    # reads back 200 (n_problems silently defaulted past a broken group_keys)
+    # or the call raises before returning at all (`len()` on an int).
+    assert grouped["n_problems"] == 50.0
+
+    ungrouped_ci, grouped_ci = ungrouped["score_ci95"], grouped["score_ci95"]
+    assert isinstance(ungrouped_ci, list)
+    assert isinstance(grouped_ci, list)
+    # Collapsing 200 samples into the 50 problems they are repeats of must
+    # WIDEN the interval -- the whole point of passing a grouping through.
+    assert (grouped_ci[1] - grouped_ci[0]) > (ungrouped_ci[1] - ungrouped_ci[0])
+
+    # Not just "wider than ungrouped": the SAME numbers interval_metrics would
+    # compute if handed these keys directly -- pinning the field wiring, not
+    # only its direction.
+    values = [1.0 if v else 0.0 for v in verdicts]
+    want = interval_metrics(values, denominator=200, group_keys=keys, n_problems=50)
+    assert grouped_ci == pytest.approx(want["score_ci95"])
+
+
+# --------------------------------------------------------------------------- #
+# wilson_interval -- a clustered 95% interval over problems
+# --------------------------------------------------------------------------- #
+
+
+def _plain_wilson(k: int, m: int, z: float = 1.96) -> tuple[float, float]:
+    """Textbook Wilson score interval, as the reduction target."""
+    p = k / m
+    centre = (p + z * z / (2 * m)) / (1 + z * z / m)
+    half = z / (1 + z * z / m) * math.sqrt(p * (1 - p) / m + z * z / (4 * m * m))
+    return 100 * max(0.0, centre - half), 100 * min(1.0, centre + half)
+
+
+@pytest.mark.parametrize(
+    "correct,m", [(1, 30), (5, 30), (15, 30), (29, 30), (391, 500), (101, 198), (3, 7)]
+)
+def test_wilson_interval_reduces_to_plain_wilson_on_booleans(correct, m):
+    # The population SD divisor is what makes this EXACT rather than off by the
+    # m/(m-1) factor -- a sample divisor puts m_eff at m-1 and misses by 0.34pp
+    # at 1/30.
+    values = [1.0] * correct + [0.0] * (m - correct)
+    got = wilson_interval(values, m)
+    assert got is not None
+    want = _plain_wilson(correct, m)
+    assert got[0] == pytest.approx(want[0], abs=1e-9)
+    assert got[1] == pytest.approx(want[1], abs=1e-9)
+
+
+def test_wilson_interval_stays_inside_the_unit_range_at_the_extremes():
+    # A Wald half-width would put the lower bound at -3.09 for 1/30. The bound
+    # is exactly where saturated and very hard sets live, so it must hold.
+    got = wilson_interval([1.0] + [0.0] * 29, 30)
+    assert got is not None
+    lo, hi = got
+    assert lo > 0.0
+    assert hi < 100.0
+
+
+def test_wilson_interval_uses_clopper_pearson_when_nothing_was_correct():
+    # p=0 leaves no dispersion to estimate, and m_eff is undefined -- but a 0.0
+    # headline is exactly when a reader needs the upper bound.
+    got = wilson_interval([0.0] * 30, 30)
+    assert got is not None
+    lo, hi = got
+    assert lo == 0.0
+    assert hi == pytest.approx(100 * (1 - 0.025 ** (1 / 30)), abs=1e-9)
+
+
+def test_wilson_interval_uses_clopper_pearson_when_everything_was_correct():
+    got = wilson_interval([1.0] * 30, 30)
+    assert got is not None
+    lo, hi = got
+    assert lo == pytest.approx(100 * 0.025 ** (1 / 30), abs=1e-9)
+    assert hi == 100.0
+
+
+def test_clopper_pearson_bound_is_scaled_onto_the_reported_quantity():
+    # The limit bounds the mean of the m OBSERVED units, the report prints
+    # `sum/D`; without `m/D` the two are different quantities.
+    raw = 100 * (1 - 0.025 ** (1 / 30))
+    for n_fail in (2, 5, 20):
+        total = 30 + n_fail
+        got = wilson_interval([0.0] * 30, total)
+        assert got is not None
+        assert got == (0.0, pytest.approx(raw * 30 / total, abs=1e-9))
+        assert got[1] < raw  # strictly inside what was published before
+
+
+def test_clopper_pearson_bound_is_exact_when_nothing_failed():
+    # `m/D` is 1 on every unrepeated `judged` run, so the textbook limit stands.
+    for m in (2, 7, 30, 198):
+        got = wilson_interval([0.0] * m, m)
+        assert got is not None
+        assert got[1] == pytest.approx(100 * (1 - 0.025 ** (1 / m)), abs=1e-9)
+
+
+def test_saturated_bound_takes_no_observed_share_factor():
+    # `p >= 1` forces `m >= D`, so the factor would scale a LOWER bound up and
+    # could invert the interval.
+    got = wilson_interval([1.0] * 30, 20)
+    assert got is not None
+    lo, hi = got
+    assert lo == pytest.approx(100 * 0.025 ** (1 / 30), abs=1e-9)
+    assert hi == 100.0
+    assert lo < hi
+
+
+def test_grouped_clopper_pearson_scales_on_the_observed_group_share():
+    # Grouped, the factor is observed/declared problems: a problem whose every
+    # copy failed keeps its slot but cannot bound it. 3 observed, 4 declared.
+    fields = interval_metrics(
+        [0.0] * 6, denominator=6, group_keys=[0, 0, 1, 1, 2, 2], n_problems=4
+    )
+    interval = fields[SCORE_CI_FIELD]
+    assert isinstance(interval, list)
+    assert interval[0] == 0.0
+    assert interval[1] == pytest.approx(100 * (1 - 0.025 ** (1 / 3)) * 3 / 4, abs=1e-9)
+    assert fields[PROBLEM_COUNT_FIELD] == 4.0
+
+
+def test_wilson_interval_narrows_when_failures_pad_the_denominator():
+    # Failed samples are FIXED ZEROS carrying no variance, so the estimator's
+    # variance is m*s^2/D^2, not s^2/m. Using s^2/m would overstate the width
+    # by 67% at D=50, m=30.
+    values = [1.0] * 15 + [0.0] * 15
+    tight = wilson_interval(values, 50)
+    loose = wilson_interval(values, 30)
+    assert tight is not None
+    assert loose is not None
+    assert tight[1] - tight[0] < loose[1] - loose[0]
+
+
+def test_wilson_interval_omitted_below_two_problems():
+    assert wilson_interval([1.0], 1) is None
+    assert wilson_interval([], 0) is None
+
+
+def test_wilson_interval_omitted_when_every_problem_scored_alike():
+    # Zero observed dispersion at m >= 2 is a real signal, but not a variance
+    # estimate; a zero-width interval would claim certainty the run lacks.
+    assert wilson_interval([0.5] * 8, 8) is None
+
+
+def test_wilson_interval_is_order_independent():
+    a = wilson_interval([1.0, 0.0, 0.5, 0.25], 4)
+    b = wilson_interval([0.25, 0.5, 0.0, 1.0], 4)
+    assert a == b
+
+
+# --------------------------------------------------------------------------- #
+# interval_metrics -- collapse repeat copies, then estimate
+# --------------------------------------------------------------------------- #
+
+
+def test_interval_metrics_reports_the_problem_count_and_a_pair():
+    got = interval_metrics([1.0] * 10 + [0.0] * 10, denominator=20)
+    assert got["n_problems"] == 20.0
+    assert isinstance(got["score_ci95"], list)
+    assert len(got["score_ci95"]) == 2
+
+
+def test_interval_metrics_collapsing_does_not_move_the_mean():
+    # The whole change is additive: collapsing must leave `score` alone. Each
+    # group's summed value becomes its per-problem SHARE, so
+    # `sum(units) / n_problems` is still `sum(values) / denominator` -- here
+    # 1.5/3 == 3/6. Stated as an equality against the UNGROUPED branch fed those
+    # shares directly: that branch applies no scale of its own, so it cannot
+    # agree by accident.
+    values = [1.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+    keys = [0, 1, 2, 0, 1, 2]
+    grouped = interval_metrics(values, denominator=6, group_keys=keys, n_problems=3)
+    assert grouped == interval_metrics([1.0, 0.0, 0.5], denominator=3)
+    assert grouped["n_problems"] == 3.0
+    grouped_ci = grouped["score_ci95"]
+    assert isinstance(grouped_ci, list)
+    # And the mean itself, read straight off the interval: at `p` exactly 0.5
+    # Wilson is symmetric, so the midpoint IS the headline. A mis-scaled unit
+    # moves `p` and takes the whole interval with it.
+    assert (grouped_ci[0] + grouped_ci[1]) / 2 == pytest.approx(50.0)
+    flat = interval_metrics(values, denominator=6)
+    flat_ci = flat["score_ci95"]
+    assert isinstance(flat_ci, list)
+    # Same headline, wider interval -- three problems, not six.
+    assert (grouped_ci[1] - grouped_ci[0]) > (flat_ci[1] - flat_ci[0])
+
+
+def test_interval_metrics_widens_by_root_times_on_a_pure_repeat():
+    # A 4x repeat of the same 50/50 split: the honest interval is ~2x wider.
+    per_problem = [1.0, 0.0] * 25
+    flat = interval_metrics(per_problem * 4, denominator=200)
+    keys = [g for _ in range(4) for g in range(50)]
+    grouped = interval_metrics(
+        per_problem * 4, denominator=200, group_keys=keys, n_problems=50
+    )
+    flat_ci, grouped_ci = flat["score_ci95"], grouped["score_ci95"]
+    assert isinstance(flat_ci, list)
+    assert isinstance(grouped_ci, list)
+    ratio = (grouped_ci[1] - grouped_ci[0]) / (flat_ci[1] - flat_ci[0])
+    assert 1.8 < ratio < 2.2
+
+
+def test_interval_metrics_omits_both_keys_together_when_it_cannot_estimate():
+    assert interval_metrics([0.5] * 4, denominator=4) == {}
+    assert interval_metrics([1.0], denominator=1) == {}
+
+
+def test_interval_metrics_omits_the_pair_on_an_empty_denominator_when_grouped():
+    # The two paths must not disagree about an impossible input. Ungrouped,
+    # `wilson_interval`'s own `denominator <= 0` guard refuses it -- but the
+    # grouped path hands that function `n_problems`, not the denominator, so the
+    # guard never sees this. Scaling the units to zero would then read as
+    # `p == 0` and draw a Clopper-Pearson bound over a mean of nothing.
+    values = [1.0, 0.0, 1.0, 0.0]
+    assert interval_metrics(values, denominator=0) == {}
+    assert (
+        interval_metrics(values, denominator=0, group_keys=[0, 1, 2, 3], n_problems=4)
+        == {}
+    )
+
+
+def test_interval_metrics_keeps_the_slot_of_a_wholly_failed_problem():
+    # 4 problems x 2 copies under `requested`, and both copies of problem 3
+    # failed: 6 finals, denominator still 8. The DECLARED population is what the
+    # interval is quoted over, so `n_problems` stays 4 and the width is the
+    # 4-problem width -- not the 3-problem one the observed groups would give.
+    values = [1.0, 0.0, 1.0, 1.0, 0.0, 0.0]
+    keys = [0, 0, 1, 1, 2, 2]
+    got = interval_metrics(values, denominator=8, group_keys=keys, n_problems=4)
+    assert got["n_problems"] == 4.0
+    # scale is 4/8, so the shares are exact: 1.0, 2.0 and 0.0 halved.
+    assert got == interval_metrics([0.5, 1.0, 0.0], denominator=4)
+
+
+def test_interval_metrics_rejects_a_grouping_that_does_not_align():
+    with pytest.raises(ValueError, match="one key per value"):
+        interval_metrics([1.0, 0.0], denominator=2, group_keys=[0], n_problems=1)
+
+
+def test_interval_metrics_needs_the_problem_count_with_the_keys():
+    with pytest.raises(ValueError, match="n_problems"):
+        interval_metrics([1.0, 0.0], denominator=2, group_keys=[0, 0])
+
+
+# --------------------------------------------------------------------------- #
+# the per-metric contract -- an interval, its population, and its unit
+# --------------------------------------------------------------------------- #
+
+
+def test_the_interval_field_names_are_the_suffix_rule_applied():
+    """The one spelled-out constant must BE what `ci_field` derives.
+
+    `SCORE_CI_FIELD` is a literal because the preflight resolves it by name out of
+    this module; that is exactly what lets it drift from the rule every other
+    interval key follows.
+    """
+    assert ci_field("score") == SCORE_CI_FIELD
+    assert ci_field("pass@k") == f"pass@k{CI_SUFFIX}"
+
+
+@pytest.mark.parametrize(
+    "values,denominator,keys,problems",
+    [
+        ([1.0, 0.0, 1.0, 1.0, 0.0], 5, None, None),
+        ([1.0, 0.0, 1.0, 1.0, 0.0], 8, None, None),
+        ([0.25, 0.5, 0.75, 0.0], 4, None, None),
+        ([1.0, 0.0] * 4, 8, [0, 1, 2, 3] * 2, 4),
+        ([0.5] * 4, 4, None, None),  # nothing to estimate -> both empty
+    ],
+)
+def test_interval_metrics_is_metric_interval_pinned_to_the_headline(
+    values, denominator, keys, problems
+):
+    """The duplicated three-key dict cannot drift: it is pinned by equality.
+
+    `interval_metrics` spells `score_ci95` / `n_problems` out as literals so the
+    preflight can name them, which means the same fragment is now built in two
+    places. Byte-equality with the general function is what keeps the second
+    spelling honest.
+    """
+    assert interval_metrics(
+        values, denominator=denominator, group_keys=keys, n_problems=problems
+    ) == metric_interval(
+        "score", values, denominator=denominator, group_keys=keys, n_problems=problems
+    )
+
+
+def test_interval_metrics_declares_the_unit_its_interval_is_clustered_on():
+    got = interval_metrics([1.0] * 6 + [0.0] * 6, denominator=12)
+    assert got[CI_UNITS_FIELD] == {"score": PROBLEM_COUNT_FIELD}
+    # The declaration names a key the same fragment writes: an entry pointing at
+    # a population nothing published is unreadable.
+    units = got[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    assert all(unit in got for unit in units.values())
+
+
+def test_metric_interval_publishes_a_rate_on_its_own_population_key():
+    got = metric_interval(
+        "aacc", [1.0, 0.0, 1.0, 1.0], denominator=4, unit="n_versions"
+    )
+    assert set(got) == {"aacc_ci95", "n_versions", CI_UNITS_FIELD}
+    assert got[CI_UNITS_FIELD] == {"aacc": "n_versions"}
+    # The problem count is NOT written: a version-level rate borrowing it would
+    # quote a per-version interval over a population of problems.
+    assert PROBLEM_COUNT_FIELD not in got
+
+
+def test_metric_interval_refuses_a_unit_that_is_not_a_population_count():
+    """The pointer unit is refused where the count is WRITTEN, not where it lands.
+
+    `fields[unit] = float(population)` puts the count under whatever key *unit*
+    names, and a fold is later-wins -- so a unit naming another metric replaces
+    that metric's rate with a count. `interval_declaration_problems` sees it, but
+    only on the finished dict, which the runner saves BEFORE it raises: the
+    corrupted rate would already be on disk. Refusing here means the report is
+    never built.
+    """
+    with pytest.raises(ValueError, match="not a population count"):
+        metric_interval(
+            "loose_prompt_level_accuracy",
+            [1.0, 0.0, 1.0],
+            denominator=3,
+            unit="strict_prompt_level_accuracy",
+        )
+    # Refused before anything is estimated, so a bad unit fails on every run and
+    # not only on the ones with spread to report: this call has none.
+    with pytest.raises(ValueError, match="not a population count"):
+        metric_interval("acc", [0.5] * 4, denominator=4, unit="score")
+    # And a real count is accepted, so the complaint is about the VALUE.
+    assert metric_interval("aacc", [1.0, 0.0, 1.0], denominator=3, unit="n_versions"), (
+        "a count-prefixed unit must still work"
+    )
+
+
+def test_metric_interval_omits_the_declaration_with_the_interval():
+    # No interval, no population, no unit entry -- a declaration for a key that
+    # is not there describes nothing.
+    assert metric_interval("pass@k", [0.5] * 4, denominator=4) == {}
+    assert metric_interval("pass@k", [1.0], denominator=1) == {}
+
+
+def test_merge_metrics_unions_declarations_a_plain_merge_would_drop():
+    headline = interval_metrics([1.0, 0.0, 1.0, 1.0], denominator=4)
+    versions = metric_interval(
+        "aacc", [1.0, 0.0, 0.0, 1.0], denominator=4, unit="n_versions"
+    )
+    # The failure this function exists to prevent: `|` keeps only the LAST
+    # declaration, so `score_ci95` survives with no unit recorded anywhere.
+    plain = headline | versions
+    plain_units = plain[CI_UNITS_FIELD]
+    assert isinstance(plain_units, dict)
+    assert plain_units == {"aacc": "n_versions"}
+    assert "score" not in plain_units
+
+    merged = merge_metrics(headline, versions)
+    assert merged[CI_UNITS_FIELD] == {
+        "score": PROBLEM_COUNT_FIELD,
+        "aacc": "n_versions",
+    }
+    # Everything else is a plain merge: both intervals and both populations.
+    assert merged[SCORE_CI_FIELD] == headline[SCORE_CI_FIELD]
+    assert merged["aacc_ci95"] == versions["aacc_ci95"]
+    assert merged["n_versions"] == versions["n_versions"]
+
+
+def test_merge_metrics_lets_a_later_fragment_win_every_other_key():
+    assert merge_metrics({"a": 1.0, "b": 2.0}, {"b": 3.0}) == {"a": 1.0, "b": 3.0}
+
+
+def test_merge_metrics_refuses_one_metric_on_two_populations():
+    with pytest.raises(ValueError, match="one population"):
+        merge_metrics(
+            {CI_UNITS_FIELD: {"eacc": PROBLEM_COUNT_FIELD}},
+            {CI_UNITS_FIELD: {"eacc": "n_versions"}},
+        )
+    # Re-declaring the SAME unit is not a conflict -- every fragment of one
+    # block declares the population it shares.
+    assert merge_metrics(
+        {CI_UNITS_FIELD: {"eacc": PROBLEM_COUNT_FIELD}},
+        {CI_UNITS_FIELD: {"eacc": PROBLEM_COUNT_FIELD}},
+    ) == {CI_UNITS_FIELD: {"eacc": PROBLEM_COUNT_FIELD}}
+
+
+def test_merge_metrics_refuses_a_declaration_that_is_not_a_map():
+    with pytest.raises(ValueError, match="map of metric"):
+        merge_metrics({CI_UNITS_FIELD: 1.0})
+
+
+def test_ungated_intervals_carries_nothing_from_a_block_with_no_intervals():
+    # The empty path: `zero_metrics`' key set describes no problems, so it has
+    # no interval to lift out of the gate and nothing to declare.
+    block = sampling_report([], n=4, k=4, denominator=6, score_key="pass@1")
+    assert "pass@1" in block
+    assert ungated_intervals(block, metrics=("score", "pass@1")) == {}
+
+
+def test_ungated_intervals_trims_the_declaration_to_the_intervals_it_carries(
+    _finals_factory,
+):
+    finals = _finals_factory([[True, False, True, True], [False] * 4, [True] * 4] * 3)
+    block = sampling_report(finals, n=4, k=4, denominator=9, score_key="pass@1")
+    carried = ungated_intervals(block, metrics=("score", "pass@1"))
+
+    # `pass@1` and the headline travel; `avg@n` and the rest stay behind the gate
+    # with the metrics they bracket.
+    assert set(carried) == {
+        SCORE_CI_FIELD,
+        PROBLEM_COUNT_FIELD,
+        ci_field("pass@1"),
+        CI_UNITS_FIELD,
+    }
+    assert carried[CI_UNITS_FIELD] == {
+        "score": PROBLEM_COUNT_FIELD,
+        "pass@1": PROBLEM_COUNT_FIELD,
+    }
+    assert carried[SCORE_CI_FIELD] == block[SCORE_CI_FIELD]
+    assert carried[ci_field("pass@1")] == block[ci_field("pass@1")]
+    # Every entry it kept is the block's own, so merging the whole block later
+    # restores the trimmed ones rather than losing one.
+    units = block[CI_UNITS_FIELD]
+    kept_units = carried[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    assert isinstance(kept_units, dict)
+    assert kept_units.items() <= units.items()
+
+
+def test_ungated_intervals_carries_the_population_of_each_metric_it_keeps():
+    """A two-unit block must not leave a declaration pointing at nothing.
+
+    The failure this shape replaces: keyed on a fixed tuple of FIELD names it
+    could only ever copy `n_problems`, while trimming the declaration by interval
+    presence -- so a block whose second metric sits on another unit produced
+    `pass@1: n_graded` with `n_graded` absent. An orphan entry is worse than no
+    entry, and `t_eval`'s `n_graded` / `n_parsed` pair is exactly this shape.
+    """
+    block: dict[str, float | list[float] | dict[str, str]] = {
+        SCORE_CI_FIELD: [1.0, 2.0],
+        PROBLEM_COUNT_FIELD: 12.0,
+        ci_field("pass@1"): [3.0, 4.0],
+        "n_graded": 9.0,
+        ci_field("avg@n"): [5.0, 6.0],
+        CI_UNITS_FIELD: {
+            "score": PROBLEM_COUNT_FIELD,
+            "pass@1": "n_graded",
+            "avg@n": PROBLEM_COUNT_FIELD,
+        },
+    }
+    carried = ungated_intervals(block, metrics=("score", "pass@1"))
+    assert carried == {
+        SCORE_CI_FIELD: [1.0, 2.0],
+        PROBLEM_COUNT_FIELD: 12.0,
+        ci_field("pass@1"): [3.0, 4.0],
+        "n_graded": 9.0,
+        CI_UNITS_FIELD: {"score": PROBLEM_COUNT_FIELD, "pass@1": "n_graded"},
+    }
+    # And the withheld metric's interval and entry stayed behind.
+    assert ci_field("avg@n") not in carried
+    units = carried[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    assert "avg@n" not in units
+    # The contract on what it returned: every declared unit is a key in it.
+    assert all(unit in carried for unit in units.values())
+
+
+def test_ungated_intervals_refuses_an_interval_it_cannot_declare():
+    # A block not built by these estimators. Carrying the interval anyway would
+    # publish exactly the unreadable key the contract exists to prevent.
+    with pytest.raises(ValueError, match="no unit declared"):
+        ungated_intervals(
+            {SCORE_CI_FIELD: [1.0, 2.0], PROBLEM_COUNT_FIELD: 4.0},
+            metrics=("score",),
+        )
+    with pytest.raises(ValueError, match="does not write"):
+        ungated_intervals(
+            {
+                SCORE_CI_FIELD: [1.0, 2.0],
+                CI_UNITS_FIELD: {"score": "n_versions"},
+            },
+            metrics=("score",),
+        )
+
+
+def test_ungated_intervals_publishes_no_population_without_an_interval():
+    # A population with no interval beside it is a count nothing asked for, so
+    # the whole fragment is withheld rather than half of it.
+    assert ungated_intervals({PROBLEM_COUNT_FIELD: 30.0}, metrics=("score",)) == {}
+    assert ungated_intervals({}, metrics=("score", "pass@1")) == {}
+
+
+def test_interval_declaration_problems_accepts_a_report_the_estimators_built(
+    _finals_factory,
+):
+    finals = _finals_factory([[True, False, True, True], [False] * 4, [True] * 4] * 3)
+    block = sampling_report(finals, n=4, k=4, denominator=9, score_key="pass@1")
+    report: dict[str, object] = {"score": block["pass@1"], **block}
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.parametrize(
+    "report,expected",
+    [
+        # An interval nothing declares: the case a source scan cannot see, since
+        # a per-metric key is built from a metric name rather than a literal.
+        (
+            {
+                "accuracy": 50.0,
+                "accuracy_ci95": [1.0, 2.0],
+                PROBLEM_COUNT_FIELD: 4.0,
+            },
+            "no ci95_units entry for 'accuracy'",
+        ),
+        # A declaration whose population is not in the report.
+        (
+            {
+                "aacc": 50.0,
+                "aacc_ci95": [1.0, 2.0],
+                CI_UNITS_FIELD: {"aacc": "n_versions"},
+            },
+            "over 'n_versions', which the report does not write",
+        ),
+        # A declaration about a metric the report never published.
+        (
+            {
+                "score": 50.0,
+                SCORE_CI_FIELD: [1.0, 2.0],
+                PROBLEM_COUNT_FIELD: 4.0,
+                CI_UNITS_FIELD: {
+                    "score": PROBLEM_COUNT_FIELD,
+                    "avg@n": PROBLEM_COUNT_FIELD,
+                },
+            },
+            "declares 'avg@n', which the report does not publish",
+        ),
+        # Not a map at all.
+        ({"score": 1.0, CI_UNITS_FIELD: 4.0}, "not a map of metric"),
+    ],
+)
+def test_interval_declaration_problems_names_each_unreadable_key(report, expected):
+    problems = interval_declaration_problems(report)
+    assert any(expected in problem for problem in problems), problems
+
+
+def test_interval_declaration_problems_refuses_a_unit_that_is_not_a_count():
+    """The pointer shape: a declaration naming another METRIC, not a population.
+
+    It resolves -- the named key really is in the report -- so the "does not
+    write" rule cannot see it, and the interval ends up quoted over a rate. The
+    two spellings of "one interval under two names" are the alias parameter and
+    nothing else.
+    """
+    problems = interval_declaration_problems(
+        {
+            "loose_prompt_level_accuracy": 50.0,
+            "loose_accuracy": 50.0,
+            "loose_accuracy_ci95": [40.0, 60.0],
+            PROBLEM_COUNT_FIELD: 4.0,
+            CI_UNITS_FIELD: {"loose_accuracy": "loose_prompt_level_accuracy"},
+        }
+    )
+    assert any("is not a population count" in problem for problem in problems), problems
+    # And the same report with a real count declared is clean, so the complaint is
+    # about the VALUE and not about anything else in that shape.
+    assert (
+        interval_declaration_problems(
+            {
+                "loose_prompt_level_accuracy": 50.0,
+                "loose_accuracy": 50.0,
+                "loose_accuracy_ci95": [40.0, 60.0],
+                PROBLEM_COUNT_FIELD: 4.0,
+                CI_UNITS_FIELD: {"loose_accuracy": PROBLEM_COUNT_FIELD},
+            }
+        )
+        == []
+    )
+
+
+def test_interval_declaration_problems_reports_an_absent_unit_once():
+    # A unit the report does not write is not ALSO reported as "not a count":
+    # the specific complaint is the useful one, and two lines for one mistake
+    # read as two mistakes.
+    problems = interval_declaration_problems(
+        {"aacc": 50.0, "aacc_ci95": [1.0, 2.0], CI_UNITS_FIELD: {"aacc": "versions"}}
+    )
+    assert len(problems) == 1, problems
+    assert "does not write" in problems[0]
+
+
+def test_interval_declaration_problems_refuses_a_shared_interval_on_two_numbers():
+    """A non-alias passed as one: two metrics, one bound, two published numbers.
+
+    The gap this closes. `interval_metrics` files the same bounds under every
+    alias name without ever seeing the values the report publishes, so nothing
+    but the finished dict can tell a second name for one number from a second
+    number.
+    """
+    shared = [40.0, 60.0]
+    problems = interval_declaration_problems(
+        {
+            "accuracy": 50.0,
+            "accuracy_ci95": list(shared),
+            # The mirror: a complement published as though it were another name
+            # for the same number.
+            "incorrect": 50.5,
+            "incorrect_ci95": list(shared),
+            PROBLEM_COUNT_FIELD: 30.0,
+            CI_UNITS_FIELD: {
+                "accuracy": PROBLEM_COUNT_FIELD,
+                "incorrect": PROBLEM_COUNT_FIELD,
+            },
+        }
+    )
+    assert len(problems) == 1, problems
+    assert "true ALIAS" in problems[0]
+    assert "'accuracy'" in problems[0] and "'incorrect'" in problems[0]
+
+
+def test_interval_declaration_problems_accepts_an_alias_rounded_to_two_places():
+    # SciTaRC's shape: one estimate under two names, one of them rounded to 2 dp
+    # while the bounds bracket the unrounded mean. The two printed rates differ,
+    # and are still one number.
+    unrounded = 100 * 1 / 3
+    report: dict[str, object] = {
+        "score": round(unrounded, 2),
+        SCORE_CI_FIELD: [20.0, 45.0],
+        "accuracy": unrounded,
+        "accuracy_ci95": [20.0, 45.0],
+        PROBLEM_COUNT_FIELD: 30.0,
+        CI_UNITS_FIELD: {
+            "score": PROBLEM_COUNT_FIELD,
+            "accuracy": PROBLEM_COUNT_FIELD,
+        },
+    }
+    assert abs(unrounded - round(unrounded, 2)) < ALIAS_VALUE_TOLERANCE
+    assert interval_declaration_problems(report) == []
+    # And the tolerance is not a licence: two rates that differ in the second
+    # decimal place are two numbers, and sharing one bound between them fires.
+    report["accuracy"] = round(unrounded, 2) + 0.02
+    assert any(
+        "true ALIAS" in problem for problem in interval_declaration_problems(report)
+    )
+
+
+def test_interval_declaration_problems_leaves_two_units_and_two_bounds_alone():
+    """Neither half of the alias rule fires on a legitimate two-unit report.
+
+    Same bounds on two DIFFERENT units is not an alias claim -- nothing says the
+    two populations are one -- and different bounds on one unit is the ordinary
+    case of two co-equal metrics.
+    """
+    assert (
+        interval_declaration_problems(
+            {
+                "thought": 50.0,
+                "thought_ci95": [40.0, 60.0],
+                "args_f1_score_parsed": 75.0,
+                "args_f1_score_parsed_ci95": [40.0, 60.0],
+                "n_graded": 30.0,
+                "n_parsed": 20.0,
+                CI_UNITS_FIELD: {
+                    "thought": "n_graded",
+                    "args_f1_score_parsed": "n_parsed",
+                },
+            }
+        )
+        == []
+    )
+    assert (
+        interval_declaration_problems(
+            {
+                "acc": 50.0,
+                "acc_ci95": [40.0, 60.0],
+                "acc_norm": 75.0,
+                "acc_norm_ci95": [65.0, 85.0],
+                PROBLEM_COUNT_FIELD: 30.0,
+                CI_UNITS_FIELD: {
+                    "acc": PROBLEM_COUNT_FIELD,
+                    "acc_norm": PROBLEM_COUNT_FIELD,
+                },
+            }
+        )
+        == []
+    )
+
+
+def test_every_population_key_the_estimators_write_is_a_count():
+    # The prefix is the recognizer, so the default unit has to carry it or the
+    # whole fleet fails its own check.
+    assert PROBLEM_COUNT_FIELD.startswith(COUNT_KEY_PREFIX)
+
+
+def test_interval_declaration_problems_ignores_a_report_with_no_intervals():
+    # A report that publishes no interval at all must stay silent -- `ruler`,
+    # `iheval` and `multi_if` are the three left -- and `hle`'s
+    # `confidence_interval` is not an interval key: it does not end in the
+    # suffix, and it is deliberately undeclared.
+    assert (
+        interval_declaration_problems(
+            {"score": 1.0, "accuracy": 1.0, "confidence_interval": 6.4}
+        )
+        == []
+    )
+
+
+class _Final:
+    def __init__(self, sample_id):
+        self.sample_id = sample_id
+
+
+def test_problem_population_passes_a_real_grouping_through():
+    """A repeated split already counts problems, so it is returned untouched."""
+    grouping = ProblemGrouping([7, 7, 8], 2)
+    out = problem_population(grouping, [], n_problems=999)
+    assert out is grouping
+
+
+def test_problem_population_gives_one_group_per_sample_when_unrepeated():
+    out = problem_population(None, [_Final(4), _Final(9)], n_problems=3)
+    assert out.n_problems == 3
+    # One key per sample, and DISTINCT -- "each sample is its own problem".
+    assert len(out.keys) == 2
+    assert len(set(out.keys)) == 2
+
+
+def test_problem_population_does_not_collapse_samples_sharing_a_sample_id():
+    """Positional keys, not `sample_id`.
+
+    Keying on `sample_id` would merge these two into one group, which drops the
+    interval entirely at two samples -- and a task whose contexts happen to
+    repeat an id is a fixture away, not a hypothetical.
+    """
+    out = problem_population(None, [_Final(0), _Final(0)], n_problems=2)
+    assert len(set(out.keys)) == 2
+
+
+def test_problem_population_leaves_the_interval_untouched():
+    """The whole point: it corrects what `n_problems` REPORTS, nothing else.
+
+    4 problems at n=4 with one wholly-failed problem. `n_problems` moves from the
+    rollout count to the problem count; `score_ci95` must not move at all,
+    because the factor cancels out of both `p` and the variance.
+    """
+    values = [4.0, 0.0, 2.0]
+    denominator = 4 * 4
+
+    ungrouped = interval_metrics(values, denominator=denominator)
+    grouping = problem_population(None, [_Final(i) for i in range(3)], n_problems=4)
+    grouped = interval_metrics(
+        values,
+        denominator=denominator,
+        group_keys=grouping.keys,
+        n_problems=grouping.n_problems,
+    )
+
+    assert ungrouped[PROBLEM_COUNT_FIELD] == 16.0  # rollouts — the old, wrong unit
+    assert grouped[PROBLEM_COUNT_FIELD] == 4.0  # problems
+    assert grouped[SCORE_CI_FIELD] == ungrouped[SCORE_CI_FIELD]

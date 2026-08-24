@@ -23,6 +23,11 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import (
+    SCORE_CI_FIELD,
+    interval_declaration_problems,
+    wilson_interval,
+)
 from sieval.datasets.cmmlu import CMMLUDataset, CMMLUDatasetSample
 from sieval.tasks.cmmlu_kshot_clp import (
     CMMLU_CATEGORIES,
@@ -306,6 +311,21 @@ async def test_report_excludes_failures_from_subject_denominator():
     assert "china_specific" not in report
     # pass@1 is dropped (duplicated score/overall, not a CMMLU metric).
     assert "pass@1" not in report
+    # The headline is a mean over SUBJECTS, so its interval is clustered on the
+    # two subjects that ran and declares their count -- `n_problems` would quote
+    # a between-subject width over a population of questions.
+    assert report["n_subjects"] == 2.0
+    assert "n_problems" not in report
+    assert report["ci95_units"] == {
+        "score": "n_subjects",
+        "overall": "n_subjects",
+    }
+    expected = wilson_interval([1.0, 0.0], 2)
+    assert expected is not None
+    assert report[SCORE_CI_FIELD] == list(expected)
+    assert report["overall_ci95"] == report[SCORE_CI_FIELD]
+    assert "stem_ci95" not in report
+    assert interval_declaration_problems(report) == []
 
 
 # ---------------------------------------------------------------------------

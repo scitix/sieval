@@ -20,6 +20,7 @@ from sieval.core.models import Request, Response
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import build_judgement_record, build_rollout_judgement
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.human_eval import HumanEvalDataset
 from sieval.datasets.livecodebench_code_generation import LiveCodeBenchDataset
 from sieval.datasets.mbpp import MBPPDataset
@@ -145,6 +146,9 @@ async def test_report_omits_maj_at_k_for_programs(task_cls, dataset, model):
     assert {"pass@1", "avg@n", "pass@k", "n", "k", "n_short"} <= set(report)
     assert "maj@k" not in report
     assert report["score_key"] == "pass@1"
+    # The empty path publishes the full key set with no interval at all, which is
+    # still a shape the runner validates.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.parametrize(("task_cls", "dataset", "model"), FAMILY, ids=IDS)
@@ -174,11 +178,54 @@ async def test_pass_at_k_column_carries_a_literal_k(task_cls, dataset, model):
     assert (report["n"], report["k"]) == (2.0, 2.0)
 
 
-def _final(judgement):
+def _final(judgement, sample_id: int = 0):
     from sieval.core.tasks import TaskContext, build_prediction_record
 
-    ctx = TaskContext(sample_id=0, raw_sample={})
+    ctx = TaskContext(sample_id=sample_id, raw_sample={})
     ctx = ctx.to_preprocessed({"prompt": "p"})
     ctx = ctx.to_inferred("inf")
     ctx = ctx.to_postprocessed(build_prediction_record(["a", "b"]))
     return ctx.to_feedback(judgement).to_final()
+
+
+@pytest.mark.parametrize(("task_cls", "dataset", "model"), FAMILY, ids=IDS)
+@pytest.mark.parametrize(("k", "n"), [(1, 1), (2, 2)])
+@pytest.mark.anyio
+async def test_report_carries_an_interval_around_the_headline(
+    task_cls, dataset, model, k, n
+):
+    # Two problems split evenly is the smallest case with genuine spread --
+    # `wilson_interval` needs >= 2 problems and 0 < p < 1 to emit anything.
+    # The default `n = 1` is covered as well: the interval is deliberately NOT
+    # gated on a repeated budget, and that is the path the rule protects.
+    task = _build(task_cls, dataset, model, k=k, n=n)
+    finals = [
+        _final(
+            build_judgement_record(
+                None,
+                [
+                    build_rollout_judgement(
+                        i, passed, extra={"msg": "passed" if passed else "failed"}
+                    )
+                    for i in range(n)
+                ],
+            ),
+            sample_id=sample_id,
+        )
+        for sample_id, passed in ((0, True), (1, False))
+    ]
+    try:
+        report = await task.report(finals, [])
+    finally:
+        await task.shutdown()
+
+    lo, hi = report["score_ci95"]
+    assert lo < report["score"] < hi
+    assert report["n_problems"] == 2
+    # Both budgets, because the `n > 1` gate is where the fold happens: `report`
+    # merges the always-published intervals with `ungated_intervals` and then, at
+    # `n > 1` only, `update`s the whole block over the top. A declaration lost
+    # there is invisible to `check_preflight.py` (a per-metric interval key is
+    # built from a metric name, not a literal) and the runner catches it only
+    # AFTER a finished run has written its `report.json`.
+    assert interval_declaration_problems(report) == []

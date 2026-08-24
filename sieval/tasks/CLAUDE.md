@@ -123,6 +123,52 @@ comparable only when the field agrees. Neither key is inferable from the values,
 and both are additive, so a bare report scores correctly and stays silent about
 what it measured.
 
+A third group is checked by the same rule set, though it is measured rather than
+declared: `SCORE_CI_FIELD` (`score_ci95`), `PROBLEM_COUNT_FIELD` (`n_problems`)
+and `CI_UNITS_FIELD` (`ci95_units`) are emitted **together or not at all** — and
+that rule applies per METRIC, so a report carrying one metric's count beside
+another's interval is correct rather than half-done. What the three keys mean, why
+each is unreadable without the others, and which report-level shapes look like
+broken pairs and are not, are stated once in
+[`docs/guide/metrics.md`](../../docs/guide/metrics.md) §"Intervals" — the reader's
+contract is canonical there, so it is cited here rather than restated in different
+words. What follows is only what an author does about it.
+
+Never spell any of those keys here. Merge them from `metrics.py`:
+`interval_metrics` for the headline, `metric_interval` for any other metric (it
+takes the population key as `unit`), `sampling_report`, which does this for every
+key of the sampling block, and `ungated_intervals`, which lifts the block's
+always-published intervals out of an `n > 1` gate and trims the declaration to
+what came with them.
+
+Both emitters take `aliases` — the other key names the **same number** is
+published under. Pass them on the same call, never as a second call with the same
+arguments: the alias interval must *be* the headline's, and two calls are only
+equal until one of them is edited. A true alias only; a metric that is a different
+number gets its own `metric_interval` call over its own per-unit values, and one
+that is a deterministic function of another gets nothing at all. The guide's "One
+interval per metric" has that rule and its two live cases; the emitters cannot
+enforce it, since they never see the values the report publishes, so the runner
+does.
+
+A metric's `unit` must be a population count — an `n_…` key the same report
+writes. `metric_interval` **raises** on anything else before it builds anything,
+which is the one refusal that does not wait for the runner: the population is
+written UNDER that key, so save-then-raise would leave a count where the report
+holds a rate. A declaration nobody can read is worth saving and refusing; a number
+that is wrong is not.
+
+Two fragments that each carry intervals are folded with `merge_metrics`, never
+with `|`: a plain merge replaces `ci95_units` wholesale, so one fragment's
+declarations survive and the other's intervals are left with no unit — silently,
+because the intervals themselves are all still there. The preflight cannot catch
+that (a per-metric interval key is built from a metric name, not a literal, so its
+key set is not the runtime one); the **runner** does, at report-write time, by
+saving `report.json` and then raising on any interval whose unit is missing,
+unresolvable, or shared with a metric publishing a different number — plus a unit
+that is not a count in a **hand-written** `ci95_units`, the one route that gets
+past the emitter's own refusal.
+
 Machine-checked over every class defining `report` under `sieval/tasks/`:
 `check_preflight.py --check check_report_declarations`. A `report` that is a
 single `return helper(...)` is judged on the helper, so a shared report

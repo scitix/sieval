@@ -119,10 +119,21 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    ProblemGrouping,
     health_metrics,
+    interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import GSMPlusDatasetSample
+
+#: Report key carrying `score_wo_critical_thinking`'s population: the problems
+#: outside the `critical thinking` split, plus the failures whose perturbation
+#: could not be recovered (which that rate charges as wrong). The second
+#: population of this report -- `n_problems` is the headline's -- and the unit the
+#: co-headline's interval declares.
+WO_CRITICAL_THINKING_COUNT_FIELD = "n_problems_wo_critical_thinking"
 
 # Verbatim from prompt_template.py::cot_prompt_map_func, which returns
 # (template, instruction) -> (user turn, system turn).
@@ -218,8 +229,9 @@ class GSMPlusZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     @override
@@ -289,9 +301,22 @@ class GSMPlusZeroShotGenTask(
         # in the prediction file — so a pipeline failure counts as wrong.
         per_type: dict[str, list[int]] = defaultdict(lambda: [0, 0])  # [correct, total]
         correct_num = 0
-        for ctx in finals:
+        # The same per-sample verdicts `accuracy` is a mean of, kept as the axis
+        # the interval is estimated on rather than recomputed below.
+        first: list[float] = []
+        # The subset `score_wo_critical_thinking` averages, and where each of its
+        # members sits in `finals` -- so a repeat grouping can be restricted to
+        # them positionally rather than re-derived.
+        wo_first: list[float] = []
+        wo_positions: list[int] = []
+        for position, ctx in enumerate(finals):
             perturbation_type = ctx.feedback_result["extra"]["perturbation_type"]
-            if ctx.feedback_result["rollouts"][0]["correct"]:
+            correct = ctx.feedback_result["rollouts"][0]["correct"]
+            first.append(1.0 if correct else 0.0)
+            if perturbation_type != CRITICAL_THINKING:
+                wo_first.append(1.0 if correct else 0.0)
+                wo_positions.append(position)
+            if correct:
                 correct_num += 1
                 per_type[perturbation_type][0] += 1
             per_type[perturbation_type][1] += 1
@@ -308,7 +333,7 @@ class GSMPlusZeroShotGenTask(
 
         total = len(finals) + len(fails)
         accuracy = 100 * correct_num / total if total else 0.0
-        report: dict[str, float | str] = {
+        report: dict[str, float | str | list[float]] = {
             "score": accuracy,
             "accuracy": accuracy,
             SCORE_KEY_FIELD: "accuracy",
@@ -328,6 +353,41 @@ class GSMPlusZeroShotGenTask(
         report["score_wo_critical_thinking"] = (
             100 * wo_correct / wo_total if wo_total else 0.0
         )
+        grouping = self.problem_groups(finals)
+        wo_grouping = (
+            None
+            if grouping is None
+            # Restricted to the subset, so a repeated split still collapses the
+            # copies of one problem rather than reading them as independent
+            # questions.
+            else ProblemGrouping(
+                [grouping.keys[position] for position in wo_positions],
+                len({grouping.keys[position] for position in wo_positions}),
+            )
+        )
+        # Reported unconditionally, like `n_turns` elsewhere in the fleet: this
+        # rate is always published, and a rate over 20 problems and one over 2000
+        # are the same number and a different claim. The estimator below re-emits
+        # the same value, which is what makes the two a pair rather than two
+        # definitions of one key.
+        #
+        # Unrepeated -- every config in this tree -- each sample is its own
+        # problem and this IS `wo_total`, the count the rate divides by. On a
+        # repeated split the two nouns come apart, deliberately and in one
+        # direction: `n_problems` above reads the whole split (so a problem whose
+        # every copy failed still occupies a slot), while this counts the
+        # non-critical-thinking problems the run actually OBSERVED, since a failed
+        # sample's perturbation type lives on its `raw_sample` and its copy number
+        # does not. So a wholly-failed non-CT problem stays in `wo_total` -- the
+        # rate charges it as wrong, per DENOMINATOR_REQUESTED -- and is absent
+        # here. Nothing published is wrong: `n_problems` cancels out of `p`
+        # entirely (`interval_metrics` scales by G/D and divides by G), and a
+        # smaller G only widens the interval. Aligning the two would mean
+        # resolving each failed sample's copy number as well as its type, which is
+        # a second grouping pass for a count that no shipped config can reach.
+        report[WO_CRITICAL_THINKING_COUNT_FIELD] = float(
+            wo_total if wo_grouping is None else wo_grouping.n_problems
+        )
         for perturbation_type, (correct, seen) in sorted(per_type.items()):
             report[f"score_{_metric_key(perturbation_type)}"] = (
                 100 * correct / seen if seen else 0.0
@@ -337,4 +397,30 @@ class GSMPlusZeroShotGenTask(
         # failure mode — a reasoning model returning empty content, scored
         # correct on `critical thinking` — is invisible in report.json.
         report.update(health_metrics(finals))
-        return report
+        # Two populations, so two intervals and two counts. The headline is over
+        # the REQUESTED `total`; `score_wo_critical_thinking` is a co-headline
+        # over its OWN subset (`wo_total`, untyped fails included), so it may not
+        # borrow the headline's interval or its `n_problems`. The
+        # per-perturbation keys have their own populations too and are out of
+        # scope: one count per cell is a breakdown, not a headline.
+        return report | merge_metrics(
+            interval_metrics(
+                first,
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `accuracy` is `score` under its own name, so it carries the same
+                # interval. `score_wo_critical_thinking` is NOT an alias -- it is a
+                # different number over a different population -- and neither are
+                # the per-perturbation keys.
+                aliases=("accuracy",),
+            ),
+            metric_interval(
+                "score_wo_critical_thinking",
+                wo_first,
+                denominator=wo_total,
+                group_keys=None if wo_grouping is None else wo_grouping.keys,
+                n_problems=None if wo_grouping is None else wo_grouping.n_problems,
+                unit=WO_CRITICAL_THINKING_COUNT_FIELD,
+            ),
+        )

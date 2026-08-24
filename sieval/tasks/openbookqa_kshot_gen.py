@@ -59,6 +59,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     first_rollout_correct,
     health_metrics,
+    interval_metrics,
     warn_unscored_rollouts,
 )
 from sieval.datasets import OpenBookQADatasetSample
@@ -110,8 +111,9 @@ class OpenBookQAFewShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -200,18 +202,39 @@ class OpenBookQAFewShotGenTask(
         # The FIRST rollout's verdict: this benchmark publishes a single-draw
         # number, so scoring the whole draw would restate it.
         warn_unscored_rollouts(finals, task="openbookqa_kshot_gen")
+        total = len(finals)
         correct = first_rollout_correct(finals)
-        accuracy = 100 * correct / len(finals) if finals else 0.0
+        accuracy = 100 * correct / total if total else 0.0
         # `score` is the headline; `accuracy` names the metric behind it
         # (% of finalized samples whose extracted letter equals answerKey),
         # mirroring how gsm8k/drop surface their metric alongside `score`.
-        return {
+        metrics: dict[str, float | str | list[float]] = {
             "score": accuracy,
             "fails": len(fails),
             "accuracy": accuracy,
             SCORE_KEY_FIELD: "accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
         } | health_metrics(finals)
+        # Same axis as `accuracy` -- the first rollout's verdict, per judged
+        # sample -- over the same denominator, so the interval brackets the
+        # number it is printed beside.
+        first = [
+            1.0
+            if ((f.feedback_result or {}).get("rollouts") or [{}])[0].get("correct")
+            else 0.0
+            for f in finals
+        ]
+        grouping = self.problem_groups(finals)
+        return metrics | interval_metrics(
+            first,
+            denominator=total,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+            # `accuracy` is `score` under its own name, so it carries the same
+            # interval: a reader keyed on the column `score_key` names would
+            # otherwise have to know the bound is filed under `score`.
+            aliases=("accuracy",),
+        )
 
     def _retrieve_fewshot(self) -> list[OpenBookQADatasetSample]:
         if self.n_shot <= 0:

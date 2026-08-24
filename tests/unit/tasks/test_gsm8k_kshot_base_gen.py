@@ -10,6 +10,7 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.core.models import ModelOutput, Request, Response, SamplingParams
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import TaskContext
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.gsm8k import GSM8KDataset, GSM8KDatasetSample
 from sieval.tasks.gsm8k_kshot_base_gen import (
     STOP_SEQUENCES,
@@ -105,3 +106,54 @@ async def test_feedback_and_report_include_flexible_secondary_metric():
     assert report["score"] == 0.0
     assert report["exact_match"] == 0.0
     assert report["flexible_exact_match"] == 100.0
+
+
+@pytest.mark.anyio
+async def test_report_brackets_both_extraction_rules_separately():
+    """Each rule gets its own bounds, over the values its own rate is a mean of.
+
+    The two are built to disagree: both samples are flexible-correct and
+    strict-wrong, so a flexible interval copied onto the strict rule lands at the
+    opposite end of the range.
+    """
+    task, _ = _task()
+    raw = _sample()
+
+    def _final(sample_id: int) -> TaskContext:
+        metrics: dict[str, bool | float] = {
+            "exact_match": False,
+            "flexible_exact_match": True,
+        }
+        return TaskContext(
+            sample_id=sample_id,
+            raw_sample=raw,
+            feedback_result={
+                "reference": "42",
+                "rollouts": [{"index": 0, "correct": False, "metrics": metrics}],
+                "metrics": metrics,
+            },
+        )
+
+    report = await task.report([_final(0), _final(1)], [])
+
+    assert report["score"] == report["exact_match"] == 0.0
+    assert report["flexible_exact_match"] == 100.0
+    assert report["n_problems"] == 2
+    lo, hi = report["score_ci95"]
+    # `exact_match` is `score` under its own name, so it repeats the headline
+    # bounds; the flexible rule gets its own at the other end of the range.
+    assert report["exact_match_ci95"] == [lo, hi]
+    flexible = report["flexible_exact_match_ci95"]
+    # Saturated at ONE, where the headline is saturated at zero: an upper limit of
+    # exactly 100 and a lower limit above 0. Borrowing the headline's fails both.
+    assert flexible[1] == 100.0
+    assert flexible[0] > 0.0
+    assert hi < 100.0
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "exact_match": "n_problems",
+        "flexible_exact_match": "n_problems",
+    }
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []

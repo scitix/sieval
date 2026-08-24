@@ -24,6 +24,8 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    interval_declaration_problems,
+    wilson_interval,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.gsm_plus import GSMPlusDataset, GSMPlusDatasetSample
@@ -378,11 +380,17 @@ async def test_report_empty_finals():
         "score": 0.0,
         "accuracy": 0.0,
         "score_wo_critical_thinking": 0.0,
+        # The co-headline's population, reported at 0 samples too: a rate with no
+        # count behind it cannot be read, and 0 here is measured rather than
+        # standing in for something unmeasurable.
+        "n_problems_wo_critical_thinking": 0.0,
         "fails": 0,
         "n_unextracted": 0.0,
         SCORE_KEY_FIELD: "accuracy",
         DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
     }
+    # No interval on either axis, so nothing declares one.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio
@@ -403,6 +411,52 @@ async def test_report_counts_fails_in_overall_and_per_type_denominators():
 
 
 @pytest.mark.anyio
+async def test_report_interval_is_quoted_over_the_requested_population():
+    task, _ = _task()
+    finals = [
+        _final(0, "numerical substitution", True),
+        _final(1, "numerical substitution", False),
+    ]
+    fails = [
+        TaskContext(
+            sample_id=2, raw_sample=_sample(perturbation_type="critical thinking")
+        )
+    ]
+
+    report = await task.report(finals, fails)
+
+    # REQUESTED, like the headline: the fail is inside the population, so 3 --
+    # not the 2 samples that produced a verdict.
+    assert report["n_problems"] == 3
+    assert report["score"] == pytest.approx(100 / 3)
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
+    # `accuracy` is `score` under its own name, so it carries the same bounds.
+    assert report["accuracy_ci95"] == [lo, hi]
+    # `score_wo_critical_thinking` is a co-headline over its OWN population, so
+    # it gets its own interval on its own count and never borrows the headline's.
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "accuracy": "n_problems",
+        "score_wo_critical_thinking": "n_problems_wo_critical_thinking",
+    }
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
+    assert report["score_wo_critical_thinking"] != report["score"]
+    # Two of the three samples are outside the `critical thinking` split -- the
+    # failed one is inside it -- so the subset population is 2, not the 3 the
+    # headline is over.
+    assert report["n_problems_wo_critical_thinking"] == 2
+    subset = wilson_interval([1.0, 0.0], 2)
+    assert subset is not None
+    assert report["score_wo_critical_thinking_ci95"] == list(subset)
+    assert report["score_wo_critical_thinking_ci95"] != interval
+
+
+@pytest.mark.anyio
 async def test_report_tolerates_fail_without_raw_sample():
     # A context that failed before its sample was attached has no perturbation
     # type, so it cannot land in a per-type cell.
@@ -415,6 +469,11 @@ async def test_report_tolerates_fail_without_raw_sample():
     # the same `requested` denominator as `score`. Left out, this co-headline read
     # 100.0 on a run whose `score` was 50.0.
     assert report["score_wo_critical_thinking"] == 50.0
+    # And in its population, which is the count that rate was divided by. The
+    # untyped failure is a deterministic zero there: inside the denominator,
+    # outside the values, exactly as it is for the headline.
+    assert report["n_problems_wo_critical_thinking"] == 2
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

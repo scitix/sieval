@@ -19,7 +19,7 @@ is kept whole.
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
-from collections.abc import Mapping
+from collections.abc import Hashable, Mapping
 from typing import override
 
 from sieval.community.simpleqa_verified import (
@@ -52,6 +52,9 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    merge_metrics,
+    metric_interval,
+    problem_population,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import SimpleQAVerifiedDatasetSample
@@ -106,9 +109,10 @@ class SimpleQAVerifiedZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # `str`: the report carries `score_key`, which names a column rather than
+        # measuring one. `list[float]` is a per-bucket interval, and
+        # `dict[str, str]` the map naming the population each is clustered on.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     @classmethod
@@ -237,11 +241,11 @@ class SimpleQAVerifiedZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
-        graded = [
-            r["extra"]["grade"]
+        by_sample = [
+            [r["extra"]["grade"] for r in (f.feedback_result or {}).get("rollouts", [])]
             for f in finals
-            for r in (f.feedback_result or {}).get("rollouts", [])
         ]
+        graded = [grade for sample in by_sample for grade in sample]
         # Pipeline failures (exhausted retries) never produced a gradeable
         # answer; count each failed sample's requested attempts as
         # NOT_ATTEMPTED so the F1 spans the full requested set — matching the
@@ -249,22 +253,95 @@ class SimpleQAVerifiedZeroShotGenTask(
         # gsm8k), rather than only the successfully-graded subset.
         grades = graded + ["NOT_ATTEMPTED"] * (self._n * len(fails))
         m = aggregate_metrics(grades)
-        return {
-            "score": m["f1"] * 100,
-            "f1": m["f1"] * 100,
-            "accuracy_given_attempted": m["accuracy_given_attempted"] * 100,
-            "correct": m["is_correct"] * 100,
-            "incorrect": m["is_incorrect"] * 100,
-            "not_attempted": m["is_not_attempted"] * 100,
-            "n_graded": len(graded),
-            "fails": len(fails),
-            SCORE_KEY_FIELD: "f1",
-            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-            # `not_attempted` is the autorater's reading of the answer; a blank
-            # response the autorater never saw a claim in lands there too, so the
-            # rate alone cannot say whether the model hedged or returned nothing.
-            # Deliberately only `health_metrics` and not the rest of the sampling
-            # block: RFC #74 defers `pass@k` / `maj@k` for the LLM-judged family,
-            # while this one measures extraction rather than the draw and is
-            # outside that gate.
-        } | health_metrics(finals)
+        # Always supplied, never left None: these three rates are averaged over
+        # ROLLOUTS, so an absent grouping would publish the ROLLOUT count as
+        # `n_problems`. Does not move the interval -- see `problem_population`.
+        grouping = problem_population(
+            self.problem_groups(finals), finals, n_problems=len(finals) + len(fails)
+        )
+        return (
+            {
+                "score": m["f1"] * 100,
+                "f1": m["f1"] * 100,
+                "accuracy_given_attempted": m["accuracy_given_attempted"] * 100,
+                "correct": m["is_correct"] * 100,
+                "incorrect": m["is_incorrect"] * 100,
+                "not_attempted": m["is_not_attempted"] * 100,
+                "n_graded": len(graded),
+                "fails": len(fails),
+                SCORE_KEY_FIELD: "f1",
+                DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+                # `not_attempted` is the autorater's reading of the answer; a blank
+                # response the autorater never saw a claim in lands there too, so the
+                # rate alone cannot say whether the model hedged or returned nothing.
+                # Deliberately only `health_metrics` and not the rest of the sampling
+                # block: RFC #74 defers `pass@k` / `maj@k` for the LLM-judged family,
+                # while this one measures extraction rather than the draw and is
+                # outside that gate.
+            }
+            | health_metrics(finals)
+            | merge_metrics(
+                # Three real buckets, so three estimands: `parse_grade` returns any of
+                # CORRECT / INCORRECT / NOT_ATTEMPTED, and no one of these rates is
+                # another mirrored. Each is a mean over the same rollout population of
+                # its own per-sample count, declared over problems.
+                #
+                # `f1` and `accuracy_given_attempted` get none. The first is a
+                # harmonic mean of two set-level rates and the second a ratio of two
+                # rollout sums whose per-problem attempted counts differ, so no
+                # per-problem value averages to either -- an estimator that does not
+                # fit the estimand would publish a plausible-looking wrong width.
+                metric_interval(
+                    "correct",
+                    [
+                        float(sum(g == "CORRECT" for g in sample))
+                        for sample in by_sample
+                    ],
+                    denominator=len(grades),
+                    group_keys=grouping.keys,
+                    n_problems=grouping.n_problems,
+                ),
+                metric_interval(
+                    "incorrect",
+                    [
+                        float(sum(g == "INCORRECT" for g in sample))
+                        for sample in by_sample
+                    ],
+                    denominator=len(grades),
+                    group_keys=grouping.keys,
+                    n_problems=grouping.n_problems,
+                ),
+                metric_interval(
+                    "not_attempted",
+                    # The one bucket whose fail stand-ins are not zeros: a failed
+                    # sample contributes `n` NOT_ATTEMPTED grades, so leaving those
+                    # units out would centre the interval BELOW the rate printed
+                    # beside it. They enter as their own units, each carrying its
+                    # whole requested budget -- a deterministic value, which widens
+                    # the estimate rather than narrowing it.
+                    [
+                        float(sum(g == "NOT_ATTEMPTED" for g in sample))
+                        for sample in by_sample
+                    ]
+                    + [float(self._n)] * len(fails),
+                    denominator=len(grades),
+                    group_keys=[*grouping.keys, *self._failed_keys(fails)],
+                    n_problems=grouping.n_problems,
+                ),
+            )
+        )
+
+    def _failed_keys(self, fails) -> list[Hashable]:
+        """A grouping key per failed sample, in the judged samples' key space.
+
+        Only `not_attempted` needs them, and it needs them not to collide with a
+        judged sample's: on a repeated split the failed copies of one problem
+        belong in that problem's group, and on an unrepeated one every sample is
+        its own problem -- where `problem_population`'s positional keys are
+        integers, so these are tagged tuples instead of a second range that would
+        fuse each failure into an unrelated question.
+        """
+        grouped = self.problem_groups(fails)
+        if grouped is not None:
+            return grouped.keys
+        return [("fail", index) for index in range(len(fails))]

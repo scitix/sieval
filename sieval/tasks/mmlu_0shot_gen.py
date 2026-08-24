@@ -29,6 +29,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
     warn_unscored_rollouts,
 )
 from sieval.datasets import MMLUDatasetSample
@@ -63,8 +64,9 @@ class MMLUZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     @override
@@ -140,6 +142,9 @@ class MMLUZeroShotGenTask(
         warn_unscored_rollouts(finals, task="mmlu_0shot_gen")
         correct_num = 0
         category_metrics = defaultdict(lambda: {"correct": 0, "total": 0})
+        # The same per-sample verdicts `score` is a mean of, kept as the axis the
+        # interval is estimated on rather than recomputed from the report.
+        first: list[float] = []
         for ctx in finals:
             # One `or {}` for both reads, or the guard on the first is a promise
             # the second breaks two lines later.
@@ -147,13 +152,15 @@ class MMLUZeroShotGenTask(
             verdicts = judgement.get("rollouts") or []
             correct = bool(verdicts) and verdicts[0]["correct"]
             category = (judgement.get("extra") or {}).get("category", "other")
+            first.append(1.0 if correct else 0.0)
             if correct:
                 correct_num += 1
                 category_metrics[category]["correct"] += 1
             category_metrics[category]["total"] += 1
 
-        score = 100 * correct_num / len(finals) if finals else 0.0
-        results: dict[str, float | str] = {"score": score}
+        total = len(finals)
+        score = 100 * correct_num / total if total else 0.0
+        results: dict[str, float | str | list[float]] = {"score": score}
         for category, metrics in category_metrics.items():
             category_score = (
                 100 * metrics["correct"] / metrics["total"]
@@ -164,4 +171,18 @@ class MMLUZeroShotGenTask(
         results["fails"] = len(fails)
         results[SCORE_KEY_FIELD] = "score"
         results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
-        return results | health_metrics(finals)
+        # On the headline only. A per-category interval needs its own population
+        # count per category -- one `n_problems` cannot carry 57 of them -- so
+        # `score_<category>` deliberately ships without one rather than borrow
+        # the headline's.
+        grouping = self.problem_groups(finals)
+        return (
+            results
+            | health_metrics(finals)
+            | interval_metrics(
+                first,
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            )
+        )

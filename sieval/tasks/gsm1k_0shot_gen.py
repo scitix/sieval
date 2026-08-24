@@ -95,6 +95,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     first_rollout_correct,
     health_metrics,
+    interval_metrics,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import GSM1KDatasetSample
@@ -149,7 +150,10 @@ class GSM1KZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float | str],
+        # `float | str`: the report carries `score_key`, which names a column
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     @override
@@ -223,7 +227,7 @@ class GSM1KZeroShotGenTask(
         # First-rollout, because that is the axis a one-greedy-draw protocol
         # publishes — the shared helper the sibling uses, not a local re-count.
         accuracy = 100 * first_rollout_correct(finals) / total if total else 0.0
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float]] = {
             "score": accuracy,
             "fails": len(fails),
             "accuracy": accuracy,
@@ -238,4 +242,26 @@ class GSM1KZeroShotGenTask(
         # GSM8K - GSM1k gap cannot be told apart from a difference in how often
         # extraction failed, which is the confound this benchmark exists to avoid.
         metrics |= health_metrics(finals)
-        return metrics
+        # Same axis as `accuracy` above -- the first rollout's verdict, per judged
+        # sample -- over the same REQUESTED `total`, so the interval brackets the
+        # number it is printed beside. On both halves of the pair for the same
+        # reason the denominator policy is: an interval computed over a different
+        # population on one side would make the diff unreadable.
+        first = [
+            1.0
+            if ((f.feedback_result or {}).get("rollouts") or [{}])[0].get("correct")
+            else 0.0
+            for f in finals
+        ]
+        grouping = self.problem_groups(finals)
+        return metrics | interval_metrics(
+            first,
+            denominator=total,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+            # `accuracy` is `score` under its own name, so it carries the same
+            # interval: a reader keyed on the column `score_key` names would
+            # otherwise have to know the bound is filed under `score`. On both
+            # halves of the pair, for the same reason the denominator policy is.
+            aliases=("accuracy",),
+        )

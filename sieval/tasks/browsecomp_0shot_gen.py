@@ -63,6 +63,8 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
+    problem_population,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import BrowseCompDatasetSample
@@ -116,8 +118,9 @@ class BrowseCompZeroShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     @classmethod
@@ -238,30 +241,70 @@ class BrowseCompZeroShotGenTask(
 
     @override
     async def report(self, finals, fails):
-        graded = [
-            r["extra"]["grade"]
+        # Per sample first, then flattened: the headline's denominator counts
+        # ROLLOUTS, so a sample's contribution to it is its COUNT of `CORRECT`
+        # rollouts rather than a rate, and that count is only visible before the
+        # flattening. `graded` below is the same list `aggregate_metrics` scores.
+        by_sample = [
+            [r["extra"]["grade"] for r in (f.feedback_result or {}).get("rollouts", [])]
             for f in finals
-            for r in (f.feedback_result or {}).get("rollouts", [])
         ]
+        graded = [grade for sample in by_sample for grade in sample]
         # Pipeline failures (exhausted retries) never produced a gradeable
         # answer; BrowseComp has no NOT_ATTEMPTED bucket, so count each failed
         # sample's requested attempts as INCORRECT — accuracy spans the full
         # requested set, matching the official metric.
         grades = graded + ["INCORRECT"] * (self._n * len(fails))
         m = aggregate_metrics(grades)
-        return {
-            "score": m["accuracy"] * 100,
-            "accuracy": m["accuracy"] * 100,
-            "correct": m["is_correct"] * 100,
-            "incorrect": m["is_incorrect"] * 100,
-            "n_graded": len(graded),
-            "fails": len(fails),
-            SCORE_KEY_FIELD: "accuracy",
-            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-            # There is no NOT_ATTEMPTED bucket here, so an empty response scores
-            # INCORRECT alongside a wrong answer; this is the count that tells
-            # them apart. Deliberately only `health_metrics` and not the rest of
-            # the sampling block: RFC #74 defers `pass@k` / `maj@k` for the
-            # LLM-judged family, while this one measures extraction rather than
-            # the draw and is outside that gate.
-        } | health_metrics(finals)
+        # The same `g == "CORRECT"` test `aggregate_metrics` applies, counted per
+        # sample, over the same `len(grades)` population. The failed samples'
+        # stand-in `INCORRECT`s are deterministic zeros inside that population and
+        # so are left out of `values` rather than added as zero-valued groups.
+        correct_per_sample = [
+            float(sum(g == "CORRECT" for g in sample)) for sample in by_sample
+        ]
+        # Always supplied, never left None: this headline is averaged over
+        # ROLLOUTS, so an absent grouping would publish the ROLLOUT count as
+        # `n_problems`. Does not move the interval -- see `problem_population`.
+        grouping = problem_population(
+            self.problem_groups(finals), finals, n_problems=len(finals) + len(fails)
+        )
+        return (
+            {
+                "score": m["accuracy"] * 100,
+                "accuracy": m["accuracy"] * 100,
+                "correct": m["is_correct"] * 100,
+                "incorrect": m["is_incorrect"] * 100,
+                "n_graded": len(graded),
+                "fails": len(fails),
+                SCORE_KEY_FIELD: "accuracy",
+                DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+                # There is no NOT_ATTEMPTED bucket here, so an empty response scores
+                # INCORRECT alongside a wrong answer; this is the count that tells
+                # them apart. Deliberately only `health_metrics` and not the rest of
+                # the sampling block: RFC #74 defers `pass@k` / `maj@k` for the
+                # LLM-judged family, while this one measures extraction rather than
+                # the draw and is outside that gate.
+            }
+            | health_metrics(finals)
+            | interval_metrics(
+                correct_per_sample,
+                denominator=len(grades),
+                group_keys=grouping.keys,
+                n_problems=grouping.n_problems,
+                # `accuracy` and `correct` are `score` under two other names --
+                # `aggregate_metrics` returns one `is_correct` and files it under
+                # both -- so all three carry the one interval.
+                #
+                # `incorrect` gets none, even though `aggregate_metrics` counts it
+                # as its own bucket rather than as `1 - is_correct`: `parse_grade`
+                # returns CORRECT or INCORRECT and nothing else, and the fail
+                # stand-ins are INCORRECT, so the two rates sum to 100 on every
+                # input this task can produce. A bound on it would be the
+                # accuracy bound mirrored -- two numbers that look independent and
+                # carry one piece of information. It becomes a real third estimand
+                # only if a NOT_ATTEMPTED bucket ever arrives, which is what
+                # separates this from `simpleqa_verified`, where it already has.
+                aliases=("accuracy", "correct"),
+            )
+        )

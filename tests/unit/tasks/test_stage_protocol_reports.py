@@ -21,6 +21,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 
 
 def _final(feedback, *, postprocess=None, preprocess=None) -> TaskContext:
@@ -35,6 +36,14 @@ def _final(feedback, *, postprocess=None, preprocess=None) -> TaskContext:
     return ctx.to_final()
 
 
+class _NoDataset:
+    """Stands in for `self._dataset` so `problem_groups()` (which reads
+    `self._dataset.test_set`) resolves to "no grouping" instead of raising.
+    """
+
+    test_set = None
+
+
 def _task(cls, **kwargs):
     """Build a task without touching a dataset or model.
 
@@ -42,6 +51,7 @@ def _task(cls, **kwargs):
     bypassing ``__init__`` keeps these tests free of dataset/model fixtures.
     """
     task = object.__new__(cls)
+    task._dataset = _NoDataset()
     for key, value in kwargs.items():
         setattr(task, key, value)
     return task
@@ -397,6 +407,45 @@ class TestIFEvalReport:
         # headline is the strict prompt-level accuracy
         assert report["score"] == pytest.approx(50.0)
         assert report["fails"] == 0
+
+        # The interval is on the STRICT PROMPT axis -- the headline. Two things
+        # pin it there: the population is the 2 prompts, not the 4 instructions an
+        # instruction-level reading would pool over; and it stays strictly below
+        # the loose prompt-level 100.0, which is what a loose-axis interval would
+        # bracket instead.
+        assert report["n_problems"] == 2
+        interval = report["score_ci95"]
+        assert isinstance(interval, list)
+        lo, hi = interval
+        assert lo < report["score"] < hi
+        assert hi < report["loose_prompt_level_accuracy"]
+
+        # Four prompt-level names, one population. `strict_prompt_level_accuracy`
+        # and `strict_accuracy` are `score` under two other names, so all three
+        # repeat the headline bounds; the loose pair is a different number and
+        # gets its own -- saturated at 100 here, so a loose bound copied from the
+        # headline fails the `== 100.0` below.
+        assert report["strict_prompt_level_accuracy_ci95"] == [lo, hi]
+        assert report["strict_accuracy_ci95"] == [lo, hi]
+        loose_interval = report["loose_prompt_level_accuracy_ci95"]
+        assert isinstance(loose_interval, list)
+        assert loose_interval[1] == 100.0
+        assert loose_interval != interval
+        assert report["loose_accuracy_ci95"] == loose_interval
+        assert report["ci95_units"] == {
+            "score": "n_problems",
+            "strict_prompt_level_accuracy": "n_problems",
+            "strict_accuracy": "n_problems",
+            "loose_prompt_level_accuracy": "n_problems",
+            "loose_accuracy": "n_problems",
+        }
+        # The `*_instruction_level_accuracy` pair pools over CONSTRAINTS and stays
+        # uninterval'd.
+        assert "strict_instruction_level_accuracy_ci95" not in report
+        assert "loose_instruction_level_accuracy_ci95" not in report
+        # The task tests call report() directly, so the runner's finalizer never
+        # sees this dict -- run the validator here or a missing declaration ships.
+        assert interval_declaration_problems(report) == []
 
     async def test_instruction_level_pools_counts_rather_than_averaging_samples(self):
         from sieval.tasks.ifeval_0shot_gen import IFEvalZeroShotGenTask

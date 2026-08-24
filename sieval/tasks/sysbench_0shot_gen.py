@@ -126,6 +126,8 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     health_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.core.types import JSONValue
 from sieval.core.utils.serialization import obj_to_dict
@@ -267,9 +269,11 @@ class SysBenchZeroShotGenTask(
         list[ModelOutput],
         PredictionRecord,
         JudgementRecord,
-        # `float | str`: the report carries `score_key`, `denominator_policy` and
+        # `str`: the report carries `score_key`, `denominator_policy` and
         # `history_mode`, which name things rather than measure them.
-        dict[str, float | str],
+        # `list[float]` is a per-metric interval, and `dict[str, str]` the map
+        # saying whether each is clustered on turns or on sessions.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     @classmethod
@@ -581,6 +585,10 @@ class SysBenchZeroShotGenTask(
         # [satisfied constraints, total constraints] over turns actually graded.
         graded: list[int] = [0, 0]
         n_graded_turns = 0
+        # Per turn, in `turns` order: 1.0 for a turn the grader could not read.
+        # The values `ungradeable_rate` is the mean of, taken from the branch
+        # that decides it rather than recomputed from the two counts.
+        ungradeable: list[float] = []
         # [satisfied, constraints, full turns, turns] per bucket. Raw counts, because
         # `csr_*` pools over constraints and `isr_*` averages over turns -- the two
         # denominators differ, so neither can be recovered from the other's rate.
@@ -637,10 +645,12 @@ class SysBenchZeroShotGenTask(
                 n_grader_unparsed += turn_unparsed
                 if turn_unparsed >= n_turn_criteria:
                     unparsed_turns += 1
+                    ungradeable.append(1.0)
                 else:
                     graded[0] += n_satisfied
                     graded[1] += n_turn_criteria
                     n_graded_turns += 1
+                    ungradeable.append(0.0)
                 for cid, verdict in verdicts.items():
                     # Coerced: the loader normalises `alignment` but stores
                     # `criteria` raw, so `criteria_type: null` would key this
@@ -654,7 +664,11 @@ class SysBenchZeroShotGenTask(
 
         m = aggregate_metrics(turns, session_n_turns)
         n_turns = int(m["n_turns"])
-        metrics: dict[str, float | str] = {
+        # One call, two readers: `ssr` is the mean of `prefix / n_declared` over
+        # these and Table 4's `R_t` series counts the same prefixes by position.
+        # Computing it twice would let one drift onto a different denominator.
+        prefixes = session_prefixes(turns, session_n_turns)
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": m["csr"] * 100,
             # Pooled over constraints, which is what Table 2 reports -- NOT the mean
             # of the per-turn rates, which turns of unequal constraint count make a
@@ -747,7 +761,7 @@ class SysBenchZeroShotGenTask(
         # rather than counted against. `ssr` is the mean of this series when every
         # session declares the same length, which is the released set's shape.
         prefix_cells: dict[int, list[int]] = defaultdict(lambda: [0, 0])
-        for prefix, n_declared in session_prefixes(turns, session_n_turns).values():
+        for prefix, n_declared in prefixes.values():
             for position in range(1, n_declared + 1):
                 prefix_cells[position][0] += position <= prefix
                 prefix_cells[position][1] += 1
@@ -790,4 +804,50 @@ class SysBenchZeroShotGenTask(
         metrics["n_criteria_unaligned"] = float(unaligned[1])
         metrics["n_turns_unaligned"] = float(unaligned[3])
 
-        return metrics | health_metrics(finals)
+        # Two populations, one report, so each rate says which it is clustered on.
+        # `csr_macro`, `isr` and `ungradeable_rate` are means over TURNS; `ssr` is
+        # a mean over SESSIONS of a normalised prefix, and one `n_turns` cannot
+        # answer for both.
+        #
+        # `csr` and `csr_graded` get none, deliberately: both pool over
+        # constraints (`Σ satisfied / Σ criteria` over turns carrying 1-11 of
+        # them), so no per-turn value has either as its mean -- which is the same
+        # reason `csr_macro` exists as a separate column. An estimator that does
+        # not fit the estimand would publish a plausible-looking wrong width.
+        return (
+            metrics
+            | merge_metrics(
+                # The per-turn satisfied fraction, spelled as `aggregate_metrics`
+                # spells it: every turn in `turns` carries constraints (the loop
+                # above skips those that do not), so the guard is the same guard.
+                metric_interval(
+                    "csr_macro",
+                    [t[2] / t[3] if t[3] else 0.0 for t in turns],
+                    denominator=n_turns,
+                    unit="n_turns",
+                ),
+                # The all-satisfied indicator upstream averages over turns.
+                metric_interval(
+                    "isr",
+                    [1.0 if t[3] > 0 and t[2] == t[3] else 0.0 for t in turns],
+                    denominator=n_turns,
+                    unit="n_turns",
+                ),
+                metric_interval(
+                    "ungradeable_rate",
+                    ungradeable,
+                    denominator=n_turns,
+                    unit="n_turns",
+                ),
+                # Per session, the normalised count of consecutive fully-satisfied
+                # turns from the start -- the term `ssr` averages, over the
+                # sessions `n_sessions` counts.
+                metric_interval(
+                    "ssr",
+                    [prefix / n_declared for prefix, n_declared in prefixes.values()],
+                    denominator=len(prefixes),
+                    unit="n_sessions",
+                ),
+            )
+            | health_metrics(finals)
+        )

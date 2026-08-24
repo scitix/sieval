@@ -17,6 +17,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.complex_constraints import (
     ComplexConstraintsDataset,
     ComplexConstraintsDatasetSample,
@@ -324,6 +325,89 @@ async def test_report_headline_is_the_task_pass_rate():
     assert report["n_criteria_graded"] == 70
     assert report["n_grader_unparsed"] == 0
     assert report["fails"] == 0
+
+    # The interval rides `task_pass_rate`, over the 4 ROLLOUT units -- not the
+    # criterion axes, which pool over the 70 criteria asserted above. Reading
+    # `criterion_pass_rate_micro` would quote the interval over 70.
+    assert report["n_problems"] == 4
+    assert report["n_problems"] != report["n_criteria_graded"]
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+    # `task_pass_rate` is `score` under its own name, so it repeats the headline
+    # bounds; `criterion_pass_rate_macro` is the per-rollout satisfied fraction
+    # and gets its own. The two read 50.0 and 72.5 here, so a macro bound copied
+    # from the headline fails to contain its own number.
+    assert report["task_pass_rate_ci95"] == [lo, hi]
+    macro_interval = report["criterion_pass_rate_macro_ci95"]
+    assert isinstance(macro_interval, list)
+    assert macro_interval != interval
+    assert macro_interval[0] < report["criterion_pass_rate_macro"] < macro_interval[1]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "task_pass_rate": "n_problems",
+        "criterion_pass_rate_macro": "n_problems",
+    }
+    # The micro rate pools over CRITERIA and gets none.
+    assert "criterion_pass_rate_micro_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_report_n_problems_counts_problems_not_rollouts():
+    """At n=2 the two counts diverge, and `n_problems` must be the smaller one.
+
+    `task_pass_rate` is averaged over ROLLOUT units -- 2 problems x 2 rollouts =
+    4 -- while `n_problems` is the field a reader sizes the evidence by.
+    Reporting 4 there would overstate it two-fold and put it in a different unit
+    from every sample-denominator task's `n_problems`.
+    """
+    task, _, _ = _task(n=2)
+
+    def _final_n2(sample_id: int, *, passed: tuple[bool, bool]) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                None,
+                [
+                    build_rollout_judgement(
+                        i,
+                        ok,
+                        score=1.0 if ok else 0.0,
+                        metrics={
+                            "task_pass": ok,
+                            "criterion_pass_rate": 1.0 if ok else 0.0,
+                        },
+                        extra={
+                            "n_criteria": 3,
+                            "n_satisfied": 3 if ok else 0,
+                            "n_grader_unparsed": 0,
+                        },
+                    )
+                    for i, ok in enumerate(passed)
+                ],
+            ),
+        )
+
+    report = await task.report(
+        [_final_n2(0, passed=(True, True)), _final_n2(1, passed=(False, False))],
+        fails=[],
+    )
+
+    # 2 of 4 rollout units: the headline is over rollouts.
+    assert report["n_graded"] == 4
+    assert report["task_pass_rate"] == pytest.approx(50.0)
+    # ...but the population is 2 PROBLEMS, not the 4 rollouts.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < 50.0 < hi
 
 
 @pytest.mark.anyio

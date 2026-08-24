@@ -21,8 +21,26 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     sieval_task,
 )
-from sieval.core.tasks.metrics import DENOMINATOR_FIELD, DENOMINATOR_JUDGED
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_JUDGED,
+    merge_metrics,
+    metric_interval,
+)
 from sieval.datasets import TEvalBeforeCallingDatasetSample
+
+#: The axes the ``*_parsed`` triple narrows to the samples whose reply parsed.
+#: Named once: ``_post_process`` publishes the rates and ``_axis_intervals``
+#: brackets them, and a second spelling is how one axis gets a rate with another
+#: axis's interval beside it.
+_PARSED_AXES = ("args_precision", "args_recall", "args_f1_score")
+
+#: Population keys the two axis families are clustered on. ``n_graded`` counts
+#: every judged sample, ``n_parsed`` only those whose reply parsed; they differ
+#: exactly when a reply does not, which is why the declaration is per metric and
+#: this report has no single default.
+_GRADED_COUNT = "n_graded"
+_PARSED_COUNT = "n_parsed"
 
 
 @sieval_task(
@@ -48,9 +66,11 @@ class TEvalBeforeCallingZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        # `float | str`: the report carries `denominator_policy`, which names a
-        # population rather than measuring one.
-        dict[str, float | str],
+        # `str`: the report carries `denominator_policy`, which names a population
+        # rather than measuring one. `list[float]` is a per-axis interval, and
+        # `dict[str, str]` the map saying which of this report's two populations
+        # each of those is clustered on.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -180,11 +200,16 @@ class TEvalBeforeCallingZeroShotGenTask(
         # pointed at an arbitrary axis. `denominator_policy` still applies: every
         # axis is macro-averaged over the judged samples, with pipeline failures
         # reported in `fails` rather than averaged in as zeros.
+        #
+        # The intervals ride BESIDE `_post_process` rather than inside it: that
+        # method returns upstream's rate mapping, and every interval-bearing
+        # fragment of a report has to be folded in one `merge_metrics` -- a plain
+        # merge would keep only the last fragment's `ci95_units`.
         return {
             **self._post_process(results_list),
             "fails": len(fails),
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
-        }
+        } | merge_metrics(*self._axis_intervals(results_list))
 
     def _format_load(self, data) -> dict:
         try:
@@ -396,7 +421,7 @@ class TEvalBeforeCallingZeroShotGenTask(
         """
         scored = self._metric_keys()
         # list of dict to dict of list
-        results: dict[str, float] = {"n_graded": float(len(results_list))}
+        results: dict[str, float] = {_GRADED_COUNT: float(len(results_list))}
         if results_list:
             for key in scored:
                 results[key] = float(
@@ -407,12 +432,68 @@ class TEvalBeforeCallingZeroShotGenTask(
         # sieval addition, no upstream counterpart. Gated on what the mode
         # scores: `args_precision_parsed` beside an omitted `args_precision`
         # would call one axis both unmeasured and zero.
-        success_samples = [r for r in results_list if r.get("parse_rate", 0) == 1]
-        results["n_parsed"] = float(len(success_samples))
+        success_samples = self._parsed_samples(results_list)
+        results[_PARSED_COUNT] = float(len(success_samples))
         if success_samples:
-            for key in ("args_precision", "args_recall", "args_f1_score"):
+            for key in _PARSED_AXES:
                 if key in scored:
                     results[f"{key}_parsed"] = float(
                         np.mean([r[key] for r in success_samples]) * 100
                     )
         return results
+
+    @staticmethod
+    def _parsed_samples(results_list: list[dict]) -> list[dict]:
+        """The judged samples whose reply parsed -- the ``*_parsed`` population.
+
+        One definition of "parsed", shared by the rates and by their intervals:
+        two spellings of this filter would put a rate over one population beside
+        an interval over another, and nothing in the report would say so.
+        """
+        return [r for r in results_list if r.get("parse_rate", 0) == 1]
+
+    def _axis_intervals(
+        self, results_list: list[dict]
+    ) -> list[dict[str, float | list[float] | dict[str, str]]]:
+        """One interval per published axis, each on the population it averages.
+
+        Every axis is exactly a mean over samples of that sample's own score, so
+        each carries its own -- `args_f1_score` included, which is the mean of
+        the PER-SAMPLE F1s the evaluator computed and not a harmonic mean of two
+        pooled rates.
+
+        Two populations, declared per metric because this report has no single
+        default: the six axes are averaged over every judged sample
+        (``n_graded``) and the ``*_parsed`` triple over the samples whose reply
+        parsed (``n_parsed``). The two differ exactly when a reply does not
+        parse, and a triple borrowing ``n_graded`` would quote an interval over a
+        population it was not computed over.
+
+        The gates are `_post_process`' own -- `_metric_keys` for which axes this
+        configuration scores, `_parsed_samples` for the narrowed population -- so
+        an interval cannot appear for an axis the report omits. The reverse is
+        allowed and expected: below two samples, or with no spread between them,
+        the estimator has nothing to say and the axis ships without a bound.
+        """
+        scored = self._metric_keys()
+        intervals = [
+            metric_interval(
+                axis,
+                [result[axis] for result in results_list],
+                denominator=len(results_list),
+                unit=_GRADED_COUNT,
+            )
+            for axis in scored
+        ]
+        parsed = self._parsed_samples(results_list)
+        intervals += [
+            metric_interval(
+                f"{axis}_parsed",
+                [result[axis] for result in parsed],
+                denominator=len(parsed),
+                unit=_PARSED_COUNT,
+            )
+            for axis in _PARSED_AXES
+            if axis in scored
+        ]
+        return intervals

@@ -168,6 +168,9 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.datasets import GSM1KDatasetSample
 
@@ -313,7 +316,7 @@ class GSM1KFewShotBaseGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float | str],
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -399,29 +402,24 @@ class GSM1KFewShotBaseGenTask(
         # wrong, not as an excluded sample. One return rather than an empty-set
         # early exit, so the two declarations below cannot drift between branches.
         total = len(finals) + len(fails)
-        flexible = (
-            100
-            * sum(
-                1
-                for ctx in finals
-                if ctx.feedback_result["metrics"]["flexible_exact_match"]
-            )
-            / total
-            if total
-            else 0.0
-        )
-        strict = (
-            100
-            * sum(
-                1
-                for ctx in finals
-                if ctx.feedback_result["metrics"]["strict_exact_match"]
-            )
-            / total
-            if total
-            else 0.0
-        )
-        metrics: dict[str, float | str] = {
+        # The two extraction rules as per-problem values, read once: each rate is
+        # the mean of its own list, and each interval is estimated over that same
+        # list, so a rate and the bound printed beside it cannot come to read
+        # different axes. They differ on real samples here, which is why neither
+        # borrows the other's. Read exactly as the rates always read them -- a
+        # judged sample carries a `metrics` block, and a guard here would turn a
+        # missing one into a silent zero rather than the error it is.
+        flexible_values = [
+            1.0 if ctx.feedback_result["metrics"]["flexible_exact_match"] else 0.0
+            for ctx in finals
+        ]
+        strict_values = [
+            1.0 if ctx.feedback_result["metrics"]["strict_exact_match"] else 0.0
+            for ctx in finals
+        ]
+        flexible = 100 * sum(flexible_values) / total if total else 0.0
+        strict = 100 * sum(strict_values) / total if total else 0.0
+        metrics: dict[str, float | str | list[float]] = {
             "score": flexible,
             "fails": len(fails),
             "flexible_exact_match": flexible,
@@ -445,4 +443,28 @@ class GSM1KFewShotBaseGenTask(
         # expected case here, not an extraction failure, since GSM1k's gold has no
         # `####` and only the response can supply one.
         metrics |= health_metrics(finals)
-        return metrics
+        # One interval per rule, each over the values that rule's rate is the mean
+        # of. Denominator is the same REQUESTED `total` on both, unlike the GSM8K
+        # sibling's JUDGED one.
+        grouping = self.problem_groups(finals)
+        return metrics | merge_metrics(
+            interval_metrics(
+                flexible_values,
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `flexible_exact_match` is `score` under its own name, so it
+                # carries the same interval.
+                aliases=("flexible_exact_match",),
+            ),
+            # `strict_exact_match` is the co-equal rule, not an alias: the two
+            # disagree on real samples, which is the whole reason both are
+            # published.
+            metric_interval(
+                "strict_exact_match",
+                strict_values,
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            ),
+        )

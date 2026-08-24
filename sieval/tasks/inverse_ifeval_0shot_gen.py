@@ -68,6 +68,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     sampling_report,
+    ungated_intervals,
 )
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import InverseIFEvalDataset, InverseIFEvalDatasetSample
@@ -142,7 +143,8 @@ class InverseIFEvalZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        dict[str, float | str | None],
+        # `list[float]` carries `score_ci95`.
+        dict[str, float | str | None | list[float] | dict[str, str]],
     ]
 ):
     @classmethod
@@ -308,7 +310,13 @@ class InverseIFEvalZeroShotGenTask(
         # since the paper's cell quantization implies n=6. Withholding the block
         # would hide the spread of a draw already paid for.
         rolled = sampling_report(
-            finals, n=self._n, k=self._k, denominator=total, votes=False
+            finals,
+            n=self._n,
+            k=self._k,
+            denominator=total,
+            votes=False,
+            score_key="pass@1",
+            grouping=self.problem_groups(finals),
         )
         pass_at_1 = rolled["pass@1"]
 
@@ -324,7 +332,7 @@ class InverseIFEvalZeroShotGenTask(
                 if not (verdict.get("extra") or {}).get("grader_parsed", True):
                     n_grader_unparsed += 1
 
-        metrics: dict[str, float | str | None] = {
+        metrics: dict[str, float | str | None | list[float] | dict[str, str]] = {
             "score": pass_at_1,
             "pass@1": pass_at_1,
             "fails": len(fails),
@@ -342,6 +350,9 @@ class InverseIFEvalZeroShotGenTask(
             SCORE_KEY_FIELD: "pass@1",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
+        # Outside the n>1 gate, because the metrics they bracket are: `pass@1`
+        # is published at every budget, and so is the headline copied from it.
+        metrics |= ungated_intervals(rolled, metrics=("score", "pass@1"))
         if self._n > 1:
             # At n=1 the rest only restates `pass@1`.
             metrics.update(rolled)

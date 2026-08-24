@@ -20,6 +20,9 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.datasets import DROPDatasetSample
 
@@ -51,8 +54,9 @@ class DROPFewShotGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -172,10 +176,26 @@ class DROPFewShotGenTask(
     @override
     async def report(self, finals, fails):
         count = len(finals)
-        total_em = sum(ctx.feedback_result["metrics"]["em"] for ctx in finals)
+        # `em` is already on 0-1, so these ARE the per-question values its interval
+        # is estimated over; `f1` needs the rescale below.
+        per_question_em = [
+            float(ctx.feedback_result["metrics"]["em"]) for ctx in finals
+        ]
+        total_em = sum(per_question_em)
         total_f1 = sum(ctx.feedback_result["metrics"]["f1"] for ctx in finals)
         avg_em = total_em / count * 100 if count > 0 else 0
         avg_f1 = total_f1 / count if count > 0 else 0
+        # DROP's official metric is the MEAN OF PER-QUESTION F1s, so the headline
+        # is a genuine mean over problems -- not the pooled precision/recall ratio
+        # an "F1" usually names, which would have no per-problem value at all.
+        #
+        # `/ 100` is load-bearing: `drop_metric` returns `em` on 0-1 but `f1` on
+        # 0-100 (`_compute_f1` scales by 100), which is why `avg_f1` above needs no
+        # `* 100` where `avg_em` does. Passed raw, every value would be 100x over,
+        # `p` would exceed 1.0, and the interval would land silently on the
+        # saturated Clopper-Pearson branch.
+        per_question_f1 = [ctx.feedback_result["metrics"]["f1"] / 100 for ctx in finals]
+        grouping = self.problem_groups(finals)
         # `em` and `f1` are co-equal partial-credit metrics; `score_key` records
         # which of the two the headline was taken from. The denominator is the
         # judged set — a pipeline failure is reported in `fails`, not averaged in
@@ -187,4 +207,23 @@ class DROPFewShotGenTask(
             "f1": avg_f1,
             SCORE_KEY_FIELD: "f1",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
-        }
+        } | merge_metrics(
+            interval_metrics(
+                per_question_f1,
+                denominator=count,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `f1` is `score` under its own name, so it carries the same
+                # interval.
+                aliases=("f1",),
+            ),
+            # `em` is the co-equal column, not an alias: the binary verdict where
+            # `f1` is the partial credit, so it is estimated over its own values.
+            metric_interval(
+                "em",
+                per_question_em,
+                denominator=count,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            ),
+        )

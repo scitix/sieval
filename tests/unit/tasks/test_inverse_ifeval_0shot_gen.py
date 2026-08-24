@@ -25,7 +25,11 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
-from sieval.core.tasks.metrics import DENOMINATOR_FIELD, DENOMINATOR_REQUESTED
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    interval_declaration_problems,
+)
 from sieval.datasets.inverse_ifeval import InverseIFEvalDataset
 from sieval.tasks.inverse_ifeval_0shot_gen import InverseIFEvalZeroShotGenTask
 from tests.conftest import HandlerTransport
@@ -387,6 +391,9 @@ async def test_report_score_is_the_pooled_mean_with_fails_in_the_denominator():
     assert report["n_graded"] == 3
     assert report[DENOMINATOR_FIELD] == DENOMINATOR_REQUESTED
     assert report["score_key"] == "pass@1"
+    # `n_graded` sits beside a problem-clustered interval here, so the unit map is
+    # the only thing saying which count the interval belongs to.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio
@@ -470,6 +477,24 @@ async def test_report_omits_sampling_block_at_n_1_and_adds_it_above():
     assert report["k"] == 2
     # No majority vote over free-form prose.
     assert "maj@k" not in report
+
+
+@pytest.mark.anyio
+async def test_report_carries_an_interval_around_the_headline():
+    # Two problems split evenly is the smallest case with genuine spread --
+    # `wilson_interval` needs >= 2 problems and 0 < p < 1 to emit anything.
+    task, _, _ = _task()
+    finals = _finals(
+        [
+            ("english", "Question Correction", [True]),
+            ("english", "Question Correction", [False]),
+        ]
+    )
+    report = await task.report(finals, [])
+
+    lo, hi = report["score_ci95"]
+    assert lo < report["score"] < hi
+    assert report["n_problems"] == 2
 
 
 @pytest.mark.anyio

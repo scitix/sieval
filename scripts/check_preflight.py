@@ -421,6 +421,43 @@ _DENOMINATOR_VALUES = frozenset({"requested", "judged"})
 #: keys reads them as computed and gives up on the very reports it is checking.
 _DECLARATION_CONSTANTS = frozenset({"SCORE_KEY_FIELD", "DENOMINATOR_FIELD"})
 
+#: The interval pair as ``metrics.py`` NAMES it. Rule 5 resolves these two
+#: constants to their values rather than restating the key strings, so renaming a
+#: key there reaches the check for free — but only while the constant names still
+#: match, which is what `test_interval_constants_match_the_metrics_module` pins:
+#: a name that resolves to nothing turns rule 5 off silently.
+_INTERVAL_KEY_CONSTANT = "SCORE_CI_FIELD"
+_PROBLEM_COUNT_CONSTANT = "PROBLEM_COUNT_FIELD"
+
+#: The per-metric interval contract, also read out of ``metrics.py`` by name:
+#: the suffix every interval key carries (``pass@1`` -> ``pass@1_ci95``) and the
+#: key mapping each of those back to the population it is clustered on. Rule 6
+#: is off, silently, if either name stops resolving — which is what
+#: `test_interval_constants_match_the_metrics_module` pins.
+_CI_SUFFIX_CONSTANT = "CI_SUFFIX"
+_CI_UNITS_CONSTANT = "CI_UNITS_FIELD"
+
+#: The general per-metric emitter. A headline routed through it publishes
+#: ``score_ci95`` under a key built from a metric NAME, which no source scan can
+#: enumerate — so rule 5 reads the CALL instead (:func:`_headline_interval_units`).
+_METRIC_INTERVAL_HELPER = "metric_interval"
+
+#: ``metrics.py`` helpers that fold their ARGUMENTS into one dict, so the keys
+#: they publish are their operands' and not their own
+#: (:func:`_merged_sources`). Renaming one without updating this reads as a task
+#: that stopped publishing an interval — which `test_real_tasks_pair_the_interval`
+#: reports as a drop rather than letting it pass quietly.
+_FOLD_HELPERS = frozenset({"merge_metrics"})
+
+#: Task modules that publish an interval's population with no interval beside it.
+#: A handoff, not an exemption — and **empty**: ugmathbench's ``n_problems``
+#: predated the interval, and the pair closed once that task said which of its two
+#: axes each of its rates belongs to (its ``score_ci95`` is clustered on problems,
+#: EAcc's unit, and its per-version AAcc deliberately gets none). An entry that has
+#: become unnecessary is itself reported (rule 5), so the list cannot outlive its
+#: reason — which is how this one expired.
+_UNPAIRED_PROBLEM_COUNT: frozenset[str] = frozenset()
+
 
 def _report_of(cls: ast.ClassDef) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
     """Return the class's own ``report``, or None if it does not define one."""
@@ -433,31 +470,107 @@ def _report_of(cls: ast.ClassDef) -> ast.FunctionDef | ast.AsyncFunctionDef | No
     return None
 
 
-def _dict_keys_written(fn: ast.AST) -> set[str]:
+def _module_constants(tree: ast.Module | None) -> dict[str, str]:
+    """Module-level ``NAME = "literal"`` bindings, by name.
+
+    ``metrics.py`` writes some report keys through a constant
+    (``{SCORE_CI_FIELD: [lo, hi]}``) rather than a literal, so a scan that
+    understands only string-literal keys reads that dict as computed and sees
+    none of the keys the module defines. Resolved from the module rather than
+    restated here, on the same terms as :func:`_metrics_helper_keys`: the module
+    owns its key names, and a copy here is a copy that falls behind.
+    """
+    if tree is None:
+        return {}
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                constants[target.id] = value.value
+    return constants
+
+
+def _key_names(fn: ast.AST, constants: dict[str, str] | None) -> dict[str, set[str]]:
+    """Names usable as a dict key in *fn*, and the key strings each can name.
+
+    Two sources, both needed before a report that spells its keys through
+    ``metrics.py``'s constants can be read at all:
+
+    * a module constant bound to a literal — ``{SCORE_CI_FIELD: [lo, hi]}``;
+    * a loop variable iterating a fixed tuple of those —
+      ``for field in (SCORE_CI_FIELD, PROBLEM_COUNT_FIELD): metrics[field] = ...``
+      writes two keys this scan can name, even though the subscript itself is a
+      variable. Without it that one loop makes the whole report read as writing
+      an unnameable key, and rules 4-5 give up on the report entirely.
+
+    Over-approximating a loop variable only ever makes those rules more
+    permissive: they check that a DECLARED key is present, never that an
+    undeclared one is absent.
+    """
+    if constants is None:
+        return {}
+    names: dict[str, set[str]] = {name: {value} for name, value in constants.items()}
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.For) or not isinstance(node.target, ast.Name):
+            continue
+        if not isinstance(node.iter, (ast.Tuple, ast.List)):
+            continue
+        bound: set[str] = set()
+        for element in node.iter.elts:
+            if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                bound.add(element.value)
+            elif isinstance(element, ast.Name) and element.id in constants:
+                bound.add(constants[element.id])
+            else:
+                # One element this cannot name makes the loop variable unnameable:
+                # a partial set would claim the report writes only the keys that
+                # happened to resolve.
+                bound = set()
+                break
+        if bound:
+            names[node.target.id] = names.get(node.target.id, set()) | bound
+    return names
+
+
+def _dict_keys_written(
+    fn: ast.AST, constants: dict[str, str] | None = None
+) -> set[str]:
     """Every string key *fn* WRITES into a dict.
 
     Writes only — dict-literal keys and ``d["k"] = ...`` targets. A subscript
     *read* is excluded on purpose: ``rollout["score"]`` reads a per-rollout
     verdict, and counting it would make a task that never publishes a headline
     look like one that does.
+
+    *constants* resolves a key spelled as a name rather than a literal — see
+    :func:`_key_names`. Omitted, only literals count, which is what every caller
+    wanted before the report keys grew constants of their own.
     """
+    resolvable = _key_names(fn, constants)
+
+    def _named(key: ast.expr | None) -> set[str]:
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            return {key.value}
+        if isinstance(key, ast.Name):
+            return resolvable.get(key.id, set())
+        return set()
+
     keys: set[str] = set()
     for node in ast.walk(fn):
         if isinstance(node, ast.Dict):
-            keys.update(
-                k.value
-                for k in node.keys
-                if isinstance(k, ast.Constant) and isinstance(k.value, str)
-            )
+            for key in node.keys:
+                keys |= _named(key)
         elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
-                if (
-                    isinstance(target, ast.Subscript)
-                    and isinstance(target.slice, ast.Constant)
-                    and isinstance(target.slice.value, str)
-                ):
-                    keys.add(target.slice.value)
+                if isinstance(target, ast.Subscript):
+                    keys |= _named(target.slice)
     return keys
 
 
@@ -500,29 +613,45 @@ def _dict_key_patterns(fn: ast.AST) -> set[str]:
     return patterns
 
 
-def _names_a_key_statically(key: ast.expr | None) -> bool:
+def _names_a_key_statically(
+    key: ast.expr | None, resolvable: dict[str, set[str]] | None = None
+) -> bool:
     """Whether *key* pins a dict key at parse time — literally or as a pattern.
 
-    ``None`` is a ``**`` spread. A :class:`ast.Name` counts only for the
-    declaration fields, which every report spells as constants.
+    ``None`` is a ``**`` spread. A :class:`ast.Name` counts for the declaration
+    fields, which every report spells as constants, and for any other name
+    *resolvable* can name (:func:`_key_names`) — a name bound to a literal in
+    ``metrics.py`` names its key exactly as well as the literal would.
     """
     return (
         isinstance(key, ast.JoinedStr)
         or (isinstance(key, ast.Constant) and isinstance(key.value, str))
-        or (isinstance(key, ast.Name) and key.id in _DECLARATION_CONSTANTS)
+        or (
+            isinstance(key, ast.Name)
+            and (
+                key.id in _DECLARATION_CONSTANTS
+                or (resolvable is not None and key.id in resolvable)
+            )
+        )
     )
 
 
 def _merged_sources(fn: ast.AST) -> set[str] | None:
     """The ``metrics.py`` helpers *fn* folds whole dicts in from, by name.
 
-    Three spellings in the tree: ``| health_metrics(finals)``,
-    ``|= sampling_report(...)``, ``metrics.update(rolled)``. Naming the helper
-    rather than just noting that a merge happened is what keeps rule 4 sharp —
-    widening to every key ``metrics.py`` can emit would accept
-    ``score_key: "pass@1"`` on a task that never computed one.
+    Four spellings in the tree: ``| health_metrics(finals)``,
+    ``|= sampling_report(...)``, ``metrics.update(rolled)``, and one fold helper
+    whose ARGUMENTS are the operands — ``merge_metrics(a, b)`` publishes the keys
+    of both, so a rule reading only the outermost call would credit the fold and
+    lose the two fragments inside it. Naming the helper rather than just noting
+    that a merge happened is what keeps rule 4 sharp — widening to every key
+    ``metrics.py`` can emit would accept ``score_key: "pass@1"`` on a task that
+    never computed one.
 
-    ``None`` when a merge cannot be traced to a name, which widens it anyway.
+    ``None`` when a merge cannot be traced to a name, which widens it anyway. A
+    fold ARGUMENT that cannot be traced is skipped instead: it is a dict built
+    here, whose literal keys are already read straight off the tree.
+
     Narrow about ``|`` on purpose: ``dict[str, float | str]`` is a type
     annotation in the same tree, so only a call operand counts as a merge.
     """
@@ -545,6 +674,14 @@ def _merged_sources(fn: ast.AST) -> set[str] | None:
         """Record the helper *value* came from; False if it cannot be named."""
         if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
             sources.add(value.func.id)
+            if value.func.id in _FOLD_HELPERS:
+                for argument in value.args:
+                    inner = (
+                        argument.value
+                        if isinstance(argument, ast.Starred)
+                        else argument
+                    )
+                    _resolve(inner)
             return True
         if isinstance(value, ast.Name) and value.id in produced_by:
             sources.add(produced_by[value.id])
@@ -571,29 +708,34 @@ def _merged_sources(fn: ast.AST) -> set[str] | None:
     return sources
 
 
-def _has_unknowable_key(fn: ast.AST) -> bool:
+def _has_unknowable_key(fn: ast.AST, constants: dict[str, str] | None = None) -> bool:
     """Whether *fn* writes a key nothing static can name — not even a pattern.
 
     A ``**`` spread of an expression, or a key computed from a variable. Unlike a
     merge there is no module to go read, so rule 4 stays silent rather than
-    report a column the report does write.
+    report a column the report does write. *constants* is resolved the same way
+    :func:`_dict_keys_written` resolves it, so a key spelled as a name — or as a
+    variable a loop binds to those names — is known rather than unknowable.
     """
+    resolvable = _key_names(fn, constants)
     for node in ast.walk(fn):
         if isinstance(node, ast.Dict):
-            if not all(_names_a_key_statically(k) for k in node.keys):
+            if not all(_names_a_key_statically(k, resolvable) for k in node.keys):
                 return True
         elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
                 if isinstance(target, ast.Subscript) and not _names_a_key_statically(
-                    target.slice
+                    target.slice, resolvable
                 ):
                     return True
     return False
 
 
 def _metrics_helper_keys(
-    tree: ast.Module | None, roots: set[str] | None
+    tree: ast.Module | None,
+    roots: set[str] | None,
+    constants: dict[str, str] | None = None,
 ) -> tuple[set[str], set[str]]:
     """Report keys the named ``metrics.py`` helpers can produce.
 
@@ -602,11 +744,15 @@ def _metrics_helper_keys(
     because ``sampling_report`` returns ``rolled | budget_metrics(...)`` and gets
     ``pass@k`` from ``rollout_metrics``, so one body names few of its keys.
     *roots* of ``None`` (an untraceable merge) widens this to the whole module.
+
+    *constants* are the module's own ``NAME = "literal"`` bindings, so a helper
+    returning ``{SCORE_CI_FIELD: ...}`` is read as writing that key rather than a
+    computed one.
     """
     if tree is None:
         return set(), set()
     if roots is None:
-        return _dict_keys_written(tree), _dict_key_patterns(tree)
+        return _dict_keys_written(tree, constants), _dict_key_patterns(tree)
 
     keys: set[str] = set()
     patterns: set[str] = set()
@@ -620,7 +766,7 @@ def _metrics_helper_keys(
         fn = _function_named(tree, name)
         if fn is None:
             continue
-        keys |= _dict_keys_written(fn)
+        keys |= _dict_keys_written(fn, constants)
         patterns |= _dict_key_patterns(fn)
         queue += [
             node.func.id
@@ -655,6 +801,62 @@ def _declared_field_values(fn: ast.AST, constant: str, literal: str) -> list[ast
                 if isinstance(target, ast.Subscript) and _matches(target.slice):
                     found.append(node.value)
     return found
+
+
+def _resolved_string(value: ast.expr, constants: dict[str, str]) -> str | None:
+    """The string *value* names, literally or through a ``metrics.py`` constant.
+
+    ``None`` when nothing static can say — a computed unit name, which rule 6
+    skips rather than guesses at, on the same terms as
+    :func:`_has_unknowable_key`.
+    """
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return value.value
+    if isinstance(value, ast.Name):
+        return constants.get(value.id)
+    return None
+
+
+def _headline_interval_units(fn: ast.AST, constants: dict[str, str]) -> set[str]:
+    """Population keys a ``metric_interval`` call declares for the HEADLINE.
+
+    Rule 5 reads the interval key off the report's own dict, which cannot see a
+    headline emitted through :func:`metric_interval`: that helper writes
+    ``ci_field(metric)``, an ``ast.Call``, so ``score_ci95`` is nowhere in the
+    source. A macro-over-strata task therefore looks like a report with no
+    interval at all — and could bypass the pair rule entirely without meaning to.
+
+    What IS nameable is the call: its first argument is the literal ``"score"``
+    and its ``unit=`` is a literal or a module constant, so the population the
+    headline is clustered on can be read even though the key holding its interval
+    cannot. Reported as a second figure rather than folded into ``paired``: those
+    two counts answer different questions, and a report whose headline is
+    clustered on subjects has no ``n_problems`` to pair with by design.
+
+    Only ``"score"`` — a sibling metric's interval is not the headline pair's
+    business, and the runtime check already covers every metric.
+    """
+    units: set[str] = set()
+    for node in ast.walk(fn):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == _METRIC_INTERVAL_HELPER
+        ):
+            continue
+        first = node.args[0] if node.args else None
+        if first is None or _resolved_string(first, constants) != "score":
+            continue
+        declared = next((k.value for k in node.keywords if k.arg == "unit"), None)
+        # No `unit=` means the helper's own default, which is the problem count.
+        named = (
+            constants.get(_PROBLEM_COUNT_CONSTANT)
+            if declared is None
+            else _resolved_string(declared, constants)
+        )
+        if named is not None:
+            units.add(named)
+    return units
 
 
 def _policy_text(value: ast.expr) -> str:
@@ -1846,7 +2048,7 @@ class PreflightRunner:
         ``report["score"]``. That is how 21 of 49 modules stayed bare after the
         fields shipped.
 
-        Four rules, AST-only so a task whose optional deps are absent is still
+        Five rules, AST-only so a task whose optional deps are absent is still
         covered:
 
         1. a class defining ``report`` declares ``denominator_policy``;
@@ -1861,12 +2063,56 @@ class PreflightRunner:
            headline pointing at a missing column survives every test and every
            run. A key merged in from ``metrics.py`` counts, traced to the helper
            that emits it (:func:`_merged_sources`); skipped, not guessed, only
-           for a key nothing static can name (:func:`_has_unknowable_key`).
+           for a key nothing static can name (:func:`_has_unknowable_key`);
+        5. the headline interval and its problem count are written as a **pair**.
+           An interval whose population is unknown cannot be read — the same
+           half-width means one thing over 30 problems and another over 500 — and
+           a population with no interval beside it is a count nothing asked for.
+           Both keys are named by ``metrics.py``'s own constants, so this resolves
+           a name-spelled dict key (:func:`_module_constants`) as well as a
+           literal, and counts a pair merged in from ``interval_metrics``.
+           Deliberately exact-match only, where rule 4 also accepts an f-string
+           pattern: a loop that *could* produce ``score_ci95`` is not evidence
+           that an interval was estimated, and ``score_<category>`` matches every
+           pattern that would. :data:`_UNPAIRED_PROBLEM_COUNT` would list a module
+           publishing a count that predates its interval; it is **empty** today,
+           because the one entry it held expired when that task paired its keys.
+           The listing expires loudly by design, since a listed module that pairs
+           the two is reported as well.
+
+           A headline clustered on something OTHER than problems pairs with its
+           own count, not with ``n_problems`` — a macro over subjects owes
+           ``n_subjects``, and copying the problem count there would narrow the
+           interval. Those reports emit the headline through ``metric_interval``,
+           whose interval key is built from a metric name and so is invisible
+           here, so they are read off the call and counted as a **second figure**
+           (:func:`_headline_interval_units`). Two counts rather than one sum:
+           they are different claims, and a single total would hide which unit a
+           report is on.
+        6. every interval declares its UNIT. A report may carry one interval per
+           metric, so ``n_problems`` alone no longer says what any single one is
+           clustered on: a report writing any ``*_ci95`` key writes
+           ``ci95_units`` too, and every population key that map names is a key
+           the same report writes. Two halves, because they fail differently — an
+           interval with no entry is unreadable, and an entry naming a key that
+           is not there points at nothing. Here an f-string key *does* count when
+           its literal tail is the suffix (``f"{axis}_ci95"`` produces
+           intervals; ``f"score_{category}"`` does not, which is why rule 5
+           cannot take patterns), and a hand-written ``ci95_units`` is read for
+           its values — one built inside ``metrics.py`` names its own population
+           key by construction, so there is nothing there to check.
 
         A ``report`` that is a single ``return helper(...)`` is judged on the
         helper, resolved through the module's own imports — ``arc/``'s four leaves
         share one ``arc_report``, and demanding the keys at a site that does not
         build the dict would force four copies to drift apart.
+
+        A key spelled as a NAME resolves against ``metrics.py``'s constants and
+        the task module's own, in that order of precedence: a report naming its
+        population key once, as a module constant, is as readable as one spelling
+        ``PROBLEM_COUNT_FIELD``, and reading only the shared module's bindings
+        made the former look like a computed key — which switches rules 4-5 off
+        for that whole report.
         """
         py_files = [
             f
@@ -1880,14 +2126,34 @@ class PreflightRunner:
         metrics_tree = self._parse_task_module(
             self.project_root / "sieval" / "core" / "tasks" / "metrics.py", []
         )
+        # `metrics.py`'s own key constants, so rule 5 names the interval pair the
+        # way the module does. Absent (no such module, or the names changed), rule
+        # 5 has nothing to check and the PASS message's pair count drops to zero —
+        # which is what `test_real_tasks_pair_the_interval` watches for.
+        constants = _module_constants(metrics_tree)
+        interval_key = constants.get(_INTERVAL_KEY_CONSTANT)
+        population_key = constants.get(_PROBLEM_COUNT_CONSTANT)
+        ci_suffix = constants.get(_CI_SUFFIX_CONSTANT)
+        units_key = constants.get(_CI_UNITS_CONSTANT)
         violations: list[str] = []
         checked = 0
         verified = 0
+        paired = 0
+        paired_elsewhere = 0
+        declared_units = 0
         for py_file in py_files:
             rel = py_file.relative_to(self.project_root)
             tree = self._parse_task_module(py_file, violations)
             if tree is None:
                 continue
+            # The task's OWN literal-bound names too, not just `metrics.py`'s: a
+            # report key spelled `SUBSET_COUNT_FIELD` is as nameable as one
+            # spelled `PROBLEM_COUNT_FIELD`, and reading only the shared module's
+            # constants made a task naming its own population key look like one
+            # writing a computed key -- which switches rule 4 off for that whole
+            # report. `metrics.py`'s bindings win a collision, so the shared key
+            # names keep one meaning.
+            key_constants = _module_constants(tree) | constants
 
             for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
                 report = _report_of(cls)
@@ -1914,12 +2180,17 @@ class PreflightRunner:
                 names: set[str] = set()
                 policies: list[ast.expr] = []
                 score_keys: list[ast.expr] = []
+                unit_maps: list[ast.expr] = []
                 merged: set[str] | None = set()
                 unknowable = False
                 for scope in scopes:
-                    keys |= _dict_keys_written(scope)
+                    keys |= _dict_keys_written(scope, key_constants)
                     patterns |= _dict_key_patterns(scope)
                     names |= _names_read(scope)
+                    if units_key is not None:
+                        unit_maps += _declared_field_values(
+                            scope, _CI_UNITS_CONSTANT, units_key
+                        )
                     policies += _declared_field_values(
                         scope, "DENOMINATOR_FIELD", "denominator_policy"
                     )
@@ -1931,10 +2202,10 @@ class PreflightRunner:
                         merged = None
                     else:
                         merged |= sources
-                    unknowable = unknowable or _has_unknowable_key(scope)
+                    unknowable = unknowable or _has_unknowable_key(scope, key_constants)
                 if merged is None or merged:
                     merged_keys, merged_patterns = _metrics_helper_keys(
-                        metrics_tree, merged
+                        metrics_tree, merged, constants
                     )
                     keys |= merged_keys
                     patterns |= merged_patterns
@@ -1995,6 +2266,88 @@ class PreflightRunner:
                             "points nowhere"
                         )
 
+                if ci_suffix is not None and units_key is not None:
+                    # An f-string counts here, unlike in rule 5, when its literal
+                    # TAIL is the suffix: `f"{axis}_ci95"` can only produce
+                    # interval keys, where `f"score_{category}"` produces none.
+                    interval_fields = sorted(
+                        {key for key in keys if key.endswith(ci_suffix)}
+                        | {
+                            pattern
+                            for pattern in patterns
+                            if pattern.endswith(re.escape(ci_suffix))
+                        }
+                    )
+                    if units_key in keys:
+                        declared_units += 1
+                    elif interval_fields:
+                        violations.append(
+                            f"{where}: report() writes {', '.join(interval_fields)} "
+                            f"but no {units_key!r}, so nothing says which "
+                            "population each of those intervals is clustered on "
+                            "— one report can carry an interval per metric, and "
+                            "they need not share a unit"
+                        )
+                    for value in unit_maps:
+                        if not isinstance(value, ast.Dict):
+                            continue
+                        for metric, unit in zip(value.keys, value.values, strict=True):
+                            named = _resolved_string(unit, key_constants)
+                            if named is None or named in keys:
+                                continue
+                            declared_for = _resolved_string(metric, key_constants)
+                            violations.append(
+                                f"{where}: {units_key} declares "
+                                f"{declared_for or ast.unparse(metric)!r} on "
+                                f"population {named!r}, which this report never "
+                                "writes — the unit an interval is quoted over has "
+                                "to be a key a reader can find beside it"
+                            )
+
+                if interval_key is None or population_key is None:
+                    continue
+                module = rel.as_posix()
+                unpaired_by_hand = module in _UNPAIRED_PROBLEM_COUNT
+                has_interval = interval_key in keys
+                has_population = population_key in keys
+                if has_interval and has_population:
+                    paired += 1
+                    if unpaired_by_hand:
+                        violations.append(
+                            f"{where}: {module!r} is listed in "
+                            "_UNPAIRED_PROBLEM_COUNT (check_preflight.py) but now "
+                            f"writes {interval_key!r} beside its "
+                            f"{population_key!r} — delete the entry, or the next "
+                            "unpaired count in this module goes unreported"
+                        )
+                elif has_interval:
+                    violations.append(
+                        f"{where}: report() writes {interval_key!r} but no "
+                        f"{population_key!r}, so nothing says how many problems "
+                        "the interval was clustered over — the same half-width "
+                        "means one thing over 30 problems and another over 500"
+                    )
+                elif has_population and not unpaired_by_hand:
+                    violations.append(
+                        f"{where}: report() writes {population_key!r} with no "
+                        f"{interval_key!r} beside it, so it publishes an interval's "
+                        "population and no interval — the pair is emitted whole or "
+                        "not at all"
+                    )
+                # The headline routed through `metric_interval`: its interval key
+                # is unnameable, so the pair is read off the CALL and counted
+                # apart. Without this the three macro-over-strata reports show up
+                # as reports with no interval at all, and the pair rule is one
+                # helper swap away from being unenforced by accident.
+                other_units = sorted(
+                    unit
+                    for scope in scopes
+                    for unit in _headline_interval_units(scope, key_constants)
+                    if unit != population_key
+                )
+                if other_units:
+                    paired_elsewhere += 1
+
         if violations:
             return [
                 CheckResult(
@@ -2010,7 +2363,10 @@ class PreflightRunner:
                 "check_report_declarations",
                 f"all {checked} task report(s) declare their score key and "
                 f"denominator policy ({verified} score_key(s) also resolved to a "
-                "key the report writes)",
+                f"key the report writes; {paired} report(s) pair the headline "
+                f"interval with its problem count and {paired_elsewhere} with "
+                f"another population; {declared_units} declare the "
+                "unit of every interval they publish)",
             )
         ]
 

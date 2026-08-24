@@ -28,6 +28,8 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    ProblemGrouping,
+    interval_metrics,
 )
 from sieval.core.utils.ppl import total_logprob
 
@@ -226,16 +228,25 @@ def arc_judgement_record(
 def arc_report(
     finals,
     fails,
-) -> dict[str, float | str]:
+    grouping: ProblemGrouping | None = None,
+) -> dict[str, float | str | list[float] | dict[str, str]]:
     """The shared report for all four ARC tasks, declarations included.
 
     Both PPL and CLP leaves delegate here, so the declarations live here too --
-    four copies of ``score_key`` is how two of them would come to disagree.
+    four copies of ``score_key`` is how two of them would come to disagree. The
+    headline interval is one of those declarations, which is why *grouping* is a
+    parameter: it is read off the live dataset by ``Task.problem_groups``, and
+    this helper is a free function with no ``self`` to reach it through. A leaf
+    passing ``None`` gets an interval that treats every sample as its own
+    problem, which is correct exactly when the split was not repeated.
     """
-    correct_num = sum(
-        1 for ctx in finals if ctx.feedback_result["rollouts"][0]["correct"]
-    )
-    acc = 100 * correct_num / len(finals) if finals else 0.0
+    # The same per-sample verdicts `acc` is a mean of, read from the one place the
+    # count above reads them, so the interval cannot drift onto another axis.
+    correct = [
+        1.0 if ctx.feedback_result["rollouts"][0]["correct"] else 0.0 for ctx in finals
+    ]
+    total = len(finals)
+    acc = 100 * sum(correct) / total if total else 0.0
     return {
         "score": acc,
         "acc": acc,
@@ -244,4 +255,13 @@ def arc_report(
         # `len(finals)`: a pipeline failure is reported in `fails`, not scored as
         # a wrong choice -- the MCQ-family convention (mmlu / cmmlu / openbookqa).
         DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
-    }
+    } | interval_metrics(
+        correct,
+        denominator=total,
+        group_keys=None if grouping is None else grouping.keys,
+        n_problems=None if grouping is None else grouping.n_problems,
+        # `acc` is `score` under its own name, so it carries the same interval:
+        # a reader keyed on the column `score_key` names would otherwise have to
+        # know the bound is filed under `score`.
+        aliases=("acc",),
+    )

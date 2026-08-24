@@ -26,6 +26,7 @@ from sieval.core.runners.resume_gate import ResumeIdentityError, ResumeVersionEr
 from sieval.core.runners.runner import (
     ResultDirExistsError,
     TaskRunner,
+    UnreadableIntervalError,
     gate_resume_identity,
     gate_resume_version,
     read_run_version,
@@ -2704,6 +2705,136 @@ class TestReportVersions:
 
         assert report is None
         assert not (runner.root_dir / "report.json").exists()
+
+
+class UndeclaredIntervalTask(MockTask):
+    """Publishes an interval with nothing saying which population it is over.
+
+    The shape a plain ``|`` between two interval-bearing fragments produces: the
+    intervals are all there, one fragment's ``ci95_units`` replaced the other's.
+    No source scan can catch it -- a per-metric interval key is built from a
+    metric name -- so the runner is the last place it can be caught at all.
+    """
+
+    async def report(self, finals, fails):
+        return {
+            "score": 50.0,
+            "accuracy": 50.0,
+            "score_key": "accuracy",
+            "score_ci95": [30.0, 70.0],
+            "accuracy_ci95": [30.0, 70.0],
+            "n_problems": float(len(finals) + len(fails)),
+            "ci95_units": {"score": "n_problems"},
+        }
+
+
+class UnresolvableUnitTask(MockTask):
+    """Declares an interval over a population key the report does not write."""
+
+    async def report(self, finals, fails):
+        return {
+            "score": 50.0,
+            "score_key": "score",
+            "score_ci95": [30.0, 70.0],
+            "ci95_units": {"score": "n_versions"},
+        }
+
+
+class DeclaredIntervalTask(MockTask):
+    """The same report, whole: every interval declared, every unit present."""
+
+    async def report(self, finals, fails):
+        return {
+            "score": 50.0,
+            "accuracy": 50.0,
+            "score_key": "accuracy",
+            "score_ci95": [30.0, 70.0],
+            "accuracy_ci95": [30.0, 70.0],
+            "n_problems": float(len(finals) + len(fails)),
+            "ci95_units": {"score": "n_problems", "accuracy": "n_problems"},
+        }
+
+
+class TestReportIntervalDeclarations:
+    """The run refuses a report whose intervals cannot be read -- after saving it.
+
+    `check_preflight.py` can only see that `ci95_units` EXISTS: the per-metric
+    keys are built from metric names, so its static key set is neither a subset
+    nor a superset of the runtime one. Completeness is checked here instead.
+    """
+
+    @pytest.mark.anyio
+    async def test_an_undeclared_interval_fails_the_run(self, tmp_path):
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = UndeclaredIntervalTask(dataset=MockDataset(), model=model, name="undecl")
+        runner = TaskRunner(task, make_config(tmp_path))
+
+        with pytest.raises(ValueError, match="accuracy_ci95"):
+            await runner.arun()
+
+        # SAVED FIRST, then refused: a finished run's artifacts are worth keeping,
+        # and the undeclared key is in them for whoever reads the failure.
+        saved = orjson.loads((runner.root_dir / "report.json").read_bytes())
+        assert saved["accuracy_ci95"] == [30.0, 70.0]
+        assert saved["sieval_versions"] == [__version__]
+
+    @pytest.mark.anyio
+    async def test_a_unit_the_report_does_not_write_fails_the_run(self, tmp_path):
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = UnresolvableUnitTask(dataset=MockDataset(), model=model, name="nounit")
+        runner = TaskRunner(task, make_config(tmp_path))
+
+        with pytest.raises(ValueError, match="n_versions"):
+            await runner.arun()
+        assert (runner.root_dir / "report.json").exists()
+
+    @pytest.mark.anyio
+    async def test_a_complete_declaration_passes(self, tmp_path):
+        # The discriminating half: the same two intervals, declared, must not
+        # raise -- otherwise the guard above would pass on any report at all.
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = DeclaredIntervalTask(dataset=MockDataset(), model=model, name="decl")
+        runner = TaskRunner(task, make_config(tmp_path))
+
+        report = await runner.arun()
+        assert report["ci95_units"] == {
+            "score": "n_problems",
+            "accuracy": "n_problems",
+        }
+
+    @pytest.mark.anyio
+    async def test_a_report_with_no_interval_is_untouched(self, tmp_path):
+        # `MockTask` publishes no interval and no declaration: the check has
+        # nothing to say, and the nine real reports in that position must not
+        # start failing.
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = MockTask(dataset=MockDataset(), model=model, name="nointerval")
+        report = await TaskRunner(task, make_config(tmp_path)).arun()
+
+        assert "ci95_units" not in report
+
+    @pytest.mark.anyio
+    async def test_the_refusal_still_leaves_the_run_its_anomaly_report(self, tmp_path):
+        """Refusing a report must not also cost the run its other artifacts.
+
+        `report.json` being saved before the raise is only half of "a finished
+        run's artifacts are worth keeping": raising out of the save aborted the
+        rest of `arun`'s finalization, so `anomalies.json` -- written after it --
+        never appeared. Which is the file a reader of this very failure would go
+        to next. Pinned here because nothing else in the suite runs the guard with
+        `detect_anomalies` on.
+        """
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = UndeclaredIntervalTask(dataset=MockDataset(), model=model, name="undecl")
+        runner = TaskRunner(task, make_config(tmp_path, detect_anomalies=True))
+
+        with pytest.raises(UnreadableIntervalError, match="accuracy_ci95"):
+            await runner.arun()
+
+        # Still a ValueError, so anything catching the pre-name shape is unaffected.
+        assert issubclass(UnreadableIntervalError, ValueError)
+        assert (runner.root_dir / "report.json").exists()
+        assert (runner.root_dir / "anomalies.json").exists()
 
 
 class GenTask(MockTask):

@@ -23,6 +23,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     iter_grader_outputs,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.advanced_if import AdvancedIFDataset, AdvancedIFDatasetSample
 from sieval.tasks import advanced_if_0shot_gen
 from sieval.tasks.advanced_if_0shot_gen import AdvancedIFZeroShotGenTask
@@ -353,6 +354,122 @@ async def test_report_pools_both_published_rates():
     assert report["n_rubric_checks"] == 8.0
     assert report["n_grader_unparsed"] == 0.0
     assert report["fails"] == 0
+
+    # The interval rides `overall_pass_rate`, pooled over the 2 rollout units --
+    # not `micro_pass_rate`, which pools over the 8 rubric checks. `n_problems`
+    # counts PROBLEMS, so it must not equal `n_rubric_checks`; at n=1 it happens
+    # to equal the rollout count too (see the n=2 case below, where it does not).
+    assert report["n_problems"] == 2
+    assert report["n_problems"] != report["n_rubric_checks"]
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+    # `overall_pass_rate` is `score` under its own name, so it repeats the
+    # headline bounds; `macro_pass_rate` is the per-rollout rubric mean and gets
+    # its own. The two read 50.0 and 75.0 here, so a macro bound copied from the
+    # headline fails to contain its own number.
+    assert report["overall_pass_rate_ci95"] == [lo, hi]
+    macro_interval = report["macro_pass_rate_ci95"]
+    assert isinstance(macro_interval, list)
+    assert macro_interval != interval
+    assert macro_interval[0] < report["macro_pass_rate"] < macro_interval[1]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "overall_pass_rate": "n_problems",
+        "macro_pass_rate": "n_problems",
+    }
+    # `micro_pass_rate` pools over RUBRIC CHECKS and gets none, and neither do the
+    # per-aspect breakdown keys.
+    assert "micro_pass_rate_ci95" not in report
+    assert f"{COMPLEX}_pass_rate_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_report_counts_failed_rollouts_in_the_interval_population():
+    """A fail contributes `n` deterministic zeros to the denominator.
+
+    Two samples at n=1 plus one fail: 2 graded + 1 stand-in = 3, so the interval
+    is quoted over 3 rather than the 2 that were graded.
+    """
+    task, _ = _task()
+    report = await task.report(
+        [_final(COMPLEX, True, 2, 2), _final(COMPLEX, False, 2, 0)],
+        [TaskContext(sample_id=9)],
+    )
+
+    assert report["overall_pass_rate"] == pytest.approx(100 / 3)
+    assert report["n_problems"] == 3
+
+
+@pytest.mark.anyio
+async def test_report_n_problems_counts_problems_not_rollouts():
+    """At n=2 the two counts diverge, and `n_problems` must be the smaller one.
+
+    The headline is pooled over ROLLOUTS, so the denominator is 2 problems x 2
+    rollouts = 4. `n_problems` is the field a reader sizes the evidence by, and
+    reporting 4 there would overstate it two-fold and make the number
+    uncomparable against a task that reports questions.
+    """
+    sample = _sample()
+    dataset = AdvancedIFDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(sample)])})
+    )
+    task = AdvancedIFZeroShotGenTask(
+        dataset,
+        _ScriptedChatModel(reply="x", model="candidate"),
+        grader=_ScriptedChatModel(reply="{}", model="o3-mini"),
+        n=2,
+    )
+
+    def _two_rollout_final(sample_id: int, *, passed: tuple[bool, bool]):
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                None,
+                [
+                    build_rollout_judgement(
+                        i,
+                        ok,
+                        score=1.0 if ok else 0.0,
+                        metrics={
+                            "satisfied_all": ok,
+                            "rubric_level_pass_rate": 1.0 if ok else 0.0,
+                        },
+                        extra={
+                            "n_checks": 1,
+                            "n_checks_passed": 1 if ok else 0,
+                            "grader_parsed": True,
+                        },
+                    )
+                    for i, ok in enumerate(passed)
+                ],
+                extra={"benchmark_name": COMPLEX},
+            ),
+        )
+
+    report = await task.report(
+        [
+            _two_rollout_final(0, passed=(True, True)),
+            _two_rollout_final(1, passed=(False, False)),
+        ],
+        [],
+    )
+
+    # 2 of 4 rollouts passed: the headline is over rollouts.
+    assert report["overall_pass_rate"] == pytest.approx(50.0)
+    assert report["n_graded"] == 4.0
+    # ...but the population is 2 PROBLEMS, not the 4 rollouts.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < 50.0 < hi
 
 
 @pytest.mark.anyio

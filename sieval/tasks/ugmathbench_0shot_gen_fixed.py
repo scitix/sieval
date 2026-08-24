@@ -165,10 +165,15 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
+    PROBLEM_COUNT_FIELD,
     SCORE_KEY_FIELD,
+    ProblemGrouping,
     aggregate,
     budget_metrics,
     health_metrics,
+    interval_metrics,
+    merge_metrics,
+    metric_interval,
     rollout_metrics,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
@@ -178,6 +183,13 @@ from sieval.datasets import UGMathBenchDatasetSample
 #: CLI default (``eval_rule.py --precision``), not the stricter 1e-8 its
 #: ``Judger`` class defaults to.
 DEFAULT_PRECISION = 1e-3
+
+#: Report key carrying AAcc's population: the *(problem, version)* pairs the run
+#: asked for, failures included. The second population of this report --
+#: ``n_problems`` is EAcc's and CAcc's -- and the unit every per-version interval
+#: declares. Deliberately not ``n_versions_judged``, which excludes the failed
+#: versions AAcc counts as wrong.
+VERSION_COUNT_FIELD = "n_versions"
 
 
 @sieval_task(
@@ -286,8 +298,9 @@ class UGMathBenchZeroShotGenFixedTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -426,6 +439,37 @@ class UGMathBenchZeroShotGenFixedTask(
         )
 
     @override
+    def problem_groups(self, finals) -> ProblemGrouping | None:
+        """No grouping: ``report`` has already collapsed the versions it would.
+
+        The clustering here is inherent to the data — one sample is one
+        *(problem, version)* pair — so it never routes through ``Dataset.repeat``
+        and there is no column for the base implementation to read. But the
+        collapse is not missing: ``report``'s ``by_problem`` reduction **is** it,
+        and it must not be applied twice. ``interval_metrics`` collapses a group
+        by summing its values and rescaling, i.e. by the group's MEAN, while
+        EAcc's per-problem reduction is "correct in *every* version" — a nonlinear
+        function of the versions that no mean can express. Handing it per-version
+        verdicts keyed on ``problem_id`` would therefore estimate an interval on
+        **AAcc's** axis and print it beside an EAcc headline. So the interval is
+        estimated in ``report``, over the per-problem EAcc indicators, ungrouped.
+
+        Returning ``None`` also covers a repeat-wrapped run: copies of a version
+        share their ``problem_id``, so ``by_problem`` absorbs them and the
+        population stays the problem count rather than growing with the samples.
+
+        **AAcc is clustered on versions, not on problems**, and so are this
+        task's copies of the sampling keys: they are means over the *(problem,
+        version)* pairs, and ``report`` declares them over ``n_versions``.
+        Reusing the problem-level population for any of them would report a
+        per-problem width on a per-version rate — the same ``sqrt(times)``
+        narrowing as an uncollapsed repeat, wearing a different name. That is
+        what makes this report a two-unit one, and why nothing here can supply
+        one grouping for all of its metrics.
+        """
+        return None
+
+    @override
     async def report(self, finals, fails):
         by_problem: dict[str, list[bool]] = defaultdict(list)
         by_subject: dict[str, dict[str, list[bool]]] = defaultdict(
@@ -434,6 +478,11 @@ class UGMathBenchZeroShotGenFixedTask(
         n_correct = 0
         # Per *version*, the unit AAcc counts — not per problem, which is EAcc's.
         per_version: list[dict[str, float]] = []
+        # The same first-rollout verdicts `n_correct` sums, kept as the axis
+        # AAcc's interval is estimated on. A failed version produced none, and is
+        # a deterministic zero inside `n_versions` -- so it stays out of these
+        # values and inside the denominator.
+        version_correct: list[float] = []
         observed_rollouts: list[int] = []
 
         unattributed_finals = 0
@@ -456,6 +505,7 @@ class UGMathBenchZeroShotGenFixedTask(
             verdicts = judgement["rollouts"]
             correct = bool(verdicts) and verdicts[0]["correct"]
             n_correct += int(correct)
+            version_correct.append(1.0 if correct else 0.0)
             # Computed ALONGSIDE AAcc/EAcc, never inside them: those keep their
             # first-rollout definition or EAcc's denominator stops meaning what
             # its warnings say it means.
@@ -542,7 +592,7 @@ class UGMathBenchZeroShotGenFixedTask(
                 unattributed,
             )
 
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": eacc,
             # `score` is EAcc, not one of the sampling metrics — say which column
             # the headline number came from rather than leave it to be inferred.
@@ -556,7 +606,16 @@ class UGMathBenchZeroShotGenFixedTask(
             # a percentage of EAcc (upstream's RE).
             "delta": aacc - eacc,
             "relative_delta": (aacc - eacc) * 100 / eacc if eacc else 0.0,
-            "n_problems": float(len(by_problem)),
+            # EAcc's denominator, and the population the interval below is
+            # clustered over — one key, spelled the way `metrics.py` names it so
+            # the two cannot drift into two readings of one column.
+            PROBLEM_COUNT_FIELD: float(len(by_problem)),
+            # AAcc's denominator, and the population every per-VERSION interval
+            # below is clustered over. Reported unconditionally: a rate over 3
+            # versions and one over 3000 are the same number and a different
+            # claim. Distinct from `n_versions_judged` by exactly the failed
+            # versions, which AAcc counts as wrong.
+            VERSION_COUNT_FIELD: float(n_versions),
             "n_versions_judged": float(len(finals)),
             "incomplete_problems": float(incomplete),
             # Non-zero means EAcc's denominator is short by this many samples,
@@ -569,21 +628,85 @@ class UGMathBenchZeroShotGenFixedTask(
         # Only when the run actually drew more than one sample: at n=1 pass@1 is
         # aacc/100, and a second name for it invites being read as independent
         # evidence.
+        version_intervals: list[dict[str, float | list[float] | dict[str, str]]] = []
         if self._n > 1 and per_version:
             # `n_versions` is AAcc's denominator, so a failed version counts as
             # wrong in both. Averaging over the judged versions alone would bias
             # these upward over survivors — the defect the EAcc warnings above
             # describe (RFC #74 F).
-            metrics.update(aggregate(per_version, n_versions))
+            rolled = aggregate(per_version, n_versions)
+            metrics.update(rolled)
             metrics.update(
                 budget_metrics(
                     observed_rollouts, n=self._n, k=self._k, unit="judged version"
                 )
             )
+            # Each of these keys is exactly `sum(per-version value) / n_versions`
+            # over the SAME values `aggregate` folded, so each carries its own
+            # interval rather than borrowing one: `pass@k` is not a rescaled
+            # `pass@1`, and one bound over a block of six would make five of them
+            # read as measured. Iterating `rolled` is what keeps the interval set
+            # equal to the metric set -- the gates on `pass@k` / `maj@k` /
+            # `self_consistency` are already in the keys, and an axis `aggregate`
+            # dropped for being partial gets nothing.
+            #
+            # This is the one task in the tree whose sampling block sits on a unit
+            # other than problems: these are per *(problem, version)* pair, so
+            # they declare `n_versions` and not `n_problems`.
+            version_intervals += [
+                metric_interval(
+                    key,
+                    [version[key] for version in per_version],
+                    denominator=n_versions,
+                    unit=VERSION_COUNT_FIELD,
+                )
+                for key in rolled
+            ]
 
         # Outside the n>1 gate: extraction health is a fact about the parser, not
         # about the draw, and n=1 is where a stopped extractor hides longest.
         metrics |= health_metrics(finals)
+
+        # Two units, one fold. On the PROBLEM axis: EAcc (the headline) and CAcc
+        # beside it, each over one value per problem -- correct in every version,
+        # or in any -- and over the same problem count both divide by, so each
+        # brackets the number it is printed beside. Ungrouped on purpose: the
+        # `by_problem` reduction above IS this task's collapse, and it is
+        # nonlinear, so a second mean-based one would move the interval onto
+        # AAcc's per-version axis (see `problem_groups`). `interval_metrics`
+        # re-emits the problem count with the same value the block above wrote,
+        # which is what makes the two a pair rather than two definitions of one
+        # key.
+        #
+        # On the VERSION axis: AAcc, over the same first-rollout verdicts
+        # `n_correct` sums, plus whatever sampling keys this budget published.
+        # `delta` and `relative_delta` get nothing on either axis -- they combine
+        # aggregates from BOTH units, so no per-unit value has either as its mean.
+        #
+        # One `merge_metrics` for all of it: a second `|=` of a second merge would
+        # replace the whole `ci95_units` map rather than union it, and the
+        # intervals it dropped the declaration for would still all be there.
+        metrics |= merge_metrics(
+            interval_metrics(
+                _effective_hits(by_problem),
+                denominator=len(by_problem),
+                # `eacc` is `score` under its own name, so it carries the same
+                # interval.
+                aliases=("eacc",),
+            ),
+            metric_interval(
+                "cacc",
+                _covered_hits(by_problem),
+                denominator=len(by_problem),
+            ),
+            metric_interval(
+                "aacc",
+                version_correct,
+                denominator=n_versions,
+                unit=VERSION_COUNT_FIELD,
+            ),
+            *version_intervals,
+        )
 
         for subject, problems in sorted(by_subject.items()):
             metrics[f"eacc_{subject.lower()}"] = _effective_accuracy(problems)
@@ -632,25 +755,43 @@ def _identify(ctx) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _effective_accuracy(by_problem: dict[str, list[bool]]) -> float:
-    """Share of problems correct in *every* one of their randomized versions.
+def _effective_hits(by_problem: dict[str, list[bool]]) -> list[float]:
+    """Per-problem EAcc indicators: 1.0 for a problem correct in *every* version.
 
     A problem judged on fewer versions than the benchmark defines cannot be
     confirmed correct across all of them, so it never counts as a hit.
+
+    The values :func:`_effective_accuracy` is the mean of, and the units the
+    headline's interval is estimated over. One function rather than two, because
+    a second copy of the all-versions rule is a second answer to what counts as
+    a hit — and the interval would then bracket a number the report does not
+    publish.
     """
+    return [
+        1.0 if len(verdicts) == VERSIONS and all(verdicts) else 0.0
+        for verdicts in by_problem.values()
+    ]
+
+
+def _effective_accuracy(by_problem: dict[str, list[bool]]) -> float:
+    """Share of problems correct in *every* one of their randomized versions."""
     if not by_problem:
         return 0.0
-    hits = sum(
-        1
-        for verdicts in by_problem.values()
-        if len(verdicts) == VERSIONS and all(verdicts)
-    )
-    return hits * 100 / len(by_problem)
+    return sum(_effective_hits(by_problem)) * 100 / len(by_problem)
+
+
+def _covered_hits(by_problem: dict[str, list[bool]]) -> list[float]:
+    """Per-problem CAcc indicators: 1.0 for a problem correct in ANY version.
+
+    The values :func:`_covered_accuracy` is the mean of, and the units its
+    interval is estimated over -- one function rather than two, for the reason
+    :func:`_effective_hits` gives.
+    """
+    return [1.0 if any(verdicts) else 0.0 for verdicts in by_problem.values()]
 
 
 def _covered_accuracy(by_problem: dict[str, list[bool]]) -> float:
     """Share of problems correct in at least one version — EAcc's upper bracket."""
     if not by_problem:
         return 0.0
-    hits = sum(1 for verdicts in by_problem.values() if any(verdicts))
-    return hits * 100 / len(by_problem)
+    return sum(_covered_hits(by_problem)) * 100 / len(by_problem)

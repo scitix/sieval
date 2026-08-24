@@ -11,6 +11,7 @@ from sieval.community.openbookqa import OBQA_PROMPT_TEMPLATE
 from sieval.core.models import ModelOutput, Request, Response, SamplingParams
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import TaskContext
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.openbookqa import OpenBookQADataset, OpenBookQADatasetSample
 from sieval.tasks.openbookqa_kshot_gen import (
     STOP_SEQUENCES,
@@ -209,6 +210,17 @@ async def test_feedback_and_report_accuracy_and_field_types():
     assert isinstance(report["fails"], int)
     # MCQ tasks report accuracy only — no pass@1 (sibling consistency).
     assert "pass@1" not in report
+    # JUDGED: the fail is outside the population, so 2 -- not 3.
+    assert report["n_problems"] == 2
+    lo, hi = report["score_ci95"]
+    assert lo < report["score"] < hi
+    # `accuracy` is `score` under its own name, so it carries the same bounds --
+    # a reader keyed on the column `score_key` names finds its companion.
+    assert report["accuracy_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {"score": "n_problems", "accuracy": "n_problems"}
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 def test_negative_k_rejected():

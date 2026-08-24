@@ -118,6 +118,8 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     first_rollout_correct,
     health_metrics,
+    interval_metrics,
+    merge_metrics,
     sampling_report,
 )
 from sieval.datasets import PlatinumBenchDatasetSample
@@ -219,8 +221,9 @@ class PlatinumMathGenTask(
         PredictionRecord,
         JudgementRecord,
         # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # rather than measuring one; `list[float]` carries an interval, and
+        # `dict[str, str]` the `ci95_units` map naming each interval's unit.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     """Base for one PlatinumBench math subset; leaves set :attr:`subset`."""
@@ -374,7 +377,7 @@ class PlatinumMathGenTask(
         # additive and never touch them.
         correct_num = first_rollout_correct(finals)
         accuracy = 100 * correct_num / total
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float]] = {
             "score": accuracy,
             "fails": len(fails),
             "accuracy": accuracy,
@@ -387,10 +390,39 @@ class PlatinumMathGenTask(
         # Outside the gate: extraction health is a fact about the parser, not
         # about the draw, and n=1 is where a stopped extractor hides longest.
         metrics |= health_metrics(finals)
+        # Same axis as `accuracy` above -- the first rollout's verdict, per
+        # judged sample -- over the same `total` denominator, so the interval
+        # brackets the number it is printed beside.
+        first = [
+            1.0
+            if ((f.feedback_result or {}).get("rollouts") or [{}])[0].get("correct")
+            else 0.0
+            for f in finals
+        ]
+        grouping = self.problem_groups(finals)
+        headline = interval_metrics(
+            first,
+            denominator=total,
+            group_keys=None if grouping is None else grouping.keys,
+            n_problems=None if grouping is None else grouping.n_problems,
+            # `accuracy` is `score` under its own name, so it carries the same
+            # interval: a reader keyed on the column `score_key` names would
+            # otherwise have to know the bound is filed under `score`. `errors` is
+            # a count of questions, not a rate, and gets nothing.
+            aliases=("accuracy",),
+        )
         if self._n <= 1:
-            return metrics
+            return metrics | headline
 
-        # Over `total`, the denominator `accuracy` uses, so a failed sample
-        # counts as wrong in both.
-        metrics.update(sampling_report(finals, n=self._n, k=self._k, denominator=total))
-        return metrics
+        # One fold, not two merges: a plain merge replaces `ci95_units` wholesale,
+        # so folding the sampling block over the headline's interval would leave
+        # `score_ci95` with no unit declared. The same grouping and the same
+        # `total` on both sides, so they declare one `n_problems`, not two --
+        # over `total`, the denominator `accuracy` uses, so a failed sample counts
+        # as wrong in both.
+        return metrics | merge_metrics(
+            headline,
+            sampling_report(
+                finals, n=self._n, k=self._k, denominator=total, grouping=grouping
+            ),
+        )

@@ -21,6 +21,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
 )
 from sieval.core.tasks.context import TaskContext
+from sieval.core.tasks.metrics import interval_declaration_problems
 from tests.conftest import HandlerTransport, ModuleIsolation
 
 _TASK_MODULE = "sieval.tasks.theoremqa_kshot_base_gen"
@@ -128,6 +129,43 @@ async def test_report_divides_metrics_by_completed_finals_only():
     assert report["accuracy"] == 100.0
     assert report["fails"] == 1.0
     assert report["empty"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_report_pairs_the_accuracy_column_with_the_headline_interval():
+    """`accuracy` is `score` under its own name, so it carries the same bounds.
+
+    Two problems split evenly is the smallest case with genuine spread --
+    `wilson_interval` needs >= 2 problems and 0 < p < 1 to emit anything at all.
+    """
+    raw = {"Question": "What is 2+2?", "Answer": "4", "Answer_type": "integer"}
+    task = _task(n_shot=0)
+
+    def _final(sample_id: int, *, correct: bool) -> TaskContext:
+        return (
+            TaskContext(sample_id=sample_id, raw_sample=raw)
+            .to_preprocessed({"prompt": "p"})
+            .to_inferred("i")
+            .to_postprocessed(build_prediction_record(["4"]))
+            .to_feedback(
+                build_judgement_record("4", [build_rollout_judgement(0, correct)])
+            )
+        )
+
+    report = await task.report([_final(0, correct=True), _final(1, correct=False)], [])
+
+    assert report["score"] == report["accuracy"] == 50.0
+    # JUDGED: this task excludes fails, so the population is the 2 judged.
+    assert report["n_problems"] == 2
+    lo, hi = report["score_ci95"]
+    assert lo < report["score"] < hi
+    assert report["accuracy_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {"score": "n_problems", "accuracy": "n_problems"}
+    # `empty` is a count, not a rate, so it neither gets nor borrows an interval.
+    assert "empty_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

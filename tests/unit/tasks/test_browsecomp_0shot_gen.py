@@ -16,6 +16,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.browsecomp import (
     BrowseCompDataset,
     BrowseCompDatasetSample,
@@ -275,6 +276,74 @@ async def test_report_fails_weighted_by_n():
     # 2 correct attempts + n*1 = 2 INCORRECT => 4 units, accuracy 50%.
     assert report["n_graded"] == 2
     assert report["accuracy"] == pytest.approx(50.0)
+
+
+@pytest.mark.anyio
+async def test_report_interval_is_averaged_over_rollouts_but_sized_in_problems():
+    """Two different counts, and they must not be confused.
+
+    The headline is averaged over ROLLOUTS: 2 samples at n=2 plus one fail is
+    4 graded + 2 stand-ins = 6, which is the denominator. `n_problems` is the
+    PROBLEM count, 3 -- the field a reader sizes the evidence by, and the one
+    that has to mean the same noun here as on every other task.
+    """
+    dataset = BrowseCompDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
+    )
+    model = _ScriptedChatModel(reply="x", model="candidate")
+    grader = _ScriptedChatModel(reply="correct: yes", model="grader")
+    task = BrowseCompZeroShotGenTask(dataset, model, grader=grader, n=2)
+
+    def _final(sample_id: int, *, grade: str) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        i,
+                        grade == "CORRECT",
+                        extra={"grade": grade, "confidence": 100},
+                    )
+                    for i in range(2)
+                ],
+            ),
+        )
+
+    report = await task.report(
+        [_final(0, grade="CORRECT"), _final(1, grade="INCORRECT")],
+        [TaskContext(sample_id=2)],
+    )
+
+    # 2 correct of 6 rollout units — the headline's own denominator.
+    assert report["accuracy"] == pytest.approx(100 * 2 / 6)
+    # The population is 3 problems, NOT the 6 rollouts it was averaged over.
+    assert report["n_problems"] == 3
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+    # `accuracy` and `correct` are `score` under two other names -- one
+    # `is_correct`, filed under both -- so all three carry the one interval.
+    assert report["accuracy_ci95"] == [lo, hi]
+    assert report["correct_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "accuracy": "n_problems",
+        "correct": "n_problems",
+    }
+    # `incorrect` gets none. `aggregate_metrics` counts it as its own bucket, but
+    # `parse_grade` returns CORRECT or INCORRECT and nothing else and the fail
+    # stand-ins are INCORRECT, so on every input this task can produce the two
+    # rates sum to 100 and a bound on one is the other mirrored. This assertion is
+    # what would fail first if a third bucket ever arrived.
+    assert report["incorrect"] == pytest.approx(100 - report["correct"])
+    assert "incorrect_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

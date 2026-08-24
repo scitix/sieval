@@ -20,6 +20,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.scicode import SciCodeDataset
 from sieval.tasks.scicode_0shot_gen import SciCodeZeroShotGenTask
 from tests.conftest import HandlerTransport
@@ -737,6 +738,29 @@ async def test_report_sub_and_main_accuracy():
     assert report["total_problems"] == 2
     assert report["main_problem_accuracy"] == pytest.approx(50.0)
     assert report["score"] == report["main_problem_accuracy"]
+
+    # The interval is on the MAIN-problem axis -- the headline -- over
+    # `total_problems`, not on the step-pooled `sub_problem_accuracy` beside it.
+    # 2 problems, not the 5 steps a step-axis reading would report.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["score"] < hi
+    # The population is the problem count, not the step count -- a step-axis
+    # interval would report 5 here, and `total_steps` is asserted to be 5 above.
+    assert report["n_problems"] != report["total_steps"]
+    # `main_problem_accuracy` is `score` under its own name, so it carries the
+    # same bounds. `sub_problem_accuracy` pools over STEPS and gets none.
+    assert report["main_problem_accuracy_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "main_problem_accuracy": "n_problems",
+    }
+    assert "sub_problem_accuracy_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

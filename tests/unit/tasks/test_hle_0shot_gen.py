@@ -3,6 +3,7 @@
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
+import math
 from unittest.mock import patch
 
 import numpy as np
@@ -26,6 +27,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.hle import HLEDataset
 from sieval.tasks.hle_0shot_gen import HLEZeroShotGenTask
 from tests.conftest import HandlerTransport
@@ -282,6 +284,76 @@ async def test_report_accuracy_and_counts_fails_in_denominator():
     assert report["accuracy"] == pytest.approx(33.33, abs=1e-2)
     assert report["score"] == report["accuracy"]
 
+    # Upstream's pooled Wald HALF-WIDTH survives untouched beside the new
+    # clustered pair. Two different objects: a scalar in percentage points, and
+    # a [lo, hi] pair. Neither replaces the other.
+    half_width = report["confidence_interval"]
+    assert isinstance(half_width, float)
+    assert half_width == pytest.approx(
+        1.96 * math.sqrt(33.33 * (100 - 33.33) / 3), abs=1e-2
+    )
+    # Quoted over the ROLLOUT population, which at n=1 is finals + fails.
+    assert report["n_problems"] == 3
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    score = report["score"]
+    assert isinstance(score, float)
+    assert lo < score < hi
+    # `accuracy` is `score` under its own name, so it carries the same bounds.
+    assert report["accuracy_ci95"] == [lo, hi]
+    # `confidence_interval` is upstream's half-width, not a metric, so it is NOT
+    # declared -- an entry for it would name a key nothing computed an interval
+    # over. `calibration_error` is a binned RMS with no per-problem value.
+    assert report["ci95_units"] == {"score": "n_problems", "accuracy": "n_problems"}
+    assert "confidence_interval_ci95" not in report
+    assert "calibration_error_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships. It is
+    # also the check that would catch `confidence_interval` being mistaken for an
+    # interval key, since it does not end in the suffix.
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_report_n_problems_counts_problems_not_rollouts():
+    """At n=2 the two counts diverge, and `n_problems` must be the smaller one.
+
+    `accuracy` is averaged over ROLLOUTS -- 2 problems x 2 rollouts = 4 -- but
+    `n_problems` is what a reader sizes the evidence by. Reporting 4 there would
+    overstate it two-fold and put it in a different unit from every
+    sample-denominator task's `n_problems`.
+    """
+    task, _, _ = _task(n=2)
+
+    def _final(sample_id: int, *, correct: tuple[bool, bool]) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            feedback_result=build_judgement_record(
+                "",
+                [
+                    build_rollout_judgement(
+                        i, ok, extra={"confidence": 90, "grader_parsed": True}
+                    )
+                    for i, ok in enumerate(correct)
+                ],
+            ),
+        )
+
+    report = await task.report(
+        [_final(0, correct=(True, True)), _final(1, correct=(False, False))], []
+    )
+
+    # 2 of 4 rollouts: the headline is over rollouts.
+    assert report["n"] == 4
+    assert report["accuracy"] == pytest.approx(50.0)
+    # ...but the population is 2 PROBLEMS, not the 4 rollouts.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < 50.0 < hi
+
 
 @pytest.mark.anyio
 async def test_report_fails_weighted_by_n():
@@ -338,6 +410,15 @@ async def test_report_drops_unparsed_judge_from_grading():
     assert report["n"] == 2  # both stay in the denominator
     # 1 correct / 2 => 50.0; the dropped record counts as incorrect via `n`.
     assert report["accuracy"] == pytest.approx(50.0)
+    # The interval axis applies the same `grader_parsed` filter `accuracy` does:
+    # the unparsed rollout is a deterministic zero inside `n`, never a success.
+    # Counting it would put the mean at 100 and saturate the interval.
+    assert report["n_problems"] == 2
+    interval = report["score_ci95"]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < 50.0 < hi
+    assert hi < 100.0
 
 
 @pytest.mark.anyio

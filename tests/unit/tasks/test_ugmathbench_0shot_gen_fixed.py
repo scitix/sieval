@@ -7,6 +7,7 @@ import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
+from sieval.core.datasets import REPEAT_GROUP_COLUMN
 from sieval.core.models import ModelMeta, ModelOutput, Request, Response
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import (
@@ -17,8 +18,17 @@ from sieval.core.tasks import (
     build_prompt_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import (
+    PROBLEM_COUNT_FIELD,
+    SCORE_CI_FIELD,
+    interval_declaration_problems,
+    wilson_interval,
+)
 from sieval.datasets.ugmathbench import UGMathBenchDataset
-from sieval.tasks.ugmathbench_0shot_gen_fixed import UGMathBenchZeroShotGenFixedTask
+from sieval.tasks.ugmathbench_0shot_gen_fixed import (
+    VERSION_COUNT_FIELD,
+    UGMathBenchZeroShotGenFixedTask,
+)
 from tests.conftest import HandlerTransport
 
 
@@ -362,6 +372,148 @@ async def test_an_unrecoverable_version_is_counted_rather_than_dropped():
     assert report["eacc"] > report["aacc"]  # the invariant this makes visible
 
 
+# --- the headline interval --------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_the_interval_is_clustered_on_problems_not_versions():
+    """The headline is EAcc, a per-PROBLEM rate, so the population is problems.
+
+    One sample is one *(problem, version)* pair, so reading the versions as
+    independent problems would narrow the interval by the same `sqrt(times)` an
+    uncollapsed repeat does, wearing a different name.
+    """
+    finals = [
+        *_all_versions("p1", [True, True, True]),
+        *_all_versions("p2", [True, True, True]),
+        *_all_versions("p3", [True, True, False]),
+        *_all_versions("p4", [False, False, False]),
+    ]
+    report = await _task().report(finals, [])
+
+    assert report[PROBLEM_COUNT_FIELD] == 4.0  # problems, not the 12 versions
+    interval = report[SCORE_CI_FIELD]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    assert lo < report["eacc"] < hi
+    # `eacc` is `score` under its own name, so it repeats the headline bounds;
+    # `cacc` is the other per-problem rate and gets its own, over "correct in ANY
+    # version" rather than "in every one". They read 50.0 and 75.0 here, so a
+    # `cacc` bound copied from the headline fails to contain its own number.
+    assert report["eacc_ci95"] == [lo, hi]
+    cacc_interval = report["cacc_ci95"]
+    assert isinstance(cacc_interval, list)
+    assert cacc_interval != interval
+    assert cacc_interval[0] < report["cacc"] < cacc_interval[1]
+    # Two units in one report, so `aacc` is declared on its own population and
+    # the three per-problem rates on theirs.
+    assert report["ci95_units"] == {
+        "score": PROBLEM_COUNT_FIELD,
+        "eacc": PROBLEM_COUNT_FIELD,
+        "cacc": PROBLEM_COUNT_FIELD,
+        "aacc": VERSION_COUNT_FIELD,
+    }
+    # `delta` and `relative_delta` combine aggregates from BOTH units, so no
+    # per-unit value has either as its mean and neither gets an interval.
+    assert "delta_ci95" not in report
+    assert "relative_delta_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
+
+    # It is exactly the interval over the four per-problem EAcc indicators --
+    # two of four correct in every version.
+    expected = wilson_interval([1.0, 1.0, 0.0, 0.0], 4)
+    assert expected is not None
+    assert (lo, hi) == expected
+
+    # And the collapsing is what widened it: the same verdicts read per VERSION
+    # -- 8 of 12 correct, which is AAcc's axis -- give a strictly narrower one.
+    # That narrower interval is AAcc's own, and it is published as such rather
+    # than not at all: 12 versions, declared as 12.
+    per_version = wilson_interval([1.0] * 8 + [0.0] * 4, 12)
+    assert per_version is not None
+    assert hi - lo > per_version[1] - per_version[0]
+    assert report[VERSION_COUNT_FIELD] == 12.0
+    assert report["aacc_ci95"] == list(per_version)
+    aacc_interval = report["aacc_ci95"]
+    assert isinstance(aacc_interval, list)
+    assert aacc_interval[0] < report["aacc"] < aacc_interval[1]
+
+
+@pytest.mark.anyio
+async def test_the_interval_is_on_eaccs_axis_not_aaccs():
+    """A mean over versions would land on AAcc, which is a different number.
+
+    20 problems, each correct in one version of three: EAcc is 0 and AAcc is
+    33.3. Collapsing the versions by their MEAN -- what a grouped
+    `interval_metrics` call would do -- brackets 33.3; EAcc's all-versions
+    reduction brackets 0. The two do not overlap, so this fails loudly if the
+    interval is ever computed on the version axis.
+    """
+    finals = [
+        final
+        for problem in range(20)
+        for final in _all_versions(f"p{problem}", [True, False, False])
+    ]
+    report = await _task().report(finals, [])
+
+    assert report[PROBLEM_COUNT_FIELD] == 20.0
+    assert report["eacc"] == 0.0
+    assert report["aacc"] == pytest.approx(100 / 3)
+    interval = report[SCORE_CI_FIELD]
+    assert isinstance(interval, list)
+    lo, hi = interval
+    # p == 0 exactly: the one-sided Clopper-Pearson limit over 20 problems.
+    assert lo == 0.0
+    assert hi < report["aacc"]
+
+
+@pytest.mark.anyio
+async def test_a_repeated_version_does_not_inflate_the_population():
+    """Copies of a version share their `problem_id`, so `by_problem` absorbs them.
+
+    A repeat-wrapped run is degenerate for EAcc for an unrelated reason -- a
+    problem carrying six verdicts is not judged on exactly `VERSIONS` of them, so
+    it counts as incomplete and can never be a hit -- but the POPULATION must
+    still be the problem count. Reading the copies as extra problems is the
+    narrowing this task's grouping exists to prevent.
+    """
+    finals = [
+        final
+        for problem in ("p1", "p2")
+        for _ in range(2)
+        for final in _all_versions(problem, [True, True, True])
+    ]
+    report = await _task().report(finals, [])
+
+    assert report[PROBLEM_COUNT_FIELD] == 2.0  # not 4, and not the 12 samples
+    assert report["incomplete_problems"] == 2.0
+
+
+def test_problem_groups_is_off_because_report_already_collapsed():
+    """Even on a repeated split, where the base implementation WOULD group.
+
+    `report`'s `by_problem` reduction is the collapse, and it is nonlinear:
+    letting core collapse the same samples again by their mean would put the
+    interval on AAcc's axis.
+    """
+    dataset = UGMathBenchDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([_sample(), _sample()])})
+    ).repeat(2)
+    task = UGMathBenchZeroShotGenFixedTask(
+        dataset, ChatModel(model="mock-chat", api_key="fake")
+    )
+    test_set = task.dataset.test_set
+    assert test_set is not None
+    # The premise: the split really is repeat-stamped, so the base implementation
+    # would return a grouping here rather than None for want of a column.
+    assert REPEAT_GROUP_COLUMN in test_set.column_names
+
+    finals = [task.make_context(i) for i in range(len(test_set))]
+    assert task.problem_groups(finals) is None
+
+
 # --- n / k sampling wiring -------------------------------------------------
 
 
@@ -440,3 +592,79 @@ async def test_sampling_metrics_use_the_aacc_denominator():
     # survivors-only denominator would report.
     assert report["pass@1"] == pytest.approx(75.0)
     assert report["avg@n"] == pytest.approx(75.0)
+    # Every judged version here reads 1.0, so there is no spread between the
+    # units to estimate from and the keys ship without a bound -- omitted, never
+    # a zero-width interval claiming a certainty this run does not have.
+    units = report["ci95_units"]
+    assert isinstance(units, dict)
+    assert "pass@1" not in units
+    assert "pass@1_ci95" not in report
+    assert wilson_interval([1.0] * 3, 4) is None
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_the_sampling_block_is_clustered_on_versions_not_problems():
+    """UGMathBench is the one task whose sampling block is not per problem.
+
+    Each entry `aggregate` folds is one *(problem, version)* pair, over AAcc's
+    denominator, so every key of that block declares `n_versions`. Copying the
+    headline's declaration would quote a per-version width over a population of
+    problems -- the same narrowing an uncollapsed repeat produces.
+    """
+    dataset = UGMathBenchDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([_sample()])})
+    )
+    task = UGMathBenchZeroShotGenFixedTask(
+        dataset, ChatModel(model="mock-chat", api_key="fake"), k=2, n=2
+    )
+
+    def judged(problem_id: str, version: int, verdicts: list[bool]) -> TaskContext:
+        return TaskContext(
+            sample_id=f"{problem_id}-v{version}",
+            postprocess_result=build_prediction_record([["4"]] * len(verdicts)),
+            feedback_result=build_judgement_record(
+                ["4"],
+                [build_rollout_judgement(i, c) for i, c in enumerate(verdicts)],
+                extra={
+                    "problem_id": problem_id,
+                    "version": version,
+                    "subject": "Algebra",
+                },
+            ),
+        ).to_final()
+
+    # Four versions with three different per-version pass@1 values, so the block
+    # has something to estimate and the six keys do not all coincide.
+    finals = [
+        judged("p1", 1, [True, True]),
+        judged("p1", 2, [True, False]),
+        judged("p1", 3, [False, False]),
+        judged("p2", 1, [True, True]),
+    ]
+    report = await task.report(finals, [])
+
+    assert report[VERSION_COUNT_FIELD] == 4.0
+    assert report[PROBLEM_COUNT_FIELD] == 2.0
+    units = report["ci95_units"]
+    assert isinstance(units, dict)
+    # The whole block on the version axis, the headline and its per-problem
+    # siblings on theirs.
+    assert units["pass@1"] == VERSION_COUNT_FIELD
+    assert units["avg@n"] == VERSION_COUNT_FIELD
+    assert units["pass@k"] == VERSION_COUNT_FIELD
+    assert units["aacc"] == VERSION_COUNT_FIELD
+    assert units["score"] == PROBLEM_COUNT_FIELD
+    assert units["cacc"] == PROBLEM_COUNT_FIELD
+    # The interval set is the metric set: every key the block folded is
+    # declared, and nothing the budget gated out is.
+    for key in ("pass@1", "avg@n", "pass@k", "pass^k", "maj@k", "self_consistency"):
+        assert (key in report) == (key in units), key
+    # Each key is estimated on its OWN per-version values, not on a shared one:
+    # pass@1 averages 1.0 / 0.5 / 0.0 / 1.0 while pass@2 averages the
+    # solved-at-least-once indicator, so the two bounds differ.
+    expected = wilson_interval([1.0, 0.5, 0.0, 1.0], 4)
+    assert expected is not None
+    assert report["pass@1_ci95"] == list(expected)
+    assert report["pass@k_ci95"] != report["pass@1_ci95"]
+    assert interval_declaration_problems(report) == []

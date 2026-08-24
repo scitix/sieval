@@ -4,6 +4,7 @@ from sieval.core.runners.runner import (
     ResultDirExistsError,
     TaskRunner,
     TaskRunnerConfig,
+    UnreadableIntervalError,
     read_run_version,
 )
 
@@ -13,6 +14,7 @@ __all__ = [
     "ResumeAction",
     "TaskRunner",
     "TaskRunnerConfig",
+    "UnreadableIntervalError",
     "read_run_version",
     "resume_version_verdict",
 ]
