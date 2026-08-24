@@ -116,15 +116,26 @@ count. The value of every `ci95_units` entry is a key in the same report, so a
 reader that finds an interval can always find the population it is quoted over.
 
 **Which metrics have one today is partial, and this is where it stands.** The
-headline of 49 of the 58 task reports, exactly as before; plus every sampling key
-the shared block publishes — `pass@1`, `avg@n`, `pass@k`, `pass^k`, `maj@k`,
-`self_consistency` — on the 28 tasks that route through it. Every other metric in
-the tree carries none yet.
+headline of 49 of the 58 task reports; the column `score_key` names it was copied
+from, under that column's own name; every sampling key the shared block publishes
+— `pass@1`, `avg@n`, `pass@k`, `pass^k`, `maj@k`, `self_consistency` — on the 28
+tasks that route through it; and the co-equal second rate of the tasks that
+publish one on the problem unit (HellaSwag's `acc`, DROP's `em`, the two
+`exact_match` rules of the GSM8K/GSM1k base tasks, IFEval's and IFBench's other
+grade, UGMathBench's `cacc`, AdvancedIF's `macro_pass_rate`,
+ComplexConstraints' `criterion_pass_rate_macro`, SciTaRC's `exact_match` and
+`partial`).
+
+Not yet: everything on a population key the report does not write today (SysBench,
+`t_eval_before_calling`, SimpleQA-Verified, UGMathBench's per-version `aacc`,
+GSM+'s `score_wo_critical_thinking`), the pooled-ratio and nonlinear families
+below, every `score_<category>` / per-subject breakdown key, and the
+stratum macros of `ruler` / `iheval`.
 
 So **`<metric>_ci95` is optional even when `<metric>` is there**, and a consumer
 has to treat it that way. A metric can be published with no interval for two
-reasons: no estimator has been wired to it yet (every metric outside the two
-groups above), or there was nothing to estimate on this run — fewer than two units,
+reasons: no estimator has been wired to it yet (every metric outside the groups
+above), or there was nothing to estimate on this run — fewer than two units,
 or no dispersion between them, which is when `wilson_interval` returns nothing
 rather than a zero-width interval claiming certainty the run does not have. A run
 where every sample failed publishes all six sampling metrics and no interval at
@@ -140,11 +151,20 @@ Three rules decide whether a metric is a candidate at all:
   neither, and get no interval rather than an estimator that does not fit them.
 - A **deterministic transform** of another metric gets none. Its bounds would be
   the other metric's mirrored, which reads as two independent measurements of one
-  thing.
+  thing. `aa_lcr_0shot_gen`'s `incorrect` is literally `1 - accuracy`, so it gets
+  none. `browsecomp_0shot_gen`'s is written as an independent bucket count and
+  still gets none, because `parse_grade` returns `CORRECT` or `INCORRECT` and
+  nothing else and a pipeline failure stands in as `INCORRECT` — so the two rates
+  sum to 100 on every input that task can produce. It becomes a third estimand
+  only if a `NOT_ATTEMPTED` bucket arrives, which is the difference from
+  `simpleqa_verified_0shot_gen`, where three buckets are real.
 - A true **alias** — the same number under a second key name — does get one, so a
-  consumer keyed on either name finds a companion. `score_ci95` and
-  `pass@1_ci95` on a `pass@1`-headline task are exactly this case: the same two
-  bounds, published twice, because `score` is a copy of `pass@1`.
+  consumer keyed on either name finds a companion. That covers `score_ci95` and
+  `<column>_ci95` on every task whose `score` is a copy of another column
+  (`accuracy`, `acc_norm`, `exact_match`, `pass@1`, …), and IFEval's
+  `strict_accuracy` beside `strict_prompt_level_accuracy`. The bounds are not
+  merely equal but identical: the emitter takes the alias names as a parameter and
+  publishes one estimate under all of them, so the two cannot drift apart.
 
 A withheld metric takes its interval with it: a task that withholds the sampling
 block at `n = 1` withholds those metrics' intervals too, and keeps the ones for
@@ -301,7 +321,8 @@ an interval on one is not an interval on the other, and each owes its own
 population. Reusing a problem-level population for a version-level rate narrows
 the interval by the same √times an uncollapsed repeat does, wearing a different
 name. Its `score_ci95` is EAcc's, clustered on problems and declared over
-`n_problems`; `aacc` carries no interval, so nothing declares one for it.
+`n_problems`; `cacc` is the other per-*problem* rate and carries its own over the
+same `n_problems`; `aacc` carries no interval, so nothing declares one for it.
 
 The per-category keys (`score_<category>` on MMLU and MMLU-Pro) carry **no**
 interval today. Each would need its own population count, and one `n_problems`

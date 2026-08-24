@@ -136,6 +136,18 @@ than spelling any of the keys here: `interval_metrics` for the headline,
 `ungated_intervals`, which lifts the block's always-published intervals out of an
 `n > 1` gate and trims the declaration to what came with them.
 
+Both emitters take `aliases`: the other key names the **same number** is published
+under, each getting `<alias>_ci95` and a declaration on the same population. That
+is how the column `score_key` names gets a bound — a consumer keyed on `accuracy`
+cannot know the interval is filed under `score`. A parameter rather than a second
+call, because the alias interval must *be* the headline's and two calls with the
+same arguments are only equal until one is edited. It is for a **true alias**
+only. A different number gets its own `metric_interval` call over its own
+per-unit values; a **deterministic function** of another metric gets nothing at
+all, since a mirrored bound reads as second evidence and is not (`aa_lcr`'s
+`incorrect` is `1 - accuracy`; `browsecomp`'s is written as an independent bucket
+but sums to 100 with `correct` on every grade its parser can return).
+
 Two fragments that each carry intervals are folded with `merge_metrics`, never
 with `|`: a plain merge replaces `ci95_units` wholesale, so one fragment's
 declarations survive and the other's intervals are left with no unit — silently,
