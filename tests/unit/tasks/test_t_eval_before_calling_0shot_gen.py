@@ -12,6 +12,11 @@ import pytest
 
 from sieval.core.models import DEFAULT_REQUEST_TIMEOUT, ChatModel
 from sieval.core.tasks import build_prediction_record
+from sieval.core.tasks.metrics import (
+    CI_UNITS_FIELD,
+    ci_field,
+    interval_declaration_problems,
+)
 from sieval.tasks.t_eval_before_calling_0shot_gen import (
     TEvalBeforeCallingZeroShotGenTask,
 )
@@ -39,6 +44,17 @@ def _ctx(gold):
     return SimpleNamespace(
         raw_sample={"template": "", "ground_truth": gold, "meta_data": {}}
     )
+
+
+#: Every axis json mode scores with `eval_thought` off, so a hand-built sample
+#: can be read by `_post_process`' strict subscript.
+_JSON_AXES = ("name", "args_precision", "args_recall", "args_f1_score", "parse_rate")
+
+
+def _judged(**axes):
+    """One judged sample carrying every json-mode axis, defaulting to a hit."""
+    metrics = dict.fromkeys(_JSON_AXES, 1.0) | axes
+    return SimpleNamespace(feedback_result={"metrics": metrics})
 
 
 class TestMetricKeys:
@@ -329,6 +345,115 @@ class TestReport:
             assert axis not in result
         assert result["n_graded"] == 5.0
         assert result["n_parsed"] == 0.0
+
+    def test_each_axis_carries_its_own_interval_on_its_own_population(self):
+        """Two populations in one report, declared per metric.
+
+        The un-suffixed axes are averaged over every judged sample and the
+        `*_parsed` triple over the samples that parsed, so there is no
+        report-wide default: the fixture makes the two differ (3 of 4 parsed)
+        and the declaration has to say which axis is on which.
+        """
+        task = _task()
+        finals = [
+            _judged(args_precision=1.0),
+            _judged(args_precision=0.0),
+            _judged(args_precision=1.0),
+            # Unparsed: inside `n_graded`, outside `n_parsed`.
+            _judged(args_precision=0.0, parse_rate=0.0),
+        ]
+
+        result = asyncio.run(task.report(finals, []))
+
+        assert result["n_graded"] == 4.0
+        assert result["n_parsed"] == 3.0
+        # Two rates on two populations out of the same per-sample values.
+        assert result["args_precision"] == 50.0
+        assert result["args_precision_parsed"] == pytest.approx(200 / 3)
+        units = result[CI_UNITS_FIELD]
+        assert isinstance(units, dict)
+        assert units["args_precision"] == "n_graded"
+        assert units["parse_rate"] == "n_graded"
+        assert units["args_precision_parsed"] == "n_parsed"
+        # Every published axis is declared, and nothing else is.
+        assert set(units) == {
+            *_JSON_AXES,
+            "args_precision_parsed",
+            "args_recall_parsed",
+            "args_f1_score_parsed",
+        }
+        # The narrowed axis is estimated over the narrowed population, so its
+        # interval is NOT the un-suffixed axis's -- which is what a triple
+        # borrowing `n_graded` would produce.
+        assert (
+            result[ci_field("args_precision")]
+            != result[ci_field("args_precision_parsed")]
+        )
+        assert interval_declaration_problems(result) == []
+
+    def test_an_axis_with_no_spread_is_published_without_a_bound(self):
+        """Omitted, never zeroed: one judged sample has nothing to estimate from.
+
+        The report still publishes every axis and both counts -- an interval is
+        never present for an absent metric, but a present metric may have none.
+        """
+        result = asyncio.run(_task().report([_judged()], []))
+
+        assert result["parse_rate"] == 100.0
+        assert result["n_graded"] == 1.0
+        for axis in _JSON_AXES:
+            assert ci_field(axis) not in result
+        assert CI_UNITS_FIELD not in result
+        assert interval_declaration_problems(result) == []
+
+    def test_the_str_mode_report_declares_only_the_axes_it_scores(self):
+        # str/understand scores the args axes and `parse_rate`, so `name` gets
+        # neither a rate nor an interval nor an entry.
+        task = _task(default_prompt_type="str", eval_type="understand")
+        finals = [
+            SimpleNamespace(
+                feedback_result={
+                    "metrics": {
+                        "args_precision": hit,
+                        "args_recall": hit,
+                        "args_f1_score": hit,
+                        "parse_rate": 1.0,
+                    }
+                }
+            )
+            for hit in (1.0, 0.0, 1.0)
+        ]
+
+        result = asyncio.run(task.report(finals, []))
+
+        units = result[CI_UNITS_FIELD]
+        assert isinstance(units, dict)
+        assert "name" not in units
+        assert units["args_recall_parsed"] == "n_parsed"
+        assert interval_declaration_problems(result) == []
+
+    def test_the_empty_and_unparseable_paths_declare_nothing(self):
+        # No interval to declare on either path, so no entry either: a
+        # declaration for a key that is not there describes nothing.
+        task = _task()
+        empty = asyncio.run(task.report([], []))
+        assert CI_UNITS_FIELD not in empty
+        assert interval_declaration_problems(empty) == []
+
+        unparsed = [_judged(**dict.fromkeys(_JSON_AXES, 0.0)) for _ in range(5)]
+        zeros = asyncio.run(task.report(unparsed, []))
+        assert zeros["n_parsed"] == 0.0
+        units = zeros[CI_UNITS_FIELD]
+        assert isinstance(units, dict)
+        for axis in ("args_precision_parsed", "args_recall_parsed"):
+            # An empty population: no interval, and nothing declared for it.
+            assert ci_field(axis) not in zeros
+            assert axis not in units
+        # The graded axes are a real zero over five samples, which is where a
+        # reader most needs a bound -- the one-sided Clopper-Pearson limit.
+        assert zeros[ci_field("args_precision")][0] == 0.0
+        assert units["args_precision"] == "n_graded"
+        assert interval_declaration_problems(zeros) == []
 
     def test_every_report_path_is_strict_json(self):
         """No path may emit a nan: `allow_nan=False` is the reader's contract."""

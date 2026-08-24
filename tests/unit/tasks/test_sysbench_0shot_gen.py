@@ -19,6 +19,11 @@ from sieval.core.tasks import (
     build_prediction_record,
     iter_grader_outputs,
 )
+from sieval.core.tasks.metrics import (
+    CI_UNITS_FIELD,
+    ci_field,
+    interval_declaration_problems,
+)
 from sieval.tasks.sysbench_0shot_gen import SysBenchZeroShotGenTask
 
 
@@ -598,6 +603,66 @@ def test_report_over_no_finals_is_zero_rather_than_a_crash():
     m = _report([], fails=["boom"])
     assert m["csr"] == 0.0 and m["ssr"] == 0.0
     assert m["fails"] == 1
+    # Nothing to estimate over an empty run, so nothing is declared either.
+    assert CI_UNITS_FIELD not in m
+    assert interval_declaration_problems(m) == []
+
+
+def test_the_turn_rates_and_the_session_rate_declare_different_populations():
+    """Two units in one report: `ssr` is per session, the rest per turn.
+
+    The fixture's four turns sit in two sessions, so the two populations are
+    different numbers and a rate borrowing the other's count would be quoted
+    over a population it was not computed over.
+    """
+    full = ({"1": True}, {"1": "格式约束"}, "align")
+    half = ({"1": True, "2": False}, {"1": "格式约束", "2": "内容约束"}, "misalign")
+    m = _report([_judged_session(1, [full, half]), _judged_session(2, [full, full])])
+
+    assert m["n_turns"] == 4
+    assert m["n_sessions"] == 2
+    units = m[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    assert units == {
+        "csr_macro": "n_turns",
+        "isr": "n_turns",
+        "ungradeable_rate": "n_turns",
+        "ssr": "n_sessions",
+    }
+    # The pooled ratios are absent, not zero-width: `csr` and `csr_graded` are
+    # `Σ satisfied / Σ criteria` over turns of unequal constraint count, so no
+    # per-turn value has either as its mean.
+    assert "csr" not in units and "csr_graded" not in units
+    assert ci_field("csr") not in m and ci_field("csr_graded") not in m
+    # Each interval brackets the rate printed beside it, and the two turn rates
+    # are estimated on their own axes rather than sharing one.
+    for metric in ("csr_macro", "isr", "ssr"):
+        low, high = m[ci_field(metric)]
+        assert low <= m[metric] <= high
+    assert m[ci_field("csr_macro")] != m[ci_field("isr")]
+    # No ungradeable turn here: a real zero over four turns, which still gets the
+    # one-sided limit rather than nothing.
+    assert m["ungradeable_rate"] == 0.0
+    assert m[ci_field("ungradeable_rate")][0] == 0.0
+    assert interval_declaration_problems(m) == []
+
+
+def test_the_ungradeable_rate_interval_is_estimated_on_the_turns_it_counts():
+    """A run with one unreadable turn of three, from the branch that counts it.
+
+    Discriminates against an interval built from the two counts rather than from
+    the per-turn indicator: the rate is 1/3, and its bound has to come from
+    three units, one of them a hit.
+    """
+    full = ({"1": True}, {"1": "格式约束"}, "align")
+    unreadable = ({"1": None}, {"1": "格式约束"}, "align")
+    m = _report([_judged_session(1, [full, unreadable]), _judged_session(2, [full])])
+
+    assert m["n_turns"] == 3
+    assert m["ungradeable_rate"] == pytest.approx(100 / 3)
+    low, high = m[ci_field("ungradeable_rate")]
+    assert low <= m["ungradeable_rate"] <= high
+    assert interval_declaration_problems(m) == []
 
 
 # --------------------------------------------------------------------------
