@@ -22,6 +22,7 @@ from sieval.core.models import Request, Response
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import TaskContext
+from sieval.core.tasks.metrics import interval_declaration_problems
 from tests.conftest import HandlerTransport
 
 DRAW = 4
@@ -479,3 +480,7 @@ async def test_report_carries_an_interval_around_the_headline(case):
     lo, hi = report["score_ci95"]
     assert lo < report["score"] < hi
     assert report["n_problems"] == 2
+    # Covers MMLU-Pro, which has no test module of its own -- and MMLU and
+    # OpenBookQA, whose per-category keys are what a pattern-matching preflight
+    # check cannot tell apart from an interval key.
+    assert interval_declaration_problems(report) == []

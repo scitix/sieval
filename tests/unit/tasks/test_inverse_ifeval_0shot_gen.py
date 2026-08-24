@@ -25,7 +25,11 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
-from sieval.core.tasks.metrics import DENOMINATOR_FIELD, DENOMINATOR_REQUESTED
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    interval_declaration_problems,
+)
 from sieval.datasets.inverse_ifeval import InverseIFEvalDataset
 from sieval.tasks.inverse_ifeval_0shot_gen import InverseIFEvalZeroShotGenTask
 from tests.conftest import HandlerTransport
@@ -387,6 +391,9 @@ async def test_report_score_is_the_pooled_mean_with_fails_in_the_denominator():
     assert report["n_graded"] == 3
     assert report[DENOMINATOR_FIELD] == DENOMINATOR_REQUESTED
     assert report["score_key"] == "pass@1"
+    # `n_graded` sits beside a problem-clustered interval here, so the unit map is
+    # the only thing saying which count the interval belongs to.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

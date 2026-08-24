@@ -22,6 +22,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.aime_2024 import AIME2024Dataset
 from sieval.datasets.aime_2025 import AIME2025Dataset
 from sieval.datasets.aime_2026 import AIME2026Dataset
@@ -154,31 +155,45 @@ async def test_report_key_set_is_identical_when_empty(task_cls, dataset_cls, fie
         # n == 1: nothing was drawn, so there is no draw to describe.
         assert not {"avg@n", "pass@k", "maj@k", "n", "k", "n_short"} & set(empty)
 
+    # One problem, so nothing here has dispersion to bracket and neither report
+    # carries an interval at all. That is its own contract -- a report with no
+    # intervals declares no units -- and it is all this case can pin: the
+    # per-metric declarations need two problems to exist, which is what
+    # `test_report_carries_an_interval_around_the_headline` supplies.
+    for shape, report in (("populated", populated), ("empty", empty)):
+        assert interval_declaration_problems(report) == [], shape
+        assert not [key for key in report if key.endswith("_ci95")], shape
+
 
 @pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)
+@pytest.mark.parametrize("k", [1, 2])
 @pytest.mark.anyio
 async def test_report_carries_an_interval_around_the_headline(
-    task_cls, dataset_cls, field
+    task_cls, dataset_cls, field, k
 ):
     # Two problems split evenly is the smallest case with genuine spread --
     # `wilson_interval` needs >= 2 problems and 0 < p < 1 to emit anything.
-    task = _build(task_cls, dataset_cls, field)
+    #
+    # Both budgets, because `k > 1` is where the whole sampling block folds in on
+    # top of the always-published pair, and that is the fold whose declarations
+    # can go missing.
+    task = _build(task_cls, dataset_cls, field, k=k, n=k)
     raw = _sample(field)
     report = await task.report(
         [
             TaskContext(
                 sample_id=0,
                 raw_sample=raw,
-                feedback_result=_feedback(1),
-                postprocess_result=build_prediction_record([ANSWER]),
+                feedback_result=_feedback(k),
+                postprocess_result=build_prediction_record([ANSWER] * k),
             ),
             TaskContext(
                 sample_id=1,
                 raw_sample=raw,
                 feedback_result=build_judgement_record(
-                    ANSWER, [build_rollout_judgement(0, False)]
+                    ANSWER, [build_rollout_judgement(i, False) for i in range(k)]
                 ),
-                postprocess_result=build_prediction_record(["0"]),
+                postprocess_result=build_prediction_record(["0"] * k),
             ),
         ],
         [],
@@ -186,6 +201,12 @@ async def test_report_carries_an_interval_around_the_headline(
     lo, hi = report["score_ci95"]
     assert lo < report["score"] < hi
     assert report["n_problems"] == 2
+    # Every interval the block published, not just the headline's: a per-metric
+    # key is built from a metric NAME, so `check_preflight.py` cannot enumerate
+    # them and the runner reaches them only AFTER a finished run has written its
+    # `report.json`. At k > 1 that is five more intervals than the pair
+    # `ungated_intervals` checks on its way through.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)

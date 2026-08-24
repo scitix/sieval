@@ -21,6 +21,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.mmlu import MMLUDataset, MMLUDatasetSample
 from sieval.tasks.mmlu_kshot_clp import (
     CHOICES,
@@ -318,6 +319,9 @@ async def test_report_interval_is_quoted_over_the_judged_population():
     # The per-category breakdown deliberately ships without a population of its
     # own, so nothing invites reading this `n_problems` as covering it.
     assert "score_stem" in report
+    # Those `score_<category>` keys are exactly what a pattern-matching check
+    # cannot tell from an interval key, so run the runner's own check here.
+    assert interval_declaration_problems(report) == []
 
 
 # --- Validation ---

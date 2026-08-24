@@ -20,6 +20,7 @@ from sieval.core.models import Request, Response
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import build_judgement_record, build_rollout_judgement
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.human_eval import HumanEvalDataset
 from sieval.datasets.livecodebench_code_generation import LiveCodeBenchDataset
 from sieval.datasets.mbpp import MBPPDataset
@@ -145,6 +146,9 @@ async def test_report_omits_maj_at_k_for_programs(task_cls, dataset, model):
     assert {"pass@1", "avg@n", "pass@k", "n", "k", "n_short"} <= set(report)
     assert "maj@k" not in report
     assert report["score_key"] == "pass@1"
+    # The empty path publishes the full key set with no interval at all, which is
+    # still a shape the runner validates.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.parametrize(("task_cls", "dataset", "model"), FAMILY, ids=IDS)
@@ -218,3 +222,10 @@ async def test_report_carries_an_interval_around_the_headline(
     lo, hi = report["score_ci95"]
     assert lo < report["score"] < hi
     assert report["n_problems"] == 2
+    # Both budgets, because the `n > 1` gate is where the fold happens: `report`
+    # merges the always-published intervals with `ungated_intervals` and then, at
+    # `n > 1` only, `update`s the whole block over the top. A declaration lost
+    # there is invisible to `check_preflight.py` (a per-metric interval key is
+    # built from a metric name, not a literal) and the runner catches it only
+    # AFTER a finished run has written its `report.json`.
+    assert interval_declaration_problems(report) == []

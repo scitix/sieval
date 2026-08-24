@@ -22,6 +22,7 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     PROBLEM_COUNT_FIELD,
     SCORE_CI_FIELD,
+    interval_declaration_problems,
     rollout_view,
     wilson_interval,
 )
@@ -103,6 +104,11 @@ async def test_report_counts_questions_not_copies():
     assert isinstance(interval, list)
     lo, hi = interval
     assert lo < report["score"] < hi
+
+    # This is the repeated-split report the guide quotes, so the runner's own
+    # check runs on it here rather than only on a real run -- which is the point
+    # after which it would be too late to be cheap.
+    assert interval_declaration_problems(report) == []
 
     # And the collapsing is what widened it: the very same verdicts, read as 20
     # independent problems, produce a strictly narrower interval. Read back
