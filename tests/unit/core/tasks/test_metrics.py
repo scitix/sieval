@@ -967,6 +967,62 @@ def test_wilson_interval_uses_clopper_pearson_when_everything_was_correct():
     assert hi == 100.0
 
 
+def test_clopper_pearson_bound_is_scaled_onto_the_reported_quantity():
+    # The limit bounds the mean of the m OBSERVED units; the reported number is
+    # `sum/D`, which the `D - m` deterministic zeros scale by `m/D`. Without the
+    # factor this branch bounds a different quantity than the one printed beside
+    # it -- conservatively, but the variance branch already makes this correction
+    # and the two must agree.
+    raw = 100 * (1 - 0.025 ** (1 / 30))
+    for n_fail in (2, 5, 20):
+        total = 30 + n_fail
+        got = wilson_interval([0.0] * 30, total)
+        assert got is not None
+        assert got[0] == 0.0
+        assert got[1] == pytest.approx(raw * 30 / total, abs=1e-9)
+        # Strictly inside the unscaled bound, which is what was published before.
+        assert got[1] < raw
+
+
+def test_clopper_pearson_bound_is_exact_when_nothing_failed():
+    # `m/D` is exactly 1 on every unrepeated `judged` run, so the textbook limit
+    # -- and the reduction to plain Wilson that depends on it -- is untouched.
+    for m in (2, 7, 30, 198):
+        got = wilson_interval([0.0] * m, m)
+        assert got is not None
+        assert got[1] == pytest.approx(100 * (1 - 0.025 ** (1 / m)), abs=1e-9)
+
+
+def test_saturated_bound_takes_no_observed_share_factor():
+    # Values on 0-1 sum to at most m, so `p >= 1` forces `m >= D`. Scaling a
+    # LOWER bound by `m/D >= 1` could push it past `scale` and invert the
+    # interval, so the saturated branch deliberately takes no factor.
+    got = wilson_interval([1.0] * 30, 20)
+    assert got is not None
+    lo, hi = got
+    assert lo == pytest.approx(100 * 0.025 ** (1 / 30), abs=1e-9)
+    assert hi == 100.0
+    assert lo < hi
+
+
+def test_grouped_clopper_pearson_scales_on_the_observed_group_share():
+    # In the grouped path `wilson_interval` is handed the group count, so the
+    # factor becomes observed/declared problems: a problem whose every copy
+    # failed keeps its slot in the population but cannot bound it.
+    fields = interval_metrics(
+        [0.0] * 6,
+        denominator=6,
+        group_keys=[0, 0, 1, 1, 2, 2],
+        n_problems=4,
+    )
+    interval = fields[SCORE_CI_FIELD]
+    assert isinstance(interval, list)
+    assert interval[0] == 0.0
+    # 3 groups observed, 4 declared.
+    assert interval[1] == pytest.approx(100 * (1 - 0.025 ** (1 / 3)) * 3 / 4, abs=1e-9)
+    assert fields[PROBLEM_COUNT_FIELD] == 4.0
+
+
 def test_wilson_interval_narrows_when_failures_pad_the_denominator():
     # Failed samples are FIXED ZEROS carrying no variance, so the estimator's
     # variance is m*s^2/D^2, not s^2/m. Using s^2/m would overstate the width

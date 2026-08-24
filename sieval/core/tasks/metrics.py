@@ -429,7 +429,19 @@ def wilson_interval(
     Returns ``None`` -- omitted, never zeroed -- when there is nothing to estimate:
     fewer than two problems, or no dispersion between them. At ``p`` exactly 0 or 1
     there is no dispersion either, but that is when a reader most needs the bound,
-    so those fall back to the exact one-sided Clopper-Pearson limit over problems.
+    so those fall back to the one-sided Clopper-Pearson limit over the ``m``
+    OBSERVED units.
+
+    At ``p == 0`` that limit is rescaled by ``m/D``, which is the same correction
+    the variance above makes carried into the degenerate branch: Clopper-Pearson
+    bounds the mean of the ``m`` random units, while the reported number is
+    ``sum/D`` over a population that also holds ``D - m`` deterministic zeros --
+    so the estimand is ``m/D`` of what the raw limit bounds. Without it a
+    30-problem all-wrong run with 5 failures publishes ``[0, 11.57]`` where the
+    bound on ``sum/D`` is ``[0, 9.92]``. The factor is exactly 1 whenever
+    ``D == m``, so the limit stays EXACT in the textbook case and the reduction
+    above is untouched. The saturated branch takes no such factor -- see the
+    comment there.
 
     No randomness, so two readers of the same values compute the same interval
     (RFC #74 D refused a seed in this layer). Order-independent, which matters
@@ -441,8 +453,16 @@ def wilson_interval(
     total = sum(values)
     p = total / denominator
     if p <= 0.0:
-        return 0.0, scale * (1.0 - 0.025 ** (1 / m))
+        # Clopper-Pearson bounds the mean of the m OBSERVED units; the reported
+        # quantity is `sum/D`, which the `D - m` deterministic zeros scale by
+        # `m/D`. Exactly 1.0 when `D == m`, so the textbook reduction is
+        # unaffected; below 1 on a `requested` run with failures.
+        return 0.0, scale * (m / denominator) * (1.0 - 0.025 ** (1 / m))
     if p >= 1.0:
+        # NO `m/D` factor here, and not by omission: values on 0-1 sum to at most
+        # `m`, so `p >= 1` forces `m >= D`, and the only sane case is `m == D`
+        # where the factor is 1. Applying it would multiply a LOWER bound by
+        # `m/D >= 1` and could push it past `scale`, inverting the interval.
         return scale * 0.025 ** (1 / m), scale
     mean = total / m
     # Population divisor: with the sample divisor `m_eff` lands on `m - 1` and the
