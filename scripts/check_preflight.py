@@ -2048,6 +2048,13 @@ class PreflightRunner:
         helper, resolved through the module's own imports — ``arc/``'s four leaves
         share one ``arc_report``, and demanding the keys at a site that does not
         build the dict would force four copies to drift apart.
+
+        A key spelled as a NAME resolves against ``metrics.py``'s constants and
+        the task module's own, in that order of precedence: a report naming its
+        population key once, as a module constant, is as readable as one spelling
+        ``PROBLEM_COUNT_FIELD``, and reading only the shared module's bindings
+        made the former look like a computed key — which switches rules 4-5 off
+        for that whole report.
         """
         py_files = [
             f
