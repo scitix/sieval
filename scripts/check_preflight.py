@@ -2074,9 +2074,10 @@ class PreflightRunner:
            Deliberately exact-match only, where rule 4 also accepts an f-string
            pattern: a loop that *could* produce ``score_ci95`` is not evidence
            that an interval was estimated, and ``score_<category>`` matches every
-           pattern that would. One module is listed in
-           :data:`_UNPAIRED_PROBLEM_COUNT` as publishing a count that predates the
-           interval; the listing expires loudly, since a listed module that pairs
+           pattern that would. :data:`_UNPAIRED_PROBLEM_COUNT` would list a module
+           publishing a count that predates its interval; it is **empty** today,
+           because the one entry it held expired when that task paired its keys.
+           The listing expires loudly by design, since a listed module that pairs
            the two is reported as well.
 
            A headline clustered on something OTHER than problems pairs with its
