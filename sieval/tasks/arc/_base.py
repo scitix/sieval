@@ -260,4 +260,8 @@ def arc_report(
         denominator=total,
         group_keys=None if grouping is None else grouping.keys,
         n_problems=None if grouping is None else grouping.n_problems,
+        # `acc` is `score` under its own name, so it carries the same interval:
+        # a reader keyed on the column `score_key` names would otherwise have to
+        # know the bound is filed under `score`.
+        aliases=("acc",),
     )

@@ -21,6 +21,8 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.datasets import DROPDatasetSample
 
@@ -174,7 +176,12 @@ class DROPFewShotGenTask(
     @override
     async def report(self, finals, fails):
         count = len(finals)
-        total_em = sum(ctx.feedback_result["metrics"]["em"] for ctx in finals)
+        # `em` is already on 0-1, so these ARE the per-question values its interval
+        # is estimated over; `f1` needs the rescale below.
+        per_question_em = [
+            float(ctx.feedback_result["metrics"]["em"]) for ctx in finals
+        ]
+        total_em = sum(per_question_em)
         total_f1 = sum(ctx.feedback_result["metrics"]["f1"] for ctx in finals)
         avg_em = total_em / count * 100 if count > 0 else 0
         avg_f1 = total_f1 / count if count > 0 else 0
@@ -200,9 +207,23 @@ class DROPFewShotGenTask(
             "f1": avg_f1,
             SCORE_KEY_FIELD: "f1",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
-        } | interval_metrics(
-            per_question_f1,
-            denominator=count,
-            group_keys=None if grouping is None else grouping.keys,
-            n_problems=None if grouping is None else grouping.n_problems,
+        } | merge_metrics(
+            interval_metrics(
+                per_question_f1,
+                denominator=count,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `f1` is `score` under its own name, so it carries the same
+                # interval.
+                aliases=("f1",),
+            ),
+            # `em` is the co-equal column, not an alias: the binary verdict where
+            # `f1` is the partial credit, so it is estimated over its own values.
+            metric_interval(
+                "em",
+                per_question_em,
+                denominator=count,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            ),
         )

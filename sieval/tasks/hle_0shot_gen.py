@@ -382,5 +382,11 @@ class HLEZeroShotGenTask(
             denominator=n,
             group_keys=grouping.keys,
             n_problems=grouping.n_problems,
+            # `accuracy` is `score` under its own name, so it carries the same
+            # interval. `confidence_interval` is deliberately absent from this
+            # list: it is not a metric but upstream's own pooled half-width, and
+            # it must never appear in `ci95_units`. `calibration_error` is a
+            # binned RMS with no per-problem value, so it gets nothing.
+            aliases=("accuracy",),
         )
         return results

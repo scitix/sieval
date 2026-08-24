@@ -292,5 +292,19 @@ class BrowseCompZeroShotGenTask(
                 denominator=len(grades),
                 group_keys=grouping.keys,
                 n_problems=grouping.n_problems,
+                # `accuracy` and `correct` are `score` under two other names --
+                # `aggregate_metrics` returns one `is_correct` and files it under
+                # both -- so all three carry the one interval.
+                #
+                # `incorrect` gets none, even though `aggregate_metrics` counts it
+                # as its own bucket rather than as `1 - is_correct`: `parse_grade`
+                # returns CORRECT or INCORRECT and nothing else, and the fail
+                # stand-ins are INCORRECT, so the two rates sum to 100 on every
+                # input this task can produce. A bound on it would be the
+                # accuracy bound mirrored -- two numbers that look independent and
+                # carry one piece of information. It becomes a real third estimand
+                # only if a NOT_ATTEMPTED bucket ever arrives, which is what
+                # separates this from `simpleqa_verified`, where it already has.
+                aliases=("accuracy", "correct"),
             )
         )

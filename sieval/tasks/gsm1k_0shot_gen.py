@@ -259,4 +259,9 @@ class GSM1KZeroShotGenTask(
             denominator=total,
             group_keys=None if grouping is None else grouping.keys,
             n_problems=None if grouping is None else grouping.n_problems,
+            # `accuracy` is `score` under its own name, so it carries the same
+            # interval: a reader keyed on the column `score_key` names would
+            # otherwise have to know the bound is filed under `score`. On both
+            # halves of the pair, for the same reason the denominator policy is.
+            aliases=("accuracy",),
         )

@@ -46,6 +46,7 @@ from sieval.core.tasks.metrics import (
     health_metrics,
     interval_metrics,
     merge_metrics,
+    metric_interval,
     sampling_report,
 )
 from sieval.datasets import GSM8KDatasetSample
@@ -100,18 +101,26 @@ def _extract_flexible_match(text: str) -> tuple[str, str]:
     return "", "none"
 
 
-def _named(finals, metric: str) -> int:
-    """How many judged samples the FIRST rollout got right on *metric*.
+def _named_values(finals, metric: str) -> list[float]:
+    """Per-sample 0/1 values of *metric*, read off the FIRST rollout.
 
     Reads the sample-level `metrics` block, which `feedback` fills from rollout 0
     -- the axis lm-eval-harness measured. Tolerant of a missing block so a run
     interrupted mid-feedback reports a number rather than a KeyError.
+
+    The units each rate's interval is estimated over, and the values :func:`_named`
+    counts. One function rather than two, so a rate and the interval printed
+    beside it cannot come to read two different axes.
     """
-    return sum(
-        1
+    return [
+        1.0 if ((ctx.feedback_result or {}).get("metrics") or {}).get(metric) else 0.0
         for ctx in finals
-        if ((ctx.feedback_result or {}).get("metrics") or {}).get(metric)
-    )
+    ]
+
+
+def _named(finals, metric: str) -> int:
+    """How many judged samples the FIRST rollout got right on *metric*."""
+    return int(sum(_named_values(finals, metric)))
 
 
 @sieval_task(
@@ -276,23 +285,33 @@ class GSM8KFewShotBaseGenTask(
         # Outside the gate: extraction health is a fact about the parser,
         # not the draw, and n=1 is where a stopped extractor hides longest.
         metrics |= health_metrics(finals)
-        # Same axis `_named` reads for `correct_num` above -- the strict
-        # `exact_match` flag on the sample-level `metrics` block, not
-        # `flexible_exact_match` and not a blind re-read of rollout 0's
-        # `correct` -- over the same `count` denominator this task excludes
-        # fails from.
-        strict = [
-            1.0
-            if ((f.feedback_result or {}).get("metrics") or {}).get("exact_match")
-            else 0.0
-            for f in finals
-        ]
+        # The very lists `_named` counted above -- the strict `exact_match` flag on
+        # the sample-level `metrics` block and the flexible one beside it, not a
+        # blind re-read of rollout 0's `correct` -- over the same `count`
+        # denominator this task excludes fails from.
+        strict = _named_values(finals, "exact_match")
+        flexible = _named_values(finals, "flexible_exact_match")
         grouping = self.problem_groups(finals)
-        headline = interval_metrics(
-            strict,
-            denominator=count,
-            group_keys=None if grouping is None else grouping.keys,
-            n_problems=None if grouping is None else grouping.n_problems,
+        headline = merge_metrics(
+            interval_metrics(
+                strict,
+                denominator=count,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `exact_match` is `score` under its own name, so it carries the
+                # same interval.
+                aliases=("exact_match",),
+            ),
+            # `flexible_exact_match` is the co-equal extraction rule, not an
+            # alias: the two disagree on real samples, which is the whole reason
+            # both are published.
+            metric_interval(
+                "flexible_exact_match",
+                flexible,
+                denominator=count,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            ),
         )
         if self._n <= 1:
             return metrics | headline

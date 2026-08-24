@@ -144,6 +144,8 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     interval_metrics,
+    merge_metrics,
+    metric_interval,
     problem_population,
 )
 from sieval.core.utils.serialization import obj_to_dict
@@ -451,6 +453,23 @@ class ComplexConstraintsZeroShotGenTask(
             )
             for sample in by_sample
         ]
+        # `criterion_pass_rate_macro`'s own per-unit value -- the rollout's
+        # satisfied FRACTION, on 0-1, zero when its rubric size is unknown --
+        # summed per sample, over the same `len(units)` population. Its own axis,
+        # not the headline's: a rollout can satisfy most criteria without
+        # satisfying all of them, which is the difference the two rates exist to
+        # show. NOT `criterion_pass_rate_micro`, which pools over criteria.
+        macro_per_sample = [
+            float(
+                sum(
+                    r["extra"]["n_satisfied"] / r["extra"]["n_criteria"]
+                    if r["extra"]["n_criteria"]
+                    else 0.0
+                    for r in sample
+                )
+            )
+            for sample in by_sample
+        ]
         # Always supplied, never left None: this headline is averaged over
         # ROLLOUTS, so an absent grouping would publish the ROLLOUT count as
         # `n_problems`. Does not move the interval -- see `problem_population`.
@@ -482,10 +501,25 @@ class ComplexConstraintsZeroShotGenTask(
                 # measures the parser rather than the draw and is outside that gate.
             }
             | health_metrics(finals)
-            | interval_metrics(
-                passed_per_sample,
-                denominator=len(units),
-                group_keys=grouping.keys,
-                n_problems=grouping.n_problems,
+            | merge_metrics(
+                interval_metrics(
+                    passed_per_sample,
+                    denominator=len(units),
+                    group_keys=grouping.keys,
+                    n_problems=grouping.n_problems,
+                    # `task_pass_rate` is `score` under its own name, so it
+                    # carries the same interval. `criterion_pass_rate_micro` gets
+                    # none: it pools over CRITERIA, a ratio of two sums whose
+                    # per-problem counts differ (10-40), so no per-problem value
+                    # has it as its mean.
+                    aliases=("task_pass_rate",),
+                ),
+                metric_interval(
+                    "criterion_pass_rate_macro",
+                    macro_per_sample,
+                    denominator=len(units),
+                    group_keys=grouping.keys,
+                    n_problems=grouping.n_problems,
+                ),
             )
         )

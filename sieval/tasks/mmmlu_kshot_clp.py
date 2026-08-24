@@ -449,6 +449,10 @@ class MMMLUKShotClpTask(
             denominator=total,
             group_keys=None if grouping is None else grouping.keys,
             n_problems=None if grouping is None else grouping.n_problems,
+            # `score_mmmlu` is `score` under its own name, so it carries the same
+            # interval: a reader keyed on the column `score_key` names would
+            # otherwise have to know the bound is filed under `score`.
+            aliases=("score_mmmlu",),
         )
 
     def _build_train_prompt(self, sample: MMMLUDatasetSample) -> str:

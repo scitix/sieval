@@ -75,6 +75,8 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     interval_metrics,
+    merge_metrics,
+    metric_interval,
     problem_population,
 )
 from sieval.core.utils.serialization import obj_to_dict
@@ -433,6 +435,15 @@ class AdvancedIFZeroShotGenTask(
         passed_per_sample = [
             float(sum(1 for v in sample if v["satisfied_all"])) for sample in by_sample
         ]
+        # `macro_pass_rate`'s own per-verdict value -- the rollout's rubric rate,
+        # on 0-1 -- summed per sample, over the same rollout population. Its own
+        # axis, not the headline's: a rollout can satisfy most rubrics without
+        # satisfying all of them, which is the difference the two rates exist to
+        # show. The failed stand-ins carry `rubric_pass_rate: 0.0`, deterministic
+        # zeros inside the population, so they stay out of `values`.
+        macro_per_sample = [
+            float(sum(v["rubric_pass_rate"] for v in sample)) for sample in by_sample
+        ]
         # Always supplied, never left None: this headline is averaged over
         # ROLLOUTS, so an absent grouping would publish the ROLLOUT count as
         # `n_problems`. Does not move the interval -- see `problem_population`.
@@ -458,11 +469,25 @@ class AdvancedIFZeroShotGenTask(
         # defers `pass@k` / `maj@k` for the LLM-judged family, while this one
         # measures extraction rather than the draw and is outside that gate.
         results |= health_metrics(finals)
-        results |= interval_metrics(
-            passed_per_sample,
-            denominator=len(verdicts) + len(failed),
-            group_keys=grouping.keys,
-            n_problems=grouping.n_problems,
+        results |= merge_metrics(
+            interval_metrics(
+                passed_per_sample,
+                denominator=len(verdicts) + len(failed),
+                group_keys=grouping.keys,
+                n_problems=grouping.n_problems,
+                # `overall_pass_rate` is `score` under its own name, so it carries
+                # the same interval. `micro_pass_rate` gets none: it pools over
+                # RUBRIC CHECKS, a ratio of two sums whose per-problem counts
+                # differ, so no per-problem value has it as its mean.
+                aliases=("overall_pass_rate",),
+            ),
+            metric_interval(
+                "macro_pass_rate",
+                macro_per_sample,
+                denominator=len(verdicts) + len(failed),
+                group_keys=grouping.keys,
+                n_problems=grouping.n_problems,
+            ),
         )
         for benchmark_name, group in sorted(by_benchmark.items()):
             aspect = aggregate_metrics(group)

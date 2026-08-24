@@ -130,6 +130,8 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
     interval_metrics,
+    merge_metrics,
+    metric_interval,
     problem_population,
 )
 from sieval.core.utils.serialization import obj_to_dict
@@ -411,13 +413,19 @@ class SciTaRCZeroShotGenTask(
         n_exact = 0
         n_graded = 0
         n_grader_unparsed = 0
-        # Per SAMPLE, not per rollout: the headline's denominator counts rollouts,
-        # so a sample's contribution is its COUNT of correct rollouts rather than
-        # a rate. Read per-sample here because the loop below otherwise flattens
-        # every rollout into one total and the clustering would be lost.
+        # Per SAMPLE, not per rollout: each rate's denominator counts rollouts, so
+        # a sample's contribution is its COUNT of qualifying rollouts rather than a
+        # rate. Read per-sample here because the loop below otherwise flattens
+        # every rollout into one total and the clustering would be lost. One list
+        # per published rate, counted off the very same tests the totals are, so a
+        # rate and the bound printed beside it cannot come to read different axes.
         correct_per_sample: list[float] = []
+        exact_per_sample: list[float] = []
+        partial_per_sample: list[float] = []
         for final in finals:
             sample_correct = 0
+            sample_exact = 0
+            sample_partial = 0
             for rollout in (final.feedback_result or {}).get("rollouts", []):
                 extra = rollout.get("extra") or {}
                 if rollout["correct"]:
@@ -425,14 +433,18 @@ class SciTaRCZeroShotGenTask(
                     sample_correct += 1
                 elif rollout.get("score") == PARTIAL_SCORE:
                     n_partial += 1
+                    sample_partial += 1
                 if (rollout.get("metrics") or {}).get("exact_match"):
                     n_exact += 1
+                    sample_exact += 1
                 if extra.get("grader_skipped"):
                     continue
                 n_graded += 1
                 if not extra.get("grader_parsed"):
                     n_grader_unparsed += 1
             correct_per_sample.append(float(sample_correct))
+            exact_per_sample.append(float(sample_exact))
+            partial_per_sample.append(float(sample_partial))
 
         # Denominator spans the full requested set: a pipeline failure produced
         # no gradeable answer and counts as wrong, matching upstream (whose
@@ -478,15 +490,38 @@ class SciTaRCZeroShotGenTask(
                 # measures extraction rather than the draw and is outside that gate.
             }
             | health_metrics(finals)
-            | interval_metrics(
-                correct_per_sample,
-                # The rollout population. `fails` produced no rollouts, so they are
-                # deterministic zeros inside `n` but contribute no variance -- exactly
-                # the case `wilson_interval` derives. `partial` and `exact_match` are
-                # separate axes and get no interval: a PARTIAL_SCORE rollout counts as
-                # NOT correct in the headline.
-                denominator=n,
-                group_keys=grouping.keys,
-                n_problems=grouping.n_problems,
+            | merge_metrics(
+                interval_metrics(
+                    correct_per_sample,
+                    # The rollout population. `fails` produced no rollouts, so they
+                    # are deterministic zeros inside `n` but contribute no variance
+                    # -- exactly the case `wilson_interval` derives.
+                    denominator=n,
+                    group_keys=grouping.keys,
+                    n_problems=grouping.n_problems,
+                    # `accuracy` is `score` under its own name, so it carries the
+                    # same interval.
+                    aliases=("accuracy",),
+                ),
+                # `exact_match` and `partial` are separate axes, each over its own
+                # per-sample counts: a PARTIAL_SCORE rollout counts as NOT correct
+                # in the headline, and exact match is a stricter test than the
+                # graded verdict. Each rate is rounded to 2 dp while its interval
+                # brackets the unrounded mean, at most 0.005 pp away -- the same
+                # note the headline carries.
+                metric_interval(
+                    "exact_match",
+                    exact_per_sample,
+                    denominator=n,
+                    group_keys=grouping.keys,
+                    n_problems=grouping.n_problems,
+                ),
+                metric_interval(
+                    "partial",
+                    partial_per_sample,
+                    denominator=n,
+                    group_keys=grouping.keys,
+                    n_problems=grouping.n_problems,
+                ),
             )
         )

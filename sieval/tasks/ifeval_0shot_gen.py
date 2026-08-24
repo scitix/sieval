@@ -19,6 +19,8 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.datasets import IFEvalDatasetSample
 
@@ -198,20 +200,42 @@ class IFEvalZeroShotGenTask(
         # followed-nothing prompt.
         results[SCORE_KEY_FIELD] = "strict_prompt_level_accuracy"
         results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
-        # The PROMPT axis of the STRICT grade -- exactly the quantity `score` is a
-        # mean of, over the same `len(judgements)` denominator. The
-        # `*_instruction_level_accuracy` siblings deliberately get no interval:
-        # they pool over CONSTRAINTS, and a constraint count moves with which
-        # prompts were sampled, so their resampling unit is not the problem.
+        # The PROMPT axis of each grade -- exactly the quantities the four
+        # prompt-level keys are means of, over the same `len(judgements)`
+        # denominator. The `*_instruction_level_accuracy` siblings deliberately
+        # get no interval: they pool over CONSTRAINTS, and a constraint count
+        # moves with which prompts were sampled, so their resampling unit is not
+        # the problem.
         strict_prompt = [
             1.0 if j["metrics"]["strict_follow_all"] else 0.0 for j in judgements
         ]
+        loose_prompt = [
+            1.0 if j["metrics"]["loose_follow_all"] else 0.0 for j in judgements
+        ]
         grouping = self.problem_groups(finals)
-        return results | interval_metrics(
-            strict_prompt,
-            denominator=len(judgements),
-            group_keys=None if grouping is None else grouping.keys,
-            n_problems=None if grouping is None else grouping.n_problems,
+        group_keys = None if grouping is None else grouping.keys
+        n_problems = None if grouping is None else grouping.n_problems
+        return results | merge_metrics(
+            interval_metrics(
+                strict_prompt,
+                denominator=len(judgements),
+                group_keys=group_keys,
+                n_problems=n_problems,
+                # Two aliases, because upstream publishes this one number by two
+                # routes and this report keeps both key sets intact. All three
+                # names are the same value, so all three carry the one interval.
+                aliases=("strict_prompt_level_accuracy", "strict_accuracy"),
+            ),
+            # The LOOSE grade is a different number on the same prompts, not an
+            # alias -- and it too is published under two names.
+            metric_interval(
+                "loose_prompt_level_accuracy",
+                loose_prompt,
+                denominator=len(judgements),
+                group_keys=group_keys,
+                n_problems=n_problems,
+                aliases=("loose_accuracy",),
+            ),
         )
 
     def _clean_kwargs(self, kwargs):

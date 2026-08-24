@@ -79,6 +79,8 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.core.utils.ppl import total_logprob
 from sieval.datasets import HellaSwagDatasetSample
@@ -300,14 +302,17 @@ class HellaSwagFewShotPPLTask(
                 SCORE_KEY_FIELD: "acc_norm",
                 DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
             }
-        acc_num = sum(1 for ctx in finals if ctx.feedback_result["metrics"]["acc"])
-        # The headline axis: the LENGTH-NORMALISED flag, not `acc` beside it and
-        # not rollout 0's `correct`. The two are co-equal published columns that
-        # disagree on real samples, so reading `acc` here would bracket a number
-        # this report does not headline.
+        # The two co-equal published columns, each as its own per-problem values:
+        # the LENGTH-NORMALISED flag the headline is a mean of, and the raw one
+        # beside it. They disagree on real samples, so each brackets its own
+        # column and neither borrows the other's interval.
+        acc_values = [
+            1.0 if ctx.feedback_result["metrics"]["acc"] else 0.0 for ctx in finals
+        ]
         norm_values = [
             1.0 if ctx.feedback_result["metrics"]["acc_norm"] else 0.0 for ctx in finals
         ]
+        acc_num = sum(acc_values)
         acc_norm_num = sum(norm_values)
         acc = 100 * acc_num / total
         acc_norm = 100 * acc_norm_num / total
@@ -322,13 +327,27 @@ class HellaSwagFewShotPPLTask(
             # so without a reader having to know the family convention.
             SCORE_KEY_FIELD: "acc_norm",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-        } | interval_metrics(
-            norm_values,
-            # REQUESTED, like the headline: a failed sample is a deterministic
-            # zero inside the denominator and contributes no variance.
-            denominator=total,
-            group_keys=None if grouping is None else grouping.keys,
-            n_problems=None if grouping is None else grouping.n_problems,
+        } | merge_metrics(
+            interval_metrics(
+                norm_values,
+                # REQUESTED, like the headline: a failed sample is a deterministic
+                # zero inside the denominator and contributes no variance.
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `acc_norm` is `score` under its own name, so it carries the same
+                # interval.
+                aliases=("acc_norm",),
+            ),
+            # `acc` is the co-equal column, not an alias: a different number on the
+            # same problems, so it is estimated over its own values.
+            metric_interval(
+                "acc",
+                acc_values,
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+            ),
         )
 
     def _build_fewshot_prefix(self) -> str:

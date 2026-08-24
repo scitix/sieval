@@ -330,5 +330,12 @@ class AALCRZeroShotGenTask(
                 denominator=len(grades),
                 group_keys=grouping.keys,
                 n_problems=grouping.n_problems,
+                # `accuracy` and `correct` are `score` under two other names --
+                # `aggregate_metrics` returns one `is_correct` and files it under
+                # both -- so all three carry the one interval. `incorrect` is
+                # `1 - is_correct`, whose bound is the exact mirror; publishing it
+                # would hand a reader two bounds that look independent and carry
+                # one piece of information.
+                aliases=("accuracy", "correct"),
             )
         )

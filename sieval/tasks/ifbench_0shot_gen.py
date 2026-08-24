@@ -48,6 +48,8 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
     interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.datasets import IFBenchDatasetSample
 
@@ -302,21 +304,40 @@ class IFBenchZeroShotGenTask(
         # is reported in `fails` rather than scored as a followed-nothing prompt.
         results[SCORE_KEY_FIELD] = "loose_prompt_level_accuracy"
         results[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
-        # The PROMPT axis of the LOOSE grade -- IFBench's headline, where the
-        # IFEval sibling's is strict. The two modules differ only in this key, so
-        # copying that one's interval verbatim would attach a strict interval to a
-        # loose headline and no value inspection would catch it. The
+        # The PROMPT axis of each grade. The LOOSE one is IFBench's headline where
+        # the IFEval sibling's is strict; the two modules differ only in that key,
+        # so copying that one's interval verbatim would attach a strict interval to
+        # a loose headline and no value inspection would catch it. The
         # `*_instruction_level_accuracy` siblings pool over CONSTRAINTS, a
         # different resampling unit, and deliberately get no interval.
         loose_prompt = [
             1.0 if j["metrics"]["loose_follow_all"] else 0.0 for j in judgements
         ]
+        strict_prompt = [
+            1.0 if j["metrics"]["strict_follow_all"] else 0.0 for j in judgements
+        ]
         grouping = self.problem_groups(finals)
-        return results | interval_metrics(
-            loose_prompt,
-            denominator=len(judgements),
-            group_keys=None if grouping is None else grouping.keys,
-            n_problems=None if grouping is None else grouping.n_problems,
+        group_keys = None if grouping is None else grouping.keys
+        n_problems = None if grouping is None else grouping.n_problems
+        return results | merge_metrics(
+            interval_metrics(
+                loose_prompt,
+                denominator=len(judgements),
+                group_keys=group_keys,
+                n_problems=n_problems,
+                # `loose_prompt_level_accuracy` is `score` under its own name, so
+                # it carries the same interval. IFBench publishes no `*_accuracy`
+                # aliases, unlike the IFEval sibling.
+                aliases=("loose_prompt_level_accuracy",),
+            ),
+            # The STRICT grade is the co-equal reading, not an alias.
+            metric_interval(
+                "strict_prompt_level_accuracy",
+                strict_prompt,
+                denominator=len(judgements),
+                group_keys=group_keys,
+                n_problems=n_problems,
+            ),
         )
 
     def _clean_kwargs(self, kwargs: list[dict[str, Any]]) -> list[dict[str, Any]]:

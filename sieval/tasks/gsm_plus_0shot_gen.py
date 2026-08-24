@@ -354,4 +354,9 @@ class GSMPlusZeroShotGenTask(
             denominator=total,
             group_keys=None if grouping is None else grouping.keys,
             n_problems=None if grouping is None else grouping.n_problems,
+            # `accuracy` is `score` under its own name, so it carries the same
+            # interval. `score_wo_critical_thinking` is NOT an alias -- it is a
+            # different number over a different population -- and neither are the
+            # per-perturbation keys.
+            aliases=("accuracy",),
         )

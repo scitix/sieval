@@ -19,6 +19,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.tasks.platinum_bench._base import (
     MATH_PARSING_STRATEGY,
     PLATINUM_REFERENCE_NOTES,
@@ -406,14 +407,20 @@ async def test_report_emits_accuracy_and_error_count():
     task, _ = make_task(PlatinumGSM8KZeroShotGenTask)
     finals = [_final(0, True), _final(1, True), _final(2, False), _final(3, False)]
     report = await task.report(finals, [])
+    assert interval_declaration_problems(report) == []
     # Popped rather than hardcoded: the interval is asserted for shape in
     # test_report_carries_an_interval_around_the_headline below, not pinned to a
     # float here.
     lo, hi = report.pop("score_ci95")
+    # `accuracy` is `score` under its own name, so it carries the SAME bounds.
+    assert report.pop("accuracy_ci95") == [lo, hi]
     n_problems = report.pop("n_problems")
-    # The unit that interval is clustered on, popped with it: the three are one
-    # fragment, and a report carrying an interval always declares its population.
-    assert report.pop("ci95_units") == {"score": "n_problems"}
+    # The unit each interval is clustered on, popped with them: an interval and
+    # its declaration are one fragment, and both names sit on one population.
+    assert report.pop("ci95_units") == {
+        "score": "n_problems",
+        "accuracy": "n_problems",
+    }
     assert lo < report["score"] < hi
     assert n_problems == 4
     assert report == {

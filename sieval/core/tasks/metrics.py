@@ -544,6 +544,7 @@ def interval_metrics(
     denominator: int,
     group_keys: Sequence[Hashable] | None = None,
     n_problems: int | None = None,
+    aliases: Sequence[str] = (),
 ) -> dict[str, float | list[float] | dict[str, str]]:
     """The headline's interval and the problem population it is declared over.
 
@@ -575,6 +576,17 @@ def interval_metrics(
     *denominator* of zero, which is the one case the grouped path has to refuse
     for itself.
 
+    *aliases* are the other key names the SAME number is published under -- the
+    column ``score_key`` says the headline was copied from (``accuracy``,
+    ``acc_norm``, ``exact_match``), and any second published route to it. Each
+    gets ``<alias>_ci95`` carrying this interval and a declaration on the same
+    population, because a consumer keyed on the column name has no way to know
+    the interval it needs is filed under ``score``. A parameter rather than a
+    second call: the alias interval must BE the headline's, and two calls with
+    the same arguments are only equal until one of them is edited. It is for a
+    true alias only -- a metric that is a different number, even a deterministic
+    function of this one, is not one of these.
+
     This is :func:`metric_interval` pinned to the headline: metric ``score``,
     unit ``n_problems``. It spells those two out as its own literals rather than
     delegating, so the keys it publishes can be named by a reader that only parses
@@ -595,11 +607,18 @@ def interval_metrics(
     if estimated is None:
         return {}
     (low, high), population = estimated
-    return {
+    fields: dict[str, float | list[float] | dict[str, str]] = {
         SCORE_CI_FIELD: [low, high],
         PROBLEM_COUNT_FIELD: float(population),
-        CI_UNITS_FIELD: {"score": PROBLEM_COUNT_FIELD},
+        CI_UNITS_FIELD: {"score": PROBLEM_COUNT_FIELD}
+        | dict.fromkeys(aliases, PROBLEM_COUNT_FIELD),
     }
+    for alias in aliases:
+        # A fresh list per key, not one shared object: these land in one JSON
+        # document, and a shared list is a shared mutable in every reader that
+        # loads the report back and edits it.
+        fields[ci_field(alias)] = [low, high]
+    return fields
 
 
 def metric_interval(
@@ -610,6 +629,7 @@ def metric_interval(
     group_keys: Sequence[Hashable] | None = None,
     n_problems: int | None = None,
     unit: str = PROBLEM_COUNT_FIELD,
+    aliases: Sequence[str] = (),
 ) -> dict[str, float | list[float] | dict[str, str]]:
     """One metric's own interval, its population, and the unit it is clustered on.
 
@@ -627,6 +647,14 @@ def metric_interval(
     population, and reusing a problem count for one of those narrows the interval
     by the same root-times an uncollapsed repeat does.
 
+    *aliases* are further key names the same number is published under, on the
+    same terms as :func:`interval_metrics`' -- IFEval publishes one prompt-level
+    rate as both ``loose_prompt_level_accuracy`` and ``loose_accuracy``, and a
+    consumer keyed on either has to find a companion. A true alias only: a
+    metric that is a different number gets its own call, and one that is a
+    deterministic function of this one gets nothing, since a mirrored bound reads
+    as second evidence and is not.
+
     The interval, the population and the declaration are one return value, never
     three steps a caller can half-complete -- a ``<metric>_ci95`` whose unit
     nothing recorded is unreadable, and that is the failure this shape exists to
@@ -641,11 +669,14 @@ def metric_interval(
     if estimated is None:
         return {}
     (low, high), population = estimated
-    return {
-        ci_field(metric): [low, high],
-        unit: float(population),
-        CI_UNITS_FIELD: {metric: unit},
+    names = [metric, *aliases]
+    # A fresh list per key, not one shared object -- see `interval_metrics`.
+    fields: dict[str, float | list[float] | dict[str, str]] = {
+        ci_field(name): [low, high] for name in names
     }
+    fields[unit] = float(population)
+    fields[CI_UNITS_FIELD] = dict.fromkeys(names, unit)
+    return fields
 
 
 def merge_metrics(

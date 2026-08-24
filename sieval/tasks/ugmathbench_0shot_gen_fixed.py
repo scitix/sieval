@@ -172,6 +172,8 @@ from sieval.core.tasks.metrics import (
     budget_metrics,
     health_metrics,
     interval_metrics,
+    merge_metrics,
+    metric_interval,
     rollout_metrics,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
@@ -619,17 +621,30 @@ class UGMathBenchZeroShotGenFixedTask(
         # about the draw, and n=1 is where a stopped extractor hides longest.
         metrics |= health_metrics(finals)
 
-        # The interval on the headline, on EAcc's own axis: one value per
-        # PROBLEM -- correct in every version or not -- over the same problem
-        # count `eacc` divided by, so it brackets the number it is printed
-        # beside. Ungrouped on purpose: the `by_problem` reduction above IS this
-        # task's collapse, and it is nonlinear, so a second mean-based one would
-        # move the interval onto AAcc's per-version axis (see `problem_groups`).
+        # One interval per PROBLEM-axis rate: EAcc (the headline) and CAcc beside
+        # it, each over one value per problem -- correct in every version, or in
+        # any -- and over the same problem count both divide by, so each brackets
+        # the number it is printed beside. `aacc` is deliberately absent: it is a
+        # per-VERSION rate whose population this report does not write.
+        # Ungrouped on purpose: the `by_problem` reduction above IS this task's
+        # collapse, and it is nonlinear, so a second mean-based one would move the
+        # interval onto AAcc's per-version axis (see `problem_groups`).
         # `interval_metrics` re-emits the problem count with the same value the
         # block above wrote, which is what makes the two a pair rather than two
         # definitions of one key.
-        metrics |= interval_metrics(
-            _effective_hits(by_problem), denominator=len(by_problem)
+        metrics |= merge_metrics(
+            interval_metrics(
+                _effective_hits(by_problem),
+                denominator=len(by_problem),
+                # `eacc` is `score` under its own name, so it carries the same
+                # interval.
+                aliases=("eacc",),
+            ),
+            metric_interval(
+                "cacc",
+                _covered_hits(by_problem),
+                denominator=len(by_problem),
+            ),
         )
 
         for subject, problems in sorted(by_subject.items()):
@@ -704,9 +719,18 @@ def _effective_accuracy(by_problem: dict[str, list[bool]]) -> float:
     return sum(_effective_hits(by_problem)) * 100 / len(by_problem)
 
 
+def _covered_hits(by_problem: dict[str, list[bool]]) -> list[float]:
+    """Per-problem CAcc indicators: 1.0 for a problem correct in ANY version.
+
+    The values :func:`_covered_accuracy` is the mean of, and the units its
+    interval is estimated over -- one function rather than two, for the reason
+    :func:`_effective_hits` gives.
+    """
+    return [1.0 if any(verdicts) else 0.0 for verdicts in by_problem.values()]
+
+
 def _covered_accuracy(by_problem: dict[str, list[bool]]) -> float:
     """Share of problems correct in at least one version — EAcc's upper bracket."""
     if not by_problem:
         return 0.0
-    hits = sum(1 for verdicts in by_problem.values() if any(verdicts))
-    return hits * 100 / len(by_problem)
+    return sum(_covered_hits(by_problem)) * 100 / len(by_problem)
