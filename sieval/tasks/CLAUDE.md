@@ -125,41 +125,38 @@ what it measured.
 
 A third group is checked by the same rule set, though it is measured rather than
 declared: `SCORE_CI_FIELD` (`score_ci95`), `PROBLEM_COUNT_FIELD` (`n_problems`)
-and `CI_UNITS_FIELD` (`ci95_units`) are emitted **together or not at all**. An
-interval whose population is unknown cannot be read, a population with no
-interval beside it is a count nothing asked for, and — now that a report can
-carry an interval per metric — an interval whose unit is undeclared cannot be
-told from one clustered on something else. Merge them from `metrics.py` rather
-than spelling any of the keys here: `interval_metrics` for the headline,
-`metric_interval` for any other metric (it takes the population key as `unit`),
-`sampling_report`, which does this for every key of the sampling block, and
-`ungated_intervals`, which lifts the block's always-published intervals out of an
-`n > 1` gate and trims the declaration to what came with them.
+and `CI_UNITS_FIELD` (`ci95_units`) are emitted **together or not at all** — and
+that rule applies per METRIC, so a report carrying one metric's count beside
+another's interval is correct rather than half-done. What the three keys mean, why
+each is unreadable without the others, and which report-level shapes look like
+broken pairs and are not, are stated once in
+[`docs/guide/metrics.md`](../../docs/guide/metrics.md) §"Intervals" — the reader's
+contract is canonical there, so it is cited here rather than restated in different
+words. What follows is only what an author does about it.
 
-Both emitters take `aliases`: the other key names the **same number** is published
-under, each getting `<alias>_ci95` and a declaration on the same population. That
-is how the column `score_key` names gets a bound — a consumer keyed on `accuracy`
-cannot know the interval is filed under `score`. A parameter rather than a second
-call, because the alias interval must *be* the headline's and two calls with the
-same arguments are only equal until one is edited. It is for a **true alias**
-only. A different number gets its own `metric_interval` call over its own
-per-unit values; a **deterministic function** of another metric gets nothing at
-all, since a mirrored bound reads as second evidence and is not (`aa_lcr`'s
-`incorrect` is `1 - accuracy`; `browsecomp`'s is written as an independent bucket
-but sums to 100 with `correct` on every grade its parser can return). The
-emitters cannot check that — they never see the values the report publishes — so
-the **runner** does: two metrics on one unit carrying one interval have to publish
-one number, within the half a hundredth a 2-dp-rounded rate can sit from the
-unrounded mean.
+Never spell any of those keys here. Merge them from `metrics.py`:
+`interval_metrics` for the headline, `metric_interval` for any other metric (it
+takes the population key as `unit`), `sampling_report`, which does this for every
+key of the sampling block, and `ungated_intervals`, which lifts the block's
+always-published intervals out of an `n > 1` gate and trims the declaration to
+what came with them.
 
-The `unit` a metric declares is a **population count** — an `n_…` key the same
-report writes, holding how many units the interval is clustered on. Never another
-metric key: "one interval under two names" is `aliases`, not an entry redirecting
-one metric to another. `metric_interval` **raises** on a unit that is not a count,
-before it builds anything: the population is written UNDER that key, so a unit
-naming a metric would replace that metric's rate with a count — and the runner's
-save-then-raise would leave the corrupted rate on disk. A declaration nobody can
-read is worth saving and refusing; a number that is wrong is not.
+Both emitters take `aliases` — the other key names the **same number** is
+published under. Pass them on the same call, never as a second call with the same
+arguments: the alias interval must *be* the headline's, and two calls are only
+equal until one of them is edited. A true alias only; a metric that is a different
+number gets its own `metric_interval` call over its own per-unit values, and one
+that is a deterministic function of another gets nothing at all. The guide's "One
+interval per metric" has that rule and its two live cases; the emitters cannot
+enforce it, since they never see the values the report publishes, so the runner
+does.
+
+A metric's `unit` must be a population count — an `n_…` key the same report
+writes. `metric_interval` **raises** on anything else before it builds anything,
+which is the one refusal that does not wait for the runner: the population is
+written UNDER that key, so save-then-raise would leave a count where the report
+holds a rate. A declaration nobody can read is worth saving and refusing; a number
+that is wrong is not.
 
 Two fragments that each carry intervals are folded with `merge_metrics`, never
 with `|`: a plain merge replaces `ci95_units` wholesale, so one fragment's
@@ -171,16 +168,6 @@ saving `report.json` and then raising on any interval whose unit is missing,
 unresolvable, or shared with a metric publishing a different number — plus a unit
 that is not a count in a **hand-written** `ci95_units`, the one route that gets
 past the emitter's own refusal.
-
-The pair rule applies **per metric**, so two report-level shapes are correct and
-not failures. `n_problems` with no `score_ci95`: a report folding several
-fragments may publish the count for a **sibling** metric's interval when the
-headline itself had no dispersion, or when the headline is nonlinear and never
-gets one (`simpleqa_verified`). And `score_ci95` with no `n_problems`: a headline
-clustered on strata pairs with `n_subjects` / `n_subsets` instead (`agieval`,
-`c_eval`, `cmmlu`), and copying `n_problems` there would narrow the interval by
-quoting a between-stratum width over a population of questions — the error this
-whole contract exists to prevent.
 
 Machine-checked over every class defining `report` under `sieval/tasks/`:
 `check_preflight.py --check check_report_declarations`. A `report` that is a
