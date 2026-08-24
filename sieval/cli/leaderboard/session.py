@@ -43,6 +43,7 @@ from sieval.cli.resolution import (
     TASK_MODEL_ROLES,
     binding_resource_argument_paths,
     derive_model_type,
+    finalize_inline_model_binding,
     is_task_model_role_sentinel,
     normalize_inline_model_binding,
     resolve_dataset_class,
@@ -50,6 +51,7 @@ from sieval.cli.resolution import (
     resolve_task_class,
     validate_model_type_dialect,
     validate_named_config_map,
+    validate_omitted_dialect_migration,
     validate_task_config_args,
     validate_task_model_requirements,
 )
@@ -80,7 +82,6 @@ from sieval.core.models.deployment import (
 )
 from sieval.core.models.dialect_registry import (
     RequestSeedSupport,
-    dialect_is_bindable,
     get_dialect_spec,
 )
 from sieval.core.models.reconcile import (
@@ -1323,6 +1324,7 @@ class EvalSession:
         self._task_model_requirements: tuple[TaskModelRequirement, ...] = ()
         self._aggregated_requirements: dict[str, AggregatedTaskRequirements] = {}
         self._model_types_by_root: dict[str, Literal["chat", "gen"]] = {}
+        self._model_types_by_binding: dict[str, Literal["chat", "gen"]] = {}
         self._legacy_bypass_bindings: frozenset[str] = frozenset()
         self._prelaunch_binding_inputs: tuple[BindingReconcileInput, ...] = ()
         self._prelaunch_deployment_inputs: dict[str, DeploymentReconcileInput] = {}
@@ -1555,12 +1557,17 @@ class EvalSession:
         model_type: Literal["chat", "gen"],
         models_cfg: Mapping[str, dict[str, Any]],
     ) -> NamedModelBinding:
-        """Select a dialect after root model-kind derivation."""
+        """Select a dialect from explicit protocol or the derived model kind."""
 
         chain = self._model_config_chain(binding.config_name, models_cfg)
-        _, root_config = chain[0]
         dialect_declared = any("dialect" in config for _, config in chain)
         explicit_dialect = self._merged_model_value(chain, "dialect")
+        validate_omitted_dialect_migration(
+            binding.config_name,
+            model_type,
+            self._merged_model_value(chain, "engine"),
+            dialect_declared=dialect_declared,
+        )
         if dialect_declared and (
             not isinstance(explicit_dialect, str) or not explicit_dialect
         ):
@@ -1568,19 +1575,9 @@ class EvalSession:
                 f"Model '{binding.config_name}' dialect must be a non-empty string"
             )
 
-        # Only the explicit model-level assertion activates the one-cycle
-        # SGLang compatibility shim.  A managed DeploymentPlan's engine is a
-        # serving fact, not a dialect selector.
-        root_engine = root_config.get("engine")
         if dialect_declared:
             assert isinstance(explicit_dialect, str)
             dialect_id = explicit_dialect
-        elif root_engine == "sglang" and model_type == "gen":
-            dialect_id = (
-                "sglang_native"
-                if dialect_is_bindable("sglang_native")
-                else "sglang_legacy"
-            )
         else:
             dialect_id = "openai_chat" if model_type == "chat" else "openai_completions"
         return dataclasses.replace(binding, dialect_id=dialect_id)
@@ -2349,6 +2346,51 @@ class EvalSession:
             ),
         )
 
+    @staticmethod
+    def _validate_engine_dialect_requirements(
+        binding: NormalizedModelBinding,
+        requirements: AggregatedTaskRequirements,
+        declarations: Mapping[str, JSONValue],
+        request_intents: Mapping[CapabilityKey, CapabilityIntent],
+        engine_id: str,
+    ) -> None:
+        """Reject known engine/dialect incompatibilities before model I/O."""
+
+        input_scoring_intent = request_intents.get("input_scoring")
+        declares_input_scoring = (
+            "input_scoring" in declarations
+            and declarations["input_scoring"] is not False
+        )
+        requires_input_scoring = (
+            requirements.input_scoring
+            or (input_scoring_intent is not None and input_scoring_intent.required)
+            or declares_input_scoring
+        )
+        # TODO(PR-5): replace this deployment-specific guard with the
+        # registered sglang_native binder's capability contract.
+        if (
+            engine_id != "sglang"
+            or binding.dialect_id != "openai_completions"
+            or not requires_input_scoring
+        ):
+            return
+
+        sources_set = set(requirements.input_scoring_sources)
+        if input_scoring_intent is not None:
+            sources_set.update(input_scoring_intent.sources)
+        if declares_input_scoring:
+            sources_set.add("model.capabilities.input_scoring")
+        sources = ", ".join(sorted(sources_set))
+        source_detail = f" (required by {sources})" if sources else ""
+        raise ValueError(
+            f"Model binding '{binding.binding_id}' requires input_scoring"
+            f"{source_detail}, but deployment engine 'sglang' with dialect "
+            "'openai_completions' cannot serve input_scoring: SGLang's "
+            "/v1/completions endpoint rejects echo=True with logprobs. Use a "
+            "named model binding with dialect: sglang_legacy until the "
+            "sglang_native binder replaces the compatibility bypass."
+        )
+
     def _setup_prelaunch_reconciliation(self) -> None:
         """Resolve and reconcile every task/model binding before client creation."""
 
@@ -2471,7 +2513,6 @@ class EvalSession:
             binding_id: finalized_binding(binding)
             for binding_id, binding in self._normalized_model_bindings.items()
         }
-        self._model_types_by_root = model_types_by_root
 
         grouped: dict[str, list[TaskModelRequirement]] = {
             binding_id: [] for binding_id in self._normalized_model_bindings
@@ -2482,6 +2523,73 @@ class EvalSession:
             binding_id: aggregate_task_requirements(group)
             for binding_id, group in grouped.items()
         }
+
+        # Freeze one compatibility-wrapper kind for every binding form. Named
+        # bindings inherit their deployment root's decision; inline bindings
+        # use the shared resolver's historical zero-evidence Chat fallback;
+        # borrowed legacy wrappers contribute their explicit ChatModel/GenModel
+        # type without letting the dialect select it.
+        model_types_by_binding: dict[str, Literal["chat", "gen"]] = {}
+        finalized_inline: dict[str, InlineModelBinding] = {}
+        for binding_id, binding in self._normalized_model_bindings.items():
+            if isinstance(binding, NamedModelBinding):
+                model_type = model_types_by_root[binding.root_deployment_key]
+            else:
+                explicit_type: Literal["chat", "gen"] | None = None
+                if isinstance(binding, ExternalModelBinding):
+                    external_model = self._external_model_for_binding(binding_id)
+                    if isinstance(external_model, ChatModel):
+                        explicit_type = "chat"
+                    elif isinstance(external_model, GenModel):
+                        explicit_type = "gen"
+                model_type = derive_model_type(
+                    binding_id,
+                    explicit_type,
+                    aggregated[binding_id],
+                )
+                if isinstance(binding, InlineModelBinding):
+                    finalized_inline[binding_id] = finalize_inline_model_binding(
+                        binding,
+                        model_type,
+                    )
+                elif binding.dialect_id is None:
+                    raise ValueError(f"Model binding '{binding_id}' has no dialect")
+                else:
+                    validate_model_type_dialect(
+                        binding_id,
+                        model_type,
+                        binding.dialect_id,
+                    )
+            model_types_by_binding[binding_id] = model_type
+
+        if finalized_inline:
+
+            def replace_inline(
+                binding: NormalizedModelBinding,
+            ) -> NormalizedModelBinding:
+                return finalized_inline.get(binding.binding_id, binding)
+
+            records = [
+                dataclasses.replace(record, binding=replace_inline(record.binding))
+                for record in records
+            ]
+            self._task_requirement_contexts = {
+                task_name: dataclasses.replace(
+                    context,
+                    model_bindings={
+                        role: replace_inline(binding)
+                        for role, binding in context.model_bindings.items()
+                    },
+                )
+                for task_name, context in self._task_requirement_contexts.items()
+            }
+            self._normalized_model_bindings = {
+                binding_id: replace_inline(binding)
+                for binding_id, binding in self._normalized_model_bindings.items()
+            }
+
+        self._model_types_by_root = model_types_by_root
+        self._model_types_by_binding = model_types_by_binding
 
         legacy_bypass: set[str] = set()
         binding_inputs: list[BindingReconcileInput] = []
@@ -2503,6 +2611,15 @@ class EvalSession:
 
             declarations = self._declarations_for_binding(binding, models_cfg)
             self._validate_legacy_capability_surfaces(binding, declarations, models_cfg)
+            request_intents = self._legacy_request_intents_for(binding, models_cfg)
+            deployment = self._deployment_input_for(binding, models_cfg)
+            self._validate_engine_dialect_requirements(
+                binding,
+                requirements,
+                declarations,
+                request_intents,
+                deployment.engine_id,
+            )
 
             binding_inputs.append(
                 BindingReconcileInput(
@@ -2514,13 +2631,10 @@ class EvalSession:
                     model_profile=self._model_profile_for(binding),
                     connection_scope=self._connection_scope_for(binding, models_cfg),
                     declarations=declarations,
-                    request_intents=self._legacy_request_intents_for(
-                        binding, models_cfg
-                    ),
+                    request_intents=request_intents,
                     route_intent=self._route_intent_for(binding, models_cfg),
                 )
             )
-            deployment = self._deployment_input_for(binding, models_cfg)
             previous = deployment_inputs.get(deployment.root_deployment_key)
             if previous is not None and previous != deployment:
                 raise ValueError(
@@ -2946,11 +3060,22 @@ class EvalSession:
 
         realized_by_root: dict[str, Deployment] = {}
         postlaunch_inputs: dict[str, DeploymentReconcileInput] = {}
+        prelaunch_bindings = {
+            binding.binding_id: binding for binding in self._prelaunch_binding_inputs
+        }
         for binding in self._normalized_model_bindings.values():
             if binding.binding_id in self._legacy_bypass_bindings:
                 continue
             template = self._prelaunch_deployment_inputs[binding.root_deployment_key]
             deployment = self._configured_deployment_for(binding, template, models_cfg)
+            prelaunch_binding = prelaunch_bindings[binding.binding_id]
+            self._validate_engine_dialect_requirements(
+                binding,
+                self._aggregated_requirements[binding.binding_id],
+                prelaunch_binding.declarations,
+                prelaunch_binding.request_intents,
+                deployment.engine.engine_id,
+            )
             previous = realized_by_root.get(binding.root_deployment_key)
             if previous is not None and previous != deployment:
                 raise ValueError(
@@ -3157,21 +3282,11 @@ class EvalSession:
     def _as_legacy_wrapper(
         self,
         model: Model,
-        requirements: AggregatedTaskRequirements,
-        model_type: Literal["chat", "gen"] | None = None,
+        model_type: Literal["chat", "gen"],
     ) -> Model:
-        """Use normalized evidence or the deployment root's single type."""
+        """Apply the one model-kind decision frozen during prelaunch."""
 
-        if model_type is not None:
-            input_kind = (
-                InputKind.CHAT if model_type == "chat" else InputKind.COMPLETION
-            )
-        elif len(requirements.input) == 1:
-            input_kind = next(iter(requirements.input))
-        else:
-            runtime_plan = model.runtime_plan
-            binding_id = runtime_plan.binding_id if runtime_plan is not None else "?"
-            raise ValueError(f"binding '{binding_id}' has no legacy input kind")
+        input_kind = InputKind.CHAT if model_type == "chat" else InputKind.COMPLETION
         wrapper_type: type[Model] = (
             ChatModel if input_kind is InputKind.CHAT else GenModel
         )
@@ -3318,8 +3433,7 @@ class EvalSession:
                         )
                     model = self._as_legacy_wrapper(
                         model,
-                        self._aggregated_requirements[binding.binding_id],
-                        self._model_types_by_root[binding.root_deployment_key],
+                        self._model_types_by_binding[binding.binding_id],
                     )
 
                 if self.deterministic:
@@ -3383,7 +3497,7 @@ class EvalSession:
                     self._request_seed_decisions_by_binding[binding.binding_id],
                 )
             bound_by_binding[binding.binding_id] = self._as_legacy_wrapper(
-                model, self._aggregated_requirements[binding.binding_id]
+                model, self._model_types_by_binding[binding.binding_id]
             )
 
         role_models: dict[str, dict[str, Model]] = {}
@@ -3409,7 +3523,7 @@ class EvalSession:
                             ],
                         )
                     role_model = self._as_legacy_wrapper(
-                        rebound, self._aggregated_requirements[binding.binding_id]
+                        rebound, self._model_types_by_binding[binding.binding_id]
                     )
                 else:
                     role_model = bound_by_binding[binding.binding_id]

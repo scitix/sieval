@@ -18,7 +18,8 @@ per-option context is identical within a sample, its log-prob cancels in the
 argmax, so summing the echoed INPUT tokens (excluding the trailing generated
 token — see ``echoed_logprob``) is exact for EM.
 
-Scored via ``SglangGenModel``'s echoed-input logprobs (``engine: sglang``). The
+Scored via ``SglangGenModel``'s echoed-input logprobs
+(``dialect: sglang_legacy``). The
 sglang server MUST be launched with ``--disable-radix-cache``: on a prefix-cache
 hit sglang drops logprobs for cached positions, and the model fails loud rather
 than score a truncated echoed sequence.
@@ -90,8 +91,9 @@ N_SHOT = 25
             "logP(opt|'Answer:'), argmax = prediction. This is the ppl "
             "protocol (one inference per option; full answer text), not the "
             "single-letter clp method. Requires the sglang server launched "
-            "with --disable-radix-cache (SglangGenModel fails loud on a cache "
-            "hit that truncates echoed logprobs). Comparison target — the "
+            "with --disable-radix-cache and the model configured with "
+            "dialect: sglang_legacy (SglangGenModel fails loud on a cache hit "
+            "that truncates echoed logprobs). Comparison target — the "
             "SEPARATION regime (arXiv 2412.17758), Qwen2.5-report style. The "
             "98.4 options/letter figure is the clp sibling, not this task."
         ),

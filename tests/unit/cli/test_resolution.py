@@ -17,6 +17,7 @@ import pytest
 from sieval.cli.resolution import (
     _guess_submodule_names,
     derive_model_type,
+    finalize_inline_model_binding,
     load_class_from_name,
     load_class_from_path,
     normalize_inline_model_binding,
@@ -541,6 +542,34 @@ class TestResolveConfigModelTypes:
 
         assert result.model_types_by_config == {"m": "gen"}
 
+    def test_inline_role_dialect_must_match_requirement_input(self):
+        config = {
+            "models": {"m": {"name": "org/candidate"}},
+            "tasks": {
+                "task": {
+                    "model": "m",
+                    "class": "fake.Task",
+                    "args": {
+                        "extractor": {
+                            "model": "org/extractor",
+                            "dialect": "openai_completions",
+                        }
+                    },
+                }
+            },
+        }
+        with (
+            patch(
+                "sieval.cli.resolution.resolve_task_class",
+                return_value=self.CompletionWithExtractorTask,
+            ),
+            pytest.raises(
+                ValueError,
+                match=r"inline:task:extractor:.*legacy type 'chat'.*must agree",
+            ),
+        ):
+            resolve_config_model_types(config)
+
     def test_inline_sglang_legacy_role_is_rejected_during_resolution(self):
         config = {
             "models": {"m": {"name": "org/candidate"}},
@@ -943,6 +972,17 @@ class TestNormalizeInlineModelBinding:
     def test_missing_or_empty_model_is_rejected(self, model):
         with pytest.raises(ValueError, match="requires a non-empty 'model'"):
             normalize_inline_model_binding("t", "grader", self._config(model=model))
+
+    def test_omitted_dialect_remains_pending_until_requirements_are_known(self):
+        binding = normalize_inline_model_binding("t", "grader", self._config())
+
+        assert binding.dialect_id is None
+        assert finalize_inline_model_binding(binding, "chat").dialect_id == (
+            "openai_chat"
+        )
+        assert finalize_inline_model_binding(binding, "gen").dialect_id == (
+            "openai_completions"
+        )
 
     @pytest.mark.parametrize("dialect", ["", None, 7])
     def test_empty_dialect_is_rejected(self, dialect):

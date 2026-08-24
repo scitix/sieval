@@ -20,7 +20,7 @@ import importlib
 import inspect
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -198,12 +198,14 @@ def normalize_inline_model_binding(
     ).encode()
     digest = hashlib.sha256(encoded).hexdigest()[:16]
     binding_id = f"inline:{task_name}:{role}:{digest}"
-    dialect = raw_config.get("dialect", "openai_chat")
-    if not isinstance(dialect, str) or not dialect:
+    dialect_declared = "dialect" in raw_config
+    dialect = raw_config.get("dialect")
+    if dialect_declared and (not isinstance(dialect, str) or not dialect):
         raise ValueError(
             f"Task '{task_name}' inline {role} dialect must be a non-empty string"
         )
-    if dialect == "sglang_legacy":
+    dialect_id = cast(str, dialect) if dialect_declared else None
+    if dialect_id == "sglang_legacy":
         raise ValueError(
             f"Task '{task_name}' inline {role} cannot use the named-model-only "
             "sglang_legacy bypass; configure a named model or use a bindable dialect"
@@ -225,7 +227,7 @@ def normalize_inline_model_binding(
         root_deployment_key=f"deployment:{binding_id}",
         requested_model_id=requested_model_id,
         config=safe_config,
-        dialect_id=dialect,
+        dialect_id=dialect_id,
     )
 
 
@@ -572,6 +574,8 @@ def validate_model_type_dialect(
         raise ValueError("dialect_id must be a non-empty string")
 
     expected_input = "chat" if model_type == "chat" else "completion"
+    # TODO(PR-5): remove this pseudo-spec branch when the registered
+    # sglang_native binder replaces the temporary legacy bypass.
     accepted_inputs = (
         ("completion",)
         if dialect_id == "sglang_legacy"
@@ -585,6 +589,46 @@ def validate_model_type_dialect(
             f"only {accepted}. The model type and dialect input contract "
             "must agree."
         )
+
+
+def validate_omitted_dialect_migration(
+    model_name: str,
+    model_type: Literal["chat", "gen"],
+    engine_id: object | None,
+    *,
+    dialect_declared: bool,
+) -> None:
+    """Reject an omitted dialect where the old selector changed wire protocol.
+
+    Before engine identity and request protocol were separated, ``engine:
+    sglang`` selected the native ``/generate`` compatibility path for ``gen``
+    models. Defaulting that config to OpenAI Completions would silently change
+    its wire protocol, so require the migration choice to be explicit.
+    """
+
+    if dialect_declared or model_type != "gen" or engine_id != "sglang":
+        return
+    raise ValueError(
+        f"Model '{model_name}' declares engine: sglang with type: gen but omits "
+        "dialect. Engine identity no longer selects a request protocol; set "
+        "dialect: sglang_legacy to preserve the native /generate path, or set "
+        "dialect: openai_completions to migrate explicitly."
+    )
+
+
+def finalize_inline_model_binding(
+    binding: InlineModelBinding,
+    model_type: Literal["chat", "gen"],
+) -> InlineModelBinding:
+    """Resolve an omitted inline dialect from the frozen model-kind decision."""
+
+    if not isinstance(binding, InlineModelBinding):
+        raise TypeError("binding must be an InlineModelBinding")
+    dialect_id = binding.dialect_id
+    if dialect_id is None:
+        dialect_id = "openai_chat" if model_type == "chat" else "openai_completions"
+    validate_model_type_dialect(binding.binding_id, model_type, dialect_id)
+    return replace(binding, dialect_id=dialect_id)
 
 
 @dataclass(frozen=True)
@@ -699,6 +743,21 @@ def resolve_config_model_types(
                     dialect_id,
                 )
             by_config[binding.config_name] = model_type
+
+    inline_bindings = {
+        record.binding.binding_id: record.binding
+        for record in records
+        if isinstance(record.binding, InlineModelBinding)
+    }
+    for binding_id, binding in inline_bindings.items():
+        requirements = aggregate_task_requirements(
+            record
+            for record in records
+            if isinstance(record.binding, InlineModelBinding)
+            and record.binding.binding_id == binding_id
+        )
+        model_type = derive_model_type(binding_id, None, requirements)
+        finalize_inline_model_binding(binding, model_type)
 
     return ConfigModelTypeResolution(by_root, by_config)
 
