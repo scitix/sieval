@@ -2716,6 +2716,80 @@ class TestCheckReportDeclarations:
         # And rule 4 still resolved the score_key rather than skipping the report.
         assert "1 score_key(s) also resolved" in r.message
 
+    def test_a_headline_on_another_population_is_counted_apart(self, tmp_path: Path):
+        """The bypass: a headline emitted through `metric_interval` is invisible.
+
+        Its interval key is built from a metric name, so rule 5's exact-match
+        read sees no interval and no pair — a macro-over-strata report looked
+        like one publishing nothing. Counted as a second figure rather than
+        folded into `paired`, because a subject-clustered headline owes
+        `n_subjects` and must NOT carry `n_problems`.
+        """
+        r = self._run(
+            tmp_path,
+            "SUBJECT_COUNT_FIELD = 'n_subjects'\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            SUBJECT_COUNT_FIELD: 2.0,\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        } | metric_interval('score', finals, unit=SUBJECT_COUNT_FIELD)\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+        assert "0 report(s) pair the headline interval with its problem count" in (
+            r.message
+        )
+        assert "1 with another population" in r.message
+
+    def test_a_headline_on_the_problem_count_is_not_double_counted(
+        self, tmp_path: Path
+    ):
+        # The second figure counts only the reports on ANOTHER unit: a headline
+        # `metric_interval` call left on the default population is the ordinary
+        # pair, and summing the two figures would report it twice.
+        r = self._run(
+            tmp_path,
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        } | metric_interval('score', finals)\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+        assert "0 report(s) pair the headline interval with its problem count" in (
+            r.message
+        )
+        assert "0 with another population" in r.message
+
+    def test_a_sibling_metrics_interval_is_not_read_as_the_headline(
+        self, tmp_path: Path
+    ):
+        # `metric_interval` is how every co-equal sibling gets its bound, and a
+        # sibling on another unit is not a headline pair — only a call whose
+        # metric is literally `score` counts.
+        r = self._run(
+            tmp_path,
+            "TURN_COUNT_FIELD = 'n_turns'\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'isr': 1.0,\n"
+            "            TURN_COUNT_FIELD: 4.0,\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        } | metric_interval('isr', finals, unit=TURN_COUNT_FIELD)\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+        assert "0 with another population" in r.message
+
     def test_a_population_key_named_by_the_tasks_own_constant_is_nameable(
         self, tmp_path: Path
     ):
@@ -3036,6 +3110,14 @@ class TestCheckReportDeclarations:
         match = re.search(r"(\d+) report\(s\) pair the headline", result.message)
         assert match is not None, result.message
         assert int(match.group(1)) >= 49
+        # And the second figure, for the headlines clustered on something other
+        # than problems. It is the only place those reports are visible — their
+        # interval key is built from a metric name — so a drop here means either a
+        # macro-over-strata task stopped estimating or the call-reading stopped
+        # working, and neither shows up in the count above.
+        other = re.search(r"and (\d+) with another population", result.message)
+        assert other is not None, result.message
+        assert int(other.group(1)) >= 3
 
     def test_interval_constants_match_the_metrics_module(self):
         """Rule 5 looks the pair up by CONSTANT NAME, so a rename must fail here.

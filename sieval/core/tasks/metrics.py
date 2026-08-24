@@ -680,7 +680,27 @@ def metric_interval(
     three steps a caller can half-complete -- a ``<metric>_ci95`` whose unit
     nothing recorded is unreadable, and that is the failure this shape exists to
     make impossible.
+
+    Raises:
+        ValueError: if *unit* is not a population count (:data:`COUNT_KEY_PREFIX`).
+            The population is written UNDER that key, so a *unit* naming a metric
+            puts a count where a report holds a rate: later-wins in the fold, and
+            the rate is gone. Refused here rather than left to
+            :func:`interval_declaration_problems`, because that runs on the
+            finished dict -- which the runner saves BEFORE it raises, so the
+            corrupted rate would already be on disk. A declaration nobody can
+            read is worth saving and refusing; a number that is wrong is not.
+            Checked before anything is estimated, so a bad unit fails on every
+            run rather than only on the ones with dispersion to report.
     """
+    if not unit.startswith(COUNT_KEY_PREFIX):
+        raise ValueError(
+            f"metric_interval: unit {unit!r} is not a population count -- those "
+            f"are spelled {COUNT_KEY_PREFIX!r}... in this tree. The population is "
+            f"published under this key, so {metric!r}'s interval would replace "
+            f"whatever the report holds at {unit!r} with a count. Two names for "
+            "one number are `aliases`, not a unit pointing at another metric."
+        )
     estimated = _clustered_interval(
         values,
         denominator=denominator,
@@ -837,7 +857,10 @@ def interval_declaration_problems(report: Mapping[str, object]) -> list[str]:
     * an entry whose value is not a population COUNT (:data:`COUNT_KEY_PREFIX`).
       ``ci95_units`` maps a metric to the SIZE of its population, so a value
       naming another metric resolves -- that key is in the report -- and still
-      leaves the interval with nothing to be read against;
+      leaves the interval with nothing to be read against.
+      :func:`metric_interval` refuses that unit outright, since it is what writes
+      the count under it; this half covers the map a report hand-writes, where
+      there is no estimator between the declaration and the reader;
     * two metrics declared on one unit, carrying one interval, publishing two
       different numbers (:func:`_alias_value_problems`).
 
@@ -920,9 +943,14 @@ def _alias_value_problems(
             unit = units[first]
             if unit != units[second]:
                 continue
-            low = report.get(ci_field(first))
-            high = report.get(ci_field(second))
-            if not isinstance(low, list) or not isinstance(high, list) or low != high:
+            # The two INTERVALS, each a `[lo, hi]` list -- not two bounds.
+            first_bounds = report.get(ci_field(first))
+            second_bounds = report.get(ci_field(second))
+            if (
+                not isinstance(first_bounds, list)
+                or not isinstance(second_bounds, list)
+                or first_bounds != second_bounds
+            ):
                 continue
             first_value = report.get(first)
             second_value = report.get(second)

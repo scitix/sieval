@@ -1154,6 +1154,33 @@ def test_metric_interval_publishes_a_rate_on_its_own_population_key():
     assert PROBLEM_COUNT_FIELD not in got
 
 
+def test_metric_interval_refuses_a_unit_that_is_not_a_population_count():
+    """The pointer unit is refused where the count is WRITTEN, not where it lands.
+
+    `fields[unit] = float(population)` puts the count under whatever key *unit*
+    names, and a fold is later-wins -- so a unit naming another metric replaces
+    that metric's rate with a count. `interval_declaration_problems` sees it, but
+    only on the finished dict, which the runner saves BEFORE it raises: the
+    corrupted rate would already be on disk. Refusing here means the report is
+    never built.
+    """
+    with pytest.raises(ValueError, match="not a population count"):
+        metric_interval(
+            "loose_prompt_level_accuracy",
+            [1.0, 0.0, 1.0],
+            denominator=3,
+            unit="strict_prompt_level_accuracy",
+        )
+    # Refused before anything is estimated, so a bad unit fails on every run and
+    # not only on the ones with spread to report: this call has none.
+    with pytest.raises(ValueError, match="not a population count"):
+        metric_interval("acc", [0.5] * 4, denominator=4, unit="score")
+    # And a real count is accepted, so the complaint is about the VALUE.
+    assert metric_interval("aacc", [1.0, 0.0, 1.0], denominator=3, unit="n_versions"), (
+        "a count-prefixed unit must still work"
+    )
+
+
 def test_metric_interval_omits_the_declaration_with_the_interval():
     # No interval, no population, no unit entry -- a declaration for a key that
     # is not there describes nothing.

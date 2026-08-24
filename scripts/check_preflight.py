@@ -437,6 +437,11 @@ _PROBLEM_COUNT_CONSTANT = "PROBLEM_COUNT_FIELD"
 _CI_SUFFIX_CONSTANT = "CI_SUFFIX"
 _CI_UNITS_CONSTANT = "CI_UNITS_FIELD"
 
+#: The general per-metric emitter. A headline routed through it publishes
+#: ``score_ci95`` under a key built from a metric NAME, which no source scan can
+#: enumerate — so rule 5 reads the CALL instead (:func:`_headline_interval_units`).
+_METRIC_INTERVAL_HELPER = "metric_interval"
+
 #: ``metrics.py`` helpers that fold their ARGUMENTS into one dict, so the keys
 #: they publish are their operands' and not their own
 #: (:func:`_merged_sources`). Renaming one without updating this reads as a task
@@ -810,6 +815,48 @@ def _resolved_string(value: ast.expr, constants: dict[str, str]) -> str | None:
     if isinstance(value, ast.Name):
         return constants.get(value.id)
     return None
+
+
+def _headline_interval_units(fn: ast.AST, constants: dict[str, str]) -> set[str]:
+    """Population keys a ``metric_interval`` call declares for the HEADLINE.
+
+    Rule 5 reads the interval key off the report's own dict, which cannot see a
+    headline emitted through :func:`metric_interval`: that helper writes
+    ``ci_field(metric)``, an ``ast.Call``, so ``score_ci95`` is nowhere in the
+    source. A macro-over-strata task therefore looks like a report with no
+    interval at all — and could bypass the pair rule entirely without meaning to.
+
+    What IS nameable is the call: its first argument is the literal ``"score"``
+    and its ``unit=`` is a literal or a module constant, so the population the
+    headline is clustered on can be read even though the key holding its interval
+    cannot. Reported as a second figure rather than folded into ``paired``: those
+    two counts answer different questions, and a report whose headline is
+    clustered on subjects has no ``n_problems`` to pair with by design.
+
+    Only ``"score"`` — a sibling metric's interval is not the headline pair's
+    business, and the runtime check already covers every metric.
+    """
+    units: set[str] = set()
+    for node in ast.walk(fn):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == _METRIC_INTERVAL_HELPER
+        ):
+            continue
+        first = node.args[0] if node.args else None
+        if first is None or _resolved_string(first, constants) != "score":
+            continue
+        declared = next((k.value for k in node.keywords if k.arg == "unit"), None)
+        # No `unit=` means the helper's own default, which is the problem count.
+        named = (
+            constants.get(_PROBLEM_COUNT_CONSTANT)
+            if declared is None
+            else _resolved_string(declared, constants)
+        )
+        if named is not None:
+            units.add(named)
+    return units
 
 
 def _policy_text(value: ast.expr) -> str:
@@ -2031,6 +2078,16 @@ class PreflightRunner:
            :data:`_UNPAIRED_PROBLEM_COUNT` as publishing a count that predates the
            interval; the listing expires loudly, since a listed module that pairs
            the two is reported as well.
+
+           A headline clustered on something OTHER than problems pairs with its
+           own count, not with ``n_problems`` — a macro over subjects owes
+           ``n_subjects``, and copying the problem count there would narrow the
+           interval. Those reports emit the headline through ``metric_interval``,
+           whose interval key is built from a metric name and so is invisible
+           here, so they are read off the call and counted as a **second figure**
+           (:func:`_headline_interval_units`). Two counts rather than one sum:
+           they are different claims, and a single total would hide which unit a
+           report is on.
         6. every interval declares its UNIT. A report may carry one interval per
            metric, so ``n_problems`` alone no longer says what any single one is
            clustered on: a report writing any ``*_ci95`` key writes
@@ -2081,6 +2138,7 @@ class PreflightRunner:
         checked = 0
         verified = 0
         paired = 0
+        paired_elsewhere = 0
         declared_units = 0
         for py_file in py_files:
             rel = py_file.relative_to(self.project_root)
@@ -2275,6 +2333,19 @@ class PreflightRunner:
                         "population and no interval — the pair is emitted whole or "
                         "not at all"
                     )
+                # The headline routed through `metric_interval`: its interval key
+                # is unnameable, so the pair is read off the CALL and counted
+                # apart. Without this the three macro-over-strata reports show up
+                # as reports with no interval at all, and the pair rule is one
+                # helper swap away from being unenforced by accident.
+                other_units = sorted(
+                    unit
+                    for scope in scopes
+                    for unit in _headline_interval_units(scope, key_constants)
+                    if unit != population_key
+                )
+                if other_units:
+                    paired_elsewhere += 1
 
         if violations:
             return [
@@ -2292,7 +2363,8 @@ class PreflightRunner:
                 f"all {checked} task report(s) declare their score key and "
                 f"denominator policy ({verified} score_key(s) also resolved to a "
                 f"key the report writes; {paired} report(s) pair the headline "
-                f"interval with its problem count; {declared_units} declare the "
+                f"interval with its problem count and {paired_elsewhere} with "
+                f"another population; {declared_units} declare the "
                 "unit of every interval they publish)",
             )
         ]
