@@ -359,9 +359,7 @@ class GSMPlusZeroShotGenTask(
             if grouping is None
             # Restricted to the subset, so a repeated split still collapses the
             # copies of one problem rather than reading them as independent
-            # questions. Its population is the subset's DISTINCT problems, which
-            # is what `wo_total` counts already when each sample is its own
-            # problem -- one noun for the key under either config.
+            # questions.
             else ProblemGrouping(
                 [grouping.keys[position] for position in wo_positions],
                 len({grouping.keys[position] for position in wo_positions}),
@@ -372,6 +370,21 @@ class GSMPlusZeroShotGenTask(
         # are the same number and a different claim. The estimator below re-emits
         # the same value, which is what makes the two a pair rather than two
         # definitions of one key.
+        #
+        # Unrepeated -- every config in this tree -- each sample is its own
+        # problem and this IS `wo_total`, the count the rate divides by. On a
+        # repeated split the two nouns come apart, deliberately and in one
+        # direction: `n_problems` above reads the whole split (so a problem whose
+        # every copy failed still occupies a slot), while this counts the
+        # non-critical-thinking problems the run actually OBSERVED, since a failed
+        # sample's perturbation type lives on its `raw_sample` and its copy number
+        # does not. So a wholly-failed non-CT problem stays in `wo_total` -- the
+        # rate charges it as wrong, per DENOMINATOR_REQUESTED -- and is absent
+        # here. Nothing published is wrong: `n_problems` cancels out of `p`
+        # entirely (`interval_metrics` scales by G/D and divides by G), and a
+        # smaller G only widens the interval. Aligning the two would mean
+        # resolving each failed sample's copy number as well as its type, which is
+        # a second grouping pass for a count that no shipped config can reach.
         report[WO_CRITICAL_THINKING_COUNT_FIELD] = float(
             wo_total if wo_grouping is None else wo_grouping.n_problems
         )

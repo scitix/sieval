@@ -20,7 +20,7 @@ Two rules govern the whole file:
 | `fails` | Samples that failed the pipeline (an error, not a wrong answer). |
 | `denominator_policy` | Which population the headline is averaged over. |
 | `score_ci95` | 95% interval on `score`, as `[lo, hi]` |
-| `n_problems` | Declared problem population the headline is averaged over |
+| `n_problems` | Declared problem population — of whichever metrics `ci95_units` puts on it, usually the headline |
 | `ci95_units` | Which population count each interval in the report is clustered on |
 
 The first four are on every report (one documented exception below).
@@ -52,8 +52,13 @@ when this field agrees; when `fails` is 0 the two coincide.
 `report()` omits either, whose policy is a word other than the two above, or
 whose `score_key` names a column the report does not contain — nothing reads
 `score_key` at run time, so that last one would otherwise go unnoticed. The same
-check fails a report that writes `score_ci95` without `n_problems`, or the
-reverse, and one that writes any `*_ci95` key without writing `ci95_units` at all.
+check fails a report whose **source** writes `score_ci95` without `n_problems`, or
+the reverse, and one that writes any `*_ci95` key without writing `ci95_units` at
+all. Read that as a property of the check, not as an invariant of the format: it
+is an exact match on the literal keys a source scan can see, and a headline
+clustered on strata pairs with its own count instead (three reports do — see
+"whole or not at all" below). Those are counted separately in the check's own PASS
+line, so the two figures reconcile rather than leaving three reports unexplained.
 
 Whether that map is *complete* is checked at run time instead, when the report is
 finished: a per-metric interval key is built from a metric name, so no source scan
@@ -67,6 +72,15 @@ different numbers, which is what a metric passed as an alias of something it is
 not looks like from the outside. Saved first on purpose — the artifacts of a
 finished run are worth keeping — and raised rather than logged, because an
 ignorable warning is how every earlier undeclared-key defect shipped.
+
+The count-key rule is also enforced **before** any of that, by the estimator
+itself, and that ordering is the point: the population is published *under* the
+key the unit names, so a unit naming a metric replaces that metric's rate with a
+count. Save-then-raise is right for a declaration a reader cannot use — the file
+stays inspectable — and wrong for a value that is wrong, so a report with such a
+unit is never built and never reaches disk. What the run-time half still covers is
+a `ci95_units` map written by hand, where no estimator sits between the
+declaration and the reader.
 
 One task is the documented exception, and only to the `score` half:
 `t_eval_before_calling_0shot_gen` publishes one rate per axis and no headline, so
@@ -88,9 +102,26 @@ population the number is *about*, not as a count of what was measured.
 They arrive **whole or not at all** — an interval whose population is unknown
 cannot be read, a population with no interval beside it is a count nothing asked
 for, and an interval whose unit is undeclared cannot be told from one clustered on
-something else — so `score_ci95`, `n_problems` and the `ci95_units` entry naming
-that population appear together. All are omitted, never zeroed, when there is
-nothing to estimate: fewer than two problems, or no spread between them.
+something else — so an interval, the count it is clustered on, and the
+`ci95_units` entry naming that count appear together. All are omitted, never
+zeroed, when there is nothing to estimate: fewer than two problems, or no spread
+between them.
+
+**Read that per metric, not per report** — a report is not malformed for
+breaking either half of it at the report level, and three shapes in this tree do:
+
+- `score_ci95` with **no `n_problems`**: AGIEval, C-Eval and CMMLU cluster their
+  headline on strata, so the count beside it is `n_subsets` / `n_subjects`. The
+  pair is with *its own* population, and copying `n_problems` there would be the
+  error, not the fix.
+- `n_problems` with **no `score_ci95`**: `simpleqa_verified_0shot_gen`'s headline
+  is a nonlinear F1 and gets no interval, while its three buckets do — the count
+  is theirs.
+- a metric with **no interval at all**, whenever its own values had no spread,
+  beside a sibling that has one.
+
+So pair `<metric>_ci95` with the count `ci95_units` names **for that metric**, and
+treat every one of the three keys as independently optional.
 
 It is a Wilson interval on an effective sample size, so it stays inside 0–100 and
 is asymmetric near a bound; at a `score` of exactly 0 or 100 it falls back to the
@@ -193,8 +224,12 @@ Three rules decide whether a metric is a candidate at all:
   unit sharing one interval have to publish the same number, within the half a
   hundredth a rate rounded to 2 dp can sit from the unrounded mean the bounds
   bracket. Two metrics on one unit have equal bounds only when they have equal
-  `p`, so that check is a tautology for a real alias and fires precisely on a
-  metric handed to the parameter that is not one.
+  `p`, so that check is a tautology for a real alias and fires on a metric handed
+  to the parameter that is not one — **with one blind spot**: it runs on the
+  finished report, so a wrongly-aliased metric that *also* has its own
+  `metric_interval` call later in the same fold is overwritten by that call before
+  the check sees it. What it catches is the case that actually publishes a
+  mirrored bound: a sibling with no estimate of its own.
 
 A withheld metric takes its interval with it: a task that withholds the sampling
 block at `n = 1` withholds those metrics' intervals too, and keeps the ones for

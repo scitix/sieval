@@ -155,7 +155,11 @@ unrounded mean.
 The `unit` a metric declares is a **population count** — an `n_…` key the same
 report writes, holding how many units the interval is clustered on. Never another
 metric key: "one interval under two names" is `aliases`, not an entry redirecting
-one metric to another, and the runner refuses a unit that is not a count.
+one metric to another. `metric_interval` **raises** on a unit that is not a count,
+before it builds anything: the population is written UNDER that key, so a unit
+naming a metric would replace that metric's rate with a count — and the runner's
+save-then-raise would leave the corrupted rate on disk. A declaration nobody can
+read is worth saving and refusing; a number that is wrong is not.
 
 Two fragments that each carry intervals are folded with `merge_metrics`, never
 with `|`: a plain merge replaces `ci95_units` wholesale, so one fragment's
@@ -164,11 +168,19 @@ because the intervals themselves are all still there. The preflight cannot catch
 that (a per-metric interval key is built from a metric name, not a literal, so its
 key set is not the runtime one); the **runner** does, at report-write time, by
 saving `report.json` and then raising on any interval whose unit is missing,
-unresolvable, not a count, or shared with a metric publishing a different number.
+unresolvable, or shared with a metric publishing a different number — plus a unit
+that is not a count in a **hand-written** `ci95_units`, the one route that gets
+past the emitter's own refusal.
 
-`n_problems` with no `score_ci95` beside it is not that failure: a report folding
-several fragments may publish the count for a **sibling** metric's interval when
-the headline itself had no dispersion. The pair rule applies per metric.
+The pair rule applies **per metric**, so two report-level shapes are correct and
+not failures. `n_problems` with no `score_ci95`: a report folding several
+fragments may publish the count for a **sibling** metric's interval when the
+headline itself had no dispersion, or when the headline is nonlinear and never
+gets one (`simpleqa_verified`). And `score_ci95` with no `n_problems`: a headline
+clustered on strata pairs with `n_subjects` / `n_subsets` instead (`agieval`,
+`c_eval`, `cmmlu`), and copying `n_problems` there would narrow the interval by
+quoting a between-stratum width over a population of questions — the error this
+whole contract exists to prevent.
 
 Machine-checked over every class defining `report` under `sieval/tasks/`:
 `check_preflight.py --check check_report_declarations`. A `report` that is a
