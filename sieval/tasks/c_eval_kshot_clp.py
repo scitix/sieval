@@ -65,9 +65,16 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    metric_interval,
 )
 from sieval.core.utils.ppl import choice_scores_from_top_logprobs
 from sieval.datasets import CEvalDatasetSample
+
+#: Report key carrying the population the headline is a macro-average over: the
+#: subjects that ran, which a subject-subset run changes. Not `n_problems` --
+#: the unit here is the subject, and the per-subject accuracies are what `score`
+#: is the mean of.
+SUBJECT_COUNT_FIELD = "n_subjects"
 
 CHOICES = ("A", "B", "C", "D")
 _FEWSHOT_SPLIT = "dev"
@@ -178,9 +185,10 @@ class CEvalFewShotCLPTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # `str`: the report carries `score_key`, which names a column rather than
+        # measuring one. `list[float]` is the headline's interval, and
+        # `dict[str, str]` the map naming the population it is clustered on.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     """C-Eval few-shot next-token logprob evaluation for base models."""
@@ -342,12 +350,15 @@ class CEvalFewShotCLPTask(
         }
         overall = sum(subject_acc.values()) / len(subject_acc) if subject_acc else 0.0
 
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": overall,
             "fails": float(len(fails)),
             "overall": overall,
             SCORE_KEY_FIELD: "overall",
             DENOMINATOR_FIELD: DENOMINATOR_JUDGED,
+            # The macro's denominator, reported unconditionally: a mean over 52
+            # subjects and one over 3 are the same number and a different claim.
+            SUBJECT_COUNT_FIELD: float(len(subject_acc)),
         }
         # Only report categories with evaluated subjects, so a subject-subset
         # run omits absent categories instead of a misleading 0.0.
@@ -357,4 +368,19 @@ class CEvalFewShotCLPTask(
                 metrics[category.lower().replace(" ", "_")] = sum(available) / len(
                     available
                 )
-        return metrics
+        # The headline is exactly the mean over SUBJECTS of the per-subject
+        # accuracy, so the interval is clustered on subjects and declares
+        # `n_subjects` -- not `n_problems`, which would quote a between-subject
+        # width over a population of questions. `/ 100` because the estimator
+        # works on rates and rescales once at the end; the published numbers are
+        # untouched. The per-category macros are means over their own subject
+        # subsets and get none: one count per cell is a breakdown, not a headline.
+        return metrics | metric_interval(
+            "score",
+            [accuracy / 100 for accuracy in subject_acc.values()],
+            denominator=len(subject_acc),
+            unit=SUBJECT_COUNT_FIELD,
+            # `overall` is `score` under its own name, so it carries the same
+            # interval.
+            aliases=("overall",),
+        )

@@ -23,6 +23,11 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import (
+    SCORE_CI_FIELD,
+    interval_declaration_problems,
+    wilson_interval,
+)
 from sieval.datasets.c_eval import CEvalDataset, CEvalDatasetSample
 from sieval.tasks.c_eval_kshot_clp import CEvalFewShotCLPTask
 from tests.conftest import HandlerTransport
@@ -166,6 +171,42 @@ async def test_report_macro_over_subjects_with_category_breakdown():
     assert "social_science" not in report  # no evaluated subjects → omitted
     assert "macro_accuracy" not in report
     assert report["fails"] == 0.0
+    # The headline is a mean over SUBJECTS, so its interval is clustered on the
+    # two subjects that ran and declares their count -- not `n_problems`, which
+    # would quote a between-subject width over the three questions.
+    assert report["n_subjects"] == 2.0
+    assert "n_problems" not in report
+    assert report["ci95_units"] == {
+        "score": "n_subjects",
+        "overall": "n_subjects",
+    }
+    expected = wilson_interval([1.0, 0.0], 2)
+    assert expected is not None
+    assert report[SCORE_CI_FIELD] == list(expected)
+    # `overall` is `score` under its own name, so it repeats those bounds.
+    assert report["overall_ci95"] == report[SCORE_CI_FIELD]
+    # The per-category macros are means over their own subject subsets and get
+    # no interval: one count per cell is a breakdown, not a headline.
+    assert "stem_ci95" not in report
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_report_over_one_subject_publishes_the_count_and_no_interval():
+    # Omitted, never zeroed: one subject is nothing to estimate between, and the
+    # macro is still published with the population it was averaged over.
+    model = _ScriptedGenModel({"A": -0.1, "B": -1.0, "C": -1.0, "D": -1.0})
+    task = _task(model)
+    finals = [
+        TaskContext(sample_id=0, feedback_result=_fb(True, "high_school_physics")),
+        TaskContext(sample_id=1, feedback_result=_fb(False, "high_school_physics")),
+    ]
+    report = await task.report(finals, [])
+
+    assert report["n_subjects"] == 1.0
+    assert SCORE_CI_FIELD not in report
+    assert "ci95_units" not in report
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

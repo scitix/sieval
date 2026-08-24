@@ -119,11 +119,21 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    ProblemGrouping,
     health_metrics,
     interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import GSMPlusDatasetSample
+
+#: Report key carrying `score_wo_critical_thinking`'s population: the problems
+#: outside the `critical thinking` split, plus the failures whose perturbation
+#: could not be recovered (which that rate charges as wrong). The second
+#: population of this report -- `n_problems` is the headline's -- and the unit the
+#: co-headline's interval declares.
+WO_CRITICAL_THINKING_COUNT_FIELD = "n_problems_wo_critical_thinking"
 
 # Verbatim from prompt_template.py::cot_prompt_map_func, which returns
 # (template, instruction) -> (user turn, system turn).
@@ -294,10 +304,18 @@ class GSMPlusZeroShotGenTask(
         # The same per-sample verdicts `accuracy` is a mean of, kept as the axis
         # the interval is estimated on rather than recomputed below.
         first: list[float] = []
-        for ctx in finals:
+        # The subset `score_wo_critical_thinking` averages, and where each of its
+        # members sits in `finals` -- so a repeat grouping can be restricted to
+        # them positionally rather than re-derived.
+        wo_first: list[float] = []
+        wo_positions: list[int] = []
+        for position, ctx in enumerate(finals):
             perturbation_type = ctx.feedback_result["extra"]["perturbation_type"]
             correct = ctx.feedback_result["rollouts"][0]["correct"]
             first.append(1.0 if correct else 0.0)
+            if perturbation_type != CRITICAL_THINKING:
+                wo_first.append(1.0 if correct else 0.0)
+                wo_positions.append(position)
             if correct:
                 correct_num += 1
                 per_type[perturbation_type][0] += 1
@@ -335,6 +353,28 @@ class GSMPlusZeroShotGenTask(
         report["score_wo_critical_thinking"] = (
             100 * wo_correct / wo_total if wo_total else 0.0
         )
+        grouping = self.problem_groups(finals)
+        wo_grouping = (
+            None
+            if grouping is None
+            # Restricted to the subset, so a repeated split still collapses the
+            # copies of one problem rather than reading them as independent
+            # questions. Its population is the subset's DISTINCT problems, which
+            # is what `wo_total` counts already when each sample is its own
+            # problem -- one noun for the key under either config.
+            else ProblemGrouping(
+                [grouping.keys[position] for position in wo_positions],
+                len({grouping.keys[position] for position in wo_positions}),
+            )
+        )
+        # Reported unconditionally, like `n_turns` elsewhere in the fleet: this
+        # rate is always published, and a rate over 20 problems and one over 2000
+        # are the same number and a different claim. The estimator below re-emits
+        # the same value, which is what makes the two a pair rather than two
+        # definitions of one key.
+        report[WO_CRITICAL_THINKING_COUNT_FIELD] = float(
+            wo_total if wo_grouping is None else wo_grouping.n_problems
+        )
         for perturbation_type, (correct, seen) in sorted(per_type.items()):
             report[f"score_{_metric_key(perturbation_type)}"] = (
                 100 * correct / seen if seen else 0.0
@@ -344,19 +384,30 @@ class GSMPlusZeroShotGenTask(
         # failure mode — a reasoning model returning empty content, scored
         # correct on `critical thinking` — is invisible in report.json.
         report.update(health_metrics(finals))
-        # On the headline only, over the same REQUESTED `total`.
-        # `score_wo_critical_thinking` is a co-headline with its OWN population
-        # (`wo_total`, untyped fails included) and the per-perturbation keys have
-        # theirs, so neither may borrow this interval or this `n_problems`.
-        grouping = self.problem_groups(finals)
-        return report | interval_metrics(
-            first,
-            denominator=total,
-            group_keys=None if grouping is None else grouping.keys,
-            n_problems=None if grouping is None else grouping.n_problems,
-            # `accuracy` is `score` under its own name, so it carries the same
-            # interval. `score_wo_critical_thinking` is NOT an alias -- it is a
-            # different number over a different population -- and neither are the
-            # per-perturbation keys.
-            aliases=("accuracy",),
+        # Two populations, so two intervals and two counts. The headline is over
+        # the REQUESTED `total`; `score_wo_critical_thinking` is a co-headline
+        # over its OWN subset (`wo_total`, untyped fails included), so it may not
+        # borrow the headline's interval or its `n_problems`. The
+        # per-perturbation keys have their own populations too and are out of
+        # scope: one count per cell is a breakdown, not a headline.
+        return report | merge_metrics(
+            interval_metrics(
+                first,
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `accuracy` is `score` under its own name, so it carries the same
+                # interval. `score_wo_critical_thinking` is NOT an alias -- it is a
+                # different number over a different population -- and neither are
+                # the per-perturbation keys.
+                aliases=("accuracy",),
+            ),
+            metric_interval(
+                "score_wo_critical_thinking",
+                wo_first,
+                denominator=wo_total,
+                group_keys=None if wo_grouping is None else wo_grouping.keys,
+                n_problems=None if wo_grouping is None else wo_grouping.n_problems,
+                unit=WO_CRITICAL_THINKING_COUNT_FIELD,
+            ),
         )

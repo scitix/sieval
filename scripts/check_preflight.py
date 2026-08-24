@@ -2080,6 +2080,14 @@ class PreflightRunner:
             tree = self._parse_task_module(py_file, violations)
             if tree is None:
                 continue
+            # The task's OWN literal-bound names too, not just `metrics.py`'s: a
+            # report key spelled `SUBSET_COUNT_FIELD` is as nameable as one
+            # spelled `PROBLEM_COUNT_FIELD`, and reading only the shared module's
+            # constants made a task naming its own population key look like one
+            # writing a computed key -- which switches rule 4 off for that whole
+            # report. `metrics.py`'s bindings win a collision, so the shared key
+            # names keep one meaning.
+            key_constants = _module_constants(tree) | constants
 
             for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
                 report = _report_of(cls)
@@ -2110,7 +2118,7 @@ class PreflightRunner:
                 merged: set[str] | None = set()
                 unknowable = False
                 for scope in scopes:
-                    keys |= _dict_keys_written(scope, constants)
+                    keys |= _dict_keys_written(scope, key_constants)
                     patterns |= _dict_key_patterns(scope)
                     names |= _names_read(scope)
                     if units_key is not None:
@@ -2128,7 +2136,7 @@ class PreflightRunner:
                         merged = None
                     else:
                         merged |= sources
-                    unknowable = unknowable or _has_unknowable_key(scope, constants)
+                    unknowable = unknowable or _has_unknowable_key(scope, key_constants)
                 if merged is None or merged:
                     merged_keys, merged_patterns = _metrics_helper_keys(
                         metrics_tree, merged, constants
@@ -2218,10 +2226,10 @@ class PreflightRunner:
                         if not isinstance(value, ast.Dict):
                             continue
                         for metric, unit in zip(value.keys, value.values, strict=True):
-                            named = _resolved_string(unit, constants)
+                            named = _resolved_string(unit, key_constants)
                             if named is None or named in keys:
                                 continue
-                            declared_for = _resolved_string(metric, constants)
+                            declared_for = _resolved_string(metric, key_constants)
                             violations.append(
                                 f"{where}: {units_key} declares "
                                 f"{declared_for or ast.unparse(metric)!r} on "

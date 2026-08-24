@@ -34,7 +34,10 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
+    SCORE_CI_FIELD,
     SCORE_KEY_FIELD,
+    interval_declaration_problems,
+    wilson_interval,
 )
 from sieval.datasets.agieval import AGIEvalDataset, AGIEvalDatasetSample
 from sieval.tasks.agieval_0shot_gen import AGIEvalZeroShotGenTask
@@ -373,6 +376,48 @@ async def test_report_macro_averages_over_subsets_not_samples():
     assert metrics["score_sat_math"] == pytest.approx(50.0)
     assert metrics["score_aqua_rat"] == pytest.approx(100.0)
     assert metrics["fails"] == 0.0
+    # The headline is a mean over SUBSETS, so its interval is clustered on the
+    # two subsets that ran and declares their count -- `n_problems` would quote a
+    # between-subset width over a population of questions.
+    assert metrics["n_subsets"] == 2.0
+    assert "n_problems" not in metrics
+    assert metrics["ci95_units"] == {"score": "n_subsets"}
+    expected = wilson_interval([0.5, 1.0], 2)
+    assert expected is not None
+    assert metrics[SCORE_CI_FIELD] == list(expected)
+    # A per-subset cell is its own population and gets no interval: one count per
+    # cell is a breakdown, not a headline.
+    assert "score_sat_math_ci95" not in metrics
+    assert interval_declaration_problems(metrics) == []
+
+
+@pytest.mark.anyio
+async def test_report_declares_the_group_macros_no_interval():
+    # `macro_<group>` is the same shape over a fixed group, and each would need
+    # its own count -- so the group macros are published without a bound, and
+    # nothing declares one for them.
+    task = _task()
+    metrics = await task.report([_final(subset, True) for subset in MATH_SUBSETS], [])
+
+    assert metrics["macro_math"] == pytest.approx(100.0)
+    assert "macro_math_ci95" not in metrics
+    units = metrics["ci95_units"]
+    assert isinstance(units, dict)
+    assert set(units) == {"score"}
+    assert interval_declaration_problems(metrics) == []
+
+
+@pytest.mark.anyio
+async def test_report_over_one_subset_publishes_the_count_and_no_interval():
+    # Omitted, never zeroed: one subset is nothing to estimate between, and the
+    # macro still reports the population it was averaged over.
+    task = _task()
+    metrics = await task.report([_final("sat-math", True)], [])
+
+    assert metrics["n_subsets"] == 1.0
+    assert SCORE_CI_FIELD not in metrics
+    assert "ci95_units" not in metrics
+    assert interval_declaration_problems(metrics) == []
 
 
 @pytest.mark.anyio

@@ -64,8 +64,15 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_JUDGED,
     SCORE_KEY_FIELD,
+    metric_interval,
 )
 from sieval.datasets import AGIEvalDatasetSample
+
+#: Report key carrying the population the headline is a macro-average over: the
+#: subsets that ran, which a subset selection changes. Not `n_problems` -- the
+#: unit here is the subset, and the per-subset accuracies are what `score` is the
+#: mean of.
+SUBSET_COUNT_FIELD = "n_subsets"
 
 # Upstream sends this on BOTH calls (openai_api.query_azure_openai_chat, which
 # run_prediction.py routes both stages through), so it is part of the measured
@@ -216,9 +223,11 @@ class AGIEvalZeroShotGenTask(
         list[ModelOutput],
         PredictionRecord,
         JudgementRecord,
-        # `float | str`: the report carries `score_key` / `denominator_policy`,
-        # which name a column and a population rather than measuring one.
-        dict[str, float | str],
+        # `str`: the report carries `score_key` / `denominator_policy`, which name
+        # a column and a population rather than measuring one. `list[float]` is
+        # the headline's interval, and `dict[str, str]` the map naming the
+        # population it is clustered on.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     """AGIEval zero-shot: answer, extract, score — routed per subset."""
@@ -375,9 +384,12 @@ class AGIEvalZeroShotGenTask(
         }
         overall = sum(subset_acc.values()) / len(subset_acc) if subset_acc else 0.0
 
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": overall,
             "fails": float(len(fails)),
+            # The macro's denominator, reported unconditionally: a mean over 20
+            # subsets and one over 2 are the same number and a different claim.
+            SUBSET_COUNT_FIELD: float(len(subset_acc)),
         }
         # Canonical subset order, so two runs' reports line up key for key.
         for subset in SUBSETS:
@@ -392,4 +404,17 @@ class AGIEvalZeroShotGenTask(
         # Infra failures land in `fails` and are excluded from every per-subset
         # accuracy, so the headline is averaged over the samples that were judged.
         metrics[DENOMINATOR_FIELD] = DENOMINATOR_JUDGED
-        return metrics
+        # The headline is exactly the mean over SUBSETS of the per-subset
+        # accuracy, so the interval is clustered on subsets and declares
+        # `n_subsets` -- not `n_problems`, which would quote a between-subset
+        # width over a population of questions. `/ 100` because the estimator
+        # works on rates and rescales once at the end; the published numbers are
+        # untouched. `macro_<group>` is the same shape over a fixed group and gets
+        # none: those exist to be read against a published column, and each would
+        # need its own count of a constant size.
+        return metrics | metric_interval(
+            "score",
+            [accuracy / 100 for accuracy in subset_acc.values()],
+            denominator=len(subset_acc),
+            unit=SUBSET_COUNT_FIELD,
+        )

@@ -2716,6 +2716,86 @@ class TestCheckReportDeclarations:
         # And rule 4 still resolved the score_key rather than skipping the report.
         assert "1 score_key(s) also resolved" in r.message
 
+    def test_a_population_key_named_by_the_tasks_own_constant_is_nameable(
+        self, tmp_path: Path
+    ):
+        """A task that names its own unit is not a task writing a computed key.
+
+        The macro-over-strata reports spell their population key once, as a
+        module constant, and pass the same name to the estimator. Reading only
+        `metrics.py`'s constants made that dict key unnameable, which switches
+        rule 4 off for the whole report -- so the `score_key` went unchecked on
+        exactly the reports that had just started declaring a unit.
+        """
+        r = self._run(
+            tmp_path,
+            "SUBJECT_COUNT_FIELD = 'n_subjects'\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'overall': 1.0,\n"
+            "            SUBJECT_COUNT_FIELD: 2.0,\n"
+            "            SCORE_KEY_FIELD: 'overall',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        } | metric_interval('score', finals, unit=SUBJECT_COUNT_FIELD)\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "PASS"
+        assert "1 score_key(s) also resolved" in r.message
+        assert "1 declare the unit of every interval" in r.message
+        # And it is not read as the headline pair: the population it writes is
+        # subjects, not problems, so rule 5 has nothing to count here.
+        assert "0 report(s) pair the headline interval" in r.message
+
+    def test_a_hand_written_unit_naming_a_missing_constant_is_caught(
+        self, tmp_path: Path
+    ):
+        """Rule 6's second half reads the VALUES of a hand-written `ci95_units`.
+
+        A value spelled as the task's own constant was unresolvable and therefore
+        SKIPPED, so an entry pointing at a count the report never writes passed
+        silently -- the one shape this half exists to catch.
+        """
+        r = self._run(
+            tmp_path,
+            "TURN_COUNT_FIELD = 'n_turns'\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'isr_ci95': [1.0, 2.0],\n"
+            "            'isr': 1.0,\n"
+            "            CI_UNITS_FIELD: {'isr': TURN_COUNT_FIELD},\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+            metrics=self._METRICS,
+        )
+        assert r.status == "FAIL"
+        assert any("population 'n_turns'" in v for v in r.details or [])
+
+        # And the same report writing that count passes, so the complaint is
+        # about the missing key and not about the spelling.
+        ok = self._run(
+            tmp_path / "ok",
+            "TURN_COUNT_FIELD = 'n_turns'\n"
+            "class DemoTask:\n"
+            "    async def report(self, finals, fails):\n"
+            "        return {\n"
+            "            'score': 1.0,\n"
+            "            'isr_ci95': [1.0, 2.0],\n"
+            "            'isr': 1.0,\n"
+            "            TURN_COUNT_FIELD: 4.0,\n"
+            "            CI_UNITS_FIELD: {'isr': TURN_COUNT_FIELD},\n"
+            "            SCORE_KEY_FIELD: 'score',\n"
+            "            DENOMINATOR_FIELD: DENOMINATOR_JUDGED,\n"
+            "        }\n",
+            metrics=self._METRICS,
+        )
+        assert ok.status == "PASS"
+        assert "1 declare the unit of every interval" in ok.message
+
     def test_a_score_pattern_is_not_an_interval(self, tmp_path: Path):
         # `score_<category>` matches any f-string pattern that could produce
         # `score_ci95`, so rule 5 matches keys exactly. Pattern matching here

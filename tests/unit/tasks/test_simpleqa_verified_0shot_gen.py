@@ -3,6 +3,8 @@
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
+import asyncio
+
 import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -16,6 +18,14 @@ from sieval.core.tasks import (
     build_judgement_record,
     build_prediction_record,
     build_rollout_judgement,
+)
+from sieval.core.tasks.metrics import (
+    CI_UNITS_FIELD,
+    PROBLEM_COUNT_FIELD,
+    SCORE_CI_FIELD,
+    ci_field,
+    interval_declaration_problems,
+    wilson_interval,
 )
 from sieval.datasets.simpleqa_verified import (
     SimpleQAVerifiedDataset,
@@ -387,3 +397,112 @@ def test_report_empty_is_zero():
     m = aggregate_metrics([])
     assert m["f1"] == 0.0
     assert parse_grade("C") == "NOT_ATTEMPTED"
+
+
+# --- report: one interval per bucket, over a problem population ---
+
+
+@pytest.mark.anyio
+async def test_each_bucket_carries_its_own_interval_over_problems():
+    """Three real buckets, three estimands -- and the F1 headline gets none.
+
+    This report had no problem count at all before: `n_graded` is a rollout
+    count. The population these rates are clustered on is problems, which is
+    what makes the number comparable against a task reporting questions.
+    """
+    task, _ = _task()
+    grades = ["CORRECT", "CORRECT", "INCORRECT", "NOT_ATTEMPTED"]
+    finals = [
+        TaskContext(sample_id=i, feedback_result=_graded(g))
+        for i, g in enumerate(grades)
+    ]
+    report = await task.report(finals, fails=[])
+
+    assert report[PROBLEM_COUNT_FIELD] == 4.0
+    units = report[CI_UNITS_FIELD]
+    assert isinstance(units, dict)
+    assert units == {
+        "correct": PROBLEM_COUNT_FIELD,
+        "incorrect": PROBLEM_COUNT_FIELD,
+        "not_attempted": PROBLEM_COUNT_FIELD,
+    }
+    # The headline is a harmonic mean of two set-level rates and
+    # `accuracy_given_attempted` a ratio of two rollout sums, so neither is a
+    # mean over problems of anything and neither gets a bound.
+    assert SCORE_CI_FIELD not in report
+    assert ci_field("f1") not in report
+    assert ci_field("accuracy_given_attempted") not in report
+    # Each bucket is estimated on its own per-problem counts.
+    expected = wilson_interval([1.0, 1.0, 0.0, 0.0], 4)
+    assert expected is not None
+    assert report[ci_field("correct")] == list(expected)
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_the_not_attempted_interval_includes_the_failed_samples():
+    """The one bucket whose fail stand-ins are ones, not zeros.
+
+    A failed sample contributes `n` NOT_ATTEMPTED grades to the published rate,
+    so leaving those units out of the estimate would centre the interval below
+    the number printed beside it -- here on 0 of 4 rather than on 2 of 4.
+    """
+    task, _ = _task()  # n=1
+    finals = [
+        TaskContext(sample_id=i, feedback_result=_graded(g))
+        for i, g in enumerate(["CORRECT", "INCORRECT"])
+    ]
+    fails = [TaskContext(sample_id=10), TaskContext(sample_id=11)]
+    report = await task.report(finals, fails)
+
+    assert report["not_attempted"] == pytest.approx(50.0)
+    assert report[PROBLEM_COUNT_FIELD] == 4.0
+    # Two judged problems at 0 and two failed ones at 1: the four units the rate
+    # is a mean of.
+    expected = wilson_interval([0.0, 0.0, 1.0, 1.0], 4)
+    assert expected is not None
+    assert report[ci_field("not_attempted")] == list(expected)
+    # And the judged-only reading -- the two zeros alone -- is a different,
+    # differently-centred interval, so this fails if the stand-ins are dropped.
+    judged_only = wilson_interval([0.0, 0.0], 4)
+    assert judged_only is not None
+    assert report[ci_field("not_attempted")] != list(judged_only)
+    # `correct` and `incorrect` keep the fleet convention: their stand-ins ARE
+    # deterministic zeros, so they stay in the denominator and out of the values.
+    assert report[ci_field("correct")] == list(wilson_interval([1.0, 0.0], 4) or [])
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_a_failed_sample_stands_in_for_its_whole_budget():
+    """At n=2 a failure is two NOT_ATTEMPTED rollouts, and one problem.
+
+    The unit is the problem, so the failed sample enters as a single unit
+    carrying 2 -- which the grouping rescales to the same mean the published
+    rate reports.
+    """
+    dataset = SimpleQAVerifiedDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(_sample())])})
+    )
+    model = _ScriptedChatModel(reply="x", model="candidate")
+    grader = _ScriptedChatModel(reply="A", model="grader")
+    task = SimpleQAVerifiedZeroShotGenTask(dataset, model, grader=grader, n=2)
+    finals = [TaskContext(sample_id=0, feedback_result=_graded("CORRECT", "CORRECT"))]
+    fails = [TaskContext(sample_id=1)]
+    report = await task.report(finals, fails)
+
+    assert report["not_attempted"] == pytest.approx(50.0)
+    assert report[PROBLEM_COUNT_FIELD] == 2.0
+    interval = report[ci_field("not_attempted")]
+    assert isinstance(interval, list)
+    assert interval[0] <= report["not_attempted"] <= interval[1]
+    assert interval_declaration_problems(report) == []
+
+
+def test_the_empty_report_declares_nothing():
+    task, _ = _task()
+    report = asyncio.run(task.report([], []))
+
+    assert CI_UNITS_FIELD not in report
+    assert PROBLEM_COUNT_FIELD not in report
+    assert interval_declaration_problems(report) == []
