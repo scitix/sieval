@@ -382,18 +382,14 @@ class Task[
         no collapsing is needed -- the ordinary case, where one sample is one
         problem.
 
-        Read off the LIVE DATASET rather than off the contexts, because a context
-        carries the wrong half of the answer: :meth:`make_context` stamps
-        ``repeat_index``, which says WHICH COPY a sample is, and grouping needs
-        WHICH PROBLEM it came from. The copy number cannot supply that -- every
-        problem has a copy 0 -- and no context field holds
-        :data:`~sieval.core.datasets.REPEAT_GROUP_COLUMN`, so the row is the only
-        place it exists.
+        Read off the LIVE DATASET, because a context carries the wrong half of the
+        answer: ``repeat_index`` says WHICH COPY a sample is, and grouping needs
+        WHICH PROBLEM -- every problem has a copy 0. Only the row holds
+        :data:`~sieval.core.datasets.REPEAT_GROUP_COLUMN`.
 
-        ``sample_id`` indexes the post-transform test set, the same relation the
-        runner's raw-sample backfill relies on, so this resolves identically fresh
-        and resumed: a resume rebuilds every context through :meth:`make_context`,
-        which re-derives the row from the same index.
+        ``sample_id`` indexes the post-transform test set, so this resolves
+        identically fresh and resumed: a resume rebuilds every context through
+        :meth:`make_context`, off the same index.
 
         Override this in a task whose clustering comes from somewhere other than
         ``Dataset.repeat``. There is exactly one grouping per task and the task owns

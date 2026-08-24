@@ -410,32 +410,26 @@ cannot carry 57 of them.
 #### The non-problem units are not collapsed under `repeat`
 
 `Task.problem_groups` collapses the copies `Dataset.repeat` makes, and every
-interval declared over `n_problems` goes through it. **The units above do not.**
-`repeat` is a dataset transform any config can ask for, so a run that repeats one
-of these three splits reports those intervals over samples rather than over
-problems, narrowing them by up to √times with nothing in the report to disagree —
-the same defect "Copies of one problem are one problem" describes for the
-headline. It is latent, not active: no config in this tree repeats these splits,
-and the one split that *is* repeated by default (`gpqa_diamond_0shot_gen`) is
-clustered on problems and collapses correctly.
+interval over `n_problems` goes through it. **The units above do not.** `repeat`
+is a transform any config can ask for, so a run repeating one of these splits
+quotes those intervals over samples rather than problems, narrowing them by up to
+√times — the defect "Copies of one problem are one problem" describes for the
+headline. Latent, not active: no config here repeats these splits, and the one
+repeated by default (`gpqa_diamond_0shot_gen`) clusters on problems and collapses
+correctly.
 
-Closing it is a schema change rather than a wiring change, which is why it is
-recorded here instead of fixed:
+Each case is a schema or semantics decision rather than wiring, which is why it
+is recorded and not fixed:
 
-- **`t_eval_before_calling`** — `n_graded` and `n_parsed` count *samples*, and
-  they are published metrics in their own right. A collapsed interval has to
-  declare a *problem* count, so it needs new keys; declaring the collapsed
-  population under `n_graded` would overwrite a sample count with a problem count
-  (12 → 3 on a 3×4 run) and move a published number.
-- **SysBench** — blocked upstream of the interval. `session_id` comes from the
-  data, so two copies of one session collapse into a single `prefixes` entry while
-  `turns` keeps both: `ssr` already collapses by accident and the per-turn rates
-  double-count. What `repeat` should mean for a session-based task has to be
-  settled before its interval can be clustered.
-- **UGMathBench** — `problem_groups` returns `None` deliberately, because EAcc's
-  per-problem reduction is nonlinear and a mean-based collapse would move its
-  interval onto AAcc's axis. The *version* axis needs its own grouping, separate
-  from the one the base class supplies.
+- **`t_eval_before_calling`** — `n_graded` / `n_parsed` count *samples* and are
+  published metrics. A collapsed interval must declare a *problem* count, so it
+  needs new keys: writing one under `n_graded` would move a published number
+  (12 → 3 on a 3×4 run).
+- **SysBench** — blocked before the interval. `session_id` comes from the data, so
+  two copies of a session fuse into one `prefixes` entry while `turns` keeps both:
+  `ssr` already collapses by accident, the per-turn rates double-count.
+- **UGMathBench** — `problem_groups` returns `None` deliberately (EAcc's
+  per-problem reduction is nonlinear). The *version* axis needs its own grouping.
 
 ### `hle_0shot_gen`'s `confidence_interval` is a different estimator
 

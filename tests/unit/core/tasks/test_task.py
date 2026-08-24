@@ -582,13 +582,10 @@ def test_problem_groups_resolves_identically_on_resume_shaped_contexts(
     _dummy_task_factory,
 ):
     # `TaskLoader.load_initial_state` rebuilds EVERY context on resume as
-    # `make_context(sid, None)` -- terminal samples included -- so the row is
-    # re-fetched from the same index and the grouping is the fresh one.
-    #
-    # Pinned because the reason this reads the dataset is often mis-stated as "a
-    # context loses its repeat data on resume". It does not: `repeat_index` is
-    # re-derived right here. The actual reason is that the copy number says WHICH
-    # COPY and grouping needs WHICH PROBLEM, and no context field carries that.
+    # `make_context(sid, None)`, terminal samples included, so the row is
+    # re-fetched and `repeat_index` re-derived. Pinned against the mis-statement
+    # that a context loses its repeat data on resume -- it does not; the reason
+    # this reads the dataset is that no context field carries `repeat_group`.
     task = _dummy_task_factory(rows=[{"id": i} for i in range(3)], repeat=2)
     fresh = [task.make_context(i, raw=None) for i in range(6)]
     assert [ctx.repeat_index for ctx in fresh] == [0, 0, 0, 1, 1, 1]
