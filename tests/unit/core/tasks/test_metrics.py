@@ -17,8 +17,10 @@ from sieval.core.tasks import (
     build_rollout_judgement,
 )
 from sieval.core.tasks.metrics import (
+    ALIAS_VALUE_TOLERANCE,
     CI_SUFFIX,
     CI_UNITS_FIELD,
+    COUNT_KEY_PREFIX,
     PROBLEM_COUNT_FIELD,
     SCORE_CI_FIELD,
     ProblemGrouping,
@@ -1358,6 +1360,154 @@ def test_interval_declaration_problems_accepts_a_report_the_estimators_built(
 def test_interval_declaration_problems_names_each_unreadable_key(report, expected):
     problems = interval_declaration_problems(report)
     assert any(expected in problem for problem in problems), problems
+
+
+def test_interval_declaration_problems_refuses_a_unit_that_is_not_a_count():
+    """The pointer shape: a declaration naming another METRIC, not a population.
+
+    It resolves -- the named key really is in the report -- so the "does not
+    write" rule cannot see it, and the interval ends up quoted over a rate. The
+    two spellings of "one interval under two names" are the alias parameter and
+    nothing else.
+    """
+    problems = interval_declaration_problems(
+        {
+            "loose_prompt_level_accuracy": 50.0,
+            "loose_accuracy": 50.0,
+            "loose_accuracy_ci95": [40.0, 60.0],
+            PROBLEM_COUNT_FIELD: 4.0,
+            CI_UNITS_FIELD: {"loose_accuracy": "loose_prompt_level_accuracy"},
+        }
+    )
+    assert any("is not a population count" in problem for problem in problems), problems
+    # And the same report with a real count declared is clean, so the complaint is
+    # about the VALUE and not about anything else in that shape.
+    assert (
+        interval_declaration_problems(
+            {
+                "loose_prompt_level_accuracy": 50.0,
+                "loose_accuracy": 50.0,
+                "loose_accuracy_ci95": [40.0, 60.0],
+                PROBLEM_COUNT_FIELD: 4.0,
+                CI_UNITS_FIELD: {"loose_accuracy": PROBLEM_COUNT_FIELD},
+            }
+        )
+        == []
+    )
+
+
+def test_interval_declaration_problems_reports_an_absent_unit_once():
+    # A unit the report does not write is not ALSO reported as "not a count":
+    # the specific complaint is the useful one, and two lines for one mistake
+    # read as two mistakes.
+    problems = interval_declaration_problems(
+        {"aacc": 50.0, "aacc_ci95": [1.0, 2.0], CI_UNITS_FIELD: {"aacc": "versions"}}
+    )
+    assert len(problems) == 1, problems
+    assert "does not write" in problems[0]
+
+
+def test_interval_declaration_problems_refuses_a_shared_interval_on_two_numbers():
+    """A non-alias passed as one: two metrics, one bound, two published numbers.
+
+    The gap this closes. `interval_metrics` files the same bounds under every
+    alias name without ever seeing the values the report publishes, so nothing
+    but the finished dict can tell a second name for one number from a second
+    number.
+    """
+    shared = [40.0, 60.0]
+    problems = interval_declaration_problems(
+        {
+            "accuracy": 50.0,
+            "accuracy_ci95": list(shared),
+            # The mirror: a complement published as though it were another name
+            # for the same number.
+            "incorrect": 50.5,
+            "incorrect_ci95": list(shared),
+            PROBLEM_COUNT_FIELD: 30.0,
+            CI_UNITS_FIELD: {
+                "accuracy": PROBLEM_COUNT_FIELD,
+                "incorrect": PROBLEM_COUNT_FIELD,
+            },
+        }
+    )
+    assert len(problems) == 1, problems
+    assert "true ALIAS" in problems[0]
+    assert "'accuracy'" in problems[0] and "'incorrect'" in problems[0]
+
+
+def test_interval_declaration_problems_accepts_an_alias_rounded_to_two_places():
+    # SciTaRC's shape: one estimate under two names, one of them rounded to 2 dp
+    # while the bounds bracket the unrounded mean. The two printed rates differ,
+    # and are still one number.
+    unrounded = 100 * 1 / 3
+    report: dict[str, object] = {
+        "score": round(unrounded, 2),
+        SCORE_CI_FIELD: [20.0, 45.0],
+        "accuracy": unrounded,
+        "accuracy_ci95": [20.0, 45.0],
+        PROBLEM_COUNT_FIELD: 30.0,
+        CI_UNITS_FIELD: {
+            "score": PROBLEM_COUNT_FIELD,
+            "accuracy": PROBLEM_COUNT_FIELD,
+        },
+    }
+    assert abs(unrounded - round(unrounded, 2)) < ALIAS_VALUE_TOLERANCE
+    assert interval_declaration_problems(report) == []
+    # And the tolerance is not a licence: two rates that differ in the second
+    # decimal place are two numbers, and sharing one bound between them fires.
+    report["accuracy"] = round(unrounded, 2) + 0.02
+    assert any(
+        "true ALIAS" in problem for problem in interval_declaration_problems(report)
+    )
+
+
+def test_interval_declaration_problems_leaves_two_units_and_two_bounds_alone():
+    """Neither half of the alias rule fires on a legitimate two-unit report.
+
+    Same bounds on two DIFFERENT units is not an alias claim -- nothing says the
+    two populations are one -- and different bounds on one unit is the ordinary
+    case of two co-equal metrics.
+    """
+    assert (
+        interval_declaration_problems(
+            {
+                "thought": 50.0,
+                "thought_ci95": [40.0, 60.0],
+                "args_f1_score_parsed": 75.0,
+                "args_f1_score_parsed_ci95": [40.0, 60.0],
+                "n_graded": 30.0,
+                "n_parsed": 20.0,
+                CI_UNITS_FIELD: {
+                    "thought": "n_graded",
+                    "args_f1_score_parsed": "n_parsed",
+                },
+            }
+        )
+        == []
+    )
+    assert (
+        interval_declaration_problems(
+            {
+                "acc": 50.0,
+                "acc_ci95": [40.0, 60.0],
+                "acc_norm": 75.0,
+                "acc_norm_ci95": [65.0, 85.0],
+                PROBLEM_COUNT_FIELD: 30.0,
+                CI_UNITS_FIELD: {
+                    "acc": PROBLEM_COUNT_FIELD,
+                    "acc_norm": PROBLEM_COUNT_FIELD,
+                },
+            }
+        )
+        == []
+    )
+
+
+def test_every_population_key_the_estimators_write_is_a_count():
+    # The prefix is the recognizer, so the default unit has to carry it or the
+    # whole fleet fails its own check.
+    assert PROBLEM_COUNT_FIELD.startswith(COUNT_KEY_PREFIX)
 
 
 def test_interval_declaration_problems_ignores_a_report_with_no_intervals():

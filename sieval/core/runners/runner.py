@@ -1061,8 +1061,10 @@ class TaskRunner:
 
         Raises:
             ValueError: if the saved report publishes a ``*_ci95`` key with no
-                ``ci95_units`` entry, or an entry naming a metric or a population
-                key the report does not write.
+                ``ci95_units`` entry, an entry naming a metric or a population key
+                the report does not write, an entry whose population is not a
+                count key, or two metrics on one unit sharing one interval while
+                publishing two different numbers.
         """
         if report is None:
             return
@@ -1088,10 +1090,11 @@ class TaskRunner:
                     "interval(s) no reader can use:\n  - "
                     + "\n  - ".join(problems)
                     + "\nEvery interval travels with a `ci95_units` entry naming a "
-                    "population key the same report writes. Emit intervals through "
-                    "`sieval.core.tasks.metrics` and fold two interval-bearing "
-                    "fragments with `merge_metrics`, not `|` -- a plain merge "
-                    "replaces the whole declaration."
+                    "population COUNT the same report writes, and one interval is "
+                    "shared only by keys publishing one number. Emit intervals "
+                    "through `sieval.core.tasks.metrics` and fold two "
+                    "interval-bearing fragments with `merge_metrics`, not `|` -- a "
+                    "plain merge replaces the whole declaration."
                 )
 
     def _resolve_result_dir(

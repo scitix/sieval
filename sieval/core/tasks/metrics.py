@@ -480,6 +480,21 @@ CI_SUFFIX = "_ci95"
 #: estimators here emit the declaration WITH the interval, never beside it.
 CI_UNITS_FIELD = "ci95_units"
 
+#: Prefix every population-count key in this tree carries -- ``n_problems``,
+#: ``n_turns``, ``n_versions``, ``n_subjects``. What a ``ci95_units`` entry names
+#: is the SIZE of the population its metric is clustered on, so the value has to
+#: be one of these: a value naming another metric points at a rate, and there is
+#: no count beside the interval to read it against. The same prefix marks a count
+#: apart from a rate everywhere else in a report.
+COUNT_KEY_PREFIX = "n_"
+
+#: How far two report values may sit apart and still be one number published
+#: under two names, in points. A report may round the rate it prints -- SciTaRC
+#: rounds to 2 dp -- while the bounds bracket the unrounded mean, and 2-dp
+#: rounding of a percentage moves a value by at most this much. Wide enough to
+#: absorb that, far narrower than any real difference between two metrics.
+ALIAS_VALUE_TOLERANCE = 0.005
+
 
 def ci_field(metric: str) -> str:
     """The report key carrying *metric*'s interval."""
@@ -575,6 +590,12 @@ def interval_metrics(
     zeroed -- whenever :func:`wilson_interval` has nothing to estimate, and on a
     *denominator* of zero, which is the one case the grouped path has to refuse
     for itself.
+
+    That is a property of THIS fragment, not of the report it lands in: a report
+    folding several fragments through :func:`merge_metrics` can publish
+    ``n_problems`` with a sibling metric's interval and no ``score_ci95`` at all,
+    when the headline has no dispersion and the sibling does. The pair rule
+    applies per metric, and one metric's omission is not half of another's pair.
 
     *aliases* are the other key names the SAME number is published under -- the
     column ``score_key`` says the headline was copied from (``accuracy``,
@@ -806,12 +827,19 @@ def interval_declaration_problems(report: Mapping[str, object]) -> list[str]:
     the finished dict, where a fragment folded with a plain ``|`` has already lost
     whatever it was going to lose.
 
-    Three ways it can be wrong, all of them a key a reader cannot use:
+    Five ways it can be wrong -- three of them a key a reader cannot use, two a
+    key a reader would misread:
 
     * an interval with no entry -- nothing says which population it is over;
     * an entry naming a population key the report does not write;
     * an entry naming a metric the report does not publish -- a declaration about
-      a column that is not there.
+      a column that is not there;
+    * an entry whose value is not a population COUNT (:data:`COUNT_KEY_PREFIX`).
+      ``ci95_units`` maps a metric to the SIZE of its population, so a value
+      naming another metric resolves -- that key is in the report -- and still
+      leaves the interval with nothing to be read against;
+    * two metrics declared on one unit, carrying one interval, publishing two
+      different numbers (:func:`_alias_value_problems`).
 
     Returned rather than raised, so the caller decides when: the report is worth
     saving before anything about it is refused.
@@ -843,10 +871,74 @@ def interval_declaration_problems(report: Mapping[str, object]) -> list[str]:
                 f"{CI_UNITS_FIELD} declares {metric!r} over {unit!r}, which the "
                 "report does not write"
             )
+        elif not unit.startswith(COUNT_KEY_PREFIX):
+            # `elif`: a unit that is absent has already been reported, and the
+            # more specific complaint about a key that IS there is the useful one.
+            problems.append(
+                f"{CI_UNITS_FIELD} declares {metric!r} over {unit!r}, which is not "
+                f"a population count -- those are spelled {COUNT_KEY_PREFIX!r}... "
+                "in this tree. The unit is how many units the interval is "
+                "clustered on, so naming another metric points at a rate"
+            )
         if metric not in report:
             problems.append(
                 f"{CI_UNITS_FIELD} declares {metric!r}, which the report does not "
                 "publish"
+            )
+    return problems + _alias_value_problems(report, units)
+
+
+def _alias_value_problems(
+    report: Mapping[str, object], units: Mapping[str, object]
+) -> list[str]:
+    """Metrics sharing one interval on one unit whose published numbers differ.
+
+    The alias rule, checked in the one place that can: ``aliases`` names the
+    other keys ONE number is published under, and the emitters file the same
+    bounds under each of them. They never see the values the report will publish,
+    so a caller handing them a metric that is merely RELATED -- a complement, a
+    rescale, a stricter variant -- gets a mirrored bound with no complaint, and a
+    mirrored bound reads as second evidence when it is the same evidence twice.
+
+    Two metrics on the same unit have equal bounds only when they have equal
+    ``p``: Wilson is monotone in it. So equal bounds beside unequal values is
+    that mistake and essentially nothing else -- near-tautological for a real
+    alias, and specific to a mis-passed one. Compared against
+    :data:`ALIAS_VALUE_TOLERANCE` rather than exactly, because a report may round
+    the rate it prints while the bounds bracket the unrounded mean.
+
+    Only *declared* metrics are paired: an undeclared interval is already a
+    problem in its own right, and its unit is unknown, so nothing can be said
+    about whom it shares a bound with.
+    """
+    problems: list[str] = []
+    # Sorted, so a report with two mis-passed aliases names them in a stable
+    # order rather than in dict order.
+    metrics = sorted(units)
+    for index, first in enumerate(metrics):
+        for second in metrics[index + 1 :]:
+            unit = units[first]
+            if unit != units[second]:
+                continue
+            low = report.get(ci_field(first))
+            high = report.get(ci_field(second))
+            if not isinstance(low, list) or not isinstance(high, list) or low != high:
+                continue
+            first_value = report.get(first)
+            second_value = report.get(second)
+            if not isinstance(first_value, (int, float)) or not isinstance(
+                second_value, (int, float)
+            ):
+                continue
+            if abs(first_value - second_value) <= ALIAS_VALUE_TOLERANCE:
+                continue
+            problems.append(
+                f"{first!r} and {second!r} are both declared on {unit!r} and carry "
+                f"the same interval, but the report publishes {first_value} and "
+                f"{second_value}. One interval under two names is a true ALIAS -- "
+                "the same number, two keys; a metric that is a different number "
+                "owns its own estimate, and one that is a deterministic function "
+                "of another owns none"
             )
     return problems
 
