@@ -81,6 +81,21 @@ class ResultDirExistsError(FileExistsError):
         )
 
 
+class UnreadableIntervalError(ValueError):
+    """A finished report publishes an interval no reader can use.
+
+    Its own type so the completion path can tell THIS refusal apart from any
+    other failure and finish writing the run's remaining artifacts before it
+    surfaces -- see :meth:`TaskRunner._save_report_with_diagnostics`. A
+    ``ValueError`` subclass because that is what the check raised before it had a
+    name, so nothing catching the broader shape changes behaviour.
+
+    Every other exception still aborts finalization where it is raised: this is
+    deferred only because the run itself is complete and its artifacts are worth
+    having, not because the failure is tolerable.
+    """
+
+
 @dataclass
 class TaskRunnerConfig:
     """Configuration for :class:`TaskRunner`.
@@ -679,7 +694,17 @@ class TaskRunner:
             finals, fails = self._final_and_failed()
             report = await self._task.report(finals, fails)
             # Always save report on completion
-            await self._save_report_with_diagnostics(report, finals, fails)
+            refusal: UnreadableIntervalError | None = None
+            try:
+                await self._save_report_with_diagnostics(report, finals, fails)
+            except UnreadableIntervalError as exc:
+                # HELD, not swallowed. `report.json` is already on disk and the run
+                # itself finished, so the remaining artifacts are written before
+                # this surfaces -- refusing an unreadable declaration must not also
+                # cost the run its `anomalies.json`, which is the evidence a reader
+                # of the failure needs. Re-raised unchanged below; only this one
+                # type is deferred, so every other failure still aborts here.
+                refusal = exc
             # Backstop: create-if-absent, normally a no-op (written at run start).
             await self._saver.write_run_meta()
             # Generate anomaly report
@@ -695,6 +720,8 @@ class TaskRunner:
 
             if self._progress:
                 self._progress.close()
+            if refusal is not None:
+                raise refusal
             return report
 
         except (KeyboardInterrupt, anyio.get_cancelled_exc_class()):
@@ -1057,14 +1084,22 @@ class TaskRunner:
         making it destructive; a log line would be ignorable, which is what let
         every earlier undeclared-key defect ship.
 
+        That reasoning does not stop at ``report.json``, which is why the refusal
+        has a type of its own: raising here would abort the rest of :meth:`arun`'s
+        finalization, so a declaration defect would cost the finished run its
+        ``anomalies.json`` -- the artifact the paragraph above exists to protect.
+        The completion path catches :class:`UnreadableIntervalError`, writes what
+        is left, and re-raises it unchanged. The early-return path has nothing
+        after it and lets it propagate straight out.
+
         Non-dict reports are saved unchanged; ``None`` skips the save.
 
         Raises:
-            ValueError: if the saved report publishes a ``*_ci95`` key with no
-                ``ci95_units`` entry, an entry naming a metric or a population key
-                the report does not write, an entry whose population is not a
-                count key, or two metrics on one unit sharing one interval while
-                publishing two different numbers.
+            UnreadableIntervalError: if the saved report publishes a ``*_ci95``
+                key with no ``ci95_units`` entry, an entry naming a metric or a
+                population key the report does not write, an entry whose
+                population is not a count key, or two metrics on one unit sharing
+                one interval while publishing two different numbers.
         """
         if report is None:
             return
@@ -1085,7 +1120,7 @@ class TaskRunner:
         if isinstance(report, dict):
             problems = interval_declaration_problems(cast(dict[str, JSONValue], report))
             if problems:
-                raise ValueError(
+                raise UnreadableIntervalError(
                     f"{self._task.name}: report.json was saved, but it publishes "
                     "interval(s) no reader can use:\n  - "
                     + "\n  - ".join(problems)

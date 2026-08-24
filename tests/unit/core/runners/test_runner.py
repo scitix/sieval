@@ -26,6 +26,7 @@ from sieval.core.runners.resume_gate import ResumeIdentityError, ResumeVersionEr
 from sieval.core.runners.runner import (
     ResultDirExistsError,
     TaskRunner,
+    UnreadableIntervalError,
     gate_resume_identity,
     gate_resume_version,
     read_run_version,
@@ -2811,6 +2812,29 @@ class TestReportIntervalDeclarations:
         report = await TaskRunner(task, make_config(tmp_path)).arun()
 
         assert "ci95_units" not in report
+
+    @pytest.mark.anyio
+    async def test_the_refusal_still_leaves_the_run_its_anomaly_report(self, tmp_path):
+        """Refusing a report must not also cost the run its other artifacts.
+
+        `report.json` being saved before the raise is only half of "a finished
+        run's artifacts are worth keeping": raising out of the save aborted the
+        rest of `arun`'s finalization, so `anomalies.json` -- written after it --
+        never appeared. Which is the file a reader of this very failure would go
+        to next. Pinned here because nothing else in the suite runs the guard with
+        `detect_anomalies` on.
+        """
+        model = MockChatModel(answers=DEFAULT_ANSWERS)
+        task = UndeclaredIntervalTask(dataset=MockDataset(), model=model, name="undecl")
+        runner = TaskRunner(task, make_config(tmp_path, detect_anomalies=True))
+
+        with pytest.raises(UnreadableIntervalError, match="accuracy_ci95"):
+            await runner.arun()
+
+        # Still a ValueError, so anything catching the pre-name shape is unaffected.
+        assert issubclass(UnreadableIntervalError, ValueError)
+        assert (runner.root_dir / "report.json").exists()
+        assert (runner.root_dir / "anomalies.json").exists()
 
 
 class GenTask(MockTask):
