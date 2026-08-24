@@ -16,6 +16,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.browsecomp import (
     BrowseCompDataset,
     BrowseCompDatasetSample,
@@ -324,6 +325,25 @@ async def test_report_interval_is_averaged_over_rollouts_but_sized_in_problems()
     score = report["score"]
     assert isinstance(score, float)
     assert lo < score < hi
+    # `accuracy` and `correct` are `score` under two other names -- one
+    # `is_correct`, filed under both -- so all three carry the one interval.
+    assert report["accuracy_ci95"] == [lo, hi]
+    assert report["correct_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "accuracy": "n_problems",
+        "correct": "n_problems",
+    }
+    # `incorrect` gets none. `aggregate_metrics` counts it as its own bucket, but
+    # `parse_grade` returns CORRECT or INCORRECT and nothing else and the fail
+    # stand-ins are INCORRECT, so on every input this task can produce the two
+    # rates sum to 100 and a bound on one is the other mirrored. This assertion is
+    # what would fail first if a third bucket ever arrived.
+    assert report["incorrect"] == pytest.approx(100 - report["correct"])
+    assert "incorrect_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

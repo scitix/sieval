@@ -14,6 +14,7 @@ from sieval.core.tasks import (
     build_judgement_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.gsm1k import GSM1KDataset, GSM1KDatasetSample
 from sieval.tasks.gsm1k_kshot_base_gen import (
     _GSM8K_FEWSHOT_EXAMPLES,
@@ -250,6 +251,25 @@ async def test_report_interval_rides_the_flexible_rule_not_the_strict_one():
     # Brackets the flexible headline, not the strict 0.0 beside it.
     assert lo <= report["score"] <= hi
     assert lo > report["strict_exact_match"]
+    # `flexible_exact_match` is `score` under its own name, so it repeats the
+    # headline bounds; `strict_exact_match` is the co-equal rule and gets its own,
+    # which on this fixture is the OTHER end of the range -- so a strict bound
+    # copied from the headline fails both of the next two assertions.
+    assert report["flexible_exact_match_ci95"] == [lo, hi]
+    strict_interval = report["strict_exact_match_ci95"]
+    assert isinstance(strict_interval, list)
+    # The saturated-at-zero shape: an exact lower limit of 0, where the headline's
+    # is a saturated-at-one 15.81. Borrowing the headline's fails here.
+    assert strict_interval[0] == 0.0
+    assert strict_interval[1] < 100.0
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "flexible_exact_match": "n_problems",
+        "strict_exact_match": "n_problems",
+    }
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

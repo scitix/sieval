@@ -16,6 +16,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.aa_lcr import AALCRDataset, AALCRDatasetSample
 from sieval.tasks.aa_lcr_0shot_gen import (
     AALCRZeroShotGenTask,
@@ -377,6 +378,22 @@ async def test_report_interval_is_averaged_over_rollouts_but_sized_in_problems()
     score = report["score"]
     assert isinstance(score, float)
     assert lo < score < hi
+    # `accuracy` and `correct` are `score` under two other names -- one
+    # `is_correct`, filed under both -- so all three carry the one interval.
+    assert report["accuracy_ci95"] == [lo, hi]
+    assert report["correct_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "accuracy": "n_problems",
+        "correct": "n_problems",
+    }
+    # `incorrect` is `1 - correct`, so a bound on it would be this one mirrored:
+    # two numbers that look independent and carry one piece of information.
+    assert report["incorrect"] == pytest.approx(100 - report["correct"])
+    assert "incorrect_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

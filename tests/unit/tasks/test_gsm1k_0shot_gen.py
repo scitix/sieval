@@ -15,6 +15,7 @@ from sieval.core.tasks import (
     build_judgement_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.gsm1k import GSM1KDataset, GSM1KDatasetSample
 from sieval.tasks import gsm1k_0shot_gen as module
@@ -140,6 +141,14 @@ async def test_report_interval_is_quoted_over_the_requested_population():
     assert isinstance(interval, list)
     lo, hi = interval
     assert lo < report["score"] < hi
+    # `accuracy` is `score` under its own name, so it carries the same bounds --
+    # on both halves of the GSM8K/GSM1k pair, for the same reason the denominator
+    # policy is declared on both: a diff is unreadable if one side has no bound.
+    assert report["accuracy_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {"score": "n_problems", "accuracy": "n_problems"}
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 # --- grading is offloaded, and a timeout scores wrong rather than failing ---

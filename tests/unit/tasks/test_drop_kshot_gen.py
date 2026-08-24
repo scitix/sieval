@@ -14,6 +14,7 @@ from sieval.core.tasks import (
     build_judgement_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.drop import DROPDataset, DROPDatasetSample
 from sieval.tasks.drop_kshot_gen import DROPFewShotGenTask
 from tests.conftest import HandlerTransport
@@ -172,3 +173,20 @@ async def test_report_interval_rides_per_question_f1_on_the_right_scale():
     # On the right scale the mean is 0.75, not 75. Unrescaled it saturates and
     # the upper bound pins to the top of the range.
     assert hi < 100.0
+    # `f1` is `score` under its own name, so it repeats the headline bounds; `em`
+    # is the co-equal column and gets its OWN, over its own per-question values.
+    # The two differ here -- 0.5 against 0.75 -- so `em` borrowing the headline's
+    # is what these assertions catch.
+    assert report["f1_ci95"] == [lo, hi]
+    em_interval = report["em_ci95"]
+    assert isinstance(em_interval, list)
+    assert em_interval != interval
+    assert em_interval[0] < report["em"] < em_interval[1]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "f1": "n_problems",
+        "em": "n_problems",
+    }
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []

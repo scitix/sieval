@@ -21,6 +21,7 @@ from sieval.core.tasks import (
 from sieval.core.tasks.metrics import (
     PROBLEM_COUNT_FIELD,
     SCORE_CI_FIELD,
+    interval_declaration_problems,
     wilson_interval,
 )
 from sieval.datasets.ugmathbench import UGMathBenchDataset
@@ -392,6 +393,29 @@ async def test_the_interval_is_clustered_on_problems_not_versions():
     assert isinstance(interval, list)
     lo, hi = interval
     assert lo < report["eacc"] < hi
+    # `eacc` is `score` under its own name, so it repeats the headline bounds;
+    # `cacc` is the other per-problem rate and gets its own, over "correct in ANY
+    # version" rather than "in every one". They read 50.0 and 75.0 here, so a
+    # `cacc` bound copied from the headline fails to contain its own number.
+    assert report["eacc_ci95"] == [lo, hi]
+    cacc_interval = report["cacc_ci95"]
+    assert isinstance(cacc_interval, list)
+    assert cacc_interval != interval
+    assert cacc_interval[0] < report["cacc"] < cacc_interval[1]
+    assert report["ci95_units"] == {
+        "score": PROBLEM_COUNT_FIELD,
+        "eacc": PROBLEM_COUNT_FIELD,
+        "cacc": PROBLEM_COUNT_FIELD,
+    }
+    # `aacc` is a per-VERSION rate whose population this report does not write,
+    # and `delta` / `relative_delta` combine two units, so none of the three gets
+    # one.
+    assert "aacc_ci95" not in report
+    assert "delta_ci95" not in report
+    assert "relative_delta_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
     # It is exactly the interval over the four per-problem EAcc indicators --
     # two of four correct in every version.

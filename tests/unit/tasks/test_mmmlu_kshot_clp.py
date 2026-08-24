@@ -21,6 +21,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.mmmlu import MMMLUDataset, MMMLUDatasetSample
 from sieval.tasks.mmmlu_kshot_clp import (
     MMMLUKShotClpTask,
@@ -315,6 +316,15 @@ async def test_report_returns_weighted_overall_locale_category_and_subject_score
     score = report["score"]
     assert isinstance(score, float)
     assert lo < score < hi
+    # `score_mmmlu` is `score` under its own name, so it carries the same bounds.
+    # The locale / category / subject breakdowns each remain uninterval'd: one
+    # `n_problems` cannot say what any of them is clustered on.
+    assert report["score_mmmlu_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {"score": "n_problems", "score_mmmlu": "n_problems"}
+    assert "score_locale_zh_cn_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

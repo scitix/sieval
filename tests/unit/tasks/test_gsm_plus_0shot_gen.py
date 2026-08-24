@@ -24,6 +24,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_FIELD,
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
+    interval_declaration_problems,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.gsm_plus import GSMPlusDataset, GSMPlusDatasetSample
@@ -425,6 +426,12 @@ async def test_report_interval_is_quoted_over_the_requested_population():
     assert isinstance(interval, list)
     lo, hi = interval
     assert lo < report["score"] < hi
+    # `accuracy` is `score` under its own name, so it carries the same bounds.
+    assert report["accuracy_ci95"] == [lo, hi]
+    assert report["ci95_units"] == {"score": "n_problems", "accuracy": "n_problems"}
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
     # `score_wo_critical_thinking` is a co-headline over its OWN population, so
     # it neither gets nor borrows an interval.
     assert report["score_wo_critical_thinking"] != report["score"]

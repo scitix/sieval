@@ -18,6 +18,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.ifbench import IFBenchDataset
 from sieval.tasks import ifbench_0shot_gen as module
 from sieval.tasks.ifbench_0shot_gen import IFBenchZeroShotGenTask
@@ -220,6 +221,27 @@ async def test_report_interval_rides_the_loose_prompt_axis():
     assert lo < report["score"] < hi
     # Strictly above the strict rate, which a strict-axis interval would bracket.
     assert lo > report["strict_prompt_level_accuracy"]
+    # `loose_prompt_level_accuracy` is `score` under its own name, so it repeats
+    # the headline bounds; the STRICT prompt rate is the co-equal reading and gets
+    # its own -- pinned at zero here, where the headline's lower bound is not, so
+    # a strict bound copied from the headline fails the next two assertions.
+    assert report["loose_prompt_level_accuracy_ci95"] == [lo, hi]
+    strict_interval = report["strict_prompt_level_accuracy_ci95"]
+    assert isinstance(strict_interval, list)
+    assert strict_interval[0] == 0.0
+    assert strict_interval != interval
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "loose_prompt_level_accuracy": "n_problems",
+        "strict_prompt_level_accuracy": "n_problems",
+    }
+    # The `*_instruction_level_accuracy` pair pools over CONSTRAINTS and stays
+    # uninterval'd.
+    assert "strict_instruction_level_accuracy_ci95" not in report
+    assert "loose_instruction_level_accuracy_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 def test_ensure_nltk_resources_passes_when_every_resource_is_staged(

@@ -23,6 +23,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
     iter_grader_outputs,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.advanced_if import AdvancedIFDataset, AdvancedIFDatasetSample
 from sieval.tasks import advanced_if_0shot_gen
 from sieval.tasks.advanced_if_0shot_gen import AdvancedIFZeroShotGenTask
@@ -366,6 +367,27 @@ async def test_report_pools_both_published_rates():
     score = report["score"]
     assert isinstance(score, float)
     assert lo < score < hi
+    # `overall_pass_rate` is `score` under its own name, so it repeats the
+    # headline bounds; `macro_pass_rate` is the per-rollout rubric mean and gets
+    # its own. The two read 50.0 and 75.0 here, so a macro bound copied from the
+    # headline fails to contain its own number.
+    assert report["overall_pass_rate_ci95"] == [lo, hi]
+    macro_interval = report["macro_pass_rate_ci95"]
+    assert isinstance(macro_interval, list)
+    assert macro_interval != interval
+    assert macro_interval[0] < report["macro_pass_rate"] < macro_interval[1]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "overall_pass_rate": "n_problems",
+        "macro_pass_rate": "n_problems",
+    }
+    # `micro_pass_rate` pools over RUBRIC CHECKS and gets none, and neither do the
+    # per-aspect breakdown keys.
+    assert "micro_pass_rate_ci95" not in report
+    assert f"{COMPLEX}_pass_rate_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

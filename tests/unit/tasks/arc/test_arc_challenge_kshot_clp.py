@@ -18,6 +18,7 @@ from sieval.core.models import (
 from sieval.core.models.gen_model import GenModel
 from sieval.core.tasks import EvalMode, TaskContext
 from sieval.core.tasks.meta import get_task_meta
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.arc_challenge import (
     ARCChallengeDataset,
     ARCChallengeDatasetSample,
@@ -175,6 +176,15 @@ async def test_shared_report_pairs_the_interval_with_its_problem_count():
     assert isinstance(interval, list)
     lo, hi = interval
     assert lo < report["score"] < hi
+    # `acc` is `score` under its own name -- `score_key` says so -- so it carries
+    # the same bounds. Without them, a reader keyed on the column ARC actually
+    # publishes finds no interval at all.
+    assert report["acc_ci95"] == [lo, hi]
+    # Both names declared over the one population. The task tests call report()
+    # directly, so the runner's finalizer never sees this dict -- run the
+    # validator here or a missing declaration ships.
+    assert report["ci95_units"] == {"score": "n_problems", "acc": "n_problems"}
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

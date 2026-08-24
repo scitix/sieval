@@ -27,6 +27,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.hle import HLEDataset
 from sieval.tasks.hle_0shot_gen import HLEZeroShotGenTask
 from tests.conftest import HandlerTransport
@@ -299,6 +300,19 @@ async def test_report_accuracy_and_counts_fails_in_denominator():
     score = report["score"]
     assert isinstance(score, float)
     assert lo < score < hi
+    # `accuracy` is `score` under its own name, so it carries the same bounds.
+    assert report["accuracy_ci95"] == [lo, hi]
+    # `confidence_interval` is upstream's half-width, not a metric, so it is NOT
+    # declared -- an entry for it would name a key nothing computed an interval
+    # over. `calibration_error` is a binned RMS with no per-problem value.
+    assert report["ci95_units"] == {"score": "n_problems", "accuracy": "n_problems"}
+    assert "confidence_interval_ci95" not in report
+    assert "calibration_error_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships. It is
+    # also the check that would catch `confidence_interval` being mistaken for an
+    # interval key, since it does not end in the suffix.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

@@ -22,6 +22,7 @@ from sieval.core.tasks import (
     build_prompt_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.hellaswag import HellaSwagDataset
 from sieval.tasks.hellaswag_kshot_ppl import (
     HellaSwagFewShotPPLTask,
@@ -366,3 +367,21 @@ async def test_report_interval_rides_acc_norm_not_acc():
     # Strictly below `acc`: on the `acc` axis every value is 1.0, which would
     # push the interval to the top of the range instead.
     assert hi < report["acc"]
+    # `acc_norm` is `score` under its own name, so it repeats the headline bounds;
+    # `acc` is the co-equal column and gets its OWN, estimated over its own
+    # values. Which is exactly the saturated interval the headline must not be:
+    # the two being different is what fails if `acc` borrowed the headline's.
+    assert report["acc_norm_ci95"] == [lo, hi]
+    acc_interval = report["acc_ci95"]
+    assert isinstance(acc_interval, list)
+    assert acc_interval != interval
+    assert acc_interval[1] == 100.0
+    assert acc_interval[0] < report["acc"]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "acc_norm": "n_problems",
+        "acc": "n_problems",
+    }
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []

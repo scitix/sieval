@@ -19,8 +19,9 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.scitarc import SciTaRCDataset
-from sieval.tasks.scitarc_0shot_gen import SciTaRCZeroShotGenTask
+from sieval.tasks.scitarc_0shot_gen import PARTIAL_SCORE, SciTaRCZeroShotGenTask
 from tests.conftest import HandlerTransport
 
 TABLES = [["\\begin{table}\n", "NLLB 64.71\n", "\\end{table}\n"]]
@@ -330,6 +331,53 @@ async def test_report_counts_fails_in_the_denominator():
     score = report["score"]
     assert isinstance(score, float)
     assert lo < score < hi
+    assert interval_declaration_problems(report) == []
+
+
+@pytest.mark.anyio
+async def test_report_brackets_each_of_its_three_rates_on_its_own_axis():
+    """`accuracy`, `exact_match` and `partial` are three axes, three intervals.
+
+    Built so all three read a different number -- 3, 2 and 1 of 6 rollouts -- so
+    an interval copied from the headline onto either of the others fails to
+    contain the number it is printed beside.
+    """
+    task, _, _ = _task()
+    finals = [
+        _final(0, correct=True, score=1.0, em=True),
+        _final(1, correct=True, score=1.0, em=True),
+        _final(2, correct=True, score=1.0, em=False),
+        _final(3, correct=False, score=PARTIAL_SCORE, em=False),
+        _final(4, correct=False, score=0.0, em=False),
+        _final(5, correct=False, score=0.0, em=False),
+    ]
+    report = await task.report(finals, [])
+
+    assert report["n"] == 6
+    assert report["score"] == report["accuracy"] == pytest.approx(50.0)
+    assert report["exact_match"] == pytest.approx(33.33, abs=1e-2)
+    assert report["partial"] == pytest.approx(16.67, abs=1e-2)
+    assert report["n_problems"] == 6
+
+    lo, hi = report["score_ci95"]
+    # `accuracy` is `score` under its own name, so it repeats the headline bounds.
+    assert report["accuracy_ci95"] == [lo, hi]
+    for metric in ("exact_match", "partial"):
+        own = report[f"{metric}_ci95"]
+        assert isinstance(own, list)
+        assert own != [lo, hi]
+        value = report[metric]
+        assert isinstance(value, float)
+        assert own[0] < value < own[1]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "accuracy": "n_problems",
+        "exact_match": "n_problems",
+        "partial": "n_problems",
+    }
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

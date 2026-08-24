@@ -17,6 +17,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.datasets.complex_constraints import (
     ComplexConstraintsDataset,
     ComplexConstraintsDatasetSample,
@@ -336,6 +337,25 @@ async def test_report_headline_is_the_task_pass_rate():
     score = report["score"]
     assert isinstance(score, float)
     assert lo < score < hi
+    # `task_pass_rate` is `score` under its own name, so it repeats the headline
+    # bounds; `criterion_pass_rate_macro` is the per-rollout satisfied fraction
+    # and gets its own. The two read 50.0 and 72.5 here, so a macro bound copied
+    # from the headline fails to contain its own number.
+    assert report["task_pass_rate_ci95"] == [lo, hi]
+    macro_interval = report["criterion_pass_rate_macro_ci95"]
+    assert isinstance(macro_interval, list)
+    assert macro_interval != interval
+    assert macro_interval[0] < report["criterion_pass_rate_macro"] < macro_interval[1]
+    assert report["ci95_units"] == {
+        "score": "n_problems",
+        "task_pass_rate": "n_problems",
+        "criterion_pass_rate_macro": "n_problems",
+    }
+    # The micro rate pools over CRITERIA and gets none.
+    assert "criterion_pass_rate_micro_ci95" not in report
+    # The task tests call report() directly, so the runner's finalizer never sees
+    # this dict -- run the validator here or a missing declaration ships.
+    assert interval_declaration_problems(report) == []
 
 
 @pytest.mark.anyio

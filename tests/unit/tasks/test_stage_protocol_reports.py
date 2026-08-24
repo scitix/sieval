@@ -21,6 +21,7 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.metrics import interval_declaration_problems
 
 
 def _final(feedback, *, postprocess=None, preprocess=None) -> TaskContext:
@@ -418,6 +419,33 @@ class TestIFEvalReport:
         lo, hi = interval
         assert lo < report["score"] < hi
         assert hi < report["loose_prompt_level_accuracy"]
+
+        # Four prompt-level names, one population. `strict_prompt_level_accuracy`
+        # and `strict_accuracy` are `score` under two other names, so all three
+        # repeat the headline bounds; the loose pair is a different number and
+        # gets its own -- saturated at 100 here, so a loose bound copied from the
+        # headline fails the `== 100.0` below.
+        assert report["strict_prompt_level_accuracy_ci95"] == [lo, hi]
+        assert report["strict_accuracy_ci95"] == [lo, hi]
+        loose_interval = report["loose_prompt_level_accuracy_ci95"]
+        assert isinstance(loose_interval, list)
+        assert loose_interval[1] == 100.0
+        assert loose_interval != interval
+        assert report["loose_accuracy_ci95"] == loose_interval
+        assert report["ci95_units"] == {
+            "score": "n_problems",
+            "strict_prompt_level_accuracy": "n_problems",
+            "strict_accuracy": "n_problems",
+            "loose_prompt_level_accuracy": "n_problems",
+            "loose_accuracy": "n_problems",
+        }
+        # The `*_instruction_level_accuracy` pair pools over CONSTRAINTS and stays
+        # uninterval'd.
+        assert "strict_instruction_level_accuracy_ci95" not in report
+        assert "loose_instruction_level_accuracy_ci95" not in report
+        # The task tests call report() directly, so the runner's finalizer never
+        # sees this dict -- run the validator here or a missing declaration ships.
+        assert interval_declaration_problems(report) == []
 
     async def test_instruction_level_pools_counts_rather_than_averaging_samples(self):
         from sieval.tasks.ifeval_0shot_gen import IFEvalZeroShotGenTask
