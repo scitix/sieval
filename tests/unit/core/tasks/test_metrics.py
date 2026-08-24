@@ -1511,9 +1511,10 @@ def test_every_population_key_the_estimators_write_is_a_count():
 
 
 def test_interval_declaration_problems_ignores_a_report_with_no_intervals():
-    # The nine reports that publish no interval at all must stay silent, and
-    # `hle`'s `confidence_interval` is not an interval key: it does not end in
-    # the suffix, and it is deliberately undeclared.
+    # A report that publishes no interval at all must stay silent -- `ruler`,
+    # `iheval` and `multi_if` are the three left -- and `hle`'s
+    # `confidence_interval` is not an interval key: it does not end in the
+    # suffix, and it is deliberately undeclared.
     assert (
         interval_declaration_problems(
             {"score": 1.0, "accuracy": 1.0, "confidence_interval": 6.4}

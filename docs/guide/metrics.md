@@ -19,17 +19,19 @@ Two rules govern the whole file:
 | `score_key` | Which other key `score` was copied from — `pass@1`, `accuracy`, `exact_match`, … |
 | `fails` | Samples that failed the pipeline (an error, not a wrong answer). |
 | `denominator_policy` | Which population the headline is averaged over. |
-| `score_ci95` | 95% interval on `score`, as `[lo, hi]`, clustered on problems |
+| `score_ci95` | 95% interval on `score`, as `[lo, hi]` |
 | `n_problems` | Declared problem population the headline is averaged over |
-| `ci95_units` | Which population key each interval in the report is clustered on |
+| `ci95_units` | Which population count each interval in the report is clustered on |
 
 The first four are on every report (one documented exception below).
 `score_ci95` / `n_problems` are on every task whose headline is a mean over
-problems, which is most of them but not all: a headline that is a
-**macro-average over strata**, a rate **pooled over constraints**, a **nonlinear
-ratio of aggregates**, or **absent altogether** is not such a mean, and those
-reports carry no headline interval. So a report may carry none at all, which is
-not the same as a zero-width one. It is never zeroed to stand in for a missing
+problems, which is most of them but not all: a headline that is a rate **pooled
+over constraints**, a **nonlinear ratio of aggregates**, or **absent
+altogether** is not such a mean, and those reports carry no headline interval. A
+headline that is a **macro-average over strata** is a mean over *those* — the
+three that ship it carry `score_ci95` beside `n_subjects` / `n_subsets` rather
+than `n_problems`. So a report may carry no interval at all, which is not the
+same as a zero-width one. It is never zeroed to stand in for a missing
 one. `ci95_units` is there whenever the report carries **any** interval, and
 absent when it carries none.
 
@@ -56,10 +58,15 @@ reverse, and one that writes any `*_ci95` key without writing `ci95_units` at al
 Whether that map is *complete* is checked at run time instead, when the report is
 finished: a per-metric interval key is built from a metric name, so no source scan
 can enumerate the keys a report will publish. The run **saves `report.json` and
-then fails** if any `*_ci95` key has no `ci95_units` entry, or an entry names a
-metric or a population key the report does not write. Saved first on purpose — the
-artifacts of a finished run are worth keeping — and raised rather than logged,
-because an ignorable warning is how every earlier undeclared-key defect shipped.
+then fails** on any of five things — an interval with no `ci95_units` entry; an
+entry naming a metric or a population key the report does not write; an entry
+whose population is not a **count** key (`n_…`), which is how a value naming
+another *metric* is caught, since that key really is in the report; and two
+metrics declared on one unit that carry one interval while publishing two
+different numbers, which is what a metric passed as an alias of something it is
+not looks like from the outside. Saved first on purpose — the artifacts of a
+finished run are worth keeping — and raised rather than logged, because an
+ignorable warning is how every earlier undeclared-key defect shipped.
 
 One task is the documented exception, and only to the `score` half:
 `t_eval_before_calling_0shot_gen` publishes one rate per axis and no headline, so
@@ -112,35 +119,40 @@ entry per metric:
 ```
 
 One population key per **unit**, not per metric: metrics sharing a unit share the
-count. The value of every `ci95_units` entry is a key in the same report, so a
-reader that finds an interval can always find the population it is quoted over.
+count. The value of every `ci95_units` entry is a **population count** the same
+report writes — always an `n_…` key — so a reader that finds an interval can
+always find the size of the population it is quoted over. It never points at
+another metric: two names for one number are handled where the interval is
+computed, not by an entry redirecting one key to another.
 
 **Which metrics have one today is partial, and this is where it stands.** The
-headline of 49 of the 58 task reports; the column `score_key` names it was copied
+headline of 52 of the 58 task reports — 49 of them over `n_problems`, and
+AGIEval, C-Eval and CMMLU over the strata their macro averages
+(`n_subsets` / `n_subjects`); the column `score_key` names it was copied
 from, under that column's own name; every sampling key the shared block publishes
 — `pass@1`, `avg@n`, `pass@k`, `pass^k`, `maj@k`, `self_consistency` — on the 28
-tasks that route through it; and the co-equal second rate of the tasks that
+tasks that route through it, plus UGMathBench's copies of those six on its
+*version* axis; and the co-equal second rate of the tasks that
 publish one on the problem unit (HellaSwag's `acc`, DROP's `em`, the second
 extraction rule on each of the GSM8K and GSM1k base tasks —
 `flexible_exact_match` beside GSM8K's `exact_match`, `strict_exact_match` beside
 GSM1k's `flexible_exact_match` — IFEval's and IFBench's other
 grade, UGMathBench's `cacc`, AdvancedIF's `macro_pass_rate`,
 ComplexConstraints' `criterion_pass_rate_macro`, SciTaRC's `exact_match` and
-`partial`).
+`partial`, SimpleQA-Verified's `correct` / `incorrect` / `not_attempted`).
 
-Not yet, and for two different reasons. **Counted already, not yet estimated**:
-SysBench's per-turn and per-session rates (`csr_macro`, `isr`,
-`ungradeable_rate`, `ssr`), whose report already writes `n_turns` and
-`n_sessions`, and every axis of `t_eval_before_calling`, whose report already
-writes `n_graded` and `n_parsed`. Those need an estimator, not a new count.
-**Missing the count itself**: SimpleQA-Verified, whose report carries no problem
-count at all (only
-`n_graded`, a rollout count); UGMathBench's per-version `aacc`, whose denominator
-counts requested versions where the reported `n_versions_judged` counts judged
-ones; and GSM+'s `score_wo_critical_thinking`, whose non-critical-thinking subset
-size is computed but never reported. Then the pooled-ratio and nonlinear families
-below, every `score_<category>` / per-subject breakdown key, and the stratum
-macros of `ruler` / `iheval`.
+Beyond the problem unit — and beyond the `n_subjects` / `n_subsets` above — six
+more populations carry one: SysBench's per-turn rates (`csr_macro`, `isr`,
+`ungradeable_rate`) over `n_turns` and its `ssr` over `n_sessions`; every
+`t_eval_before_calling` axis over `n_graded`, with the `*_parsed` triple over
+`n_parsed`; UGMathBench's `aacc` and its six sampling keys over `n_versions`; and
+GSM+'s `score_wo_critical_thinking` over `n_problems_wo_critical_thinking`.
+
+Not yet: the pooled-ratio and nonlinear families below, every
+`score_<category>` / per-subject breakdown key, and the stratum macros of
+`ruler` / `iheval` — held deliberately, not for want of a count, because at 5
+context lengths or 9 subtasks the interval would describe between-stratum spread
+over a handful of terms.
 
 So **`<metric>_ci95` is optional even when `<metric>` is there**, and a consumer
 has to treat it that way. A metric can be published with no interval for two
@@ -177,7 +189,12 @@ Three rules decide whether a metric is a candidate at all:
   parameter, so the bounds are computed once rather than once per key and cannot
   drift apart. Each key still carries its own list, so they are equal values and
   not a shared object — nothing that reads the report back and edits one bound
-  changes another.
+  changes another. The finished report is checked against this: two metrics on one
+  unit sharing one interval have to publish the same number, within the half a
+  hundredth a rate rounded to 2 dp can sit from the unrounded mean the bounds
+  bracket. Two metrics on one unit have equal bounds only when they have equal
+  `p`, so that check is a tautology for a real alias and fires precisely on a
+  metric handed to the parameter that is not one.
 
 A withheld metric takes its interval with it: a task that withholds the sampling
 block at `n = 1` withholds those metrics' intervals too, and keeps the ones for
@@ -328,14 +345,28 @@ runs, per problem, and lives outside a single run's `report.json`.
 ### An interval names the axis it is clustered on
 
 A task publishing rates on two different axes must say which axis each of its
-intervals belongs to, which is what `ci95_units` records. UGMathBench is the case
-in this tree: `aacc` is a rate per *version* and `eacc` a rate per *problem*, so
-an interval on one is not an interval on the other, and each owes its own
-population. Reusing a problem-level population for a version-level rate narrows
-the interval by the same √times an uncollapsed repeat does, wearing a different
-name. Its `score_ci95` is EAcc's, clustered on problems and declared over
-`n_problems`; `cacc` is the other per-*problem* rate and carries its own over the
-same `n_problems`; `aacc` carries no interval, so nothing declares one for it.
+intervals belongs to, which is what `ci95_units` records. Reusing a problem-level
+population for a rate on another unit narrows the interval by the same √times an
+uncollapsed repeat does, wearing a different name. Four reports are two-unit
+today:
+
+- **UGMathBench.** `eacc` is a rate per *problem* and `aacc` a rate per
+  *version*, so an interval on one is not an interval on the other. Its
+  `score_ci95` is EAcc's, declared over `n_problems`, and `cacc` is the other
+  per-problem rate over the same count; `aacc` and this task's copies of the six
+  sampling keys are per version and declare `n_versions` — the requested versions,
+  failures included, which is what AAcc divides by and which the older
+  `n_versions_judged` does not count. It is the only task in the tree whose
+  sampling block does not sit on problems.
+- **SysBench.** `csr_macro`, `isr` and `ungradeable_rate` are means over turns and
+  declare `n_turns`; `ssr` is a mean over sessions and declares `n_sessions`.
+- **`t_eval_before_calling`.** Every axis is a mean over judged samples
+  (`n_graded`); the `*_parsed` triple narrows to the samples whose reply parsed
+  (`n_parsed`). Those two differ exactly when a reply does not parse, which is why
+  this report has no single default and declares per metric.
+- **GSM+.** The headline is over `n_problems`; `score_wo_critical_thinking` is a
+  co-headline over its own subset and declares
+  `n_problems_wo_critical_thinking`.
 
 The per-category keys (`score_<category>` on MMLU and MMLU-Pro) carry **no**
 interval today. Each would need its own population count, and one `n_problems`
@@ -385,7 +416,9 @@ Rates are percentages (0–100) over the task's declared denominator; `n`, `k` a
 Each of the six rates carries **its own** 95% interval — `pass@1_ci95`,
 `avg@n_ci95`, `pass@k_ci95`, `pass^k_ci95`, `maj@k_ci95`,
 `self_consistency_ci95` — clustered on problems and declared over the block's one
-`n_problems`. All six are exact means over problems of a per-problem value, so
+`n_problems` (UGMathBench is the exception: it builds these per *version*, so its
+copies declare `n_versions`). All six are exact means over their unit of a
+per-unit value, so
 none of them borrows another's: `pass@k` is not a rescaled `pass@1`, and one
 interval for a block of six would make five of them read as measured when only one
 was. None is ever there for a column that is not — each is derived from its

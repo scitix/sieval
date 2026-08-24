@@ -146,7 +146,16 @@ only. A different number gets its own `metric_interval` call over its own
 per-unit values; a **deterministic function** of another metric gets nothing at
 all, since a mirrored bound reads as second evidence and is not (`aa_lcr`'s
 `incorrect` is `1 - accuracy`; `browsecomp`'s is written as an independent bucket
-but sums to 100 with `correct` on every grade its parser can return).
+but sums to 100 with `correct` on every grade its parser can return). The
+emitters cannot check that — they never see the values the report publishes — so
+the **runner** does: two metrics on one unit carrying one interval have to publish
+one number, within the half a hundredth a 2-dp-rounded rate can sit from the
+unrounded mean.
+
+The `unit` a metric declares is a **population count** — an `n_…` key the same
+report writes, holding how many units the interval is clustered on. Never another
+metric key: "one interval under two names" is `aliases`, not an entry redirecting
+one metric to another, and the runner refuses a unit that is not a count.
 
 Two fragments that each carry intervals are folded with `merge_metrics`, never
 with `|`: a plain merge replaces `ci95_units` wholesale, so one fragment's
@@ -154,8 +163,12 @@ declarations survive and the other's intervals are left with no unit — silentl
 because the intervals themselves are all still there. The preflight cannot catch
 that (a per-metric interval key is built from a metric name, not a literal, so its
 key set is not the runtime one); the **runner** does, at report-write time, by
-saving `report.json` and then raising on any interval whose unit is missing or
-unresolvable.
+saving `report.json` and then raising on any interval whose unit is missing,
+unresolvable, not a count, or shared with a metric publishing a different number.
+
+`n_problems` with no `score_ci95` beside it is not that failure: a report folding
+several fragments may publish the count for a **sibling** metric's interval when
+the headline itself had no dispersion. The pair rule applies per metric.
 
 Machine-checked over every class defining `report` under `sieval/tasks/`:
 `check_preflight.py --check check_report_declarations`. A `report` that is a
