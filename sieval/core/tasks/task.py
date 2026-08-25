@@ -46,6 +46,8 @@ _SGLANG_LEGACY_CAPABILITIES = frozenset(
 
 
 def _dialect_input_shape(dialect_id: str) -> tuple[frozenset[str], frozenset[str]]:
+    # TODO(PR-5): remove this pseudo-spec branch when the registered
+    # sglang_native binder replaces the temporary legacy bypass.
     if dialect_id == "sglang_legacy":
         return frozenset({InputKind.COMPLETION.value}), frozenset({"text"})
 
@@ -87,6 +89,8 @@ def _validate_descriptor_capabilities(
     required = _required_capabilities(requires)
     if not required:
         return
+    # TODO(PR-5): remove this pseudo-spec branch when the registered
+    # sglang_native binder replaces the temporary legacy bypass.
     if dialect_id == "sglang_legacy":
         available = _SGLANG_LEGACY_CAPABILITIES
     else:

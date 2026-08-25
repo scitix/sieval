@@ -470,6 +470,37 @@ class TestValidateModelCapabilities:
         assert not result.ok
         assert any("unknown dialect 'chat'" in error for error in result.errors)
 
+    def test_explicit_sglang_legacy_bypass_is_accepted(self):
+        result = validate_eval_config(
+            self._config(
+                type="gen",
+                engine="sglang",
+                dialect="sglang_legacy",
+            )
+        )
+
+        assert result.ok, result.errors
+
+    @pytest.mark.parametrize("declaration", [True, False])
+    def test_sglang_legacy_bypass_rejects_capability_declarations(
+        self, declaration: bool
+    ):
+        result = validate_eval_config(
+            self._config(
+                type="gen",
+                engine="sglang",
+                dialect="sglang_legacy",
+                capabilities={"input_scoring": declaration},
+            )
+        )
+
+        assert not result.ok
+        assert any(
+            "sglang_legacy bypass" in error
+            and "cannot declare canonical capabilities" in error
+            for error in result.errors
+        )
+
     @pytest.mark.parametrize(
         ("dialect", "message"),
         [
@@ -1503,6 +1534,38 @@ class TestRunDryRun:
         for check in result["checks"]:
             assert "name" in check
             assert "ok" in check
+
+    def test_explicit_sglang_legacy_bypass_reaches_prelaunch(self, tmp_path):
+        from sieval.cli.validation import run_dry_run
+
+        config = tmp_path / "sglang-legacy.yaml"
+        config.write_text(
+            "models:\n"
+            "  m:\n"
+            "    name: org/model\n"
+            "    type: gen\n"
+            "    engine: sglang\n"
+            "    dialect: sglang_legacy\n"
+            "    api_base: http://127.0.0.1:30000\n"
+            "datasets:\n"
+            "  d:\n"
+            "    class: sieval.datasets.human_eval.HumanEvalDataset\n"
+            "tasks:\n"
+            "  t:\n"
+            "    class: sieval.tasks.human_eval_0shot_base_gen."
+            "HumanEvalZeroShotBaseGenTask\n"
+            "    dataset: d\n"
+            "    model: m\n",
+            encoding="utf-8",
+        )
+
+        result = run_dry_run(config)
+        checks = {check["name"]: check for check in result["checks"]}
+
+        assert result["n_errors"] == 0
+        assert checks["schema"]["ok"] is True
+        assert checks["imports"]["ok"] is True
+        assert checks["capability_reconcile"]["ok"] is True
 
     def test_returns_dict_on_missing_file(self, tmp_path):
         from sieval.cli.validation import run_dry_run

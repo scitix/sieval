@@ -270,10 +270,12 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
 def _validate_capabilities(cfg: dict, result: ValidationResult) -> None:
     """Validate canonical dialect and capability declarations for each model.
 
-    An explicit dialect selects its descriptor and executable PR-1 binder.  If
-    the dialect is omitted, only provider-neutral option shapes can be checked
-    here; task-derived default selection remains composition's job.  This layer
-    deliberately does not duplicate #59's model-kind resolver.
+    An explicit canonical dialect selects its descriptor and executable PR-1
+    binder.  The temporary ``sglang_legacy`` pseudo-dialect is accepted without
+    canonical capabilities until PR-5 replaces it.  If the dialect is omitted,
+    only provider-neutral option shapes can be checked here; task-derived
+    default selection remains composition's job.  This layer deliberately does
+    not duplicate #59's model-kind resolver.
     """
     models = cfg.get("models", {})
 
@@ -293,6 +295,22 @@ def _validate_capabilities(cfg: dict, result: ValidationResult) -> None:
                 )
                 continue
             dialect_id = raw_dialect
+
+        if dialect_id == "sglang_legacy":
+            # TODO(PR-5): remove this pseudo-spec branch when the registered
+            # sglang_native binder replaces the temporary legacy bypass.
+            if "capabilities" not in mcfg:
+                continue
+            raw_capabilities = mcfg["capabilities"]
+            if not isinstance(raw_capabilities, Mapping):
+                result.errors.append(f"Model '{name}': capabilities must be a mapping")
+            elif raw_capabilities:
+                result.errors.append(
+                    f"Model '{name}': the temporary sglang_legacy bypass "
+                    "cannot declare canonical capabilities before the "
+                    "sglang_native PR-5 binder"
+                )
+            continue
 
         if dialect_id is not None:
             try:
