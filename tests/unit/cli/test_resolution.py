@@ -1157,13 +1157,11 @@ class TestValidateConfiguredEngineId:
         with pytest.raises(ValueError, match="differs only in case") as excinfo:
             validate_configured_engine_id(engine, context="Model 'm'")
 
-        # The message must name the spelling to write, not just the offence:
-        # engine-scoped guards and deployment_fingerprint match exactly.
+        # Must name the spelling to write, not just the offence.
         assert repr(canonical) in str(excinfo.value)
 
     def test_a_case_variant_is_not_silently_folded(self):
-        # Folding would change a recorded identity assertion behind the user's
-        # back and split deployment_fingerprint across spellings.
+        # Folding would rewrite a declared identity and split the fingerprint.
         with pytest.raises(ValueError):
             validate_configured_engine_id("SGLang", context="Model 'm'")
 
@@ -1175,19 +1173,14 @@ class TestValidateConfiguredEngineId:
                 validate_configured_engine_id(bad, context="Model 'm'")
 
     def test_every_registered_backend_is_covered(self):
-        """Pin the probe to the registry so a new backend cannot slip past.
+        """Pin the probe to the registry so a new backend cannot slip past."""
 
-        The rejection reads the backend registry rather than a local copy of
-        the name set; this fails if that ever regresses to a hardcoded list.
-        """
         from sieval.infer.backends import _TRANSLATORS
 
         assert _TRANSLATORS, "backend registry is empty; the probe proves nothing"
         for name in _TRANSLATORS:
-            # The probe folds the candidate and looks the result up, so it only
-            # sees a backend whose registered id is already casefolded. Assert
-            # that rather than assume it: a mixed-case id would be silently
-            # uncovered, and this is the only place that would notice.
+            # The probe folds then looks up, so it only sees an already-folded
+            # id. Assert that: a mixed-case one would be silently uncovered.
             assert name == name.casefold(), (
                 f"backend id {name!r} is not casefolded, so "
                 "validate_configured_engine_id cannot detect its case variants"
