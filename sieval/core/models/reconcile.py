@@ -8,17 +8,16 @@ AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
 import json
-import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Never, Protocol, Self, cast
+from typing import Protocol, cast
 
 from sieval.core.types import JSONValue
 
 from ._fingerprint import fingerprint_mapping
-from ._shared import copy_json_value
+from ._shared import copy_json_value, freeze_json_mapping
 from .capabilities import (
     CAPABILITY_KEYS,
     CAPABILITY_SPECS,
@@ -154,7 +153,9 @@ class ServingRequirement:
     def __post_init__(self) -> None:
         if self.capability not in CAPABILITY_SPECS:
             raise ValueError(f"unknown serving capability {self.capability!r}")
-        object.__setattr__(self, "minimums", _freeze_json(self.minimums, "minimums"))
+        object.__setattr__(
+            self, "minimums", freeze_json_mapping(self.minimums, "minimums")
+        )
         object.__setattr__(self, "sources", _source_tuple(self.sources))
         if self.verifier is not None:
             _nonempty(self.verifier, "serving verifier")
@@ -184,10 +185,10 @@ class Configured:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "launch_patch", _freeze_json(self.launch_patch, "launch_patch")
+            self, "launch_patch", freeze_json_mapping(self.launch_patch, "launch_patch")
         )
         object.__setattr__(
-            self, "evidence", _freeze_json(self.evidence, "serving evidence")
+            self, "evidence", freeze_json_mapping(self.evidence, "serving evidence")
         )
         if any(check.stage is not CheckStage.REQUEST for check in self.request_checks):
             raise ValueError("Configured.request_checks must use request stage")
@@ -286,7 +287,7 @@ class BindingReconcileInput:
         object.__setattr__(
             self,
             "declarations",
-            _freeze_json(self.declarations, "capability declarations"),
+            freeze_json_mapping(self.declarations, "capability declarations"),
         )
         request_intents: dict[CapabilityKey, CapabilityIntent] = {}
         for key, intent in self.request_intents.items():
@@ -341,12 +342,12 @@ class DeploymentReconcileInput:
         object.__setattr__(
             self,
             "recipe_parameters",
-            _freeze_json(self.recipe_parameters, "recipe_parameters"),
+            freeze_json_mapping(self.recipe_parameters, "recipe_parameters"),
         )
         object.__setattr__(
             self,
             "explicit_parameters",
-            _freeze_json(self.explicit_parameters, "explicit_parameters"),
+            freeze_json_mapping(self.explicit_parameters, "explicit_parameters"),
         )
 
     @property
@@ -429,7 +430,7 @@ class BindingCapabilityPlan:
         object.__setattr__(
             self,
             "declared_capabilities",
-            _freeze_json(self.declared_capabilities, "declared_capabilities"),
+            freeze_json_mapping(self.declared_capabilities, "declared_capabilities"),
         )
         object.__setattr__(
             self,
@@ -462,7 +463,7 @@ class BindingCapabilityPlan:
             "capability_minimums",
             MappingProxyType(
                 {
-                    key: _freeze_json(value, f"capability_minimums.{key}")
+                    key: freeze_json_mapping(value, f"capability_minimums.{key}")
                     for key, value in self.capability_minimums.items()
                 }
             ),
@@ -541,17 +542,17 @@ class DeploymentCapabilityPlan:
         object.__setattr__(
             self,
             "recipe_parameters",
-            _freeze_json(self.recipe_parameters, "recipe_parameters"),
+            freeze_json_mapping(self.recipe_parameters, "recipe_parameters"),
         )
         object.__setattr__(
             self,
             "explicit_parameters",
-            _freeze_json(self.explicit_parameters, "explicit_parameters"),
+            freeze_json_mapping(self.explicit_parameters, "explicit_parameters"),
         )
         object.__setattr__(
             self,
             "launch_patch",
-            _freeze_json(self.launch_patch, "launch_patch"),
+            freeze_json_mapping(self.launch_patch, "launch_patch"),
         )
         for name in ("serving_requirements", "setup_checks", "request_checks"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
@@ -565,7 +566,7 @@ class DeploymentCapabilityPlan:
             "outcome_evidence",
             MappingProxyType(
                 {
-                    key: _freeze_json(value, f"outcome_evidence.{key}")
+                    key: freeze_json_mapping(value, f"outcome_evidence.{key}")
                     for key, value in self.outcome_evidence.items()
                 }
             ),
@@ -634,12 +635,12 @@ class RuntimeBindingPlan:
         object.__setattr__(
             self,
             "declared_capabilities",
-            _freeze_json(self.declared_capabilities, "declared_capabilities"),
+            freeze_json_mapping(self.declared_capabilities, "declared_capabilities"),
         )
         object.__setattr__(
             self,
             "effective_capabilities",
-            _freeze_json(self.effective_capabilities, "effective_capabilities"),
+            freeze_json_mapping(self.effective_capabilities, "effective_capabilities"),
         )
         object.__setattr__(
             self, "available_capabilities", frozenset(self.available_capabilities)
@@ -655,7 +656,7 @@ class RuntimeBindingPlan:
             "capability_minimums",
             MappingProxyType(
                 {
-                    key: _freeze_json(value, f"capability_minimums.{key}")
+                    key: freeze_json_mapping(value, f"capability_minimums.{key}")
                     for key, value in self.capability_minimums.items()
                 }
             ),
@@ -1774,77 +1775,13 @@ def _nonempty(value: object, name: str) -> None:
         raise TypeError(f"{name} must be a non-empty string")
 
 
-class _FrozenJSONList(list[JSONValue]):
-    """List-shaped JSON value that rejects mutation while preserving equality."""
-
-    def _immutable(self, *args: object, **kwargs: object) -> Never:
-        del self, args, kwargs
-        raise TypeError("frozen JSON sequences do not support mutation")
-
-    def __copy__(self) -> Self:
-        return self
-
-    def __deepcopy__(self, memo: dict[int, object]) -> Self:
-        del memo
-        return self
-
-
-# ``list`` exposes several mutation spellings, including in-place operators.
-# Install the same guard for all of them so nested JSON sequences remain
-# list-compatible without leaving a normal mutation path open.
-for _method_name in (
-    "append",
-    "clear",
-    "extend",
-    "insert",
-    "pop",
-    "remove",
-    "reverse",
-    "sort",
-    "__delitem__",
-    "__iadd__",
-    "__imul__",
-    "__setitem__",
-):
-    setattr(_FrozenJSONList, _method_name, _FrozenJSONList._immutable)
-del _method_name
-
-
-def _freeze_json_value(value: object, path: str) -> JSONValue:
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{path} must not contain non-finite floats")
-        return value
-    if isinstance(value, Mapping):
-        copied: dict[str, JSONValue] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError(f"{path} keys must be strings")
-            copied[key] = _freeze_json_value(item, f"{path}.{key}")
-        return MappingProxyType(copied)
-    if isinstance(value, (list, tuple)):
-        return _FrozenJSONList(
-            _freeze_json_value(item, f"{path}[{index}]")
-            for index, item in enumerate(value)
-        )
-    raise TypeError(f"{path} contains non-JSON value {type(value).__name__}")
-
-
-def _freeze_json(value: Mapping[str, JSONValue], path: str) -> Mapping[str, JSONValue]:
-    frozen = _freeze_json_value(value, path)
-    assert isinstance(frozen, Mapping)
-    return cast(Mapping[str, JSONValue], frozen)
-
-
 def _freeze_request_defaults(value: RequestDefaults, path: str) -> RequestDefaults:
     """Detach and deeply freeze defaults before they become plan evidence."""
 
     if not isinstance(value, RequestDefaults):
         raise TypeError(f"{path} must be RequestDefaults")
     frozen = RequestDefaults()
-    object.__setattr__(frozen, "values", _freeze_json(value.values, path))
+    object.__setattr__(frozen, "values", freeze_json_mapping(value.values, path))
     return frozen
 
 
@@ -1864,7 +1801,7 @@ def _freeze_capability_intent(value: CapabilityIntent, path: str) -> CapabilityI
     object.__setattr__(
         frozen,
         "minimums",
-        _freeze_json(value.minimums, f"{path}.minimums"),
+        freeze_json_mapping(value.minimums, f"{path}.minimums"),
     )
     return frozen
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
+from sieval.core.models._shared import thaw_json_mapping
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     Capability,
@@ -33,11 +34,11 @@ from sieval.core.models.dialect import (
     OutputContract,
     OutputContractError,
     OutputRule,
-    PassthroughObservation,
     PreparedRequest,
     RequestAudit,
-    RequestAuditError,
     RuntimePlanView,
+    WireEvidence,
+    WireObservation,
     active_request_leaves,
     validate_input_scoring,
     validate_request_invariants,
@@ -205,8 +206,23 @@ _IR_OWNED_BODY_KEYS = BINDING_RESOURCE_KEYS | frozenset(
 class _CompletionContext:
     n: int
     input_scoring: bool
-    stream: bool
-    request_params: Mapping[str, JSONValue]
+
+
+@dataclass(frozen=True)
+class _CompletionsLogprobsVerifier:
+    expected: int
+
+    def verify(self, body: Mapping[str, JSONValue]) -> str | None:
+        if "logprobs" not in body:
+            return "body.logprobs is missing"
+        actual = body["logprobs"]
+        if (
+            not isinstance(actual, int)
+            or isinstance(actual, bool)
+            or actual != self.expected
+        ):
+            return "body.logprobs does not match the request's top-logprobs setting"
+        return None
 
 
 @dataclass(frozen=True)
@@ -223,16 +239,6 @@ class _LegacyPlan:
         default_factory=dict
     )
     required_output_channels: frozenset[str] = frozenset()
-
-
-def _ensure_matching_audit(req: Request, audit: RequestAudit) -> None:
-    active = active_request_leaves(req)
-    if audit.active != active:
-        missing = sorted(set(active) - set(audit.active))
-        extra = sorted(set(audit.active) - set(active))
-        raise RequestAuditError(
-            f"audit does not match request: missing={missing}, extra={extra}"
-        )
 
 
 def _completion_top_logprobs(raw: object) -> list[dict[str, float]] | None:
@@ -373,13 +379,15 @@ class OpenAICompletionsDialect:
     ) -> None:
         """Reject non-completion semantics before any client operation."""
 
-        _ensure_matching_audit(req, audit)
-        for path in audit.active:
+        audit.require_matches_request(req)
+        for path in audit.active_paths:
             if path in _CONSUMED_PATHS or path == "dialect_options":
                 continue
             if path.startswith("dialect_options."):
                 key = path.removeprefix("dialect_options.")
-                if key in {"prefill", "prefix"}:
+                if not key:
+                    audit.rejected(path, "dialect option keys must be non-empty")
+                elif key in {"prefill", "prefix"}:
                     audit.rejected(path, _PREFILL_UNSUPPORTED_REASON)
                 elif key in _IR_OWNED_BODY_KEYS:
                     audit.rejected(
@@ -395,29 +403,32 @@ class OpenAICompletionsDialect:
         del plan
 
     def prepare(self, req: Request, audit: RequestAudit) -> PreparedRequest:
-        """Lower one validated request and attach exact audit observations."""
+        """Lower one validated request and register exact audit observations."""
 
-        _ensure_matching_audit(req, audit)
+        audit.require_matches_request(req)
         audit.raise_rejections()
         if not isinstance(req.input, CompletionInput):
             raise DialectError("OpenAI completions requires CompletionInput")
 
-        body: dict[str, Any] = {
+        body: dict[str, JSONValue] = {
             "model": self._model,
             "prompt": req.input.text,
             "stream": req.scheduling.stream,
         }
-        consumed: set[str] = set()
-        passthrough: dict[str, PassthroughObservation] = {}
 
-        def consume(path: str) -> None:
-            audit.consumed(path)
-            consumed.add(path)
+        def consume(path: str, *wire: WireEvidence) -> None:
+            audit.consumed(path, *wire)
 
-        consume("input.completion")
+        consume(
+            "input.completion",
+            WireObservation(("prompt",)),
+        )
         if req.input.suffix is not None:
             body["suffix"] = req.input.suffix
-            consume("input.completion.suffix")
+            consume(
+                "input.completion.suffix",
+                WireObservation(("suffix",)),
+            )
 
         sampling = req.sampling
         simple_sampling = {
@@ -431,32 +442,65 @@ class OpenAICompletionsDialect:
         for name, value in simple_sampling.items():
             if value is not None:
                 body[name] = value
-                consume(f"sampling.{name}")
+                consume(
+                    f"sampling.{name}",
+                    WireObservation((name,)),
+                )
         if sampling.stop is not None:
             body["stop"] = list(sampling.stop)
-            consume("sampling.stop")
+            consume(
+                "sampling.stop",
+                WireObservation(("stop",)),
+            )
         if sampling.n != 1:
             body["n"] = sampling.n
-            consume("sampling.n")
+            consume("sampling.n", WireObservation(("n",)))
 
         extra_body: dict[str, JSONValue] = {}
         if sampling.top_k is not None:
             extra_body["top_k"] = sampling.top_k
-            consume("sampling.top_k")
+            consume(
+                "sampling.top_k",
+                WireObservation(("extra_body", "top_k")),
+            )
 
         scoring = req.scoring
         if scoring.input_scoring:
             body["echo"] = True
-            consume("scoring.input_scoring")
-        if scoring.sampled_logprobs:
-            consume("scoring.sampled_logprobs")
-        if scoring.top_logprobs > 0:
-            consume("scoring.top_logprobs")
-        if scoring.sampled_logprobs or scoring.input_scoring:
+        # ``top_logprobs`` is claimed against ``body.logprobs`` below, so emit
+        # the field whenever any of the three leaves needs it.  Its arm is
+        # unreachable through ``validate_request_invariants``, which requires
+        # ``sampled_logprobs`` alongside it; without it the split contract
+        # would claim a field this body never emitted.
+        if (
+            scoring.sampled_logprobs
+            or scoring.input_scoring
+            or scoring.top_logprobs > 0
+        ):
             body["logprobs"] = scoring.top_logprobs
+        logprobs_verifier = _CompletionsLogprobsVerifier(scoring.top_logprobs)
+        if scoring.input_scoring:
+            consume(
+                "scoring.input_scoring",
+                WireObservation(("echo",)),
+                logprobs_verifier,
+            )
+        if scoring.sampled_logprobs:
+            consume(
+                "scoring.sampled_logprobs",
+                logprobs_verifier,
+            )
+        if scoring.top_logprobs > 0:
+            consume(
+                "scoring.top_logprobs",
+                WireObservation(("logprobs",)),
+            )
 
         if req.scheduling.stream:
-            consume("scheduling.stream")
+            consume(
+                "scheduling.stream",
+                WireObservation(("stream",)),
+            )
 
         options = req.dialect_options
         if options is not None:
@@ -469,26 +513,18 @@ class OpenAICompletionsDialect:
                 path = f"dialect_options.{key}"
                 extra_body[key] = option_value
                 audit.passthrough(path, "extra_body")
-                passthrough[path] = PassthroughObservation("extra_body", option_value)
 
         if req.scheduling.stream and "stream_options" not in extra_body:
             body["stream_options"] = {"include_usage": True}
         if extra_body:
             body["extra_body"] = extra_body
 
-        request_params = {
-            key: value for key, value in body.items() if key not in {"model", "prompt"}
-        }
         prepared = PreparedRequest(
             operation="completions.create",
             body=body,
-            consumed_paths=frozenset(consumed),
-            passthrough=passthrough,
             context=_CompletionContext(
                 n=sampling.n,
                 input_scoring=scoring.input_scoring,
-                stream=req.scheduling.stream,
-                request_params=request_params,
             ),
         )
         return prepared
@@ -504,10 +540,22 @@ class OpenAICompletionsDialect:
         if not isinstance(context, _CompletionContext):
             raise DialectError("prepared completions request has invalid context")
 
-        raw = await self._client.completions.create(**dict(prepared.body))
-        if context.stream:
-            return await self._lift_stream(raw, context)
-        return self._lift(raw, context)
+        body = prepared.thaw_body()
+        stream = body.get("stream")
+        if not isinstance(stream, bool):
+            raise DialectError("prepared completions request has invalid stream flag")
+        request_params = thaw_json_mapping(
+            {
+                key: value
+                for key, value in body.items()
+                if key not in {"model", "prompt"}
+            },
+            "completion request parameters",
+        )
+        raw = await self._client.completions.create(**body)
+        if stream:
+            return await self._lift_stream(raw, context, request_params)
+        return self._lift(raw, context, request_params)
 
     async def arun(self, req: Request) -> Response:
         """One-cycle direct compatibility path; Model uses the split contract."""
@@ -524,21 +572,37 @@ class OpenAICompletionsDialect:
         self.output_contract.validate(plan, req, response)
         return response
 
-    def _lift(self, raw: object, context: _CompletionContext) -> Response:
-        accumulator = _Accumulator(context, streaming=False)
+    def _lift(
+        self,
+        raw: object,
+        context: _CompletionContext,
+        request_params: Mapping[str, JSONValue],
+    ) -> Response:
+        accumulator = _Accumulator(
+            context,
+            streaming=False,
+            request_params=request_params,
+        )
         accumulator.capture_metadata(raw)
         accumulator.capture_choices(getattr(raw, "choices", ()))
         usage = _completions_usage_stats(getattr(raw, "usage", None))
         return accumulator.response(usage)
 
     async def _lift_stream(
-        self, stream: object, context: _CompletionContext
+        self,
+        stream: object,
+        context: _CompletionContext,
+        request_params: Mapping[str, JSONValue],
     ) -> Response:
         if not isinstance(stream, AsyncIterable):
             raise OutputContractError(
                 "streaming completions response is not asynchronously iterable"
             )
-        accumulator = _Accumulator(context, streaming=True)
+        accumulator = _Accumulator(
+            context,
+            streaming=True,
+            request_params=request_params,
+        )
         usage: UsageStats | None = None
         async for chunk in stream:
             accumulator.capture_metadata(chunk)
@@ -550,9 +614,16 @@ class OpenAICompletionsDialect:
 
 
 class _Accumulator:
-    def __init__(self, context: _CompletionContext, *, streaming: bool) -> None:
+    def __init__(
+        self,
+        context: _CompletionContext,
+        *,
+        streaming: bool,
+        request_params: Mapping[str, JSONValue],
+    ) -> None:
         self._context = context
         self._streaming = streaming
+        self._request_params = request_params
         self._texts = [""] * context.n
         self._finish_reasons = [""] * context.n
         self._seen_indices: set[int] = set()
@@ -702,7 +773,7 @@ class _Accumulator:
             top_logprobs=top,
             input_scoring=input_scoring,
             usage=usage,
-            request_params=self._context.request_params,
+            request_params=self._request_params,
             response_model=self._response_model,
             system_fingerprint=self._system_fingerprint,
         )

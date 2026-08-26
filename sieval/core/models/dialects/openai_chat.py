@@ -10,10 +10,12 @@ AI-Generated Code - GPT-5.6 (OpenAI)
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, cast
 
+from sieval.core.models._shared import copy_json_value, thaw_json_mapping
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     Capability,
@@ -30,10 +32,11 @@ from sieval.core.models.dialect import (
     OutputContract,
     OutputContractError,
     OutputRule,
-    PassthroughObservation,
     PreparedRequest,
     RequestAudit,
     RuntimePlanView,
+    WireEvidence,
+    WireObservation,
     active_request_leaves,
     validate_reasoning,
     validate_request_invariants,
@@ -58,6 +61,7 @@ from sieval.core.models.ir import (
     TopKEntry,
     UsageStats,
 )
+from sieval.core.types import JSONValue
 
 from ._usage import usage_stats
 
@@ -242,7 +246,6 @@ _CANONICAL_WIRE_KEYS = BINDING_RESOURCE_KEYS | frozenset(
 
 @dataclass(frozen=True)
 class _ChatContext:
-    messages: list[dict[str, Any]]
     request: Request
 
 
@@ -478,12 +481,221 @@ def _response_format(req: Request) -> dict[str, Any] | None:
     if params.format == "json_object":
         return {"type": "json_object"}
     schema: dict[str, Any] = {
-        "name": params.name or "response",
+        "name": params.name if params.name is not None else "response",
         "schema": dict(params.schema or {}),
     }
     if params.strict is not None:
         schema["strict"] = params.strict
     return {"type": "json_schema", "json_schema": schema}
+
+
+def _canonical_message_json(value: object) -> str:
+    return json.dumps(
+        copy_json_value(value, "chat message value"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _verify_json_string(
+    actual: object,
+    expected: object,
+    path: str,
+) -> str | None:
+    if not isinstance(actual, str):
+        return f"{path} must be a string"
+    if isinstance(expected, str):
+        if actual != expected:
+            return f"{path} changed"
+        return None
+    try:
+        parsed = json.loads(actual)
+    except json.JSONDecodeError:
+        return f"{path} is not valid JSON"
+    if _canonical_message_json(parsed) != _canonical_message_json(expected):
+        return f"{path} changed"
+    return None
+
+
+def _verify_inline_part(
+    expected: TextPart | ImagePart,
+    actual: object,
+    path: str,
+) -> str | None:
+    if not isinstance(actual, Mapping):
+        return f"{path} must be an object"
+    actual_mapping = cast(Mapping[str, object], actual)
+    if isinstance(expected, TextPart):
+        if set(actual_mapping) != {"type", "text"}:
+            return f"{path} has unexpected text-part fields"
+        if (
+            actual_mapping.get("type") != "text"
+            or actual_mapping.get("text") != expected.text
+        ):
+            return f"{path} changed"
+        return None
+
+    if set(actual_mapping) != {"type", "image_url"}:
+        return f"{path} has unexpected image-part fields"
+    if actual_mapping.get("type") != "image_url":
+        return f"{path}.type changed"
+    image = actual_mapping.get("image_url")
+    if not isinstance(image, Mapping):
+        return f"{path}.image_url must be an object"
+    image_mapping = cast(Mapping[str, object], image)
+    expected_keys = {"url"}
+    if expected.detail is not None:
+        expected_keys.add("detail")
+    if set(image_mapping) != expected_keys:
+        return f"{path}.image_url fields changed"
+    expected_url = (
+        expected.url
+        if expected.url is not None
+        else (
+            f"data:{expected.media_type or 'application/octet-stream'};"
+            f"base64,{expected.data}"
+        )
+    )
+    if image_mapping.get("url") != expected_url:
+        return f"{path}.image_url.url changed"
+    if expected.detail is not None and image_mapping.get("detail") != expected.detail:
+        return f"{path}.image_url.detail changed"
+    return None
+
+
+def _verify_tool_calls(
+    expected: list[ToolCallPart],
+    actual: object,
+    path: str,
+) -> str | None:
+    if not isinstance(actual, list):
+        return f"{path} must be a list"
+    if len(actual) != len(expected):
+        return f"{path} count changed"
+    for index, (source, item) in enumerate(zip(expected, actual, strict=True)):
+        item_path = f"{path}[{index}]"
+        if not isinstance(item, Mapping):
+            return f"{item_path} must be an object"
+        if set(item) != {"id", "type", "function"}:
+            return f"{item_path} fields changed"
+        if item.get("id") != source.call_id or item.get("type") != "function":
+            return f"{item_path} identity changed"
+        function = item.get("function")
+        if not isinstance(function, Mapping):
+            return f"{item_path}.function must be an object"
+        if set(function) != {"name", "arguments"}:
+            return f"{item_path}.function fields changed"
+        if function.get("name") != source.name:
+            return f"{item_path}.function.name changed"
+        mismatch = _verify_json_string(
+            function.get("arguments"),
+            source.arguments,
+            f"{item_path}.function.arguments",
+        )
+        if mismatch is not None:
+            return mismatch
+    return None
+
+
+def _verify_message(
+    expected: ChatMessage,
+    actual: object,
+    index: int,
+) -> str | None:
+    path = f"body.messages[{index}]"
+    if not isinstance(actual, Mapping):
+        return f"{path} must be an object"
+    actual_mapping = cast(Mapping[str, object], actual)
+    if actual_mapping.get("role") != expected.role:
+        return f"{path}.role changed"
+    if expected.name is None:
+        if "name" in actual_mapping:
+            return f"{path}.name was added"
+    elif actual_mapping.get("name") != expected.name:
+        return f"{path}.name changed"
+
+    inline = [
+        part for part in expected.content if isinstance(part, TextPart | ImagePart)
+    ]
+    calls = [part for part in expected.content if isinstance(part, ToolCallPart)]
+    results = [part for part in expected.content if isinstance(part, ToolResultPart)]
+    allowed = {"role", "content"}
+    if expected.name is not None:
+        allowed.add("name")
+
+    if results:
+        if len(results) != 1 or calls or inline:
+            return f"{path} has an invalid tool-result source shape"
+        allowed.add("tool_call_id")
+        if set(actual_mapping) != allowed:
+            return f"{path} tool-result fields changed"
+        result = results[0]
+        if actual_mapping.get("tool_call_id") != result.call_id:
+            return f"{path}.tool_call_id changed"
+        return _verify_json_string(
+            actual_mapping.get("content"),
+            result.result,
+            f"{path}.content",
+        )
+
+    if calls:
+        allowed.add("tool_calls")
+    if set(actual_mapping) != allowed:
+        return f"{path} fields changed"
+    if calls:
+        mismatch = _verify_tool_calls(
+            calls,
+            actual_mapping.get("tool_calls"),
+            f"{path}.tool_calls",
+        )
+        if mismatch is not None:
+            return mismatch
+
+    if "content" not in actual_mapping:
+        return f"{path}.content is missing"
+    content = actual_mapping["content"]
+    if not inline:
+        return None if content is None else f"{path}.content changed"
+    if all(isinstance(part, TextPart) for part in inline):
+        expected_text = "".join(cast(TextPart, part).text for part in inline)
+        return None if content == expected_text else f"{path}.content changed"
+    if not isinstance(content, list):
+        return f"{path}.content must be a list"
+    if len(content) != len(inline):
+        return f"{path}.content item count changed"
+    for part_index, (source, item) in enumerate(zip(inline, content, strict=True)):
+        mismatch = _verify_inline_part(
+            source,
+            item,
+            f"{path}.content[{part_index}]",
+        )
+        if mismatch is not None:
+            return mismatch
+    return None
+
+
+@dataclass(frozen=True)
+class _ChatMessagesVerifier:
+    source: ChatInput
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source", deepcopy(self.source))
+
+    def verify(self, body: Mapping[str, JSONValue]) -> str | None:
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            return "body.messages must be a list"
+        if len(messages) != len(self.source.messages):
+            return "body.messages count changed"
+        for index, (expected, actual) in enumerate(
+            zip(self.source.messages, messages, strict=True)
+        ):
+            mismatch = _verify_message(expected, actual, index)
+            if mismatch is not None:
+                return mismatch
+        return None
 
 
 class OpenAIChatDialect:
@@ -516,12 +728,13 @@ class OpenAIChatDialect:
     def validate_request(
         self, req: Request, audit: RequestAudit, plan: RuntimePlanView
     ) -> None:
+        audit.require_matches_request(req)
         del plan
         reorders_message = isinstance(req.input, ChatInput) and any(
             _has_inline_content_after_tool_call(message)
             for message in req.input.messages
         )
-        for path in audit.active:
+        for path in audit.active_paths:
             if path == "dialect_options":
                 audit.noop(
                     path,
@@ -580,6 +793,11 @@ class OpenAIChatDialect:
                 req.structured_output.format not in {"json_object", "json_schema"}
             ):
                 audit.rejected(path, "unsupported Chat Completions response format")
+            elif path == "structured_output.name" and req.structured_output.name == "":
+                audit.rejected(
+                    path,
+                    "Chat Completions structured-output name must be non-empty",
+                )
             elif (
                 path
                 in {
@@ -595,7 +813,9 @@ class OpenAIChatDialect:
                 )
             elif path.startswith("dialect_options."):
                 key = path.removeprefix("dialect_options.")
-                if key in {"prefill", "prefix"}:
+                if not key:
+                    audit.rejected(path, "dialect option keys must be non-empty")
+                elif key in {"prefill", "prefix"}:
                     audit.rejected(path, _PREFILL_UNSUPPORTED_REASON)
                 elif key in _CANONICAL_WIRE_KEYS:
                     audit.rejected(
@@ -604,17 +824,18 @@ class OpenAIChatDialect:
                     )
 
     def prepare(self, req: Request, audit: RequestAudit) -> PreparedRequest:
+        audit.require_matches_request(req)
+        audit.raise_rejections()
         if not isinstance(req.input, ChatInput):
             raise TypeError("openai_chat requires ChatInput")
+        messages_verifier = _ChatMessagesVerifier(req.input)
         messages = [_message_to_wire(message) for message in req.input.messages]
         params: dict[str, Any] = {}
-        consumed: set[str] = set()
-        passthrough: dict[str, PassthroughObservation] = {}
+        active_paths = frozenset(audit.active_paths)
 
-        def consume(path: str) -> None:
-            if path in audit.active and path not in audit.decisions:
-                audit.consumed(path)
-                consumed.add(path)
+        def consume(path: str, *wire: WireEvidence) -> None:
+            if path in active_paths and path not in audit.decisions:
+                audit.consumed(path, *wire)
 
         for path in (
             "input.chat",
@@ -626,7 +847,7 @@ class OpenAIChatDialect:
             "input.modality.tool_call",
             "input.modality.tool_result",
         ):
-            consume(path)
+            consume(path, messages_verifier)
 
         sampling = req.sampling
         sampling_wire = {
@@ -641,29 +862,44 @@ class OpenAIChatDialect:
             path = f"sampling.{name}"
             if value is not None:
                 params[name] = value
-                consume(path)
+                consume(path, WireObservation((name,)))
         if sampling.stop is not None:
             params["stop"] = list(sampling.stop)
-            consume("sampling.stop")
+            consume(
+                "sampling.stop",
+                WireObservation(("stop",)),
+            )
         if sampling.n != 1:
             params["n"] = sampling.n
-            consume("sampling.n")
+            consume("sampling.n", WireObservation(("n",)))
 
         extra_body: dict[str, Any] = {}
         if sampling.top_k is not None:
             extra_body["top_k"] = sampling.top_k
-            consume("sampling.top_k")
+            consume(
+                "sampling.top_k",
+                WireObservation(("extra_body", "top_k")),
+            )
         if req.scoring.sampled_logprobs:
             params["logprobs"] = True
-            consume("scoring.sampled_logprobs")
+            consume(
+                "scoring.sampled_logprobs",
+                WireObservation(("logprobs",)),
+            )
         if req.scoring.top_logprobs > 0:
             params["top_logprobs"] = req.scoring.top_logprobs
-            consume("scoring.top_logprobs")
+            consume(
+                "scoring.top_logprobs",
+                WireObservation(("top_logprobs",)),
+            )
 
         reasoning = req.reasoning
         if reasoning.effort is not None:
             params["reasoning_effort"] = reasoning.effort
-            consume("reasoning.effort")
+            consume(
+                "reasoning.effort",
+                WireObservation(("reasoning_effort",)),
+            )
         if reasoning.summary == "none":
             # Current Chat Completions compatibility servers expose visible
             # reasoning independently of the request; summary is a documented
@@ -675,24 +911,51 @@ class OpenAIChatDialect:
 
         if req.tools.functions:
             params["tools"] = [dict(item) for item in req.tools.functions]
-            consume("tools.functions")
+            consume(
+                "tools.functions",
+                WireObservation(("tools",)),
+            )
         if req.tools.choice is not None:
             params["tool_choice"] = req.tools.choice
-            consume("tools.choice")
+            consume(
+                "tools.choice",
+                WireObservation(("tool_choice",)),
+            )
         if req.tools.parallel is not None:
             params["parallel_tool_calls"] = req.tools.parallel
-            consume("tools.parallel")
+            consume(
+                "tools.parallel",
+                WireObservation(("parallel_tool_calls",)),
+            )
 
         response_format = _response_format(req)
         if response_format is not None:
             params["response_format"] = response_format
-        for item in ("format", "schema", "name", "strict"):
-            consume(f"structured_output.{item}")
+            consume(
+                "structured_output.format",
+                WireObservation(("response_format", "type")),
+            )
+            if req.structured_output.format == "json_schema":
+                consume(
+                    "structured_output.schema",
+                    WireObservation(("response_format", "json_schema", "schema")),
+                )
+                consume(
+                    "structured_output.name",
+                    WireObservation(("response_format", "json_schema", "name")),
+                )
+                consume(
+                    "structured_output.strict",
+                    WireObservation(("response_format", "json_schema", "strict")),
+                )
 
         if req.scheduling.stream:
             params["stream"] = True
             params["stream_options"] = {"include_usage": True}
-            consume("scheduling.stream")
+            consume(
+                "scheduling.stream",
+                WireObservation(("stream",)),
+            )
         else:
             params["stream"] = False
 
@@ -703,16 +966,19 @@ class OpenAIChatDialect:
                     continue
                 extra_body[key] = option_value
                 audit.passthrough(path, "extra_body")
-                passthrough[path] = PassthroughObservation("extra_body", option_value)
         if extra_body:
             params["extra_body"] = extra_body
 
+        wire_body: dict[str, Any] = {
+            "model": self._requested_model_id,
+            "messages": messages,
+            **params,
+        }
+
         return PreparedRequest(
             operation="chat.completions.create",
-            body=params,
-            consumed_paths=frozenset(consumed),
-            passthrough=passthrough,
-            context=_ChatContext(messages, req),
+            body=wire_body,
+            context=_ChatContext(req),
         )
 
     def _structured_output(
@@ -880,13 +1146,20 @@ class OpenAIChatDialect:
         if not isinstance(prepared.context, _ChatContext):
             raise TypeError("openai_chat received an invalid prepared context")
         context = prepared.context
-        params = dict(prepared.body)
-        raw = await self._client.chat.completions.create(
-            model=self._requested_model_id,
-            messages=context.messages,
-            **params,
+        body = prepared.thaw_body()
+        stream = body.get("stream")
+        if not isinstance(stream, bool):
+            raise TypeError("openai_chat prepared body has an invalid stream flag")
+        params = thaw_json_mapping(
+            {
+                key: value
+                for key, value in body.items()
+                if key not in {"model", "messages"}
+            },
+            "chat request parameters",
         )
-        if params["stream"]:
+        raw = await self._client.chat.completions.create(**body)
+        if stream:
             return await self._lift_stream(raw, context.request, params)
         return self._lift(raw, context.request, params)
 

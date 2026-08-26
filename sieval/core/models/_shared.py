@@ -12,8 +12,46 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 
 import math
 from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Never, Self, cast
 
 from sieval.core.types import JSONValue
+
+
+class _FrozenJSONList(list[JSONValue]):
+    """List-shaped JSON value that rejects mutation while preserving equality."""
+
+    def _immutable(self, *args: object, **kwargs: object) -> Never:
+        del self, args, kwargs
+        raise TypeError("frozen JSON sequences do not support mutation")
+
+    def __copy__(self) -> Self:
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> Self:
+        del memo
+        return self
+
+
+# ``list`` exposes several mutation spellings, including in-place operators.
+# Install the same guard for all of them so nested JSON sequences remain
+# list-compatible without leaving a normal mutation path open.
+for _method_name in (
+    "append",
+    "clear",
+    "extend",
+    "insert",
+    "pop",
+    "remove",
+    "reverse",
+    "sort",
+    "__delitem__",
+    "__iadd__",
+    "__imul__",
+    "__setitem__",
+):
+    setattr(_FrozenJSONList, _method_name, _FrozenJSONList._immutable)
+del _method_name
 
 
 def copy_json_value(value: object, path: str) -> JSONValue:
@@ -42,6 +80,49 @@ def copy_json_value(value: object, path: str) -> JSONValue:
             for index, item in enumerate(value)
         ]
     raise TypeError(f"{path} contains non-JSON value {type(value).__name__}")
+
+
+def freeze_json_value(value: object, path: str) -> JSONValue:
+    """Detach and recursively freeze one JSON-compatible value."""
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} must not contain non-finite floats")
+        return value
+    if isinstance(value, Mapping):
+        return freeze_json_mapping(cast(Mapping[str, JSONValue], value), path)
+    if isinstance(value, (list, tuple)):
+        return _FrozenJSONList(
+            freeze_json_value(item, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        )
+    raise TypeError(f"{path} contains non-JSON value {type(value).__name__}")
+
+
+def freeze_json_mapping(
+    value: Mapping[str, JSONValue], path: str
+) -> Mapping[str, JSONValue]:
+    """Detach and recursively freeze a JSON mapping."""
+
+    copied: dict[str, JSONValue] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError(f"{path} keys must be strings")
+        copied[key] = freeze_json_value(item, f"{path}.{key}")
+    return MappingProxyType(copied)
+
+
+def thaw_json_mapping(
+    value: Mapping[str, JSONValue], path: str
+) -> dict[str, JSONValue]:
+    """Return a detached, mutable plain-JSON copy of a frozen mapping."""
+
+    thawed = copy_json_value(value, path)
+    if not isinstance(thawed, dict):
+        raise TypeError(f"{path} must be a mapping")
+    return cast(dict[str, JSONValue], thawed)
 
 
 def named_json_value(value: object, name: str) -> JSONValue:

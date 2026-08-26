@@ -14,10 +14,10 @@ from sieval.core.models.dialect import (
     OutputContract,
     OutputContractError,
     OutputRule,
-    PassthroughObservation,
     PreparedRequest,
     RequestAudit,
     RequestAuditError,
+    WireObservation,
     active_request_capabilities,
     active_request_leaves,
     active_response_channels,
@@ -78,6 +78,22 @@ def _all_rules(guarantee=Guarantee.BEST_EFFORT):
         for name, (role, _) in response_field_contract().items()
         if role == "channel"
     }
+
+
+@dataclass(frozen=True)
+class _MismatchVerifier:
+    message: str | None
+
+    def verify(self, body: Mapping[str, JSONValue]) -> str | None:
+        del body
+        return self.message
+
+
+@dataclass(frozen=True)
+class _BrokenVerifier:
+    def verify(self, body: Mapping[str, JSONValue]) -> str | None:
+        del body
+        raise RuntimeError("verifier bug")
 
 
 class TestLeafDerivation:
@@ -253,29 +269,57 @@ class TestRequestAudit:
     def test_omitted_leaf_fails(self):
         audit = RequestAudit({"input.completion": "x"})
         with pytest.raises(RequestAuditError, match="unaccounted"):
-            audit.finish(PreparedRequest("create", {}, frozenset(), {}))
+            audit.finish(PreparedRequest("create", {}))
 
     def test_double_accounting_fails(self):
         audit = RequestAudit({"input.completion": "x"})
-        audit.consumed("input.completion")
+        audit.consumed(
+            "input.completion",
+            WireObservation(("prompt",)),
+        )
         with pytest.raises(RequestAuditError, match="twice"):
             audit.noop("input.completion", "equivalent")
 
-    def test_unclaimed_prepared_consumption_fails(self):
-        audit = RequestAudit({"input.completion": "x"})
-        audit.noop("input.completion", "empty body is semantically equivalent")
-        prepared = PreparedRequest("create", {}, frozenset({"input.completion"}), {})
-        with pytest.raises(RequestAuditError, match="unclaimed"):
-            audit.finish(prepared)
+    def test_prepared_request_detaches_the_wire_body(self):
+        body = {"extra_body": {"stop_ids": [1, 2]}}
+
+        prepared = PreparedRequest("create", body)
+        body["extra_body"]["stop_ids"].append(3)
+
+        assert prepared.body == {"extra_body": {"stop_ids": [1, 2]}}
+
+    def test_prepared_request_recursively_freezes_the_wire_body(self):
+        prepared = PreparedRequest(
+            "create",
+            {"messages": [{"role": "user", "content": ["x"]}]},
+        )
+
+        messages = cast(Any, prepared.body["messages"])
+        with pytest.raises(TypeError, match="frozen JSON sequences"):
+            messages.append({"role": "user", "content": ["y"]})
+        with pytest.raises(TypeError):
+            messages[0]["role"] = "assistant"
+        with pytest.raises(TypeError, match="frozen JSON sequences"):
+            messages[0]["content"].append("y")
+
+    def test_prepared_request_thaws_one_detached_mutable_body(self):
+        prepared = PreparedRequest(
+            "create",
+            {"extra_body": {"stop_ids": [1, 2]}},
+        )
+
+        thawed = prepared.thaw_body()
+        cast(Any, thawed["extra_body"])["stop_ids"].append(3)
+
+        assert thawed == {"extra_body": {"stop_ids": [1, 2, 3]}}
+        assert prepared.body == {"extra_body": {"stop_ids": [1, 2]}}
 
     def test_passthrough_destination_and_value_are_verified(self):
         audit = RequestAudit({"dialect_options.min_p": 0.1})
         audit.passthrough("dialect_options.min_p", "extra_body")
         altered = PreparedRequest(
             "create",
-            {},
-            frozenset(),
-            {"dialect_options.min_p": PassthroughObservation("extra_body", 0.2)},
+            {"extra_body": {"min_p": 0.2}},
         )
         with pytest.raises(RequestAuditError, match="value changed"):
             audit.finish(altered)
@@ -288,9 +332,13 @@ class TestRequestAudit:
 
     def test_active_and_decisions_views_are_detached(self):
         audit = RequestAudit({"input.completion": "x"})
+        assert audit.active_paths == ("input.completion",)
         active = cast(dict[str, object], audit.active)
         active["extra"] = True
-        audit.consumed("input.completion")
+        audit.consumed(
+            "input.completion",
+            WireObservation(("prompt",)),
+        )
         decisions = cast(dict[str, object], audit.decisions)
         decisions.clear()
 
@@ -300,7 +348,10 @@ class TestRequestAudit:
     def test_decision_must_reference_an_active_leaf(self):
         audit = RequestAudit({"input.completion": "x"})
         with pytest.raises(RequestAuditError, match="inactive leaf"):
-            audit.consumed("sampling.temperature")
+            audit.consumed(
+                "sampling.temperature",
+                WireObservation(("temperature",)),
+            )
 
     def test_noop_requires_a_documented_reason(self):
         audit = RequestAudit({"input.completion": "x"})
@@ -312,26 +363,97 @@ class TestRequestAudit:
         with pytest.raises(RequestAuditError, match="only dialect options"):
             audit.passthrough("input.completion", "body")
 
-    def test_consumed_leaf_requires_prepared_observation(self):
+    def test_consumed_leaf_requires_wire_evidence(self):
         audit = RequestAudit({"input.completion": "x"})
-        audit.consumed("input.completion")
-        with pytest.raises(RequestAuditError, match="unobserved"):
-            audit.finish(PreparedRequest("create", {}, frozenset(), {}))
+        with pytest.raises(RequestAuditError, match="requires wire evidence"):
+            audit.consumed("input.completion")
+
+    def test_consumed_leaf_requires_its_observed_wire_field(self):
+        audit = RequestAudit({"sampling.temperature": 0.25})
+        audit.consumed(
+            "sampling.temperature",
+            WireObservation(("temperature",)),
+        )
+        prepared = PreparedRequest(
+            "create",
+            {},
+        )
+
+        with pytest.raises(RequestAuditError, match="wire field.*missing"):
+            audit.finish(prepared)
+
+    def test_consumed_leaf_requires_its_observed_wire_value(self):
+        audit = RequestAudit({"sampling.temperature": 0.25})
+        audit.consumed(
+            "sampling.temperature",
+            WireObservation(("temperature",)),
+        )
+        prepared = PreparedRequest(
+            "create",
+            {"temperature": 0.5},
+        )
+
+        with pytest.raises(RequestAuditError, match="wire value changed"):
+            audit.finish(prepared)
+
+    def test_wire_observation_uses_the_audited_source_value(self):
+        audit = RequestAudit({"structured_output.strict": False})
+        audit.consumed(
+            "structured_output.strict",
+            WireObservation(("response_format", "json_schema", "strict")),
+        )
+        prepared = PreparedRequest(
+            "create",
+            {"response_format": {"json_schema": {"strict": True}}},
+        )
+
+        with pytest.raises(RequestAuditError, match="wire value changed"):
+            audit.finish(prepared)
+
+    def test_wire_verifier_reports_only_declared_mismatches(self):
+        audit = RequestAudit({"input.chat": object()})
+        audit.consumed("input.chat", _MismatchVerifier("messages changed"))
+
+        with pytest.raises(RequestAuditError, match="messages changed"):
+            audit.finish(PreparedRequest("create", {"messages": []}))
+
+    def test_wire_verifier_implementation_errors_are_not_wrapped(self):
+        audit = RequestAudit({"input.chat": object()})
+        audit.consumed("input.chat", _BrokenVerifier())
+
+        with pytest.raises(RuntimeError, match="verifier bug"):
+            audit.finish(PreparedRequest("create", {"messages": []}))
+
+    def test_request_match_uses_a_detached_nested_snapshot(self):
+        nested = {"mode": "sent"}
+        req = Request(
+            input=CompletionInput("x"),
+            dialect_options=DialectOptions(
+                "openai_completions",
+                {"vendor": nested},
+            ),
+        )
+        audit = RequestAudit(active_request_leaves(req))
+        nested["mode"] = "changed"
+
+        with pytest.raises(
+            RequestAuditError,
+            match=r"changed=.*dialect_options.vendor",
+        ):
+            audit.require_matches_request(req)
 
     def test_passthrough_paths_and_destinations_must_match(self):
         audit = RequestAudit({"dialect_options.min_p": 0.1})
         audit.passthrough("dialect_options.min_p", "extra_body")
 
-        with pytest.raises(RequestAuditError, match="paths do not match"):
-            audit.finish(PreparedRequest("create", {}, frozenset(), {}))
+        with pytest.raises(RequestAuditError, match="wire field.*missing"):
+            audit.finish(PreparedRequest("create", {}))
 
         altered = PreparedRequest(
             "create",
-            {},
-            frozenset(),
-            {"dialect_options.min_p": PassthroughObservation("body", 0.1)},
+            {"body": {"min_p": 0.1}},
         )
-        with pytest.raises(RequestAuditError, match="destination changed"):
+        with pytest.raises(RequestAuditError, match="wire field.*missing"):
             audit.finish(altered)
 
 
