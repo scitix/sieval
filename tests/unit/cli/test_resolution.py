@@ -24,6 +24,7 @@ from sieval.cli.resolution import (
     resolve_class,
     resolve_config_model_types,
     resolve_key_function,
+    validate_configured_engine_id,
     validate_model_type_dialect,
 )
 from sieval.core.models.requirements import (
@@ -1105,6 +1106,14 @@ class TestNormalizeInlineModelBinding:
                 self._config(engine="unknown"),
             )
 
+    def test_case_variant_engine_is_rejected(self):
+        with pytest.raises(ValueError, match="differs only in case"):
+            normalize_inline_model_binding(
+                "t",
+                "grader",
+                self._config(engine="SGLang"),
+            )
+
     @pytest.mark.parametrize("service_role", [None, "", 7])
     def test_invalid_service_role_is_rejected(self, service_role):
         with pytest.raises(ValueError, match="service_role must be a non-empty string"):
@@ -1121,3 +1130,71 @@ class TestNormalizeInlineModelBinding:
         assert isinstance(nested_args, dict)
         assert "api_key" not in nested_args
         assert "sk-secret" not in binding.binding_id
+
+
+class TestValidateConfiguredEngineId:
+    """``engine`` is a free-form identity, minus the spellings we can name."""
+
+    @pytest.mark.parametrize(
+        "engine",
+        ["sglang", "vllm", "sglang-0.4.6", "vllm-nightly", "tgi", "my-gateway"],
+    )
+    def test_canonical_and_foreign_identities_pass_through(self, engine):
+        assert validate_configured_engine_id(engine, context="Model 'm'") == engine
+
+    @pytest.mark.parametrize(
+        ("engine", "canonical"),
+        [
+            ("SGLang", "sglang"),
+            ("SGLANG", "sglang"),
+            ("SGlAnG", "sglang"),
+            ("VLLM", "vllm"),
+            ("vLLM", "vllm"),
+            ("Vllm", "vllm"),
+        ],
+    )
+    def test_case_variant_of_a_managed_backend_is_rejected(self, engine, canonical):
+        with pytest.raises(ValueError, match="differs only in case") as excinfo:
+            validate_configured_engine_id(engine, context="Model 'm'")
+
+        # The message must name the spelling to write, not just the offence:
+        # engine-scoped guards and deployment_fingerprint match exactly.
+        assert repr(canonical) in str(excinfo.value)
+
+    def test_a_case_variant_is_not_silently_folded(self):
+        # Folding would change a recorded identity assertion behind the user's
+        # back and split deployment_fingerprint across spellings.
+        with pytest.raises(ValueError):
+            validate_configured_engine_id("SGLang", context="Model 'm'")
+
+    def test_reserved_and_non_string_rejections_still_apply(self):
+        with pytest.raises(ValueError, match="'unknown' is reserved"):
+            validate_configured_engine_id("unknown", context="Model 'm'")
+        for bad in (None, "", 7):
+            with pytest.raises(TypeError, match="non-empty string"):
+                validate_configured_engine_id(bad, context="Model 'm'")
+
+    def test_every_registered_backend_is_covered(self):
+        """Pin the probe to the registry so a new backend cannot slip past.
+
+        The rejection reads the backend registry rather than a local copy of
+        the name set; this fails if that ever regresses to a hardcoded list.
+        """
+        from sieval.infer.backends import _TRANSLATORS
+
+        assert _TRANSLATORS, "backend registry is empty; the probe proves nothing"
+        for name in _TRANSLATORS:
+            # The probe folds the candidate and looks the result up, so it only
+            # sees a backend whose registered id is already casefolded. Assert
+            # that rather than assume it: a mixed-case id would be silently
+            # uncovered, and this is the only place that would notice.
+            assert name == name.casefold(), (
+                f"backend id {name!r} is not casefolded, so "
+                "validate_configured_engine_id cannot detect its case variants"
+            )
+            assert validate_configured_engine_id(name, context="c") == name
+            variant = name.swapcase()
+            if variant == name:
+                continue  # no cased characters, so no variant exists to reject
+            with pytest.raises(ValueError, match="differs only in case"):
+                validate_configured_engine_id(variant, context="c")

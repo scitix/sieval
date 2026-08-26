@@ -39,6 +39,7 @@ from sieval.core.models.requirements import (
     aggregate_task_requirements,
 )
 from sieval.core.types import JSONValue
+from sieval.infer.backends import get_translator
 
 # Registry for simple name lookups
 DATASET_MODULE = "sieval.datasets"
@@ -126,12 +127,37 @@ def binding_resource_argument_paths(
     return tuple(sorted(paths))
 
 
+def _managed_engine_id_folding_to(engine: str) -> str | None:
+    """The managed backend id that ``engine`` differs from by case alone, if any.
+
+    Probes the backend registry through its public lookup rather than keeping a
+    second copy of the name set here, so a newly registered backend is covered
+    without editing this function.
+    """
+
+    folded = engine.casefold()
+    if folded == engine:
+        return None
+    try:
+        get_translator(folded)
+    except LookupError:
+        return None
+    return folded
+
+
 def validate_configured_engine_id(engine: object, *, context: str) -> str:
     """Validate a user-declared engine identity.
 
     ``"unknown"`` is reserved for the internal representation of an omitted
     engine assertion. Accepting it from configuration would make an explicit
     value indistinguishable from absence and bypass engine-specific checks.
+
+    A value differing from a managed backend id by case alone is rejected, not
+    folded: engine-scoped checks and ``deployment_fingerprint`` both match the
+    canonical spelling exactly, so ``SGLang`` would quietly forfeit the
+    SGLang-specific guards and fingerprint as a separate engine. Identities
+    that are genuinely someone else's (``sglang-0.4.6``, a vendor gateway)
+    stay free-form — only an exact case collision is a typo we can name.
     """
 
     if not isinstance(engine, str) or not engine:
@@ -140,6 +166,14 @@ def validate_configured_engine_id(engine: object, *, context: str) -> str:
         raise ValueError(
             f"{context}: 'engine' value 'unknown' is reserved; omit 'engine' "
             "when the deployment engine identity is unavailable"
+        )
+    canonical = _managed_engine_id_folding_to(engine)
+    if canonical is not None:
+        raise ValueError(
+            f"{context}: 'engine' value {engine!r} differs only in case from "
+            f"the managed backend id {canonical!r}; write {canonical!r}. "
+            "Engine-scoped checks and the deployment fingerprint both match "
+            "the canonical spelling exactly."
         )
     return engine
 
