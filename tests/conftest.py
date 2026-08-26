@@ -52,6 +52,7 @@ from sieval.core.models.dialect import (
     PreparedRequest,
     RequestAudit,
 )
+from sieval.core.models.dialect_registry import get_dialect_spec
 from sieval.core.models.gen_model import GenModel
 from sieval.core.models.ir import (
     ChatInput,
@@ -309,11 +310,10 @@ class HandlerTransport:
     """
 
     def __init__(self, handler, dialect_id: str):
-        if dialect_id not in {"openai_chat", "openai_completions"}:
-            raise ValueError(f"unsupported test dialect: {dialect_id!r}")
+        spec = get_dialect_spec(dialect_id)
         self._handler = handler
         self.dialect_id = dialect_id
-        self.connection_family = "openai_sdk"
+        self.connection_family = spec.connection_family
         self.output_contract = OutputContract(
             {
                 name: OutputRule(Guarantee.PRESENT_OR_ERROR)

@@ -20,7 +20,7 @@ import importlib
 import inspect
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -28,6 +28,7 @@ from typing import Any, Literal, cast
 from loguru import logger
 
 from sieval.core.models.deployment import BINDING_RESOURCE_KEYS
+from sieval.core.models.dialect_registry import get_dialect_spec
 from sieval.core.models.requirements import (
     AggregatedTaskRequirements,
     InlineModelBinding,
@@ -38,6 +39,7 @@ from sieval.core.models.requirements import (
     aggregate_task_requirements,
 )
 from sieval.core.types import JSONValue
+from sieval.infer.backends import get_translator
 
 # Registry for simple name lookups
 DATASET_MODULE = "sieval.datasets"
@@ -125,6 +127,53 @@ def binding_resource_argument_paths(
     return tuple(sorted(paths))
 
 
+def _managed_engine_id_folding_to(engine: str) -> str | None:
+    """The managed backend id ``engine`` case-folds onto, if any.
+
+    Probes the registry rather than copying the name set, so a newly registered
+    backend needs no edit here.
+    """
+
+    folded = engine.casefold()
+    if folded == engine:
+        return None
+    try:
+        get_translator(folded)
+    except LookupError:
+        return None
+    return folded
+
+
+def validate_configured_engine_id(engine: object, *, context: str) -> str:
+    """Validate a user-declared engine identity.
+
+    ``"unknown"`` is reserved for the internal representation of an omitted
+    engine assertion. Accepting it from configuration would make an explicit
+    value indistinguishable from absence and bypass engine-specific checks.
+
+    ``SGLang`` is rejected, not folded: engine-scoped checks and
+    ``deployment_fingerprint`` match the canonical spelling exactly, so folding
+    would rewrite a declared identity and a variant would fingerprint as its own
+    engine. Foreign ids (``sglang-0.4.6``, a vendor gateway) stay free-form.
+    """
+
+    if not isinstance(engine, str) or not engine:
+        raise TypeError(f"{context}: 'engine' must be a non-empty string")
+    if engine == "unknown":
+        raise ValueError(
+            f"{context}: 'engine' value 'unknown' is reserved; omit 'engine' "
+            "when the deployment engine identity is unavailable"
+        )
+    canonical = _managed_engine_id_folding_to(engine)
+    if canonical is not None:
+        raise ValueError(
+            f"{context}: 'engine' value {engine!r} differs only in case from "
+            f"the managed backend id {canonical!r}; write {canonical!r}. "
+            "Engine-scoped checks match the canonical spelling exactly."
+        )
+    return engine
+
+
 def _safe_inline_model_config(
     config: Mapping[str, object],
 ) -> dict[str, JSONValue]:
@@ -197,22 +246,35 @@ def normalize_inline_model_binding(
     ).encode()
     digest = hashlib.sha256(encoded).hexdigest()[:16]
     binding_id = f"inline:{task_name}:{role}:{digest}"
-    dialect = raw_config.get("dialect", "openai_chat")
-    if not isinstance(dialect, str) or not dialect:
+    dialect_declared = "dialect" in raw_config
+    dialect = raw_config.get("dialect")
+    if dialect_declared and (not isinstance(dialect, str) or not dialect):
         raise ValueError(
             f"Task '{task_name}' inline {role} dialect must be a non-empty string"
         )
-    if dialect == "sglang_legacy":
+    dialect_id = cast(str, dialect) if dialect_declared else None
+    if dialect_id == "sglang_legacy":
         raise ValueError(
             f"Task '{task_name}' inline {role} cannot use the named-model-only "
             "sglang_legacy bypass; configure a named model or use a bindable dialect"
         )
+    if "engine" in raw_config:
+        validate_configured_engine_id(
+            raw_config.get("engine"),
+            context=f"Inline binding '{binding_id}'",
+        )
+    if "service_role" in raw_config:
+        service_role = raw_config.get("service_role")
+        if not isinstance(service_role, str) or not service_role:
+            raise ValueError(
+                f"Inline binding '{binding_id}' service_role must be a non-empty string"
+            )
     return InlineModelBinding(
         binding_id=binding_id,
         root_deployment_key=f"deployment:{binding_id}",
         requested_model_id=requested_model_id,
         config=safe_config,
-        dialect_id=dialect,
+        dialect_id=dialect_id,
     )
 
 
@@ -539,6 +601,83 @@ def derive_model_type(
     return "chat"
 
 
+def validate_model_type_dialect(
+    model_name: str,
+    model_type: Literal["chat", "gen"],
+    dialect_id: str,
+) -> None:
+    """Require the single legacy model kind to match the dialect input contract.
+
+    ``derive_model_type`` remains the sole compatibility-wrapper authority. A
+    dialect can validate that result, but it cannot silently select a different
+    wrapper kind.
+    """
+
+    if not isinstance(model_name, str) or not model_name:
+        raise TypeError("model_name must be a non-empty string")
+    if model_type not in ("chat", "gen"):
+        raise ValueError(f"invalid model type {model_type!r}")
+    if not isinstance(dialect_id, str) or not dialect_id:
+        raise ValueError("dialect_id must be a non-empty string")
+
+    expected_input = "chat" if model_type == "chat" else "completion"
+    # TODO(PR-5): remove this pseudo-spec branch when the registered
+    # sglang_native binder replaces the temporary legacy bypass.
+    accepted_inputs = (
+        ("completion",)
+        if dialect_id == "sglang_legacy"
+        else get_dialect_spec(dialect_id).input_kinds
+    )
+    if expected_input not in accepted_inputs:
+        accepted = ", ".join(repr(item) for item in accepted_inputs)
+        raise ValueError(
+            f"Model '{model_name}' resolves legacy type {model_type!r} "
+            f"({expected_input} input), but dialect {dialect_id!r} accepts "
+            f"only {accepted}. The model type and dialect input contract "
+            "must agree."
+        )
+
+
+def validate_omitted_dialect_migration(
+    model_name: str,
+    model_type: Literal["chat", "gen"],
+    engine_id: object | None,
+    *,
+    dialect_declared: bool,
+) -> None:
+    """Reject an omitted dialect where the old selector changed wire protocol.
+
+    Before engine identity and request protocol were separated, ``engine:
+    sglang`` selected the native ``/generate`` compatibility path for ``gen``
+    models. Defaulting that config to OpenAI Completions would silently change
+    its wire protocol, so require the migration choice to be explicit.
+    """
+
+    if dialect_declared or model_type != "gen" or engine_id != "sglang":
+        return
+    raise ValueError(
+        f"Model '{model_name}' declares engine: sglang with type: gen but omits "
+        "dialect. Engine identity no longer selects a request protocol; set "
+        "dialect: sglang_legacy to preserve the native /generate path, or set "
+        "dialect: openai_completions to migrate explicitly."
+    )
+
+
+def finalize_inline_model_binding(
+    binding: InlineModelBinding,
+    model_type: Literal["chat", "gen"],
+) -> InlineModelBinding:
+    """Resolve an omitted inline dialect from the frozen model-kind decision."""
+
+    if not isinstance(binding, InlineModelBinding):
+        raise TypeError("binding must be an InlineModelBinding")
+    dialect_id = binding.dialect_id
+    if dialect_id is None:
+        dialect_id = "openai_chat" if model_type == "chat" else "openai_completions"
+    validate_model_type_dialect(binding.binding_id, model_type, dialect_id)
+    return replace(binding, dialect_id=dialect_id)
+
+
 @dataclass(frozen=True)
 class ConfigModelTypeResolution:
     """Legacy model kinds derived from normalized task requirement hooks."""
@@ -584,14 +723,30 @@ def resolve_config_model_types(
     chains = {name: _config_model_chain(name, models) for name in models}
     bindings = {name: _config_named_binding(name, chains[name]) for name in models}
     records: list[TaskModelRequirement] = []
+    roots_with_unresolved_task_classes: set[str] = set()
+
+    def mark_unresolved_task_root(
+        task_name: str,
+        task_config: Mapping[str, Any],
+    ) -> None:
+        """Remember where missing task evidence could change model-kind choice."""
+
+        try:
+            model_name = _config_task_model_name(task_name, task_config, models)
+        except ValueError:
+            # Normal configuration validation owns malformed/missing references.
+            return
+        roots_with_unresolved_task_classes.add(bindings[model_name].root_deployment_key)
 
     for task_name, task_config in tasks.items():
         class_spec = task_config.get("class")
         if not isinstance(class_spec, str) or not class_spec:
+            mark_unresolved_task_root(task_name, task_config)
             continue
         try:
             task_class = resolve_task_class(class_spec)
         except (ImportError, AttributeError):
+            mark_unresolved_task_root(task_name, task_config)
             continue
 
         model_name = _config_task_model_name(task_name, task_config, models)
@@ -635,8 +790,44 @@ def resolve_config_model_types(
         )
         model_type = derive_model_type(root_name, explicit_type, requirements)
         by_root[root_key] = model_type
+        type_has_independent_evidence = explicit_type is not None or bool(
+            requirements.input
+        )
         for binding in root_bindings:
+            chain = chains[binding.config_name]
+            dialect_declared = any("dialect" in config for _, config in chain)
+            dialect_id = _config_merged_model_value(chain, "dialect")
+            if dialect_declared:
+                if not isinstance(dialect_id, str) or not dialect_id:
+                    raise ValueError(
+                        f"Model '{binding.config_name}' dialect must be a "
+                        "non-empty string"
+                    )
+                if (
+                    type_has_independent_evidence
+                    or root_key not in roots_with_unresolved_task_classes
+                ):
+                    validate_model_type_dialect(
+                        binding.config_name,
+                        model_type,
+                        dialect_id,
+                    )
             by_config[binding.config_name] = model_type
+
+    inline_bindings = {
+        record.binding.binding_id: record.binding
+        for record in records
+        if isinstance(record.binding, InlineModelBinding)
+    }
+    for binding_id, binding in inline_bindings.items():
+        requirements = aggregate_task_requirements(
+            record
+            for record in records
+            if isinstance(record.binding, InlineModelBinding)
+            and record.binding.binding_id == binding_id
+        )
+        model_type = derive_model_type(binding_id, None, requirements)
+        finalize_inline_model_binding(binding, model_type)
 
     return ConfigModelTypeResolution(by_root, by_config)
 
@@ -674,6 +865,16 @@ def _config_model_chain(
     visit(model_name)
     chain.reverse()
     return tuple(chain)
+
+
+def _config_merged_model_value(
+    chain: tuple[tuple[str, dict[str, Any]], ...], field: str
+) -> object | None:
+    value: object | None = None
+    for _, config in chain:
+        if field in config:
+            value = config[field]
+    return value
 
 
 def _config_named_binding(

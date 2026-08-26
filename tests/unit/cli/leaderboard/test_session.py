@@ -1677,6 +1677,41 @@ class TestPrelaunchReconciliation:
                 ),
             )
 
+    class NoInputTask:
+        @classmethod
+        def model_requirements_for(cls, context):
+            return (
+                TaskModelRequirement(
+                    role="candidate",
+                    binding=context.model_bindings["candidate"],
+                    requires=TaskRequirements(),
+                    source_task="no_input",
+                ),
+            )
+
+    class NoInputJudgeTask:
+        model_type = "chat"
+
+        def __init__(self, *, grader=None, models_by_role=None):
+            del grader, models_by_role
+
+        @classmethod
+        def model_requirements_for(cls, context):
+            return (
+                TaskModelRequirement(
+                    role="candidate",
+                    binding=context.model_bindings["candidate"],
+                    requires=TaskRequirements(input=InputKind.CHAT),
+                    source_task="no_input_judge_candidate",
+                ),
+                TaskModelRequirement(
+                    role="grader",
+                    binding=context.model_bindings["grader"],
+                    requires=TaskRequirements(),
+                    source_task="no_input_judge_grader",
+                ),
+            )
+
     class JudgeTask:
         model_type = "chat"
 
@@ -2174,6 +2209,162 @@ tasks:
         ):
             session.prepare_prelaunch()
 
+    def test_type_and_dialect_conflict_fails_before_model_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  responses:
+    name: org/model
+    type: gen
+    dialect: openai_responses
+tasks:
+  no_input:
+    class: fake.NoInputTask
+    dataset:
+      class: fake.Dataset
+    model: responses
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.NoInputTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(
+                ValueError,
+                match=r"legacy type 'gen'.*openai_responses.*must agree",
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
+
+    def test_inline_dialect_input_conflict_fails_before_model_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+    type: chat
+    dialect: openai_chat
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: org/grader
+        dialect: openai_completions
+        api_base: https://grader.example/v1
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(
+                ValueError,
+                match=r"inline:judged:grader:.*legacy type 'chat'.*must agree",
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
+
+    def test_explicit_null_dialect_is_rejected_before_model_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: chat
+    dialect: null
+tasks:
+  no_input:
+    class: fake.NoInputTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.NoInputTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(ValueError, match=r"m.*dialect must be a non-empty string"),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
+
+    def test_unused_derived_dialect_must_match_shared_root_type_before_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  base:
+    name: org/model
+    type: chat
+  completion_view:
+    base: base
+    dialect: openai_completions
+tasks:
+  chat:
+    class: fake.ChatTask
+    dataset:
+      class: fake.Dataset
+    model: base
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.ChatTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(
+                ValueError,
+                match=(r"completion_view.*legacy type 'chat'.*openai_completions"),
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
+
     def test_sibling_derived_kinds_conflict_at_shared_root(
         self, tmp_path: Path
     ) -> None:
@@ -2281,6 +2472,260 @@ tasks:
         assert deployment.engine_source == "unknown"
         assert deployment.deployment_id is None
         assert deployment.plan is None
+
+    def test_native_external_dialect_requires_explicit_api_base(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: claude
+    type: chat
+    dialect: anthropic_messages
+tasks: {}
+""",
+        )
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://wrong-family.example/v1")
+        session = EvalSession(config_path)
+
+        with pytest.raises(
+            ValueError,
+            match=r"anthropic_messages.*requires an explicit api_base",
+        ):
+            session.prepare_prelaunch()
+
+    def test_managed_native_dialect_does_not_require_external_api_base(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: claude
+    type: chat
+    dialect: anthropic_messages
+    infer:
+      backend: vllm
+      checkpoint: /models/claude
+tasks: {}
+""",
+        )
+        raw_plan = {
+            "backend": "vllm",
+            "checkpoint": "/models/claude",
+            "assignments": [],
+        }
+        session = EvalSession(config_path, infer_plans={"m": raw_plan})
+        models_cfg = session._get_named_config_map("models")
+        binding = session._finalize_named_binding(
+            session._provisional_named_binding("m", models_cfg),
+            "chat",
+            models_cfg,
+        )
+
+        deployment_input = session._deployment_input_for(binding, models_cfg)
+
+        assert deployment_input.engine_id == "vllm"
+        assert deployment_input.plan is not None
+
+    def test_explicit_engine_assertion_must_match_deployment_plan(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: sglang
+    dialect: openai_completions
+    infer:
+      backend: vllm
+      checkpoint: /models/org-model
+tasks: {}
+""",
+        )
+        raw_plan = {
+            "backend": "vllm",
+            "checkpoint": "/models/org-model",
+            "assignments": [],
+        }
+        session = EvalSession(config_path, infer_plans={"m": raw_plan})
+
+        with pytest.raises(
+            ValueError,
+            match=r"engine assertion 'sglang'.*deployment engine 'vllm'",
+        ):
+            session.prepare_prelaunch()
+
+    def test_infer_backend_is_not_a_remote_engine_or_dialect_selector(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    infer:
+      backend: sglang
+      checkpoint: /models/org-model
+tasks: {}
+""",
+        )
+        session = EvalSession(config_path)
+        models_cfg = session._get_named_config_map("models")
+        binding = session._finalize_named_binding(
+            session._provisional_named_binding("m", models_cfg),
+            "gen",
+            models_cfg,
+        )
+
+        assert binding.dialect_id == "openai_completions"
+        deployment_input = session._deployment_input_for(binding, models_cfg)
+        assert deployment_input.engine_id == "unknown"
+
+    def test_managed_sglang_engine_does_not_select_legacy_dialect(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    infer:
+      backend: sglang
+      checkpoint: /models/org-model
+tasks: {}
+""",
+        )
+        raw_plan = {
+            "backend": "sglang",
+            "checkpoint": "/models/org-model",
+            "assignments": [],
+        }
+        session = EvalSession(config_path, infer_plans={"m": raw_plan})
+        models_cfg = session._get_named_config_map("models")
+        binding = session._finalize_named_binding(
+            session._provisional_named_binding("m", models_cfg),
+            "gen",
+            models_cfg,
+        )
+
+        assert binding.dialect_id == "openai_completions"
+        deployment_input = session._deployment_input_for(binding, models_cfg)
+        assert deployment_input.engine_id == "sglang"
+
+    def test_remote_engine_identity_is_independent_of_chat_dialect(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: chat
+    engine: hosted-vendor
+    dialect: openai_chat
+tasks: {}
+""",
+        )
+        session = EvalSession(config_path)
+
+        session.prepare_prelaunch()
+
+        deployment_input = session._prelaunch_deployment_inputs["model:m"]
+        assert deployment_input.engine_id == "hosted-vendor"
+        deployment = session._configured_deployment_for(
+            session._normalized_model_bindings["model:m"],
+            deployment_input,
+            session._get_named_config_map("models"),
+        )
+        assert deployment.engine.engine_id == "hosted-vendor"
+        assert deployment.engine_source == "config"
+
+    def test_reserved_unknown_engine_is_rejected_before_reconcile_or_client_io(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: unknown
+    dialect: sglang_legacy
+tasks: {}
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch("sieval.cli.leaderboard.session.reconcile") as reconcile_mock,
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(ValueError, match="'unknown' is reserved"),
+        ):
+            session.prepare_prelaunch()
+
+        reconcile_mock.assert_not_called()
+        client_factory.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("field", "error_type", "expected"),
+        [
+            ("engine", TypeError, "'engine' must be a non-empty string"),
+            ("service_role", ValueError, "service_role must be a non-empty string"),
+        ],
+    )
+    def test_explicit_null_binding_identity_fields_are_not_treated_as_omitted(
+        self,
+        tmp_path: Path,
+        field: str,
+        error_type: type[Exception],
+        expected: str,
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  m:
+    name: org/model
+    type: chat
+    {field}: null
+tasks:
+  no_input:
+    class: fake.NoInputTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.NoInputTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+            pytest.raises(error_type, match=expected),
+        ):
+            session.prepare_prelaunch()
+
+        client_factory.assert_not_called()
 
     def test_infer_overrides_are_projected_as_explicit_engine_parameters(
         self, tmp_path: Path
@@ -2559,13 +3004,13 @@ tasks:
                 "sieval.cli.leaderboard.session.resolve_task_class",
                 return_value=self.CompletionTask,
             ),
-            pytest.raises(ValueError, match="input_kind_unsupported"),
+            pytest.raises(ValueError, match=r"legacy type 'gen'.*must agree"),
         ):
             await session._prepare_execution()
 
         setup_models.assert_not_called()
 
-    def test_explicit_sglang_without_dialect_stays_named_legacy_bypass(
+    def test_sglang_gen_without_dialect_fails_before_reconcile(
         self, tmp_path: Path
     ) -> None:
         config_path = self._config(
@@ -2576,6 +3021,47 @@ models:
     name: org/model
     type: gen
     engine: sglang
+tasks:
+  completion:
+    class: fake.CompletionTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.CompletionTask,
+            ),
+            patch("sieval.cli.leaderboard.session.reconcile") as reconcile_call,
+            pytest.raises(
+                ValueError,
+                match=(
+                    r"engine: sglang.*omits dialect.*"
+                    r"sglang_legacy.*openai_completions"
+                ),
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        reconcile_call.assert_not_called()
+
+    @pytest.mark.parametrize("engine", ["sglagn", "vendor-engine"])
+    def test_engine_identity_does_not_select_request_dialect(
+        self, tmp_path: Path, engine: str
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: {engine}
+    api_base: https://provider.example/v1
 tasks:
   completion:
     class: fake.CompletionTask
@@ -2590,16 +3076,16 @@ tasks:
             "sieval.cli.leaderboard.session.resolve_task_class",
             return_value=self.CompletionTask,
         ):
-            session._setup_prelaunch_reconciliation()
+            session.prepare_prelaunch()
 
-        assert session._legacy_bypass_bindings == {"model:m"}
+        assert not session._legacy_bypass_bindings
         assert session._normalized_model_bindings["model:m"].dialect_id == (
-            "sglang_legacy"
+            "openai_completions"
         )
         assert session.prelaunch_reconcile_result is not None
-        assert not session.prelaunch_reconcile_result.binding_plans
+        assert "model:m" in session.prelaunch_reconcile_result.binding_plans
 
-    def test_explicit_sglang_uses_native_dialect_when_binder_is_active(
+    def test_sglang_completions_rejects_input_scoring_before_reconcile(
         self, tmp_path: Path
     ) -> None:
         config_path = self._config(
@@ -2610,6 +3096,51 @@ models:
     name: org/model
     type: gen
     engine: sglang
+    dialect: openai_completions
+    api_base: https://sglang.example/v1
+tasks:
+  score:
+    class: fake.CompletionScoringTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.CompletionScoringTask,
+            ),
+            patch("sieval.cli.leaderboard.session.reconcile") as reconcile_call,
+            pytest.raises(
+                ValueError,
+                match=(
+                    r"engine 'sglang'.*openai_completions.*"
+                    r"rejects echo=True with logprobs.*dialect: sglang_legacy"
+                ),
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        reconcile_call.assert_not_called()
+
+    def test_sglang_completions_rejects_declared_input_scoring_before_reconcile(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: sglang
+    dialect: openai_completions
+    api_base: https://sglang.example/v1
+    capabilities:
+      input_scoring: true
 tasks:
   completion:
     class: fake.CompletionTask
@@ -2619,18 +3150,185 @@ tasks:
 """,
         )
         session = EvalSession(config_path)
-        models_cfg = session._get_named_config_map("models")
-        provisional = session._provisional_named_binding("m", models_cfg)
-        assert provisional.dialect_id is None
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.CompletionTask,
+            ),
+            patch("sieval.cli.leaderboard.session.reconcile") as reconcile_call,
+            pytest.raises(
+                ValueError,
+                match=r"model\.capabilities\.input_scoring.*engine 'sglang'",
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        reconcile_call.assert_not_called()
+
+    def test_sglang_completions_rejects_echo_infer_arg_before_reconcile(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: sglang
+    dialect: openai_completions
+    api_base: https://sglang.example/v1
+tasks:
+  completion:
+    class: fake.CompletionTask
+    dataset:
+      class: fake.Dataset
+    model: m
+    infer_args:
+      echo: true
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.CompletionTask,
+            ),
+            patch("sieval.cli.leaderboard.session.reconcile") as reconcile_call,
+            pytest.raises(
+                ValueError,
+                match=r"tasks\.completion\.infer_args\.echo.*engine 'sglang'",
+            ),
+        ):
+            session.prepare_prelaunch()
+
+        reconcile_call.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "capability_block",
+        [
+            "",
+            "    capabilities:\n      input_scoring: false\n",
+        ],
+        ids=["omitted", "explicitly-disabled"],
+    )
+    def test_sglang_completions_without_input_scoring_reconciles(
+        self, tmp_path: Path, capability_block: str
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: sglang
+    dialect: openai_completions
+    api_base: https://sglang.example/v1
+{capability_block}tasks:
+  completion:
+    class: fake.CompletionTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        session = EvalSession(config_path)
 
         with patch(
-            "sieval.cli.leaderboard.session.dialect_is_bindable",
-            return_value=True,
-        ) as bindable:
-            binding = session._finalize_named_binding(provisional, "gen", models_cfg)
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=self.CompletionTask,
+        ):
+            result = session.prepare_prelaunch()
 
-        bindable.assert_called_once_with("sglang_native")
-        assert binding.dialect_id == "sglang_native"
+        assert result.is_valid
+        assert result.binding_plans["model:m"].dialect_id == "openai_completions"
+
+    def test_managed_sglang_completions_rejects_input_scoring(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    infer:
+      backend: sglang
+      checkpoint: /models/org-model
+tasks:
+  score:
+    class: fake.CompletionScoringTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        raw_plan = {
+            "backend": "sglang",
+            "checkpoint": "/models/org-model",
+            "assignments": [],
+        }
+        session = EvalSession(config_path, infer_plans={"m": raw_plan})
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.CompletionScoringTask,
+            ),
+            pytest.raises(ValueError, match=r"engine 'sglang'.*input_scoring"),
+        ):
+            session.prepare_prelaunch()
+
+    def test_realized_sglang_completions_rejects_input_scoring_postlaunch(
+        self, tmp_path: Path
+    ) -> None:
+        from sieval.core.models import Deployment, Engine, ServingFacts
+
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  m:
+    name: org/model
+    type: gen
+    dialect: openai_completions
+tasks:
+  score:
+    class: fake.CompletionScoringTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        realized = Deployment(
+            deployment_id=None,
+            plan=None,
+            engine=Engine("sglang"),
+            engine_source="deployment",
+            api_base="http://127.0.0.1:30000/v1",
+            endpoints={},
+            topology=None,
+            metrics_url=None,
+            facts=ServingFacts(),
+        )
+        session = EvalSession(config_path, realized_deployments={"m": realized})
+
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=self.CompletionScoringTask,
+        ):
+            session.prepare_prelaunch()
+            with (
+                patch("sieval.cli.leaderboard.session.reconcile") as reconcile_call,
+                pytest.raises(ValueError, match=r"engine 'sglang'.*input_scoring"),
+            ):
+                session._setup_postlaunch_reconciliation()
+
+        reconcile_call.assert_not_called()
 
     def test_sglang_legacy_bypass_rejects_capability_declarations(
         self, tmp_path: Path
@@ -2643,6 +3341,7 @@ models:
     name: org/model
     type: gen
     engine: sglang
+    dialect: sglang_legacy
     capabilities:
       input_scoring: true
 tasks:
@@ -3751,6 +4450,67 @@ tasks:
             close.assert_awaited_once()
 
     @pytest.mark.anyio
+    async def test_zero_evidence_inline_role_uses_frozen_chat_type(
+        self, tmp_path: Path
+    ) -> None:
+        from sieval.core.models import ChatModel
+
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+    api_base: https://candidate.example/v1
+    api_key: candidate-key
+tasks:
+  judged:
+    class: fake.NoInputJudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: org/grader
+        api_base: https://grader.example/v1
+        api_key: grader-key
+""",
+        )
+        session = EvalSession(config_path)
+        closes = [AsyncMock(), AsyncMock()]
+        connections = [types.SimpleNamespace(close=close) for close in closes]
+
+        try:
+            with (
+                patch(
+                    "sieval.cli.leaderboard.session.resolve_task_class",
+                    return_value=self.NoInputJudgeTask,
+                ),
+                patch(
+                    "sieval.core.models.connection_factory.AsyncOpenAI",
+                    side_effect=connections,
+                ),
+            ):
+                session._setup_prelaunch_reconciliation()
+                session._setup_postlaunch_reconciliation()
+                session._setup_models()
+
+            binding = session._task_requirement_contexts["judged"].model_bindings[
+                "grader"
+            ]
+            assert not session._aggregated_requirements[binding.binding_id].input
+            assert session._model_types_by_binding[binding.binding_id] == "chat"
+            assert binding.dialect_id == "openai_chat"
+            assert isinstance(
+                session._bound_task_role_models["judged"]["grader"], ChatModel
+            )
+        finally:
+            await session._close_owned_model_resources()
+
+        for close in closes:
+            close.assert_awaited_once()
+
+    @pytest.mark.anyio
     async def test_postlaunch_inline_grader_gets_own_pool_and_role_binding(
         self, tmp_path: Path, loguru_caplog
     ) -> None:
@@ -3818,6 +4578,130 @@ tasks:
         await session._close_owned_model_resources()
         for close in closes:
             close.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_zero_evidence_external_role_uses_frozen_chat_type(
+        self, tmp_path: Path
+    ) -> None:
+        from sieval.core.models import ChatModel
+
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+    api_base: https://candidate.example/v1
+    api_key: candidate-key
+tasks:
+  judged:
+    class: fake.NoInputJudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args: {}
+""",
+        )
+        external = ChatModel(
+            model="org/external-grader",
+            api_base="https://external.example/v1",
+            api_key="external-key",
+        )
+        session = EvalSession(config_path)
+        task = cast(dict, cast(dict, session.config["tasks"])["judged"])
+        cast(dict, task["args"])["grader"] = external
+        candidate_close = AsyncMock()
+
+        try:
+            with (
+                patch(
+                    "sieval.cli.leaderboard.session.resolve_task_class",
+                    return_value=self.NoInputJudgeTask,
+                ),
+                patch(
+                    "sieval.core.models.connection_factory.AsyncOpenAI",
+                    return_value=types.SimpleNamespace(close=candidate_close),
+                ),
+            ):
+                session._setup_prelaunch_reconciliation()
+                session._setup_postlaunch_reconciliation()
+                session._setup_models()
+
+            binding = session._task_requirement_contexts["judged"].model_bindings[
+                "grader"
+            ]
+            assert not session._aggregated_requirements[binding.binding_id].input
+            assert session._model_types_by_binding[binding.binding_id] == "chat"
+            rebound = session._bound_task_role_models["judged"]["grader"]
+            assert isinstance(rebound, ChatModel)
+            assert rebound.pool is external.pool
+        finally:
+            await session._close_owned_model_resources()
+            await external.aclose()
+
+        candidate_close.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_zero_evidence_external_gen_role_preserves_explicit_type(
+        self, tmp_path: Path
+    ) -> None:
+        from sieval.core.models import GenModel
+
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+    api_base: https://candidate.example/v1
+    api_key: candidate-key
+tasks:
+  judged:
+    class: fake.NoInputJudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args: {}
+""",
+        )
+        external = GenModel(
+            model="org/external-grader",
+            api_base="https://external.example/v1",
+            api_key="external-key",
+        )
+        session = EvalSession(config_path)
+        task = cast(dict, cast(dict, session.config["tasks"])["judged"])
+        cast(dict, task["args"])["grader"] = external
+        candidate_close = AsyncMock()
+
+        try:
+            with (
+                patch(
+                    "sieval.cli.leaderboard.session.resolve_task_class",
+                    return_value=self.NoInputJudgeTask,
+                ),
+                patch(
+                    "sieval.core.models.connection_factory.AsyncOpenAI",
+                    return_value=types.SimpleNamespace(close=candidate_close),
+                ),
+            ):
+                session._setup_prelaunch_reconciliation()
+                session._setup_postlaunch_reconciliation()
+                session._setup_models()
+
+            binding = session._task_requirement_contexts["judged"].model_bindings[
+                "grader"
+            ]
+            assert not session._aggregated_requirements[binding.binding_id].input
+            assert session._model_types_by_binding[binding.binding_id] == "gen"
+            rebound = session._bound_task_role_models["judged"]["grader"]
+            assert isinstance(rebound, GenModel)
+            assert rebound.pool is external.pool
+        finally:
+            await session._close_owned_model_resources()
+            await external.aclose()
+
+        candidate_close.assert_awaited_once()
 
     @pytest.mark.anyio
     async def test_external_grader_pool_is_borrowed_not_closed(
@@ -4307,6 +5191,7 @@ models:
     name: org/model
     type: gen
     engine: sglang
+    dialect: sglang_legacy
     api_base: https://sglang.example/v1
     api_key: local
 tasks:
@@ -4367,6 +5252,7 @@ models:
     name: org/model
     type: gen
     engine: sglang
+    dialect: sglang_legacy
     api_base: https://sglang.example/v1
     api_key: local
 tasks:
@@ -4447,6 +5333,7 @@ models:
     name: org/model
     type: gen
     engine: sglang
+    dialect: sglang_legacy
     api_base: https://sglang.example/v1
     api_key: local
     args:
@@ -4524,6 +5411,7 @@ models:
     name: org/model
     type: gen
     engine: sglang
+    dialect: sglang_legacy
     api_base: https://sglang.example/v1
     api_key: local
 datasets:

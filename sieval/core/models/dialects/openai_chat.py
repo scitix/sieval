@@ -151,6 +151,7 @@ CAPABILITY_DECISIONS: Mapping[str, DialectCapabilityDecision] = MappingProxyType
                 "multimodal_input",
                 request_leaves=(
                     "input.modality.image",
+                    "input.modality.image.detail",
                     "input.modality.image.media_type",
                 ),
                 _config_validator=_validate_multimodal_config,
@@ -458,6 +459,18 @@ def _message_to_wire(message: ChatMessage) -> dict[str, Any]:
     return wire
 
 
+def _has_inline_content_after_tool_call(message: ChatMessage) -> bool:
+    """Whether Chat Completions would have to reorder this message."""
+
+    saw_call = False
+    for part in message.content:
+        if isinstance(part, ToolCallPart):
+            saw_call = True
+        elif saw_call and isinstance(part, TextPart | ImagePart):
+            return True
+    return False
+
+
 def _response_format(req: Request) -> dict[str, Any] | None:
     params = req.structured_output
     if params.format is None:
@@ -504,11 +517,21 @@ class OpenAIChatDialect:
         self, req: Request, audit: RequestAudit, plan: RuntimePlanView
     ) -> None:
         del plan
+        reorders_message = isinstance(req.input, ChatInput) and any(
+            _has_inline_content_after_tool_call(message)
+            for message in req.input.messages
+        )
         for path in audit.active:
             if path == "dialect_options":
                 audit.noop(
                     path,
                     "an empty matching dialect-options block has no effect",
+                )
+            elif path == "input.chat" and reorders_message:
+                audit.rejected(
+                    path,
+                    "Chat Completions cannot preserve inline content that follows "
+                    "a tool call in the same ordered IR message",
                 )
             elif path == "input.completion" or path == "input.completion.suffix":
                 audit.rejected(path, "openai_chat requires ChatInput")
@@ -595,8 +618,10 @@ class OpenAIChatDialect:
 
         for path in (
             "input.chat",
+            "input.chat.message.name",
             "input.modality.text",
             "input.modality.image",
+            "input.modality.image.detail",
             "input.modality.image.media_type",
             "input.modality.tool_call",
             "input.modality.tool_result",

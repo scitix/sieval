@@ -230,25 +230,43 @@ class TestValidateModels:
         assert not result.ok
         assert any("type" in e for e in result.errors)
 
-    def test_invalid_engine_value(self):
+    @pytest.mark.parametrize("engine", [None, "", 7, ["vllm"]])
+    def test_invalid_engine_value(self, engine):
         cfg = {
-            "models": {"m": {"name": "x", "type": "gen", "engine": "bogus"}},
+            "models": {"m": {"name": "x", "type": "gen", "engine": engine}},
             "datasets": {},
             "tasks": {},
         }
         result = validate_eval_config(cfg)
         assert not result.ok
-        assert any("engine must be" in e for e in result.errors)
+        assert any("'engine' must be a non-empty string" in e for e in result.errors)
 
-    def test_engine_on_chat_model(self):
+    def test_internal_unknown_engine_value_is_rejected(self):
         cfg = {
-            "models": {"m": {"name": "x", "type": "chat", "engine": "sglang"}},
+            "models": {
+                "m": {
+                    "name": "x",
+                    "type": "gen",
+                    "engine": "unknown",
+                }
+            },
+            "datasets": {},
+            "tasks": {},
+        }
+
+        result = validate_eval_config(cfg)
+
+        assert not result.ok
+        assert any("'unknown' is reserved" in error for error in result.errors)
+
+    def test_engine_identity_is_independent_of_chat_model_type(self):
+        cfg = {
+            "models": {"m": {"name": "claude", "type": "chat", "engine": "anthropic"}},
             "datasets": {},
             "tasks": {},
         }
         result = validate_eval_config(cfg)
-        assert not result.ok
-        assert any("only valid for type: gen" in e for e in result.errors)
+        assert result.ok, result.errors
 
     def test_engine_on_derived_model(self):
         cfg = {
@@ -452,6 +470,37 @@ class TestValidateModelCapabilities:
         assert not result.ok
         assert any("unknown dialect 'chat'" in error for error in result.errors)
 
+    def test_explicit_sglang_legacy_bypass_is_accepted(self):
+        result = validate_eval_config(
+            self._config(
+                type="gen",
+                engine="sglang",
+                dialect="sglang_legacy",
+            )
+        )
+
+        assert result.ok, result.errors
+
+    @pytest.mark.parametrize("declaration", [True, False])
+    def test_sglang_legacy_bypass_rejects_capability_declarations(
+        self, declaration: bool
+    ):
+        result = validate_eval_config(
+            self._config(
+                type="gen",
+                engine="sglang",
+                dialect="sglang_legacy",
+                capabilities={"input_scoring": declaration},
+            )
+        )
+
+        assert not result.ok
+        assert any(
+            "sglang_legacy bypass" in error
+            and "cannot declare canonical capabilities" in error
+            for error in result.errors
+        )
+
     @pytest.mark.parametrize(
         ("dialect", "message"),
         [
@@ -538,7 +587,7 @@ class TestValidateModelCapabilities:
         assert not invalid.ok
         assert any("minimum must be an integer" in error for error in invalid.errors)
 
-    def test_legacy_sglang_bypass_rejects_new_capability_declarations(self):
+    def test_static_validation_does_not_guess_the_legacy_sglang_dialect(self):
         result = validate_eval_config(
             self._config(
                 type="gen",
@@ -547,8 +596,7 @@ class TestValidateModelCapabilities:
             )
         )
 
-        assert not result.ok
-        assert any("legacy SGLang bypass" in error for error in result.errors)
+        assert result.ok, result.errors
 
 
 # ---------------------------------------------------------------------------
@@ -1487,6 +1535,38 @@ class TestRunDryRun:
             assert "name" in check
             assert "ok" in check
 
+    def test_explicit_sglang_legacy_bypass_reaches_prelaunch(self, tmp_path):
+        from sieval.cli.validation import run_dry_run
+
+        config = tmp_path / "sglang-legacy.yaml"
+        config.write_text(
+            "models:\n"
+            "  m:\n"
+            "    name: org/model\n"
+            "    type: gen\n"
+            "    engine: sglang\n"
+            "    dialect: sglang_legacy\n"
+            "    api_base: http://127.0.0.1:30000\n"
+            "datasets:\n"
+            "  d:\n"
+            "    class: sieval.datasets.human_eval.HumanEvalDataset\n"
+            "tasks:\n"
+            "  t:\n"
+            "    class: sieval.tasks.human_eval_0shot_base_gen."
+            "HumanEvalZeroShotBaseGenTask\n"
+            "    dataset: d\n"
+            "    model: m\n",
+            encoding="utf-8",
+        )
+
+        result = run_dry_run(config)
+        checks = {check["name"]: check for check in result["checks"]}
+
+        assert result["n_errors"] == 0
+        assert checks["schema"]["ok"] is True
+        assert checks["imports"]["ok"] is True
+        assert checks["capability_reconcile"]["ok"] is True
+
     def test_returns_dict_on_missing_file(self, tmp_path):
         from sieval.cli.validation import run_dry_run
 
@@ -1741,5 +1821,6 @@ class TestRunDryRun:
         )
         assert check["ok"] is False
         assert check["detail"] == str(normal.value)
-        assert "input_kind_unsupported" in check["detail"]
+        assert "legacy type 'chat'" in check["detail"]
+        assert "must agree" in check["detail"]
         assert result["n_errors"] == 1

@@ -29,6 +29,7 @@ from sieval.cli.resolution import (
     binding_resource_argument_paths,
     resolve_dataset_class,
     resolve_task_class,
+    validate_configured_engine_id,
     validate_task_config_args,
 )
 from sieval.core.models.capabilities import (
@@ -189,9 +190,8 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                     f"Model '{name}': 'service_role' must be a non-empty string"
                 )
 
-        # `engine` selects the gen backend (mirrors _setup_models' guards; the
-        # engine-on-non-gen check there uses the *inferred* type, so here we
-        # can only flag the statically-decidable explicit `type: chat` case).
+        # `engine` is an optional identity assertion on the root deployment.
+        # It is independent of the request dialect and legacy model type.
         if "engine" in mcfg:
             engine = mcfg.get("engine")
             if has_base:
@@ -199,14 +199,14 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
                     f"Model '{name}': derived models cannot set 'engine'; it is "
                     "inherited from the base model. Set it on the base instead."
                 )
-            elif engine not in ("vllm", "sglang"):
-                result.errors.append(
-                    f"Model '{name}': engine must be 'vllm' or 'sglang', got {engine!r}"
-                )
-            elif model_type == "chat":
-                result.errors.append(
-                    f"Model '{name}': 'engine' is only valid for type: gen, not 'chat'"
-                )
+            else:
+                try:
+                    validate_configured_engine_id(
+                        engine,
+                        context=f"Model '{name}'",
+                    )
+                except (TypeError, ValueError) as exc:
+                    result.errors.append(str(exc))
 
         if has_base:
             base_ref = mcfg["base"]
@@ -270,10 +270,12 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
 def _validate_capabilities(cfg: dict, result: ValidationResult) -> None:
     """Validate canonical dialect and capability declarations for each model.
 
-    An explicit dialect selects its descriptor and executable PR-1 binder.  If
-    the dialect is omitted, only provider-neutral option shapes can be checked
-    here; task-derived default selection remains composition's job.  This layer
-    deliberately does not duplicate #59's model-kind resolver.
+    An explicit canonical dialect selects its descriptor and executable PR-1
+    binder.  The temporary ``sglang_legacy`` pseudo-dialect is accepted without
+    canonical capabilities until PR-5 replaces it.  If the dialect is omitted,
+    only provider-neutral option shapes can be checked here; task-derived
+    default selection remains composition's job.  This layer deliberately does
+    not duplicate #59's model-kind resolver.
     """
     models = cfg.get("models", {})
 
@@ -294,18 +296,20 @@ def _validate_capabilities(cfg: dict, result: ValidationResult) -> None:
                 continue
             dialect_id = raw_dialect
 
-        # The one-cycle SGLang path intentionally has no RuntimeBindingPlan or
-        # capability binder.  Existing configs may keep using it, but new
-        # capability declarations must wait for the native adapter.
-        if (
-            not has_dialect
-            and "capabilities" in mcfg
-            and mcfg.get("engine") == "sglang"
-        ):
-            result.errors.append(
-                f"Model '{name}': 'capabilities' cannot be declared on the "
-                "legacy SGLang bypass; select an active canonical dialect"
-            )
+        if dialect_id == "sglang_legacy":
+            # TODO(PR-5): remove this pseudo-spec branch when the registered
+            # sglang_native binder replaces the temporary legacy bypass.
+            if "capabilities" not in mcfg:
+                continue
+            raw_capabilities = mcfg["capabilities"]
+            if not isinstance(raw_capabilities, Mapping):
+                result.errors.append(f"Model '{name}': capabilities must be a mapping")
+            elif raw_capabilities:
+                result.errors.append(
+                    f"Model '{name}': the temporary sglang_legacy bypass "
+                    "cannot declare canonical capabilities before the "
+                    "sglang_native PR-5 binder"
+                )
             continue
 
         if dialect_id is not None:
@@ -576,7 +580,11 @@ def _validate_unreferenced(cfg: dict, result: ValidationResult) -> None:
 
 
 def validate_eval_config(cfg: dict) -> ValidationResult:
-    """Static schema validation — no imports, no instantiation."""
+    """Validate static schema without imports or instantiation.
+
+    Dialect selection and capability compatibility become authoritative only
+    during prelaunch reconciliation; use :func:`run_dry_run` for that check.
+    """
     result = ValidationResult()
     if not _validate_structure(cfg, result):
         return result
