@@ -5,18 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Changed
-
-- **BREAKING — `infer.backend` no longer selects the request dialect or
-  activates the temporary `sglang_legacy` bypass.** It now identifies only the
-  managed inference backend. Existing SGLang generation configs that relied on
-  the implicit native `/generate` path must declare `engine: sglang` and
-  `dialect: sglang_legacy`; configs intentionally using SGLang's
-  OpenAI-compatible endpoint must select `dialect: openai_completions`
-  explicitly.
-
 ## [0.8.0] - 2026-08-14
 
 A minor bump, and a wide one: the on-disk record shape, several `report.json`
