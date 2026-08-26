@@ -4,12 +4,15 @@ AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
+from dataclasses import replace
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import sieval.core.models.dialects.openai_chat as openai_chat_module
 from sieval.core.models.capabilities import Capability, ReasoningOptions, Supported
 from sieval.core.models.dialect import (
     DialectError,
@@ -223,6 +226,61 @@ class TestWireTranslation:
         }
         assert response.structured_output is not None
         assert response.structured_output.value == {"answer": 42}
+
+    @pytest.mark.anyio
+    async def test_multiple_text_parts_preserve_their_exact_concatenation(self) -> None:
+        dialect, create = _dialect()
+
+        await dialect.arun(
+            Request(
+                input=_chat(
+                    ChatMessage(
+                        "user",
+                        (TextPart("alpha"), TextPart("beta"), TextPart("alpha")),
+                    )
+                )
+            )
+        )
+
+        assert _awaited_kwargs(create)["messages"] == [
+            {"role": "user", "content": "alphabetaalpha"}
+        ]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("stream", [False, True], ids=["non-stream", "stream"])
+    async def test_request_params_snapshot_matches_pre_await_wire(
+        self, stream: bool
+    ) -> None:
+        raw = (
+            _AsyncItems([_chunk(content="ok", finish_reason="stop")])
+            if stream
+            else _response()
+        )
+        dialect, create = _dialect(raw)
+        original = {"mode": "sent"}
+        sent: dict[str, Any] = {}
+
+        async def mutate_after_capture(**kwargs: Any) -> object:
+            sent.update(deepcopy(kwargs))
+            original["mode"] = "changed after response"
+            kwargs["extra_body"]["vendor"]["mode"] = "changed inside SDK"
+            return raw
+
+        create.side_effect = mutate_after_capture
+        response = await dialect.arun(
+            Request(
+                input=_chat(),
+                scheduling=SchedulingParams(stream=stream),
+                dialect_options=DialectOptions(
+                    "openai_chat",
+                    {"vendor": original},
+                ),
+            )
+        )
+
+        assert sent["extra_body"] == {"vendor": {"mode": "sent"}}
+        assert response.request_params is not None
+        assert response.request_params["extra_body"] == {"vendor": {"mode": "sent"}}
 
     @pytest.mark.anyio
     async def test_empty_matching_dialect_options_are_an_explicit_noop(self) -> None:
@@ -474,6 +532,8 @@ class TestPreflightRejections:
         dialect.validate_request(req, audit, SimpleNamespace())
         with pytest.raises(RequestAuditError):
             audit.raise_rejections()
+        with pytest.raises(RequestAuditError):
+            dialect.prepare(req, audit)
 
         create.assert_not_awaited()
 
@@ -499,14 +559,172 @@ class TestPreflightRejections:
         with pytest.raises(TypeError, match="requires ChatInput"):
             dialect.prepare(req, RequestAudit(active_request_leaves(req)))
 
+    def test_audit_rejects_a_consumed_field_removed_from_the_wire_body(self) -> None:
+        dialect, _ = _dialect()
+        req = Request(
+            input=_chat(),
+            sampling=SamplingParams(temperature=0.25),
+        )
+        audit = RequestAudit(active_request_leaves(req))
+        dialect.validate_request(req, audit, SimpleNamespace())
+        prepared = dialect.prepare(req, audit)
+        body = dict(prepared.body)
+        del body["temperature"]
+
+        with pytest.raises(RequestAuditError, match=r"body\.temperature.*missing"):
+            audit.finish(replace(prepared, body=body))
+
+    @pytest.mark.anyio
+    async def test_message_lowering_bug_is_rejected_before_io(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dialect, create = _dialect()
+        req = Request(input=_chat(ChatMessage("user", (TextPart("secret"),))))
+        original = openai_chat_module._message_to_wire
+
+        def drop_content(message: ChatMessage) -> dict[str, Any]:
+            wire = original(message)
+            wire.pop("content", None)
+            return wire
+
+        monkeypatch.setattr(openai_chat_module, "_message_to_wire", drop_content)
+
+        with pytest.raises(RequestAuditError, match="messages"):
+            await dialect.arun(req)
+
+        create.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_response_format_lowering_bug_is_rejected_before_io(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dialect, create = _dialect(_response(_choice(0, '{"ok":true}')))
+        req = Request(
+            input=_chat(),
+            structured_output=StructuredOutputParams(
+                format="json_schema",
+                schema={"type": "object"},
+                name="answer",
+                strict=False,
+            ),
+        )
+        original = openai_chat_module._response_format
+
+        def drop_strict(request: Request) -> dict[str, Any] | None:
+            wire = original(request)
+            assert wire is not None
+            wire["json_schema"].pop("strict", None)
+            return wire
+
+        monkeypatch.setattr(openai_chat_module, "_response_format", drop_strict)
+
+        with pytest.raises(RequestAuditError, match=r"strict.*missing"):
+            await dialect.arun(req)
+
+        create.assert_not_awaited()
+
+    def test_messages_verifier_checks_nested_semantics(self) -> None:
+        dialect, _ = _dialect()
+        req = Request(
+            input=_chat(
+                ChatMessage(
+                    "user",
+                    (
+                        TextPart("look"),
+                        ImagePart(url="https://example.test/image.png", detail="high"),
+                    ),
+                    name="named-user",
+                ),
+                ChatMessage(
+                    "assistant",
+                    (ToolCallPart("call-1", "inspect", {"value": 1}),),
+                ),
+                ChatMessage("tool", (ToolResultPart("call-1", {"ok": True}),)),
+            )
+        )
+        audit = RequestAudit(active_request_leaves(req))
+        dialect.validate_request(req, audit, SimpleNamespace())
+        prepared = dialect.prepare(req, audit)
+
+        mutations = (
+            lambda body: body["messages"][0].__setitem__("name", "changed"),
+            lambda body: body["messages"][0]["content"][1]["image_url"].__setitem__(
+                "detail", "low"
+            ),
+            lambda body: body["messages"][1]["tool_calls"][0].__setitem__(
+                "id", "changed"
+            ),
+            lambda body: body["messages"][2].__setitem__("content", '{"ok":false}'),
+        )
+        for mutate in mutations:
+            body = cast(Any, prepared.thaw_body())
+            mutate(body)
+            with pytest.raises(RequestAuditError, match="messages"):
+                audit.finish(replace(prepared, body=body))
+
+    def test_finished_prepared_messages_cannot_be_mutated(self) -> None:
+        dialect, _ = _dialect()
+        req = Request(input=_chat())
+        audit = RequestAudit(active_request_leaves(req))
+        dialect.validate_request(req, audit, SimpleNamespace())
+        prepared = dialect.prepare(req, audit)
+        audit.finish(prepared)
+
+        messages = cast(Any, prepared.body["messages"])
+        with pytest.raises(TypeError):
+            messages[0]["content"] = "changed"
+
+    def test_chat_rejects_an_audit_for_another_request(self) -> None:
+        dialect, create = _dialect()
+        req_a = Request(input=_chat(ChatMessage("user", (TextPart("A"),))))
+        req_b = Request(input=_chat(ChatMessage("user", (TextPart("B"),))))
+
+        audit = RequestAudit(active_request_leaves(req_a))
+        with pytest.raises(RequestAuditError, match=r"changed=.*input.chat"):
+            dialect.validate_request(req_b, audit, SimpleNamespace())
+
+        audit = RequestAudit(active_request_leaves(req_a))
+        dialect.validate_request(req_a, audit, SimpleNamespace())
+        with pytest.raises(RequestAuditError, match=r"changed=.*input.chat"):
+            dialect.prepare(req_b, audit)
+
+        create.assert_not_awaited()
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "req",
+        [
+            Request(
+                input=_chat(),
+                structured_output=StructuredOutputParams(
+                    format="json_schema",
+                    schema={"type": "object"},
+                    name="",
+                ),
+            ),
+            Request(
+                input=_chat(),
+                dialect_options=DialectOptions("openai_chat", {"": 1}),
+            ),
+        ],
+        ids=["empty-structured-output-name", "empty-option-key"],
+    )
+    async def test_empty_wire_names_are_explicit_audit_rejections(
+        self, req: Request
+    ) -> None:
+        dialect, create = _dialect()
+
+        with pytest.raises(RequestAuditError, match="non-empty"):
+            await dialect.arun(req)
+
+        create.assert_not_awaited()
+
     @pytest.mark.anyio
     async def test_execute_rejects_invalid_prepared_context(self) -> None:
         dialect, create = _dialect()
         prepared = PreparedRequest(
             operation="chat.completions.create",
             body={"stream": False},
-            consumed_paths=frozenset(),
-            passthrough={},
         )
 
         with pytest.raises(TypeError, match="invalid prepared context"):

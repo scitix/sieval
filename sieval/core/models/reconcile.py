@@ -8,17 +8,16 @@ AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
 import json
-import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Never, Protocol, Self, cast
+from typing import Protocol, cast
 
 from sieval.core.types import JSONValue
 
 from ._fingerprint import fingerprint_mapping
-from ._shared import copy_json_value
+from ._shared import freeze_json_mapping, thaw_json_value
 from .capabilities import (
     CAPABILITY_KEYS,
     CAPABILITY_SPECS,
@@ -1774,68 +1773,7 @@ def _nonempty(value: object, name: str) -> None:
         raise TypeError(f"{name} must be a non-empty string")
 
 
-class _FrozenJSONList(list[JSONValue]):
-    """List-shaped JSON value that rejects mutation while preserving equality."""
-
-    def _immutable(self, *args: object, **kwargs: object) -> Never:
-        del self, args, kwargs
-        raise TypeError("frozen JSON sequences do not support mutation")
-
-    def __copy__(self) -> Self:
-        return self
-
-    def __deepcopy__(self, memo: dict[int, object]) -> Self:
-        del memo
-        return self
-
-
-# ``list`` exposes several mutation spellings, including in-place operators.
-# Install the same guard for all of them so nested JSON sequences remain
-# list-compatible without leaving a normal mutation path open.
-for _method_name in (
-    "append",
-    "clear",
-    "extend",
-    "insert",
-    "pop",
-    "remove",
-    "reverse",
-    "sort",
-    "__delitem__",
-    "__iadd__",
-    "__imul__",
-    "__setitem__",
-):
-    setattr(_FrozenJSONList, _method_name, _FrozenJSONList._immutable)
-del _method_name
-
-
-def _freeze_json_value(value: object, path: str) -> JSONValue:
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{path} must not contain non-finite floats")
-        return value
-    if isinstance(value, Mapping):
-        copied: dict[str, JSONValue] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError(f"{path} keys must be strings")
-            copied[key] = _freeze_json_value(item, f"{path}.{key}")
-        return MappingProxyType(copied)
-    if isinstance(value, (list, tuple)):
-        return _FrozenJSONList(
-            _freeze_json_value(item, f"{path}[{index}]")
-            for index, item in enumerate(value)
-        )
-    raise TypeError(f"{path} contains non-JSON value {type(value).__name__}")
-
-
-def _freeze_json(value: Mapping[str, JSONValue], path: str) -> Mapping[str, JSONValue]:
-    frozen = _freeze_json_value(value, path)
-    assert isinstance(frozen, Mapping)
-    return cast(Mapping[str, JSONValue], frozen)
+_freeze_json = freeze_json_mapping
 
 
 def _freeze_request_defaults(value: RequestDefaults, path: str) -> RequestDefaults:
@@ -1870,7 +1808,7 @@ def _freeze_capability_intent(value: CapabilityIntent, path: str) -> CapabilityI
 
 
 def _thaw_json(value: object) -> JSONValue:
-    return copy_json_value(value, "serialized value")
+    return thaw_json_value(value, "serialized value")
 
 
 def _json_sequence(value: JSONValue) -> tuple[str | int | float | bool | None, ...]:

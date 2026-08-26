@@ -4,8 +4,10 @@ AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -183,9 +185,49 @@ class TestValidationAndAudit:
         with pytest.raises(RequestAuditError, match="audit does not match"):
             dialect.validate_request(req, audit, _Plan())
 
+    def test_prepare_rejects_an_audit_for_another_request(self) -> None:
+        req_a = Request(input=CompletionInput("A"))
+        req_b = Request(input=CompletionInput("B"))
+        dialect, create = _dialect(_response())
+        audit = RequestAudit(active_request_leaves(req_a))
+        dialect.validate_request(req_a, audit, _Plan())
+
+        with pytest.raises(RequestAuditError, match=r"changed=.*input.completion"):
+            dialect.prepare(req_b, audit)
+
+        create.assert_not_awaited()
+
     def test_empty_model_id_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="model must not be empty"):
             OpenAICompletionsDialect(object(), "")
+
+    def test_audit_rejects_a_consumed_field_removed_from_the_wire_body(self) -> None:
+        req = Request(
+            input=CompletionInput("prompt"),
+            sampling=SamplingParams(temperature=0.25),
+        )
+        dialect, _ = _dialect(_response())
+        audit = RequestAudit(active_request_leaves(req))
+        dialect.validate_request(req, audit, _Plan())
+        prepared = dialect.prepare(req, audit)
+        body = dict(prepared.body)
+        del body["temperature"]
+
+        with pytest.raises(RequestAuditError, match=r"body\.temperature.*missing"):
+            audit.finish(replace(prepared, body=body))
+
+    def test_logprobs_verifier_rejects_equal_float_wire_value(self) -> None:
+        req = Request(
+            input=CompletionInput("prompt"),
+            scoring=ScoringParams(input_scoring=True),
+        )
+        dialect, _ = _dialect(_response())
+        audit, prepared = _prepare(dialect, req)
+        body = dict(prepared.body)
+        body["logprobs"] = 0.0
+
+        with pytest.raises(RequestAuditError, match="top-logprobs setting"):
+            audit.finish(replace(prepared, body=body))
 
     def test_prepare_rejects_chat_input_defensively(self) -> None:
         req = Request(input=ChatInput((ChatMessage("user", (TextPart("hello"),)),)))
@@ -207,11 +249,26 @@ class TestValidationAndAudit:
         assert "extra_body" not in prepared.body
 
     @pytest.mark.anyio
+    async def test_empty_dialect_option_key_is_an_explicit_audit_rejection(
+        self,
+    ) -> None:
+        req = Request(
+            input=CompletionInput("prompt"),
+            dialect_options=DialectOptions("openai_completions", {"": 1}),
+        )
+        dialect, create = _dialect(_response())
+
+        with pytest.raises(RequestAuditError, match="non-empty"):
+            await dialect.arun(req)
+
+        create.assert_not_awaited()
+
+    @pytest.mark.anyio
     @pytest.mark.parametrize(
         "prepared",
         [
-            PreparedRequest("wrong", {}, frozenset(), {}),
-            PreparedRequest("completions.create", {}, frozenset(), {}),
+            PreparedRequest("wrong", {}),
+            PreparedRequest("completions.create", {}),
         ],
     )
     async def test_execute_rejects_invalid_prepared_request(
@@ -406,6 +463,44 @@ class TestWirePreparation:
             "max_tokens": 3,
             "extra_body": kwargs["extra_body"],
         }
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("stream", [False, True], ids=["non-stream", "stream"])
+    async def test_request_params_snapshot_matches_pre_await_wire(
+        self, stream: bool
+    ) -> None:
+        raw = (
+            _AsyncItems([_response(_choice(text="ok"))])
+            if stream
+            else _response(_choice(text="ok"))
+        )
+        dialect, create = _dialect(raw)
+        original = {"mode": "sent"}
+        sent: dict[str, object] = {}
+
+        async def mutate_after_capture(**kwargs: object) -> object:
+            sent.update(deepcopy(kwargs))
+            original["mode"] = "changed after response"
+            extra_body = cast(dict[str, object], kwargs["extra_body"])
+            vendor = cast(dict[str, object], extra_body["vendor"])
+            vendor["mode"] = "changed inside SDK"
+            return raw
+
+        create.side_effect = mutate_after_capture
+        response = await dialect.arun(
+            Request(
+                input=CompletionInput("prompt"),
+                scheduling=SchedulingParams(stream=stream),
+                dialect_options=DialectOptions(
+                    "openai_completions",
+                    {"vendor": original},
+                ),
+            )
+        )
+
+        assert sent["extra_body"] == {"vendor": {"mode": "sent"}}
+        assert response.request_params is not None
+        assert response.request_params["extra_body"] == {"vendor": {"mode": "sent"}}
 
 
 class TestInputScoringBoundary:

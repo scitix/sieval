@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Request audits now verify consumed Chat aggregates independently of their
+  lowering helpers, recursively freeze prepared wire bodies, and derive stored
+  request parameters from the exact body handed to the provider SDK.
+- Empty structured-output names and empty dialect-option keys are rejected with
+  `RequestAuditError`. Use `name=None` to request the dialect's default schema
+  name; empty option keys must be removed or renamed.
+
+### Changed
+
+- **BREAKING — custom dialect preparation evidence.** `PreparedRequest` now
+  accepts only `operation`, the complete provider `body`, and optional response
+  `context`; call `prepared.thaw_body()` once when invoking an SDK.
+  `RequestAudit.consumed()` now requires `WireObservation` or `WireVerifier`
+  evidence, and `PassthroughObservation` is removed. Identity-preserving fields
+  should use `WireObservation(destination)` so the expected value comes from
+  the audited request leaf; aggregate or transformed fields should use an
+  independent `WireVerifier`.
+
 ## [0.8.0] - 2026-08-14
 
 A minor bump, and a wide one: the on-disk record shape, several `report.json`

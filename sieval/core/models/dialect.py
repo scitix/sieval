@@ -8,13 +8,16 @@ channels without a condition language or solver.
 AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
+import json
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, fields
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from sieval.core.types import JSONValue
 
+from ._shared import copy_json_value, freeze_json_mapping, thaw_json_mapping
 from .ir import (
     ChatInput,
     CompletionInput,
@@ -52,8 +55,32 @@ class Guarantee(StrEnum):
 
 
 @dataclass(frozen=True)
+class WireObservation:
+    """A wire destination whose expected value is the audited request leaf."""
+
+    destination: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.destination or any(
+            not isinstance(item, str) or not item for item in self.destination
+        ):
+            raise ValueError("wire observation destination must be non-empty keys")
+
+
+@runtime_checkable
+class WireVerifier(Protocol):
+    """Independently compare an audited source value with the final wire body."""
+
+    def verify(self, body: Mapping[str, JSONValue]) -> str | None: ...
+
+
+type WireEvidence = WireObservation | WireVerifier
+
+
+@dataclass(frozen=True)
 class Consumed:
     path: str
+    wire_evidence: tuple[WireEvidence, ...]
 
 
 @dataclass(frozen=True)
@@ -78,20 +105,70 @@ type AuditDecision = Consumed | Rejected | NoOp | Passthrough
 
 
 @dataclass(frozen=True)
-class PassthroughObservation:
-    destination: str
-    value: object
-
-
-@dataclass(frozen=True)
 class PreparedRequest:
-    """Dialect-local wire preparation plus explicit audit evidence."""
+    """Dialect-local complete wire request awaiting audit verification.
+
+    ``body`` is the sole authority for provider request fields.  ``execute``
+    may use ``context`` for response lifting, but must not reconstruct or add
+    request fields outside this body.
+    """
 
     operation: str
     body: Mapping[str, JSONValue]
-    consumed_paths: frozenset[str]
-    passthrough: Mapping[str, PassthroughObservation]
     context: object | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "body",
+            freeze_json_mapping(self.body, "prepared wire body"),
+        )
+
+    def thaw_body(self) -> dict[str, JSONValue]:
+        """Return one mutable, detached copy for a provider SDK call."""
+
+        return thaw_json_mapping(self.body, "prepared wire body")
+
+
+_MISSING_WIRE_VALUE = object()
+
+
+def _canonical_json(value: object) -> str:
+    copied = copy_json_value(value, "prepared wire value")
+    return json.dumps(
+        copied,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _wire_value(body: Mapping[str, JSONValue], destination: tuple[str, ...]) -> object:
+    current: object = body
+    for key in destination:
+        if not isinstance(current, Mapping):
+            return _MISSING_WIRE_VALUE
+        mapping = cast(Mapping[str, object], current)
+        if key not in mapping:
+            return _MISSING_WIRE_VALUE
+        current = mapping[key]
+    return current
+
+
+def _wire_destination(destination: tuple[str, ...]) -> str:
+    return "body." + ".".join(destination)
+
+
+def _snapshot_audit_value(value: object) -> object:
+    return deepcopy(value)
+
+
+def _same_audit_value(left: object, right: object) -> bool:
+    try:
+        return _canonical_json(left) == _canonical_json(right)
+    except (TypeError, ValueError):
+        return left == right
 
 
 def _input_leaves(req: Request) -> dict[str, object]:
@@ -171,12 +248,22 @@ class RequestAudit:
     """Require exactly one observable decision for each active request leaf."""
 
     def __init__(self, active: Mapping[str, object]):
-        self._active = dict(active)
+        self._active = {
+            path: _snapshot_audit_value(value) for path, value in active.items()
+        }
         self._decisions: dict[str, AuditDecision] = {}
 
     @property
     def active(self) -> Mapping[str, object]:
-        return dict(self._active)
+        return {
+            path: _snapshot_audit_value(value) for path, value in self._active.items()
+        }
+
+    @property
+    def active_paths(self) -> tuple[str, ...]:
+        """Return active leaf names without copying their potentially large values."""
+
+        return tuple(self._active)
 
     @property
     def decisions(self) -> Mapping[str, AuditDecision]:
@@ -189,8 +276,36 @@ class RequestAudit:
             raise RequestAuditError(f"request leaf {path!r} was accounted for twice")
         self._decisions[path] = decision
 
-    def consumed(self, path: str) -> None:
-        self._record(path, Consumed(path))
+    def require_matches_request(self, req: Request) -> None:
+        """Reject an audit created for different or subsequently changed input."""
+
+        current = active_request_leaves(req)
+        audit_paths = set(self._active)
+        current_paths = set(current)
+        missing = sorted(current_paths - audit_paths)
+        extra = sorted(audit_paths - current_paths)
+        changed = sorted(
+            path
+            for path in audit_paths & current_paths
+            if not _same_audit_value(self._active[path], current[path])
+        )
+        if missing or extra or changed:
+            raise RequestAuditError(
+                "audit does not match request: "
+                f"missing={missing}, extra={extra}, changed={changed}"
+            )
+
+    def consumed(self, path: str, *wire_evidence: WireEvidence) -> None:
+        if not wire_evidence:
+            raise RequestAuditError(
+                f"consumed request leaf {path!r} requires wire evidence"
+            )
+        if not all(
+            isinstance(evidence, (WireObservation, WireVerifier))
+            for evidence in wire_evidence
+        ):
+            raise TypeError("wire evidence must be WireObservation or WireVerifier")
+        self._record(path, Consumed(path, tuple(wire_evidence)))
 
     def rejected(self, path: str, reason: str) -> None:
         self._record(path, Rejected(path, reason))
@@ -203,6 +318,8 @@ class RequestAudit:
     def passthrough(self, path: str, destination: str) -> None:
         if not path.startswith("dialect_options."):
             raise RequestAuditError("only dialect options may use Passthrough")
+        if not isinstance(destination, str) or not destination:
+            raise RequestAuditError("Passthrough destination must be non-empty")
         self._record(path, Passthrough(path, destination))
 
     def raise_rejections(self) -> None:
@@ -218,36 +335,55 @@ class RequestAudit:
                 "unaccounted request leaves: " + ", ".join(sorted(missing))
             )
 
-        consumed = {
-            path
-            for path, decision in self._decisions.items()
-            if isinstance(decision, Consumed)
-        }
-        if consumed != set(prepared.consumed_paths):
-            missing_observation = consumed - set(prepared.consumed_paths)
-            unclaimed = set(prepared.consumed_paths) - consumed
-            detail: list[str] = []
-            if missing_observation:
-                detail.append("unobserved=" + ",".join(sorted(missing_observation)))
-            if unclaimed:
-                detail.append("unclaimed=" + ",".join(sorted(unclaimed)))
-            raise RequestAuditError(
-                "prepared consumption mismatch: " + "; ".join(detail)
-            )
+        verified: set[int] = set()
+        for path, decision in self._decisions.items():
+            if isinstance(decision, Consumed):
+                evidence_items = decision.wire_evidence
+            elif isinstance(decision, Passthrough):
+                option_key = path.removeprefix("dialect_options.")
+                if not option_key:
+                    raise RequestAuditError("dialect option keys must be non-empty")
+                evidence_items = (WireObservation((decision.destination, option_key)),)
+            else:
+                continue
 
-        expected_passthrough = {
-            path: decision
-            for path, decision in self._decisions.items()
-            if isinstance(decision, Passthrough)
-        }
-        if set(expected_passthrough) != set(prepared.passthrough):
-            raise RequestAuditError("prepared passthrough paths do not match decisions")
-        for path, decision in expected_passthrough.items():
-            observed = prepared.passthrough[path]
-            if observed.destination != decision.destination:
-                raise RequestAuditError(f"passthrough destination changed for {path!r}")
-            if observed.value != self._active[path]:
-                raise RequestAuditError(f"passthrough value changed for {path!r}")
+            for evidence in evidence_items:
+                if isinstance(evidence, WireObservation):
+                    actual = _wire_value(prepared.body, evidence.destination)
+                    destination = _wire_destination(evidence.destination)
+                    if actual is _MISSING_WIRE_VALUE:
+                        raise RequestAuditError(
+                            f"prepared wire field {destination!r} is missing for "
+                            f"{path!r}"
+                        )
+                    try:
+                        expected = _canonical_json(self._active[path])
+                    except (TypeError, ValueError) as exc:
+                        raise RequestAuditError(
+                            f"request leaf {path!r} requires a WireVerifier"
+                        ) from exc
+                    if _canonical_json(actual) != expected:
+                        raise RequestAuditError(
+                            f"prepared wire value changed for {path!r} at "
+                            f"{destination!r}"
+                        )
+                    continue
+
+                verifier_id = id(evidence)
+                if verifier_id in verified:
+                    continue
+                verified.add(verifier_id)
+                mismatch = evidence.verify(prepared.body)
+                if mismatch is not None and (
+                    not isinstance(mismatch, str) or not mismatch.strip()
+                ):
+                    raise TypeError(
+                        "WireVerifier.verify() must return None or a non-empty string"
+                    )
+                if mismatch is not None:
+                    raise RequestAuditError(
+                        f"prepared wire mismatch for {path!r}: {mismatch}"
+                    )
 
 
 def request_capability(path: str) -> str | None:

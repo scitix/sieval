@@ -20,12 +20,12 @@ import random
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import psutil
@@ -64,6 +64,7 @@ from sieval.core.runners.runner import TaskRunnerConfig
 from sieval.core.tasks.context import TaskContext, TaskStage
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
+from sieval.core.types import JSONValue
 
 
 # ===================================================================
@@ -302,6 +303,20 @@ class MockDataset(Dataset):
 # while the wire layer stays canned. Subclass mocks override
 # ``_stub_arun`` and chain via ``super()``.
 # ===================================================================
+@dataclass(frozen=True)
+class _ObservedPathVerifier:
+    path: str
+
+    def verify(self, body: Mapping[str, JSONValue]) -> str | None:
+        observed = body.get("observed")
+        if not isinstance(observed, Mapping):
+            return f"body.observed omitted {self.path!r}"
+        observed_mapping = cast(Mapping[str, object], observed)
+        if observed_mapping.get(self.path) is not True:
+            return f"body.observed omitted {self.path!r}"
+        return None
+
+
 class HandlerTransport:
     """Dialect double: forwards ``execute`` to a handler coroutine.
 
@@ -327,16 +342,15 @@ class HandlerTransport:
         del req, audit, plan
 
     def prepare(self, req: Request, audit: RequestAudit) -> PreparedRequest:
-        consumed = frozenset(
-            path for path in audit.active if path not in audit.decisions
+        consumed = sorted(
+            path for path in audit.active_paths if path not in audit.decisions
         )
+        body = {"observed": dict.fromkeys(consumed, True)}
         for path in consumed:
-            audit.consumed(path)
+            audit.consumed(path, _ObservedPathVerifier(path))
         return PreparedRequest(
             operation="handler",
-            body={},
-            consumed_paths=consumed,
-            passthrough={},
+            body=body,
             context=req,
         )
 
