@@ -24,6 +24,7 @@ from sieval.core.models.dialect import (
     OutputContractError,
     Passthrough,
     PreparedRequest,
+    Rejected,
     RequestAudit,
     RequestAuditError,
     active_request_leaves,
@@ -32,6 +33,7 @@ from sieval.core.models.dialects.openai_completions import (
     CAPABILITY_DECISIONS,
     OUTPUT_CONTRACT,
     OpenAICompletionsDialect,
+    _CompletionsLogprobsVerifier,
 )
 from sieval.core.models.ir import (
     ChatInput,
@@ -229,6 +231,19 @@ class TestValidationAndAudit:
         with pytest.raises(RequestAuditError, match="top-logprobs setting"):
             audit.finish(replace(prepared, body=body))
 
+    def test_logprobs_verifier_rejects_a_boolean_wire_value(self) -> None:
+        """``True == 1``, so only the bool guard rejects this.
+
+        Unreachable through ``finish()``: a positive expected count also carries
+        a ``WireObservation`` on ``body.logprobs``, which rejects the bool
+        first.  Pinning the guard directly is the only way to cover it.
+        """
+
+        verifier = _CompletionsLogprobsVerifier(1)
+
+        assert verifier.verify({"logprobs": 1}) is None
+        assert verifier.verify({"logprobs": True}) is not None
+
     def test_prepare_rejects_chat_input_defensively(self) -> None:
         req = Request(input=ChatInput((ChatMessage("user", (TextPart("hello"),)),)))
         dialect, _ = _dialect(_response())
@@ -262,6 +277,26 @@ class TestValidationAndAudit:
             await dialect.arun(req)
 
         create.assert_not_awaited()
+
+    def test_empty_dialect_option_key_is_rejected_during_validation(self) -> None:
+        """Pin *which* layer rejects, not merely that something does.
+
+        ``finish()`` is a backstop with the same wording, so matching only the
+        message still passes with this dialect's check deleted.
+        """
+
+        req = Request(
+            input=CompletionInput("prompt"),
+            dialect_options=DialectOptions("openai_completions", {"": 1}),
+        )
+        dialect, _ = _dialect(_response())
+        audit = RequestAudit(active_request_leaves(req))
+
+        dialect.validate_request(req, audit, _Plan())
+
+        decision = audit.decisions["dialect_options."]
+        assert isinstance(decision, Rejected)
+        assert "non-empty" in decision.reason
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(

@@ -111,6 +111,10 @@ class PreparedRequest:
     ``body`` is the sole authority for provider request fields.  ``execute``
     may use ``context`` for response lifting, but must not reconstruct or add
     request fields outside this body.
+
+    ``model`` and ``stream_options`` carry no audit evidence: neither derives
+    from a request leaf.  Everything that lowers one must be provable through
+    ``Consumed.wire_evidence``, and ``dialect_options`` may not override either.
     """
 
     operation: str
@@ -255,6 +259,11 @@ class RequestAudit:
 
     @property
     def active(self) -> Mapping[str, object]:
+        """Return active leaves with their values, each a detached snapshot.
+
+        Costs one deep copy per leaf; prefer ``active_paths`` to iterate names.
+        """
+
         return {
             path: _snapshot_audit_value(value) for path, value in self._active.items()
         }

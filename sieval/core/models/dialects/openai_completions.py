@@ -467,7 +467,16 @@ class OpenAICompletionsDialect:
         scoring = req.scoring
         if scoring.input_scoring:
             body["echo"] = True
-        if scoring.sampled_logprobs or scoring.input_scoring:
+        # ``top_logprobs`` is claimed against ``body.logprobs`` below, so emit
+        # the field whenever any of the three leaves needs it.  Its arm is
+        # unreachable through ``validate_request_invariants``, which requires
+        # ``sampled_logprobs`` alongside it; without it the split contract
+        # would claim a field this body never emitted.
+        if (
+            scoring.sampled_logprobs
+            or scoring.input_scoring
+            or scoring.top_logprobs > 0
+        ):
             body["logprobs"] = scoring.top_logprobs
         logprobs_verifier = _CompletionsLogprobsVerifier(scoring.top_logprobs)
         if scoring.input_scoring:

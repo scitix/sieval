@@ -33,6 +33,9 @@ class _FrozenJSONList(list[JSONValue]):
         return self
 
 
+# ``list`` exposes several mutation spellings, including in-place operators.
+# Install the same guard for all of them so nested JSON sequences remain
+# list-compatible without leaving a normal mutation path open.
 for _method_name in (
     "append",
     "clear",
@@ -120,12 +123,6 @@ def thaw_json_mapping(
     if not isinstance(thawed, dict):
         raise TypeError(f"{path} must be a mapping")
     return cast(dict[str, JSONValue], thawed)
-
-
-def thaw_json_value(value: object, path: str) -> JSONValue:
-    """Return a detached, mutable plain-JSON copy of any frozen JSON value."""
-
-    return copy_json_value(value, path)
 
 
 def named_json_value(value: object, name: str) -> JSONValue:

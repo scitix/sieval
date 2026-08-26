@@ -3,7 +3,7 @@
 AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
@@ -18,6 +18,7 @@ from sieval.core.models.dialect import (
     DialectError,
     OutputContractError,
     PreparedRequest,
+    Rejected,
     RequestAudit,
     RequestAuditError,
     active_request_leaves,
@@ -640,27 +641,155 @@ class TestPreflightRejections:
                     (ToolCallPart("call-1", "inspect", {"value": 1}),),
                 ),
                 ChatMessage("tool", (ToolResultPart("call-1", {"ok": True}),)),
+                # All-text content lowers to a concatenated string, not a part
+                # list — a different verifier branch from the mixed message.
+                ChatMessage("user", (TextPart("al"), TextPart("pha"))),
             )
         )
         audit = RequestAudit(active_request_leaves(req))
         dialect.validate_request(req, audit, SimpleNamespace())
         prepared = dialect.prepare(req, audit)
 
-        mutations = (
-            lambda body: body["messages"][0].__setitem__("name", "changed"),
-            lambda body: body["messages"][0]["content"][1]["image_url"].__setitem__(
-                "detail", "low"
+        # One entry per field the verifier proves: an unexercised guard can be
+        # deleted with the suite still green, which is the weakness this
+        # verifier exists to remove, reintroduced one level up.
+        mutations: tuple[tuple[str, Callable[[Any], object]], ...] = (
+            ("name", lambda body: body["messages"][0].__setitem__("name", "changed")),
+            ("role", lambda body: body["messages"][0].__setitem__("role", "system")),
+            (
+                "text",
+                lambda body: body["messages"][0]["content"][0].__setitem__(
+                    "text", "l00k"
+                ),
             ),
-            lambda body: body["messages"][1]["tool_calls"][0].__setitem__(
-                "id", "changed"
+            (
+                "image url",
+                lambda body: body["messages"][0]["content"][1]["image_url"].__setitem__(
+                    "url", "https://example.test/other.png"
+                ),
             ),
-            lambda body: body["messages"][2].__setitem__("content", '{"ok":false}'),
+            (
+                "image detail",
+                lambda body: body["messages"][0]["content"][1]["image_url"].__setitem__(
+                    "detail", "low"
+                ),
+            ),
+            (
+                "content part count",
+                lambda body: body["messages"][0]["content"].append(
+                    {"type": "text", "text": "extra"}
+                ),
+            ),
+            (
+                "tool-call id",
+                lambda body: body["messages"][1]["tool_calls"][0].__setitem__(
+                    "id", "changed"
+                ),
+            ),
+            (
+                "tool-call name",
+                lambda body: body["messages"][1]["tool_calls"][0][
+                    "function"
+                ].__setitem__("name", "changed"),
+            ),
+            (
+                "tool-call arguments",
+                lambda body: body["messages"][1]["tool_calls"][0][
+                    "function"
+                ].__setitem__("arguments", '{"value":2}'),
+            ),
+            (
+                "tool-call count",
+                lambda body: body["messages"][1]["tool_calls"].append(
+                    {
+                        "id": "call-2",
+                        "type": "function",
+                        "function": {"name": "inspect", "arguments": "{}"},
+                    }
+                ),
+            ),
+            (
+                "tool-result id",
+                lambda body: body["messages"][2].__setitem__("tool_call_id", "changed"),
+            ),
+            (
+                "tool-result content",
+                lambda body: body["messages"][2].__setitem__("content", '{"ok":false}'),
+            ),
+            (
+                "concatenated text",
+                lambda body: body["messages"][3].__setitem__("content", "phaal"),
+            ),
+            (
+                "message count",
+                lambda body: body["messages"].append(
+                    {"role": "user", "content": "injected"}
+                ),
+            ),
+            ("message order", lambda body: body["messages"].reverse()),
         )
-        for mutate in mutations:
+        survived: list[str] = []
+        for label, mutate in mutations:
             body = cast(Any, prepared.thaw_body())
             mutate(body)
-            with pytest.raises(RequestAuditError, match="messages"):
+            try:
                 audit.finish(replace(prepared, body=body))
+            except RequestAuditError as exc:
+                assert "messages" in str(exc), f"{label}: {exc}"
+                continue
+            survived.append(label)
+        assert not survived, f"message mutations the verifier accepted: {survived}"
+
+    def test_messages_verifier_accepts_the_honest_wire_body(self) -> None:
+        dialect, _ = _dialect()
+        req = Request(
+            input=_chat(
+                ChatMessage(
+                    "user",
+                    (
+                        TextPart("look"),
+                        ImagePart(url="https://example.test/image.png", detail="high"),
+                    ),
+                    name="named-user",
+                ),
+                ChatMessage(
+                    "assistant",
+                    (ToolCallPart("call-1", "inspect", {"value": 1}),),
+                ),
+                ChatMessage("tool", (ToolResultPart("call-1", {"ok": True}),)),
+                # All-text content lowers to a concatenated string, not a part
+                # list — a different verifier branch from the mixed message.
+                ChatMessage("user", (TextPart("al"), TextPart("pha"))),
+            )
+        )
+        audit = RequestAudit(active_request_leaves(req))
+        dialect.validate_request(req, audit, SimpleNamespace())
+        prepared = dialect.prepare(req, audit)
+
+        audit.finish(prepared)
+
+    def test_messages_verifier_ignores_tool_argument_reformatting(self) -> None:
+        """Mapping arguments are serialized by the dialect, so whitespace is
+        not part of the request's meaning and must not read as a mismatch."""
+
+        dialect, _ = _dialect()
+        req = Request(
+            input=_chat(
+                ChatMessage(
+                    "assistant",
+                    (ToolCallPart("call-1", "inspect", {"value": 1}),),
+                ),
+            )
+        )
+        audit = RequestAudit(active_request_leaves(req))
+        dialect.validate_request(req, audit, SimpleNamespace())
+        prepared = dialect.prepare(req, audit)
+        body = cast(Any, prepared.thaw_body())
+        body["messages"][0]["tool_calls"][0]["function"]["arguments"] = (
+            '{ "value" : 1 }'
+        )
+
+        audit.finish(replace(prepared, body=body))
 
     def test_finished_prepared_messages_cannot_be_mutated(self) -> None:
         dialect, _ = _dialect()
@@ -718,6 +847,48 @@ class TestPreflightRejections:
             await dialect.arun(req)
 
         create.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("req", "path"),
+        [
+            (
+                Request(
+                    input=_chat(),
+                    structured_output=StructuredOutputParams(
+                        format="json_schema",
+                        schema={"type": "object"},
+                        name="",
+                    ),
+                ),
+                "structured_output.name",
+            ),
+            (
+                Request(
+                    input=_chat(),
+                    dialect_options=DialectOptions("openai_chat", {"": 1}),
+                ),
+                "dialect_options.",
+            ),
+        ],
+        ids=["empty-structured-output-name", "empty-option-key"],
+    )
+    def test_empty_wire_names_are_rejected_during_validation(
+        self, req: Request, path: str
+    ) -> None:
+        """Pin *which* layer rejects, not merely that something does.
+
+        ``finish()`` is a backstop with the same wording, so matching only the
+        message still passes with this dialect's check deleted.
+        """
+
+        dialect, _ = _dialect()
+        audit = RequestAudit(active_request_leaves(req))
+
+        dialect.validate_request(req, audit, SimpleNamespace())
+
+        decision = audit.decisions[path]
+        assert isinstance(decision, Rejected)
+        assert "non-empty" in decision.reason
 
     @pytest.mark.anyio
     async def test_execute_rejects_invalid_prepared_context(self) -> None:
