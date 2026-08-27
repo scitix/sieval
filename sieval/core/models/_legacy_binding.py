@@ -9,7 +9,7 @@ canonical ``Model.bind`` path, so it goes when the wrappers do.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
@@ -38,8 +38,117 @@ class _LegacyOpenAIBinding:
     deployment: Deployment
     pool: ConnectionPool[Any]
     runtime_plan: RuntimeBindingPlan
+    provenance_projector: "_LegacyProvenanceProjector"
     local_limiter: anyio.CapacityLimiter | None
     parent_limiter: anyio.CapacityLimiter | None
+
+
+@dataclass(frozen=True)
+class _LegacyProvenanceProjector:
+    """Project a UUID-scoped runtime plan into stable persisted evidence."""
+
+    connection_identity: ConnectionIdentity
+    runtime_binding_id: str
+    runtime_root_deployment_key: str
+    runtime_binding_plan_fingerprint: str
+    runtime_deployment_plan_fingerprint: str
+
+    def _identity_suffix(self) -> str:
+        identity_fingerprint = fingerprint_mapping(
+            {
+                "endpoint": self.connection_identity.endpoint,
+                "connection_family": self.connection_identity.connection_family,
+                "credential_scope": self.connection_identity.credential_scope,
+                "retry_policy": self.connection_identity.retry_policy,
+                "quota_scope": self.connection_identity.quota_scope,
+            }
+        )
+        return identity_fingerprint.removeprefix("sha256:")[:16]
+
+    def _stable_binding_id(
+        self,
+        runtime_plan: RuntimeBindingPlan,
+        stable_base_id: str,
+    ) -> str | None:
+        """Classify and project only wrapper-owned binding identities.
+
+        ``with_dialect`` accepts plans for sibling logical bindings.  Preserve
+        a sibling suffix in an injective, namespaced encoding.  An unrelated
+        binding ID is opaque: retaining it could persist a runtime UUID, while
+        treating it as the base binding could collapse two logical bindings.
+        """
+
+        if runtime_plan.binding_id == self.runtime_binding_id:
+            return stable_base_id
+        sibling_prefix = f"{self.runtime_binding_id}:"
+        if runtime_plan.binding_id.startswith(sibling_prefix):
+            suffix = runtime_plan.binding_id.removeprefix(sibling_prefix)
+            encoded_suffix = suffix.encode("utf-8").hex()
+            return f"{stable_base_id}:sibling:{encoded_suffix}"
+        return None
+
+    def _project_identity(
+        self, runtime_plan: RuntimeBindingPlan
+    ) -> RuntimeBindingPlan | None:
+        """Replace proven wrapper-owned identities without touching evidence."""
+
+        if runtime_plan.root_deployment_key != self.runtime_root_deployment_key:
+            return None
+        identity_suffix = self._identity_suffix()
+        stable_base_id = (
+            f"legacy:{runtime_plan.dialect_id}:"
+            f"{runtime_plan.requested_model_id}:{identity_suffix}"
+        )
+        binding_id = self._stable_binding_id(runtime_plan, stable_base_id)
+        if binding_id is None:
+            return None
+        root_deployment_key = (
+            f"legacy:{runtime_plan.deployment_fingerprint}:{identity_suffix}"
+        )
+        return replace(
+            runtime_plan,
+            binding_id=binding_id,
+            root_deployment_key=root_deployment_key,
+            connection_identity=self.connection_identity,
+        )
+
+    def __call__(self, runtime_plan: RuntimeBindingPlan) -> RuntimeBindingPlan | None:
+        """Return stable evidence only when no opaque proof was replaced.
+
+        Reconciliation owns binding/deployment plan fingerprints.  A bare
+        ``with_dialect`` call cannot interpret a changed opaque fingerprint,
+        so it must leave provenance incomplete for the composition layer to
+        fill rather than silently replacing that evidence.
+        """
+
+        if (
+            runtime_plan.binding_plan_fingerprint
+            != self.runtime_binding_plan_fingerprint
+            or runtime_plan.deployment_plan_fingerprint
+            != self.runtime_deployment_plan_fingerprint
+        ):
+            return None
+        projected_identity = self._project_identity(runtime_plan)
+        if projected_identity is None:
+            return None
+
+        semantic_plan = projected_identity.to_json_value()
+        for key in (
+            "binding_plan_fingerprint",
+            "deployment_plan_fingerprint",
+            "fingerprint",
+            "verification_fingerprint",
+        ):
+            semantic_plan.pop(key)
+        binding_plan_fingerprint = fingerprint_mapping(
+            {"legacy_provenance_plan": semantic_plan}
+        )
+        projected = replace(
+            projected_identity,
+            binding_plan_fingerprint=binding_plan_fingerprint,
+            deployment_plan_fingerprint="external:none",
+        )
+        return projected
 
 
 def _legacy_runtime_plan(
@@ -163,10 +272,33 @@ def build_legacy_openai_binding(
         deployment=deployment,
         identity=identity,
     )
+    # The UUID above is required runtime identity: independently constructed
+    # legacy wrappers must never share quota or credential ownership by
+    # accident.  Persisted provenance records the same semantic binding with
+    # only a credential category and a stable private-pool scope, so object
+    # allocation does not make equivalent run artifacts differ.
+    provenance_identity = ConnectionIdentity(
+        endpoint=endpoint,
+        connection_family="openai_sdk",
+        credential_scope=(
+            "legacy-private:explicit-credential"
+            if api_key is not None
+            else "legacy-private:environment-credential"
+        ),
+        retry_policy=f"openai-sdk:max-retries={max_retries}",
+        quota_scope="legacy-private",
+    )
     return _LegacyOpenAIBinding(
         deployment=deployment,
         pool=pool,
         runtime_plan=runtime_plan,
+        provenance_projector=_LegacyProvenanceProjector(
+            provenance_identity,
+            runtime_plan.binding_id,
+            runtime_plan.root_deployment_key,
+            runtime_plan.binding_plan_fingerprint,
+            runtime_plan.deployment_plan_fingerprint,
+        ),
         local_limiter=local_limiter,
         parent_limiter=parent_limiter,
     )

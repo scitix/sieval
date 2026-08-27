@@ -326,6 +326,127 @@ def _model_value_paths(value: object) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+def _is_uuid_scoped_legacy_plan(plan: RuntimeBindingPlan) -> bool:
+    """Return whether a plan still carries wrapper-private pool identity."""
+
+    identity = plan.connection_identity
+    quota_scope = identity.quota_scope
+    return quota_scope.startswith(
+        "legacy-private:"
+    ) and identity.credential_scope.startswith(f"{quota_scope}:")
+
+
+def _record_provenance_replacement(
+    replacements: dict[str, str],
+    ambiguous: set[str],
+    runtime_value: str,
+    stable_value: str,
+) -> None:
+    """Record a replacement, retaining collisions for fail-loud evidence checks."""
+
+    if runtime_value == stable_value:
+        return
+    if runtime_value in ambiguous:
+        return
+    previous = replacements.get(runtime_value)
+    if previous is not None and previous != stable_value:
+        del replacements[runtime_value]
+        ambiguous.add(runtime_value)
+        return
+    replacements[runtime_value] = stable_value
+
+
+def _record_plan_provenance_replacements(
+    replacements: dict[str, str],
+    ambiguous: set[str],
+    runtime_plan: RuntimeBindingPlan,
+    provenance_plan: RuntimeBindingPlan,
+) -> None:
+    """Map every runtime-only plan identity that can appear in evidence."""
+
+    pairs = (
+        (runtime_plan.binding_id, provenance_plan.binding_id),
+        (runtime_plan.root_deployment_key, provenance_plan.root_deployment_key),
+        (runtime_plan.fingerprint, provenance_plan.fingerprint),
+        (
+            runtime_plan.verification_fingerprint,
+            provenance_plan.verification_fingerprint,
+        ),
+        (
+            runtime_plan.binding_plan_fingerprint,
+            provenance_plan.binding_plan_fingerprint,
+        ),
+        (
+            runtime_plan.deployment_plan_fingerprint,
+            provenance_plan.deployment_plan_fingerprint,
+        ),
+        (
+            runtime_plan.connection_identity.credential_scope,
+            provenance_plan.connection_identity.credential_scope,
+        ),
+        (
+            runtime_plan.connection_identity.quota_scope,
+            provenance_plan.connection_identity.quota_scope,
+        ),
+    )
+    for runtime_value, stable_value in pairs:
+        _record_provenance_replacement(
+            replacements,
+            ambiguous,
+            runtime_value,
+            stable_value,
+        )
+
+
+def _replace_provenance_tokens(
+    value: JSONValue,
+    replacements: Mapping[str, str],
+) -> JSONValue:
+    """Recursively replace runtime identities, including embedded strings."""
+
+    if isinstance(value, str):
+        projected = value
+        for runtime_value in sorted(replacements, key=len, reverse=True):
+            projected = projected.replace(
+                runtime_value,
+                replacements[runtime_value],
+            )
+        return projected
+    if isinstance(value, list):
+        return [_replace_provenance_tokens(item, replacements) for item in value]
+    if isinstance(value, Mapping):
+        projected_mapping: dict[str, JSONValue] = {}
+        typed_mapping = cast(Mapping[str, JSONValue], value)
+        for key, item in typed_mapping.items():
+            projected_key = cast(str, _replace_provenance_tokens(key, replacements))
+            if projected_key in projected_mapping:
+                raise ValueError(
+                    "external provenance projection collapses evidence key "
+                    f"{projected_key!r}"
+                )
+            projected_mapping[projected_key] = _replace_provenance_tokens(
+                item, replacements
+            )
+        return projected_mapping
+    return value
+
+
+def _contains_provenance_token(value: JSONValue, token: str) -> bool:
+    """Return whether a runtime token survives anywhere in JSON evidence."""
+
+    if isinstance(value, str):
+        return token in value
+    if isinstance(value, list):
+        return any(_contains_provenance_token(item, token) for item in value)
+    if isinstance(value, Mapping):
+        typed_mapping = cast(Mapping[str, JSONValue], value)
+        return any(
+            token in key or _contains_provenance_token(item, token)
+            for key, item in typed_mapping.items()
+        )
+    return False
+
+
 class _PR1CompatibilityServingReconciler:
     """Keep existing scoring paths behind their named response guards.
 
@@ -1819,6 +1940,198 @@ class EvalSession:
                     )
                 found[plan.binding_id] = plan
         return tuple(found[key] for key in sorted(found))
+
+    def _external_provenance_plan(
+        self,
+        model: Model,
+        result: ReconcileResult,
+        binding_id: str,
+    ) -> RuntimeBindingPlan:
+        """Project a reconciled external plan without its runtime-only identity."""
+
+        runtime_plan = result.runtime_plans[binding_id]
+        if model._provenance_projector is None:
+            return runtime_plan
+        baseline = model._provenance_plan
+        if baseline is None:
+            raise ValueError(
+                f"external binding {binding_id!r} has incomplete baseline provenance"
+            )
+        source_baseline = model.runtime_plan
+        if source_baseline is None:
+            raise ValueError(f"external binding {binding_id!r} has no runtime plan")
+        binding_plan = result.binding_plans[binding_id]
+        stable_scope = ConnectionScope(
+            credential_scope=baseline.connection_identity.credential_scope,
+            retry_policy=baseline.connection_identity.retry_policy,
+            quota_scope=baseline.connection_identity.quota_scope,
+        )
+        provenance_binding_plan = dataclasses.replace(
+            binding_plan,
+            binding_id=baseline.binding_id,
+            root_deployment_key=baseline.root_deployment_key,
+            connection_scope=stable_scope,
+        )
+
+        projector = model._provenance_projector
+        replacements: dict[str, str] = {}
+        ambiguous_replacements: set[str] = set()
+        runtime_to_provenance: dict[str, str] = {}
+        _record_plan_provenance_replacements(
+            replacements,
+            ambiguous_replacements,
+            source_baseline,
+            baseline,
+        )
+        runtime_to_provenance[source_baseline.fingerprint] = baseline.fingerprint
+
+        for sources in self._task_role_model_sources.values():
+            for source in sources.values():
+                if not isinstance(source, Model) or source.runtime_plan is None:
+                    continue
+                source_plan = source.runtime_plan
+                if source_plan.root_deployment_key != runtime_plan.root_deployment_key:
+                    continue
+                if (
+                    source_plan.connection_identity != runtime_plan.connection_identity
+                    and _is_uuid_scoped_legacy_plan(source_plan)
+                ):
+                    raise ValueError(
+                        "deployment root mixes different UUID-scoped legacy "
+                        "connection identities; use separate roots"
+                    )
+                if source._provenance_projector is not None:
+                    provenance_plan = source._provenance_plan
+                    if provenance_plan is None:
+                        raise ValueError(
+                            "external legacy source has incomplete provenance: "
+                            f"{source_plan.binding_id}"
+                        )
+                elif (
+                    source_plan.connection_identity == runtime_plan.connection_identity
+                ):
+                    provenance_plan = projector(source_plan)
+                    if provenance_plan is None:
+                        raise ValueError(
+                            "external canonical source cannot be projected into "
+                            "legacy provenance: "
+                            f"{source_plan.binding_id}"
+                        )
+                else:
+                    # A genuinely canonical identity is already stable and may
+                    # remain verbatim in this legacy model's aggregate proof.
+                    provenance_plan = source_plan
+
+                previous = runtime_to_provenance.get(source_plan.fingerprint)
+                if previous is not None and previous != provenance_plan.fingerprint:
+                    raise ValueError(
+                        "external runtime plan has conflicting stable provenance "
+                        f"projections: {source_plan.fingerprint}"
+                    )
+                runtime_to_provenance[source_plan.fingerprint] = (
+                    provenance_plan.fingerprint
+                )
+                _record_plan_provenance_replacements(
+                    replacements,
+                    ambiguous_replacements,
+                    source_plan,
+                    provenance_plan,
+                )
+
+        _record_provenance_replacement(
+            replacements,
+            ambiguous_replacements,
+            runtime_plan.binding_plan_fingerprint,
+            provenance_binding_plan.fingerprint,
+        )
+        _record_provenance_replacement(
+            replacements,
+            ambiguous_replacements,
+            runtime_plan.binding_id,
+            provenance_binding_plan.binding_id,
+        )
+        _record_provenance_replacement(
+            replacements,
+            ambiguous_replacements,
+            runtime_plan.root_deployment_key,
+            provenance_binding_plan.root_deployment_key,
+        )
+        _record_provenance_replacement(
+            replacements,
+            ambiguous_replacements,
+            runtime_plan.connection_identity.credential_scope,
+            stable_scope.credential_scope,
+        )
+        _record_provenance_replacement(
+            replacements,
+            ambiguous_replacements,
+            runtime_plan.connection_identity.quota_scope,
+            stable_scope.quota_scope,
+        )
+
+        unresolved_result_tokens = {
+            runtime_plan.fingerprint,
+            runtime_plan.verification_fingerprint,
+            runtime_plan.deployment_plan_fingerprint,
+        } - replacements.keys()
+        unresolved_result_tokens.update(ambiguous_replacements)
+
+        deployment_plan = result.deployment_plans[runtime_plan.root_deployment_key]
+        outcome_evidence: dict[CapabilityKey, Mapping[str, JSONValue]] = {}
+        for capability, evidence in deployment_plan.outcome_evidence.items():
+            plan_fingerprints = evidence.get("plan_fingerprints")
+            if evidence.get("source") == "external_runtime_plans":
+                if not isinstance(plan_fingerprints, list) or not all(
+                    isinstance(fingerprint, str) for fingerprint in plan_fingerprints
+                ):
+                    raise TypeError(
+                        "external runtime plan evidence must contain string "
+                        "plan_fingerprints"
+                    )
+                typed_fingerprints = cast(list[str], plan_fingerprints)
+                missing = sorted(set(typed_fingerprints) - runtime_to_provenance.keys())
+                if missing:
+                    raise ValueError(
+                        "external provenance projection cannot resolve runtime plan "
+                        "fingerprint(s): " + ", ".join(missing)
+                    )
+
+            projected = _replace_provenance_tokens(evidence, replacements)
+            assert isinstance(projected, Mapping)
+            if evidence.get("source") == "external_runtime_plans":
+                projected_fingerprints = projected.get("plan_fingerprints")
+                assert isinstance(projected_fingerprints, list)
+                projected = {
+                    **projected,
+                    "plan_fingerprints": sorted(
+                        {cast(str, item) for item in projected_fingerprints}
+                    ),
+                }
+            leaked = sorted(
+                token
+                for token in unresolved_result_tokens
+                if _contains_provenance_token(cast(JSONValue, projected), token)
+            )
+            if leaked:
+                raise ValueError(
+                    "external provenance evidence contains unresolved runtime "
+                    "fingerprint(s): " + ", ".join(leaked)
+                )
+            outcome_evidence[capability] = cast(Mapping[str, JSONValue], projected)
+        provenance_deployment_plan = dataclasses.replace(
+            deployment_plan,
+            root_deployment_key=baseline.root_deployment_key,
+            outcome_evidence=outcome_evidence,
+        )
+
+        return dataclasses.replace(
+            runtime_plan,
+            binding_id=baseline.binding_id,
+            root_deployment_key=baseline.root_deployment_key,
+            connection_identity=baseline.connection_identity,
+            binding_plan_fingerprint=provenance_binding_plan.fingerprint,
+            deployment_plan_fingerprint=provenance_deployment_plan.fingerprint,
+        )
 
     def _validate_external_runtime_obligations(self, result: ReconcileResult) -> None:
         """Reject a rebound external plan that weakens its existing guarantees."""
@@ -3521,9 +3834,15 @@ class EvalSession:
                         binding.binding_id,
                     )
                     runtime_plan = result.runtime_plans[binding.binding_id]
+                    provenance_plan = self._external_provenance_plan(
+                        live_model,
+                        result,
+                        binding.binding_id,
+                    )
                     rebound = live_model.with_dialect(
                         runtime_plan.dialect_id, runtime_plan
                     )
+                    rebound = rebound._with_provenance_plan(provenance_plan)
                     if self.deterministic:
                         rebound = _apply_request_seed_decision_to_model(
                             rebound,

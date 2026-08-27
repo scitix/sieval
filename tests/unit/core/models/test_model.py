@@ -12,6 +12,7 @@ AI-Generated Code - Claude Fable 5 (Anthropic)
 
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -95,6 +96,205 @@ class TestModelUnique:
         assert first.runtime_plan.fingerprint != second.runtime_plan.fingerprint
         assert "first-secret" not in repr(first.pool.identity)
         assert "second-secret" not in repr(second.pool.identity)
+
+    @pytest.mark.parametrize("model_type", [ChatModel, GenModel])
+    def test_equivalent_legacy_models_persist_stable_provenance(self, model_type):
+        first = model_type(
+            model="same-model",
+            api_base="https://same.example/v1",
+            api_key="same-secret",
+            max_retries=4,
+        )
+        second = model_type(
+            model="same-model",
+            api_base="https://same.example/v1",
+            api_key="same-secret",
+            max_retries=4,
+        )
+
+        assert first.pool.identity != second.pool.identity
+        assert first.runtime_plan is not None
+        assert second.runtime_plan is not None
+        assert first.runtime_plan.fingerprint != second.runtime_plan.fingerprint
+
+        first_provenance = first._provenance(Response(texts=("first",)))
+        second_provenance = second._provenance(Response(texts=("second",)))
+
+        assert first_provenance == second_provenance
+        assert (
+            first_provenance.capabilities.plan_fingerprint
+            != first.runtime_plan.fingerprint
+        )
+
+    def test_legacy_provenance_projection_survives_shape_derivation(self, gen_model):
+        plan = gen_model.runtime_plan
+        assert plan is not None
+        expected = gen_model._provenance(Response(texts=("base",))).capabilities
+        assert expected is not None
+
+        derived = gen_model.with_args(temperature=0.25)
+        rebound = gen_model.with_dialect(gen_model.dialect_id, plan)
+        compat = rebound.as_compat_type(GenModel)
+
+        for model in (derived, rebound, compat):
+            actual = model._provenance(Response(texts=("derived",))).capabilities
+            assert actual == expected
+
+    def test_canonical_bind_uses_the_runtime_plan_fingerprints(self, gen_model):
+        plan = gen_model.runtime_plan
+        assert plan is not None
+        canonical = Model.bind(gen_model.deployment, gen_model.pool, plan)
+
+        evidence = canonical._provenance(Response(texts=("canonical",))).capabilities
+
+        assert evidence is not None
+        assert evidence.plan_fingerprint == plan.fingerprint
+        assert evidence.verification_fingerprint == plan.verification_fingerprint
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "requested_model_id",
+            "dialect_id",
+            "declared_capabilities",
+            "effective_capabilities",
+            "available_capabilities",
+            "capability_minimums",
+            "request_defaults",
+            "required_output_channels",
+            "request_checks",
+            "deployment_fingerprint",
+            "resolved_route",
+            "connection_identity.endpoint",
+            "connection_identity.connection_family",
+            "connection_identity.retry_policy",
+        ],
+    )
+    def test_rebind_rejects_provenance_projection_semantic_drift(
+        self, gen_model, field
+    ):
+        plan = gen_model.runtime_plan
+        assert plan is not None
+        check = DeferredCheck(
+            "sampled_logprobs",
+            CheckStage.REQUEST,
+            "validate_response_channel",
+            "changed provenance guard",
+        )
+        variants = {
+            "requested_model_id": replace(plan, requested_model_id="other-model"),
+            "dialect_id": replace(plan, dialect_id="other-dialect"),
+            "declared_capabilities": replace(
+                plan, declared_capabilities={"sampled_logprobs": {}}
+            ),
+            "effective_capabilities": replace(
+                plan, effective_capabilities={"sampled_logprobs": {}}
+            ),
+            "available_capabilities": replace(plan, available_capabilities=frozenset()),
+            "capability_minimums": replace(
+                plan, capability_minimums={"top_logprobs": {"minimum": 2}}
+            ),
+            "request_defaults": replace(
+                plan,
+                request_defaults=RequestDefaults({"sampling.temperature": 0.25}),
+            ),
+            "required_output_channels": replace(
+                plan, required_output_channels=frozenset({"reasoning"})
+            ),
+            "request_checks": replace(plan, request_checks=(check,)),
+            "deployment_fingerprint": replace(
+                plan, deployment_fingerprint="sha256:other"
+            ),
+            "resolved_route": replace(
+                plan,
+                resolved_route=replace(plan.resolved_route, service_role="other"),
+            ),
+            "connection_identity.endpoint": replace(
+                plan,
+                connection_identity=replace(
+                    plan.connection_identity,
+                    endpoint="https://other.example/v1",
+                ),
+            ),
+            "connection_identity.connection_family": replace(
+                plan,
+                connection_identity=replace(
+                    plan.connection_identity,
+                    connection_family="async_http_json",
+                ),
+            ),
+            "connection_identity.retry_policy": replace(
+                plan,
+                connection_identity=replace(
+                    plan.connection_identity,
+                    retry_policy="other-retry-policy",
+                ),
+            ),
+        }
+
+        with pytest.raises(ValueError, match=field.replace(".", r"\.")):
+            gen_model._with_provenance_plan(variants[field])
+
+    def test_noop_rebind_preserves_full_projected_provenance(self, gen_model):
+        plan = gen_model.runtime_plan
+        assert plan is not None
+        current_provenance = gen_model._provenance_plan
+        assert current_provenance is not None
+        full_projection = replace(
+            current_provenance,
+            binding_plan_fingerprint="stable:reconciled-binding",
+            deployment_plan_fingerprint="stable:reconciled-deployment",
+        )
+        rebound = gen_model._with_provenance_plan(full_projection)
+
+        repeated = rebound.with_dialect(plan.dialect_id, plan)
+
+        assert repeated._provenance_plan == full_projection
+        assert (
+            repeated._provenance(Response(texts=("repeated",))).capabilities
+            == rebound._provenance(Response(texts=("rebound",))).capabilities
+        )
+
+    def test_canonical_rebind_rejects_non_runtime_provenance(self, gen_model):
+        plan = gen_model.runtime_plan
+        assert plan is not None
+        canonical = Model.bind(gen_model.deployment, gen_model.pool, plan)
+        projected = replace(
+            plan,
+            connection_identity=replace(
+                plan.connection_identity,
+                credential_scope="stable:credential",
+                quota_scope="stable:quota",
+            ),
+        )
+
+        with pytest.raises(ValueError, match="persist their runtime plan verbatim"):
+            canonical._with_provenance_plan(projected)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "field",
+        ["binding_plan_fingerprint", "deployment_plan_fingerprint"],
+    )
+    async def test_opaque_rebind_requires_provenance_before_io(self, gen_model, field):
+        plan = gen_model.runtime_plan
+        assert plan is not None
+        rebound = gen_model.with_dialect(
+            plan.dialect_id,
+            replace(plan, **{field: f"opaque:{field}"}),
+        )
+        execute = AsyncMock(return_value=Response(texts=("unexpected",)))
+
+        assert rebound._provenance_plan is None
+        with pytest.raises(RuntimeError, match="provenance is incomplete"):
+            rebound._provenance(Response(texts=("not persisted",)))
+        with (
+            patch.object(rebound._dialect, "execute", execute),
+            pytest.raises(RuntimeError, match="provenance is incomplete"),
+        ):
+            await rebound.arun(Request(input=CompletionInput("prompt")))
+
+        execute.assert_not_awaited()
 
     def test_legacy_runtime_fingerprint_covers_every_plan_field(self, gen_model):
         plan = gen_model.runtime_plan

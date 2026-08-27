@@ -18,7 +18,7 @@ import copy
 from collections.abc import Mapping
 from dataclasses import fields, replace
 from types import TracebackType
-from typing import Any, Self, TypedDict, cast
+from typing import Any, Protocol, Self, TypedDict, cast
 
 import anyio
 
@@ -111,6 +111,50 @@ _RESPONSE_CHANNEL_BY_CAPABILITY: Mapping[str, str] = {
 
 _REQUEST_CHECK_VERIFIERS = frozenset({"validate_response_channel"})
 _REMOVED_SUBCLASS_HOOKS = frozenset({"_agenerate_impl", "_alogprobs_impl"})
+
+
+class _ProvenanceProjector(Protocol):
+    """Legacy seam for deriving stable evidence from a runtime plan."""
+
+    def __call__(
+        self, runtime_plan: RuntimeBindingPlan
+    ) -> RuntimeBindingPlan | None: ...
+
+
+def _validate_provenance_plan(
+    runtime_plan: RuntimeBindingPlan,
+    provenance_plan: RuntimeBindingPlan,
+) -> None:
+    """Reject projections that change request or capability semantics."""
+
+    semantic_fields = (
+        "requested_model_id",
+        "dialect_id",
+        "declared_capabilities",
+        "effective_capabilities",
+        "available_capabilities",
+        "capability_minimums",
+        "request_defaults",
+        "required_output_channels",
+        "request_checks",
+        "deployment_fingerprint",
+        "resolved_route",
+    )
+    changed = [
+        name
+        for name in semantic_fields
+        if getattr(provenance_plan, name) != getattr(runtime_plan, name)
+    ]
+    changed.extend(
+        f"connection_identity.{name}"
+        for name in ("endpoint", "connection_family", "retry_policy")
+        if getattr(provenance_plan.connection_identity, name)
+        != getattr(runtime_plan.connection_identity, name)
+    )
+    if changed:
+        raise ValueError(
+            "provenance plan changes runtime semantics: " + ", ".join(changed)
+        )
 
 
 def _checked_builder_defaults(values: Mapping[str, object]) -> dict[str, object]:
@@ -240,6 +284,8 @@ class Model:
         extra: Mapping[str, JSONValue] | None,
         api_base: str | None,
         lifecycle_owner: "Model | None",
+        provenance_projector: _ProvenanceProjector | None = None,
+        provenance_plan: RuntimeBindingPlan | None = None,
     ) -> None:
         if dialect.dialect_id != runtime_plan.dialect_id:
             raise ValueError("bound dialect does not match the runtime plan")
@@ -258,6 +304,19 @@ class Model:
         self._parent_limiter = parent_limiter
         self._lifecycle_owner = lifecycle_owner
         self._client = pool.connection  # borrowed compatibility view; never owned here
+        # Canonical bindings persist their runtime plan verbatim. Legacy
+        # wrappers retain volatile pool ownership at runtime while projecting
+        # every derived/reconciled plan into stable persisted evidence.
+        self._provenance_projector = provenance_projector
+        if provenance_plan is None:
+            provenance_plan = (
+                runtime_plan
+                if provenance_projector is None
+                else provenance_projector(runtime_plan)
+            )
+        if provenance_plan is not None:
+            _validate_provenance_plan(runtime_plan, provenance_plan)
+        self._provenance_plan = provenance_plan
 
     @property
     def dialect_id(self) -> str:
@@ -357,6 +416,9 @@ class Model:
             self._pool,
             runtime_plan,
         )
+        provenance_plan = (
+            self._provenance_plan if runtime_plan == self._runtime_plan else None
+        )
         result = object.__new__(Model)
         result._initialize(
             deployment=self._deployment,
@@ -369,8 +431,38 @@ class Model:
             extra=self._extra,
             api_base=self._api_base,
             lifecycle_owner=self._lifecycle_owner,
+            provenance_projector=self._provenance_projector,
+            provenance_plan=provenance_plan,
         )
         return result
+
+    def _with_provenance_plan(
+        self,
+        provenance_plan: RuntimeBindingPlan,
+    ) -> Self:
+        """Return a copy carrying trusted composition-layer provenance."""
+
+        if self._provenance_projector is None and provenance_plan != self._runtime_plan:
+            raise ValueError(
+                "canonical models must persist their runtime plan verbatim"
+            )
+        _validate_provenance_plan(self._runtime_plan, provenance_plan)
+        if provenance_plan == self._provenance_plan:
+            return self
+        result = copy.copy(self)
+        result._provenance_plan = provenance_plan
+        return result
+
+    def _require_provenance_plan(self) -> RuntimeBindingPlan:
+        """Return complete persisted evidence or fail before request I/O."""
+
+        provenance_plan = self._provenance_plan
+        if provenance_plan is None:
+            raise RuntimeError(
+                "model provenance is incomplete: the reconciled binding and "
+                "deployment evidence must be attached by the composition layer"
+            )
+        return provenance_plan
 
     def as_compat_type(self, model_type: type["Model"]) -> "Model":
         """Expose a truthful one-cycle wrapper over this exact binding.
@@ -405,6 +497,8 @@ class Model:
             extra=self._extra,
             api_base=self._api_base,
             lifecycle_owner=None,
+            provenance_projector=self._provenance_projector,
+            provenance_plan=self._provenance_plan,
         )
         return result
 
@@ -496,6 +590,7 @@ class Model:
 
         if not isinstance(req, Request):
             raise TypeError(f"arun requires Request, got {type(req).__name__}")
+        self._require_provenance_plan()
         projected = _apply_request_defaults(req, self._runtime_plan.request_defaults)
         validate_request_invariants(projected)
         validate_runtime_binding_plan(self._runtime_plan, projected)
@@ -562,6 +657,7 @@ class Model:
 
     def _provenance(self, response: Response) -> ModelProvenance:
         plan = self._runtime_plan
+        provenance_plan = self._require_provenance_plan()
         deployment = self._deployment
         return ModelProvenance(
             dialect_id=plan.dialect_id,
@@ -577,8 +673,8 @@ class Model:
             capabilities=CapabilityEvidence(
                 declared=plan.declared_capabilities,
                 effective=plan.effective_capabilities,
-                plan_fingerprint=plan.fingerprint,
-                verification_fingerprint=plan.verification_fingerprint,
+                plan_fingerprint=provenance_plan.fingerprint,
+                verification_fingerprint=provenance_plan.verification_fingerprint,
             ),
         )
 

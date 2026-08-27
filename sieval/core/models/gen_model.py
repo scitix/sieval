@@ -65,6 +65,7 @@ class GenModel(Model):
             extra=extra,
             api_base=api_base,
             lifecycle_owner=self,
+            provenance_projector=binding.provenance_projector,
         )
 
     def _build_default_transport(self) -> Dialect:
