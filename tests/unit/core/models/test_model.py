@@ -10,7 +10,7 @@ Response -> ModelOutput bridge.
 AI-Generated Code - Claude Fable 5 (Anthropic)
 """
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -20,6 +20,8 @@ from sieval.core.models import (
     ChatInput,
     ChatModel,
     CompletionInput,
+    ConnectionIdentity,
+    ConnectionPool,
     DialectOptions,
     GenModel,
     InputScoringResult,
@@ -39,8 +41,18 @@ from sieval.core.models import (
 )
 from sieval.core.models._legacy_bridge import response_to_model_output
 from sieval.core.models.dialect import DialectError
-from sieval.core.models.model import _apply_request_defaults
-from sieval.core.models.reconcile import CheckStage, DeferredCheck
+from sieval.core.models.model import (
+    _PROVENANCE_COMPUTED_PLAN_FIELDS,
+    _PROVENANCE_PROJECTABLE_CHECK_FIELDS,
+    _PROVENANCE_PROJECTABLE_CONNECTION_FIELDS,
+    _PROVENANCE_PROJECTABLE_PLAN_FIELDS,
+    _PROVENANCE_SEMANTIC_CHECK_FIELDS,
+    _PROVENANCE_SEMANTIC_CONNECTION_FIELDS,
+    _PROVENANCE_SEMANTIC_PLAN_FIELDS,
+    _PROVENANCE_SPECIAL_PLAN_FIELDS,
+    _apply_request_defaults,
+)
+from sieval.core.models.reconcile import CheckStage, DeferredCheck, RuntimeBindingPlan
 
 
 # ---------------------------------------------------------------------------
@@ -140,16 +152,90 @@ class TestModelUnique:
             actual = model._provenance(Response(texts=("derived",))).capabilities
             assert actual == expected
 
-    def test_canonical_bind_uses_the_runtime_plan_fingerprints(self, gen_model):
+    def test_bind_preserves_uuid_scoped_legacy_provenance_policy(self, gen_model):
         plan = gen_model.runtime_plan
         assert plan is not None
-        canonical = Model.bind(gen_model.deployment, gen_model.pool, plan)
+        rebound = Model.bind(gen_model.deployment, gen_model.pool, plan)
 
-        evidence = canonical._provenance(Response(texts=("canonical",))).capabilities
+        evidence = rebound._provenance(Response(texts=("rebound",))).capabilities
+        expected = gen_model._provenance(Response(texts=("legacy",))).capabilities
 
         assert evidence is not None
-        assert evidence.plan_fingerprint == plan.fingerprint
-        assert evidence.verification_fingerprint == plan.verification_fingerprint
+        assert evidence == expected
+        assert evidence.plan_fingerprint != plan.fingerprint
+        assert rebound._provenance_projector is not None
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("binding_plan_fingerprint", "opaque:reconciled-binding"),
+            ("deployment_plan_fingerprint", "opaque:reconciled-deployment"),
+        ],
+    )
+    def test_bind_rejects_reconciled_legacy_plan_without_stable_provenance(
+        self, gen_model, field, value
+    ):
+        plan = gen_model.runtime_plan
+        assert plan is not None
+        reconciled = replace(plan, **{field: value})
+
+        with pytest.raises(ValueError, match="opaque reconciled provenance"):
+            Model.bind(gen_model.deployment, gen_model.pool, reconciled)
+
+    @pytest.mark.parametrize(
+        ("quota_scope", "credential_scope", "message"),
+        [
+            (
+                "legacy-private:not-a-uuid",
+                "legacy-private:not-a-uuid:explicit-credential",
+                "invalid runtime UUID",
+            ),
+            (
+                "legacy-private:" + "0" * 32,
+                "legacy-private:" + "1" * 32 + ":explicit-credential",
+                "mismatched credential and quota scopes",
+            ),
+            (
+                "legacy-private:" + "0" * 32,
+                "legacy-private:" + "0" * 32 + ":unknown-credential",
+                "invalid credential category",
+            ),
+        ],
+    )
+    def test_bind_rejects_malformed_legacy_private_identity(
+        self, gen_model, quota_scope, credential_scope, message
+    ):
+        plan = gen_model.runtime_plan
+        assert plan is not None
+        malformed_identity = replace(
+            plan.connection_identity,
+            quota_scope=quota_scope,
+            credential_scope=credential_scope,
+        )
+        malformed_plan = replace(plan, connection_identity=malformed_identity)
+        malformed_pool = ConnectionPool(
+            gen_model.pool.connection,
+            malformed_identity,
+            gen_model.pool.shared_limiter,
+        )
+
+        with pytest.raises(ValueError, match=message):
+            Model.bind(gen_model.deployment, malformed_pool, malformed_plan)
+
+    def test_provenance_policy_classifies_every_runtime_plan_field(self) -> None:
+        assert {item.name for item in fields(RuntimeBindingPlan)} == (
+            _PROVENANCE_PROJECTABLE_PLAN_FIELDS
+            | _PROVENANCE_SEMANTIC_PLAN_FIELDS
+            | _PROVENANCE_SPECIAL_PLAN_FIELDS
+            | _PROVENANCE_COMPUTED_PLAN_FIELDS
+        )
+        assert {item.name for item in fields(ConnectionIdentity)} == (
+            _PROVENANCE_PROJECTABLE_CONNECTION_FIELDS
+            | _PROVENANCE_SEMANTIC_CONNECTION_FIELDS
+        )
+        assert {item.name for item in fields(DeferredCheck)} == (
+            _PROVENANCE_PROJECTABLE_CHECK_FIELDS | _PROVENANCE_SEMANTIC_CHECK_FIELDS
+        )
 
     @pytest.mark.parametrize(
         "field",
@@ -235,6 +321,30 @@ class TestModelUnique:
         with pytest.raises(ValueError, match=field.replace(".", r"\.")):
             gen_model._with_provenance_plan(variants[field])
 
+    @pytest.mark.parametrize("projected_value", [True, 1.0])
+    def test_rebind_compares_json_semantics_without_numeric_coercion(
+        self, gen_model, projected_value
+    ):
+        plan = gen_model.runtime_plan
+        assert plan is not None
+        runtime_plan = replace(
+            plan,
+            request_defaults=RequestDefaults({"sampling.temperature": 1}),
+        )
+        rebound = gen_model.with_dialect(plan.dialect_id, runtime_plan)
+        provenance_plan = rebound._provenance_plan
+        assert provenance_plan is not None
+
+        with pytest.raises(ValueError, match="request_defaults"):
+            rebound._with_provenance_plan(
+                replace(
+                    provenance_plan,
+                    request_defaults=RequestDefaults(
+                        {"sampling.temperature": projected_value}
+                    ),
+                )
+            )
+
     def test_noop_rebind_preserves_full_projected_provenance(self, gen_model):
         plan = gen_model.runtime_plan
         assert plan is not None
@@ -255,10 +365,53 @@ class TestModelUnique:
             == rebound._provenance(Response(texts=("rebound",))).capabilities
         )
 
-    def test_canonical_rebind_rejects_non_runtime_provenance(self, gen_model):
+    def test_provenance_projection_may_stabilize_only_check_reason(self, gen_model):
         plan = gen_model.runtime_plan
         assert plan is not None
-        canonical = Model.bind(gen_model.deployment, gen_model.pool, plan)
+        runtime_check = DeferredCheck(
+            "sampled_logprobs",
+            CheckStage.REQUEST,
+            "validate_response_channel",
+            f"runtime root {plan.root_deployment_key}",
+        )
+        runtime_plan = replace(plan, request_checks=(runtime_check,))
+        rebound = gen_model.with_dialect(plan.dialect_id, runtime_plan)
+        provenance_plan = rebound._provenance_plan
+        assert provenance_plan is not None
+        stable_check = replace(
+            provenance_plan.request_checks[0],
+            reason=f"stable root {provenance_plan.root_deployment_key}",
+        )
+
+        projected = rebound._with_provenance_plan(
+            replace(provenance_plan, request_checks=(stable_check,))
+        )
+
+        assert projected._provenance_plan is not None
+        assert projected._provenance_plan.request_checks == (stable_check,)
+
+    def test_canonical_rebind_rejects_non_runtime_provenance(self, gen_model):
+        legacy_plan = gen_model.runtime_plan
+        assert legacy_plan is not None
+        canonical_identity = ConnectionIdentity(
+            endpoint=legacy_plan.connection_identity.endpoint,
+            connection_family=legacy_plan.connection_identity.connection_family,
+            credential_scope="canonical:explicit-credential",
+            retry_policy=legacy_plan.connection_identity.retry_policy,
+            quota_scope="canonical:quota",
+        )
+        plan = replace(
+            legacy_plan,
+            binding_id="model:canonical",
+            root_deployment_key="model:canonical",
+            connection_identity=canonical_identity,
+        )
+        pool = ConnectionPool(
+            gen_model.pool.connection,
+            canonical_identity,
+            gen_model.pool.shared_limiter,
+        )
+        canonical = Model.bind(gen_model.deployment, pool, plan)
         projected = replace(
             plan,
             connection_identity=replace(
@@ -299,24 +452,32 @@ class TestModelUnique:
     def test_legacy_runtime_fingerprint_covers_every_plan_field(self, gen_model):
         plan = gen_model.runtime_plan
         assert plan is not None
-        variants = (
-            replace(plan, binding_id=f"{plan.binding_id}:changed"),
-            replace(plan, root_deployment_key=f"{plan.root_deployment_key}:changed"),
-            replace(plan, requested_model_id="changed-model"),
-            replace(plan, dialect_id="changed-dialect"),
-            replace(plan, declared_capabilities={"sampled_logprobs": {}}),
-            replace(plan, effective_capabilities={"sampled_logprobs": {}}),
-            replace(plan, available_capabilities=frozenset()),
-            replace(
+        variants = {
+            "binding_id": replace(plan, binding_id=f"{plan.binding_id}:changed"),
+            "root_deployment_key": replace(
+                plan, root_deployment_key=f"{plan.root_deployment_key}:changed"
+            ),
+            "requested_model_id": replace(plan, requested_model_id="changed-model"),
+            "dialect_id": replace(plan, dialect_id="changed-dialect"),
+            "declared_capabilities": replace(
+                plan, declared_capabilities={"sampled_logprobs": {}}
+            ),
+            "effective_capabilities": replace(
+                plan, effective_capabilities={"sampled_logprobs": {}}
+            ),
+            "available_capabilities": replace(plan, available_capabilities=frozenset()),
+            "capability_minimums": replace(
                 plan,
                 capability_minimums={"top_logprobs": {"minimum": 2}},
             ),
-            replace(
+            "request_defaults": replace(
                 plan,
                 request_defaults=RequestDefaults({"sampling.temperature": 0.25}),
             ),
-            replace(plan, required_output_channels=frozenset({"reasoning"})),
-            replace(
+            "required_output_channels": replace(
+                plan, required_output_channels=frozenset({"reasoning"})
+            ),
+            "request_checks": replace(
                 plan,
                 request_checks=(
                     DeferredCheck(
@@ -327,30 +488,72 @@ class TestModelUnique:
                     ),
                 ),
             ),
-            replace(plan, deployment_fingerprint="sha256:changed-deployment"),
-            replace(
+            "deployment_fingerprint": replace(
+                plan, deployment_fingerprint="sha256:changed-deployment"
+            ),
+            "resolved_route": replace(
                 plan,
                 resolved_route=replace(
                     plan.resolved_route,
                     service_role="changed-role",
                 ),
             ),
-            replace(
+            "connection_identity": replace(
                 plan,
                 connection_identity=replace(
                     plan.connection_identity,
                     quota_scope="changed-quota",
                 ),
             ),
-            replace(plan, binding_plan_fingerprint="sha256:changed-binding-plan"),
-            replace(
+            "binding_plan_fingerprint": replace(
+                plan, binding_plan_fingerprint="sha256:changed-binding-plan"
+            ),
+            "deployment_plan_fingerprint": replace(
                 plan,
                 deployment_plan_fingerprint="sha256:changed-deployment-plan",
             ),
-        )
+        }
 
-        fingerprints = {plan.fingerprint, *(item.fingerprint for item in variants)}
+        assert set(variants) == {
+            item.name for item in fields(RuntimeBindingPlan) if item.init
+        }
+
+        fingerprints = {
+            plan.fingerprint,
+            *(item.fingerprint for item in variants.values()),
+        }
         assert len(fingerprints) == len(variants) + 1
+
+        identity_variants = {
+            "endpoint": replace(
+                plan.connection_identity,
+                endpoint="https://changed.example/v1",
+            ),
+            "connection_family": replace(
+                plan.connection_identity,
+                connection_family="async_http_json",
+            ),
+            "credential_scope": replace(
+                plan.connection_identity,
+                credential_scope="changed-credential",
+            ),
+            "retry_policy": replace(
+                plan.connection_identity,
+                retry_policy="changed-retry",
+            ),
+            "quota_scope": replace(
+                plan.connection_identity,
+                quota_scope="changed-quota",
+            ),
+        }
+        assert set(identity_variants) == {
+            item.name for item in fields(ConnectionIdentity) if item.init
+        }
+        identity_fingerprints = {
+            replace(plan, connection_identity=identity).fingerprint
+            for identity in identity_variants.values()
+        }
+        assert len(identity_fingerprints) == len(identity_variants)
 
     def test_as_compat_type_rebuilds_truthful_non_owning_wrapper(self, gen_model):
         plan = gen_model.runtime_plan

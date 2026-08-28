@@ -6,6 +6,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
 import dataclasses
+import hashlib
 import json
 import re
 import types
@@ -38,11 +39,13 @@ from sieval.cli.leaderboard.session import (
     _diff_lines,
     _format_comment_header,
     _reify_cli_overrides,
+    _replace_provenance_tokens,
     _resolve_deterministic_request_seed,
     _sort_versions,
     _split_header,
     _strip_header,
     _strip_noncomparable_fields,
+    _validate_external_provenance_schema,
     arun_session,
     resolve_deterministic,
     run_session,
@@ -53,7 +56,12 @@ from sieval.cli.validation import _VALID_OPERATIONS
 from sieval.core.models.connection_factory import DEFAULT_REQUEST_TIMEOUT
 from sieval.core.models.dialect_registry import RequestSeedSupport
 from sieval.core.models.model import Model
-from sieval.core.models.reconcile import CheckStage, Configured, DeferredCheck
+from sieval.core.models.reconcile import (
+    CannotVerify,
+    CheckStage,
+    Configured,
+    DeferredCheck,
+)
 from sieval.core.models.requirements import (
     AggregatedTaskRequirements,
     InlineModelBinding,
@@ -1627,6 +1635,35 @@ class TestSetupDatasetsErrors:
 # RFC #25 pre-launch requirement composition and reconciliation
 # ===================================================================
 class TestPrelaunchReconciliation:
+    def test_external_provenance_policy_classifies_every_projected_field(
+        self,
+    ) -> None:
+        _validate_external_provenance_schema()
+
+    def test_external_provenance_projection_rejects_key_collisions(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="external provenance projection collapses evidence key 'stable'",
+        ):
+            _replace_provenance_tokens(
+                {"runtime": "first", "stable": "second"},
+                {"runtime": "stable"},
+            )
+
+    def test_external_provenance_projection_does_not_cascade_replacements(
+        self,
+    ) -> None:
+        assert (
+            _replace_provenance_tokens(
+                "runtime-long",
+                {
+                    "runtime-long": "runtime-short",
+                    "runtime-short": "stable",
+                },
+            )
+            == "runtime-short"
+        )
+
     class ChatTask:
         model_type = "chat"
 
@@ -4803,45 +4840,44 @@ tasks:
     ) -> None:
         from sieval.core.models import ChatModel, GenModel, Response
 
-        runtime_by_root: dict[str, Any] = {}
+        reconciler_roots: list[str] = []
+        reconciler_requirement_sources: list[tuple[str, ...]] = []
 
-        class RootEchoReconciler:
+        class StableInputReconciler:
             def reconcile(self, requirements, deployment):
-                if (
-                    not requirements
-                    or deployment.root_deployment_key not in runtime_by_root
-                ):
+                root = deployment.root_deployment_key
+                if not requirements or not root.startswith("legacy:"):
                     return {}
-                runtime_plan = runtime_by_root[deployment.root_deployment_key]
-                return {
-                    requirement.capability: Configured(
-                        evidence={
-                            "runtime_root": deployment.root_deployment_key,
-                            "runtime_binding": runtime_plan.binding_id,
-                            "fingerprints": {
-                                "plan": runtime_plan.fingerprint,
-                                "verification": runtime_plan.verification_fingerprint,
-                                "binding": runtime_plan.binding_plan_fingerprint,
-                                "deployment": (
-                                    runtime_plan.deployment_plan_fingerprint
-                                ),
-                            },
-                            "connection_scopes": [
-                                runtime_plan.connection_identity.credential_scope,
-                                runtime_plan.connection_identity.quota_scope,
-                            ],
-                            "nested": [
-                                {
-                                    "embedded": (
-                                        f"root={deployment.root_deployment_key};"
-                                        f"binding={runtime_plan.binding_id}"
-                                    )
-                                }
-                            ],
-                        }
-                    )
+                reconciler_roots.append(root)
+                sources = tuple(
+                    source
                     for requirement in requirements
-                }
+                    for source in requirement.sources
+                )
+                reconciler_requirement_sources.append(sources)
+                suffix = root.rsplit(":", 1)[-1]
+                payload = json.dumps(
+                    [requirement.to_json_value() for requirement in requirements],
+                    sort_keys=True,
+                )
+                digest = hashlib.sha256(f"{root}:{payload}".encode()).hexdigest()
+                outcomes = {}
+                for requirement in requirements:
+                    if requirement.capability == "top_logprobs":
+                        outcomes[requirement.capability] = CannotVerify(
+                            CheckStage.REQUEST,
+                            "validate_response_channel",
+                            f"stable-root-suffix={suffix};digest={digest}",
+                        )
+                    else:
+                        outcomes[requirement.capability] = Configured(
+                            evidence={
+                                "semantic_root": root,
+                                "derived_suffix": suffix,
+                                "derived_digest": digest,
+                            }
+                        )
+                return outcomes
 
         model_type = ChatModel if model_type_name == "chat" else GenModel
 
@@ -4880,27 +4916,54 @@ tasks:
         )
         assert first.runtime_plan is not None
         assert second.runtime_plan is not None
-        runtime_by_root.update(
-            {
-                first.runtime_plan.root_deployment_key: first.runtime_plan,
-                second.runtime_plan.root_deployment_key: second.runtime_plan,
-            }
+
+        external_input = (
+            InputKind.CHAT if model_type is ChatModel else InputKind.COMPLETION
         )
+
+        class RuntimeIdentitySourceTask:
+            model_type = "chat"
+
+            def __init__(self, *, grader=None, models_by_role=None):
+                del grader, models_by_role
+
+            @classmethod
+            def model_requirements_for(cls, context):
+                grader_binding = context.model_bindings["grader"]
+                return (
+                    TaskModelRequirement(
+                        role="candidate",
+                        binding=context.model_bindings["candidate"],
+                        requires=TaskRequirements(input=InputKind.CHAT),
+                        source_task="candidate",
+                    ),
+                    TaskModelRequirement(
+                        role="grader",
+                        binding=grader_binding,
+                        requires=TaskRequirements(
+                            input=external_input,
+                            sampled_logprobs=True,
+                        ),
+                        source_task=(
+                            f"runtime-source:{grader_binding.root_deployment_key}"
+                        ),
+                    ),
+                )
+
         session = EvalSession(
             config_path,
-            serving_reconciler=RootEchoReconciler(),
+            serving_reconciler=StableInputReconciler(),
         )
         tasks = cast(dict, session.config["tasks"])
         cast(dict, cast(dict, tasks["judged_a"])["args"])["grader"] = first
         cast(dict, cast(dict, tasks["judged_b"])["args"])["grader"] = second
-        task_type = self.JudgeTask if model_type is ChatModel else self.ScoringJudgeTask
         candidate_close = AsyncMock()
 
         try:
             with (
                 patch(
                     "sieval.cli.leaderboard.session.resolve_task_class",
-                    return_value=task_type,
+                    return_value=RuntimeIdentitySourceTask,
                 ),
                 patch(
                     "sieval.core.models.connection_factory.AsyncOpenAI",
@@ -4929,6 +4992,10 @@ tasks:
             assert first_rebound_plan is not first.runtime_plan
             assert second_rebound_plan is not second.runtime_plan
             assert first_rebound_plan.fingerprint != second_rebound_plan.fingerprint
+            first_source_provenance = first._provenance_plan
+            second_source_provenance = second._provenance_plan
+            assert first_source_provenance is not None
+            assert second_source_provenance is not None
             postlaunch = session.postlaunch_reconcile_result
             assert postlaunch is not None
             for source in (first, second):
@@ -4942,8 +5009,13 @@ tasks:
                     if "injected_reconciler" in evidence
                 ]
                 assert injected
+                assert source._provenance_plan is not None
                 assert any(
-                    source.runtime_plan.root_deployment_key in repr(evidence)
+                    source._provenance_plan.root_deployment_key in repr(evidence)
+                    for evidence in injected
+                )
+                assert all(
+                    source.runtime_plan.root_deployment_key not in repr(evidence)
                     for evidence in injected
                 )
             assert first._provenance_projector is not None
@@ -4963,6 +5035,19 @@ tasks:
             assert first_rebound._provenance_plan is not None
             assert second_rebound._provenance_plan is not None
             assert first_evidence == second_evidence
+            assert set(reconciler_roots) == {
+                first_source_provenance.root_deployment_key,
+                second_source_provenance.root_deployment_key,
+            }
+            assert {
+                source
+                for sources in reconciler_requirement_sources
+                for source in sources
+                if source.startswith("runtime-source:")
+            } == {
+                f"runtime-source:{first_source_provenance.root_deployment_key}",
+                f"runtime-source:{second_source_provenance.root_deployment_key}",
+            }
             assert first_evidence is not None
             assert first_evidence.plan_fingerprint != first_rebound_plan.fingerprint
             assert second_evidence is not None
@@ -4979,7 +5064,7 @@ tasks:
         candidate_close.assert_awaited_once()
 
     @pytest.mark.anyio
-    async def test_mixed_external_models_keep_provenance_policy_and_order(
+    async def test_model_bind_preserves_external_provenance_policy_and_order(
         self, tmp_path: Path
     ) -> None:
         from sieval.core.models import ChatModel, Model, Response
@@ -5063,7 +5148,7 @@ tasks:
                     assert legacy_evidence is not None
                     assert (
                         canonical_evidence.plan_fingerprint
-                        == canonical_runtime.fingerprint
+                        != canonical_runtime.fingerprint
                     )
                     assert legacy_evidence.plan_fingerprint != legacy_plan.fingerprint
                     legacy_fingerprints[variant].append(
@@ -5081,32 +5166,9 @@ tasks:
         assert legacy_fingerprints["shared"][0] != legacy_fingerprints["sibling"][0]
 
     @pytest.mark.anyio
-    async def test_same_root_rejects_a_different_legacy_private_pool(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_model_bind_rejects_a_mismatched_legacy_private_root(self) -> None:
         from sieval.core.models import ChatModel, Model
 
-        config_path = self._config(
-            tmp_path,
-            """
-models:
-  candidate:
-    name: org/candidate
-tasks:
-  legacy:
-    class: fake.JudgeTask
-    dataset:
-      class: fake.Dataset
-    model: candidate
-    args: {}
-  canonical:
-    class: fake.JudgeTask
-    dataset:
-      class: fake.Dataset
-    model: candidate
-    args: {}
-""",
-        )
         legacy = ChatModel(
             model="org/external-grader",
             api_base="https://external.example/v1",
@@ -5123,41 +5185,17 @@ tasks:
             other_pool.runtime_plan,
             root_deployment_key=legacy.runtime_plan.root_deployment_key,
         )
-        canonical = Model.bind(
-            other_pool.deployment,
-            other_pool.pool,
-            forced_plan,
-        )
-        session = EvalSession(config_path)
-        tasks = cast(dict, session.config["tasks"])
-        cast(dict, cast(dict, tasks["legacy"])["args"])["grader"] = legacy
-        cast(dict, cast(dict, tasks["canonical"])["args"])["grader"] = canonical
-        candidate_close = AsyncMock()
 
         try:
-            with (
-                patch(
-                    "sieval.cli.leaderboard.session.resolve_task_class",
-                    return_value=self.JudgeTask,
-                ),
-                patch(
-                    "sieval.core.models.connection_factory.AsyncOpenAI",
-                    return_value=types.SimpleNamespace(close=candidate_close),
-                ),
-            ):
-                session._setup_prelaunch_reconciliation()
-                session._setup_postlaunch_reconciliation()
-                with pytest.raises(
-                    ValueError,
-                    match="mixes different UUID-scoped legacy connection identities",
-                ):
-                    session._setup_models()
-                await session._close_owned_model_resources()
+            with pytest.raises(ValueError, match="inconsistent deployment root"):
+                Model.bind(
+                    other_pool.deployment,
+                    other_pool.pool,
+                    forced_plan,
+                )
         finally:
             await legacy.aclose()
             await other_pool.aclose()
-
-        candidate_close.assert_awaited_once()
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])
@@ -5440,6 +5478,33 @@ tasks:
                 changed_result,
                 guarded_plan.binding_id,
             )
+
+            leaked_evidence = {
+                capability: dict(value)
+                for capability, value in deployment_plan.outcome_evidence.items()
+            }
+            leaked_evidence["top_logprobs"]["injected_reconciler"] = {
+                "probe": runtime_plan.deployment_plan_fingerprint
+            }
+            leaked_deployment_plan = dataclasses.replace(
+                deployment_plan,
+                outcome_evidence=leaked_evidence,
+            )
+            leaked_result = dataclasses.replace(
+                result,
+                deployment_plans={
+                    guarded_plan.root_deployment_key: leaked_deployment_plan
+                },
+            )
+            with pytest.raises(
+                ValueError,
+                match="external provenance plan contains unresolved runtime identity",
+            ):
+                session._external_provenance_plan(
+                    guarded_external,
+                    leaked_result,
+                    guarded_plan.binding_id,
+                )
 
             assert (
                 changed_projected.verification_fingerprint

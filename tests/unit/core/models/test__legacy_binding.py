@@ -60,8 +60,8 @@ class TestLegacyBindingClient:
             patch(
                 "sieval.core.models._legacy_binding.uuid4",
                 side_effect=[
-                    SimpleNamespace(hex="first-runtime-scope"),
-                    SimpleNamespace(hex="second-runtime-scope"),
+                    SimpleNamespace(hex="0" * 32),
+                    SimpleNamespace(hex="1" * 32),
                 ],
             ),
         ):
@@ -153,6 +153,32 @@ class TestLegacyBindingClient:
         foreign = replace(binding.runtime_plan, binding_id=base.binding_id)
 
         assert binding.provenance_projector(foreign) is None
+
+    def test_projection_rejects_a_plan_from_another_runtime_root(self) -> None:
+        client = SimpleNamespace(
+            base_url="https://legacy.example/v1/",
+            close=AsyncMock(),
+        )
+        with patch(
+            "sieval.core.models._legacy_binding.AsyncOpenAI",
+            return_value=client,
+        ):
+            binding = build_legacy_openai_binding(
+                dialect_id="openai_chat",
+                model="m",
+                api_base="https://legacy.example/v1",
+                api_key="sk-runtime-only",
+                max_retries=4,
+                concurrency_limit=None,
+                parent_limiter=None,
+            )
+
+        foreign_root = replace(
+            binding.runtime_plan,
+            root_deployment_key="legacy:foreign-runtime-root",
+        )
+
+        assert binding.provenance_projector(foreign_root) is None
 
     def test_projection_rejects_changed_opaque_plan_evidence(self) -> None:
         client = SimpleNamespace(

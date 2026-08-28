@@ -15,6 +15,7 @@ AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
 import copy
+import json
 from collections.abc import Mapping
 from dataclasses import fields, replace
 from types import TracebackType
@@ -24,6 +25,7 @@ import anyio
 
 from sieval.core.types import JSONValue
 
+from ._legacy_binding import _legacy_provenance_projector_for_plan
 from ._legacy_bridge import (
     ModelMeta,
     ModelOutput,
@@ -38,6 +40,7 @@ from .capabilities import (
 )
 from .deployment import (
     BINDING_RESOURCE_KEYS,
+    ConnectionIdentity,
     ConnectionPool,
     Deployment,
 )
@@ -66,7 +69,7 @@ from .ir import (
     Request,
     Response,
 )
-from .reconcile import RuntimeBindingPlan
+from .reconcile import CheckStage, DeferredCheck, RuntimeBindingPlan
 
 
 class ModelQuotaSnapshot(TypedDict):
@@ -121,13 +124,16 @@ class _ProvenanceProjector(Protocol):
     ) -> RuntimeBindingPlan | None: ...
 
 
-def _validate_provenance_plan(
-    runtime_plan: RuntimeBindingPlan,
-    provenance_plan: RuntimeBindingPlan,
-) -> None:
-    """Reject projections that change request or capability semantics."""
-
-    semantic_fields = (
+_PROVENANCE_PROJECTABLE_PLAN_FIELDS = frozenset(
+    {
+        "binding_id",
+        "root_deployment_key",
+        "binding_plan_fingerprint",
+        "deployment_plan_fingerprint",
+    }
+)
+_PROVENANCE_SEMANTIC_PLAN_FIELDS = frozenset(
+    {
         "requested_model_id",
         "dialect_id",
         "declared_capabilities",
@@ -136,18 +142,112 @@ def _validate_provenance_plan(
         "capability_minimums",
         "request_defaults",
         "required_output_channels",
-        "request_checks",
         "deployment_fingerprint",
         "resolved_route",
+    }
+)
+_PROVENANCE_SPECIAL_PLAN_FIELDS = frozenset({"request_checks", "connection_identity"})
+_PROVENANCE_COMPUTED_PLAN_FIELDS = frozenset(
+    {"fingerprint", "verification_fingerprint"}
+)
+_PROVENANCE_PROJECTABLE_CONNECTION_FIELDS = frozenset(
+    {"credential_scope", "quota_scope"}
+)
+_PROVENANCE_SEMANTIC_CONNECTION_FIELDS = frozenset(
+    {"endpoint", "connection_family", "retry_policy"}
+)
+_PROVENANCE_PROJECTABLE_CHECK_FIELDS = frozenset({"reason"})
+_PROVENANCE_SEMANTIC_CHECK_FIELDS = frozenset({"capability", "stage", "verifier"})
+
+
+def _validate_provenance_schema() -> None:
+    """Fail when a plan field has no explicit provenance policy."""
+
+    plan_fields = {item.name for item in fields(RuntimeBindingPlan)}
+    classified_plan_fields = (
+        _PROVENANCE_PROJECTABLE_PLAN_FIELDS
+        | _PROVENANCE_SEMANTIC_PLAN_FIELDS
+        | _PROVENANCE_SPECIAL_PLAN_FIELDS
+        | _PROVENANCE_COMPUTED_PLAN_FIELDS
     )
+    if plan_fields != classified_plan_fields:
+        missing = sorted(plan_fields - classified_plan_fields)
+        stale = sorted(classified_plan_fields - plan_fields)
+        raise RuntimeError(
+            "RuntimeBindingPlan provenance policy is incomplete; "
+            f"missing={missing!r}, stale={stale!r}"
+        )
+
+    identity_fields = {item.name for item in fields(ConnectionIdentity)}
+    classified_identity_fields = (
+        _PROVENANCE_PROJECTABLE_CONNECTION_FIELDS
+        | _PROVENANCE_SEMANTIC_CONNECTION_FIELDS
+    )
+    if identity_fields != classified_identity_fields:
+        missing = sorted(identity_fields - classified_identity_fields)
+        stale = sorted(classified_identity_fields - identity_fields)
+        raise RuntimeError(
+            "ConnectionIdentity provenance policy is incomplete; "
+            f"missing={missing!r}, stale={stale!r}"
+        )
+
+    check_fields = {item.name for item in fields(DeferredCheck)}
+    classified_check_fields = (
+        _PROVENANCE_PROJECTABLE_CHECK_FIELDS | _PROVENANCE_SEMANTIC_CHECK_FIELDS
+    )
+    if check_fields != classified_check_fields:
+        missing = sorted(check_fields - classified_check_fields)
+        stale = sorted(classified_check_fields - check_fields)
+        raise RuntimeError(
+            "DeferredCheck provenance policy is incomplete; "
+            f"missing={missing!r}, stale={stale!r}"
+        )
+
+
+def _request_check_semantics(
+    checks: tuple[DeferredCheck, ...],
+) -> tuple[tuple[str, CheckStage, str], ...]:
+    """Return the executable part of checks; reasons are diagnostic evidence."""
+
+    return tuple((check.capability, check.stage, check.verifier) for check in checks)
+
+
+def _same_json_value(left: JSONValue, right: JSONValue) -> bool:
+    """Compare JSON values with the same type-sensitive rules as fingerprints."""
+
+    def encode(value: JSONValue) -> str:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    return encode(left) == encode(right)
+
+
+def _validate_provenance_plan(
+    runtime_plan: RuntimeBindingPlan,
+    provenance_plan: RuntimeBindingPlan,
+) -> None:
+    """Reject projections that change request or capability semantics."""
+
+    _validate_provenance_schema()
+    runtime_value = runtime_plan.to_json_value()
+    provenance_value = provenance_plan.to_json_value()
     changed = [
         name
-        for name in semantic_fields
-        if getattr(provenance_plan, name) != getattr(runtime_plan, name)
+        for name in sorted(_PROVENANCE_SEMANTIC_PLAN_FIELDS)
+        if not _same_json_value(runtime_value[name], provenance_value[name])
     ]
+    if _request_check_semantics(provenance_plan.request_checks) != (
+        _request_check_semantics(runtime_plan.request_checks)
+    ):
+        changed.append("request_checks")
     changed.extend(
         f"connection_identity.{name}"
-        for name in ("endpoint", "connection_family", "retry_policy")
+        for name in sorted(_PROVENANCE_SEMANTIC_CONNECTION_FIELDS)
         if getattr(provenance_plan.connection_identity, name)
         != getattr(runtime_plan.connection_identity, name)
     )
@@ -291,6 +391,8 @@ class Model:
             raise ValueError("bound dialect does not match the runtime plan")
         if dialect.connection_family != runtime_plan.resolved_route.connection_family:
             raise ValueError("bound dialect does not match the connection family")
+        if provenance_projector is None:
+            provenance_projector = _legacy_provenance_projector_for_plan(runtime_plan)
         self._deployment = deployment
         self._pool = pool
         self._runtime_plan = runtime_plan
