@@ -46,6 +46,31 @@
       "checksums": {}
     },
     {
+      "name": "ag_livecodebench_x",
+      "display_name": "Ag-LiveCodeBench-X",
+      "description": "LiveCodeBench v5's 499 stdin/stdout problems, prepared by Agnostics for any language.",
+      "source": [
+        "hf:nuprl/Ag-LiveCodeBench-X@15bef6bf966893163ea9d22f25b7c58fec06a949"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        },
+        {
+          "level1": "Code",
+          "level2": "MultiLanguageSupport"
+        }
+      ],
+      "tags": [
+        "english",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "license": null,
+      "checksums": {}
+    },
+    {
       "name": "agieval",
       "display_name": "AGIEval",
       "description": "AGIEval v1.1 — 21 human exam subsets (Gaokao, SAT, LSAT, MATH).",
@@ -1229,6 +1254,28 @@
         "source": "facebookresearch/AdvancedIF",
         "url": "https://github.com/facebookresearch/AdvancedIF/blob/f9d30137c4139d4d9af260ae28108b5afae828c0/judge.py",
         "notes": "Port of AdvancedIF (Meta, arXiv:2511.10507), 1,645 prompts across complex_if_single_turn_v5 (402), system_steerability_v2 (507) and carried_context_multi_turn_eval_v5 (736). Headline score is the overall pass rate (share of samples the grader marked SATISFIED_ALL_REQUIREMENTS=yes), the number the paper reports; micro_pass_rate is the co-published rubric-level rate; macro_pass_rate is sieval's, NOT published, averaging the per-sample rate so every sample weighs the same. LICENSING: upstream ships judge.py under CC-BY-NC-4.0, incompatible with sieval's Apache-2.0 tree, so the prompts are NOT vendored -- the operator stages a checkout and points SIEVAL_ADVANCED_IF_SRC at it, digest-checked against commit f9d30137c4139d4d9af260ae28108b5afae828c0 (which also makes them byte-exact by construction). The dataset is CC-BY-NC-4.0 too, so running this benchmark accepts those terms either way. UPSTREAM DEFECT (reproduced, not corrected): upstream routes to the system-steerability judge on benchmark_name == 'if_system_steerability_oss', a value the released dataset never contains (it ships 'system_steerability_v2'), so all 507 system-prompt rows are graded by the plain user-instruction judge and the CLI's --task choices match zero rows; processor.process_file's own docstring uses the released spelling, so the if_*_oss literals are what went stale. Kept verbatim so the unqualified name tracks upstream. Correcting it is MEASURED at +0.00 on the SS pass rate (507 rows, same responses and grader, judge prompt 5,893 -> 31,598 chars) while flipping 13.8% of individual verdicts, so no _fixed variant ships -- it would matter only for per-sample analysis. DEVIATIONS (two, both in grader-reply handling): (1) a fenced/prose-wrapped JSON verdict is recovered, since sieval cannot force response_format on an arbitrary endpoint and a fenced reply would otherwise score zero everywhere -- the same scan also recovers a verdict wrapped in a JSON array, which upstream fails the row on; (2) a non-string rubric answer is stringified instead of failing the row -- with the declaration NO that moves micro_pass_rate alone, with YES it also moves the headline (upstream fails the row, this port honours the declaration). (1) does fire in practice, on endpoints that drop response_format; (2) never fired in 1,644 live gradings. GRADER is a REAL LLM (upstream: o3-mini-2025-01-31, max_completion_tokens=32768, response_format=json_object) supplied via the `grader` task arg; pin it, as its version is not pinnable the way a Hub revision is. Send NO temperature: upstream stores self.temperature but _call_openai_api never passes it, and a reasoning-model grader rejects an explicit value outright ('temperature, top_p and n are fixed at 1'), o3-mini included -- setting it fails every grader call, and a wholly failed grading stage still reports score 0.0, which reads as a score rather than a floor. Give the grader a real thinking budget: at one endpoint's default effort the same grader emitted 0-char reasoning and ~97 output tokens for up to 20 rubrics and scored 17 points lower than itself at high effort. Its full ModelOutput and per-rubric answers are persisted under the judgement record's `extra`. VALIDATION: the port is verified against upstream, but NO published number is reproducible. Verified model-free -- judge prompts byte-identical to upstream's own _compose_prompt on all 1,645 rows for both judge classes; per-row verdicts identical to upstream's real evaluate() on 21,385 (row, reply) pairs across 13 reply shapes; pooled rates exact on every schema-conforming shape; paper Table 1 reproduced from these loaders (counts 402/736/507, avg criteria 7.44/6.08/9.81, avg turns 1.00/7.69/11.21). NOT reproducible -- the paper's judge and every model it evaluates (GPT-5, GPT-4.1, Gemini 2.5/3 Pro, Claude 4 Sonnet, Llama 4 Maverick) are legacy or retired, and judge choice alone spans ~29 points because the headline is all-or-nothing over ~7.6 rubrics: raising judge effort moved per-rubric micro only 87.2->91.8 but all-pass 48.0->65.1, a 3.4x amplification. Judge instability on identical rows: 86.6% per-sample self-agreement (same judge, same config), 69.1% across effort settings, 61.8% across families. The best available judge put gpt-5.1 at macro 76.7 against the paper's GPT-5 77.9, but with per-aspect errors of +5.1/+0.1/-8.8 that merely cancel -- not agreement, and must not be quoted as such. Upstream releases no calibration set (its Table 4 human labels are unpublished), so a replacement judge cannot be checked against human agreement first; pin and report the judge beside every score so runs stay comparable to each other."
+      },
+      "status": "experimental",
+      "reference_kind": "procedure"
+    },
+    {
+      "name": "ag_livecodebench_x_0shot_gen",
+      "display_name": "Ag-LiveCodeBench-X (0-shot)",
+      "description": "Competitive programming in an arbitrary language, graded by the Agnostics verifier.",
+      "dataset": "ag_livecodebench_x",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "code-exec",
+        "multi-language"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "nuprl/Ag-LiveCodeBench-X",
+        "url": "https://github.com/nuprl/Ag-LiveCodeBench-X/blob/b7b273ef5710db814d6eff8bca3c4f432b60ad4b/livecodebench_x.py",
+        "notes": "Prompt is the frozen dspy==3.0.0b2 ChatAdapter rendering of upstream's ChainOfThought(SolveProblem) -- captured, not read off the signature, because the 8-space instruction indent and the trailing-space asymmetry in the field list are only observable at runtime; pinned by hash in the task's tests. Response parsing and code extraction are REIMPLEMENTED, not vendored: upstream ships no license (no Hub license field, no LICENSE file). Divergences: (1) upstream's ChatAdapter retries a failed parse through JSONAdapter with a differently shaped prompt, which this port does not -- so a reply missing either marker scores 0 here and the gap is exactly n_unextracted, making this a lower bound; (2) the Agnostics verifier container is run by sieval's code-evaluator rather than from the harness process, and pinned by DIGEST rather than by upstream's mutable tag -- the digest that scored each rollout comes back on the verdict and is surfaced as report()'s verifier_image; (3) upstream's pre-run 'Say this is a test!' smoke call is not reproduced. Verifier tags are upstream's own, which are FILE EXTENSIONS, not language names -- ghcr.io/nuprl/agnostics ships lua, r, python, jl, java, cpp, ml, f90, so Julia/OCaml/Fortran resolve to jl/ml/f90 and a lowercased language name would name no image. Upstream defaults: n=1 completion, temperature 0.6 / top_p 0.95 / max_tokens 5000, container timeout supplied per run (README uses 15s, and sends that one number as BOTH the container's timeout_s and the outer process wall). No sieval run has been aligned against a published number yet, which is what status='experimental' records."
       },
       "status": "experimental",
       "reference_kind": "procedure"
