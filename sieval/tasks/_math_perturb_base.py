@@ -73,7 +73,7 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 
 from collections import defaultdict
 from collections.abc import Sequence
-from typing import cast
+from typing import cast, override
 
 from loguru import logger
 
@@ -266,6 +266,22 @@ PERTURB = "perturb"
 #: ``original`` so nothing reads as the unported ``Original`` *set*.
 SEED_SPLITS = ("train", "test")
 
+#: MATH's seven subjects, carried per row as ``type``. Both testsets hold all
+#: seven at the pinned commit, in identical counts (79 Algebra / 48 Intermediate
+#: Algebra / 38 Counting & Probability / 36 Number Theory / 35 Prealgebra / 22
+#: Precalculus / 21 Geometry). Named here for the same reason as
+#: :data:`SEED_SPLITS`: so the breakdown publishes the same seven columns on
+#: every run rather than only the ones a given draw happened to contain.
+MATH_SUBJECTS = (
+    "Algebra",
+    "Counting & Probability",
+    "Geometry",
+    "Intermediate Algebra",
+    "Number Theory",
+    "Prealgebra",
+    "Precalculus",
+)
+
 
 def seed_score_key(seed_split: str) -> str:
     """Report key for one seed-split cell."""
@@ -388,6 +404,7 @@ class MathPerturbZeroShotGenTask[TSample](
         self._k = k
         self._n = n
 
+    @override
     async def preprocess(self, raw, ctx):
         # The extracted gold, not the raw label: it is the side `eval_math`
         # actually compares, and `raw_sample` is never serialized, so without it
@@ -402,21 +419,38 @@ class MathPerturbZeroShotGenTask[TSample](
             },
         )
 
+    @override
     async def infer(self, pre, ctx):
         return await self.model.agenerate(pre["prompt"], n=self._n)
 
+    @override
     async def postprocess(self, inf, ctx):
         problem = ctx.raw_sample["problem"]
         predictions: list[JSONValue | None] = []
         for text in inf.texts:
             atoms = extract_predicted_answer(problem, text)
-            # `None`, not `[]`: `build_prediction_record` derives `extracted`
-            # from `prediction is not None`, so an empty list would record a
+            # `None`, not `[]` or `[""]`: `build_prediction_record` derives
+            # `extracted` from `prediction is not None`, so either would record a
             # failed extraction as a successful one and hide it from
-            # `n_unextracted`.
-            predictions.append(_as_json(atoms) if atoms else None)
+            # `n_unextracted`. `any`, matching `gold_atoms` -- and the empty
+            # ATOM, not just the empty list, is the reachable half: upstream's
+            # extractor returns `[""]` for `\boxed{}`, `\boxed{ }`,
+            # `\boxed{\text{}}`, `\boxed{\,}` and for a reply that stops at "The
+            # answer is ", which is the shape a response truncated at
+            # `max_tokens` takes -- the very case `n_unextracted` is read to
+            # detect. Verdict-neutral either way (`math_equal` refuses an empty
+            # prediction, and `gold_atoms` guarantees a non-empty gold), so this
+            # moves the health count and no score.
+            #
+            # `any`, not `all`: a reply that boxes twice and leaves one blank
+            # (`\boxed{42} and \boxed{}`) extracts to `["42", ""]` -- a real
+            # prediction, which upstream's all-must-match rule then scores wrong.
+            # A wrong answer is not a missing one, and recording it as
+            # unextracted would blame the parser for the model's answer.
+            predictions.append(_as_json(atoms) if any(atoms) else None)
         return build_prediction_record(predictions)
 
+    @override
     async def feedback(self, post, ctx):
         raw = ctx.raw_sample
         gold = gold_atoms(raw["problem"], raw["answer"])
@@ -466,6 +500,7 @@ class MathPerturbZeroShotGenTask[TSample](
             },
         )
 
+    @override
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
         grouping = self.problem_groups(finals)
@@ -572,8 +607,15 @@ class MathPerturbZeroShotGenTask[TSample](
             )
         # Subject cells get no interval: seven populations of 21-79 problems are a
         # breakdown, not seven headlines, and one count per cell would be seven
-        # more keys nothing ranks on.
-        for subject, denominator in sorted(type_denominators.items()):
+        # more keys nothing ranks on. They are still published for all seven
+        # subjects rather than only the observed ones -- same reason the seed
+        # cells above are: a column that appears only when the draw happens to
+        # contain it is one a consumer cannot key on, and a `limit` or a `filter`
+        # is enough to drop one. The UNION, not `MATH_SUBJECTS` alone, so a
+        # source that grows an eighth subject reports it rather than dropping it
+        # silently -- the failure a fixed list would introduce here.
+        for subject in sorted(set(MATH_SUBJECTS) | set(type_denominators)):
+            denominator = type_denominators[subject]
             report[type_score_key(subject)] = (
                 100 * type_correct[subject] / denominator if denominator else 0.0
             )

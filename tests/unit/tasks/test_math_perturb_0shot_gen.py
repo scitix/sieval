@@ -10,7 +10,7 @@ import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
 
-from sieval.core.datasets import Dataset
+from sieval.core.datasets import REPEAT_GROUP_COLUMN, Dataset
 from sieval.core.models import ModelOutput, Request, Response
 from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import (
@@ -30,6 +30,7 @@ from sieval.datasets.math_perturb_simple import MATHPerturbSimpleDataset
 from sieval.tasks._math_perturb_base import (
     COT_INSTRUCTION,
     MATH_PERTURB_UPSTREAM_URL,
+    MATH_SUBJECTS,
     grade_extracted,
     seed_count_key,
     seed_score_key,
@@ -243,6 +244,70 @@ async def test_postprocess_records_an_empty_extraction_as_none_not_empty_list():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "response",
+    [
+        "\\boxed{}",
+        "\\boxed{ }",
+        "So the answer is \\boxed{\\text{}}",
+        "\\boxed{\\,}",
+        "\\boxed{.}",
+        # The shape a reply truncated at `max_tokens` takes -- which is the case
+        # `n_unextracted` is read to detect, so it is the one that must not hide.
+        "Let me work through this. The answer is ",
+    ],
+)
+async def test_an_empty_ATOM_is_unextracted_not_a_successful_extraction(
+    response: str,
+):
+    """`[""]` is a truthy list, so `if atoms` would call it extracted.
+
+    Upstream's extractor returns a one-element list holding the empty string for
+    every response here, not the empty list the sibling test above covers. Both
+    have to become `None`, or `n_unextracted` reads 0 for a run that extracted
+    nothing — and the gold side already guards this exact shape (`gold_atoms`).
+    """
+    task, _ = _task()
+    raw = _sample()
+    post = await task.postprocess(
+        ModelOutput(model=task.model.meta(), texts=[response]), _ctx(raw)
+    )
+    assert post["rollouts"][0].get("prediction") is None
+    assert post["rollouts"][0]["extracted"] is False
+    _, judgement = await task.feedback(post, _ctx(raw, postprocess_result=post))
+    # Verdict-neutral: an empty prediction was already scored wrong, via
+    # `math_equal`'s empty-prediction refusal. Only the health count moves.
+    assert judgement["rollouts"][0]["correct"] is False
+    assert (await task.report([_final(raw, post, judgement)], []))[
+        "n_unextracted"
+    ] == 1.0
+
+
+@pytest.mark.anyio
+async def test_a_partly_empty_atom_list_stays_a_prediction():
+    """`any`, not `all` — a wrong answer is not a missing one.
+
+    A reply that boxes twice and leaves one blank extracts to `["42", ""]`, which
+    upstream's all-must-match rule then scores wrong. That is a prediction, and
+    recording it as unextracted would blame the parser for the model's answer.
+    """
+    task, _ = _task()
+    raw = _sample()
+    post = await task.postprocess(
+        ModelOutput(model=task.model.meta(), texts=["I get \\boxed{42} and \\boxed{}"]),
+        _ctx(raw),
+    )
+    assert post["rollouts"][0].get("prediction") == ["42", ""]
+    assert post["rollouts"][0]["extracted"] is True
+    _, judgement = await task.feedback(post, _ctx(raw, postprocess_result=post))
+    # Upstream requires every atom matched, so the blank one loses the sample.
+    assert judgement["rollouts"][0]["correct"] is False
+    assert (await task.report([_final(raw, post, judgement)], []))[
+        "n_unextracted"
+    ] == 0.0
+
+
+@pytest.mark.anyio
 async def test_postprocess_keeps_one_prediction_per_rollout():
     task, _ = _task(n=2)
     raw = _sample()
@@ -393,6 +458,83 @@ def test_type_score_key_slugs_the_seven_math_subjects():
     )
     assert type_score_key("Intermediate Algebra") == "score_type_intermediate_algebra"
     assert type_score_key("Number Theory") == "score_type_number_theory"
+
+
+@pytest.mark.anyio
+async def test_all_seven_subject_cells_are_published_whatever_the_draw_held():
+    """A column that appears only when the draw contains it cannot be keyed on.
+
+    Same contract as the two seed cells: one `limit` or `filter` is enough to
+    leave a subject unobserved, and a breakdown that grows and loses columns
+    between runs is one a consumer has to guess the shape of.
+    """
+    task, _ = _task()
+    raw = _sample(problem_id=1, subject="Algebra")
+    post, judgement = await _judge(task, raw, ("\\boxed{42}",))
+
+    report = await task.report([_final(raw, post, judgement)], [])
+    assert len(MATH_SUBJECTS) == 7
+    for subject in MATH_SUBJECTS:
+        assert type_score_key(subject) in report
+    assert report[type_score_key("Algebra")] == 100.0
+    # Unobserved: 0 over 0, published rather than absent.
+    assert report[type_score_key("Geometry")] == 0.0
+
+
+@pytest.mark.anyio
+async def test_a_subject_outside_the_seven_is_reported_not_dropped():
+    """The union, not `MATH_SUBJECTS` alone — the risk a fixed list introduces.
+
+    If the pinned source ever grows an eighth subject, publishing only the seven
+    would silently omit its rows from the breakdown while still counting them in
+    the headline.
+    """
+    task, _ = _task()
+    raw = _sample(problem_id=1, subject="Topology")
+    post, judgement = await _judge(task, raw, ("\\boxed{42}",))
+
+    report = await task.report([_final(raw, post, judgement)], [])
+    assert report[type_score_key("Topology")] == 100.0
+    for subject in MATH_SUBJECTS:
+        assert type_score_key(subject) in report
+
+
+@pytest.mark.anyio
+async def test_a_seed_cell_over_a_repeated_split_collapses_the_copies():
+    """`_restrict`: without it a cell counts each copy as its own problem.
+
+    `problem_groups` collapses the whole split, but a seed cell covers a SUBSET
+    of it, so the grouping has to be narrowed positionally or `metric_interval`
+    is handed one key per value it does not have — and a population inflated by
+    the repeat factor narrows the interval by its square root.
+    """
+    rows = [
+        _sample(problem_id=1, original_split="train"),
+        _sample(problem_id=1, original_split="train"),
+        _sample(problem_id=2, original_split="test"),
+        _sample(problem_id=2, original_split="test"),
+    ]
+    for row, group in zip(rows, (1, 1, 2, 2), strict=True):
+        row[REPEAT_GROUP_COLUMN] = group
+    dataset = MATHPerturbSimpleDataset(
+        _hf_dict=HFDatasetDict({"test": HFDataset.from_list([dict(r) for r in rows])})
+    )
+    task = MATHPerturbSimpleZeroShotGenTask(dataset, _CapturingChatModel())
+
+    finals = []
+    for index, raw in enumerate(rows):
+        post, judgement = await _judge(task, raw, ("\\boxed{42}",))
+        finals.append(_final(raw, post, judgement, sample_id=index))
+
+    grouping = task.problem_groups(finals)
+    assert grouping is not None and grouping.n_problems == 2
+
+    report = await task.report(finals, [])
+    # Two copies of one problem per split, so each cell is ONE problem -- not the
+    # two samples its denominator counts.
+    for seed_split in ("train", "test"):
+        assert report[seed_count_key(seed_split)] == 1.0
+    assert not interval_declaration_problems(report)
 
 
 @pytest.mark.anyio
