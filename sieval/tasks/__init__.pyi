@@ -130,6 +130,12 @@ from .livecodebench_code_generation_kshot_base_gen import (
 from .math_500_0shot_gen import (
     MATH500ZeroShotGenTask,
 )
+from .math_perturb_hard_0shot_gen import (
+    MATHPerturbHardZeroShotGenTask,
+)
+from .math_perturb_simple_0shot_gen import (
+    MATHPerturbSimpleZeroShotGenTask,
+)
 from .mbpp_kshot_base_gen import (
     MBPPFewShotBaseGenTask,
 )
@@ -241,6 +247,8 @@ __all__ = [
     "LiveCodeBenchCodeGenerationFewShotBaseGenTask",
     "LiveCodeBenchCodeGenerationZeroShotGenTask",
     "MATH500ZeroShotGenTask",
+    "MATHPerturbHardZeroShotGenTask",
+    "MATHPerturbSimpleZeroShotGenTask",
     "MBPPFewShotBaseGenTask",
     "MMLUFewShotCLPTask",
     "MMLUProZeroShotGenTask",

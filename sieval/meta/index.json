@@ -818,6 +818,54 @@
       "checksums": {}
     },
     {
+      "name": "math_perturb_hard",
+      "display_name": "MATH-P-Hard",
+      "description": "279 MATH level-5 problems perturbed so the original method no longer works.",
+      "source": [
+        "url:https://raw.githubusercontent.com/Kaffaljidhmah2/MATH-Perturb/df4840f680fce405c9449008564574961c7f4df1/math_perturb/math_perturb_hard.jsonl"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "robustness"
+      ],
+      "deps_group": null,
+      "license": "Apache-2.0",
+      "checksums": {
+        "math_perturb_hard.jsonl": "sha256:418ca51e02f3b639a919dda72b5201ce35ac6c6d7d31c3231735beb4ea012dd7"
+      }
+    },
+    {
+      "name": "math_perturb_simple",
+      "display_name": "MATH-P-Simple",
+      "description": "279 MATH level-5 problems perturbed so the original method still solves them.",
+      "source": [
+        "url:https://raw.githubusercontent.com/Kaffaljidhmah2/MATH-Perturb/df4840f680fce405c9449008564574961c7f4df1/math_perturb/math_perturb_simple.jsonl"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "CompetitionMath"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended",
+        "robustness"
+      ],
+      "deps_group": null,
+      "license": "Apache-2.0",
+      "checksums": {
+        "math_perturb_simple.jsonl": "sha256:2130821d4235dc1f5d962bee7f84a096651bf98fcb17b6dcfd3d0a48875ba5bb"
+      }
+    },
+    {
       "name": "mbpp",
       "display_name": "MBPP",
       "description": "Mostly Basic Python Problems: 974 entry-level Python tasks.",
@@ -2129,6 +2177,50 @@
         "notes": "Math postprocess aligned with simple-evals. REPEATS: simple-evals' MathEval defaults to n_repeats=16, its CLI `math` entry passes 10, while this task defaults to n=1 — set n=10 (or 16) to match, as a task arg (tasks.<name>.args.n); the model's `n` is silently overridden call-time. pass@1 over n samples equals its mean over n repeats. k>n is rejected at construction. Scope: those upstream defaults are for the full math_test split; MATH-500 is simple-evals' math_500_test."
       },
       "status": "stable",
+      "reference_kind": "value"
+    },
+    {
+      "name": "math_perturb_hard_0shot_gen",
+      "display_name": "MATH-P-Hard (0-shot, generative)",
+      "description": "MATH-P-Hard 0-shot CoT eval, scored overall and by seed split and subject.",
+      "dataset": "math_perturb_hard",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "robustness"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "Kaffaljidhmah2/MATH-Perturb",
+        "url": "https://github.com/Kaffaljidhmah2/MATH-Perturb/tree/df4840f680fce405c9449008564574961c7f4df1/evaluation",
+        "notes": "MATH-P-Hard, 279 rows (164 train-seeded / 115 test-seeded), row-aligned with MATH-P-Simple by problem_id. Table 1 targets (All): o1-mini 78.49, Gemini-2.0-flash-thinking-exp 78.14, GPT-4o 39.43, Qwen2.5-Math-7B-Instruct 27.24, Llama-3.1-8B-Instruct 10.04, Gemma-2-9b-it 11.83. The number this benchmark is for, and the one that is far below both siblings for every published row -- a Hard score near its Simple score means the harness, not the model. The seed-split cells carry the paper's second claim: the drop comes mainly from train-seeded problems, which the model may have memorized. PROMPT IS A SIEVAL CHOICE: upstream ships an evaluation package and NO inference code, and the paper specifies only zero-shot CoT with no tool use, so no upstream prompt exists to port. Used here: DeepSeek-Math's zero-shot CoT user turn, problem + '\\nPlease reason step by step, and put your final answer within \\boxed{}.', chat template applied by the serving backend -- chosen because MATH-Perturb's grader IS DeepSeek-Math's grader (upstream's evaluation/README.md says so) and that instruction is what its extractor was written against. A different prompt is a different measurement. GRADING: upstream's answer_check(problem, response, answer, 'perturb') verbatim, vendored in sieval.community.math_perturb -- gold wrapped in \\boxed{} and re-extracted so a multi-valued label splits like a prediction does, response extracted by extract_math_answer, both lists compared by eval_math at prec=MAX_ABS_TOL (1e-7, upstream's tightening of DeepSeek-Math's 1e-3). Offloaded to a worker under GRADE_TIMEOUT like every sympy-backed grader here. FIDELITY, MEASURED by executing upstream's own functions on shared inputs -- all 558 rows plus 9043 (row, synthetic response) cases spanning every branch of its extractor: extracted gold 558/558, extracted prediction 9043/9043, verdict 9043/9043. ONE DIVERGENCE, taken for execution safety rather than as a repair: upstream inherits DeepSeek-Math's hole unchanged -- a prediction reaches a bare parse_expr whose namespace carries __builtins__, and an unparseable one is returned as raw text to N, which sympifies it with sympy's own default namespace -- so a boxed __import__('os').system(...) runs while the sample still grades wrong. Here the parse is guarded (sieval.community._sympy_guards) and an unparseable answer refuses the comparison. MEASURED COST: ZERO -- rerunning the same 9043 cases with parse_latex disabled in each module's own globals, which forces every comparison down the guarded path, upstream and this port agree 9043/9043. TRAP -- upstream's backend='lark' is weaker than sympy's default ANTLR backend, and is KEPT because upstream's own source names it (a code choice, not gsm_plus's broken-pinned-dependency case). Over the 571 gold atoms these two files extract to, parse_latex fails on 40 (7.0%) under lark vs 32 (5.6%) under ANTLR, and the sets are not nested: 13 lark-only, 5 ANTLR-only. lark cannot parse \\pi AT ALL on sympy 1.14 -- all 5 \\pi atoms are lark-only failures, with comma-grouped integers (270,000), \\emptyset and interval/set unions; those comparisons fall through to parse_expr, fail there too, and are decided by string equality, so a correct answer spelled differently scores wrong. The 5 ANTLR-only failures are all \\begin{pmatrix} matrices, which math_equal handles in a branch of its own before parsing. Verdict cost over the 9043 cases: 40 differ, every one lark-False/ANTLR-True; 33 are a corpus artifact (\\% appended to a non-numeric gold) and the 5 realistic ones are all unicode-normalized answers, the o1/o3-mini case upstream added _fix_unicode for. NO maj@k / self_consistency: an answer here is a SET of atoms and upstream supplies equivalence only pairwise (math_equal), never as a canonical vote key, so the vote block is not computed rather than clustered on set reprs. REPEATS: upstream's leaderboard is one sample per problem and this task defaults to n=1; the paper's inference-time-scaling section draws N=64 (N=8 for o1-mini) for pass@k and self-consistency -- set n as a task arg (tasks.<name>.args.n), since the model's n is silently overridden call-time, and k>n is rejected at construction. DECODING: upstream publishes no single spec, only per-model recommendations on its project page (DeepSeek-R1 series temperature 0.6 / top_p 0.95 / 64k max length; QwQ-32B 32k / 0.6 / top_k 40 / 0.95; Claude-3.7-Sonnet extended thinking budget 56000, max 64000). Set them via models: / infer_args, not here. NOT PORTED: the paper's third column, Original -- the 279 UNPERTURBED MATH problems, against which both drops are measured. Upstream ships no Original file and no mapping from problem_id back to the seed MATH row, so building it means matching 279 edited statements against MATH's 12500, which is inference rather than a port; answer_check's dataset_type='original' arm is carried anyway so the grader is ready if that mapping is established. REFERENCE NUMBERS: cite the paper's Table 1 (arXiv:2502.06453v1, zero-shot CoT, All column). The project page keeps a larger leaderboard that is periodically re-run -- its numbers have MOVED from the paper's (o1-mini MATH-P-Hard 78.49 in Table 1, 79.69 there) and its CSV column order is Hard/Simple/Original, the REVERSE of the paper's, so a row read positionally off the wrong source is off by a whole benchmark. LICENSE: upstream is Apache-2.0, but its README restricts the data to academic research and asks in bold that it never be used as training data. STATUS experimental: the port is verified against upstream's code, not yet against a published row on a live run."
+      },
+      "status": "experimental",
+      "reference_kind": "value"
+    },
+    {
+      "name": "math_perturb_simple_0shot_gen",
+      "display_name": "MATH-P-Simple (0-shot, generative)",
+      "description": "MATH-P-Simple 0-shot CoT eval, scored overall and by seed split and subject.",
+      "dataset": "math_perturb_simple",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "robustness"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "Kaffaljidhmah2/MATH-Perturb",
+        "url": "https://github.com/Kaffaljidhmah2/MATH-Perturb/tree/df4840f680fce405c9449008564574961c7f4df1/evaluation",
+        "notes": "MATH-P-Simple, 279 rows (164 train-seeded / 115 test-seeded). Table 1 targets (All): o1-mini 94.98, Gemini-2.0-flash-thinking-exp 91.04, GPT-4o 62.01, Qwen2.5-Math-7B-Instruct 51.61, Llama-3.1-8B-Instruct 31.54, Gemma-2-9b-it 27.60. This is the arm that should NOT move much: the paper's finding is that most models lose only a little here versus Original, while losing 10-25 points on MATH-P-Hard, so a large Simple drop is evidence about the harness rather than about the model. Two published rows invert even that (MAmmoTH2-8B 17.92 Simple vs 12.90 Original, Phi-3.5-mini-instruct 28.67 vs 26.16), so non-monotonicity alone is not a defect signal. PROMPT IS A SIEVAL CHOICE: upstream ships an evaluation package and NO inference code, and the paper specifies only zero-shot CoT with no tool use, so no upstream prompt exists to port. Used here: DeepSeek-Math's zero-shot CoT user turn, problem + '\\nPlease reason step by step, and put your final answer within \\boxed{}.', chat template applied by the serving backend -- chosen because MATH-Perturb's grader IS DeepSeek-Math's grader (upstream's evaluation/README.md says so) and that instruction is what its extractor was written against. A different prompt is a different measurement. GRADING: upstream's answer_check(problem, response, answer, 'perturb') verbatim, vendored in sieval.community.math_perturb -- gold wrapped in \\boxed{} and re-extracted so a multi-valued label splits like a prediction does, response extracted by extract_math_answer, both lists compared by eval_math at prec=MAX_ABS_TOL (1e-7, upstream's tightening of DeepSeek-Math's 1e-3). Offloaded to a worker under GRADE_TIMEOUT like every sympy-backed grader here. FIDELITY, MEASURED by executing upstream's own functions on shared inputs -- all 558 rows plus 9043 (row, synthetic response) cases spanning every branch of its extractor: extracted gold 558/558, extracted prediction 9043/9043, verdict 9043/9043. ONE DIVERGENCE, taken for execution safety rather than as a repair: upstream inherits DeepSeek-Math's hole unchanged -- a prediction reaches a bare parse_expr whose namespace carries __builtins__, and an unparseable one is returned as raw text to N, which sympifies it with sympy's own default namespace -- so a boxed __import__('os').system(...) runs while the sample still grades wrong. Here the parse is guarded (sieval.community._sympy_guards) and an unparseable answer refuses the comparison. MEASURED COST: ZERO -- rerunning the same 9043 cases with parse_latex disabled in each module's own globals, which forces every comparison down the guarded path, upstream and this port agree 9043/9043. TRAP -- upstream's backend='lark' is weaker than sympy's default ANTLR backend, and is KEPT because upstream's own source names it (a code choice, not gsm_plus's broken-pinned-dependency case). Over the 571 gold atoms these two files extract to, parse_latex fails on 40 (7.0%) under lark vs 32 (5.6%) under ANTLR, and the sets are not nested: 13 lark-only, 5 ANTLR-only. lark cannot parse \\pi AT ALL on sympy 1.14 -- all 5 \\pi atoms are lark-only failures, with comma-grouped integers (270,000), \\emptyset and interval/set unions; those comparisons fall through to parse_expr, fail there too, and are decided by string equality, so a correct answer spelled differently scores wrong. The 5 ANTLR-only failures are all \\begin{pmatrix} matrices, which math_equal handles in a branch of its own before parsing. Verdict cost over the 9043 cases: 40 differ, every one lark-False/ANTLR-True; 33 are a corpus artifact (\\% appended to a non-numeric gold) and the 5 realistic ones are all unicode-normalized answers, the o1/o3-mini case upstream added _fix_unicode for. NO maj@k / self_consistency: an answer here is a SET of atoms and upstream supplies equivalence only pairwise (math_equal), never as a canonical vote key, so the vote block is not computed rather than clustered on set reprs. REPEATS: upstream's leaderboard is one sample per problem and this task defaults to n=1; the paper's inference-time-scaling section draws N=64 (N=8 for o1-mini) for pass@k and self-consistency -- set n as a task arg (tasks.<name>.args.n), since the model's n is silently overridden call-time, and k>n is rejected at construction. DECODING: upstream publishes no single spec, only per-model recommendations on its project page (DeepSeek-R1 series temperature 0.6 / top_p 0.95 / 64k max length; QwQ-32B 32k / 0.6 / top_k 40 / 0.95; Claude-3.7-Sonnet extended thinking budget 56000, max 64000). Set them via models: / infer_args, not here. NOT PORTED: the paper's third column, Original -- the 279 UNPERTURBED MATH problems, against which both drops are measured. Upstream ships no Original file and no mapping from problem_id back to the seed MATH row, so building it means matching 279 edited statements against MATH's 12500, which is inference rather than a port; answer_check's dataset_type='original' arm is carried anyway so the grader is ready if that mapping is established. REFERENCE NUMBERS: cite the paper's Table 1 (arXiv:2502.06453v1, zero-shot CoT, All column). The project page keeps a larger leaderboard that is periodically re-run -- its numbers have MOVED from the paper's (o1-mini MATH-P-Hard 78.49 in Table 1, 79.69 there) and its CSV column order is Hard/Simple/Original, the REVERSE of the paper's, so a row read positionally off the wrong source is off by a whole benchmark. LICENSE: upstream is Apache-2.0, but its README restricts the data to academic research and asks in bold that it never be used as training data. STATUS experimental: the port is verified against upstream's code, not yet against a published row on a live run."
+      },
+      "status": "experimental",
       "reference_kind": "value"
     },
     {
