@@ -35,7 +35,7 @@ from ._math_perturb_base import (
     tags=("english", "open-ended", "robustness"),
     deps_group="math",
     model_type="chat",
-    status="experimental",
+    status="stable",
     reference_kind="value",
     reference_impl=ReferenceImpl(
         source="Kaffaljidhmah2/MATH-Perturb",

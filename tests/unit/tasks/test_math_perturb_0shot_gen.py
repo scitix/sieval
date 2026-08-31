@@ -140,7 +140,10 @@ def test_leaf_resolves_its_own_dataset_through_the_generic_base(
     # under a name that happens to read right.
     assert get_task_meta(cls) is meta
     assert meta.dataset == dataset_name
-    assert meta.status == "experimental"
+    # `stable` since the alignment run: deepseek-math-7b-rl -- the model whose
+    # own zero-shot CoT turn this prompt is -- puts the published pair inside
+    # three same-config runs. See the base module's ALIGNMENT notes.
+    assert meta.status == "stable"
     assert meta.reference_kind == "value"
     assert meta.deps_group == "math"
     assert meta.model_type == "chat"
