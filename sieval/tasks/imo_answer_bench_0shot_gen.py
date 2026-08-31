@@ -204,8 +204,21 @@ class IMOAnswerBenchZeroShotGenTask(
                 correct = await run_cpu_bound(
                     verify_math_answer, f"${gold}$", f"${pred}$", timeout=GRADE_TIMEOUT
                 )
-            except Exception as e:
-                logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, e)
+            except TimeoutError:
+                # A grade that could not be COMPUTED IN TIME is a wrong answer,
+                # not a failed run: the contract the whole math family keeps, and
+                # `report` counts fails in the denominator, so the accuracy is
+                # the same either way. Every OTHER exception now propagates and
+                # the sample lands in `fails` as `exception::<class>` -- a grader
+                # that is broken rather than slow (a dead worker, an optional
+                # dependency missing from the environment) must not read as a
+                # model that answered wrongly.
+                logger.warning(
+                    "Grading sample {} exceeded {}s and was scored wrong; the "
+                    "prediction is likely a shape the grader cannot bound.",
+                    ctx.sample_id,
+                    GRADE_TIMEOUT,
+                )
                 correct = False
             rollouts.append(build_rollout_judgement(rollout["index"], correct))
         # `reference` is the raw dataset gold, not the normalized one: normalization

@@ -58,6 +58,30 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
 
 - Use `strict=True` in `zip()` when lengths are guaranteed to match
 - Must not modify `core/` — check `sieval/core/utils/` for existing helpers first
+- **A grading call site catches `TimeoutError`, never `Exception`.** A grade that
+  could not be computed *in time* is a wrong answer — the prediction is a shape
+  the grader cannot bound, which is the model's problem — so it is swallowed and
+  scored `False`. Every *other* exception propagates: a grader that is **broken
+  rather than slow** (a dead worker, an optional dependency absent from the
+  environment) must not be indistinguishable from a model that answered wrongly.
+  Swallowing it produces a low score on a run whose `fails` is 0 and whose logs
+  are gone as soon as the run is. Propagating costs nothing and buys the signal:
+  `feedback` raising goes straight to `to_failed(reason="exception::<class>")` —
+  no re-inference, no budget burned — and under `DENOMINATOR_REQUESTED` a fail is
+  already charged as wrong, so **the headline does not move**. This is why no
+  `n_grade_errors` metric is needed: `fails` plus the recorded reason already is
+  one. Asserted over the whole pass@k math family in
+  `tests/unit/tasks/test_math_pass_at_k_family.py`.
+    - The one thing that *does* move is a published interval: it is estimated
+      over the units that came back while scaled to the requested denominator, so
+      dropping one shifts the bound (in either direction), and a survivor set that
+      is uniformly right or uniformly wrong drops `<metric>_ci95` / `n_problems`
+      entirely — `wilson_interval` needs `0 < p < 1`. Pre-existing
+      `_clustered_interval` semantics, not a new one.
+    - A task whose report declares `DENOMINATOR_JUDGED` is the exception and owes
+      its own measurement first: there a fail is *excluded* from the denominator,
+      so moving a sample into `fails` does change the score
+      (`theoremqa_kshot_base_gen` is the only such member today).
 
 ## Tags — Anomaly Detection
 
