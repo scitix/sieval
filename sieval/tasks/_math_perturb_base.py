@@ -212,7 +212,8 @@ MATH_PERTURB_REFERENCE_NOTES = (
     "arms (this one, a generic system turn suppressing Qwen-Math's built-in "
     "system prompt, no boxed-answer instruction at all, and \"Let's think step "
     'by step") span 66.67-70.25 Simple and 38.35-39.78 Hard, and driving the '
-    "bare text through /v1/completions with NO chat template gives 70.25 / "
+    "bare text through the OpenAI completions endpoint with NO chat template "
+    "gives 70.25 / "
     "40.50 -- higher, not lower. Its verdicts were also re-derived with "
     "upstream's own answer_check (below), so the residual is on the generation "
     "side of a row this port cannot reconstruct. Read the two rows accordingly: "
@@ -226,7 +227,7 @@ MATH_PERTURB_REFERENCE_NOTES = (
     "the cap). The published 51.61 / 27.24 falls between the 512 and 1024 arms, "
     "which is the most economical account of that row -- a smaller generation "
     "budget, not a different port. Fix max_tokens before comparing anything here "
-    "to Table 1; it is an infer_args knob, deliberately not a task constant."
+    "to Table 1; it is an infer_args knob, deliberately not a task constant. "
     "GRADER DIFFERENTIAL ON LIVE TEXT: 1116 real responses from those two models "
     "graded by upstream's unmodified answer_check agree with this port on gold, "
     "prediction and verdict 1116/1116, and every published report cell "
