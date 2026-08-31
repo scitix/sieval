@@ -401,7 +401,11 @@ def _replace_provenance_tokens(
         re.compile(
             "|".join(
                 re.escape(runtime_value)
-                for runtime_value in sorted(replacements, key=len, reverse=True)
+                for runtime_value in sorted(
+                    replacements,
+                    key=lambda runtime_value: len(runtime_value),
+                    reverse=True,
+                )
             )
         )
         if replacements
@@ -706,16 +710,17 @@ def _project_external_deployment_plan(
 
         projected = _replace_provenance_tokens(evidence, replacements)
         assert isinstance(projected, Mapping)
+        projected_evidence = cast(Mapping[str, JSONValue], projected)
         if evidence.get("source") == "external_runtime_plans":
-            projected_fingerprints = projected.get("plan_fingerprints")
+            projected_fingerprints = projected_evidence.get("plan_fingerprints")
             assert isinstance(projected_fingerprints, list)
-            projected = {
-                **projected,
+            projected_evidence = {
+                **projected_evidence,
                 "plan_fingerprints": sorted(
                     {cast(str, item) for item in projected_fingerprints}
                 ),
             }
-        outcome_evidence[capability] = cast(Mapping[str, JSONValue], projected)
+        outcome_evidence[capability] = projected_evidence
 
     recipe_parameters = _replace_provenance_tokens(
         cast(JSONValue, plan.recipe_parameters), replacements
