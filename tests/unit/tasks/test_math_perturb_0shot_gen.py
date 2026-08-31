@@ -16,7 +16,9 @@ from sieval.core.models.chat_model import ChatModel
 from sieval.core.tasks import (
     NonRetriableSampleError,
     TaskContext,
+    build_judgement_record,
     build_prediction_record,
+    build_rollout_judgement,
 )
 from sieval.core.tasks.meta import TASK_REGISTRY, get_task_meta, import_all_tasks
 from sieval.core.tasks.metrics import (
@@ -27,6 +29,7 @@ from sieval.core.tasks.metrics import (
 )
 from sieval.datasets.math_perturb_hard import MATHPerturbHardDataset
 from sieval.datasets.math_perturb_simple import MATHPerturbSimpleDataset
+from sieval.tasks import _math_perturb_base
 from sieval.tasks._math_perturb_base import (
     COT_INSTRUCTION,
     MATH_PERTURB_UPSTREAM_URL,
@@ -355,6 +358,127 @@ async def test_an_unextracted_rollout_is_wrong_not_a_failure():
     raw = _sample()
     _, judgement = await _judge(task, raw, ("",))
     assert judgement["rollouts"][0]["correct"] is False
+
+
+class _Raiser:
+    """An async ``run_cpu_bound`` stand-in that always raises *exc*.
+
+    Counts its calls, so a test cannot pass because the patch was never reached —
+    which is what a rename of the grading call site would otherwise look like.
+    """
+
+    def __init__(self, exc: type[BaseException]):
+        self._exc = exc
+        self.calls = 0
+
+    async def __call__(self, *_args, **_kwargs):
+        self.calls += 1
+        raise self._exc("grader stub")
+
+
+@pytest.mark.anyio
+async def test_a_grader_timeout_is_a_wrong_answer(monkeypatch):
+    """The half that stays swallowed: a grade that could not be computed IN TIME.
+
+    The prediction is a shape `simplify` cannot bound, which is the model's
+    problem, and `report` counts fails in the denominator either way.
+    """
+    task, _ = _task()
+    stub = _Raiser(TimeoutError)
+    monkeypatch.setattr(_math_perturb_base, "run_cpu_bound", stub)
+    raw = _sample()
+    post = build_prediction_record([["42"]])
+    _, judgement = await task.feedback(post, _ctx(raw, postprocess_result=post))
+    assert judgement["rollouts"][0]["correct"] is False
+    assert stub.calls > 0, "the grading call site moved; this intercepted nothing"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("exc", [ValueError, AttributeError, ImportError, OSError])
+async def test_a_broken_grader_propagates_instead_of_scoring_zero(exc, monkeypatch):
+    """A grader that is BROKEN rather than slow must not read as a wrong answer.
+
+    This benchmark is unusually exposed to it: a missing `lark` makes every
+    symbolic comparison fall through to string equality and understates the score
+    by 5-6 points without raising at all, and the shapes that DO raise (a dead
+    worker, an optional dependency absent from the environment) used to be scored
+    0 with `fails` left at 0. Propagated, the runner records
+    `exception::<class>` on the sample and `fails` becomes the signal.
+    """
+    task, _ = _task()
+    stub = _Raiser(exc)
+    monkeypatch.setattr(_math_perturb_base, "run_cpu_bound", stub)
+    raw = _sample()
+    post = build_prediction_record([["42"]])
+    with pytest.raises(exc):
+        await task.feedback(post, _ctx(raw, postprocess_result=post))
+    assert stub.calls > 0, "the grading call site moved; this intercepted nothing"
+
+
+@pytest.mark.anyio
+async def test_moving_a_sample_into_fails_moves_no_published_rate():
+    """Why propagating costs nothing here, asserted over the RICH report.
+
+    `math_500`'s version of this covers a headline and one interval; this report
+    also carries two seed cells with their own populations and seven subject
+    cells, and a fail reaches those denominators only through `raw_sample`. So
+    the neutrality has to be checked on every rate this task publishes, not just
+    on `score`.
+    """
+    task, _ = _task()
+
+    def _judged(problem_id: int, *, correct: bool, split: str, subject: str):
+        raw = _sample(problem_id=problem_id, original_split=split, subject=subject)
+        return raw, TaskContext(
+            sample_id=problem_id,
+            raw_sample=raw,
+            feedback_result=build_judgement_record(
+                ["42"],
+                [build_rollout_judgement(0, correct)],
+                extra={"original_split": split, "type": subject},
+            ),
+            postprocess_result=build_prediction_record([["42" if correct else "0"]]),
+        )
+
+    survivors = [
+        _judged(0, correct=True, split="train", subject="Algebra")[1],
+        _judged(1, correct=True, split="train", subject="Algebra")[1],
+        _judged(2, correct=False, split="test", subject="Geometry")[1],
+    ]
+    bad_raw, bad_as_final = _judged(3, correct=False, split="test", subject="Geometry")
+    bad_as_fail = TaskContext(sample_id=3, raw_sample=bad_raw)
+
+    before = await task.report([*survivors, bad_as_final], [])
+    after = await task.report(survivors, [bad_as_fail])
+
+    # Every RATE and every POPULATION is identical -- the seed cells and all seven
+    # subject cells included, which is what proves the fail still reaches their
+    # denominators through `raw_sample`.
+    rates = [
+        key
+        for key in before
+        if key.startswith(("score", "pass@", "n_problems", "n_unextracted"))
+        and not key.endswith("_ci95")
+        and key != SCORE_KEY_FIELD
+    ]
+    assert len(rates) >= 12, rates  # headline + 2 seed + 2 counts + 7 subjects
+    for key in rates:
+        assert before[key] == after[key], key
+    assert before["fails"] == 0
+    assert after["fails"] == 1
+
+    # What moves is intervals only, and one of them VANISHES: the `test` seed cell
+    # keeps a single judged problem, and `wilson_interval` needs 0 < p < 1. Its
+    # `ci95_units` entry goes with it, so the pair stays a pair and the report is
+    # still declaration-clean -- the count is published unconditionally either way.
+    # Pre-existing `_clustered_interval` semantics, reached more often now; on a
+    # real 279-row run a 115-problem cell does not go uniform.
+    assert "score_seed_test_ci95" in before
+    assert "score_seed_test_ci95" not in after
+    assert "score_seed_test" not in after["ci95_units"]
+    assert after["n_problems_seed_test"] == before["n_problems_seed_test"]
+    assert interval_declaration_problems(before) == []
+    assert interval_declaration_problems(after) == []
 
 
 @pytest.mark.anyio

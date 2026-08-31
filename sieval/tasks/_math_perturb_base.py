@@ -469,10 +469,23 @@ class MathPerturbZeroShotGenTask[TSample](
                     grade_extracted, gold, prediction, timeout=GRADE_TIMEOUT
                 )
             except TimeoutError:
-                # An ungradeable answer is a wrong answer, not a failed run --
-                # the contract every sibling math grader here keeps. Propagating
-                # would land the sample in `fails`, which reads as infrastructure
-                # breakage.
+                # A grade that could not be computed IN TIME is a wrong answer,
+                # not a failed run -- the prediction is a shape `simplify` cannot
+                # bound, which is the model's problem. The contract every sibling
+                # math grader keeps, and `report` counts fails in the denominator
+                # so the accuracy is the same either way.
+                #
+                # Every OTHER exception propagates, and the sample lands in
+                # `fails` as `exception::<class>`. A grader that is broken rather
+                # than slow -- a dead worker, or `lark` absent from the
+                # environment, which this benchmark is unusually exposed to -- must
+                # not be indistinguishable from a model that answered wrongly:
+                # swallowed, it produced a low score on a run whose `fails` was 0
+                # and whose only trace was a log line. Propagating costs nothing
+                # -- raising here goes straight to FAILED, no re-inference, and
+                # DENOMINATOR_REQUESTED already charges a fail as wrong -- so
+                # `fails` plus that reason is the grader-error count, and no
+                # metric is owed for it.
                 logger.warning(
                     "Grading sample {} rollout {} exceeded {}s and was scored "
                     "wrong; the prediction is likely a shape `simplify` cannot "
@@ -480,14 +493,6 @@ class MathPerturbZeroShotGenTask[TSample](
                     ctx.sample_id,
                     index,
                     GRADE_TIMEOUT,
-                )
-                correct = False
-            except Exception as exc:
-                logger.warning(
-                    "Grading sample {} rollout {} raised {}; scored wrong.",
-                    ctx.sample_id,
-                    index,
-                    exc,
                 )
                 correct = False
             rollouts.append(build_rollout_judgement(index, bool(correct)))
