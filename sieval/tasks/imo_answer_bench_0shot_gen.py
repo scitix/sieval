@@ -14,6 +14,12 @@ Dual-source lineage: the boxed prompt + last-``\\boxed{}`` extraction follow
 eth-sri/matharena (``community/matharena.py``); the answer grader is EnvCommons's
 deterministic re-impl of IMO-Bench (``community/imo_bench.py``).
 
+Environment prerequisite: unlike its siblings, this task's vendored grader catches
+its own exceptions and falls back to string equality, so a broken LaTeX backend
+would depress the score silently rather than raise. ``_ensure_grader_healthy``
+probes it once per run and fails the run instead; it needs the ``math`` dependency
+group (``math-verify[antlr4-11-0]``) actually installed, not merely importable.
+
 Infer prerequisites: olympiad reasoning traces are very long — set a large output
 budget (``max_tokens`` ≈ 131072) and a generous client read-timeout (300s+). At
 ``max_tokens=65536`` ~22% of samples truncate mid-reasoning with no boxed answer
@@ -22,6 +28,7 @@ budget (``max_tokens`` ≈ 131072) and a generous client read-timeout (300s+). A
 AI-Generated Code - Claude Opus 4.8 (Anthropic)
 """
 
+import asyncio
 from typing import override
 
 from loguru import logger
@@ -62,6 +69,13 @@ from ._math_verify import normalize_vote
 IMO_ANSWER_BENCH_INSTRUCTION = (
     "Please reason step by step. Put your final answer within \\boxed{}."
 )
+
+# One gold/prediction pair the grader must call equivalent, used to probe it once
+# per run (`_ensure_grader_healthy`). `$`-wrapped exactly like a real grade so the
+# probe walks the same path, and picked to NEED the LaTeX backend: math_verify
+# calls it True, while the string fallback verify_math_answer degrades to calls it
+# False. That gap is the whole signal.
+GRADER_CANARY = (r"$\frac{1}{2}$", "$0.5$")
 
 
 @sieval_task(
@@ -154,6 +168,60 @@ class IMOAnswerBenchZeroShotGenTask(
             )
         self._k = k
         self._n = n
+        # Probe-once state for `_ensure_grader_healthy`. The flag is read outside
+        # the lock so the common path stays lock-free; the lock only keeps the
+        # first concurrent burst from probing once per sample.
+        self._grader_probed = False
+        self._grader_probe_lock = asyncio.Lock()
+
+    async def _ensure_grader_healthy(self) -> None:
+        """Fail loudly, once, if the grader cannot do LaTeX equivalence at all.
+
+        `verify_math_answer` catches `Exception` **itself** and falls back to
+        ``gold.strip().lower() == pred.strip().lower()``. That is upstream's
+        behaviour and stays. The cost is that a broken LaTeX backend never
+        raises: it silently regrades the run by string equality, scoring every
+        expression answer wrong while `fails` stays 0. It is the one grader
+        failure this family's `except TimeoutError` contract cannot catch,
+        because the swallow sits BELOW the call site rather than at it -- the
+        sibling tasks are safe only because `_math_verify.verify_answer` has no
+        handler of its own and lets the error through.
+
+        So probe instead of trusting: one grade whose verdict flips with the
+        backend. Raising lands the sample in `fails` as
+        ``exception::RuntimeError``, the same signal the rest of the family gets
+        for free -- no new metric, no new machinery.
+
+        Only a definite ``False`` fails. A probe that times out is inconclusive,
+        not negative, so it warns and stops probing rather than turning a loaded
+        box into a failed run.
+        """
+        if self._grader_probed:
+            return
+        async with self._grader_probe_lock:
+            if self._grader_probed:
+                return
+            try:
+                healthy = await run_cpu_bound(
+                    verify_math_answer, *GRADER_CANARY, timeout=GRADE_TIMEOUT
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Grader self-check timed out after {}s; proceeding unprobed. "
+                    "A LaTeX backend that is merely slow still grades correctly.",
+                    GRADE_TIMEOUT,
+                )
+                self._grader_probed = True
+                return
+            if not healthy:
+                raise RuntimeError(
+                    f"Grader self-check failed: verify_math_answer{GRADER_CANARY} "
+                    "returned False, so math_verify cannot parse LaTeX and every "
+                    "grade is falling back to string equality -- expression "
+                    "answers would score wrong with no other symptom. Check the "
+                    "`math` dependency group (math-verify[antlr4-11-0]==0.8.0)."
+                )
+            self._grader_probed = True
 
     @override
     async def preprocess(self, raw, ctx):
@@ -187,6 +255,9 @@ class IMOAnswerBenchZeroShotGenTask(
 
     @override
     async def feedback(self, post, ctx):
+        # Before trusting any verdict: this task's grader swallows its own
+        # errors, so the `except TimeoutError` below cannot see a broken one.
+        await self._ensure_grader_healthy()
         rollouts = []
         ground_truth = ctx.raw_sample["answer"]
         gold = normalize_answer(ground_truth)
@@ -213,6 +284,12 @@ class IMOAnswerBenchZeroShotGenTask(
                 # that is broken rather than slow (a dead worker, an optional
                 # dependency missing from the environment) must not read as a
                 # model that answered wrongly.
+                #
+                # UNLIKE the siblings, that only covers errors this call site can
+                # SEE. `verify_math_answer` catches `Exception` itself
+                # (community/imo_bench.py) and falls back to string equality, so
+                # a broken LaTeX backend never reaches here --
+                # `_ensure_grader_healthy` is what covers that half.
                 logger.warning(
                     "Grading sample {} exceeded {}s and was scored wrong; the "
                     "prediction is likely a shape the grader cannot bound.",

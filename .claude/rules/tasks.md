@@ -81,7 +81,29 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
     - A task whose report declares `DENOMINATOR_JUDGED` is the exception and owes
       its own measurement first: there a fail is *excluded* from the denominator,
       so moving a sample into `fails` does change the score
-      (`theoremqa_kshot_base_gen` is the only such member today).
+      (`theoremqa_kshot_base_gen` is the only such member *with a grading call
+      site* today — 20 tasks declare the policy, it is the only one that grades
+      through `run_cpu_bound`).
+    - **The rule reaches only what the call site can see.** It buys the signal
+      when the grader lets errors through; a grader that catches `Exception`
+      *itself* and returns a verdict anyway defeats it from below, and narrowing
+      the `except` cannot tell. `imo_answer_bench_0shot_gen` is the live case:
+      its vendored `verify_math_answer` falls back to string equality, so a
+      broken LaTeX backend scores every expression answer wrong with `fails`
+      still 0. Upstream fidelity means that fallback stays, so the task probes
+      the grader once per run instead (`_ensure_grader_healthy`) and raises on a
+      definite negative. When vendoring a grader, check whether it swallows
+      before relying on this rule; the twelve siblings are safe only because
+      `_math_verify.verify_answer` has no handler of its own.
+    - Propagating is the right default even though `exception::<class>` is
+      **retriable** (`ERROR_REASONS_NON_RETRIABLE`, `core/tasks/consts.py`), so a
+      deterministic breakage is re-graded once per resume until `max_retries`
+      runs out. Do not reach for `NonRetriableSampleError` to avoid that: it
+      declares the outcome fixed in the *sample's own input*, which an
+      environment fault is not, and mislabelling a transient failure permanently
+      fails a sample a retry would have recovered. The waste is bounded — under
+      the default `record_each_stage=True` a feedback failure rolls back to
+      `POSTPROCESSED`, so it re-grades without re-inferring.
 
 ## Tags — Anomaly Detection
 
