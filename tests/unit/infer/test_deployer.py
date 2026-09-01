@@ -69,6 +69,29 @@ def _make_command(
 
 class TestLaunchOne:
     @pytest.mark.anyio
+    async def test_missing_executable_names_the_binary(self):
+        """A missing engine binary must be reported as such.
+
+        Popen would raise a bare FileNotFoundError naming neither the role nor
+        the command, and indistinguishable from a missing working_dir — while
+        the operator's real question is whether the engine is installed.
+        """
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["sglang-not-installed", "serve", "--port", "30000"],
+            backend="sglang",
+            role="full",
+            health_url="http://localhost:30000/health",
+        )
+        with pytest.raises(DeployError) as excinfo:
+            await deployer._launch_one(cmd)
+
+        message = str(excinfo.value)
+        assert "sglang-not-installed" in message
+        assert "PATH" in message
+        assert "full" in message
+
+    @pytest.mark.anyio
     async def test_creates_handle_with_pid(self):
         """_launch_one should spawn a subprocess and return InferHandle."""
         deployer = LocalDeployer()
@@ -621,6 +644,87 @@ class TestDeploy:
             await deployer.deploy([cmd], detach=False, timeout=0.05, poll_interval=0.01)
 
     @pytest.mark.anyio
+    async def test_deploy_timeout_quotes_engine_log(self, tmp_path: Path):
+        """A timeout must quote the engine log, like a crash already does.
+
+        The engine's log is written outside the run directory and the process
+        is killed on the way out, so a timeout that does not quote it usually
+        leaves no evidence of why the server never came up.
+        """
+        log_file = tmp_path / "full.log"
+        log_file.write_text("Loading weights...\nCUDA out of memory\n")
+        deployer = LocalDeployer()
+        cmd = _make_command()
+
+        with (
+            patch.object(
+                deployer,
+                "_launch_one",
+                new_callable=AsyncMock,
+                return_value=_make_handle(log_file=str(log_file)),
+            ),
+            patch.object(
+                deployer,
+                "status",
+                new_callable=AsyncMock,
+                return_value=(
+                    InferPhase.RUNNING,
+                    {
+                        "ready": InferCondition(
+                            status=False, reason="connection_refused"
+                        )
+                    },
+                ),
+            ),
+            patch.object(deployer, "delete", new_callable=AsyncMock),
+            pytest.raises(DeployTimeoutError) as excinfo,
+        ):
+            await deployer.deploy([cmd], detach=False, timeout=0.05, poll_interval=0.01)
+
+        message = str(excinfo.value)
+        assert "CUDA out of memory" in message
+        assert str(log_file) in message
+        # The reason distinguishes "still loading" from "up but unhealthy".
+        assert "connection_refused" in message
+
+    @pytest.mark.anyio
+    async def test_deploy_timeout_names_log_path_when_empty(self, tmp_path: Path):
+        """An engine that logged nothing still gets its path named."""
+        log_file = tmp_path / "silent.log"
+        log_file.write_text("")
+        deployer = LocalDeployer()
+        cmd = _make_command()
+
+        with (
+            patch.object(
+                deployer,
+                "_launch_one",
+                new_callable=AsyncMock,
+                return_value=_make_handle(log_file=str(log_file)),
+            ),
+            patch.object(
+                deployer,
+                "status",
+                new_callable=AsyncMock,
+                return_value=(
+                    InferPhase.RUNNING,
+                    {
+                        "ready": InferCondition(
+                            status=False, reason="health_check_failed"
+                        )
+                    },
+                ),
+            ),
+            patch.object(deployer, "delete", new_callable=AsyncMock),
+            pytest.raises(DeployTimeoutError) as excinfo,
+        ):
+            await deployer.deploy([cmd], detach=False, timeout=0.05, poll_interval=0.01)
+
+        message = str(excinfo.value)
+        assert str(log_file) in message
+        assert "empty" in message
+
+    @pytest.mark.anyio
     async def test_deploy_process_died_raises(self):
         """Deploy should raise DeployError if a process dies during polling."""
         deployer = LocalDeployer()
@@ -698,6 +802,9 @@ class TestDeploy:
         assert len(progress_calls) >= 1
         # Each callback gets (elapsed_seconds, summary_string)
         assert "full=" in progress_calls[0][1]
+        # The not-ready reason rides along, so a run's own log says whether
+        # the engine is still loading or already answering unhealthily.
+        assert "health_check_failed" in progress_calls[0][1]
 
 
 # ---------- _read_tail ----------

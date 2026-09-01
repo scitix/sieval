@@ -12,6 +12,7 @@ import importlib
 import json
 import os
 import platform
+import shutil
 import signal
 import subprocess
 from collections.abc import AsyncIterator, Callable
@@ -129,6 +130,17 @@ class LocalDeployer:
 
         logger.info("Launching [{}]: {}", cmd.role, " ".join(cmd.cli_args))
         logger.info("Logging to {}", log_file)
+
+        # Resolve the executable before spawning. Without this the failure is a
+        # bare FileNotFoundError from Popen that names neither the role nor the
+        # command, and it is indistinguishable from a missing working_dir.
+        executable = cmd.cli_args[0] if cmd.cli_args else ""
+        if not shutil.which(executable):
+            raise DeployError(
+                f"Engine executable {executable!r} for role {cmd.role!r} was not "
+                f"found on PATH, so the process was never started and no log "
+                f"exists to inspect. Command: {' '.join(cmd.cli_args)}"
+            )
 
         env = None
         if cmd.env:
@@ -318,12 +330,21 @@ class LocalDeployer:
         while True:
             all_ready = True
             summary_parts: list[str] = []
+            not_ready: list[InferHandle] = []
 
             for handle in handles:
                 phase, conditions = await self.status(handle)
                 role = handle.metadata.get("role", "?")
                 ready = conditions.get("ready")
-                ready_str = "ready" if ready and ready.status else phase.value
+                if ready and ready.status:
+                    ready_str = "ready"
+                else:
+                    # The reason separates "still loading" (connection_refused)
+                    # from "up but unhealthy" (health_check_failed) — the one
+                    # bit that decides whether waiting longer can help.
+                    ready_str = phase.value
+                    if ready and ready.reason:
+                        ready_str += f"({ready.reason})"
                 summary_parts.append(f"{role}={ready_str}")
 
                 if phase in (InferPhase.FAILED, InferPhase.STOPPED):
@@ -335,6 +356,7 @@ class LocalDeployer:
 
                 if not (ready and ready.status):
                     all_ready = False
+                    not_ready.append(handle)
 
             elapsed = anyio.current_time() - start
             if on_progress:
@@ -346,9 +368,38 @@ class LocalDeployer:
             if anyio.current_time() >= deadline:
                 summary = ", ".join(summary_parts)
                 msg = f"Not all processes ready within {timeout}s ({summary})"
+                # A timeout is the common failure and used to be the only one
+                # that discarded the engine's own log. The process is about to
+                # be killed and its log lives outside the run directory, so if
+                # we do not quote it here it is usually gone for good.
+                msg += await self._quote_logs(not_ready)
                 raise DeployTimeoutError(msg)
 
             await anyio.sleep(poll_interval)
+
+    async def _quote_logs(self, handles: list[InferHandle]) -> str:
+        """Quote the log of each of *handles* for an error message.
+
+        Returns a block to append, empty when *handles* is. Always names the
+        log path: an empty tail is itself a finding (the engine wrote nothing),
+        and the path is the only way to reach a log that is written outside the
+        run directory.
+        """
+        blocks: list[str] = []
+        for handle in handles:
+            role = handle.metadata.get("role", "?")
+            log_file = handle.metadata.get("log_file", "")
+            launched = handle.metadata.get("cmd") or []
+            header = f"--- {role} (pid {handle.handle_id})"
+            if launched:
+                header += f" cmd: {' '.join(str(a) for a in launched)}"
+            header += f"\n    log: {log_file or '?'}"
+            tail = await self._read_tail(handle)
+            if tail:
+                blocks.append(header + " ---\n" + "\n".join(tail))
+            else:
+                blocks.append(header + " --- (empty)")
+        return "\n" + "\n".join(blocks) if blocks else ""
 
     async def _read_tail(
         self, handle: InferHandle, n: int = _FAILURE_LOG_TAIL
