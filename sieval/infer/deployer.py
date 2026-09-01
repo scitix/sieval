@@ -131,20 +131,38 @@ class LocalDeployer:
         logger.info("Launching [{}]: {}", cmd.role, " ".join(cmd.cli_args))
         logger.info("Logging to {}", log_file)
 
-        # Resolve the executable before spawning. Without this the failure is a
-        # bare FileNotFoundError from Popen that names neither the role nor the
-        # command, and it is indistinguishable from a missing working_dir.
-        executable = cmd.cli_args[0] if cmd.cli_args else ""
-        if not shutil.which(executable):
-            raise DeployError(
-                f"Engine executable {executable!r} for role {cmd.role!r} was not "
-                f"found on PATH, so the process was never started and no log "
-                f"exists to inspect. Command: {' '.join(cmd.cli_args)}"
-            )
-
         env = None
         if cmd.env:
             env = {**os.environ, **cmd.env}
+
+        # Resolve the executable before spawning. Without this the failure is a
+        # bare FileNotFoundError from Popen that names neither the role nor the
+        # command, and it is indistinguishable from a missing working_dir.
+        # Resolve it exactly the way Popen will, or the check rejects commands
+        # that would have launched: a bare name is looked up in the *child's*
+        # PATH (subprocess uses os.get_exec_path(env), so cmd.env wins), and a
+        # name carrying a directory is relative to cwd — cmd.working_dir, not
+        # this process's.
+        executable = cmd.cli_args[0] if cmd.cli_args else ""
+        search_path = (env or os.environ).get("PATH")
+        probe = executable
+        if cmd.working_dir and os.path.dirname(executable):
+            probe = os.path.join(cmd.working_dir, executable)
+
+        if not shutil.which(probe, path=search_path):
+            # which() also rejects a file that exists but is not executable,
+            # where Popen raises PermissionError, not FileNotFoundError.
+            if shutil.which(probe, mode=os.F_OK, path=search_path):
+                problem = "is not executable"
+            elif os.path.dirname(probe):
+                problem = f"does not exist at {probe!r}"
+            else:
+                problem = "was not found on PATH"
+            raise DeployError(
+                f"Engine executable {executable!r} for role {cmd.role!r} "
+                f"{problem}, so the process was never started and no log "
+                f"exists to inspect. Command: {' '.join(cmd.cli_args)}"
+            )
 
         with open(log_file, "a") as fh:
             process = subprocess.Popen(
@@ -348,10 +366,11 @@ class LocalDeployer:
                 summary_parts.append(f"{role}={ready_str}")
 
                 if phase in (InferPhase.FAILED, InferPhase.STOPPED):
-                    tail = await self._read_tail(handle)
+                    # Same quoting as the timeout path: a crash needs the log
+                    # path and the launch command for the same reason a hang
+                    # does — the log is written outside the run directory.
                     msg = f"Process {handle.handle_id} ({role}) {phase.value}"
-                    if tail:
-                        msg += f"\n--- last {len(tail)} lines ---\n" + "\n".join(tail)
+                    msg += await self._quote_logs([handle])
                     raise DeployError(msg)
 
                 if not (ready and ready.status):

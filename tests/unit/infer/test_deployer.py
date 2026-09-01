@@ -7,6 +7,7 @@ avoid spawning real processes.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -90,6 +91,100 @@ class TestLaunchOne:
         assert "sglang-not-installed" in message
         assert "PATH" in message
         assert "full" in message
+
+    @pytest.mark.anyio
+    async def test_engine_on_a_cmd_env_path_is_not_rejected(self, tmp_path: Path):
+        """An engine reachable only via cmd.env's PATH must still launch.
+
+        Popen resolves a bare argv[0] against the *child's* PATH, so a plan
+        whose ``env:`` points PATH at the prefix holding the engine works.
+        Probing this process's PATH instead would reject it before launch and
+        report the engine as absent when it is installed.
+        """
+        engine = tmp_path / "sglang"
+        engine.write_text("#!/bin/sh\nsleep 60\n")
+        engine.chmod(0o755)
+
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["sglang", "serve", "--port", "30000"],
+            backend="sglang",
+            role="full",
+            env={"PATH": f"{tmp_path}:{os.environ['PATH']}"},
+            health_url="http://localhost:30000/health",
+        )
+
+        with (
+            patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
+            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+        ):
+            mock_popen.return_value = MagicMock(pid=4242)
+            handle = await deployer._launch_one(cmd)
+
+        assert handle.handle_id == "4242"
+
+    @pytest.mark.anyio
+    async def test_present_but_non_executable_is_not_called_missing(
+        self, tmp_path: Path
+    ):
+        """A non-executable engine must not be reported as absent.
+
+        Popen raises PermissionError there, not FileNotFoundError, and telling
+        the operator it is "not found on PATH" sends them to install a binary
+        that is already sitting in front of them.
+        """
+        engine = tmp_path / "sglang"
+        engine.write_text("#!/bin/sh\nsleep 60\n")
+        engine.chmod(0o644)
+
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["sglang", "serve"],
+            backend="sglang",
+            role="full",
+            env={"PATH": str(tmp_path)},
+            health_url="http://localhost:30000/health",
+        )
+
+        with pytest.raises(DeployError) as excinfo:
+            await deployer._launch_one(cmd)
+
+        message = str(excinfo.value)
+        assert "not executable" in message
+        assert "not found on PATH" not in message
+
+    @pytest.mark.anyio
+    async def test_relative_executable_resolves_against_working_dir(
+        self, tmp_path: Path
+    ):
+        """A relative argv[0] is resolved against working_dir, as Popen does.
+
+        Popen(cwd=...) resolves a name carrying a directory relative to that
+        cwd, so probing it relative to the deployer's own cwd would reject a
+        launch that works.
+        """
+        (tmp_path / "bin").mkdir()
+        engine = tmp_path / "bin" / "sglang"
+        engine.write_text("#!/bin/sh\nsleep 60\n")
+        engine.chmod(0o755)
+
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["./bin/sglang", "serve"],
+            backend="sglang",
+            role="full",
+            working_dir=str(tmp_path),
+            health_url="http://localhost:30000/health",
+        )
+
+        with (
+            patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
+            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+        ):
+            mock_popen.return_value = MagicMock(pid=777)
+            handle = await deployer._launch_one(cmd)
+
+        assert handle.handle_id == "777"
 
     @pytest.mark.anyio
     async def test_creates_handle_with_pid(self):
@@ -686,6 +781,8 @@ class TestDeploy:
         assert str(log_file) in message
         # The reason distinguishes "still loading" from "up but unhealthy".
         assert "connection_refused" in message
+        # The launch command makes a wrong or absent engine visible here too.
+        assert "test serve" in message
 
     @pytest.mark.anyio
     async def test_deploy_timeout_names_log_path_when_empty(self, tmp_path: Path):
@@ -757,9 +854,17 @@ class TestDeploy:
                 "delete",
                 new_callable=AsyncMock,
             ),
-            pytest.raises(DeployError, match="failed"),
+            pytest.raises(DeployError, match="failed") as excinfo,
         ):
             await deployer.deploy([cmd], detach=False, poll_interval=0.01)
+
+        # A crash quotes the same block a timeout does: tail, log path and the
+        # launch command. The log is written outside the run directory, so the
+        # path is no more discoverable after a crash than after a hang.
+        message = str(excinfo.value)
+        assert "ERROR: out of memory" in message
+        assert "/tmp/test.log" in message
+        assert "test serve" in message
 
     @pytest.mark.anyio
     async def test_deploy_progress_callback(self):
