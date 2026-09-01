@@ -389,9 +389,11 @@ class LocalDeployer:
         for handle in handles:
             role = handle.metadata.get("role", "?")
             log_file = handle.metadata.get("log_file", "")
-            launched = handle.metadata.get("cmd") or []
+            launched = handle.metadata.get("cmd")
             header = f"--- {role} (pid {handle.handle_id})"
-            if launched:
+            # metadata values are not typed as sequences; a str would join
+            # character by character, so narrow rather than truth-test.
+            if isinstance(launched, list):
                 header += f" cmd: {' '.join(str(a) for a in launched)}"
             header += f"\n    log: {log_file or '?'}"
             tail = await self._read_tail(handle)
