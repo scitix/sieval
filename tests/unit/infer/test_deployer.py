@@ -18,6 +18,7 @@ from sieval.core.models import ServingFacts
 from sieval.infer.backends.translator import BackendCommand
 from sieval.infer.config import InferCondition, InferHandle, InferPhase
 from sieval.infer.deployer import (
+    DEFAULT_READY_TIMEOUT,
     DeployError,
     DeployTimeoutError,
     LocalDeployer,
@@ -63,6 +64,15 @@ def _make_command(
         role=role,
         health_url=health_url,
     )
+
+
+# ---------- DEFAULT_READY_TIMEOUT ----------
+
+
+class TestDefaultReadyTimeout:
+    def test_leaves_room_for_a_cold_start(self):
+        """264s cold was measured for a 30B MoE, so 300s was not a margin."""
+        assert DEFAULT_READY_TIMEOUT >= 600.0
 
 
 # ---------- _launch_one ----------

@@ -32,7 +32,7 @@ from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import BackendCommand, inject_user_env
 from sieval.infer.config import InferHandle
-from sieval.infer.deployer import LocalDeployer
+from sieval.infer.deployer import DEFAULT_READY_TIMEOUT, LocalDeployer
 from sieval.infer.recipes import capability_model_type
 from sieval.infer.topology import DeploymentPlan
 from sieval.infer.topology.resolver import auto_resolve_plan
@@ -177,6 +177,7 @@ async def _run_all(
     model: str | None = None,
     result_dir: str | None = None,
     deterministic: bool | None = None,
+    ready_timeout: float = DEFAULT_READY_TIMEOUT,
 ) -> dict[str, object]:
     """Orchestrate: start services -> run eval -> stop services.
 
@@ -291,6 +292,7 @@ async def _run_all(
                     backend=plan.backend,
                     deployer=deployer,
                     on_progress=_progress,
+                    timeout=ready_timeout,
                 )
             except FileExistsError:
                 msg = (
@@ -379,6 +381,19 @@ def register_run_command(app: typer.Typer) -> None:
                 ),
             ),
         ] = None,
+        ready_timeout: Annotated[
+            float,
+            typer.Option(
+                "--ready-timeout",
+                # Zero or negative makes the poll loop time out on its first
+                # pass, so a bad argument reads as a broken engine.
+                min=1.0,
+                help=(
+                    "Seconds to wait for each auto-served model to become "
+                    "ready. Applies per model, not to the run as a whole."
+                ),
+            ),
+        ] = DEFAULT_READY_TIMEOUT,
         verbose: Annotated[
             bool,
             typer.Option("--verbose", "-v", help="Verbose output"),
@@ -444,6 +459,7 @@ def register_run_command(app: typer.Typer) -> None:
                 model=model,
                 result_dir=result_dir,
                 deterministic=deterministic,
+                ready_timeout=ready_timeout,
             )
 
         try:

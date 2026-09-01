@@ -21,7 +21,11 @@ from loguru import logger
 
 from sieval.infer.backends.translator import BackendCommand
 from sieval.infer.config import InferCondition, InferEnv, InferHandle, InferPhase
-from sieval.infer.deployer import LocalDeployer, collect_basic_env
+from sieval.infer.deployer import (
+    DEFAULT_READY_TIMEOUT,
+    LocalDeployer,
+    collect_basic_env,
+)
 
 HANDLE_DIR = Path.home() / ".sieval" / "handles"
 default_deployer = LocalDeployer()
@@ -184,7 +188,7 @@ async def launch_model(
     *,
     on_progress: Callable[[float, str], None] | None = None,
     detach: bool = False,
-    timeout: float = 300.0,
+    timeout: float = DEFAULT_READY_TIMEOUT,
     already_claimed: bool = False,
 ) -> tuple[list[InferHandle], InferEnv | None]:
     """Claim handle, deploy, collect env, and persist running state.

@@ -39,6 +39,14 @@ from sieval.infer.topology.models import (
     deployment_plan_projection,
 )
 
+# Seconds to wait for a freshly launched engine to report ready. Generous
+# because the failure modes are not symmetric: a process that dies is caught
+# within a poll interval whatever this value is (STOPPED/FAILED), so this only
+# bounds one that is alive and silent. Too low fails a healthy cold start and
+# wastes the allocation; too high only delays discovery of a hang. One cluster
+# served the same 30B MoE in 77-82s warm but 264s cold, under the previous 300s.
+DEFAULT_READY_TIMEOUT = 900.0
+
 _HEALTH_CHECK_TIMEOUT = 2.0
 _GRACEFUL_SHUTDOWN_TIMEOUT = 10.0
 _LOG_DIR = Path.home() / ".sieval" / "logs"
@@ -86,7 +94,7 @@ class LocalDeployer:
         commands: list[BackendCommand],
         *,
         detach: bool = False,
-        timeout: float = 300.0,
+        timeout: float = DEFAULT_READY_TIMEOUT,
         poll_interval: float = 5.0,
         on_progress: ProgressCallback | None = None,
     ) -> list[InferHandle]:
