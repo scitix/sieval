@@ -7,6 +7,7 @@ avoid spawning real processes.
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -68,6 +69,148 @@ def _make_command(
 
 
 class TestLaunchOne:
+    @pytest.mark.anyio
+    async def test_missing_executable_names_the_binary(self):
+        """Popen's bare FileNotFoundError names neither the role nor the cmd."""
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["sglang-not-installed", "serve", "--port", "30000"],
+            backend="sglang",
+            role="full",
+            health_url="http://localhost:30000/health",
+        )
+        with pytest.raises(DeployError) as excinfo:
+            await deployer._launch_one(cmd)
+
+        message = str(excinfo.value)
+        assert "sglang-not-installed" in message
+        assert "PATH" in message
+        assert "full" in message
+
+    @pytest.mark.anyio
+    async def test_rejected_launch_creates_no_log_dir_and_names_no_log(
+        self, tmp_path: Path
+    ):
+        """A rejected launch must create no log dir and name no log path."""
+        log_dir = tmp_path / "logs"
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["sglang-not-installed", "serve"],
+            backend="sglang",
+            role="full",
+            health_url="http://localhost:30000/health",
+        )
+
+        with (
+            patch("sieval.infer.deployer._LOG_DIR", log_dir),
+            patch("sieval.infer.deployer.logger") as mock_logger,
+            pytest.raises(DeployError),
+        ):
+            await deployer._launch_one(cmd)
+
+        assert not log_dir.exists()
+        logged = " ".join(str(call) for call in mock_logger.info.call_args_list)
+        assert "Logging to" not in logged
+
+    @pytest.mark.anyio
+    async def test_directory_is_not_reported_as_absent(self, tmp_path: Path):
+        """which() rejects a directory under F_OK, so it must not read absent."""
+        engine_dir = tmp_path / "sglang"
+        engine_dir.mkdir()
+
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=[str(engine_dir), "serve"],
+            backend="sglang",
+            role="full",
+            health_url="http://localhost:30000/health",
+        )
+
+        with pytest.raises(DeployError) as excinfo:
+            await deployer._launch_one(cmd)
+
+        message = str(excinfo.value)
+        assert "is a directory" in message
+        assert "does not exist" not in message
+
+    @pytest.mark.anyio
+    async def test_engine_on_a_cmd_env_path_is_not_rejected(self, tmp_path: Path):
+        """Popen resolves argv[0] against the child's PATH, so cmd.env wins."""
+        engine = tmp_path / "sglang"
+        engine.write_text("#!/bin/sh\nsleep 60\n")
+        engine.chmod(0o755)
+
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["sglang", "serve", "--port", "30000"],
+            backend="sglang",
+            role="full",
+            env={"PATH": f"{tmp_path}:{os.environ['PATH']}"},
+            health_url="http://localhost:30000/health",
+        )
+
+        with (
+            patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
+            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+        ):
+            mock_popen.return_value = MagicMock(pid=4242)
+            handle = await deployer._launch_one(cmd)
+
+        assert handle.handle_id == "4242"
+
+    @pytest.mark.anyio
+    async def test_present_but_non_executable_is_not_called_missing(
+        self, tmp_path: Path
+    ):
+        """Popen raises PermissionError here, so reporting it absent misleads."""
+        engine = tmp_path / "sglang"
+        engine.write_text("#!/bin/sh\nsleep 60\n")
+        engine.chmod(0o644)
+
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["sglang", "serve"],
+            backend="sglang",
+            role="full",
+            env={"PATH": str(tmp_path)},
+            health_url="http://localhost:30000/health",
+        )
+
+        with pytest.raises(DeployError) as excinfo:
+            await deployer._launch_one(cmd)
+
+        message = str(excinfo.value)
+        assert "not executable" in message
+        assert "not found on PATH" not in message
+
+    @pytest.mark.anyio
+    async def test_relative_executable_resolves_against_working_dir(
+        self, tmp_path: Path
+    ):
+        """Popen(cwd=...) resolves a relative argv[0] there, not against ours."""
+        (tmp_path / "bin").mkdir()
+        engine = tmp_path / "bin" / "sglang"
+        engine.write_text("#!/bin/sh\nsleep 60\n")
+        engine.chmod(0o755)
+
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["./bin/sglang", "serve"],
+            backend="sglang",
+            role="full",
+            working_dir=str(tmp_path),
+            health_url="http://localhost:30000/health",
+        )
+
+        with (
+            patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
+            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+        ):
+            mock_popen.return_value = MagicMock(pid=777)
+            handle = await deployer._launch_one(cmd)
+
+        assert handle.handle_id == "777"
+
     @pytest.mark.anyio
     async def test_creates_handle_with_pid(self):
         """_launch_one should spawn a subprocess and return InferHandle."""
@@ -448,6 +591,22 @@ class TestLogs:
         assert lines[-1] == "line5"
 
     @pytest.mark.anyio
+    async def test_logs_collapses_progress_bar_redraws(self, tmp_path: Path):
+        """`sieval infer logs` reads the same log, so it must split the same."""
+        log_file = tmp_path / "engine.log"
+        log_file.write_text(
+            "real line 1\nreal line 2\n"
+            + "".join(f"\rLoading shards: {pct}%" for pct in range(101))
+        )
+
+        deployer = LocalDeployer()
+        handle = _make_handle(log_file=str(log_file))
+        lines = [line async for line in deployer.logs(handle, tail=3)]
+
+        assert "real line 1" in lines
+        assert sum("Loading shards" in line for line in lines) == 1
+
+    @pytest.mark.anyio
     async def test_logs_no_file(self):
         deployer = LocalDeployer()
         handle = _make_handle(log_file="/nonexistent/path.log")
@@ -479,18 +638,21 @@ class TestLogs:
         """Large files: seek near end and drop partial first line."""
         deployer = LocalDeployer()
         log_file = tmp_path / "big.log"
-        # Write a file large enough that chunk_size < file_size (triggers seek)
-        # tail=3, chunk_size=3*256=768. Write >768 bytes.
+        # Write a file large enough that chunk_size < file_size (triggers seek).
         many_lines = [f"log line {i}: " + "x" * 200 for i in range(10)]
         log_file.write_text("\n".join(many_lines) + "\n")
 
         handle = _make_handle(log_file=str(log_file))
         lines = []
-        async for line in deployer.logs(handle, tail=3):
-            lines.append(line)
+        # The read window is sized in bytes, so it must be narrowed here or the
+        # whole file fits and neither the seek nor the partial-drop path runs.
+        with patch("sieval.infer.deployer._LOG_TAIL_WINDOW_BYTES", 768):
+            async for line in deployer.logs(handle, tail=3):
+                lines.append(line)
 
         assert len(lines) == 3
         assert "log line 9" in lines[-1]
+        assert not any("log line 0" in line for line in lines)
 
 
 # ---------- deploy (integration-level, mocked) ----------
@@ -621,6 +783,84 @@ class TestDeploy:
             await deployer.deploy([cmd], detach=False, timeout=0.05, poll_interval=0.01)
 
     @pytest.mark.anyio
+    async def test_deploy_timeout_quotes_engine_log(self, tmp_path: Path):
+        """The process is killed on the way out; unquoted, its log is lost."""
+        log_file = tmp_path / "full.log"
+        log_file.write_text("Loading weights...\nCUDA out of memory\n")
+        deployer = LocalDeployer()
+        cmd = _make_command()
+
+        with (
+            patch.object(
+                deployer,
+                "_launch_one",
+                new_callable=AsyncMock,
+                return_value=_make_handle(log_file=str(log_file)),
+            ),
+            patch.object(
+                deployer,
+                "status",
+                new_callable=AsyncMock,
+                return_value=(
+                    InferPhase.RUNNING,
+                    {
+                        "ready": InferCondition(
+                            status=False, reason="connection_refused"
+                        )
+                    },
+                ),
+            ),
+            patch.object(deployer, "delete", new_callable=AsyncMock),
+            pytest.raises(DeployTimeoutError) as excinfo,
+        ):
+            await deployer.deploy([cmd], detach=False, timeout=0.05, poll_interval=0.01)
+
+        message = str(excinfo.value)
+        assert "CUDA out of memory" in message
+        assert str(log_file) in message
+        # The reason distinguishes "still loading" from "up but unhealthy".
+        assert "connection_refused" in message
+        # The launch command makes a wrong or absent engine visible here too.
+        assert "test serve" in message
+
+    @pytest.mark.anyio
+    async def test_deploy_timeout_names_log_path_when_empty(self, tmp_path: Path):
+        """An engine that logged nothing still gets its path named."""
+        log_file = tmp_path / "silent.log"
+        log_file.write_text("")
+        deployer = LocalDeployer()
+        cmd = _make_command()
+
+        with (
+            patch.object(
+                deployer,
+                "_launch_one",
+                new_callable=AsyncMock,
+                return_value=_make_handle(log_file=str(log_file)),
+            ),
+            patch.object(
+                deployer,
+                "status",
+                new_callable=AsyncMock,
+                return_value=(
+                    InferPhase.RUNNING,
+                    {
+                        "ready": InferCondition(
+                            status=False, reason="health_check_failed"
+                        )
+                    },
+                ),
+            ),
+            patch.object(deployer, "delete", new_callable=AsyncMock),
+            pytest.raises(DeployTimeoutError) as excinfo,
+        ):
+            await deployer.deploy([cmd], detach=False, timeout=0.05, poll_interval=0.01)
+
+        message = str(excinfo.value)
+        assert str(log_file) in message
+        assert "empty" in message
+
+    @pytest.mark.anyio
     async def test_deploy_process_died_raises(self):
         """Deploy should raise DeployError if a process dies during polling."""
         deployer = LocalDeployer()
@@ -653,9 +893,15 @@ class TestDeploy:
                 "delete",
                 new_callable=AsyncMock,
             ),
-            pytest.raises(DeployError, match="failed"),
+            pytest.raises(DeployError, match="failed") as excinfo,
         ):
             await deployer.deploy([cmd], detach=False, poll_interval=0.01)
+
+        # A crash quotes the same block as a timeout: tail, log path, command.
+        message = str(excinfo.value)
+        assert "ERROR: out of memory" in message
+        assert "/tmp/test.log" in message
+        assert "test serve" in message
 
     @pytest.mark.anyio
     async def test_deploy_progress_callback(self):
@@ -698,6 +944,8 @@ class TestDeploy:
         assert len(progress_calls) >= 1
         # Each callback gets (elapsed_seconds, summary_string)
         assert "full=" in progress_calls[0][1]
+        # The not-ready reason rides along, not just the phase.
+        assert "health_check_failed" in progress_calls[0][1]
 
 
 # ---------- _read_tail ----------
@@ -721,16 +969,75 @@ class TestReadTail:
         """For large files, _read_tail should seek near the end, not read all."""
         deployer = LocalDeployer()
         log_file = tmp_path / "big.log"
-        # Write a file large enough that the seek-based read kicks in
-        # n=5 with 256 bytes/line = 1280 byte chunk. Write >1280 bytes.
+        # Write a file large enough that the seek-based read kicks in.
         many_lines = [f"log line {i}: " + "x" * 200 for i in range(20)]
         log_file.write_text("\n".join(many_lines) + "\n")
 
         handle = _make_handle(log_file=str(log_file))
-        lines = await deployer._read_tail(handle, n=5)
+        # The read window is sized in bytes, so it must be narrowed here or the
+        # whole file fits and the seek path never runs.
+        with patch("sieval.infer.deployer._LOG_TAIL_WINDOW_BYTES", 1280):
+            lines = await deployer._read_tail(handle, n=5)
         assert len(lines) == 5
         # Should contain the last lines
         assert "log line 19" in lines[-1]
+        assert not any("log line 0" in line for line in lines)
+
+    @pytest.mark.anyio
+    async def test_read_tail_keeps_the_error_under_progress_bar_redraws(
+        self, tmp_path: Path
+    ):
+        """A redrawn progress bar must not push the traceback out of the tail.
+
+        Counting each carriage-return frame as a line spends the whole window
+        on one bar and buries the evidence the tail exists to carry.
+        """
+        log_file = tmp_path / "engine.log"
+        log_file.write_text(
+            "[08:45:50] server args: dp_size=4\n"
+            "[08:46:02] Scheduler hit an exception: Traceback "
+            "(most recent call last):\n"
+            "ImportError: /usr/lib/sgl_kernel.so: undefined symbol\n"
+            + "".join(
+                f"\rLoading safetensors checkpoint shards: {pct:3d}% "
+                f"Completed | {pct}/100 [00:{pct:02d}<00:00, 1.9it/s]"
+                for pct in range(101)
+            )
+        )
+
+        deployer = LocalDeployer()
+        handle = _make_handle(log_file=str(log_file))
+        lines = await deployer._read_tail(handle)
+
+        assert any("ImportError" in line for line in lines)
+        # The bar collapses to its final frame rather than 101 of them.
+        assert sum("Loading safetensors" in line for line in lines) == 1
+
+    @pytest.mark.anyio
+    async def test_read_tail_collapses_a_redrawn_line_to_its_last_frame(
+        self, tmp_path: Path
+    ):
+        """One carriage-return-redrawn line is one line: its final frame."""
+        log_file = tmp_path / "bar.log"
+        log_file.write_text("before\nstep 1\rstep 2\rstep 3\nafter\n")
+
+        deployer = LocalDeployer()
+        handle = _make_handle(log_file=str(log_file))
+        lines = await deployer._read_tail(handle)
+
+        assert lines == ["before", "step 3", "after"]
+
+    @pytest.mark.anyio
+    async def test_read_tail_handles_crlf_line_endings(self, tmp_path: Path):
+        """The last frame of ``"line1\\r"`` is ``""`` — CRLF must not vanish."""
+        log_file = tmp_path / "crlf.log"
+        log_file.write_bytes(b"line1\r\nline2\r\nline3\r\n")
+
+        deployer = LocalDeployer()
+        handle = _make_handle(log_file=str(log_file))
+        lines = await deployer._read_tail(handle)
+
+        assert lines == ["line1", "line2", "line3"]
 
     @pytest.mark.anyio
     async def test_read_tail_no_file(self):

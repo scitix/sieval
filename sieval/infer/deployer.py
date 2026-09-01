@@ -12,6 +12,7 @@ import importlib
 import json
 import os
 import platform
+import shutil
 import signal
 import subprocess
 from collections.abc import AsyncIterator, Callable
@@ -42,8 +43,26 @@ _HEALTH_CHECK_TIMEOUT = 2.0
 _GRACEFUL_SHUTDOWN_TIMEOUT = 10.0
 _LOG_DIR = Path.home() / ".sieval" / "logs"
 _FAILURE_LOG_TAIL = 30
+# Bytes read back from the end of a log before taking its trailing lines. In
+# bytes, not lines × bytes-per-line: collapsing carriage-return redraws (see
+# _tail_lines) can turn tens of kilobytes into one line, emptying such a window.
+_LOG_TAIL_WINDOW_BYTES = 256 * 1024
 
 ProgressCallback = Callable[[float, str], None]
+
+
+def _tail_lines(text: str) -> list[str]:
+    """Split *text* into log lines, one per line the engine actually wrote.
+
+    ``str.splitlines`` splits on ``\\r`` as well as ``\\n``, so a progress bar
+    redrawn with carriage returns costs one "line" per frame — enough to spend
+    a whole tail window on one bar and bury the traceback it was read for.
+    Split on ``\\n`` only and keep each line's last frame, as a terminal would.
+
+    The trailing ``\\r`` of a CRLF line is stripped first, or the last frame of
+    ``"line1\\r"`` is ``""`` and every line of a CRLF log drops.
+    """
+    return [line.rstrip("\r").rsplit("\r", 1)[-1] for line in text.split("\n")]
 
 
 class DeployError(Exception):
@@ -123,16 +142,48 @@ class LocalDeployer:
 
     async def _launch_one(self, cmd: BackendCommand) -> InferHandle:
         """Launch a single subprocess from a BackendCommand."""
+        env = None
+        if cmd.env:
+            env = {**os.environ, **cmd.env}
+
+        # Popen would raise a bare FileNotFoundError naming neither the role nor
+        # the command. Resolve exactly as it does, or this rejects launches that
+        # would have worked: a bare name against the *child's* PATH
+        # (os.get_exec_path(env)), anything else against cmd.working_dir.
+        # Runs before the log dir and the "Logging to" line, so a rejected
+        # launch creates no directory and names no path that will never exist.
+        executable = cmd.cli_args[0] if cmd.cli_args else ""
+        search_path = (env or os.environ).get("PATH")
+        probe = executable
+        if cmd.working_dir and os.path.dirname(executable):
+            probe = os.path.join(cmd.working_dir, executable)
+
+        if not shutil.which(probe, path=search_path):
+            # which() also rejects a present but non-executable file, where
+            # Popen raises PermissionError — a different finding.
+            if shutil.which(probe, mode=os.F_OK, path=search_path):
+                problem = "is not executable"
+            elif os.path.dirname(probe) and os.path.isdir(probe):
+                # which() rejects a directory under F_OK too, so it would read
+                # as absent though Popen raises PermissionError. Guarded on
+                # dirname: for a bare name this is not what Popen would run.
+                problem = f"is a directory, not an executable: {probe!r}"
+            elif os.path.dirname(probe):
+                problem = f"does not exist at {probe!r}"
+            else:
+                problem = "was not found on PATH"
+            raise DeployError(
+                f"Engine executable {executable!r} for role {cmd.role!r} "
+                f"{problem}, so the process was never started and no log "
+                f"exists to inspect. Command: {' '.join(cmd.cli_args)}"
+            )
+
         _LOG_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
         log_file = _LOG_DIR / f"{cmd.role}-{ts}.log"
 
         logger.info("Launching [{}]: {}", cmd.role, " ".join(cmd.cli_args))
         logger.info("Logging to {}", log_file)
-
-        env = None
-        if cmd.env:
-            env = {**os.environ, **cmd.env}
 
         with open(log_file, "a") as fh:
             process = subprocess.Popen(
@@ -270,19 +321,21 @@ class LocalDeployer:
             return
 
         # Read only the tail portion instead of the entire file.
-        # 256 bytes/line is a generous estimate for log lines.
-        chunk_size = tail * 256
+        chunk_size = max(tail * 256, _LOG_TAIL_WINDOW_BYTES)
         async with await anyio.open_file(path, "rb") as f:
             file_size = await f.seek(0, 2)  # seek to end
             read_start = max(0, file_size - chunk_size)
             await f.seek(read_start)
             raw = await f.read()
 
-        text = raw.decode(errors="replace")
-        lines = text.splitlines()
+        lines = _tail_lines(raw.decode(errors="replace"))
         # If we didn't read from the start, the first line may be partial — drop it.
         if read_start > 0 and lines:
             lines = lines[1:]
+        # split("\n") leaves a trailing "" for a newline-terminated file, which
+        # splitlines() did not; it would otherwise consume one of `tail` slots.
+        if lines and not lines[-1]:
+            lines = lines[:-1]
         for line in lines[-tail:]:
             yield line
 
@@ -300,8 +353,9 @@ class LocalDeployer:
                 return
             if new_raw:
                 offset += len(new_raw)
-                for line in new_raw.decode(errors="replace").splitlines():
-                    yield line
+                for line in _tail_lines(new_raw.decode(errors="replace")):
+                    if line:
+                        yield line
 
     async def _poll_all_until_ready(
         self,
@@ -318,23 +372,32 @@ class LocalDeployer:
         while True:
             all_ready = True
             summary_parts: list[str] = []
+            not_ready: list[InferHandle] = []
 
             for handle in handles:
                 phase, conditions = await self.status(handle)
                 role = handle.metadata.get("role", "?")
                 ready = conditions.get("ready")
-                ready_str = "ready" if ready and ready.status else phase.value
+                if ready and ready.status:
+                    ready_str = "ready"
+                else:
+                    # connection_refused (still loading) vs health_check_failed
+                    # (up, unhealthy) decides whether waiting longer can help.
+                    ready_str = phase.value
+                    if ready and ready.reason:
+                        ready_str += f"({ready.reason})"
                 summary_parts.append(f"{role}={ready_str}")
 
                 if phase in (InferPhase.FAILED, InferPhase.STOPPED):
-                    tail = await self._read_tail(handle)
+                    # Same block as the timeout path — the log sits outside the
+                    # run directory either way.
                     msg = f"Process {handle.handle_id} ({role}) {phase.value}"
-                    if tail:
-                        msg += f"\n--- last {len(tail)} lines ---\n" + "\n".join(tail)
+                    msg += await self._quote_logs([handle])
                     raise DeployError(msg)
 
                 if not (ready and ready.status):
                     all_ready = False
+                    not_ready.append(handle)
 
             elapsed = anyio.current_time() - start
             if on_progress:
@@ -346,9 +409,36 @@ class LocalDeployer:
             if anyio.current_time() >= deadline:
                 summary = ", ".join(summary_parts)
                 msg = f"Not all processes ready within {timeout}s ({summary})"
+                # The process is about to be killed and its log lives outside
+                # the run directory, so not quoting it here usually loses it.
+                msg += await self._quote_logs(not_ready)
                 raise DeployTimeoutError(msg)
 
             await anyio.sleep(poll_interval)
+
+    async def _quote_logs(self, handles: list[InferHandle]) -> str:
+        """Quote each handle's log tail, path and launch command.
+
+        Returns a block to append, empty when *handles* is. The path prints even
+        with no tail: an engine that logged nothing is itself a finding, and the
+        log sits outside the run directory.
+        """
+        blocks: list[str] = []
+        for handle in handles:
+            role = handle.metadata.get("role", "?")
+            log_file = handle.metadata.get("log_file", "")
+            launched = handle.metadata.get("cmd")
+            header = f"--- {role} (pid {handle.handle_id})"
+            # MetadataValue admits str, which would join character by character.
+            if isinstance(launched, list):
+                header += f" cmd: {' '.join(str(a) for a in launched)}"
+            header += f"\n    log: {log_file or '?'}"
+            tail = await self._read_tail(handle)
+            if tail:
+                blocks.append(header + " ---\n" + "\n".join(tail))
+            else:
+                blocks.append(header + " --- (empty)")
+        return "\n" + "\n".join(blocks) if blocks else ""
 
     async def _read_tail(
         self, handle: InferHandle, n: int = _FAILURE_LOG_TAIL
@@ -361,8 +451,7 @@ class LocalDeployer:
         if not path.exists():
             return []
         try:
-            # Estimate: 256 bytes/line is generous for log lines
-            chunk_size = n * 256
+            chunk_size = max(n * 256, _LOG_TAIL_WINDOW_BYTES)
             async with await anyio.open_file(path, "rb") as f:
                 file_size = await f.seek(0, 2)
                 read_start = max(0, file_size - chunk_size)
@@ -370,7 +459,7 @@ class LocalDeployer:
                 raw = await f.read()
             lines = [
                 line
-                for line in raw.decode(errors="replace").splitlines()
+                for line in _tail_lines(raw.decode(errors="replace"))
                 if line.strip()
             ]
             # Drop first line if partial (didn't read from start)
