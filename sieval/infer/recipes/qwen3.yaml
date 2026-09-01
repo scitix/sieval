@@ -16,8 +16,16 @@
 #
 # Hardware notes:
 #   A100-40G:  40GB HBM2e, Ampere, no native FP8 (bf16 only)
+#   A100-80G:  80GB HBM2e, Ampere, no native FP8 (bf16 only)
 #   H100-80G:  80GB HBM3,  Hopper, native FP8, NVLink 4 (900GB/s)
 #   H200-141G: 141GB HBM3e, Hopper, same compute as H100 but 1.76x memory
+#
+#   The A100-80G bf16 params mirror H100-80G rather than A100-40G: what bounds
+#   max_model_len across these entries is capacity, and both cards hold 80GB of
+#   the same weights and KV cache. That equivalence is where these numbers come
+#   from -- they were not measured on an A100-80G. Bandwidth and compute differ
+#   (HBM2e vs HBM3, Ampere vs Hopper) but neither feeds these params. There is
+#   no fp8 block for the same reason A100-40G has none: Ampere lacks native FP8.
 #
 # Precision notes:
 #   bf16 profiles include explicit dtype to prevent auto-detection fallback.
@@ -53,6 +61,16 @@ qwen3-0.6b:
     sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
   hardware:
     A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.90
+          max_model_len: 32768
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.85
+          context_length: 32768
+    A100-80G:
       bf16:
         vllm:
           dtype: bfloat16
@@ -125,6 +143,16 @@ qwen3-1.7b:
           dtype: bfloat16
           mem_fraction_static: 0.85
           context_length: 32768
+    A100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.90
+          max_model_len: 32768
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.85
+          context_length: 32768
     H100-80G:
       bf16:
         vllm:
@@ -179,6 +207,16 @@ qwen3-4b:
     sglang: [">=0.4.6.post1", "==0.0.0.dev1"]
   hardware:
     A100-40G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
+    A100-80G:
       bf16:
         vllm:
           dtype: bfloat16
@@ -251,6 +289,16 @@ qwen3-8b:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 32768
+    A100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
     H100-80G:
       bf16:
         vllm:
@@ -314,6 +362,16 @@ qwen3-14b:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 16384
+    A100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
     H100-80G:
       bf16:
         vllm:
@@ -377,6 +435,16 @@ qwen3-30b-a3b:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 16384
+    A100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
     H100-80G:
       bf16:
         vllm:
@@ -440,6 +508,16 @@ qwen3-32b:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 16384
+    A100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
     H100-80G:
       bf16:
         vllm:
@@ -503,6 +581,16 @@ qwen3-72b:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 16384
+    A100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 32768
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 32768
     H100-80G:
       bf16:
         vllm:
@@ -566,6 +654,16 @@ qwen3-235b-a22b:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 8192
+    A100-80G:
+      bf16:
+        vllm:
+          dtype: bfloat16
+          gpu_memory_utilization: 0.95
+          max_model_len: 16384
+        sglang:
+          dtype: bfloat16
+          mem_fraction_static: 0.90
+          context_length: 16384
     H100-80G:
       bf16:
         vllm:
