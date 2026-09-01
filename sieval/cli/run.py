@@ -385,6 +385,10 @@ def register_run_command(app: typer.Typer) -> None:
             float,
             typer.Option(
                 "--ready-timeout",
+                # A zero or negative budget makes the poll loop raise
+                # DeployTimeoutError on its first pass, which reads as a broken
+                # engine rather than a bad argument. Reject it at parse time.
+                min=1.0,
                 help=(
                     "Seconds to wait for each auto-served model to become "
                     "ready. Applies per model, not to the run as a whole."

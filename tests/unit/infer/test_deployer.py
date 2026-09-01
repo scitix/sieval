@@ -18,6 +18,7 @@ from sieval.core.models import ServingFacts
 from sieval.infer.backends.translator import BackendCommand
 from sieval.infer.config import InferCondition, InferHandle, InferPhase
 from sieval.infer.deployer import (
+    DEFAULT_READY_TIMEOUT,
     DeployError,
     DeployTimeoutError,
     LocalDeployer,
@@ -63,6 +64,22 @@ def _make_command(
         role=role,
         health_url=health_url,
     )
+
+
+# ---------- DEFAULT_READY_TIMEOUT ----------
+
+
+class TestDefaultReadyTimeout:
+    def test_leaves_room_for_a_cold_start(self):
+        """The default must not sit on top of an observed cold-start time.
+
+        A dead process is reported within a poll interval regardless of this
+        value (``_poll_all_until_ready`` raises on FAILED/STOPPED before it
+        checks the deadline), so the budget only ever bounds an alive-but-
+        silent engine: too small and a healthy cold load is failed outright.
+        One cluster measured 264s cold for a 30B MoE, so 300s was not a margin.
+        """
+        assert DEFAULT_READY_TIMEOUT >= 600.0
 
 
 # ---------- _launch_one ----------

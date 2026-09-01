@@ -129,6 +129,73 @@ class TestRunCommand:
         plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
         assert "--ready-timeout" in re.sub(r"\s+", " ", plain)
 
+    def test_ready_timeout_option_reaches_run_all(self, tmp_path: Path):
+        """The typer option must arrive at ``_run_all``, not stop at the parser.
+
+        ``test_ready_timeout_reaches_the_deploy_call`` starts *at* ``_run_all``
+        and ``test_run_help_shows_ready_timeout`` stops at ``--help``; between
+        them sits the hand-off in ``register_run_command``. Dropping that one
+        line restores the original defect — an option the user can type that
+        never reaches the deployer — while leaving both neighbours green.
+        """
+        config = tmp_path / "test.yaml"
+        config.write_text("models: {}\ntasks: {}")
+
+        mock_run_all = AsyncMock(return_value={})
+
+        with patch("sieval.cli.run._run_all", mock_run_all):
+            result = runner.invoke(
+                app, ["run", str(config), "--ready-timeout", "1234", "-o", "json"]
+            )
+
+        assert result.exit_code == 0, result.output
+        # A patch target that resolves but no longer intercepts would leave the
+        # kwargs assertion below unreached, and the test vacuously green.
+        assert mock_run_all.await_count == 1
+        await_args = mock_run_all.await_args
+        assert await_args is not None
+        assert await_args.kwargs["ready_timeout"] == 1234.0
+
+    def test_ready_timeout_rejects_a_non_positive_budget(self, tmp_path: Path):
+        """A zero/negative budget is a bad argument, not an engine failure.
+
+        Without ``min=``, the poll loop accepts it and raises
+        ``DeployTimeoutError`` on its first pass, which reads as a broken
+        engine. Typer must refuse it before anything is launched.
+        """
+        config = tmp_path / "test.yaml"
+        config.write_text("models: {}\ntasks: {}")
+
+        mock_run_all = AsyncMock(return_value={})
+        for bad in ("0", "-30"):
+            with patch("sieval.cli.run._run_all", mock_run_all):
+                result = runner.invoke(
+                    app, ["run", str(config), "--ready-timeout", bad]
+                )
+            assert result.exit_code == 2, f"{bad} was accepted: {result.output}"
+        assert mock_run_all.await_count == 0
+
+    def test_infer_start_accepts_both_readiness_option_names(self):
+        """One spelling works across both commands.
+
+        ``run`` names the budget ``--ready-timeout``; ``infer start`` shipped
+        it as ``--timeout``. Both names resolve to the same parameter here, so
+        neither spelling is wrong depending on which command you reached for.
+        """
+        import click
+        import typer.main
+
+        root = typer.main.get_command(app)
+        assert isinstance(root, click.Group)
+        infer = root.commands["infer"]
+        assert isinstance(infer, click.Group)
+
+        param = next(p for p in infer.commands["start"].params if p.name == "timeout")
+        assert set(param.opts) == {"--timeout", "--ready-timeout"}
+        # Same non-positive guard as `run --ready-timeout`.
+        assert isinstance(param.type, click.FloatRange)
+        assert param.type.min == 1.0
+
     def test_ready_timeout_default_is_shared_with_infer_start(self):
         """One named default, so the two commands cannot drift apart again.
 
@@ -160,18 +227,6 @@ class TestRunCommand:
             inspect.signature(infer_start).parameters["timeout"].default
             == DEFAULT_READY_TIMEOUT
         )
-
-    def test_ready_timeout_default_leaves_room_for_a_cold_start(self):
-        """The default must not sit on top of an observed cold-start time.
-
-        A dead process is reported within a poll interval regardless of this
-        value, so the budget only bounds an alive-but-silent engine: too small
-        and a healthy cold load is failed outright. One cluster measured 264s
-        cold for a 30B MoE, so 300s was not a margin.
-        """
-        from sieval.infer.deployer import DEFAULT_READY_TIMEOUT
-
-        assert DEFAULT_READY_TIMEOUT >= 600.0
 
     def test_run_help_shows_deterministic_flag_only(self):
         """--deterministic appears; --no-deterministic does not (monotone).
