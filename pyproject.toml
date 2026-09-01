@@ -82,6 +82,11 @@ multi-if = [
   "pythainlp>=5.0.0",
 ]
 math = [
+  # sympy's OTHER LaTeX backend. MATH-Perturb calls `parse_latex(s,
+  # backend="lark")` explicitly, so this is not interchangeable with the antlr
+  # runtime below -- the two parse different grammars and the vendored grader
+  # names one of them. Both are needed because both graders are vendored.
+  "lark>=1.2.2",
   "latex2sympy2-extended>=1.10.2",
   # antlr4-11-0 extra pins antlr4-python3-runtime==4.11.0, which sympy 1.14's
   # LaTeX grammar needs for DeepSeek symbolic_equal's parse_latex to work.

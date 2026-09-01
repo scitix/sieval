@@ -141,6 +141,14 @@ from .math_500 import (
     MATH500Dataset,
     MATH500DatasetSample,
 )
+from .math_perturb_hard import (
+    MATHPerturbHardDataset,
+    MATHPerturbHardDatasetSample,
+)
+from .math_perturb_simple import (
+    MATHPerturbSimpleDataset,
+    MATHPerturbSimpleDatasetSample,
+)
 from .mbpp import (
     MBPPDataset,
     MBPPDatasetSample,
@@ -277,6 +285,10 @@ __all__ = [
     "LiveCodeBenchDatasetSample",
     "MATH500Dataset",
     "MATH500DatasetSample",
+    "MATHPerturbHardDataset",
+    "MATHPerturbHardDatasetSample",
+    "MATHPerturbSimpleDataset",
+    "MATHPerturbSimpleDatasetSample",
     "MBPPDataset",
     "MBPPDatasetSample",
     "MMLUDataset",

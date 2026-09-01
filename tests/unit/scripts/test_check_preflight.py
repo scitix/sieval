@@ -3393,6 +3393,29 @@ class TestCheckReferenceKind:
         assert r.status == "FAIL"
         assert "found via base" in r.details[0]
 
+    def test_a_generic_base_is_followed(self, tmp_path: Path):
+        """`math_perturb`'s layout: the leaf *parameterizes* its shared base.
+
+        `DemoBase[int]` parses as an `ast.Subscript`, not the `ast.Name` the
+        `platinum_bench` case above is. Matched only against `Name`, the base
+        tier finds nothing, the task resolves to no reference at all, and it is
+        reported `unverified` -- a WARN that reads as "this one could not be
+        read", while what is underneath it is a mis-declaration, i.e. a FAIL.
+        So the subscript is unwrapped rather than skipped.
+        """
+        r = self._one(
+            tmp_path,
+            "from ._base import DemoBase\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n)\n"
+            "class DemoTask(DemoBase[int]):\n"
+            "    pass\n",
+            _base="class DemoBase:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True, build_judgement_record(None, [])\n",
+        )
+        assert r.status == "FAIL"
+        assert "found via base" in r.details[0]
+
     # --- reach: what the check cannot read, it must not call clean ----------
 
     def test_an_unreachable_task_warns_rather_than_passing_silently(

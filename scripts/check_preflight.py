@@ -2383,7 +2383,10 @@ class PreflightRunner:
            inside ``sieval/tasks/`` -- ``arc/``'s four leaves share
            ``_base.arc_judgement_record``;
         3. a base class resolved the same way -- ``platinum_bench``'s five leaves
-           inherit ``feedback`` and define none of their own.
+           inherit ``feedback`` and define none of their own. A *generic* base
+           counts: ``math_perturb``'s two leaves name theirs as
+           ``MathPerturbZeroShotGenTask[TSample]``, an ``ast.Subscript`` whose
+           ``.value`` is the class.
 
         One level each, not a transitive walk: that covers every task today, and
         a deeper chain reports as unresolved (the caller counts it) rather than
@@ -2422,15 +2425,23 @@ class PreflightRunner:
 
         inherited: list[ast.expr] = []
         for base in cls.bases:
-            if not isinstance(base, ast.Name):
+            # A *generic* base is an `ast.Subscript` -- `DemoBase[TSample]` --
+            # and the class it names is its `.value`. Unwrapped rather than
+            # skipped: a leaf that parameterizes its shared base still inherits
+            # that base's `feedback`, so skipping the subscript form drops the
+            # leaf out of this check entirely. It then reports as `unresolved`,
+            # which is a WARN -- so a mis-declaration on such a task would be
+            # announced as merely unread rather than raised as the FAIL it is.
+            named = base.value if isinstance(base, ast.Subscript) else base
+            if not isinstance(named, ast.Name):
                 continue
-            target = _resolve_intra_package(tree, base.id, path, self.project_root)
+            target = _resolve_intra_package(tree, named.id, path, self.project_root)
             if target is None or not target.is_file():
                 continue
             shared = self._parse_task_module(target, violations)
             if shared is None:
                 continue
-            parent = _class_named(shared, base.id)
+            parent = _class_named(shared, named.id)
             if parent is not None:
                 inherited += _judgement_references(parent)
 

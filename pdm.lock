@@ -5,7 +5,7 @@
 groups = ["default", "dev", "drop", "hle", "ifbench", "ifeval", "iheval", "math", "multi-if", "ruler", "ruler-gen", "scicode", "t-eval", "test"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:f967a7eb48f5d293c88909872a7893443289ec5d6c58c7e2710d86267cd43bf2"
+content_hash = "sha256:367b21d69283fc1c6529e49fd6eb905d8a62940c06601b4d57f77793b40f3ec3"
 
 [[metadata.targets]]
 requires_python = ">=3.12,<3.15"
@@ -1006,6 +1006,17 @@ dependencies = [
 ]
 files = [
     {file = "langdetect-1.0.9.tar.gz", hash = "sha256:cbc1fef89f8d062739774bd51eda3da3274006b3661d199c2655f6b3f6d605a0"},
+]
+
+[[package]]
+name = "lark"
+version = "1.3.1"
+requires_python = ">=3.8"
+summary = "a modern parsing library"
+groups = ["math"]
+files = [
+    {file = "lark-1.3.1-py3-none-any.whl", hash = "sha256:c629b661023a014c37da873b4ff58a817398d12635d3bbb2c5a03be7fe5d1e12"},
+    {file = "lark-1.3.1.tar.gz", hash = "sha256:b426a7a6d6d53189d318f2b6236ab5d6429eaf09259f1ca33eb716eed10d2905"},
 ]
 
 [[package]]
