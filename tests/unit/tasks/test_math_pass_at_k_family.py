@@ -115,8 +115,13 @@ def _grader_module(task_cls):
     Each member does `from sieval.core.utils.offload import run_cpu_bound`, so the
     binding that matters is the one in the TASK's namespace. Patching
     `offload.run_cpu_bound` instead resolves fine and intercepts nothing.
+
+    Resolved from where `feedback` is DEFINED, not from the task class: a member
+    that inherits `feedback` from a shared base grades through the base module's
+    binding, and `task_cls.__module__` would name the leaf — which has no
+    `run_cpu_bound` to patch. `math_perturb_{simple,hard}` are that shape today.
     """
-    return sys.modules[task_cls.__module__]
+    return sys.modules[task_cls.feedback.__module__]
 
 
 class _Raiser:

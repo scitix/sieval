@@ -70,8 +70,13 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
   no re-inference, no budget burned — and under `DENOMINATOR_REQUESTED` a fail is
   already charged as wrong, so **the headline does not move**. This is why no
   `n_grade_errors` metric is needed: `fails` plus the recorded reason already is
-  one. Asserted over the whole pass@k math family in
-  `tests/unit/tasks/test_math_pass_at_k_family.py`.
+  one. Enforced tree-wide by an AST survey of every `run_cpu_bound` call site in
+  `tests/unit/tasks/test_grading_call_site_convention.py` — a hand-kept list of
+  members is what let this drift in the first place, so the check reads the
+  source rather than a registry and covers tasks whose `feedback` lives in a
+  shared base. The *behaviour* behind it (a timeout still scores wrong, every
+  other class propagates, and the headline does not move either way) is asserted
+  over the pass@k math family in `tests/unit/tasks/test_math_pass_at_k_family.py`.
     - The one thing that *does* move is a published interval: it is estimated
       over the units that came back while scaled to the requested denominator, so
       dropping one shifts the bound (in either direction), and a survivor set that
@@ -82,7 +87,7 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
       its own measurement first: there a fail is *excluded* from the denominator,
       so moving a sample into `fails` does change the score
       (`theoremqa_kshot_base_gen` is the only such member *with a grading call
-      site* today — 20 tasks declare the policy, it is the only one that grades
+      site* today — 19 tasks declare the policy, it is the only one that grades
       through `run_cpu_bound`).
     - **The rule reaches only what the call site can see.** It buys the signal
       when the grader lets errors through; a grader that catches `Exception`

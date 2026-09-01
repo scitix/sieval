@@ -111,6 +111,23 @@ async def test_a_dead_latex_backend_fails_the_run_instead_of_the_model(monkeypat
 
 
 @pytest.mark.anyio
+async def test_a_dead_backend_fails_every_sample_but_is_probed_only_once(monkeypatch):
+    # The whole run must fail, not just the sample that drew the probe -- and the
+    # verdict is cached, so it does not buy one worker round trip per sample (times
+    # `max_retries`, since `exception::RuntimeError` is retriable) to re-learn it.
+    task = _build()
+    grader = _Grader(probe_result=False)
+    monkeypatch.setattr(task_mod, "run_cpu_bound", grader)
+
+    for sample_id in range(3):
+        with pytest.raises(RuntimeError, match="string equality"):
+            await _feedback(task, sample_id=sample_id)
+
+    assert grader.probe_calls == 1
+    assert grader.grade_calls == 0
+
+
+@pytest.mark.anyio
 async def test_a_healthy_grader_is_probed_and_then_stays_out_of_the_way(monkeypatch):
     task = _build()
     grader = _Grader(probe_result=True, grade_result=True)

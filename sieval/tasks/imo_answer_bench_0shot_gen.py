@@ -170,8 +170,12 @@ class IMOAnswerBenchZeroShotGenTask(
         self._n = n
         # Probe-once state for `_ensure_grader_healthy`. The flag is read outside
         # the lock so the common path stays lock-free; the lock only keeps the
-        # first concurrent burst from probing once per sample.
+        # first concurrent burst from probing once per sample. The verdict is
+        # cached as a MESSAGE rather than an exception instance: every later
+        # sample must still fail, and re-raising one instance would grow its
+        # `__traceback__` once per sample for the length of the run.
         self._grader_probed = False
+        self._grader_probe_error: str | None = None
         self._grader_probe_lock = asyncio.Lock()
 
     async def _ensure_grader_healthy(self) -> None:
@@ -195,33 +199,47 @@ class IMOAnswerBenchZeroShotGenTask(
         Only a definite ``False`` fails. A probe that times out is inconclusive,
         not negative, so it warns and stops probing rather than turning a loaded
         box into a failed run.
+
+        A definite negative fails EVERY sample, not just the one that happened to
+        probe -- but the probe itself is paid once and the verdict cached, so a
+        400-problem run does not buy 400 worker round trips (times `max_retries`,
+        since ``exception::RuntimeError`` is retriable) to re-learn one answer.
+
+        Only the *swallowed* failure needs this. `math_verify` missing outright
+        raises ``ImportError`` from `verify_math_answer`'s own import line, above
+        the fallback, so it propagates as ``exception::ImportError`` through the
+        ordinary contract and never reaches the canary.
         """
-        if self._grader_probed:
-            return
-        async with self._grader_probe_lock:
-            if self._grader_probed:
-                return
-            try:
-                healthy = await run_cpu_bound(
-                    verify_math_answer, *GRADER_CANARY, timeout=GRADE_TIMEOUT
-                )
-            except TimeoutError:
-                logger.warning(
-                    "Grader self-check timed out after {}s; proceeding unprobed. "
-                    "A LaTeX backend that is merely slow still grades correctly.",
-                    GRADE_TIMEOUT,
-                )
-                self._grader_probed = True
-                return
-            if not healthy:
-                raise RuntimeError(
-                    f"Grader self-check failed: verify_math_answer{GRADER_CANARY} "
-                    "returned False, so math_verify cannot parse LaTeX and every "
-                    "grade is falling back to string equality -- expression "
-                    "answers would score wrong with no other symptom. Check the "
-                    "`math` dependency group (math-verify[antlr4-11-0]==0.8.0)."
-                )
-            self._grader_probed = True
+        if not self._grader_probed:
+            async with self._grader_probe_lock:
+                if not self._grader_probed:
+                    self._grader_probe_error = await self._probe_grader()
+                    self._grader_probed = True
+        if self._grader_probe_error is not None:
+            raise RuntimeError(self._grader_probe_error)
+
+    async def _probe_grader(self) -> str | None:
+        """Grade the canary once; the message to fail on, or ``None`` if healthy."""
+        try:
+            healthy = await run_cpu_bound(
+                verify_math_answer, *GRADER_CANARY, timeout=GRADE_TIMEOUT
+            )
+        except TimeoutError:
+            logger.warning(
+                "Grader self-check timed out after {}s; proceeding unprobed. "
+                "A LaTeX backend that is merely slow still grades correctly.",
+                GRADE_TIMEOUT,
+            )
+            return None
+        if healthy:
+            return None
+        return (
+            f"Grader self-check failed: verify_math_answer{GRADER_CANARY} "
+            "returned False, so math_verify cannot parse LaTeX and every "
+            "grade is falling back to string equality -- expression "
+            "answers would score wrong with no other symptom. Check the "
+            "`math` dependency group (math-verify[antlr4-11-0]==0.8.0)."
+        )
 
     @override
     async def preprocess(self, raw, ctx):
