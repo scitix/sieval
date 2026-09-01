@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from loguru import logger
@@ -353,6 +354,51 @@ def match_recipe(family: str, param_billions: float) -> Recipe | None:
     return None
 
 
+# A hardware key's memory token ("80G", "141G") states the card's capacity; the
+# remaining tokens name the model ("H200"). nvidia-smi reports the capacity for
+# some cards ("NVIDIA A100-SXM4-80GB") but not others ("NVIDIA H200"), so the
+# two kinds of token cannot be required alike.
+_MEMORY_TOKEN_RE = re.compile(r"^\d+(?:g|gb|gib)$")
+
+# A reported capacity has to start on a boundary. The "10G" inside a product
+# name like "NVIDIA A10G" is part of the model, and reading it as a capacity
+# would push that card down the "states a size" branch below, refusing the very
+# fallback it needs.
+_GPU_STATES_MEMORY_RE = re.compile(r"(?<![a-z0-9])\d+\s*(?:g|gb|gib)\b")
+
+
+def _model_token_matches(token: str, gpu_lower: str) -> bool:
+    """Does *token* name the GPU model, sitting on a token boundary?
+
+    The ``"exact"`` reading can use a plain substring test because the key's
+    memory token corroborates it — "80g" is found inside "80gb". A model-only
+    reading has no such second witness, so a bare substring would let one
+    card's key claim another's name: "h20" sits inside "h200", and "h200"
+    inside "gh200".
+    """
+    pattern = rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])"
+    return re.search(pattern, gpu_lower) is not None
+
+
+def _classify_hardware_key(
+    gpu_lower: str, hw_key: str
+) -> Literal["exact", "model"] | None:
+    """Classify how well *hw_key* describes the GPU named by *gpu_lower*.
+
+    Returns ``"exact"`` when every token of the key appears in the GPU string,
+    ``"model"`` when only the model tokens do (the key's memory token is
+    absent), or ``None`` when the model tokens disagree — which includes a key
+    naming no model at all, such as a bare ``"80G"``.
+    """
+    tokens = re.split(r"[-_\s]+", hw_key.lower())
+    if all(token in gpu_lower for token in tokens):
+        return "exact"
+    model_tokens = [t for t in tokens if not _MEMORY_TOKEN_RE.match(t)]
+    if model_tokens and all(_model_token_matches(t, gpu_lower) for t in model_tokens):
+        return "model"
+    return None
+
+
 def resolve_hardware_profile(
     recipe: Recipe,
     gpu_model: str | None,
@@ -365,6 +411,20 @@ def resolve_hardware_profile(
     that every resulting token appears in ``gpu_model`` (case-insensitive).
     For example, key ``"H100-80G"`` matches GPU string
     ``"NVIDIA H100-SXM5-80GB"``.
+
+    Some drivers report a bare product name with no capacity — ``"NVIDIA
+    H200"`` — which no ``<model>-<memory>`` key can satisfy that way. When
+    the GPU string states no capacity at all, a key is therefore allowed to
+    match on its model tokens alone, but only when exactly one key does; two
+    candidates mean the recipe distinguishes memory tiers we cannot tell
+    apart, so we refuse rather than guess. A GPU string that *does* state a
+    capacity must still agree with the key, so a 40G card never inherits an
+    80G profile.
+
+    Matching on the model name alone also demands a token boundary, which the
+    corroborated ``"exact"`` reading does not: without a memory token to
+    confirm it, a plain substring would let ``"H20-96G"`` claim an ``"NVIDIA
+    H200"``, or ``"H200-141G"`` a ``"NVIDIA GH200"``.
 
     Args:
         recipe: Typed Recipe with a ``hardware`` field.
@@ -388,37 +448,77 @@ def resolve_hardware_profile(
         return None
 
     gpu_lower = gpu_model.lower()
-    for hw_key, prec_map in recipe.hardware.items():
-        key_tokens = re.split(r"[-_\s]+", hw_key.lower())
-        if all(token in gpu_lower for token in key_tokens):
-            logger.info("GPU {!r} matched hardware key {!r}", gpu_model, hw_key)
-            if precision not in prec_map:
-                logger.warning(
-                    "Precision {!r} not in hardware {!r} (available: {})",
-                    precision,
-                    hw_key,
-                    ", ".join(prec_map),
-                )
-                return None
-            fw_map = prec_map[precision]
-            if framework not in fw_map:
-                logger.info(
-                    "Framework {!r} not in hardware {}[{}] (available: {})",
-                    framework,
-                    hw_key,
-                    precision,
-                    ", ".join(fw_map),
-                )
-                return None
-            return dict(fw_map[framework])
+    matched_key: str | None = None
+    model_only: list[str] = []
 
-    logger.info(
-        "GPU {!r} did not match any hardware key in recipe {!r} (available: {})",
-        gpu_model,
-        recipe.name,
-        ", ".join(recipe.hardware),
-    )
-    return None
+    for hw_key in recipe.hardware:
+        kind = _classify_hardware_key(gpu_lower, hw_key)
+        if kind == "exact":
+            matched_key = hw_key
+            break
+        if kind == "model":
+            model_only.append(hw_key)
+
+    if matched_key is not None:
+        logger.info("GPU {!r} matched hardware key {!r}", gpu_model, matched_key)
+    elif _GPU_STATES_MEMORY_RE.search(gpu_lower):
+        # The GPU named its capacity and no key agreed with it. Falling back to
+        # the model name would hand an 80G profile to a 40G card.
+        logger.info(
+            "GPU {!r} states a memory size that matches no hardware key in "
+            "recipe {!r} (available: {})",
+            gpu_model,
+            recipe.name,
+            ", ".join(recipe.hardware),
+        )
+        return None
+    elif len(model_only) == 1:
+        matched_key = model_only[0]
+        logger.warning(
+            "GPU {!r} reports no memory size; matching hardware key {!r} on its "
+            "model name alone. Pass the engine flags explicitly after `--` if "
+            "that is the wrong memory tier.",
+            gpu_model,
+            matched_key,
+        )
+    elif model_only:
+        logger.warning(
+            "GPU {!r} reports no memory size and matches several hardware keys "
+            "in recipe {!r} ({}); refusing to guess a memory tier.",
+            gpu_model,
+            recipe.name,
+            ", ".join(model_only),
+        )
+        return None
+    else:
+        logger.info(
+            "GPU {!r} did not match any hardware key in recipe {!r} (available: {})",
+            gpu_model,
+            recipe.name,
+            ", ".join(recipe.hardware),
+        )
+        return None
+
+    prec_map = recipe.hardware[matched_key]
+    if precision not in prec_map:
+        logger.warning(
+            "Precision {!r} not in hardware {!r} (available: {})",
+            precision,
+            matched_key,
+            ", ".join(prec_map),
+        )
+        return None
+    fw_map = prec_map[precision]
+    if framework not in fw_map:
+        logger.info(
+            "Framework {!r} not in hardware {}[{}] (available: {})",
+            framework,
+            matched_key,
+            precision,
+            ", ".join(fw_map),
+        )
+        return None
+    return dict(fw_map[framework])
 
 
 def resolve_capability_profile(

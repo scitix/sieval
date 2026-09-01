@@ -281,6 +281,111 @@ class TestResolveHardwareProfile:
         )
         assert result is None
 
+    def test_bare_product_name_matches_on_model_token(
+        self, sample_recipe: Recipe
+    ) -> None:
+        """'NVIDIA H100' (no capacity reported) still matches 'H100-80G'.
+
+        Some drivers report only the product name, which can never contain the
+        key's memory token. Refusing to match there silently drops every
+        profile param from the launch command.
+        """
+        result = resolve_hardware_profile(sample_recipe, "NVIDIA H100", "bf16", "vllm")
+        assert result is not None
+        assert result["max_model_len"] == 32768
+
+    def test_bare_product_name_h200_matches_shipped_recipe(self) -> None:
+        """The reported case: nvidia-smi says 'NVIDIA H200', key is 'H200-141G'.
+
+        Compared against the recipe's own entry rather than literal numbers, so
+        retuning the YAML cannot fail a matching-logic test. The second assert
+        keeps that from passing vacuously on an empty entry.
+        """
+        recipe = load_recipe("qwen3-30b-a3b")
+        result = resolve_hardware_profile(recipe, "NVIDIA H200", "bf16", "sglang")
+        assert result == recipe.hardware["H200-141G"]["bf16"]["sglang"]
+        assert result
+
+    def test_stated_capacity_must_still_agree(self) -> None:
+        """A 40G card must not inherit the 80G profile.
+
+        The GPU names its capacity, so a model-token match would be a
+        downgrade in safety, not a rescue: the 80G context length would not
+        fit.
+        """
+        recipe = Recipe(
+            name="only-80g",
+            hardware={"A100-80G": {"bf16": {"vllm": {"max_model_len": 32768}}}},
+        )
+        assert (
+            resolve_hardware_profile(recipe, "NVIDIA A100-SXM4-40GB", "bf16", "vllm")
+            is None
+        )
+
+    def test_ambiguous_memory_tier_refuses_to_guess(self) -> None:
+        """A bare name matching two memory tiers resolves to None, not a coin flip."""
+        recipe = Recipe(
+            name="two-tiers",
+            hardware={
+                "A100-40G": {"bf16": {"vllm": {"max_model_len": 16384}}},
+                "A100-80G": {"bf16": {"vllm": {"max_model_len": 32768}}},
+            },
+        )
+        assert resolve_hardware_profile(recipe, "NVIDIA A100", "bf16", "vllm") is None
+
+    def test_exact_match_still_wins_over_model_only(self) -> None:
+        """An exact key is preferred even when a looser one is declared first."""
+        recipe = Recipe(
+            name="mixed",
+            hardware={
+                "H100-141G": {"bf16": {"vllm": {"max_model_len": 65536}}},
+                "H100-80G": {"bf16": {"vllm": {"max_model_len": 32768}}},
+            },
+        )
+        result = resolve_hardware_profile(
+            recipe, "NVIDIA H100-SXM5-80GB", "bf16", "vllm"
+        )
+        assert result is not None
+        assert result["max_model_len"] == 32768
+
+    def test_product_name_digits_are_not_a_reported_capacity(self) -> None:
+        """'NVIDIA A10G' states no capacity — its "10G" names the model.
+
+        Read as a capacity, it would push the card down the "GPU stated a size"
+        branch and refuse the very model-name fallback it needs.
+        """
+        recipe = Recipe(
+            name="a10g",
+            hardware={"A10G-24G": {"bf16": {"vllm": {"max_model_len": 8192}}}},
+        )
+        result = resolve_hardware_profile(recipe, "NVIDIA A10G", "bf16", "vllm")
+        assert result is not None
+        assert result["max_model_len"] == 8192
+
+    def test_model_token_does_not_match_a_longer_product_name(self) -> None:
+        """'H20-96G' must not claim an 'NVIDIA H200' — "h20" sits inside "h200"."""
+        recipe = Recipe(
+            name="only-h20",
+            hardware={"H20-96G": {"bf16": {"vllm": {"max_model_len": 8192}}}},
+        )
+        assert resolve_hardware_profile(recipe, "NVIDIA H200", "bf16", "vllm") is None
+
+    def test_model_token_does_not_match_a_prefixed_product_name(self) -> None:
+        """'H200-141G' must not claim an 'NVIDIA GH200' — a different part."""
+        recipe = Recipe(
+            name="only-h200",
+            hardware={"H200-141G": {"bf16": {"vllm": {"max_model_len": 32768}}}},
+        )
+        assert resolve_hardware_profile(recipe, "NVIDIA GH200", "bf16", "vllm") is None
+
+    def test_key_naming_no_model_never_matches(self) -> None:
+        """A key that is only a memory token describes no card at all."""
+        recipe = Recipe(
+            name="mem-only",
+            hardware={"80G": {"bf16": {"vllm": {"max_model_len": 32768}}}},
+        )
+        assert resolve_hardware_profile(recipe, "NVIDIA H100", "bf16", "vllm") is None
+
 
 class TestTestedVersions:
     def test_recipe_has_tested_versions(self) -> None:
