@@ -507,6 +507,48 @@ def test_grade_extracted_does_not_mutate_its_arguments():
 # --- k / n ---
 
 
+@pytest.mark.anyio
+async def test_an_unexpected_seed_split_is_published_rather_than_dropped():
+    """A third `original_split` value gets its own cell, like an eighth subject.
+
+    The subject loop takes the union with what was observed; the seed loop used
+    a fixed two-element list, so a row carrying anything else was counted in the
+    headline and in no seed column at all — the two seed rates silently stopped
+    summing to the total. The pinned data is train/test only, so this is drift
+    insurance, not a live case.
+    """
+    task, _ = _task()
+
+    def _judged(problem_id: int, split: str):
+        raw = _sample(problem_id=problem_id, original_split=split)
+        return TaskContext(
+            sample_id=problem_id,
+            raw_sample=raw,
+            feedback_result=build_judgement_record(
+                ["42"],
+                [build_rollout_judgement(0, True)],
+                extra={"original_split": split, "type": "Algebra"},
+            ),
+            postprocess_result=build_prediction_record([["42"]]),
+        )
+
+    finals = [_judged(0, "train"), _judged(1, "test"), _judged(2, "validation")]
+    report = await task.report(finals, [])
+
+    # The two declared cells still publish, unconditionally, as before.
+    assert "score_seed_train" in report
+    assert "score_seed_test" in report
+    # And the unexpected one is reported instead of vanishing.
+    assert report["score_seed_validation"] == 100.0
+    assert report["n_problems_seed_validation"] == 1.0
+    # The cells account for every problem -- the property that broke.
+    assert sum(
+        report[key]
+        for key in report
+        if key.startswith("n_problems_seed_") and not key.endswith("_ci95")
+    ) == len(finals)
+
+
 def test_k_greater_than_n_is_rejected_at_construction():
     with pytest.raises(ValueError, match="pass@2 needs at least 2 sample"):
         _task(k=2, n=1)

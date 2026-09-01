@@ -633,7 +633,16 @@ class MathPerturbZeroShotGenTask[TSample](
         # Both seed cells are always published, at their declared denominator, so
         # a run whose split happens to hold no train-seeded rows reports 0.0 over
         # 0 rather than growing and losing a column between runs.
-        for seed_split in SEED_SPLITS:
+        #
+        # The UNION with what was observed, for the same reason the subject loop
+        # below takes one: `SEED_SPLITS` alone is a fixed list, and a source that
+        # grew a third `original_split` value would put rows into a cell that is
+        # never published — counted in no column, while `n_problems` and the
+        # headline still charge for them, so the seed cells would quietly stop
+        # summing to the total. The pinned data is train/test only, so this
+        # publishes exactly the same two keys today; it is the drift that costs
+        # nothing to survive.
+        for seed_split in sorted(set(SEED_SPLITS) | set(seed_denominators)):
             values = seed_values[seed_split]
             denominator = seed_denominators[seed_split]
             report[seed_score_key(seed_split)] = (
