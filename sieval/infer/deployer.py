@@ -39,6 +39,17 @@ from sieval.infer.topology.models import (
     deployment_plan_projection,
 )
 
+# Seconds to wait for a freshly launched engine to report ready. Generous by
+# design, because the two failure modes are not symmetric: a process that dies
+# is detected within a poll interval whatever this value is (phase STOPPED or
+# FAILED), so this budget only ever bounds a process that is alive and silent.
+# Setting it too low converts a slow-but-healthy cold start into a hard failure
+# that wastes the whole allocation; setting it too high only delays discovery of
+# a genuine hang. For scale, one cluster served the same 30B MoE checkpoint in
+# 77-82s with a warm page cache but 264s cold — against which the previous 300s
+# was not a budget but a coin toss.
+DEFAULT_READY_TIMEOUT = 900.0
+
 _HEALTH_CHECK_TIMEOUT = 2.0
 _GRACEFUL_SHUTDOWN_TIMEOUT = 10.0
 _LOG_DIR = Path.home() / ".sieval" / "logs"
@@ -86,7 +97,7 @@ class LocalDeployer:
         commands: list[BackendCommand],
         *,
         detach: bool = False,
-        timeout: float = 300.0,
+        timeout: float = DEFAULT_READY_TIMEOUT,
         poll_interval: float = 5.0,
         on_progress: ProgressCallback | None = None,
     ) -> list[InferHandle]:

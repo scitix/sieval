@@ -33,7 +33,11 @@ from sieval.infer.config import (
     InferPhase,
     ParamValue,
 )
-from sieval.infer.deployer import DeployError, DeployTimeoutError
+from sieval.infer.deployer import (
+    DEFAULT_READY_TIMEOUT,
+    DeployError,
+    DeployTimeoutError,
+)
 from sieval.infer.params import merge_params
 from sieval.infer.recipes import capability_model_type
 from sieval.infer.topology.models import (
@@ -183,7 +187,7 @@ def infer_start(
     timeout: Annotated[
         float,
         typer.Option("--timeout", help="Seconds to wait for ready"),
-    ] = 300.0,
+    ] = DEFAULT_READY_TIMEOUT,
     name: Annotated[
         str | None,
         typer.Option("--name", "-n", help="Override handle name"),

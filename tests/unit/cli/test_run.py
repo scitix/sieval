@@ -4,6 +4,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
@@ -120,6 +121,57 @@ class TestRunCommand:
         assert "--result-dir" in error
         assert str(existing) in error
         assert "auto_resume=True" not in error
+
+    def test_run_help_shows_ready_timeout(self):
+        """`sieval run` exposes the readiness budget it has always enforced."""
+        result = runner.invoke(app, ["run", "--help"])
+        assert result.exit_code == 0
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "--ready-timeout" in re.sub(r"\s+", " ", plain)
+
+    def test_ready_timeout_default_is_shared_with_infer_start(self):
+        """One named default, so the two commands cannot drift apart again.
+
+        `sieval run` enforced a hardcoded 300s that no flag could reach while
+        `sieval infer start` had its own literal default. Three copies of the
+        same number is how that happened; this pins them to one.
+        """
+        import inspect
+
+        from sieval.cli.infer.commands import infer_start
+        from sieval.cli.infer.lifecycle import launch_model
+        from sieval.cli.run import _run_all
+        from sieval.infer.deployer import DEFAULT_READY_TIMEOUT, LocalDeployer
+
+        assert (
+            inspect.signature(LocalDeployer.deploy).parameters["timeout"].default
+            == DEFAULT_READY_TIMEOUT
+        )
+        assert (
+            inspect.signature(launch_model).parameters["timeout"].default
+            == DEFAULT_READY_TIMEOUT
+        )
+        assert (
+            inspect.signature(_run_all).parameters["ready_timeout"].default
+            == DEFAULT_READY_TIMEOUT
+        )
+        # typer wraps the default in the parameter's own default slot
+        assert (
+            inspect.signature(infer_start).parameters["timeout"].default
+            == DEFAULT_READY_TIMEOUT
+        )
+
+    def test_ready_timeout_default_leaves_room_for_a_cold_start(self):
+        """The default must not sit on top of an observed cold-start time.
+
+        A dead process is reported within a poll interval regardless of this
+        value, so the budget only bounds an alive-but-silent engine: too small
+        and a healthy cold load is failed outright. One cluster measured 264s
+        cold for a 30B MoE, so 300s was not a margin.
+        """
+        from sieval.infer.deployer import DEFAULT_READY_TIMEOUT
+
+        assert DEFAULT_READY_TIMEOUT >= 600.0
 
     def test_run_help_shows_deterministic_flag_only(self):
         """--deterministic appears; --no-deterministic does not (monotone).
@@ -712,6 +764,60 @@ class TestDeterministicPassedToSession:
         # YAML→session semantics are covered by TestDeterministicMode
         # in test_session.py.
         assert kwargs["deterministic"] is None
+
+    @pytest.mark.anyio
+    async def test_ready_timeout_reaches_the_deploy_call(self, tmp_path: Path):
+        """--ready-timeout must arrive at launch_model, not stop at the CLI.
+
+        The readiness budget was previously unreachable from `sieval run`: the
+        default was applied three call-frames down and nothing threaded a
+        caller's value to it.
+        """
+        from sieval.cli.run import _run_all
+
+        config = {
+            "models": {
+                "model_a": {
+                    "path": "/tmp/ckpt",
+                    "infer": {"backend": "vllm", "recipe": "test"},
+                }
+            },
+            "result_dir": str(tmp_path / "out"),
+            "tasks": {},
+        }
+        config_path = tmp_path / "cfg.yaml"
+        config_path.write_text(yaml.safe_dump(config))
+
+        mock_translator = MagicMock()
+        mock_translator.translate.return_value = [
+            BackendCommand(
+                cli_args=["vllm", "serve"],
+                backend="vllm",
+                host="localhost",
+                role="full",
+                health_url="http://localhost:8000/health",
+            )
+        ]
+        launch = AsyncMock(return_value=([_fake_handle()], None))
+
+        with (
+            patch(
+                "sieval.cli.run.resolve_infer_config",
+                new=AsyncMock(return_value=("model_a", _fake_plan(), {})),
+            ),
+            patch("sieval.cli.run.get_translator", return_value=mock_translator),
+            patch("sieval.cli.run.launch_model", new=launch),
+            patch("sieval.cli.run.cleanup_model", new=AsyncMock()),
+            patch("sieval.infer.topology.validator.validate_plan", return_value=[]),
+            patch(
+                "sieval.cli.leaderboard.session.arun_session",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            await _run_all(config_path=config_path, ready_timeout=1234.0)
+
+        launch.assert_awaited_once()
+        assert launch.await_args.kwargs["timeout"] == 1234.0
 
 
 class TestDeploymentPropagation:
