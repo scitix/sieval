@@ -26,8 +26,18 @@ here.
 
 **Fidelity, measured.** Executing upstream's own functions on shared inputs — all
 558 rows of the pinned data, and 9043 (row, synthetic response) cases spanning
-every branch of its extractor — this port reproduces upstream's extracted gold on
-558/558, its extracted prediction on 9043/9043, and its verdict on 9043/9043.
+every control-flow branch of its extractor — this port reproduces upstream's
+extracted gold on 558/558, its extracted prediction on 9043/9043, and its verdict
+on 9043/9043.
+
+*Scope of that corpus, stated because it is narrower than it reads.* Every case
+in it is ASCII, so it exercises no entry of ``_fix_unicode``'s replacement table
+— the one place where a *character* rather than a code path is the thing being
+ported. A damaged entry there is invisible to this measurement, and to ``ruff``,
+which skips ``sieval/community``, and to a unified diff, which renders a folded
+key identically to the original. So that table is pinned codepoint-by-codepoint
+in ``tests/unit/community/test_math_perturb.py`` instead of being inferred from
+verdict parity.
 
 *The execution-safety divergence costs nothing here.* Re-running that corpus with
 ``parse_latex`` disabled in each module's own globals — which forces every
@@ -138,8 +148,14 @@ MATH_PERTURB_REFERENCE_NOTES = (
     "DeepSeek-Math's 1e-3). Offloaded to a worker under GRADE_TIMEOUT like every "
     "sympy-backed grader here. FIDELITY, MEASURED by executing upstream's own "
     "functions on shared inputs -- all 558 rows plus 9043 (row, synthetic "
-    "response) cases spanning every branch of its extractor: extracted gold "
-    "558/558, extracted prediction 9043/9043, verdict 9043/9043. ONE DIVERGENCE, "
+    "response) cases spanning every control-flow branch of its extractor: "
+    "extracted gold 558/558, extracted prediction 9043/9043, verdict 9043/9043. "
+    "That corpus is ASCII, so it exercises NO entry of _fix_unicode's "
+    "replacement table -- the one place a CHARACTER rather than a code path is "
+    "what is being ported, and where a key folded to an ASCII lookalike is a "
+    "live identity no-op that a diff renders identically and ruff never reads "
+    "(it skips sieval/community). That table is pinned codepoint-by-codepoint in "
+    "tests/unit/community/test_math_perturb.py instead. ONE DIVERGENCE, "
     "taken for execution safety rather than as a repair: upstream inherits "
     "DeepSeek-Math's hole unchanged -- a prediction reaches a bare parse_expr "
     "whose namespace carries __builtins__, and an unparseable one is returned as "

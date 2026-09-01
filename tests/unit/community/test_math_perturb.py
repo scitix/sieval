@@ -134,6 +134,120 @@ def test_unicode_normalization_maps_both_dashes_to_hyphen():
     assert strip_string("5−3") == "5-3"
 
 
+#: Upstream's `_fix_unicode` replacement table at the pinned commit, keyed by
+#: CODEPOINT rather than by character, and with every value ASCII.
+#:
+#: Written this way on purpose. The characters this table is keyed on are exactly
+#: the ones an editor, a clipboard or a transcription step silently folds to an
+#: ASCII lookalike — and a folded key is not a syntax error, it is a live entry
+#: that maps a character to itself. That is how U+2003 (EM SPACE) once became
+#: U+0020 here: `' ': ' '`, an identity no-op, visually identical to the original
+#: in every diff, invisible to `ruff` (which skips `sieval/community`) and to
+#: every behavioural test that did not happen to name that character.
+#:
+#: So this file must contain no non-ASCII literal of its own: an integer cannot
+#: be folded, and `chr()` reconstructs the character at runtime.
+UPSTREAM_UNICODE_REPLACEMENTS = {
+    0x00B2: "^{2}",
+    0x00B3: "^{3}",
+    0x207F: "^{n}",
+    0x03C0: "\\pi ",
+    0x221E: "\\infty ",
+    0x23A3: "\\lfloor ",
+    0x23A6: "\\rfloor ",
+    0x2013: "-",
+    0x2212: "-",
+    0x222A: "\\cup ",
+    0x2229: "\\cap ",
+    0x00B7: "\\cdot ",
+    0x00D7: "\\times ",
+    0x2003: " ",
+    0x2044: "/",
+    0x00A0: " ",
+    0x00BD: "\\frac{1}{2}",
+    0x220F: "\\prod ",
+    0x2211: "\\sum ",
+}
+
+
+def _replacement_table():
+    """`_fix_unicode`'s literal ``replacements`` dict, read out of the source.
+
+    By AST rather than by calling the function: the point is to compare the
+    table itself against upstream's, including keys whose effect is a no-op and
+    which therefore cannot be detected from behaviour alone.
+    """
+    import ast
+    import inspect
+
+    from sieval.community import math_perturb
+
+    tree = ast.parse(inspect.getsource(math_perturb))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", None) == "replacements"
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError("`replacements` table not found in _fix_unicode")
+
+
+def test_unicode_replacement_table_matches_upstream_codepoint_for_codepoint():
+    """Every key is the character upstream keyed on, not an ASCII lookalike."""
+    assert {ord(k): v for k, v in _replacement_table().items()} == (
+        UPSTREAM_UNICODE_REPLACEMENTS
+    )
+
+
+def test_no_replacement_key_is_an_identity_no_op():
+    """The shape the EM SPACE regression took: a key that maps to itself.
+
+    Discriminating on its own — it fails for a folded key even if the pinned
+    table above were updated to match the damage.
+    """
+    assert [k for k, v in _replacement_table().items() if k == v] == []
+
+
+@pytest.mark.parametrize(
+    ("codepoint", "expected_fragment"),
+    [
+        (0x2003, " "),  # EM SPACE -> a plain space, so LaTeX still parses
+        (0x00A0, " "),  # NBSP
+        # FRACTION SLASH. The `/` it becomes is then folded by `_fix_a_slash_b`,
+        # so the fraction IS the evidence it was normalized at all.
+        (0x2044, "\\frac{1}{2}"),
+        (0x222A, "\\cup"),
+        (0x2229, "\\cap"),
+        (0x00B7, "\\cdot"),
+        (0x207F, "^{n}"),
+        (0x00B3, "^{3}"),
+        (0x220F, "\\prod"),
+        (0x2211, "\\sum"),
+        (0x23A3, "\\lfloor"),
+        (0x23A6, "\\rfloor"),
+    ],
+)
+def test_unicode_normalization_covers_every_replacement(codepoint, expected_fragment):
+    """Behavioural cover for the table entries the cases above do not name.
+
+    `chr()`, not a literal, for the reason given on
+    :data:`UPSTREAM_UNICODE_REPLACEMENTS`.
+    """
+    assert expected_fragment in strip_string("1" + chr(codepoint) + "2")
+
+
+def test_em_space_normalization_reaches_a_verdict():
+    """The regression's real cost: a correct answer typeset with U+2003.
+
+    Graded wrong while the entry was an identity no-op — 31 of the 54 pinned
+    rows whose gold contains a space flipped. Asserted end-to-end through
+    `answer_check`, so it fails if the table is right but nothing consumes it.
+    """
+    gold = "\\sqrt{2} - 1"
+    response = "\\boxed{" + gold.replace(" ", chr(0x2003)) + "}"
+    assert answer_check("A problem.", response, gold, "perturb")
+
+
 def test_unicode_normalization_is_silent():
     """A library must not write to stdout; upstream prints on every conversion."""
     import io
