@@ -58,6 +58,57 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
 
 - Use `strict=True` in `zip()` when lengths are guaranteed to match
 - Must not modify `core/` — check `sieval/core/utils/` for existing helpers first
+- **A grading call site catches `TimeoutError`, never `Exception`.** A grade that
+  could not be computed *in time* is a wrong answer — the prediction is a shape
+  the grader cannot bound, which is the model's problem — so it is swallowed and
+  scored `False`. Every *other* exception propagates: a grader that is **broken
+  rather than slow** (a dead worker, an optional dependency absent from the
+  environment) must not be indistinguishable from a model that answered wrongly.
+  Swallowing it produces a low score on a run whose `fails` is 0 and whose logs
+  are gone as soon as the run is. Propagating costs nothing and buys the signal:
+  `feedback` raising goes straight to `to_failed(reason="exception::<class>")` —
+  no re-inference, no budget burned — and under `DENOMINATOR_REQUESTED` a fail is
+  already charged as wrong, so **the headline does not move**. This is why no
+  `n_grade_errors` metric is needed: `fails` plus the recorded reason already is
+  one. Enforced tree-wide by an AST survey of every `run_cpu_bound` call site in
+  `tests/unit/tasks/test_grading_call_site_convention.py` — a hand-kept list of
+  members is what let this drift in the first place, so the check reads the
+  source rather than a registry and covers tasks whose `feedback` lives in a
+  shared base. The *behaviour* behind it (a timeout still scores wrong, every
+  other class propagates, and the headline does not move either way) is asserted
+  over the pass@k math family in `tests/unit/tasks/test_math_pass_at_k_family.py`.
+    - The one thing that *does* move is a published interval: it is estimated
+      over the units that came back while scaled to the requested denominator, so
+      dropping one shifts the bound (in either direction), and a survivor set that
+      is uniformly right or uniformly wrong drops `<metric>_ci95` / `n_problems`
+      entirely — `wilson_interval` needs `0 < p < 1`. Pre-existing
+      `_clustered_interval` semantics, not a new one.
+    - A task whose report declares `DENOMINATOR_JUDGED` is the exception and owes
+      its own measurement first: there a fail is *excluded* from the denominator,
+      so moving a sample into `fails` does change the score
+      (`theoremqa_kshot_base_gen` is the only such member *with a grading call
+      site* today — 19 tasks declare the policy, it is the only one that grades
+      through `run_cpu_bound`).
+    - **The rule reaches only what the call site can see.** It buys the signal
+      when the grader lets errors through; a grader that catches `Exception`
+      *itself* and returns a verdict anyway defeats it from below, and narrowing
+      the `except` cannot tell. `imo_answer_bench_0shot_gen` is the live case:
+      its vendored `verify_math_answer` falls back to string equality, so a
+      broken LaTeX backend scores every expression answer wrong with `fails`
+      still 0. Upstream fidelity means that fallback stays, so the task probes
+      the grader once per run instead (`_ensure_grader_healthy`) and raises on a
+      definite negative. When vendoring a grader, check whether it swallows
+      before relying on this rule; the twelve siblings are safe only because
+      `_math_verify.verify_answer` has no handler of its own.
+    - Propagating is the right default even though `exception::<class>` is
+      **retriable** (`ERROR_REASONS_NON_RETRIABLE`, `core/tasks/consts.py`), so a
+      deterministic breakage is re-graded once per resume until `max_retries`
+      runs out. Do not reach for `NonRetriableSampleError` to avoid that: it
+      declares the outcome fixed in the *sample's own input*, which an
+      environment fault is not, and mislabelling a transient failure permanently
+      fails a sample a retry would have recovered. The waste is bounded — under
+      the default `record_each_stage=True` a feedback failure rolls back to
+      `POSTPROCESSED`, so it re-grades without re-inferring.
 
 ## Tags — Anomaly Detection
 

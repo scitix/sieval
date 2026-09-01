@@ -11,6 +11,8 @@ the same keys.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+import sys
+
 import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -105,6 +107,38 @@ def _build(task_cls, dataset_cls, field, *, k: int = 1, n: int = 1):
     rows = HFDataset.from_list([_sample(field)])
     dataset = dataset_cls(_hf_dict=HFDatasetDict({"train": rows, "test": rows}))
     return task_cls(dataset, _StubChatModel(), k=k, n=n)
+
+
+def _grader_module(task_cls):
+    """The module whose `run_cpu_bound` name the task actually calls.
+
+    Each member does `from sieval.core.utils.offload import run_cpu_bound`, so the
+    binding that matters is the one in the TASK's namespace. Patching
+    `offload.run_cpu_bound` instead resolves fine and intercepts nothing.
+
+    Resolved from where `feedback` is DEFINED, not from the task class: a member
+    that inherits `feedback` from a shared base grades through the base module's
+    binding, and `task_cls.__module__` would name the leaf — which has no
+    `run_cpu_bound` to patch. `math_perturb_{simple,hard}` are that shape today.
+    """
+    return sys.modules[task_cls.feedback.__module__]
+
+
+class _Raiser:
+    """An async `run_cpu_bound` stand-in that always raises *exc*.
+
+    Counts its calls, so a test cannot pass because the patch was never reached —
+    which is what a rename of the grading call site would otherwise look like. A
+    class rather than a closure with a function attribute, which `ty` rejects.
+    """
+
+    def __init__(self, exc: type[BaseException]):
+        self._exc = exc
+        self.calls = 0
+
+    async def __call__(self, *_args, **_kwargs):
+        self.calls += 1
+        raise self._exc("grader stub")
 
 
 @pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)
@@ -343,3 +377,118 @@ async def test_postprocess_survives_a_missing_raw_sample(task_cls, dataset_cls, 
     inf = ModelOutput(model=task.model.meta(), texts=[TWO_BOXES])
     post = await task.postprocess(inf, TaskContext(sample_id=0))
     assert post["rollouts"][0]["prediction"] == "3"
+
+
+# --- grading failure: only a TIMEOUT is a wrong answer -----------------------
+
+
+@pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)
+@pytest.mark.anyio
+async def test_a_grader_timeout_is_a_wrong_answer(
+    task_cls, dataset_cls, field, monkeypatch
+):
+    """The half that must stay swallowed — upstream's contract for a slow grade.
+
+    A prediction `simplify` cannot bound is the model's problem, not the run's,
+    and `report` counts fails in the denominator either way, so propagating this
+    one would only trade a truthful number for a scarier-looking one.
+    """
+    task = _build(task_cls, dataset_cls, field)
+    stub = _Raiser(TimeoutError)
+    monkeypatch.setattr(_grader_module(task_cls), "run_cpu_bound", stub)
+    raw = _sample(field)
+    post = build_prediction_record(["0"])
+    _, judgement = await task.feedback(
+        post, TaskContext(sample_id=0, raw_sample=raw, postprocess_result=post)
+    )
+    assert judgement["rollouts"][0]["correct"] is False
+    assert stub.calls > 0, "the grading call site moved; this test intercepted nothing"
+
+
+@pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)
+@pytest.mark.parametrize("exc", [ValueError, AttributeError, ImportError, OSError])
+@pytest.mark.anyio
+async def test_a_broken_grader_propagates_instead_of_scoring_zero(
+    task_cls, dataset_cls, field, exc, monkeypatch
+):
+    """A grader that is BROKEN rather than slow must not read as a wrong answer.
+
+    Swallowed, every one of these scored the sample 0 and left `fails` at 0, so a
+    dead worker or an optional dependency missing from the environment produced a
+    low score on a run that looked clean — the shape a missing LaTeX backend
+    already takes on this family (worth 5-6 points on MATH-Perturb, 1.24 pp on
+    MATH). Propagated, the runner writes `exception::<class>` on the sample and
+    `fails` becomes the signal; nothing new has to be counted.
+    """
+    task = _build(task_cls, dataset_cls, field)
+    stub = _Raiser(exc)
+    monkeypatch.setattr(_grader_module(task_cls), "run_cpu_bound", stub)
+    raw = _sample(field)
+    post = build_prediction_record(["0"])
+    with pytest.raises(exc):
+        await task.feedback(
+            post, TaskContext(sample_id=0, raw_sample=raw, postprocess_result=post)
+        )
+    assert stub.calls > 0, "the grading call site moved; this test intercepted nothing"
+
+
+@pytest.mark.parametrize(("task_cls", "dataset_cls", "field"), FAMILY, ids=IDS)
+@pytest.mark.anyio
+async def test_moving_a_sample_into_fails_does_not_move_the_headline(
+    task_cls, dataset_cls, field
+):
+    """Why narrowing is score-neutral, asserted rather than argued.
+
+    Every member declares `DENOMINATOR_REQUESTED`, so `finals + fails` is the
+    denominator and a fail is already charged as wrong. The two readings of one
+    ungradeable sample — a judged-wrong final, or a fail — must therefore give
+    the same headline, or this change would be a scoring change wearing a
+    robustness label.
+    """
+    task = _build(task_cls, dataset_cls, field)
+    raw = _sample(field)
+
+    def _judged(sample_id: int, *, correct: bool) -> TaskContext:
+        return TaskContext(
+            sample_id=sample_id,
+            raw_sample=raw,
+            feedback_result=build_judgement_record(
+                ANSWER, [build_rollout_judgement(0, correct)]
+            ),
+            postprocess_result=build_prediction_record([ANSWER if correct else "0"]),
+        )
+
+    # Four problems, and the SURVIVORS must stay mixed: `wilson_interval` needs
+    # >= 2 problems and 0 < p < 1, so a fixture whose remaining finals are all
+    # correct would drop `score_ci95` / `n_problems` and hide the comparison
+    # behind a KeyError rather than making it.
+    survivors = [_judged(0, correct=True), _judged(1, correct=True)]
+    survivors.append(_judged(2, correct=False))
+    # What the runner builds for a stage that raised: no judgement, no prediction.
+    ungradeable_as_fail = TaskContext(sample_id=3, raw_sample=raw)
+
+    before = await task.report([*survivors, _judged(3, correct=False)], [])
+    after = await task.report(survivors, [ungradeable_as_fail])
+
+    assert before["score"] == after["score"] == 50.0
+    assert before["fails"] == 0
+    assert after["fails"] == 1
+    # Everything but `fails` and the intervals is IDENTICAL -- including
+    # `n_problems`, which is the REQUESTED population (4 either way) and not a
+    # count of what came back. Asserted as a whole-dict comparison rather than
+    # key by key, so a member that publishes an extra column cannot drift
+    # unnoticed through a test that only checks the keys this one thought of.
+    moves = {"fails", "score_ci95", "pass@1_ci95"}
+    assert set(before) == set(after)
+    assert {k: v for k, v in before.items() if k not in moves} == {
+        k: v for k, v in after.items() if k not in moves
+    }
+    # The intervals DO move, and not always outward: they are estimated over the
+    # units that came back while being scaled to the requested denominator, so
+    # dropping one shifts the spread in whichever direction that unit's value
+    # pulled it. Here the survivors are less dispersed than the full set, so the
+    # bound tightens. Pre-existing `_clustered_interval` semantics, reached more
+    # often now -- stated rather than asserted in a direction.
+    assert before["score_ci95"] != after["score_ci95"]
+    assert after["score_ci95"][0] < after["score"] < after["score_ci95"][1]
+    assert interval_declaration_problems(after) == []
