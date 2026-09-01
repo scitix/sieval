@@ -512,6 +512,55 @@ def test_k_greater_than_n_is_rejected_at_construction():
         _task(k=2, n=1)
 
 
+def test_a_missing_lark_backend_is_refused_at_construction(monkeypatch):
+    """The one grader failure no call-site handler can reach.
+
+    `parse_latex(backend="lark")` raises ImportError when the package is gone,
+    and `symbolic_equal`'s bare `except` — upstream's control flow, kept —
+    turns it into a False verdict. So `feedback` never sees an exception, and
+    the run finishes with fails=0 and a score 5-6 points low. Construction is
+    the only place it can be caught.
+    """
+    import importlib.util as importlib_util
+
+    real = importlib_util.find_spec
+    monkeypatch.setattr(
+        importlib_util,
+        "find_spec",
+        lambda name, *a, **kw: None if name == "lark" else real(name, *a, **kw),
+    )
+    with pytest.raises(ImportError, match="needs the `lark` LaTeX backend"):
+        _task()
+
+
+def test_the_lark_check_names_the_group_and_its_stale_install(monkeypatch):
+    """The message has to be actionable for the case that actually happens.
+
+    `deps_group="math"` is satisfied by an environment that installed the group
+    before `lark` was added to it, so "install the math group" alone would read
+    as already-done. Asserted so the explanation cannot be trimmed away.
+    """
+    import importlib.util as importlib_util
+
+    real = importlib_util.find_spec
+    monkeypatch.setattr(
+        importlib_util,
+        "find_spec",
+        lambda name, *a, **kw: None if name == "lark" else real(name, *a, **kw),
+    )
+    with pytest.raises(ImportError) as excinfo:
+        _task()
+    message = str(excinfo.value)
+    assert "pdm install -G math" in message
+    assert "before `lark` was added" in message
+
+
+def test_the_lark_check_passes_in_a_normal_environment():
+    """Discriminating companion: the guard must not reject a working install."""
+    task, _ = _task()
+    assert task is not None
+
+
 @pytest.mark.anyio
 async def test_infer_forwards_the_task_budget():
     task, model = _task(n=3, texts=("a", "b", "c"))

@@ -81,6 +81,7 @@ grader is ready if that mapping is ever established.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+import importlib.util
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import cast, override
@@ -249,16 +250,19 @@ MATH_PERTURB_REFERENCE_NOTES = (
     "prediction and verdict 1116/1116, and every published report cell "
     "(pass@1, both seed splits, all seven subject cells, both n_problems) "
     "re-derives exactly from the per-sample judgements on disk. "
-    "TRAP -- A MISSING lark DEGRADES SCORING SILENTLY, it does not fail. "
-    "parse_latex(backend='lark') raises ImportError when the package is absent, "
-    "symbolic_equal's bare `except` swallows it (upstream's control flow, kept), "
-    "and every symbolic comparison falls through to string equality. Measured on "
-    "the same 1116 responses: 62.01 vs 68.10 and 34.05 vs 39.07 "
-    "(Qwen2.5-Math-7B-Instruct, Simple / Hard), 28.32 vs 33.33 and 13.62 vs "
-    "14.70 (deepseek-math-7b-rl) -- 5-6 points on three of four cells, always "
-    "understating. `lark` is in the `math` extra for exactly this reason, but an "
+    "TRAP -- A MISSING lark WOULD DEGRADE SCORING SILENTLY, so the task refuses "
+    "to build without it. parse_latex(backend='lark') raises ImportError when "
+    "the package is absent, symbolic_equal's bare `except` swallows it "
+    "(upstream's control flow, kept), and every symbolic comparison falls "
+    "through to string equality. Measured on the same 1116 responses: 62.01 vs "
+    "68.10 and 34.05 vs 39.07 (Qwen2.5-Math-7B-Instruct, Simple / Hard), 28.32 "
+    "vs 33.33 and 13.62 vs 14.70 (deepseek-math-7b-rl) -- 5-6 points on three of "
+    "four cells, always understating, with fails=0 and no exception raised "
+    "anywhere. NO call-site handler can catch that, because the swallow is below "
+    "it; and `lark` being in the `math` extra does not settle it either -- an "
     "environment that installed that extra BEFORE it was added there satisfies "
-    "the group and still lacks the package. "
+    "the group and still lacks the package. So __init__ checks for it and raises "
+    "ImportError, before any inference budget is spent. "
     "SYMPY VERSION: upstream pins sympy==1.13.2 and sieval runs 1.14. Over the "
     "same 1116 responses that moves 3-4 verdicts per model, every one of them "
     "1.13.2-False / 1.14-True, and every one a complex number written with `i` "
@@ -297,6 +301,36 @@ MATH_SUBJECTS = (
     "Prealgebra",
     "Precalculus",
 )
+
+
+def require_lark_backend() -> None:
+    """Refuse to build the task when the grader's LaTeX backend is missing.
+
+    ``symbolic_equal`` reaches ``parse_latex(s, backend="lark")``, which raises
+    ``ImportError`` when ``lark`` is absent — and upstream's bare ``except``,
+    kept here, turns that raise into a ``False`` verdict. The failure is
+    therefore invisible from inside grading: nothing propagates, ``fails`` stays
+    0, and every symbolic comparison falls through to string equality. Measured
+    on 1116 stored responses, that understates by 5–6 points on three of four
+    cells — a plausible number, not an error.
+
+    No call-site handler can see it, and ``deps_group="math"`` does not settle
+    it either: an environment that installed that group *before* ``lark`` was
+    added to it satisfies the group and still lacks the package. So it is
+    checked once, here, where it costs a single ``find_spec`` and fails before
+    any inference budget is spent rather than after a full run has produced a
+    wrong score.
+    """
+    if importlib.util.find_spec("lark") is None:
+        raise ImportError(
+            "MATH-Perturb's grader needs the `lark` LaTeX backend, which is not "
+            "installed. Without it every symbolic comparison falls back to "
+            "string equality and this task under-scores by several points "
+            "instead of failing. Install the `math` dependency group "
+            "(`pdm install -G math`) — note that an environment which installed "
+            "that group before `lark` was added to it satisfies the group and "
+            "still lacks the package."
+        )
 
 
 def seed_score_key(seed_split: str) -> str:
@@ -411,6 +445,9 @@ class MathPerturbZeroShotGenTask[TSample](
 
     def __init__(self, dataset, model, name: str | None = None, k: int = 1, n: int = 1):
         super().__init__(dataset=dataset, model=model, name=name)
+        # Environment precondition first: it is the failure that would otherwise
+        # be found only by reading the score.
+        require_lark_backend()
         if k > n:
             raise ValueError(
                 f"pass@{k} needs at least {k} sample(s) per problem, got n={n}. "
@@ -493,15 +530,22 @@ class MathPerturbZeroShotGenTask[TSample](
                 #
                 # Every OTHER exception propagates, and the sample lands in
                 # `fails` as `exception::<class>`. A grader that is broken rather
-                # than slow -- a dead worker, or `lark` absent from the
-                # environment, which this benchmark is unusually exposed to -- must
-                # not be indistinguishable from a model that answered wrongly:
+                # than slow -- a dead worker, an OOM-killed child -- must not be
+                # indistinguishable from a model that answered wrongly:
                 # swallowed, it produced a low score on a run whose `fails` was 0
                 # and whose only trace was a log line. Propagating costs nothing
                 # -- raising here goes straight to FAILED, no re-inference, and
                 # DENOMINATOR_REQUESTED already charges a fail as wrong -- so
                 # `fails` plus that reason is the grader-error count, and no
                 # metric is owed for it.
+                #
+                # What this handler CANNOT reach: anything the vendored grader
+                # swallows below it. A missing `lark` raises ImportError inside
+                # `parse_latex`, and `symbolic_equal`'s bare `except` -- upstream
+                # control flow, kept -- turns it into a False verdict that never
+                # becomes an exception here. That failure is caught at
+                # construction instead (see `__init__`), because no call-site
+                # handler can see it.
                 logger.warning(
                     "Grading sample {} rollout {} exceeded {}s and was scored "
                     "wrong; the prediction is likely a shape `simplify` cannot "
