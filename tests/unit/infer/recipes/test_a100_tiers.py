@@ -1,9 +1,8 @@
 """Tests for the A100 memory tiers declared in the qwen recipe files.
 
-The A100-80G entries are *derived* from H100-80G, not measured: both cards hold
-80GB, and capacity is what bounds ``max_model_len`` across these entries, so the
-bf16 block is copied. That reasoning lives in the "Hardware notes" header of
-each recipe file; these tests keep the copy from drifting out from under it.
+The A100-80G entries are copied from H100-80G, not measured — see the "Hardware
+notes" header of each recipe file. These tests keep the copy from drifting out
+from under that note.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -25,8 +24,8 @@ class TestA100TierDerivation:
     def test_a100_80g_bf16_mirrors_h100_80g(self) -> None:
         """Equal capacity, equal bf16 block.
 
-        If a real A100-80G measurement ever replaces the derivation, update the
-        recipe files' header notes and this test together.
+        If a real measurement ever replaces the copy, update the recipe headers
+        and this test together.
         """
         for name in _recipes_with_a100_80g():
             hardware = load_recipe(name).hardware
@@ -48,8 +47,8 @@ class TestA100TierResolution:
     def test_80gb_card_gets_the_80g_tier(self) -> None:
         """An 80GB A100 gets the 80G tier — not the 40G one, and not nothing.
 
-        Before A100-80G shipped, the only A100 key was 40G, so these strings
-        state a capacity no key agreed with and resolved to no params at all.
+        With only A100-40G declared, these strings stated a capacity no key
+        agreed with and resolved to no params at all.
         """
         recipe = load_recipe("qwen3-30b-a3b")
         for gpu in ("NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"):
@@ -68,9 +67,8 @@ class TestA100TierResolution:
     def test_bare_a100_is_ambiguous_now_both_tiers_ship(self) -> None:
         """A bare 'NVIDIA A100' names no capacity, so the tier is a coin flip.
 
-        This is the ambiguity guard costing a match that used to resolve: with
-        only A100-40G declared, it was the sole candidate. Refusing is the
-        intended trade — nvidia-smi reports the capacity for this card.
+        The ambiguity guard costs a match that resolved while A100-40G was the
+        sole candidate. Intended: nvidia-smi does report this card's capacity.
         """
         recipe = load_recipe("qwen3-30b-a3b")
         assert resolve_hardware_profile(recipe, "NVIDIA A100", "bf16", "vllm") is None
