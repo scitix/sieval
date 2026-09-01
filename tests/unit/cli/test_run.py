@@ -817,7 +817,9 @@ class TestDeterministicPassedToSession:
             await _run_all(config_path=config_path, ready_timeout=1234.0)
 
         launch.assert_awaited_once()
-        assert launch.await_args.kwargs["timeout"] == 1234.0
+        await_args = launch.await_args
+        assert await_args is not None
+        assert await_args.kwargs["timeout"] == 1234.0
 
 
 class TestDeploymentPropagation:
