@@ -93,6 +93,62 @@ class TestLaunchOne:
         assert "full" in message
 
     @pytest.mark.anyio
+    async def test_rejected_launch_creates_no_log_dir_and_names_no_log(
+        self, tmp_path: Path
+    ):
+        """A launch the gate rejects must leave nothing behind and promise nothing.
+
+        Running the gate after the log directory is created and after "Logging
+        to <path>" is printed hands the operator a path that will never exist,
+        immediately before an error saying no log exists to inspect.
+        """
+        log_dir = tmp_path / "logs"
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=["sglang-not-installed", "serve"],
+            backend="sglang",
+            role="full",
+            health_url="http://localhost:30000/health",
+        )
+
+        with (
+            patch("sieval.infer.deployer._LOG_DIR", log_dir),
+            patch("sieval.infer.deployer.logger") as mock_logger,
+            pytest.raises(DeployError),
+        ):
+            await deployer._launch_one(cmd)
+
+        assert not log_dir.exists()
+        logged = " ".join(str(call) for call in mock_logger.info.call_args_list)
+        assert "Logging to" not in logged
+
+    @pytest.mark.anyio
+    async def test_directory_is_not_reported_as_absent(self, tmp_path: Path):
+        """A directory at the engine path exists — saying otherwise misleads.
+
+        ``shutil.which`` rejects a directory under ``F_OK`` too, so without an
+        explicit branch it falls through to "does not exist at", while Popen
+        raises PermissionError. Same misdiagnosis class the gate prevents.
+        """
+        engine_dir = tmp_path / "sglang"
+        engine_dir.mkdir()
+
+        deployer = LocalDeployer()
+        cmd = BackendCommand(
+            cli_args=[str(engine_dir), "serve"],
+            backend="sglang",
+            role="full",
+            health_url="http://localhost:30000/health",
+        )
+
+        with pytest.raises(DeployError) as excinfo:
+            await deployer._launch_one(cmd)
+
+        message = str(excinfo.value)
+        assert "is a directory" in message
+        assert "does not exist" not in message
+
+    @pytest.mark.anyio
     async def test_engine_on_a_cmd_env_path_is_not_rejected(self, tmp_path: Path):
         """An engine reachable only via cmd.env's PATH must still launch.
 
@@ -566,6 +622,26 @@ class TestLogs:
         assert lines[-1] == "line5"
 
     @pytest.mark.anyio
+    async def test_logs_collapses_progress_bar_redraws(self, tmp_path: Path):
+        """`sieval infer logs` hits the same redraw problem as the error tail.
+
+        It is the hand-driven route to the very log a failed deploy quotes, so
+        a --tail spent on redraws of one bar fails the operator the same way.
+        """
+        log_file = tmp_path / "engine.log"
+        log_file.write_text(
+            "real line 1\nreal line 2\n"
+            + "".join(f"\rLoading shards: {pct}%" for pct in range(101))
+        )
+
+        deployer = LocalDeployer()
+        handle = _make_handle(log_file=str(log_file))
+        lines = [line async for line in deployer.logs(handle, tail=3)]
+
+        assert "real line 1" in lines
+        assert sum("Loading shards" in line for line in lines) == 1
+
+    @pytest.mark.anyio
     async def test_logs_no_file(self):
         deployer = LocalDeployer()
         handle = _make_handle(log_file="/nonexistent/path.log")
@@ -597,18 +673,21 @@ class TestLogs:
         """Large files: seek near end and drop partial first line."""
         deployer = LocalDeployer()
         log_file = tmp_path / "big.log"
-        # Write a file large enough that chunk_size < file_size (triggers seek)
-        # tail=3, chunk_size=3*256=768. Write >768 bytes.
+        # Write a file large enough that chunk_size < file_size (triggers seek).
         many_lines = [f"log line {i}: " + "x" * 200 for i in range(10)]
         log_file.write_text("\n".join(many_lines) + "\n")
 
         handle = _make_handle(log_file=str(log_file))
         lines = []
-        async for line in deployer.logs(handle, tail=3):
-            lines.append(line)
+        # The read window is sized in bytes, so it must be narrowed here or the
+        # whole file fits and neither the seek nor the partial-drop path runs.
+        with patch("sieval.infer.deployer._LOG_TAIL_WINDOW_BYTES", 768):
+            async for line in deployer.logs(handle, tail=3):
+                lines.append(line)
 
         assert len(lines) == 3
         assert "log line 9" in lines[-1]
+        assert not any("log line 0" in line for line in lines)
 
 
 # ---------- deploy (integration-level, mocked) ----------
@@ -933,16 +1012,84 @@ class TestReadTail:
         """For large files, _read_tail should seek near the end, not read all."""
         deployer = LocalDeployer()
         log_file = tmp_path / "big.log"
-        # Write a file large enough that the seek-based read kicks in
-        # n=5 with 256 bytes/line = 1280 byte chunk. Write >1280 bytes.
+        # Write a file large enough that the seek-based read kicks in.
         many_lines = [f"log line {i}: " + "x" * 200 for i in range(20)]
         log_file.write_text("\n".join(many_lines) + "\n")
 
         handle = _make_handle(log_file=str(log_file))
-        lines = await deployer._read_tail(handle, n=5)
+        # The read window is sized in bytes, so it must be narrowed here or the
+        # whole file fits and the seek path never runs.
+        with patch("sieval.infer.deployer._LOG_TAIL_WINDOW_BYTES", 1280):
+            lines = await deployer._read_tail(handle, n=5)
         assert len(lines) == 5
         # Should contain the last lines
         assert "log line 19" in lines[-1]
+        assert not any("log line 0" in line for line in lines)
+
+    @pytest.mark.anyio
+    async def test_read_tail_keeps_the_error_under_progress_bar_redraws(
+        self, tmp_path: Path
+    ):
+        """A redrawn progress bar must not push the traceback out of the tail.
+
+        Engines redraw weight-loading bars with carriage returns even when
+        stdout is a redirected file, and with ``--dp-size N`` the children that
+        did *not* die keep redrawing into the same log after the one that did
+        has printed its traceback. Counting each frame as a line spends the
+        whole window on redraws of a single bar and buries the only evidence
+        the quoted tail exists to carry.
+        """
+        log_file = tmp_path / "engine.log"
+        log_file.write_text(
+            "[08:45:50] server args: dp_size=4\n"
+            "[08:46:02] Scheduler hit an exception: Traceback "
+            "(most recent call last):\n"
+            "ImportError: /usr/lib/sgl_kernel.so: undefined symbol\n"
+            + "".join(
+                f"\rLoading safetensors checkpoint shards: {pct:3d}% "
+                f"Completed | {pct}/100 [00:{pct:02d}<00:00, 1.9it/s]"
+                for pct in range(101)
+            )
+        )
+
+        deployer = LocalDeployer()
+        handle = _make_handle(log_file=str(log_file))
+        lines = await deployer._read_tail(handle)
+
+        assert any("ImportError" in line for line in lines)
+        # The bar collapses to its final frame rather than 101 of them.
+        assert sum("Loading safetensors" in line for line in lines) == 1
+
+    @pytest.mark.anyio
+    async def test_read_tail_collapses_a_redrawn_line_to_its_last_frame(
+        self, tmp_path: Path
+    ):
+        """One carriage-return-redrawn line is one line: its final frame."""
+        log_file = tmp_path / "bar.log"
+        log_file.write_text("before\nstep 1\rstep 2\rstep 3\nafter\n")
+
+        deployer = LocalDeployer()
+        handle = _make_handle(log_file=str(log_file))
+        lines = await deployer._read_tail(handle)
+
+        assert lines == ["before", "step 3", "after"]
+
+    @pytest.mark.anyio
+    async def test_read_tail_handles_crlf_line_endings(self, tmp_path: Path):
+        """CRLF must not collapse to empty when splitting on \\n.
+
+        Splitting on ``\\n`` leaves a trailing ``\\r`` on every CRLF line, and
+        taking the last carriage-return frame of ``"line1\\r"`` yields ``""``
+        — which would silently drop every line of a CRLF log.
+        """
+        log_file = tmp_path / "crlf.log"
+        log_file.write_bytes(b"line1\r\nline2\r\nline3\r\n")
+
+        deployer = LocalDeployer()
+        handle = _make_handle(log_file=str(log_file))
+        lines = await deployer._read_tail(handle)
+
+        assert lines == ["line1", "line2", "line3"]
 
     @pytest.mark.anyio
     async def test_read_tail_no_file(self):

@@ -43,8 +43,30 @@ _HEALTH_CHECK_TIMEOUT = 2.0
 _GRACEFUL_SHUTDOWN_TIMEOUT = 10.0
 _LOG_DIR = Path.home() / ".sieval" / "logs"
 _FAILURE_LOG_TAIL = 30
+# Bytes read back from the end of a log before taking its trailing lines.
+# Sized in bytes rather than lines × bytes-per-line: collapsing carriage-return
+# redraws (see _tail_lines) turns tens of kilobytes of progress bar into one
+# line, so a window derived from the line count comes back nearly empty.
+_LOG_TAIL_WINDOW_BYTES = 256 * 1024
 
 ProgressCallback = Callable[[float, str], None]
+
+
+def _tail_lines(text: str) -> list[str]:
+    """Split *text* into log lines, one per line the engine actually wrote.
+
+    ``str.splitlines`` splits on ``\\r`` as well as ``\\n``, so a progress bar
+    redrawn with carriage returns costs one "line" per frame. Engines redraw
+    weight-loading bars this way even when stdout is a redirected file, which
+    is enough to spend a whole tail window on redraws of a single bar and bury
+    the traceback the log was read for. Split on ``\\n`` only and keep each
+    line's last frame — what a terminal would have shown.
+
+    The trailing ``\\r`` of a CRLF line is stripped first; taking the last
+    frame of ``"line1\\r"`` would otherwise yield ``""`` and drop every line
+    of a CRLF log.
+    """
+    return [line.rstrip("\r").rsplit("\r", 1)[-1] for line in text.split("\n")]
 
 
 class DeployError(Exception):
@@ -124,13 +146,6 @@ class LocalDeployer:
 
     async def _launch_one(self, cmd: BackendCommand) -> InferHandle:
         """Launch a single subprocess from a BackendCommand."""
-        _LOG_DIR.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
-        log_file = _LOG_DIR / f"{cmd.role}-{ts}.log"
-
-        logger.info("Launching [{}]: {}", cmd.role, " ".join(cmd.cli_args))
-        logger.info("Logging to {}", log_file)
-
         env = None
         if cmd.env:
             env = {**os.environ, **cmd.env}
@@ -143,6 +158,9 @@ class LocalDeployer:
         # PATH (subprocess uses os.get_exec_path(env), so cmd.env wins), and a
         # name carrying a directory is relative to cwd — cmd.working_dir, not
         # this process's.
+        # This runs before the log directory and the "Logging to" line, so a
+        # rejected launch neither creates a directory for a process that never
+        # starts nor names a log path that will never exist.
         executable = cmd.cli_args[0] if cmd.cli_args else ""
         search_path = (env or os.environ).get("PATH")
         probe = executable
@@ -154,6 +172,12 @@ class LocalDeployer:
             # where Popen raises PermissionError, not FileNotFoundError.
             if shutil.which(probe, mode=os.F_OK, path=search_path):
                 problem = "is not executable"
+            elif os.path.dirname(probe) and os.path.isdir(probe):
+                # which() rejects a directory under F_OK too, so without this
+                # branch a directory reads as absent while Popen would raise
+                # PermissionError. Guarded on dirname: for a bare name this
+                # path is not what Popen would have run anyway.
+                problem = f"is a directory, not an executable: {probe!r}"
             elif os.path.dirname(probe):
                 problem = f"does not exist at {probe!r}"
             else:
@@ -163,6 +187,13 @@ class LocalDeployer:
                 f"{problem}, so the process was never started and no log "
                 f"exists to inspect. Command: {' '.join(cmd.cli_args)}"
             )
+
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
+        log_file = _LOG_DIR / f"{cmd.role}-{ts}.log"
+
+        logger.info("Launching [{}]: {}", cmd.role, " ".join(cmd.cli_args))
+        logger.info("Logging to {}", log_file)
 
         with open(log_file, "a") as fh:
             process = subprocess.Popen(
@@ -300,19 +331,21 @@ class LocalDeployer:
             return
 
         # Read only the tail portion instead of the entire file.
-        # 256 bytes/line is a generous estimate for log lines.
-        chunk_size = tail * 256
+        chunk_size = max(tail * 256, _LOG_TAIL_WINDOW_BYTES)
         async with await anyio.open_file(path, "rb") as f:
             file_size = await f.seek(0, 2)  # seek to end
             read_start = max(0, file_size - chunk_size)
             await f.seek(read_start)
             raw = await f.read()
 
-        text = raw.decode(errors="replace")
-        lines = text.splitlines()
+        lines = _tail_lines(raw.decode(errors="replace"))
         # If we didn't read from the start, the first line may be partial — drop it.
         if read_start > 0 and lines:
             lines = lines[1:]
+        # split("\n") leaves a trailing "" for a newline-terminated file, which
+        # splitlines() did not; it would otherwise consume one of `tail` slots.
+        if lines and not lines[-1]:
+            lines = lines[:-1]
         for line in lines[-tail:]:
             yield line
 
@@ -330,8 +363,9 @@ class LocalDeployer:
                 return
             if new_raw:
                 offset += len(new_raw)
-                for line in new_raw.decode(errors="replace").splitlines():
-                    yield line
+                for line in _tail_lines(new_raw.decode(errors="replace")):
+                    if line:
+                        yield line
 
     async def _poll_all_until_ready(
         self,
@@ -433,8 +467,7 @@ class LocalDeployer:
         if not path.exists():
             return []
         try:
-            # Estimate: 256 bytes/line is generous for log lines
-            chunk_size = n * 256
+            chunk_size = max(n * 256, _LOG_TAIL_WINDOW_BYTES)
             async with await anyio.open_file(path, "rb") as f:
                 file_size = await f.seek(0, 2)
                 read_start = max(0, file_size - chunk_size)
@@ -442,7 +475,7 @@ class LocalDeployer:
                 raw = await f.read()
             lines = [
                 line
-                for line in raw.decode(errors="replace").splitlines()
+                for line in _tail_lines(raw.decode(errors="replace"))
                 if line.strip()
             ]
             # Drop first line if partial (didn't read from start)
