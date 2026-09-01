@@ -79,16 +79,12 @@ Deviations from upstream (documented, not silent):
 - Upstream's `test_parse_latex()` self-check and its `__main__` block are not
   carried as module code; the same assertion runs as a unit test.
 
-Everything NOT in that list is byte-identical to upstream, whitespace and
-comments included, and is held that way by hash: `UPSTREAM_FUNCTION_SHA256` in
-`tests/unit/community/test_math_perturb.py` pins each verbatim function against
-a digest computed from upstream's own files, and the five above are the whole of
-`DECLARED_DIVERGENT`. The two maps partition the module, so a divergence
-introduced into a verbatim function -- and a new helper copied in without a
-decision -- fail rather than land quietly. This exists because the EM SPACE
-regression proved the gap: one key of `_fix_unicode`'s table had been folded to
-its ASCII lookalike, and `ruff` (which skips this package), a unified diff, and
-an all-ASCII 9043-case behavioural corpus were all blind to it.
+Everything else is byte-identical to upstream, whitespace and comments included,
+and held that way by hash: `tests/unit/community/test_math_perturb.py` pins each
+verbatim function against a digest of upstream's own source, and the five above
+are the whole of its `DECLARED_DIVERGENT`. The two maps partition the module, so
+a divergence added to a verbatim function -- or a helper copied in without a
+decision -- fails rather than lands quietly.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
