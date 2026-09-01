@@ -409,3 +409,143 @@ def test_symbolic_equal_refuses_an_unparseable_answer_rather_than_sympifying_it(
 def test_a_payload_prediction_grades_wrong_without_running():
     payload = "__import__('os').system('true')"
     assert not answer_check("Q?", f"\\boxed{{{payload}}}", "42", "perturb")
+
+
+# --- byte-level fidelity: what a diff and a behavioural corpus both miss ---
+
+#: sha256 of each verbatim-ported function's source, computed from UPSTREAM's own
+#: files at the pinned commit (``evaluate.py``, ``evaluation/answer_extraction.py``,
+#: ``evaluation/eval_utils.py``, ``evaluation/eval_script.py``) -- NOT from this
+#: repo's copy. So these pin FIDELITY, not merely "unchanged since last commit":
+#: regenerating them from our own file would make the test tautological.
+#:
+#: The EM SPACE regression is why this exists. A key in `_fix_unicode`'s table had
+#: been folded to its ASCII lookalike, and nothing in the tree could see it --
+#: `ruff` skips `sieval/community`, a unified diff renders the folded key
+#: identically to the original, and the 9043-case fidelity corpus is ASCII, so it
+#: exercised no entry of that table. Pinning the table codepoint-by-codepoint (see
+#: `UPSTREAM_UNICODE_REPLACEMENTS`) closed that instance; this closes the class,
+#: for every function that carries no intentional divergence.
+UPSTREAM_FUNCTION_SHA256 = {
+    "_fix_a_slash_b": (
+        "932a4664bb1c52119b6cf44b4697843a1ec9103326f4c70ddb418bd64eae6fc6"
+    ),
+    "_fix_fracs": ("06796c7d6409b17c2054744512a4d90e757416e63b97a6c0543cfb677bb25aae"),
+    "_fix_sqrt": ("423a16781943d814048e2ad60c787eb1344a538b827f8393689b1e93b309d6aa"),
+    "_fix_tan": ("81ca4ddc20bad4c254b25dd9128e001496230c50a8188f4c44be4ed7e807ca81"),
+    "answer_check": (
+        "4b2cc94dd4d082159ab88007a90185cbd37b829e6d2d09607de85d68aa5b31c3"
+    ),
+    "call_with_timeout": (
+        "7e41447ad6b385881b888aebb345e03a77f05ef8f492a78c0a110f0bf22de509"
+    ),
+    "eval_math": ("1c61c3dea602d0b079133ecaade15e5c8913bff0fdb0d76822b59a1be77281e3"),
+    "extract_answer": (
+        "e9a3a04af17d2d2b8baedaa8b984a01b18938357478da3d7629a3591a2b7813a"
+    ),
+    "extract_boxed_answers": (
+        "674801311523f78e523a2e06aa9bb7c7fa358c126bccfd87068bb6beb64b5715"
+    ),
+    "extract_math_answer": (
+        "3d6264538ef51e173abd1b96675e690463a2be0cacde28ae41da7e59b4b72524"
+    ),
+    "extract_math_perturb_ground_truth_answer": (
+        "b114eeaa5367e521bd58503e3fafd7920deed61d01387cc47bfeb57bf2299653"
+    ),
+    "extract_program_output": (
+        "b256b99fadb6f681f4c3ce1be3a4d117ef7c5bccc8caf5622c3fa6cd58324317"
+    ),
+    "is_digit": ("5317e6ecb34cd9af8afd12f7a29c9851b9ecd3b8fdca3eca9ef9c35dbe1b84e8"),
+    "math_equal": ("5087d32d97b3dde078cbaec5755f0e0ecf0809f743f335fb9b10ab175e64a412"),
+    "parse_digits": (
+        "ea0da0346a469bc837393fb75875c6f7e4e7eb290b75f1e6a5d43f381e04900e"
+    ),
+    "parse_latex": ("8c6832e62b2f49f5656d3ec0567878c143057743e60348d99546e868c90ead5e"),
+    "strip_string": (
+        "8a34124b26d0c9b0ab60fcf6b9821b08f610139b13c8ac2717747ca75f45aa5c"
+    ),
+    "symbolic_equal_process": (
+        "70e12fc5e6daca5627b91acdb74ce35debfa25ae55664d3526afc019277463c4"
+    ),
+}
+
+#: Ported functions that intentionally differ from upstream, each with the reason
+#: the module docstring gives at length. A function is either in this map or in
+#: `UPSTREAM_FUNCTION_SHA256` -- never both, never neither -- so a NEW silent
+#: divergence and a QUIETLY REMOVED documented one both fail
+#: `test_every_ported_function_is_pinned_or_declared_divergent`.
+DECLARED_DIVERGENT = {
+    "_fix_unicode": "drops the `before` local and its DEBUG print",
+    "extract_ground_truth_answer": "drops the 'Multi-valued ground truth:' print",
+    "extract_predicted_answer": "drops the 'multi-valued prediction:' print",
+    "is_correct": "drops the '2,3,4' debug print",
+    "symbolic_equal": "execution safety: guarded parse, unparseable -> None",
+}
+
+#: Defined by this port, with no upstream counterpart.
+PORT_ONLY = {"_guarded_parse_expr"}
+
+
+def _ported_function_sources() -> dict[str, str]:
+    """Every top-level function in the vendored module, as source text.
+
+    Read off the module the tests actually import, via `inspect.getsourcefile`,
+    so this cannot pass against a stale copy sitting elsewhere on the path.
+    """
+    import ast
+    import inspect
+    import pathlib
+
+    from sieval.community import math_perturb
+
+    path = inspect.getsourcefile(math_perturb)
+    assert path is not None
+    source = pathlib.Path(path).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    sources: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        # `None` only when the node carries no position info, which cannot
+        # happen for a tree parsed from this very text -- so it is a broken
+        # read rather than a function legitimately without source.
+        segment = ast.get_source_segment(source, node)
+        assert segment is not None, f"no source segment for `{node.name}`"
+        sources[node.name] = segment
+    return sources
+
+
+@pytest.mark.parametrize("name", sorted(UPSTREAM_FUNCTION_SHA256))
+def test_a_verbatim_ported_function_is_byte_identical_to_upstream(name):
+    """Byte-for-byte, including whitespace and comments.
+
+    Whitespace counts: it is not that a trailing space matters, but that any
+    edit which reaches this file at all is one a reviewer should have seen. The
+    regression this guards against changed a single CHARACTER inside a string
+    literal and was invisible to every other check in the tree.
+    """
+    import hashlib
+
+    source = _ported_function_sources()[name]
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    assert digest == UPSTREAM_FUNCTION_SHA256[name], (
+        f"`{name}` is a verbatim port and no longer matches upstream's bytes. "
+        "If the change is deliberate, move it to DECLARED_DIVERGENT and add it "
+        "to the module docstring's deviation list -- do not just refresh the "
+        "hash, which would record the drift as the new reference."
+    )
+
+
+def test_every_ported_function_is_pinned_or_declared_divergent():
+    """The partition is total, so nothing can be added without a decision.
+
+    A new helper copied in from upstream, or a divergence quietly introduced in
+    a function that used to be verbatim, lands in neither map and fails here.
+    """
+    ported = set(_ported_function_sources()) - PORT_ONLY
+    pinned = set(UPSTREAM_FUNCTION_SHA256)
+    declared = set(DECLARED_DIVERGENT)
+    assert pinned & declared == set(), (
+        "a function cannot be both verbatim and divergent"
+    )
+    assert ported == pinned | declared

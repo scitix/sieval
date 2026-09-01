@@ -79,6 +79,17 @@ Deviations from upstream (documented, not silent):
 - Upstream's `test_parse_latex()` self-check and its `__main__` block are not
   carried as module code; the same assertion runs as a unit test.
 
+Everything NOT in that list is byte-identical to upstream, whitespace and
+comments included, and is held that way by hash: `UPSTREAM_FUNCTION_SHA256` in
+`tests/unit/community/test_math_perturb.py` pins each verbatim function against
+a digest computed from upstream's own files, and the five above are the whole of
+`DECLARED_DIVERGENT`. The two maps partition the module, so a divergence
+introduced into a verbatim function -- and a new helper copied in without a
+decision -- fail rather than land quietly. This exists because the EM SPACE
+regression proved the gap: one key of `_fix_unicode`'s table had been folded to
+its ASCII lookalike, and `ruff` (which skips this package), a unified diff, and
+an all-ASCII 9043-case behavioural corpus were all blind to it.
+
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
@@ -164,7 +175,7 @@ def _fix_unicode(string):
     # dropped -- a library must not write to stdout, and nothing else read the
     # local.
 
-    # square root
+    # square root 
     pattern = re.compile(r'√(\([^()]*\)|[A-Za-z0-9]+)')
     string = pattern.sub(lambda m: r'\sqrt{' + m.group(1) + '}', string)
 
@@ -213,7 +224,7 @@ def _fix_unicode(string):
         '∏': '\\prod ',
         '∑': '\\sum ',
     }
-
+    
     for unicode_char, latex_equiv in replacements.items():
         string = string.replace(unicode_char, latex_equiv)
 
@@ -295,7 +306,7 @@ def strip_string(string):
         string = string.replace("inf", "\\infty")
     string = string.replace("+\\inity", "\\infty")
 
-    # and
+    # and 
     # string = string.replace("and", "")
     string = string.replace("\\mathbf", "")
     string = string.replace("\\mathrm", "")
@@ -306,7 +317,7 @@ def strip_string(string):
     # quote
     string.replace("'", "")
     string.replace("\"", "")
-
+    
     # i, j
     if "j" in string and "i" not in string:
         string = string.replace("j", "i")
@@ -466,7 +477,7 @@ def extract_math_answer(question, reasoning, task):
     return answer
 
 def extract_math_perturb_ground_truth_answer(question, reasoning, task):
-    """
+    """ 
         Hack for the labels with multiple answers separated by ' or '
     """
     answer = []
@@ -654,23 +665,23 @@ def symbolic_equal(a, b):
     return False
 
 
-def symbolic_equal_process(a, b, output_queue):
+def symbolic_equal_process(a, b, output_queue):  
     result = symbolic_equal(a, b)
     output_queue.put(result)
 
 
-def call_with_timeout(func, *args, timeout=1, **kwargs):
-    output_queue = multiprocessing.Queue()
-    process_args = args + (output_queue,)
-    process = multiprocessing.Process(target=func, args=process_args, kwargs=kwargs)
-    process.start()
-    process.join(timeout)
-
-    if process.is_alive():
+def call_with_timeout(func, *args, timeout=1, **kwargs):  
+    output_queue = multiprocessing.Queue()  
+    process_args = args + (output_queue,)  
+    process = multiprocessing.Process(target=func, args=process_args, kwargs=kwargs)  
+    process.start()  
+    process.join(timeout)  
+  
+    if process.is_alive():  
         process.terminate()
-        process.join()
-        return False
-
+        process.join()  
+        return False  
+  
     return output_queue.get()
 
 
@@ -803,6 +814,9 @@ def answer_check(problem, solution_str, ground_truth, dataset_type):
     """
     ground_truth_answer_extracted = extract_ground_truth_answer(problem, ground_truth, dataset_type)
     prediction_extracted = extract_predicted_answer(problem, solution_str)
+
+    #print("Ground truth:", ground_truth_answer_extracted)
+    #print("Prediction:", prediction_extracted)
 
     inp = {
         'answer': ground_truth_answer_extracted,

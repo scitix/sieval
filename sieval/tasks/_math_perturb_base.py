@@ -230,8 +230,8 @@ MATH_PERTURB_REFERENCE_NOTES = (
     "system prompt, no boxed-answer instruction at all, and \"Let's think step "
     'by step") span 66.67-70.25 Simple and 38.35-39.78 Hard, and driving the '
     "bare text through the OpenAI completions endpoint with NO chat template "
-    "gives 70.25 / "
-    "40.50 -- higher, not lower. Its verdicts were also re-derived with "
+    "gives 70.25 / 40.50 -- higher, not lower. Its verdicts were also "
+    "re-derived with "
     "upstream's own answer_check (below), so the residual is on the generation "
     "side of a row this port cannot reconstruct. Read the two rows accordingly: "
     "the open-weight anchors here are reproducible for the model whose native "
