@@ -354,27 +354,23 @@ def match_recipe(family: str, param_billions: float) -> Recipe | None:
     return None
 
 
-# A hardware key's memory token ("80G", "141G") states the card's capacity; the
-# remaining tokens name the model ("H200"). nvidia-smi reports the capacity for
-# some cards ("NVIDIA A100-SXM4-80GB") but not others ("NVIDIA H200"), so the
-# two kinds of token cannot be required alike.
+# A key's memory token ("80G") states capacity; the rest name the model ("H200").
+# nvidia-smi reports capacity for some cards but not others, so the two kinds of
+# token cannot be required alike.
 _MEMORY_TOKEN_RE = re.compile(r"^\d+(?:g|gb|gib)$")
 
-# A reported capacity has to start on a boundary. The "10G" inside a product
-# name like "NVIDIA A10G" is part of the model, and reading it as a capacity
-# would push that card down the "states a size" branch below, refusing the very
-# fallback it needs.
+# A reported capacity must start on a boundary: the "10G" in "NVIDIA A10G" names
+# the model, and reading it as a size would deny that card the model-name
+# fallback below.
 _GPU_STATES_MEMORY_RE = re.compile(r"(?<![a-z0-9])\d+\s*(?:g|gb|gib)\b")
 
 
 def _model_token_matches(token: str, gpu_lower: str) -> bool:
     """Does *token* name the GPU model, sitting on a token boundary?
 
-    The ``"exact"`` reading can use a plain substring test because the key's
-    memory token corroborates it — "80g" is found inside "80gb". A model-only
-    reading has no such second witness, so a bare substring would let one
-    card's key claim another's name: "h20" sits inside "h200", and "h200"
-    inside "gh200".
+    A model-only match has no memory token corroborating it, so a bare
+    substring would let one card's key claim another's name: "h20" sits inside
+    "h200", "h200" inside "gh200".
     """
     pattern = rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])"
     return re.search(pattern, gpu_lower) is not None
@@ -385,10 +381,9 @@ def _classify_hardware_key(
 ) -> Literal["exact", "model"] | None:
     """Classify how well *hw_key* describes the GPU named by *gpu_lower*.
 
-    Returns ``"exact"`` when every token of the key appears in the GPU string,
-    ``"model"`` when only the model tokens do (the key's memory token is
-    absent), or ``None`` when the model tokens disagree — which includes a key
-    naming no model at all, such as a bare ``"80G"``.
+    ``"exact"`` when every token of the key appears in the GPU string,
+    ``"model"`` when only the model tokens do, ``None`` when they disagree —
+    which includes a key naming no model at all, such as a bare ``"80G"``.
     """
     tokens = re.split(r"[-_\s]+", hw_key.lower())
     if all(token in gpu_lower for token in tokens):
@@ -412,19 +407,12 @@ def resolve_hardware_profile(
     For example, key ``"H100-80G"`` matches GPU string
     ``"NVIDIA H100-SXM5-80GB"``.
 
-    Some drivers report a bare product name with no capacity — ``"NVIDIA
-    H200"`` — which no ``<model>-<memory>`` key can satisfy that way. When
-    the GPU string states no capacity at all, a key is therefore allowed to
-    match on its model tokens alone, but only when exactly one key does; two
-    candidates mean the recipe distinguishes memory tiers we cannot tell
-    apart, so we refuse rather than guess. A GPU string that *does* state a
-    capacity must still agree with the key, so a 40G card never inherits an
-    80G profile.
-
-    Matching on the model name alone also demands a token boundary, which the
-    corroborated ``"exact"`` reading does not: without a memory token to
-    confirm it, a plain substring would let ``"H20-96G"`` claim an ``"NVIDIA
-    H200"``, or ``"H200-141G"`` a ``"NVIDIA GH200"``.
+    Some drivers report a bare product name — ``"NVIDIA H200"`` — that no
+    ``<model>-<memory>`` key can match that way. A GPU string stating no
+    capacity may therefore match on model tokens alone, and only when exactly
+    one key does; two candidates are refused rather than guessed. One that
+    *does* state a capacity must still agree with the key, so a 40G card never
+    inherits an 80G profile.
 
     Args:
         recipe: Typed Recipe with a ``hardware`` field.

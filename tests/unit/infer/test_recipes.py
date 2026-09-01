@@ -286,9 +286,8 @@ class TestResolveHardwareProfile:
     ) -> None:
         """'NVIDIA H100' (no capacity reported) still matches 'H100-80G'.
 
-        Some drivers report only the product name, which can never contain the
-        key's memory token. Refusing to match there silently drops every
-        profile param from the launch command.
+        A product name can never contain the key's memory token; refusing to
+        match silently drops every profile param from the launch command.
         """
         result = resolve_hardware_profile(sample_recipe, "NVIDIA H100", "bf16", "vllm")
         assert result is not None
@@ -297,9 +296,8 @@ class TestResolveHardwareProfile:
     def test_bare_product_name_h200_matches_shipped_recipe(self) -> None:
         """The reported case: nvidia-smi says 'NVIDIA H200', key is 'H200-141G'.
 
-        Compared against the recipe's own entry rather than literal numbers, so
-        retuning the YAML cannot fail a matching-logic test. The second assert
-        keeps that from passing vacuously on an empty entry.
+        Compared against the recipe's own entry so retuning the YAML cannot
+        fail a matching-logic test; the bare assert keeps that non-vacuous.
         """
         recipe = load_recipe("qwen3-30b-a3b")
         result = resolve_hardware_profile(recipe, "NVIDIA H200", "bf16", "sglang")
@@ -307,12 +305,7 @@ class TestResolveHardwareProfile:
         assert result
 
     def test_stated_capacity_must_still_agree(self) -> None:
-        """A 40G card must not inherit the 80G profile.
-
-        The GPU names its capacity, so a model-token match would be a
-        downgrade in safety, not a rescue: the 80G context length would not
-        fit.
-        """
+        """A 40G card must not inherit the 80G profile — the context won't fit."""
         recipe = Recipe(
             name="only-80g",
             hardware={"A100-80G": {"bf16": {"vllm": {"max_model_len": 32768}}}},
@@ -351,8 +344,8 @@ class TestResolveHardwareProfile:
     def test_product_name_digits_are_not_a_reported_capacity(self) -> None:
         """'NVIDIA A10G' states no capacity — its "10G" names the model.
 
-        Read as a capacity, it would push the card down the "GPU stated a size"
-        branch and refuse the very model-name fallback it needs.
+        Read as a size, the card takes the "stated a capacity" branch and is
+        refused the model-name fallback it needs.
         """
         recipe = Recipe(
             name="a10g",

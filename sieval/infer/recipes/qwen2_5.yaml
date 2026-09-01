@@ -24,12 +24,8 @@
 #   H100-80G:  80GB HBM3,  Hopper, native FP8, NVLink 4 (900GB/s)
 #   H200-141G: 141GB HBM3e, Hopper, same compute as H100 but 1.76x memory
 #
-#   The A100-80G bf16 params mirror H100-80G rather than A100-40G: what bounds
-#   max_model_len across these entries is capacity, and both cards hold 80GB of
-#   the same weights and KV cache. That equivalence is where these numbers come
-#   from -- they were not measured on an A100-80G. Bandwidth and compute differ
-#   (HBM2e vs HBM3, Ampere vs Hopper) but neither feeds these params. There is
-#   no fp8 block for the same reason A100-40G has none: Ampere lacks native FP8.
+#   A100-80G bf16 is copied from H100-80G, not measured: capacity is what
+#   bounds max_model_len here, and both cards hold 80GB.
 #
 # Precision notes:
 #   bf16 profiles include explicit dtype to prevent auto-detection fallback.
