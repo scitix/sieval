@@ -43,10 +43,9 @@ _HEALTH_CHECK_TIMEOUT = 2.0
 _GRACEFUL_SHUTDOWN_TIMEOUT = 10.0
 _LOG_DIR = Path.home() / ".sieval" / "logs"
 _FAILURE_LOG_TAIL = 30
-# Bytes read back from the end of a log before taking its trailing lines.
-# Sized in bytes rather than lines × bytes-per-line: collapsing carriage-return
-# redraws (see _tail_lines) turns tens of kilobytes of progress bar into one
-# line, so a window derived from the line count comes back nearly empty.
+# Bytes read back from the end of a log before taking its trailing lines. In
+# bytes, not lines × bytes-per-line: collapsing carriage-return redraws (see
+# _tail_lines) can turn tens of kilobytes into one line, emptying such a window.
 _LOG_TAIL_WINDOW_BYTES = 256 * 1024
 
 ProgressCallback = Callable[[float, str], None]
@@ -56,15 +55,12 @@ def _tail_lines(text: str) -> list[str]:
     """Split *text* into log lines, one per line the engine actually wrote.
 
     ``str.splitlines`` splits on ``\\r`` as well as ``\\n``, so a progress bar
-    redrawn with carriage returns costs one "line" per frame. Engines redraw
-    weight-loading bars this way even when stdout is a redirected file, which
-    is enough to spend a whole tail window on redraws of a single bar and bury
-    the traceback the log was read for. Split on ``\\n`` only and keep each
-    line's last frame — what a terminal would have shown.
+    redrawn with carriage returns costs one "line" per frame — enough to spend
+    a whole tail window on one bar and bury the traceback it was read for.
+    Split on ``\\n`` only and keep each line's last frame, as a terminal would.
 
-    The trailing ``\\r`` of a CRLF line is stripped first; taking the last
-    frame of ``"line1\\r"`` would otherwise yield ``""`` and drop every line
-    of a CRLF log.
+    The trailing ``\\r`` of a CRLF line is stripped first, or the last frame of
+    ``"line1\\r"`` is ``""`` and every line of a CRLF log drops.
     """
     return [line.rstrip("\r").rsplit("\r", 1)[-1] for line in text.split("\n")]
 
@@ -150,17 +146,12 @@ class LocalDeployer:
         if cmd.env:
             env = {**os.environ, **cmd.env}
 
-        # Resolve the executable before spawning. Without this the failure is a
-        # bare FileNotFoundError from Popen that names neither the role nor the
-        # command, and it is indistinguishable from a missing working_dir.
-        # Resolve it exactly the way Popen will, or the check rejects commands
-        # that would have launched: a bare name is looked up in the *child's*
-        # PATH (subprocess uses os.get_exec_path(env), so cmd.env wins), and a
-        # name carrying a directory is relative to cwd — cmd.working_dir, not
-        # this process's.
-        # This runs before the log directory and the "Logging to" line, so a
-        # rejected launch neither creates a directory for a process that never
-        # starts nor names a log path that will never exist.
+        # Popen would raise a bare FileNotFoundError naming neither the role nor
+        # the command. Resolve exactly as it does, or this rejects launches that
+        # would have worked: a bare name against the *child's* PATH
+        # (os.get_exec_path(env)), anything else against cmd.working_dir.
+        # Runs before the log dir and the "Logging to" line, so a rejected
+        # launch creates no directory and names no path that will never exist.
         executable = cmd.cli_args[0] if cmd.cli_args else ""
         search_path = (env or os.environ).get("PATH")
         probe = executable
@@ -168,15 +159,14 @@ class LocalDeployer:
             probe = os.path.join(cmd.working_dir, executable)
 
         if not shutil.which(probe, path=search_path):
-            # which() also rejects a file that exists but is not executable,
-            # where Popen raises PermissionError, not FileNotFoundError.
+            # which() also rejects a present but non-executable file, where
+            # Popen raises PermissionError — a different finding.
             if shutil.which(probe, mode=os.F_OK, path=search_path):
                 problem = "is not executable"
             elif os.path.dirname(probe) and os.path.isdir(probe):
-                # which() rejects a directory under F_OK too, so without this
-                # branch a directory reads as absent while Popen would raise
-                # PermissionError. Guarded on dirname: for a bare name this
-                # path is not what Popen would have run anyway.
+                # which() rejects a directory under F_OK too, so it would read
+                # as absent though Popen raises PermissionError. Guarded on
+                # dirname: for a bare name this is not what Popen would run.
                 problem = f"is a directory, not an executable: {probe!r}"
             elif os.path.dirname(probe):
                 problem = f"does not exist at {probe!r}"
@@ -391,18 +381,16 @@ class LocalDeployer:
                 if ready and ready.status:
                     ready_str = "ready"
                 else:
-                    # The reason separates "still loading" (connection_refused)
-                    # from "up but unhealthy" (health_check_failed) — the one
-                    # bit that decides whether waiting longer can help.
+                    # connection_refused (still loading) vs health_check_failed
+                    # (up, unhealthy) decides whether waiting longer can help.
                     ready_str = phase.value
                     if ready and ready.reason:
                         ready_str += f"({ready.reason})"
                 summary_parts.append(f"{role}={ready_str}")
 
                 if phase in (InferPhase.FAILED, InferPhase.STOPPED):
-                    # Same quoting as the timeout path: a crash needs the log
-                    # path and the launch command for the same reason a hang
-                    # does — the log is written outside the run directory.
+                    # Same block as the timeout path — the log sits outside the
+                    # run directory either way.
                     msg = f"Process {handle.handle_id} ({role}) {phase.value}"
                     msg += await self._quote_logs([handle])
                     raise DeployError(msg)
@@ -421,22 +409,19 @@ class LocalDeployer:
             if anyio.current_time() >= deadline:
                 summary = ", ".join(summary_parts)
                 msg = f"Not all processes ready within {timeout}s ({summary})"
-                # A timeout is the common failure and used to be the only one
-                # that discarded the engine's own log. The process is about to
-                # be killed and its log lives outside the run directory, so if
-                # we do not quote it here it is usually gone for good.
+                # The process is about to be killed and its log lives outside
+                # the run directory, so not quoting it here usually loses it.
                 msg += await self._quote_logs(not_ready)
                 raise DeployTimeoutError(msg)
 
             await anyio.sleep(poll_interval)
 
     async def _quote_logs(self, handles: list[InferHandle]) -> str:
-        """Quote the log of each of *handles* for an error message.
+        """Quote each handle's log tail, path and launch command.
 
-        Returns a block to append, empty when *handles* is. Always names the
-        log path: an empty tail is itself a finding (the engine wrote nothing),
-        and the path is the only way to reach a log that is written outside the
-        run directory.
+        Returns a block to append, empty when *handles* is. The path prints even
+        with no tail: an engine that logged nothing is itself a finding, and the
+        log sits outside the run directory.
         """
         blocks: list[str] = []
         for handle in handles:
@@ -444,8 +429,7 @@ class LocalDeployer:
             log_file = handle.metadata.get("log_file", "")
             launched = handle.metadata.get("cmd")
             header = f"--- {role} (pid {handle.handle_id})"
-            # metadata values are not typed as sequences; a str would join
-            # character by character, so narrow rather than truth-test.
+            # MetadataValue admits str, which would join character by character.
             if isinstance(launched, list):
                 header += f" cmd: {' '.join(str(a) for a in launched)}"
             header += f"\n    log: {log_file or '?'}"

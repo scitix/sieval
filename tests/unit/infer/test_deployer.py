@@ -71,12 +71,7 @@ def _make_command(
 class TestLaunchOne:
     @pytest.mark.anyio
     async def test_missing_executable_names_the_binary(self):
-        """A missing engine binary must be reported as such.
-
-        Popen would raise a bare FileNotFoundError naming neither the role nor
-        the command, and indistinguishable from a missing working_dir — while
-        the operator's real question is whether the engine is installed.
-        """
+        """Popen's bare FileNotFoundError names neither the role nor the cmd."""
         deployer = LocalDeployer()
         cmd = BackendCommand(
             cli_args=["sglang-not-installed", "serve", "--port", "30000"],
@@ -96,12 +91,7 @@ class TestLaunchOne:
     async def test_rejected_launch_creates_no_log_dir_and_names_no_log(
         self, tmp_path: Path
     ):
-        """A launch the gate rejects must leave nothing behind and promise nothing.
-
-        Running the gate after the log directory is created and after "Logging
-        to <path>" is printed hands the operator a path that will never exist,
-        immediately before an error saying no log exists to inspect.
-        """
+        """A rejected launch must create no log dir and name no log path."""
         log_dir = tmp_path / "logs"
         deployer = LocalDeployer()
         cmd = BackendCommand(
@@ -124,12 +114,7 @@ class TestLaunchOne:
 
     @pytest.mark.anyio
     async def test_directory_is_not_reported_as_absent(self, tmp_path: Path):
-        """A directory at the engine path exists — saying otherwise misleads.
-
-        ``shutil.which`` rejects a directory under ``F_OK`` too, so without an
-        explicit branch it falls through to "does not exist at", while Popen
-        raises PermissionError. Same misdiagnosis class the gate prevents.
-        """
+        """which() rejects a directory under F_OK, so it must not read absent."""
         engine_dir = tmp_path / "sglang"
         engine_dir.mkdir()
 
@@ -150,13 +135,7 @@ class TestLaunchOne:
 
     @pytest.mark.anyio
     async def test_engine_on_a_cmd_env_path_is_not_rejected(self, tmp_path: Path):
-        """An engine reachable only via cmd.env's PATH must still launch.
-
-        Popen resolves a bare argv[0] against the *child's* PATH, so a plan
-        whose ``env:`` points PATH at the prefix holding the engine works.
-        Probing this process's PATH instead would reject it before launch and
-        report the engine as absent when it is installed.
-        """
+        """Popen resolves argv[0] against the child's PATH, so cmd.env wins."""
         engine = tmp_path / "sglang"
         engine.write_text("#!/bin/sh\nsleep 60\n")
         engine.chmod(0o755)
@@ -183,12 +162,7 @@ class TestLaunchOne:
     async def test_present_but_non_executable_is_not_called_missing(
         self, tmp_path: Path
     ):
-        """A non-executable engine must not be reported as absent.
-
-        Popen raises PermissionError there, not FileNotFoundError, and telling
-        the operator it is "not found on PATH" sends them to install a binary
-        that is already sitting in front of them.
-        """
+        """Popen raises PermissionError here, so reporting it absent misleads."""
         engine = tmp_path / "sglang"
         engine.write_text("#!/bin/sh\nsleep 60\n")
         engine.chmod(0o644)
@@ -213,12 +187,7 @@ class TestLaunchOne:
     async def test_relative_executable_resolves_against_working_dir(
         self, tmp_path: Path
     ):
-        """A relative argv[0] is resolved against working_dir, as Popen does.
-
-        Popen(cwd=...) resolves a name carrying a directory relative to that
-        cwd, so probing it relative to the deployer's own cwd would reject a
-        launch that works.
-        """
+        """Popen(cwd=...) resolves a relative argv[0] there, not against ours."""
         (tmp_path / "bin").mkdir()
         engine = tmp_path / "bin" / "sglang"
         engine.write_text("#!/bin/sh\nsleep 60\n")
@@ -623,11 +592,7 @@ class TestLogs:
 
     @pytest.mark.anyio
     async def test_logs_collapses_progress_bar_redraws(self, tmp_path: Path):
-        """`sieval infer logs` hits the same redraw problem as the error tail.
-
-        It is the hand-driven route to the very log a failed deploy quotes, so
-        a --tail spent on redraws of one bar fails the operator the same way.
-        """
+        """`sieval infer logs` reads the same log, so it must split the same."""
         log_file = tmp_path / "engine.log"
         log_file.write_text(
             "real line 1\nreal line 2\n"
@@ -819,12 +784,7 @@ class TestDeploy:
 
     @pytest.mark.anyio
     async def test_deploy_timeout_quotes_engine_log(self, tmp_path: Path):
-        """A timeout must quote the engine log, like a crash already does.
-
-        The engine's log is written outside the run directory and the process
-        is killed on the way out, so a timeout that does not quote it usually
-        leaves no evidence of why the server never came up.
-        """
+        """The process is killed on the way out; unquoted, its log is lost."""
         log_file = tmp_path / "full.log"
         log_file.write_text("Loading weights...\nCUDA out of memory\n")
         deployer = LocalDeployer()
@@ -937,9 +897,7 @@ class TestDeploy:
         ):
             await deployer.deploy([cmd], detach=False, poll_interval=0.01)
 
-        # A crash quotes the same block a timeout does: tail, log path and the
-        # launch command. The log is written outside the run directory, so the
-        # path is no more discoverable after a crash than after a hang.
+        # A crash quotes the same block as a timeout: tail, log path, command.
         message = str(excinfo.value)
         assert "ERROR: out of memory" in message
         assert "/tmp/test.log" in message
@@ -986,8 +944,7 @@ class TestDeploy:
         assert len(progress_calls) >= 1
         # Each callback gets (elapsed_seconds, summary_string)
         assert "full=" in progress_calls[0][1]
-        # The not-ready reason rides along, so a run's own log says whether
-        # the engine is still loading or already answering unhealthily.
+        # The not-ready reason rides along, not just the phase.
         assert "health_check_failed" in progress_calls[0][1]
 
 
@@ -1032,12 +989,8 @@ class TestReadTail:
     ):
         """A redrawn progress bar must not push the traceback out of the tail.
 
-        Engines redraw weight-loading bars with carriage returns even when
-        stdout is a redirected file, and with ``--dp-size N`` the children that
-        did *not* die keep redrawing into the same log after the one that did
-        has printed its traceback. Counting each frame as a line spends the
-        whole window on redraws of a single bar and buries the only evidence
-        the quoted tail exists to carry.
+        Counting each carriage-return frame as a line spends the whole window
+        on one bar and buries the evidence the tail exists to carry.
         """
         log_file = tmp_path / "engine.log"
         log_file.write_text(
@@ -1076,12 +1029,7 @@ class TestReadTail:
 
     @pytest.mark.anyio
     async def test_read_tail_handles_crlf_line_endings(self, tmp_path: Path):
-        """CRLF must not collapse to empty when splitting on \\n.
-
-        Splitting on ``\\n`` leaves a trailing ``\\r`` on every CRLF line, and
-        taking the last carriage-return frame of ``"line1\\r"`` yields ``""``
-        — which would silently drop every line of a CRLF log.
-        """
+        """The last frame of ``"line1\\r"`` is ``""`` — CRLF must not vanish."""
         log_file = tmp_path / "crlf.log"
         log_file.write_bytes(b"line1\r\nline2\r\nline3\r\n")
 
