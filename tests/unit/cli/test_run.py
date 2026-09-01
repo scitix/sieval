@@ -132,11 +132,9 @@ class TestRunCommand:
     def test_ready_timeout_option_reaches_run_all(self, tmp_path: Path):
         """The typer option must arrive at ``_run_all``, not stop at the parser.
 
-        ``test_ready_timeout_reaches_the_deploy_call`` starts *at* ``_run_all``
-        and ``test_run_help_shows_ready_timeout`` stops at ``--help``; between
-        them sits the hand-off in ``register_run_command``. Dropping that one
-        line restores the original defect — an option the user can type that
-        never reaches the deployer — while leaving both neighbours green.
+        Its neighbours start *at* ``_run_all`` and stop at ``--help``; the
+        hand-off in ``register_run_command`` sits between them. Dropping that
+        one line restores the original defect and leaves both of them green.
         """
         config = tmp_path / "test.yaml"
         config.write_text("models: {}\ntasks: {}")
@@ -157,11 +155,10 @@ class TestRunCommand:
         assert await_args.kwargs["ready_timeout"] == 1234.0
 
     def test_ready_timeout_rejects_a_non_positive_budget(self, tmp_path: Path):
-        """A zero/negative budget is a bad argument, not an engine failure.
+        """A zero/negative budget must be refused before anything is launched.
 
-        Without ``min=``, the poll loop accepts it and raises
-        ``DeployTimeoutError`` on its first pass, which reads as a broken
-        engine. Typer must refuse it before anything is launched.
+        Without ``min=`` the poll loop takes it and times out on its first
+        pass, so a bad argument reads as a broken engine.
         """
         config = tmp_path / "test.yaml"
         config.write_text("models: {}\ntasks: {}")
@@ -176,12 +173,7 @@ class TestRunCommand:
         assert mock_run_all.await_count == 0
 
     def test_infer_start_accepts_both_readiness_option_names(self):
-        """One spelling works across both commands.
-
-        ``run`` names the budget ``--ready-timeout``; ``infer start`` shipped
-        it as ``--timeout``. Both names resolve to the same parameter here, so
-        neither spelling is wrong depending on which command you reached for.
-        """
+        """Both spellings resolve to the same parameter, so neither is wrong."""
         import click
         import typer.main
 

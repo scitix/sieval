@@ -71,14 +71,7 @@ def _make_command(
 
 class TestDefaultReadyTimeout:
     def test_leaves_room_for_a_cold_start(self):
-        """The default must not sit on top of an observed cold-start time.
-
-        A dead process is reported within a poll interval regardless of this
-        value (``_poll_all_until_ready`` raises on FAILED/STOPPED before it
-        checks the deadline), so the budget only ever bounds an alive-but-
-        silent engine: too small and a healthy cold load is failed outright.
-        One cluster measured 264s cold for a 30B MoE, so 300s was not a margin.
-        """
+        """264s cold was measured for a 30B MoE, so 300s was not a margin."""
         assert DEFAULT_READY_TIMEOUT >= 600.0
 
 

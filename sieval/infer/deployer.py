@@ -39,15 +39,12 @@ from sieval.infer.topology.models import (
     deployment_plan_projection,
 )
 
-# Seconds to wait for a freshly launched engine to report ready. Generous by
-# design, because the two failure modes are not symmetric: a process that dies
-# is detected within a poll interval whatever this value is (phase STOPPED or
-# FAILED), so this budget only ever bounds a process that is alive and silent.
-# Setting it too low converts a slow-but-healthy cold start into a hard failure
-# that wastes the whole allocation; setting it too high only delays discovery of
-# a genuine hang. For scale, one cluster served the same 30B MoE checkpoint in
-# 77-82s with a warm page cache but 264s cold — against which the previous 300s
-# was not a budget but a coin toss.
+# Seconds to wait for a freshly launched engine to report ready. Generous
+# because the failure modes are not symmetric: a process that dies is caught
+# within a poll interval whatever this value is (STOPPED/FAILED), so this only
+# bounds one that is alive and silent. Too low fails a healthy cold start and
+# wastes the allocation; too high only delays discovery of a hang. One cluster
+# served the same 30B MoE in 77-82s warm but 264s cold, under the previous 300s.
 DEFAULT_READY_TIMEOUT = 900.0
 
 _HEALTH_CHECK_TIMEOUT = 2.0

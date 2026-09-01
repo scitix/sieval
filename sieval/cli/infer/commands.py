@@ -187,12 +187,11 @@ def infer_start(
     timeout: Annotated[
         float,
         typer.Option(
-            # `--timeout` stays primary for compatibility; `--ready-timeout`
-            # is the name `sieval run` uses, accepted here so one spelling
-            # works across both commands. See the min= note in cli/run.py.
+            # `--ready-timeout` is what `sieval run` calls this, accepted here
+            # so one spelling works on both; `--timeout` stays primary.
             "--timeout",
             "--ready-timeout",
-            min=1.0,
+            min=1.0,  # see cli/run.py
             help="Seconds to wait for ready",
         ),
     ] = DEFAULT_READY_TIMEOUT,
