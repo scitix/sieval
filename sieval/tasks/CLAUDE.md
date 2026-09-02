@@ -174,6 +174,40 @@ Machine-checked over every class defining `report` under `sieval/tasks/`:
 single `return helper(...)` is judged on the helper, so a shared report
 (`arc/_base.py`) declares once on behalf of all its leaves rather than four times.
 
+### Metric key names follow upstream, not a house word
+
+**A metric key is spelled the way the benchmark publishes it.**
+`wikisql_0shot_gen` reports `ex_accuracy` / `lf_accuracy` because those are
+`evaluate.py`'s own two JSON keys, so a number read off a report leads back to
+the code that defines it.
+
+The pull is always toward unifying: two benchmarks in one genre each measure
+"did it reach the right answer" and "did the structure match", so one pair of
+names looks tidier than two. Resist it on the **second** of those, which is
+seldom the same measurement twice. WikiSQL's `lf_accuracy` compares condition
+triples as an *unordered set*; an "exact match" elsewhere is its own upstream's
+tree or string comparison, agreeing with it on most rows and not by
+construction. One spelling over both asserts an equivalence nobody measured,
+and it costs the pointer back to upstream — the more load-bearing property for
+a port, since that pointer is what a divergence is later argued against.
+
+So the family convention is *not* "a genre shares its key names". It is "each
+task publishes under the name its own upstream published", which is the rule
+that keeps two ports independently checkable. Three things follow:
+
+- **Cross-task comparability is declared, not spelled.** `score_key` names the
+  headline and `denominator_policy` says what it is over; those two are what
+  make columns comparable. Renaming a metric buys none of it.
+- **A real correspondence goes in `reference_impl.notes`**, where it can carry
+  the caveat it needs ("read `lf_accuracy` as the structural match, modulo
+  condition order") — never encoded by collapsing two names into one.
+- **A key that is genuinely the same count keeps the same name** for that
+  reason and not for symmetry: `n_execution_errors` means the same thing in any
+  task that executes a prediction, so it is spelled the same everywhere.
+
+Nothing enforces this — the judgement is about what two upstreams mean, which
+no checker can read. Decide it once per benchmark, when the report is written.
+
 ## Stage-Output Protocol (opt-in)
 
 The record vocabulary and its traps live in `.claude/rules/records.md`, scoped to
