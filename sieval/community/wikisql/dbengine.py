@@ -10,27 +10,26 @@ same ``lower=True`` default. Three things differ, all of them stated here.
 archived SQLAlchemy wrapper (last release 2019) and is the only reason upstream
 needs a database *file*. ``sqlite3`` speaks the same ``:name`` parameter style,
 so the SQL text reaching SQLite is unchanged; only the row accessor differs
-(``o.result`` -> ``row[0]``, over the same single-column ``AS result``
-projection).
+(``o.result`` -> ``row[0]``, over the same ``AS result`` projection).
 
 **2. Tables are built in memory, not read from a shipped ``.db``.** Upstream
 distributes ``{split}.db`` inside ``data.tar.bz2`` and points ``DBEngine`` at
-the file. This port rebuilds each table from the dataset's own
-``types``/``rows`` via ``table.create_table`` -- the same code path that
-produced those files. Verified equal, not assumed: every one of the 15,878 test
-gold queries returns byte-identical results from the rebuild and from upstream's
-shipped ``test.db`` (0 mismatches, 0 exceptions), the declared schema matches
-the ``types`` column for all 5,230 test and 2,716 dev tables, and replaying
-upstream's own ``test/example.pred.dev.jsonl.bz2`` through both paths yields the
-same ``ex_accuracy``/``lf_accuracy`` to six decimals. It drops ~120 MB of binary
-SQLite from the download and leaves the engine with no filesystem reach at all.
+the file. This port rebuilds each table from the dataset's own ``types``/``rows``
+via ``table.create_table`` -- the same code path that produced those files.
+Verified equal, not assumed: all 15,878 test gold queries return byte-identical
+results from the rebuild and from upstream's shipped ``test.db`` (0 mismatches,
+0 exceptions), the declared schema matches the ``types`` column for all 5,230
+test and 2,716 dev tables, and replaying upstream's own
+``test/example.pred.dev.jsonl.bz2`` through both paths yields the same
+``ex_accuracy``/``lf_accuracy`` to six decimals. It drops ~120 MB of binary
+SQLite from the download and leaves the engine no filesystem reach at all.
 
-**3. Indices are validated before they are formatted into SQL.** This is the one
-behavioural divergence, and it is an execution-safety stop rather than a repair.
-Upstream interpolates ``select_index`` and ``col_index`` directly into the query
-text and indexes ``agg_ops``/``cond_ops`` with whatever it is given. That is safe
-for upstream, whose predictions come from a decoder over a closed output space,
-and unsafe here, where they come from a chat model that can emit anything:
+**3. Indices are validated before they are formatted into SQL.** The one
+behavioural divergence, and an execution-safety stop rather than a repair.
+Upstream interpolates ``select_index`` and ``col_index`` straight into the query
+text and indexes ``agg_ops``/``cond_ops`` with whatever it is given -- safe for a
+decoder over a closed output space, unsafe for a chat model that can emit
+anything:
 
 * a non-``int`` ``sel``/``col`` is string-formatted into the SQL text, so it is
   an injection point (``{"sel": "0 FROM x; DROP TABLE y; --"}``);
@@ -40,18 +39,17 @@ and unsafe here, where they come from a chat model that can emit anything:
   ``AVG`` and ``cond_ops[-1]`` is ``OP``. That path raises nothing and scores a
   query the model did not ask for.
 
-Rejected indices raise, which lands in the caller's guard -- the same
-``except Exception`` upstream's ``evaluate.py`` already wraps every prediction
-in, where an unexecutable prediction becomes a non-matching result and scores
-wrong. So a malformed prediction is graded exactly as upstream grades it, and no
-injection is reachable. Condition *values* are untouched: upstream already binds
-them as parameters, never interpolates them, so they need no guard and get none.
+Rejected indices raise into the caller's guard -- the same ``except Exception``
+upstream's ``evaluate.py`` already wraps every prediction in, where an
+unexecutable prediction becomes a non-matching result and scores wrong. So a
+malformed prediction is graded exactly as upstream grades it, and no injection is
+reachable. Condition *values* need no guard and get none: upstream already binds
+them as parameters rather than interpolating them.
 
 ``op == 3`` (``OP``) is deliberately *not* rejected. It is in upstream's
-``cond_ops``, appears in no gold row of either split, and renders as invalid SQL
--- so SQLite raises and the caller's guard scores it wrong. That is upstream's
-behaviour, and preserving it keeps a model that emits ``OP`` distinguishable
-from one that emits an out-of-range integer.
+``cond_ops``, appears in no gold row of either split, and renders as invalid SQL,
+so SQLite raises and the caller's guard scores it wrong. Preserving that keeps a
+model emitting ``OP`` distinguishable from one emitting an out-of-range integer.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -72,19 +70,18 @@ num_re = re.compile(r"[-+]?\d*\.\d+|\d+")
 class InvalidQueryIndex(ValueError):
     """A ``sel``/``agg``/``col``/``op`` index that must not reach the SQL text.
 
-    A distinct type so a caller can tell a rejected *prediction* apart from a
-    genuine engine fault, and so tests can assert the guard fires rather than
-    matching on a shared message. Callers still catch broadly -- upstream's
-    ``evaluate.py`` treats every prediction-side exception alike.
+    A distinct type so a caller can tell a rejected *prediction* from a genuine
+    engine fault, and so tests assert the guard fires rather than matching on a
+    shared message. Callers still catch broadly -- upstream's ``evaluate.py``
+    treats every prediction-side exception alike.
     """
 
 
 def _checked_index(value, upper: int, what: str) -> int:
     """Return *value* as an ``int`` in ``[0, upper)``, or raise.
 
-    ``bool`` is rejected explicitly: it passes ``isinstance(v, int)`` but
-    formats as ``colTrue``/``colFalse``, so it is not the index it appears to
-    be.
+    ``bool`` is rejected explicitly: it passes ``isinstance(v, int)`` but formats
+    as ``colTrue``/``colFalse``, so it is not the index it appears to be.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         raise InvalidQueryIndex(

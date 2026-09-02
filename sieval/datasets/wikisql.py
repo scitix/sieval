@@ -12,18 +12,15 @@ This loader materialises the two published evaluation splits, ``test`` (15,878
 questions over 5,230 tables) and ``validation`` (8,421 over 2,716) -- the two
 columns every leaderboard row reports. ``train`` (56,355) is deliberately not
 materialised: nothing consumes it yet, and denormalising it would add roughly
-150 MB of Arrow. Adding it is a one-line change to ``_SPLITS`` if a k-shot
-sibling ever wants exemplars.
+150 MB of Arrow. Adding it is a one-line change to ``_SPLITS``.
 
 **No SQLite files.** Upstream's ``data.tar.bz2`` ships ``{split}.db`` alongside
-the JSONL, and its ``DBEngine`` reads them. This loader ignores them and carries
+the JSONL and its ``DBEngine`` reads them. This loader ignores them and carries
 each table's ``types``/``rows`` on the row instead, letting
 ``sieval.community.wikisql`` rebuild the table in memory through upstream's own
-``create_table``. Verified rather than assumed -- all 15,878 test gold queries
-return identical results either way, the declared schema of all 7,946 test+dev
-tables matches the ``types`` column, and upstream's own example predictions
-score identically. It drops ~120 MB of binary SQLite from the download and
-leaves the engine no filesystem reach.
+``create_table`` -- measured equal, not assumed, in that module's docstring. It
+drops ~120 MB of binary SQLite from the download and leaves the engine no
+filesystem reach.
 
 **Each row carries its own table** (the 5,230 test tables denormalise across
 15,878 questions). A shared side table would have to reach the task outside the
@@ -45,13 +42,12 @@ name and dtype -- no cast needed, upstream ships these dtypes.
 
 ``page_title`` / ``section_title`` / ``caption`` are absent on 329 of 5,230 test
 tables (181 of 2,716 dev), ``name`` on 3,956, and ``page_id`` on 1,274, hence
-``| None`` on each. They are carried but unused by the scorer: the engine derives
-its SQL identifier from ``table_id``, never from ``name``.
+``| None`` on each. They are carried but unused by the scorer, which derives its
+SQL identifier from ``table_id`` and never from ``name``.
 
-Licensing: the upstream repository is BSD-3-Clause, which covers both the
-harness (vendored in ``sieval.community.wikisql``) and the data files
-distributed in its tree. The tables are derived from Wikipedia (CC-BY-SA-3.0);
-a redistributor should honour both.
+Licensing: the upstream repository is BSD-3-Clause, covering both the harness
+(vendored in ``sieval.community.wikisql``) and the data files in its tree. The
+tables derive from Wikipedia (CC-BY-SA-3.0); a redistributor should honour both.
 
 References:
 
@@ -78,9 +74,9 @@ from sieval.core.datasets import (
 from sieval.core.utils.hf import ensure_dataset_dict
 
 #: Upstream commit the data tarball is addressed at. The repository is archived
-#: (2025-10-06), so this is also its final state -- but the commit is pinned
-#: rather than the branch anyway: a branch would let the bytes move under a
-#: checksum that no longer matches, which fails closed only after a download.
+#: (2025-10-06), so this is also its final state -- but a commit is pinned
+#: rather than a branch anyway, since a branch lets the bytes move under a
+#: checksum that then fails closed only after a download.
 WIKISQL_COMMIT = "cffb423077756d04c1bac5bcd45167c86903fbcb"
 
 WIKISQL_URL = (
@@ -90,10 +86,9 @@ WIKISQL_URL = (
 
 _ARCHIVE = "data.tar.bz2"
 
-#: HF split name -> upstream file stem. Upstream calls the held-out split
-#: ``dev``; this maps it to the conventional ``validation`` so `fewshot_split`
-#: and friends read the same here as everywhere else, while ``test`` keeps its
-#: name. ``train`` is omitted -- see the module docstring.
+#: HF split name -> upstream file stem. Upstream's held-out split is ``dev``,
+#: mapped to the conventional ``validation`` so `fewshot_split` and friends read
+#: the same here as everywhere else. ``train`` is omitted -- see the docstring.
 _SPLITS = {"test": "test", "validation": "dev"}
 
 
@@ -150,9 +145,9 @@ class WikiSQLDataset(Dataset[WikiSQLDatasetSample]):
             else name_or_path
         )
         dataset_dict = HFDatasetDict()
-        # One pass over the archive per split, reading only that split's two
-        # members. bz2 has no random access, so a member is reached by
-        # decompressing up to it; two seeks beat holding every split in memory.
+        # One pass per split, reading only that split's two members. bz2 has no
+        # random access, so a member is reached by decompressing up to it --
+        # two seeks beat holding every split in memory.
         with tarfile.open(path, "r:bz2") as tar:
             members = {m.name: m for m in tar.getmembers() if m.isfile()}
             for split, stem in _SPLITS.items():
@@ -197,8 +192,8 @@ def _row(question: dict, table: dict) -> WikiSQLDatasetSample:
         "types": table["types"],
         "rows_json": json.dumps(table["rows"], ensure_ascii=False),
         # `.get()` rather than `[]`: these five are absent on a measured
-        # fraction of tables (see the module docstring), and absent is the same
-        # thing as null here -- upstream carries no distinction between them.
+        # fraction of tables (see the docstring), and upstream carries no
+        # distinction between absent and null.
         "page_title": table.get("page_title"),
         "section_title": table.get("section_title"),
         "caption": table.get("caption"),

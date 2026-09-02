@@ -6,11 +6,10 @@ License: BSD-3-Clause
 
 Upstream's evaluation surface is ``evaluate.py`` over ``lib/query.py`` +
 ``lib/dbengine.py``. It scores a prediction that is a **logical form** --
-``{"sel": int, "agg": int, "conds": [[col, op, value], ...]}`` -- not SQL text,
-and reports two numbers: ``lf_accuracy`` (``Query.__eq__``) and ``ex_accuracy``
-(both sides run through ``DBEngine`` and their result lists compared). No SQL
-text is ever parsed, and the query that runs is a template over three integers
-with condition values bound as parameters.
+``{"sel": int, "agg": int, "conds": [[col, op, value], ...]}``, never SQL text --
+and reports ``lf_accuracy`` (``Query.__eq__``) and ``ex_accuracy`` (both sides
+run through ``DBEngine``, result lists compared). The query that runs is a
+template over three integers, with condition values bound as parameters.
 
 Local adaptations:
 
