@@ -90,6 +90,15 @@ def open_readonly(db_path: str) -> sqlite3.Connection:
     # different. Both sides of a comparison are decoded by the same factory, so
     # equality is preserved exactly — this turns a crash into a verdict without
     # being able to change one.
+    #
+    # That argument covers GRADING, where the surrogates never leave the
+    # process. `_spider_schema.build_prompt` is the other consumer, and its
+    # output goes out in an HTTP JSON body, where a lone surrogate raises
+    # `UnicodeEncodeError` under an `ensure_ascii=False` encoder. It does not
+    # fire on the pinned data — no sampled row of any dev database carries the
+    # bad bytes, and the archive is checksum-pinned, so that holds by data
+    # rather than by construction. A mirror carrying different rows would need
+    # the prompt path to sanitise instead.
     conn.text_factory = lambda raw: raw.decode("utf-8", "surrogateescape")
     return conn
 
@@ -206,6 +215,14 @@ def grade_one(
     # and is load-bearing: `eval_exact_match` mutates both parse trees in place
     # (it sorts and rewrites their clauses), so scoring it first would hand
     # `_res_map` corrupted select units and silently zero the execution column.
+    #
+    # Within execution, gold runs FIRST, where upstream runs the prediction
+    # first and returns False without ever touching the gold. The order is
+    # visible only when BOTH are unrunnable: upstream scores that a wrong
+    # answer, this raises and the sample lands in `fails`. Deliberate, and
+    # unreachable on the pinned data — all 1,034 dev golds execute — but it is
+    # the reading that keeps a gold we cannot run our bug rather than the
+    # model's, which is the same rule the parse above follows.
     execution = False
     conn = open_readonly(db_path)
     try:

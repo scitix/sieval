@@ -16,6 +16,15 @@ Spider's canonical "How many singers do we have?" /
 reproducible; if it ever fails, re-verify against the official release rather
 than re-pinning blind.
 
+The checksum pins the bytes, so a tampered mirror cannot go unnoticed. What it
+cannot pin is *availability*: this is a low-traffic third-party repo, and if it
+disappears the recovery path is upstream's own Google Drive ``spider_data.zip``
+(linked from <https://yale-lily.github.io/spider>), staged by hand and checked
+against the sha256 above — not a swap to whichever mirror is reachable. Note
+that the widely-used ``xlangai/spider`` on the Hub is **not** a substitute: it
+publishes the question rows only, with none of the ``.sqlite`` databases
+execution grading needs.
+
 **The ``sql`` column is dropped at load.** Upstream ships a pre-parsed query tree
 per row whose ``except``/``intersect``/``union`` slots are sometimes null and
 sometimes nested objects. Arrow cannot infer a schema across that
@@ -26,8 +35,10 @@ string, which is what the grader does anyway.
 
 ``train_others.json`` (1,659 rows from other sources) is not loaded — the
 ``train`` split here is ``train_spider.json`` alone, matching what "Spider train"
-means in the literature. Neither split is consumed by ``spider_0shot_gen``,
-which evaluates ``validation``.
+means in the literature. Neither training file is consumed by
+``spider_0shot_gen``, which evaluates the ``test`` split — upstream's ``dev.json``
+under the key the runner reads. See :meth:`SpiderDataset.load` for why dev lands
+under that name.
 
 References:
 
