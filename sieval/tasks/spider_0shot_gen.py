@@ -120,25 +120,62 @@ from ._spider_schema import build_prompt
 #: Upstream's four difficulty buckets, from `Evaluator.eval_hardness`.
 HARDNESS_LEVELS = ("easy", "medium", "hard", "extra")
 
-_FENCE = re.compile(r"```(?:sql)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+#: Any fence label, not just ``sql``. The prompt asks for "valid SQLite", so
+#: ```sqlite is a label models reach for; a pattern matching only ```sql falls
+#: through to the raw reply and drags the closing backticks into the statement.
+_FENCE = re.compile(r"```[^\s`]*[ \t]*\r?\n(.*?)```", re.DOTALL)
 _STATEMENT = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
+
+
+def _until_terminator(sql: str) -> str:
+    """Cut *sql* at its first statement-terminating semicolon.
+
+    A semicolon inside a string literal terminates nothing, so quoting is
+    tracked rather than the text being split on ``;`` — ``WHERE name = 'a;b'``
+    is one statement. A doubled quote, SQLite's escape, falls out of the same
+    toggle: it closes and reopens across the pair.
+    """
+    quote: str | None = None
+    for index, char in enumerate(sql):
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char == ";":
+            return sql[:index]
+    return sql
+
+
+def _statement_from(candidate: str) -> str | None:
+    """Slice one statement out of *candidate*, or ``None`` if it holds no SQL."""
+    match = _STATEMENT.search(candidate)
+    if match is None:
+        return None
+    statement = candidate[match.start() :]
+    # A fence marker ends the statement. Reached only on the unfenced fallback,
+    # where the reply can still carry a ``` the fence pattern did not consume;
+    # leaving it in fails the query on `unrecognized token: "```"`.
+    fence = statement.find("```")
+    if fence != -1:
+        statement = statement[:fence]
+    return _until_terminator(statement).strip() or None
 
 
 def extract_sql(text: str) -> str | None:
     """Pull one SQL statement out of a chat reply.
 
-    Prefers the **last** fenced block: models routinely show working and give
-    the answer last. Falls back to the text from the first ``SELECT``/``WITH``
-    keyword onward. Returns ``None`` when nothing looks like SQL, which is what
-    marks the rollout unextracted.
+    Prefers the **last fenced block that holds SQL**: models routinely show
+    working and give the answer last, and the block they close with is not
+    always the answer — a trailing ```json note is common. Falls back to the
+    text from the first ``SELECT``/``WITH`` keyword onward. Returns ``None``
+    when nothing looks like SQL, which is what marks the rollout unextracted.
     """
-    blocks = _FENCE.findall(text)
-    candidate = blocks[-1] if blocks else text
-    match = _STATEMENT.search(candidate)
-    if match is None:
-        return None
-    statement = candidate[match.start() :].strip().rstrip(";").strip()
-    return statement or None
+    for candidate in reversed(_FENCE.findall(text)):
+        statement = _statement_from(candidate)
+        if statement is not None:
+            return statement
+    return _statement_from(text)
 
 
 @cache

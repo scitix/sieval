@@ -72,6 +72,80 @@ def test_extract_strips_a_trailing_semicolon():
     assert extract_sql("```sql\nSELECT 1;\n```") == "SELECT 1"
 
 
+@pytest.mark.parametrize("label", ["sql", "SQL", "sqlite", "SQLite", "mysql", "pgsql"])
+def test_extract_accepts_any_fence_label(label):
+    """The prompt says "valid SQLite", so ```sqlite is a label models reach for.
+
+    Matching only ```sql fell through to the raw reply, whose slice runs to the
+    end of the string and carries the closing backticks into the statement —
+    SQLite then fails it on `unrecognized token: "```"`, scoring a correct
+    answer wrong.
+    """
+    assert extract_sql(f"```{label}\nSELECT 1\n```") == "SELECT 1"
+
+
+def test_extract_never_returns_a_fence_marker():
+    """Whatever the label, no extraction may carry backticks into the SQL."""
+    for label in ("sql", "sqlite", "python", "text", ""):
+        extracted = extract_sql(f"Answer:\n```{label}\nSELECT 1 FROM t\n```")
+        assert extracted == "SELECT 1 FROM t"
+
+
+def test_extract_skips_a_trailing_block_that_holds_no_sql():
+    """A ```json note after the answer must not beat the SQL block.
+
+    Guards the interaction with the permissive label above: once every label
+    matches, the LAST block is no longer necessarily the answer.
+    """
+    reply = '```sql\nSELECT 1\n```\n```json\n{"note": "done"}\n```'
+    assert extract_sql(reply) == "SELECT 1"
+
+
+def test_extract_takes_the_last_unlabelled_dialect_fence():
+    """The label must be matched, not merely survived.
+
+    Truncating at a stray ``` rescues a single ```sqlite block, so it hides a
+    fence pattern that recognises only ```sql. It cannot rescue this: with the
+    blocks unmatched the reply is treated as prose and the FIRST statement
+    wins, handing back the working instead of the answer.
+    """
+    reply = "```sqlite\nSELECT 1\n```\nactually, better:\n```sqlite\nSELECT 2\n```"
+    assert extract_sql(reply) == "SELECT 2"
+
+
+def test_extract_prefers_a_dialect_fence_over_prose_saying_select():
+    """`select` as an English verb must not outrank a real fenced answer."""
+    reply = "First I will select the right table.\n```sqlite\nSELECT 2 FROM t\n```"
+    assert extract_sql(reply) == "SELECT 2 FROM t"
+
+
+def test_extract_drops_an_unpaired_fence_marker_after_the_statement():
+    """A lone ``` never reaches the SQL, even with no fence pair to match.
+
+    A reply cut off at `max_tokens` mid-fence leaves an opener the fence
+    pattern cannot consume, so the prose fallback runs with backticks still in
+    the slice — the shape SQLite rejects as `unrecognized token`.
+    """
+    assert extract_sql("SELECT 1 FROM t\n```js") == "SELECT 1 FROM t"
+
+
+def test_extract_cuts_prose_after_the_statement_terminator():
+    reply = "SELECT count(*) FROM singer; This counts the singers."
+    assert extract_sql(reply) == "SELECT count(*) FROM singer"
+
+
+def test_extract_keeps_a_semicolon_inside_a_string_literal():
+    """A `;` in a literal terminates nothing — splitting on it would truncate."""
+    reply = "```sql\nSELECT * FROM t WHERE name = 'a;b'\n```"
+    assert extract_sql(reply) == "SELECT * FROM t WHERE name = 'a;b'"
+
+
+def test_extract_handles_a_doubled_quote_before_a_terminator():
+    """SQLite escapes a quote by doubling it; the toggle must stay balanced."""
+    reply = "```sql\nSELECT * FROM t WHERE name = 'it''s'; -- done\n```"
+    assert extract_sql(reply) == "SELECT * FROM t WHERE name = 'it''s'"
+
+
 def test_extract_returns_none_when_nothing_looks_like_sql():
     assert extract_sql("I cannot answer that.") is None
 
