@@ -855,13 +855,13 @@ _STRICT_RUNNER_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Neither adjustable nor strict — listed only so the three buckets partition
-# TaskRunnerConfig exactly (see test_every_field_classified_exactly_once). The
-# strip removes result_dir at top level (reification injects it there); the rest
-# are never reached because they don't survive into a persisted runner_config
-# block: auto_resume is set by the orchestration layer at runtime, stage_meta
-# hooks are non-serializable callables. A hand-authored runner_config field from
-# this set that changed across a resume would still be compared strictly.
+# Neither adjustable nor strict: `auto_resume` only decides WHETHER to resume,
+# the stage_meta hooks are non-serializable callables, and `result_dir` says
+# WHERE output goes. Usually none reach a persisted runner_config block — but a
+# config may spell one out, and then it persists and is compared. `--resume`
+# forces the runner's auto_resume on regardless of the YAML
+# (_build_runner_config), so an invocation that also flips the YAML value to
+# request that resume aborts on the field asking for it, with nothing to match.
 _NONMATCH_RUNNER_KEYS: frozenset[str] = frozenset(
     {
         "result_dir",
@@ -871,13 +871,23 @@ _NONMATCH_RUNNER_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Stripped from every runner_config block; `result_dir` deliberately is not.
+# Inside a block it selects the artifact directory — a hand-authored value beats
+# the `<result_dir>/<task.name>` MultiTaskRunner derives — so changing it across
+# a resume moves which shards are read and written. Only the top-level key is
+# stripped, where it is the location of the compared file.
+_NONMATCH_KEYS_STRIPPED_IN_BLOCKS: frozenset[str] = _NONMATCH_RUNNER_KEYS - {
+    "result_dir"
+}
+
 
 def _strip_noncomparable_fields(cfg: dict[str, Any]) -> dict[str, Any]:
     """Deep-copy ``cfg`` with resume-mutable fields removed, for comparison.
 
     Strips (input never mutated) top-level ``concurrency_limit`` /
     ``concurrency_limits`` / ``result_dir``, ``models.*.args.concurrency_limit``,
-    and ``_THROUGHPUT_RUNNER_KEYS`` from every ``runner_config`` block.
+    and ``_THROUGHPUT_RUNNER_KEYS`` plus ``_NONMATCH_KEYS_STRIPPED_IN_BLOCKS``
+    from every ``runner_config`` block.
     """
     out = copy.deepcopy(cfg)
 
@@ -905,7 +915,7 @@ def _strip_noncomparable_fields(cfg: dict[str, Any]) -> dict[str, Any]:
         )
     for rc in runner_config_blocks:
         if isinstance(rc, dict):
-            for key in _THROUGHPUT_RUNNER_KEYS:
+            for key in _THROUGHPUT_RUNNER_KEYS | _NONMATCH_KEYS_STRIPPED_IN_BLOCKS:
                 rc.pop(key, None)
 
     return out
