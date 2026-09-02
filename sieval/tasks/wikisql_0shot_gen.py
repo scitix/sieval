@@ -151,12 +151,17 @@ def build_prompt(question: str, header: list[str], types: list[str]) -> str:
 #: `Query.from_dict` reads exactly these.
 _REQUIRED_KEYS = frozenset({"sel", "agg", "conds"})
 
+#: One reusable decoder. `raw_decode` parses a JSON value *at* a given offset and
+#: ignores whatever follows it, which is what lets a candidate be tried without
+#: first deciding where it ends.
+_DECODER = json.JSONDecoder()
+
 
 def extract_logical_form(text: str) -> dict | None:
     """Pull the predicted logical form out of a reply, or ``None``.
 
-    Scans every balanced ``{...}`` run at any nesting depth and returns the one
-    starting **last** among those parsing as a JSON object with all of
+    Tries to decode a JSON value at every ``{`` in the reply and returns the one
+    starting **last** among those parsing as an object with all of
     ``sel``/``agg``/``conds``. *Last* because a chat model reasons before it
     answers, so an earlier run is a draft it corrected; *all three keys* so
     neither a stray fragment nor a wrapper is mistaken for an answer (given
@@ -164,27 +169,30 @@ def extract_logical_form(text: str) -> dict | None:
     *by start position*, which is what lands the nested case on the inner object,
     since it opens later even though it closes first.
 
+    ``raw_decode`` rather than brace counting, because only the parser knows a
+    brace inside a string literal is not structure: a condition value carrying
+    an unbalanced ``{`` or ``}`` would otherwise unbalance the scan and lose an
+    answer that is perfectly well formed. Values come verbatim from the question
+    (the prompt says so), so the reply's content is the model's to choose and not
+    ours to assume about. Tracking quote state in a hand-rolled scanner would
+    only move the failure: an unmatched ``"`` anywhere in the surrounding prose
+    would then swallow the answer instead. Starting *at* each brace has neither
+    problem, since nothing before the brace is read.
+
     The prompt's own format spec cannot be matched here: it holds ``<int>``
     placeholders and does not parse as JSON. Deliberate, so a reply quoting the
     instructions back is never scored as if it had answered them.
     """
     best: dict | None = None
-    best_start = -1
-    stack: list[int] = []
-    for i, ch in enumerate(text):
-        if ch == "{":
-            stack.append(i)
-        elif ch == "}" and stack:
-            start = stack.pop()
-            if start <= best_start:
-                continue
-            try:
-                candidate = json.loads(text[start : i + 1])
-            except ValueError:
-                continue
-            if isinstance(candidate, dict) and candidate.keys() >= _REQUIRED_KEYS:
-                best = candidate
-                best_start = start
+    for start, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            candidate, _ = _DECODER.raw_decode(text, start)
+        except ValueError:
+            continue
+        if isinstance(candidate, dict) and candidate.keys() >= _REQUIRED_KEYS:
+            best = candidate
     return best
 
 
