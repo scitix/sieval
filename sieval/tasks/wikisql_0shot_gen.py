@@ -24,6 +24,19 @@ why a negative index is the dangerous case rather than an obviously invalid one.
 A rejected prediction raises into the same guard ``evaluate.py`` already wraps
 every prediction in, so it scores wrong exactly as upstream scores it.
 
+That guard is widened by one line here, for the same reason and no other.
+Upstream computes its logical-form comparison *outside* its own
+``except Exception``; ``Query.__eq__`` unpacks each condition into a 3-tuple and
+hashes it, so a ``conds`` that is not a list of 3-element hashable triples
+raises past the guard. Upstream never meets one — its predictions come from a
+decoder over a closed output space — and a chat model produces them readily
+(``[[0, 0]]``, a dict of condition fields, a nested list). Left alone, such a
+prediction fails the *sample* rather than scoring wrong, which burns retries on
+a deterministic outcome and files a model's malformed answer under pipeline
+faults. So ``lf`` is computed inside the guard and a raise reads as ``False``.
+No published number can move: ``lf`` is true only of a form structurally equal
+to a gold that executes, so a form that raises here was never going to score.
+
 **The prompt is sieval's, and it has to be.** Upstream ships no LLM path at all:
 no prompt, no API client, no chat template — its inputs came from ``annotate.py``
 (Stanza-tokenised column/question token streams feeding a trained decoder), and
@@ -256,7 +269,7 @@ def extract_logical_form(text: str) -> dict | None:
             "protocol, not a local hardening: a prediction is three integers "
             "plus a value list, so the executed statement is upstream's fixed "
             "template with values bound as parameters. "
-            "TWO DELIBERATE DIVERGENCES. (1) records/SQLAlchemy -> stdlib "
+            "THREE DELIBERATE DIVERGENCES. (1) records/SQLAlchemy -> stdlib "
             "sqlite3, and tables are rebuilt in memory from the dataset's own "
             "types/rows instead of read from the shipped {split}.db. Upstream's "
             "own create_table does the rebuilding. Verified, not assumed: all "
@@ -277,7 +290,22 @@ def extract_logical_form(text: str) -> dict | None:
             "already wraps every prediction in, and scores wrong exactly as "
             "upstream scores it. op=3 (OP) is deliberately NOT rejected -- it is "
             "in upstream's cond_ops, appears in no gold row, and renders as "
-            "invalid SQL, so SQLite rejects it as upstream lets it. "
+            "invalid SQL, so SQLite rejects it as upstream lets it. (3) The "
+            "logical-form comparison is computed INSIDE that same guard. "
+            "evaluate.py computes it outside its own except-Exception, and "
+            "Query.__eq__ unpacks every condition into a 3-tuple and hashes it, "
+            "so a conds that is not a list of 3-element hashable triples "
+            "([[0, 0]], a dict of condition fields, a nested list) raises past "
+            "the guard. Upstream never meets one (closed-vocabulary decoder); a "
+            "chat model emits them readily, and left alone such a prediction "
+            "fails the SAMPLE rather than scoring wrong -- burning retries on a "
+            "deterministic outcome and filing a malformed answer under pipeline "
+            "faults. Same argument as (2), same resolution: a raise reads as "
+            "lf=False. Score impact is identically zero, not merely measured "
+            "small: lf is true only of a form structurally equal to a gold that "
+            "executes, so a form that raises here could never have scored. "
+            "Confirmed on the anchor below -- 0 occurrences in 8,421 "
+            "predictions, both metrics unchanged to the reported precision. "
             "PROMPT IS SIEVAL'S, NECESSARILY: upstream ships no LLM path at all "
             "-- no prompt, no API client, no chat template. Its inputs came from "
             "annotate.py's Stanza-tokenised streams feeding a trained decoder, "
@@ -446,7 +474,26 @@ class WikiSQLZeroShotGenTask(
                 # `pred_query == gold_query` with a None left operand falls back
                 # to identity and is False, exactly as it does upstream.
                 ex = result == gold
-                lf = pred_query == gold_query
+                try:
+                    lf = pred_query == gold_query
+                except Exception:  # noqa: BLE001 - see below
+                    # Upstream computes this comparison outside its own guard and
+                    # would raise here too -- but its predictions come from a
+                    # decoder over a closed output space, and these come from a
+                    # chat model. `Query.__eq__` unpacks each condition into a
+                    # 3-tuple and hashes it, so a `conds` that is not a list of
+                    # 3-element hashable triples (`[[0, 0]]`, a dict, a nested
+                    # list) raises out of `feedback` and fails the sample --
+                    # burning retries on a deterministic outcome and reporting a
+                    # model's malformed answer as a pipeline fault. The same
+                    # argument that licenses the index guard in `dbengine`, and
+                    # the same resolution: score it wrong, which is what
+                    # upstream's `except Exception` means to do with any
+                    # prediction it cannot grade. Cannot change a published
+                    # number -- `lf` is True only for a form structurally equal
+                    # to a gold that executes, so a form that raises here was
+                    # never going to score.
+                    lf = False
                 rollouts.append(
                     build_rollout_judgement(
                         rollout["index"],

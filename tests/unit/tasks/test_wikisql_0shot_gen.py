@@ -302,6 +302,38 @@ async def test_unexecutable_prediction_is_scored_wrong_and_the_reason_kept():
     assert "sel" in rollout["extra"]["execution_error"]
 
 
+@pytest.mark.parametrize(
+    ("label", "conds"),
+    [
+        ("condition missing its value", [[0, 0]]),
+        ("condition carrying a fourth field", [[0, 0, "a", "text"]]),
+        ("conds as a bare string", "none"),
+        ("conds as a mapping", {"col": 0, "op": 0, "value": "a", "type": "text"}),
+        ("column index as a list", [[[0], 0, "a"]]),
+    ],
+)
+@pytest.mark.anyio
+async def test_a_malformed_condition_scores_wrong_rather_than_failing_the_sample(
+    label, conds
+):
+    """The shape `sel=99` cannot reach: past the engine guard, into `Query.__eq__`.
+
+    `Query.__eq__` unpacks each condition into a 3-tuple and hashes it, so these
+    raise *there* rather than in the engine -- and upstream computes that
+    comparison outside its own `except Exception`. A chat model emits every one
+    of these; upstream's decoder emits none, which is why upstream never had to
+    care. Left uncaught they fail the whole sample, so the assertion that
+    matters is that `feedback` returns at all.
+    """
+    reply = json.dumps({"sel": 1, "agg": 0, "conds": conds})
+    _, judgement = await _judge(reply)
+    rollout = judgement["rollouts"][0]
+    assert rollout["metrics"] == {"ex": False, "lf": False}, label
+    # Scored through upstream's branch for an ungradeable prediction, which is
+    # what distinguishes this from "the model emitted nothing".
+    assert rollout["extra"]["execution_error"], label
+
+
 @pytest.mark.anyio
 async def test_a_broken_gold_fails_the_sample_rather_than_scoring_it():
     """Upstream's check.py asserts every gold executes, so this is bad data.
