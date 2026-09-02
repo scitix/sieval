@@ -185,6 +185,90 @@ async def test_unexecutable_predictions_are_counted():
     assert metrics["n_execution_errors"] == 1.0
 
 
+# --- grading failure: only a TIMEOUT is a wrong answer -----------------------
+
+
+class _Raiser:
+    """An async `run_cpu_bound` stand-in that always raises *exc*.
+
+    Counts its calls, so a test cannot pass because the patch was never reached —
+    which is what a rename of the grading call site would otherwise look like. A
+    class rather than a closure with a function attribute, which `ty` rejects.
+    """
+
+    def __init__(self, exc: type[BaseException]):
+        self._exc = exc
+        self.calls = 0
+
+    async def __call__(self, *_args, **_kwargs):
+        self.calls += 1
+        raise self._exc("grader stub")
+
+
+def _gradeable(tmp_path) -> tuple[SpiderZeroShotGenTask, dict]:
+    """A task with its paths staged, for tests that stub the grader out.
+
+    Both paths must exist — the staged-path properties check that before
+    handing either to the grader — but neither needs contents, since these
+    tests never let `grade_one` run.
+    """
+    db_dir = tmp_path / "database"
+    db_dir.mkdir()
+    tables = tmp_path / "tables.json"
+    tables.write_text("[]")
+    task = _task(db_dir=str(db_dir), tables_json_path=str(tables))
+    return task, {"db_id": "concert_singer", "query": "SELECT count(*) FROM singer"}
+
+
+@pytest.mark.anyio
+async def test_a_grader_timeout_is_a_wrong_answer(tmp_path, monkeypatch):
+    """The half that stays swallowed — a prediction the grader cannot bound.
+
+    `report` charges fails to the denominator either way, so propagating this
+    one would only trade a truthful number for a scarier-looking one. It is
+    still recorded in `error`, so `n_execution_errors` separates it from a
+    prediction that merely ran and disagreed.
+    """
+    task, raw = _gradeable(tmp_path)
+    stub = _Raiser(TimeoutError)
+    monkeypatch.setattr("sieval.tasks.spider_0shot_gen.run_cpu_bound", stub)
+    post = build_prediction_record(["SELECT count(*) FROM singer"])
+    _, judgement = await task.feedback(
+        post, TaskContext(sample_id=0, raw_sample=raw, postprocess_result=post)
+    )
+    rollout = judgement["rollouts"][0]
+    assert rollout["correct"] is False
+    assert rollout["metrics"]["execution"] is False
+    assert rollout["extra"]["error"].startswith("TimeoutError")
+    assert stub.calls > 0, "the grading call site moved; this test intercepted nothing"
+
+
+@pytest.mark.parametrize("exc", [ValueError, AttributeError, ImportError, OSError])
+@pytest.mark.anyio
+async def test_a_broken_grader_propagates_instead_of_scoring_zero(
+    exc, tmp_path, monkeypatch
+):
+    """A grader that is BROKEN rather than slow must not read as a wrong answer.
+
+    `grade_one` *relies* on this rather than merely tolerating it: it raises
+    `ValueError` on a gold it cannot parse — our bug, not a model failure — and
+    a missing database file surfaces as `OSError` from the same call. Swallowed,
+    both scored the sample 0 and left `fails` at 0, so a staging mistake or a
+    defect in the vendored parser produced a low score on a run that looked
+    clean. Propagated, the runner writes `exception::<class>` on the sample and
+    `fails` becomes the signal.
+    """
+    task, raw = _gradeable(tmp_path)
+    stub = _Raiser(exc)
+    monkeypatch.setattr("sieval.tasks.spider_0shot_gen.run_cpu_bound", stub)
+    post = build_prediction_record(["SELECT count(*) FROM singer"])
+    with pytest.raises(exc):
+        await task.feedback(
+            post, TaskContext(sample_id=0, raw_sample=raw, postprocess_result=post)
+        )
+    assert stub.calls > 0, "the grading call site moved; this test intercepted nothing"
+
+
 # --- staged-path resolution -------------------------------------------------
 
 

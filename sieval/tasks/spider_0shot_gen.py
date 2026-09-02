@@ -305,13 +305,30 @@ class SpiderZeroShotGenTask(
                     gold,
                     timeout=GRADE_TIMEOUT,
                 )
-            except Exception as exc:
-                logger.warning("Feedback failed for sample {}: {}", ctx.sample_id, exc)
+            except TimeoutError:
+                # A grade that could not be computed IN TIME stays a wrong
+                # answer -- the prediction is a shape the grader cannot bound,
+                # which is the model's problem, and `report` charges fails to
+                # the denominator either way. Every OTHER exception propagates
+                # and the sample lands in `fails` as `exception::<class>`, which
+                # `grade_one` depends on rather than merely tolerates: it
+                # *raises* on a gold it cannot parse, our bug and not a model
+                # failure, so swallowing here would record that as the model
+                # answering wrongly. SQL that will not run never reaches this
+                # path -- `grade_one` scores it `False` and names the reason in
+                # `error`, which is what `n_execution_errors` counts.
+                logger.warning(
+                    "Grading sample {} exceeded {}s and was scored wrong; both "
+                    "queries are individually bounded, so the cost is likely in "
+                    "parsing the prediction.",
+                    ctx.sample_id,
+                    GRADE_TIMEOUT,
+                )
                 graded = {
                     "exact_match": False,
                     "execution": False,
                     "hardness": None,
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "error": f"TimeoutError: grading exceeded {GRADE_TIMEOUT}s",
                 }
             rollouts.append(
                 build_rollout_judgement(
