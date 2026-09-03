@@ -3,12 +3,20 @@
 Spider (Yu et al., EMNLP 2018) is the reference cross-domain text-to-SQL set:
 1,034 dev questions over 20 databases, each paired with a gold SQL query.
 Scoring is execution-based, so the SQLite databases are part of the dataset
-rather than an optional extra — which is why this loader stages a 206 MB archive
-instead of a table of rows.
+rather than an optional extra — which is why this loader stages ~1.5 GB of
+archives instead of a table of rows. Two of them, for two different jobs:
 
-**Provenance.** Upstream distributes ``spider_data.zip`` through Google Drive
-only, which has no stable direct-download URL. This loader pulls a
-checksum-pinned mirror instead. The archive was verified against the official
+* ``spider_data.zip`` (206 MB) — the question rows, ``tables.json``, and one
+  SQLite database per ``db_id``. Everything except the headline metric reads it.
+* ``testsuite_databases.zip`` (1.27 GB) — 25 to 60 *distilled* variants of each
+  of those databases, from ``taoyds/test-suite-sql-eval``. Same schemas,
+  different rows, chosen so that a query which merely happens to agree with the
+  gold on the shipped database disagrees on one of these. This is what makes
+  test-suite accuracy the metric it is, and it is why the download is large.
+
+**Provenance.** Upstream distributes both archives through Google Drive only.
+For ``spider_data.zip``, which has no stable direct-download URL, this loader
+pulls a checksum-pinned mirror. The archive was verified against the official
 row set before pinning: ``dev.json`` carries exactly 1,034 rows over 20 distinct
 ``db_id``s, every one of those databases ships its ``.sqlite``, and row 0 is
 Spider's canonical "How many singers do we have?" /
@@ -24,6 +32,17 @@ against the sha256 above — not a swap to whichever mirror is reachable. Note
 that the widely-used ``xlangai/spider`` on the Hub is **not** a substitute: it
 publishes the question rows only, with none of the ``.sqlite`` databases
 execution grading needs.
+
+``testsuite_databases.zip`` has **no mirror at all** — searched for, and there
+is none; the Hub's several "SPIDER" datasets are unrelated sets that happen to
+share the name. So it is fetched from Drive directly, which works without
+cookies or an interstitial because the file is public and the URL carries
+``confirm=t``. That is a weaker provenance story than the first archive's and
+the checksum is what carries it: the bytes are pinned, and a Drive link that
+starts serving something else fails the download rather than quietly changing a
+published score. If the link dies, upstream's README
+(<https://github.com/taoyds/test-suite-sql-eval>) is the place to look for its
+replacement.
 
 **The ``sql`` column is dropped at load.** Upstream ships a pre-parsed query tree
 per row whose ``except``/``intersect``/``union`` slots are sometimes null and
@@ -44,6 +63,8 @@ References:
 
 * Paper: <https://arxiv.org/abs/1809.08887>
 * Harness: <https://github.com/taoyds/spider>
+* Test suites: <https://github.com/taoyds/test-suite-sql-eval>,
+  <https://arxiv.org/abs/2010.02840>
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -71,6 +92,29 @@ SPIDER_ARCHIVE_SHA256 = (
 ARCHIVE_BASENAME = "spider_data.zip"
 #: Every member of the archive lives under this single top-level directory.
 _ROOT = "spider_data"
+
+#: The distilled test suites, from ``taoyds/test-suite-sql-eval``. 1.27 GB,
+#: 3,194 SQLite databases over 28 ``db_id``s — every one of the 20 dev
+#: databases, 25 to 60 variants each.
+TEST_SUITE_URL = (
+    "https://drive.usercontent.google.com/download"
+    "?id=1mkCx2GOFIqNesD4y8TDAO1yX1QZORP5w&export=download&confirm=t"
+)
+TEST_SUITE_SHA256 = "9ec24ea8debc6bd04abfe137b5f1a739b5a8836f32c0464e4dfc94eb7f41da96"
+#: What the staged file is CALLED, which is not a choice. ``URLHandler`` names a
+#: download after the URL's last path segment, and Google Drive's is
+#: ``/download`` — every identifying part of that URL is a query parameter.
+#: Renaming it would mean a filename override in the shared downloader plus a
+#: matching change to the checksum-key rule, which is a lot of shared machinery
+#: moved for one dataset's cosmetics; pinning the odd name here is the smaller
+#: surface. The checksum key below must equal it, so the two are one constant.
+TEST_SUITE_BASENAME = "download"
+#: Where the test suites are extracted, relative to the staged directory. The
+#: archive has NO single top-level directory — it opens straight onto
+#: ``database/`` and ``__MACOSX/`` — so unlike the main archive this one is
+#: extracted into a directory we name rather than one it carries. Named to read
+#: as a sibling of ``spider_data``, which is the name its archive dictates.
+_TEST_SUITE_ROOT = "spider_test_suite"
 #: Written after a complete extraction; its presence is what makes a second
 #: load cheap. Leading dot so it cannot collide with a db_id.
 _MARKER = ".sieval-extracted"
@@ -93,9 +137,13 @@ class SpiderDatasetSample(TypedDict):
     description="Cross-domain text-to-SQL; 1,034 dev questions over 20 databases.",
     source=(
         f"url:https://huggingface.co/datasets/HAL-9001/spider-databases/resolve/"
-        f"{SPIDER_ARCHIVE_REVISION}/{ARCHIVE_BASENAME}"
+        f"{SPIDER_ARCHIVE_REVISION}/{ARCHIVE_BASENAME}",
+        f"url:{TEST_SUITE_URL}",
     ),
-    checksums={ARCHIVE_BASENAME: f"sha256:{SPIDER_ARCHIVE_SHA256}"},
+    checksums={
+        ARCHIVE_BASENAME: f"sha256:{SPIDER_ARCHIVE_SHA256}",
+        TEST_SUITE_BASENAME: f"sha256:{TEST_SUITE_SHA256}",
+    },
     categories=(Category(Level1Category.CODE, "CodeGeneration"),),
     tags=("english", "text-to-sql", "code-exec"),
     license="CC-BY-SA-4.0",
@@ -104,11 +152,13 @@ class SpiderDataset(Dataset[SpiderDatasetSample]):
     @override
     def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
         _ = kwargs
-        root = self._extract(Path(name_or_path))
+        staged = Path(name_or_path)
+        root = self._extract(staged)
         # Captured so the task can reach the databases; `copy.copy`-based clones
         # (slice/shuffle) preserve these, matching SciCodeDataset.h5_path.
         self._db_dir = str(root / "database")
         self._tables_json_path = str(root / "tables.json")
+        self._test_suite_db_dir = str(self._extract_test_suite(staged) / "database")
         return HFDatasetDict(
             {
                 "train": self._read_split(root / "train_spider.json"),
@@ -133,6 +183,17 @@ class SpiderDataset(Dataset[SpiderDatasetSample]):
     def tables_json_path(self) -> str | None:
         """Upstream's schema/foreign-key file, or ``None`` if never loaded."""
         return getattr(self, "_tables_json_path", None)
+
+    @property
+    def test_suite_db_dir(self) -> str | None:
+        """Directory of distilled test-suite databases, or ``None`` if unloaded.
+
+        Holds one subdirectory per ``db_id``, each with 25-60 ``.sqlite`` files.
+        These have the *same schemas* as ``db_dir``'s databases and different
+        rows, which is the whole point — and also why they are kept in a
+        separate tree rather than merged in.
+        """
+        return getattr(self, "_test_suite_db_dir", None)
 
     @staticmethod
     def _read_split(path: Path) -> HFDataset:
@@ -160,5 +221,37 @@ class SpiderDataset(Dataset[SpiderDatasetSample]):
             )
         with zipfile.ZipFile(archive) as handle:
             handle.extractall(root.parent)
+        (root / _MARKER).touch()
+        return root
+
+    @staticmethod
+    def _extract_test_suite(staged: Path) -> Path:
+        """Stage the distilled test suites, returning their root directory.
+
+        Separate from :meth:`_extract` rather than folded into it, because the
+        two archives are shaped differently: this one has no top-level directory
+        of its own, so the destination is named here instead of being read off
+        the archive.
+        """
+        root = (staged.parent if staged.is_file() else staged) / _TEST_SUITE_ROOT
+        if (root / _MARKER).is_file():
+            return root
+        archive = root.parent / TEST_SUITE_BASENAME
+        if not archive.is_file():
+            raise FileNotFoundError(
+                f"Spider test-suite databases not found at {str(archive)!r}. Run "
+                "'sieval dataset download spider' to stage them; they are 1.3 GB "
+                "and back the headline metric, so they are not optional."
+            )
+        with zipfile.ZipFile(archive) as handle:
+            # `__MACOSX/` is AppleDouble metadata from however upstream zipped
+            # this, ~48 entries mirroring `database/`. Skipped to keep the tree
+            # readable rather than for correctness: the grader globs
+            # `database/<db_id>/` only, so nothing under `__MACOSX/` was ever
+            # reachable from it.
+            handle.extractall(
+                root,
+                members=[n for n in handle.namelist() if not n.startswith("__MACOSX")],
+            )
         (root / _MARKER).touch()
         return root

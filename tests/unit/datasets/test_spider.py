@@ -13,8 +13,12 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.datasets.meta import get_dataset_meta
 from sieval.datasets.spider import (
+    ARCHIVE_BASENAME,
     SPIDER_ARCHIVE_REVISION,
     SPIDER_ARCHIVE_SHA256,
+    TEST_SUITE_BASENAME,
+    TEST_SUITE_SHA256,
+    TEST_SUITE_URL,
     SpiderDataset,
 )
 
@@ -43,17 +47,26 @@ def _row(db_id: str = "concert_singer", question: str = "How many singers do we 
     }
 
 
-def _make_archive(tmp_path: Path) -> Path:
-    """A miniature spider_data.zip with upstream's member layout."""
-    staged = tmp_path / "spider"
-    staged.mkdir()
-    db_file = tmp_path / "concert_singer.sqlite"
-    conn = sqlite3.connect(db_file)
+def _make_db(path: Path) -> Path:
+    conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE singer (id int, name text)")
     conn.execute("INSERT INTO singer VALUES (1, 'Joe')")
     conn.commit()
     conn.close()
-    with zipfile.ZipFile(staged / "spider_data.zip", "w") as archive:
+    return path
+
+
+def _make_archive(tmp_path: Path, with_test_suite: bool = True) -> Path:
+    """Miniatures of both staged archives, each in upstream's own layout.
+
+    They are shaped differently on purpose, which is the thing most likely to
+    break: `spider_data.zip` carries its own top-level directory and the
+    test-suite archive does not.
+    """
+    staged = tmp_path / "spider"
+    staged.mkdir()
+    db_file = _make_db(tmp_path / "concert_singer.sqlite")
+    with zipfile.ZipFile(staged / ARCHIVE_BASENAME, "w") as archive:
         archive.writestr("spider_data/dev.json", json.dumps([_row()]))
         archive.writestr(
             "spider_data/train_spider.json", json.dumps([_row(question="Train q?")])
@@ -64,16 +77,33 @@ def _make_archive(tmp_path: Path) -> Path:
         archive.write(
             db_file, "spider_data/database/concert_singer/concert_singer.sqlite"
         )
+    if with_test_suite:
+        with zipfile.ZipFile(staged / TEST_SUITE_BASENAME, "w") as archive:
+            # No top-level directory of its own -- `database/` is the root.
+            archive.write(db_file, "database/concert_singer/concert_singer.sqlite")
+            archive.write(db_file, "database/concert_singer/concert_singer_1.sqlite")
+            # AppleDouble metadata from however upstream zipped this. The real
+            # archive ships ~48 of these mirroring `database/`.
+            archive.writestr("__MACOSX/database/._concert_singer", "junk")
     return staged
 
 
-def test_source_and_checksum_are_pinned():
+def test_source_and_checksums_are_pinned():
+    """Both archives, both checksums.
+
+    The test-suite archive has no mirror and comes from Drive, so the checksum
+    is the whole provenance story: a link that starts serving something else has
+    to fail the download rather than quietly change a published score.
+    """
     meta = get_dataset_meta(SpiderDataset)
     assert meta.source == (
         "url:https://huggingface.co/datasets/HAL-9001/spider-databases/resolve/"
-        f"{SPIDER_ARCHIVE_REVISION}/spider_data.zip",
+        f"{SPIDER_ARCHIVE_REVISION}/{ARCHIVE_BASENAME}",
+        f"url:{TEST_SUITE_URL}",
     )
-    assert dict(meta.checksums)["spider_data.zip"] == f"sha256:{SPIDER_ARCHIVE_SHA256}"
+    checksums = dict(meta.checksums)
+    assert checksums[ARCHIVE_BASENAME] == f"sha256:{SPIDER_ARCHIVE_SHA256}"
+    assert checksums[TEST_SUITE_BASENAME] == f"sha256:{TEST_SUITE_SHA256}"
 
 
 def test_license_is_the_data_license():
@@ -127,14 +157,53 @@ def test_db_dir_and_tables_json_point_at_extracted_files(tmp_path):
     assert Path(tables_json_path).is_file()
 
 
-def test_extraction_is_idempotent(tmp_path):
-    """A second load must not re-extract; the marker guards a 206 MB unzip."""
+def test_the_test_suite_archive_is_extracted_beside_the_data(tmp_path):
+    """The distilled databases back the headline metric, so they must be staged.
+
+    Extracted under its own root rather than into `spider_data/`, because the
+    archive has no top-level directory to keep them apart.
+    """
+    dataset = SpiderDataset(str(_make_archive(tmp_path)))
+    test_suite_db_dir = dataset.test_suite_db_dir
+    assert test_suite_db_dir is not None
+    suite = Path(test_suite_db_dir, "concert_singer")
+    assert sorted(p.name for p in suite.iterdir()) == [
+        "concert_singer.sqlite",
+        "concert_singer_1.sqlite",
+    ]
+    # Not folded into the dataset's own tree, whose `database/` holds the one
+    # shipped copy the pre-2020 metrics read.
+    assert Path(test_suite_db_dir) != Path(str(dataset.db_dir))
+
+
+def test_apple_double_metadata_is_not_extracted(tmp_path):
+    """Cosmetic, not correctness -- the grader only globs `database/<db_id>/`.
+
+    Asserted anyway because a `__MACOSX/` tree next to the real one is the kind
+    of thing a later reader takes for a second copy of the suite.
+    """
+    dataset = SpiderDataset(str(_make_archive(tmp_path)))
+    root = Path(str(dataset.test_suite_db_dir)).parent
+    assert sorted(p.name for p in root.iterdir()) == [
+        ".sieval-extracted",
+        "database",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("marker", "label"),
+    [
+        ("spider_data/.sieval-extracted", "206 MB"),
+        ("spider_test_suite/.sieval-extracted", "1.3 GB"),
+    ],
+)
+def test_extraction_is_idempotent(tmp_path, marker, label):
+    """A second load must not re-extract; each marker guards its own unzip."""
     staged = _make_archive(tmp_path)
     SpiderDataset(str(staged))
-    marker = staged / "spider_data" / ".sieval-extracted"
-    stamp = marker.stat().st_mtime_ns
+    stamp = (staged / marker).stat().st_mtime_ns
     SpiderDataset(str(staged))
-    assert marker.stat().st_mtime_ns == stamp
+    assert (staged / marker).stat().st_mtime_ns == stamp, label
 
 
 def test_db_dir_is_none_without_load():
@@ -145,5 +214,19 @@ def test_db_dir_is_none_without_load():
 
 
 def test_missing_archive_names_the_download_command(tmp_path):
-    with pytest.raises(FileNotFoundError, match="sieval dataset download spider"):
+    # Matched on the archive-specific wording, not just the command: both
+    # archives name the same command, so the looser pattern would let this test
+    # and the one below pass on each other's error.
+    with pytest.raises(FileNotFoundError, match="Spider archive not found"):
         SpiderDataset(str(tmp_path))
+
+
+def test_missing_test_suite_archive_names_the_download_command(tmp_path):
+    """The failure a user staged before the metric moved will actually hit.
+
+    It must not read as an internal error, and it must not suggest the metric
+    can be run without the archive -- it cannot.
+    """
+    staged = _make_archive(tmp_path, with_test_suite=False)
+    with pytest.raises(FileNotFoundError, match="test-suite databases not found"):
+        SpiderDataset(str(staged))
