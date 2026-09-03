@@ -151,9 +151,8 @@ def build_prompt(question: str, header: list[str], types: list[str]) -> str:
 #: `Query.from_dict` reads exactly these.
 _REQUIRED_KEYS = frozenset({"sel", "agg", "conds"})
 
-#: One reusable decoder. `raw_decode` parses a JSON value *at* a given offset and
-#: ignores whatever follows it, which is what lets a candidate be tried without
-#: first deciding where it ends.
+#: One reusable decoder. `raw_decode` parses a JSON value *at* a given offset,
+#: ignoring whatever follows it.
 _DECODER = json.JSONDecoder()
 
 
@@ -170,14 +169,12 @@ def extract_logical_form(text: str) -> dict | None:
     since it opens later even though it closes first.
 
     ``raw_decode`` rather than brace counting, because only the parser knows a
-    brace inside a string literal is not structure: a condition value carrying
-    an unbalanced ``{`` or ``}`` would otherwise unbalance the scan and lose an
-    answer that is perfectly well formed. Values come verbatim from the question
-    (the prompt says so), so the reply's content is the model's to choose and not
-    ours to assume about. Tracking quote state in a hand-rolled scanner would
-    only move the failure: an unmatched ``"`` anywhere in the surrounding prose
-    would then swallow the answer instead. Starting *at* each brace has neither
-    problem, since nothing before the brace is read.
+    brace inside a string literal is not structure: an unbalanced ``{`` or ``}``
+    in a condition value would otherwise unbalance the scan and lose a
+    well-formed answer. Tracking quote state instead would only move the
+    failure, an unmatched ``"`` in the surrounding prose then swallowing the
+    answer; decoding *at* a brace reads nothing before it and has neither
+    problem.
 
     The prompt's own format spec cannot be matched here: it holds ``<int>``
     placeholders and does not parse as JSON. Deliberate, so a reply quoting the

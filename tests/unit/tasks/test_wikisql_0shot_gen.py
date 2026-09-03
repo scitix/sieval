@@ -239,24 +239,20 @@ def test_extractor(label, reply, expected):
     ],
 )
 def test_a_brace_inside_a_condition_value_does_not_break_extraction(label, value):
-    """Only the parser knows a brace in a string literal is not structure.
+    """A guard rather than a measurement, and deliberately so.
 
-    Counting braces loses the *unbalanced* cases: the stray one pops the scan's
-    stack, so the object's real closing brace finds it empty and a perfectly
-    well-formed answer extracts as nothing. Condition values are copied verbatim
-    from the question by the prompt's own rule, so their content is the model's
-    to choose — no gold value in either published split carries a brace today,
-    which is exactly why this needs a test rather than a measurement.
+    No gold condition value in either published split carries a brace today, so
+    nothing but a test keeps these shapes working. What would break without it
+    is argued in `extract_logical_form`.
     """
     form = {"sel": 1, "agg": 0, "conds": [[0, 0, value]]}
     assert extract_logical_form(json.dumps(form)) == form, label
 
 
 def test_an_unmatched_quote_in_prose_does_not_swallow_the_answer():
-    """The failure mode a quote-tracking brace scanner would trade up for.
+    """The failure a quote-tracking scanner would have traded up for.
 
-    Decoding *at* each brace reads nothing before it, so unbalanced quotes in
-    the model's reasoning cannot reach the answer that follows.
+    Pinned because `extract_logical_form` chose against that fix.
     """
     reply = 'He said "the third column\n{"sel": 1, "agg": 0, "conds": []}'
     assert extract_logical_form(reply) == {"sel": 1, "agg": 0, "conds": []}

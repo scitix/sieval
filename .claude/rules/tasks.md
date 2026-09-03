@@ -52,7 +52,7 @@ separate registered tasks (full rationale in `sieval/tasks/CLAUDE.md`).
     - **One number under two key names** rides along as `aliases=(...)` on the same call, never as a second call. A metric that is a **deterministic function** of another gets no interval at all.
 
     Enforced by `check_preflight.py --check check_report_declarations`, which sees only that the map exists; completeness is checked at report-write time instead. The reason for that split, and the rest of the rationale, is in `sieval/tasks/CLAUDE.md` §"Report Declarations".
-- **Spell a metric key the way the benchmark publishes it** (`wikisql_0shot_gen`'s `ex_accuracy` / `lf_accuracy` are `evaluate.py`'s own keys), rather than borrowing a sibling's word for a measurement that only looks like the same one. State a real correspondence in `reference_impl.notes`; do not encode it by renaming. A key that is genuinely the same count across tasks (`n_execution_errors`) does keep one name. Nothing enforces this — it turns on what two upstreams mean; rationale in `sieval/tasks/CLAUDE.md` §"Metric key names follow upstream, not a house word".
+- **Spell a metric key the way the benchmark publishes it** (`wikisql_0shot_gen`'s `ex_accuracy` / `lf_accuracy` are `evaluate.py`'s own keys), rather than borrowing a sibling's word for a measurement that only looks like the same one. Nothing enforces this — it turns on what two upstreams mean; the rule and what follows from it are in `sieval/tasks/CLAUDE.md` §"Metric key names follow upstream, not a house word".
 - Run `python scripts/check_preflight.py --check check_tasks` to verify naming, tags, and imports
 
 ## Code Quality

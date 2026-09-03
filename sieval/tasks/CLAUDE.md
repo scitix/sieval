@@ -191,22 +191,20 @@ construction. One spelling over both asserts an equivalence nobody measured,
 and it costs the pointer back to upstream — the more load-bearing property for
 a port, since that pointer is what a divergence is later argued against.
 
-So the family convention is *not* "a genre shares its key names". It is "each
-task publishes under the name its own upstream published", which is the rule
-that keeps two ports independently checkable. Three things follow:
+Three things follow:
 
 - **Cross-task comparability is declared, not spelled.** `score_key` names the
-  headline and `denominator_policy` says what it is over; those two are what
-  make columns comparable. Renaming a metric buys none of it.
+  headline and `denominator_policy` says what it is over; renaming a metric
+  buys none of what those two buy.
 - **A real correspondence goes in `reference_impl.notes`**, where it can carry
   the caveat it needs ("read `lf_accuracy` as the structural match, modulo
   condition order") — never encoded by collapsing two names into one.
-- **A key that is genuinely the same count keeps the same name** for that
-  reason and not for symmetry: `n_execution_errors` means the same thing in any
-  task that executes a prediction, so it is spelled the same everywhere.
+- **A key that is genuinely the same count does keep one name**:
+  `n_execution_errors` means the same thing in any task that executes a
+  prediction. Sameness, not symmetry, is what earns that.
 
 Nothing enforces this — the judgement is about what two upstreams mean, which
-no checker can read. Decide it once per benchmark, when the report is written.
+no checker can read.
 
 ## Stage-Output Protocol (opt-in)
 
