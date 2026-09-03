@@ -1,7 +1,9 @@
-"""Safety and correctness tests for the Spider 1.0 grading worker.
+"""Correctness tests for Spider 1.0's pre-2020 grading worker.
 
-Each guard is proved by deletion: the assertion must fail if the guard is
-removed, or it has tested nothing.
+Scope is the two parse-based metrics and the read-only schema substitution the
+parse depends on. The connection guards and the execution bounds they share with
+the prompt builder and the test-suite grader are tested in
+`test__spider_sqlite.py`, next to the module that owns them.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -12,12 +14,8 @@ import sqlite3
 import pytest
 
 from sieval.community.spider import get_schema
-from sieval.tasks._spider_exec import (
-    _run_bounded,
-    grade_one,
-    open_readonly,
-    read_schema_readonly,
-)
+from sieval.tasks._spider_exec import grade_one, read_schema_readonly
+from sieval.tasks._spider_sqlite import open_readonly, run_bounded
 
 
 @pytest.fixture
@@ -54,94 +52,16 @@ def tables_json(tmp_path):
     return path
 
 
-# --- guard 1: read-only -----------------------------------------------------
+# --- the deadline reaches the grader ----------------------------------------
 
 
-def test_write_is_rejected_by_the_connection(db):
-    """A model can emit DDL/DML. Read-only must stop it at the driver."""
-    conn = open_readonly(str(db))
-    with pytest.raises(sqlite3.OperationalError, match="readonly"):
-        conn.execute("DROP TABLE singer")
-    conn.close()
+def test_runaway_prediction_is_scored_wrong_with_a_reason(db, tables_json):
+    """The bound is plumbed through to a verdict, not just available.
 
-
-# --- guard 2: no ATTACH -----------------------------------------------------
-
-
-def test_attach_is_rejected(db, tmp_path):
-    """`mode=ro` alone does not stop ATTACH — that is the escape hatch."""
-    conn = open_readonly(str(db))
-    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
-        conn.execute(f"ATTACH DATABASE '{tmp_path / 'evil.db'}' AS evil")
-    conn.close()
-
-
-@pytest.mark.parametrize(
-    "statement",
-    [
-        "INSERT INTO singer VALUES (3, 'Eve')",
-        "UPDATE singer SET name = 'x'",
-        "DELETE FROM singer",
-        "CREATE TABLE evil (a int)",
-    ],
-)
-def test_every_write_vector_is_rejected(db, statement):
-    """Not just DROP — DML and DDL alike must die at the driver."""
-    conn = open_readonly(str(db))
-    with pytest.raises(sqlite3.OperationalError, match="readonly"):
-        conn.execute(statement)
-    conn.close()
-
-
-def test_reads_still_work(db):
-    """The guards must not have made the database unusable."""
-    conn = open_readonly(str(db))
-    assert conn.execute("SELECT count(*) FROM singer").fetchall() == [(2,)]
-    conn.close()
-
-
-def test_non_utf8_text_is_readable(tmp_path):
-    """Spider's `wta_1.players.last_name` holds bytes that are not valid UTF-8.
-
-    sqlite3's default text factory raises on them, which is why upstream dies on
-    two dev examples rather than scoring them. Fails without the surrogateescape
-    factory in `open_readonly`.
+    `test__spider_sqlite.py` proves the abort happens; this proves `grade_one`
+    turns it into `execution=False` plus a named `error`, which is what
+    `n_execution_errors` counts.
     """
-    path = tmp_path / "latin.sqlite"
-    conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE t (name text)")
-    # x'41FF42' is 'A', an invalid continuation byte, then 'B'.
-    conn.execute("INSERT INTO t VALUES (CAST(x'41FF42' AS TEXT))")
-    conn.commit()
-    conn.close()
-
-    reader = open_readonly(str(path))
-    try:
-        (value,) = reader.execute("SELECT name FROM t").fetchone()
-    finally:
-        reader.close()
-    # Round-trips losslessly, so two different bad byte sequences stay different.
-    assert value.encode("utf-8", "surrogateescape") == b"\x41\xff\x42"
-
-
-def test_default_bounds_do_not_bind_on_a_realistic_result():
-    """The cap must sit above real gold results, not truncate them.
-
-    Measured on the pinned dev set: largest gold is 20,662 rows, slowest is
-    0.486 s. This pins the constants so a later 'tightening' has to argue with
-    a failing test rather than silently rescoring the benchmark.
-    """
-    from sieval.tasks._spider_exec import DEFAULT_DEADLINE_S, DEFAULT_MAX_ROWS
-
-    assert DEFAULT_MAX_ROWS > 20_662
-    assert DEFAULT_DEADLINE_S > 0.486
-
-
-# --- guard 3: deadline and row cap ------------------------------------------
-
-
-def test_runaway_query_is_aborted_by_the_deadline(db, tables_json):
-    """An unbounded recursive CTE must abort inside the worker, not hang it."""
     runaway = (
         "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) "
         "SELECT count(*) FROM c"
@@ -157,25 +77,6 @@ def test_runaway_query_is_aborted_by_the_deadline(db, tables_json):
     assert out["execution"] is False
     assert out["error"] is not None
     assert "interrupted" in out["error"]
-
-
-def test_row_cap_bounds_a_large_result(db):
-    """Tested against the executor directly.
-
-    It cannot go through `grade_one`: a result big enough to trip the cap needs
-    a recursive CTE, and upstream's parser rejects those, so such a query can
-    never be a Spider gold.
-    """
-    big = (
-        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<100000) "
-        "SELECT x FROM c"
-    )
-    conn = open_readonly(str(db))
-    try:
-        with pytest.raises(RuntimeError, match="exceeded 10 rows"):
-            _run_bounded(conn, big, deadline_s=10.0, max_rows=10)
-    finally:
-        conn.close()
 
 
 # --- schema reading equivalence ---------------------------------------------
@@ -206,6 +107,7 @@ def test_identical_query_scores_both_metrics(db, tables_json):
     assert out["exact_match"] is True
     assert out["execution"] is True
     assert out["error"] is None
+    assert out["parsed"] is True
 
 
 def test_wrong_query_scores_neither(db, tables_json):
@@ -231,6 +133,52 @@ def test_unparseable_prediction_scores_zero_rather_than_raising(db, tables_json)
     )
     assert out["exact_match"] is False
     assert out["execution"] is False
+    # The gate is REPORTED, so its rate is readable. Here SQLite rejects the
+    # string too, so `error` is also set; the case where it is NOT is below,
+    # and that is the one the flag exists for.
+    assert out["parsed"] is False
+
+
+@pytest.mark.parametrize(
+    "prediction",
+    [
+        "SELECT name AS singer_name FROM singer",
+        'SELECT "name" FROM singer',
+        "SELECT name FROM (SELECT name FROM singer)",
+        "SELECT name FROM singer WHERE name IS NOT NULL",
+    ],
+)
+def test_a_correct_prediction_the_parser_rejects_scores_zero_silently(
+    db, tables_json, prediction
+):
+    """The parse gate's whole cost, in the cases that make it invisible.
+
+    Each of these runs in SQLite and returns EXACTLY the gold's rows, so both
+    pre-2020 metrics are reporting 0 for a right answer -- with `error` None,
+    because nothing failed to run. That is why `parsed` is recorded: it is the
+    only place the rate of this can come from, and without it a low execution
+    accuracy is uninterpretable. `_spider_test_suite` is the metric that scores
+    these correctly.
+
+    Ordinary SQL, not exotica: a column alias, a quoted identifier, a derived
+    table, `IS NOT NULL`. Fails if `parsed` is dropped, and fails loudly if a
+    construct here starts parsing -- in which case move it out rather than
+    weakening the assertion.
+    """
+    gold = "SELECT name FROM singer"
+    conn = open_readonly(str(db))
+    try:
+        assert run_bounded(conn, prediction, 5.0, 1000) == run_bounded(
+            conn, gold, 5.0, 1000
+        )
+    finally:
+        conn.close()
+
+    out = grade_one(str(db), str(tables_json), "concert_singer", prediction, gold)
+    assert out["parsed"] is False
+    assert out["error"] is None
+    assert out["execution"] is False
+    assert out["exact_match"] is False
 
 
 def test_empty_prediction_is_scored_not_skipped(db, tables_json):
