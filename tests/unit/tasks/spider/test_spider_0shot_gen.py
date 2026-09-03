@@ -18,7 +18,7 @@ from sieval.core.tasks import (
     build_rollout_judgement,
 )
 from sieval.datasets.spider import SpiderDataset
-from sieval.tasks.spider_0shot_gen import SpiderZeroShotGenTask, extract_sql
+from sieval.tasks.spider.spider_0shot_gen import SpiderZeroShotGenTask, extract_sql
 from tests.conftest import HandlerTransport
 
 
@@ -560,7 +560,7 @@ async def test_a_grader_timeout_is_a_wrong_answer(tmp_path, monkeypatch):
     """
     task, raw = _gradeable(tmp_path)
     stub = _Raiser(TimeoutError)
-    monkeypatch.setattr("sieval.tasks.spider_0shot_gen.run_cpu_bound", stub)
+    monkeypatch.setattr("sieval.tasks.spider.spider_0shot_gen.run_cpu_bound", stub)
     post = build_prediction_record(["SELECT count(*) FROM singer"])
     _, judgement = await task.feedback(
         post, TaskContext(sample_id=0, raw_sample=raw, postprocess_result=post)
@@ -593,7 +593,7 @@ async def test_a_broken_grader_propagates_instead_of_scoring_zero(
     """
     task, raw = _gradeable(tmp_path)
     stub = _Raiser(exc)
-    monkeypatch.setattr("sieval.tasks.spider_0shot_gen.run_cpu_bound", stub)
+    monkeypatch.setattr("sieval.tasks.spider.spider_0shot_gen.run_cpu_bound", stub)
     post = build_prediction_record(["SELECT count(*) FROM singer"])
     with pytest.raises(exc):
         await task.feedback(

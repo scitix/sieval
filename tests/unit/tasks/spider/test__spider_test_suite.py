@@ -23,12 +23,12 @@ import sqlite3
 
 import pytest
 
-from sieval.tasks._spider_test_suite import (
+from sieval.tasks.spider._spider_test_suite import (
     KEEP_DISTINCT,
     PLUG_VALUE,
     grade_one,
 )
-from sieval.tasks._spider_test_suite import (
+from sieval.tasks.spider._spider_test_suite import (
     # Aliased, not renamed at the source: pytest collects any module-level
     # `test_*` callable, so importing these under their own names would have it
     # try to run the production functions as tests and error on their arguments
@@ -36,7 +36,7 @@ from sieval.tasks._spider_test_suite import (
     # they are the test-suite metric -- so the workaround belongs here.
     test_suite_databases as suite_databases,
 )
-from sieval.tasks._spider_test_suite import (
+from sieval.tasks.spider._spider_test_suite import (
     test_suite_match as suite_match,
 )
 

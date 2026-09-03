@@ -14,8 +14,8 @@ import sqlite3
 import pytest
 
 from sieval.community.spider import get_schema
-from sieval.tasks._spider_exec import grade_one, read_schema_readonly
-from sieval.tasks._spider_sqlite import open_readonly, run_bounded
+from sieval.tasks.spider._spider_exec import grade_one, read_schema_readonly
+from sieval.tasks.spider._spider_sqlite import open_readonly, run_bounded
 
 
 @pytest.fixture

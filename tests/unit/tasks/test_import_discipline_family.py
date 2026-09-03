@@ -86,11 +86,13 @@ FORBIDDEN: dict[str, tuple[str, ...]] = {
     # evaluator's `parse` imports sqlparse. The prompt path needs neither, which
     # is why the hardened connection lives in `_spider_sqlite` -- importing it
     # from `_spider_exec` would put both back at module scope.
-    "spider_0shot_gen": (
+    # Keyed by module path under `sieval.tasks.`, so a task in a subpackage
+    # spells the subpackage too -- the manifest builds `sieval.tasks.<key>`.
+    "spider.spider_0shot_gen": (
         "sieval.community.spider",
         "sieval.community.spider_test_suite",
-        "sieval.tasks._spider_exec",
-        "sieval.tasks._spider_test_suite",
+        "sieval.tasks.spider._spider_exec",
+        "sieval.tasks.spider._spider_test_suite",
         "nltk",
         "sqlparse",
     ),

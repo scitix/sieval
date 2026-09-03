@@ -16,7 +16,7 @@ import sqlite3
 
 import pytest
 
-from sieval.tasks._spider_sqlite import (
+from sieval.tasks.spider._spider_sqlite import (
     DEFAULT_DEADLINE_S,
     DEFAULT_MAX_ROWS,
     open_readonly,
@@ -52,7 +52,7 @@ def test_importing_the_connection_needs_no_grading_dependency():
     import ast
     import inspect
 
-    import sieval.tasks._spider_sqlite as module
+    import sieval.tasks.spider._spider_sqlite as module
 
     tree = ast.parse(inspect.getsource(module))
     imported = set()

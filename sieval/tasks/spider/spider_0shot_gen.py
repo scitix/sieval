@@ -67,8 +67,8 @@ hardened reading on both paths — read-only immutable connection,
 SQLite. Per ``sieval/tasks/CLAUDE.md`` this is the one divergence that does
 **not** earn a ``_fixed`` variant: a variant exists so two readings can be
 compared, and the unsafe reading is not one we will run. Details and the measured
-bounds live in ``sieval.tasks._spider_exec``; what the test-suite path adds on
-top of them is in ``sieval.tasks._spider_test_suite``.
+bounds live in ``sieval.tasks.spider._spider_exec``; what the test-suite path adds on
+top of them is in ``sieval.tasks.spider._spider_test_suite``.
 
 Only *execution* is ours. Every comparison is upstream's own bytes — ``result_eq``
 for the headline, ``eval_exec_match``'s projection and ``eval_exact_match`` for

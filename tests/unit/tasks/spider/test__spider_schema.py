@@ -7,8 +7,8 @@ import sqlite3
 
 import pytest
 
-import sieval.tasks._spider_schema as schema_module
-from sieval.tasks._spider_schema import build_prompt
+import sieval.tasks.spider._spider_schema as schema_module
+from sieval.tasks.spider._spider_schema import build_prompt
 
 
 @pytest.fixture
