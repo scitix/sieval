@@ -143,16 +143,22 @@ evidence. This is the anchor the named-divergence measurements above could not
 supply — they show every cause we can *name* measures zero, which is not the
 same as having compared the two implementations.
 
-**Why this still ships ``experimental``.** One anchor is left, and it is the
-weaker of the two: *this task against a published number*. Spider's own
-leaderboard is almost entirely fine-tuned systems, so it does not compare to a
-0-shot chat model, and the one published figure using **this** prompt
-(Rajkumar et al.'s ``code-davinci-002``) is a retired completion model, which is
-exactly the divergence this task documents. So the remaining gap is not a
-measurement anyone has skipped; it is a comparison Spider does not currently
-offer, and the honest reading is that the harness is anchored and the score is
-not. A ``spider_0shot_base_gen`` sibling is where a completion-faithful,
-paper-comparable number belongs.
+``status="experimental"``: anchored against upstream by construction and now
+end to end, with **no published number to compare against** — and that is a
+property of Spider, not a gap in this work. Its leaderboard is almost entirely
+fine-tuned systems, so it does not compare to a 0-shot chat model, and the one
+published figure using **this** prompt (Rajkumar et al.'s
+``code-davinci-002``) is a retired completion model, which is exactly the
+divergence documented above. So there is no measurement left to take here: a
+``spider_0shot_base_gen`` sibling is where a completion-faithful,
+paper-comparable number belongs, and only that sibling could carry a
+``Target:``/``Measured:`` block. Not "unvalidated"; validated against the only
+reference that exists, with a stated limit — the reading
+``gsm1k_kshot_base_gen`` uses for the same status.
+
+This is therefore the **terminal** status for this task rather than a
+placeholder, and the two dev passes above are reported as measurements, not as
+an alignment claim.
 
 References:
 
@@ -422,12 +428,16 @@ def _ensure_punkt_tab() -> None:
             "own shipped evaluation_examples/predict.txt (322 pairs, 4 db_ids). "
             "Zero upstream crashes and zero gold failures, the latter asserted "
             "by construction since this port raises on a gold it cannot run. "
-            "STILL OWED, and the only reason this is experimental: a "
-            "published-anchor run. That one is structurally weak for Spider -- "
-            "its leaderboard is almost all fine-tuned systems, and the one "
+            "NOTHING FURTHER IS OWED, and experimental is the TERMINAL status "
+            "rather than a placeholder: there is no published number to anchor "
+            "against, which is a property of Spider and not a gap in this work. "
+            "Its leaderboard is almost all fine-tuned systems, and the one "
             "published figure using this prompt (Rajkumar's code-davinci-002) "
             "is a retired completion model, which is the divergence this task "
-            "documents. Bounds measured on both paths and no bound binds: 1,034 dev "
+            "documents -- so only a completion-faithful spider_0shot_base_gen "
+            "sibling could carry a Target:/Measured: block. Validated against "
+            "the only reference that exists, with a stated limit. "
+            "Bounds measured on both paths and no bound binds: 1,034 dev "
             "golds on the shipped databases, largest result 20,662 rows and "
             "slowest 0.486s; 40,167 gold executions across the distilled suite "
             "(38.8 databases per sample), zero gold failures, gold-vs-gold "
