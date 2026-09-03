@@ -21,6 +21,7 @@ import yaml
 from sieval.cli._filter_spec import VALUES_DIGEST_KEY, compute_values_digest
 from sieval.cli.leaderboard.session import (
     _DETERMINISTIC_SEED_CONTRACT_KEY,
+    _NONMATCH_KEYS_STRIPPED_IN_BLOCKS,
     _NONMATCH_RUNNER_KEYS,
     _STRICT_RUNNER_KEYS,
     _THROUGHPUT_RUNNER_KEYS,
@@ -6979,6 +6980,53 @@ class TestStripNoncomparableFields:
         out = _strip_noncomparable_fields(cfg)
         assert "concurrency_limit" not in out["models"]["m"]["args"]
         assert out["models"]["m"]["args"]["temperature"] == 0.0
+
+    @staticmethod
+    def _both_placements(rc: dict) -> list[dict]:
+        """Strip `rc` as a top-level default and as a per-task override.
+
+        runner_config carries the same keys in both places; the strip must
+        treat them identically.
+        """
+        top = _strip_noncomparable_fields({"runner_config": dict(rc)})
+        per_task = _strip_noncomparable_fields(
+            {"tasks": {"t": {"runner_config": dict(rc)}}}
+        )
+        return [top["runner_config"], per_task["tasks"]["t"]["runner_config"]]
+
+    def test_removes_hand_authored_nonmatch_runner_fields(self):
+        """A non-match field written out by hand must not block a resume.
+
+        `auto_resume` is the live case: an invocation that flips the YAML value
+        to request a resume would otherwise abort on the field asking for it.
+        """
+        for key, before in (
+            ("auto_resume", False),
+            ("stage_meta_hook", None),
+            ("stage_meta_hooks", []),
+        ):
+            for rc in self._both_placements({key: before, "max_iterations": 3}):
+                assert key not in rc, f"{key} must not be compared across a resume"
+                assert rc["max_iterations"] == 3, "strict fields must survive"
+
+    def test_nonmatch_bucket_is_fully_stripped(self):
+        """Every key declared stripped-in-blocks is, not just the ones we listed."""
+        cfg = {"runner_config": dict.fromkeys(_NONMATCH_KEYS_STRIPPED_IN_BLOCKS, "x")}
+        assert _strip_noncomparable_fields(cfg)["runner_config"] == {}
+
+    def test_runner_config_result_dir_stays_compared(self):
+        """`result_dir` inside a runner_config block is NOT resume-mutable.
+
+        There it selects the artifact directory, so stripping it would let a
+        run that moves its own shards through as a clean resume.
+        """
+        for rc in self._both_placements({"result_dir": "./A"}):
+            assert rc == {"result_dir": "./A"}
+
+    def test_top_level_result_dir_is_still_stripped(self):
+        """The top-level key keeps its long-standing exemption."""
+        out = _strip_noncomparable_fields({"result_dir": "./A", "models": {}})
+        assert "result_dir" not in out
 
     def test_removes_runner_config_throughput_keeps_strict(self):
         cfg = {
