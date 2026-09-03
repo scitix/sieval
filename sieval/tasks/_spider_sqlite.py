@@ -65,6 +65,25 @@ DEFAULT_DEADLINE_S = 5.0
 #: from every gold here and was already wrong. Time is bounded separately by
 #: the deadline above, which the progress handler enforces during the fetch as
 #: well as the execute, so this is a memory bound and not a second time one.
+#:
+#: **What the raise does cost, measured** (2026-09-03). Being a memory bound,
+#: the cap is also the ceiling, and raising it 5x raised that 5x. ``run_bounded``
+#: fetches ``max_rows + 1`` in one call, so the whole capped result is
+#: materialised before the length check rejects it: a three-way cross join on
+#: ``car_1`` hits the cap and moves peak RSS by ~450 MB for a single statement
+#: (~90 MB at the old cap). ``test_suite_match`` holds a gold and a prediction
+#: result at once and ``result_eq`` then builds several more copies of both, and
+#: the offload pool runs up to 8 workers, so the worst case is a multi-GB
+#: transient rather than the ~700 MB the old cap allowed.
+#:
+#: Kept anyway, because the alternative is worse: at 100,000 a real gold sits
+#: 7.5% under the cap, and on the gold side binding means *failing* a sample.
+#: The exposure is also not reachable by the data — no dev gold comes within 5x
+#: of the cap, and across both full dev passes no model prediction hit it at all
+#: (the guard that did fire on a real prediction was the deadline above, once).
+#: Should it ever need lowering, the fix is a chunked fetch that rejects at the
+#: threshold instead of after it, not a smaller number: that decouples the
+#: ceiling from the cap, which is what makes the two arguments here conflict.
 DEFAULT_MAX_ROWS = 500_000
 #: How often SQLite calls the progress handler, in VM instructions.
 _PROGRESS_INTERVAL = 1_000
