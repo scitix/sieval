@@ -154,6 +154,60 @@ def test_extract_returns_none_for_an_empty_reply():
     assert extract_sql("") is None
 
 
+@pytest.mark.parametrize(
+    "comment",
+    [
+        "-- Find all cars with more than 4 cylinders",
+        "-- Count singers with age over 20",
+        "-- Step 1: select distinct countries",
+        "/* select the youngest singer */",
+        "/* join singers with concerts */",
+    ],
+)
+def test_extract_ignores_a_keyword_inside_a_leading_comment(comment):
+    """A comment holding "with"/"select" must not become the statement start.
+
+    Both are ordinary English words, so a model that opens with a comment would
+    otherwise have the slice begin mid-prose and reach SQLite as
+    `with more than 4 cylinders SELECT ...` — one syntax error, scored a wrong
+    answer and counted against `n_execution_errors`, so it reads as the model's
+    fault rather than the extractor's. Parametrised over both comment syntaxes
+    because they are masked by separate branches.
+    """
+    extracted = extract_sql(f"```sql\n{comment}\nSELECT a FROM t\n```")
+    assert extracted is not None
+    assert extracted.lower().startswith("select a from t")
+
+
+def test_extract_keeps_a_comment_that_follows_the_statement():
+    """Masking hides comments from the SEARCH, it does not delete them.
+
+    SQLite accepts trailing commentary, and stripping it would be a second,
+    unasked-for change to what reaches the grader.
+    """
+    extracted = extract_sql("```sql\nSELECT a FROM t -- the answer\n```")
+    assert extracted == "SELECT a FROM t -- the answer"
+
+
+def test_extract_does_not_treat_a_dash_dash_inside_a_literal_as_a_comment():
+    """`'a--b'` is a value, so the rest of the line is still SQL."""
+    reply = "```sql\nSELECT a FROM t WHERE note = 'a--b' AND x = 1\n```"
+    assert extract_sql(reply) == "SELECT a FROM t WHERE note = 'a--b' AND x = 1"
+
+
+def test_extract_ignores_a_semicolon_inside_a_comment():
+    """A `;` in a comment terminates nothing, so the statement is not cut short."""
+    reply = "```sql\nSELECT a FROM t\n-- watch out; this is prose\nWHERE x = 1\n```"
+    extracted = extract_sql(reply)
+    assert extracted is not None
+    assert extracted.endswith("WHERE x = 1")
+
+
+def test_extract_returns_none_for_a_comment_only_reply():
+    """A block that is nothing but commentary holds no statement to run."""
+    assert extract_sql("```sql\n-- I need to select something, but cannot\n```") is None
+
+
 # --- report -----------------------------------------------------------------
 
 
@@ -176,7 +230,7 @@ def _final(
     hardness: str,
     error=None,
     test_suite_error=None,
-    parsed: bool = True,
+    parsed: bool | None = True,
 ) -> TaskContext:
     """One graded rollout, with all three verdicts spelled out separately.
 
@@ -388,6 +442,67 @@ async def test_the_parser_gate_is_sized_without_touching_the_score():
     assert metrics["n_parser_rejected"] == 1.0
     assert metrics["score"] == 100.0
     assert metrics["execution_accuracy"] == 50.0
+
+
+@pytest.mark.anyio
+async def test_a_grading_timeout_is_not_counted_as_a_parser_rejection():
+    """A timeout means the parser never ran, which is not a rejection.
+
+    `n_parser_rejected` is the size of the gate on the two parse-gated columns
+    — the number that explains a 43pp spread between the headline and
+    `execution_accuracy` on a real dev pass — so a counter that absorbs
+    unrelated failures stops being readable. The rollout is already counted by
+    `n_execution_errors`, which is what makes double-counting it wrong rather
+    than merely redundant.
+    """
+    finals = [
+        _final(
+            0,
+            test_suite=False,
+            execution=False,
+            exact=False,
+            hardness="easy",
+            error="TimeoutError: grading exceeded 30.0s",
+            test_suite_error="TimeoutError: grading exceeded 30.0s",
+            parsed=None,
+        ),
+    ]
+    metrics = await _task().report(finals, [])
+    assert metrics["n_parser_rejected"] == 0.0
+    assert metrics["n_execution_errors"] == 1.0
+
+
+@pytest.mark.anyio
+async def test_an_absent_parsed_flag_is_not_counted_as_a_rejection():
+    """Serialization drops a `None`, so a resumed record has no `parsed` key.
+
+    The same rollout must be counted the same way whether it was just graded or
+    hydrated from a shard — a resume that started charging timeouts to the
+    parser gate would move a published diagnostic with no code change.
+    """
+    final = TaskContext(
+        sample_id=0,
+        feedback_result=build_judgement_record(
+            "SELECT 1",
+            [
+                build_rollout_judgement(
+                    0,
+                    False,
+                    metrics={
+                        "test_suite": False,
+                        "execution": False,
+                        "exact_match": False,
+                    },
+                    # No `parsed` key at all, which is what a shard round-trip
+                    # leaves behind for the timeout branch.
+                    extra={"hardness": "easy", "error": None, "test_suite_error": None},
+                )
+            ],
+        ),
+        postprocess_result=build_prediction_record(["SELECT 1"]),
+    )
+    metrics = await _task().report([final], [])
+    assert metrics["n_parser_rejected"] == 0.0
 
 
 # --- grading failure: only a TIMEOUT is a wrong answer -----------------------

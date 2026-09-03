@@ -179,39 +179,94 @@ _FENCE = re.compile(r"```[^\s`]*[ \t]*\r?\n(.*?)```", re.DOTALL)
 _STATEMENT = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
 
 
-def _until_terminator(sql: str) -> str:
-    """Cut *sql* at its first statement-terminating semicolon.
+def _mask_comments(sql: str) -> str:
+    """Blank out *sql*'s comment bodies, preserving every offset.
 
-    A semicolon inside a string literal terminates nothing, so quoting is
+    So a match on the mask can slice the original. Comments are masked rather
+    than removed for exactly that reason: the statement keeps whatever
+    commentary the model wrote (SQLite accepts it), and only the *search* stops
+    seeing it.
+
+    A ``--`` inside a string literal opens no comment, so quoting is tracked in
+    the same left-to-right pass — ``WHERE note = 'a--b'`` holds no comment.
+    """
+    masked = list(sql)
+    quote: str | None = None
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if quote is not None:
+            if char == quote:
+                quote = None
+            index += 1
+        elif char in "'\"":
+            quote = char
+            index += 1
+        elif sql.startswith("--", index):
+            end = sql.find("\n", index)
+            end = len(sql) if end == -1 else end
+            masked[index:end] = " " * (end - index)
+            index = end
+        elif sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            # An unterminated block comment runs to the end, which is how SQLite
+            # reads it too.
+            end = len(sql) if end == -1 else end + 2
+            masked[index:end] = " " * (end - index)
+            index = end
+        else:
+            index += 1
+    return "".join(masked)
+
+
+def _terminator_index(masked: str) -> int | None:
+    """Offset of the first statement-terminating semicolon, or ``None``.
+
+    Takes the *masked* text, so a semicolon inside a comment terminates
+    nothing. A semicolon inside a string literal does not either, so quoting is
     tracked rather than the text being split on ``;`` — ``WHERE name = 'a;b'``
     is one statement. A doubled quote, SQLite's escape, falls out of the same
     toggle: it closes and reopens across the pair.
     """
     quote: str | None = None
-    for index, char in enumerate(sql):
+    for index, char in enumerate(masked):
         if quote is not None:
             if char == quote:
                 quote = None
         elif char in "'\"":
             quote = char
         elif char == ";":
-            return sql[:index]
-    return sql
+            return index
+    return None
 
 
 def _statement_from(candidate: str) -> str | None:
-    """Slice one statement out of *candidate*, or ``None`` if it holds no SQL."""
-    match = _STATEMENT.search(candidate)
+    """Slice one statement out of *candidate*, or ``None`` if it holds no SQL.
+
+    The keyword search runs over the comment-masked text. A model that opens
+    with ``-- Find all cars with more than 4 cylinders`` would otherwise have
+    the statement start at that ``with``, and the slice — comment prose and all
+    — reaches SQLite as ``with more than 4 cylinders SELECT ...``, one syntax
+    error scored as a wrong answer and counted against `n_execution_errors`.
+    ``with`` and ``select`` are ordinary English words, so a leading comment is
+    enough on its own; no model in the two dev runs opened one, which is what
+    made this reachable but unobserved.
+    """
+    masked = _mask_comments(candidate)
+    match = _STATEMENT.search(masked)
     if match is None:
         return None
-    statement = candidate[match.start() :]
+    statement, masked = candidate[match.start() :], masked[match.start() :]
     # A fence marker ends the statement. Reached only on the unfenced fallback,
     # where the reply can still carry a ``` the fence pattern did not consume;
     # leaving it in fails the query on `unrecognized token: "```"`.
-    fence = statement.find("```")
+    fence = masked.find("```")
     if fence != -1:
-        statement = statement[:fence]
-    return _until_terminator(statement).strip() or None
+        statement, masked = statement[:fence], masked[:fence]
+    end = _terminator_index(masked)
+    if end is not None:
+        statement = statement[:end]
+    return statement.strip() or None
 
 
 def extract_sql(text: str) -> str | None:
@@ -497,7 +552,15 @@ class SpiderZeroShotGenTask(
                     "exact_match": False,
                     "execution": False,
                     "hardness": None,
-                    "parsed": False,
+                    # `None`, not `False`: on this path the parser may never
+                    # have run, and `False` would charge a timeout to
+                    # `n_parser_rejected` -- the one number that makes the two
+                    # parse-gated columns readable. Measured at 30.3% (a
+                    # gpt-5.4-mini dev pass) and 57.2% (Qwen3.5-397B), it is
+                    # what explains a 43pp gap between the headline and
+                    # `execution_accuracy`, so a counter that quietly absorbs
+                    # unrelated failures is worse than one that omits them.
+                    "parsed": None,
                     "error": f"TimeoutError: grading exceeded {GRADE_TIMEOUT}s",
                     "test_suite_error": (
                         f"TimeoutError: grading exceeded {GRADE_TIMEOUT}s"
@@ -521,8 +584,11 @@ class SpiderZeroShotGenTask(
                         "test_suite_error": graded["test_suite_error"],
                         # Not a metric: the flag that says whether the two
                         # reference metrics above scored this prediction's
-                        # answer or only its syntax.
-                        "parsed": bool(graded["parsed"]),
+                        # answer or only its syntax. `None` when the parser did
+                        # not run at all, so it is passed through rather than
+                        # coerced -- `bool(None)` is exactly the misreport the
+                        # timeout branch above avoids.
+                        "parsed": graded["parsed"],
                     },
                 )
             )
@@ -546,7 +612,12 @@ class SpiderZeroShotGenTask(
                 n_exact += bool(metrics.get("exact_match"))
                 if extra.get("error") or extra.get("test_suite_error"):
                     n_execution_errors += 1
-                if not extra.get("parsed"):
+                # An explicit `False` only. A missing or `None` flag means the
+                # parser never ran (a grading timeout), which is not a
+                # rejection -- and that rollout is already counted by
+                # `n_execution_errors`, so counting it here too would put one
+                # event in two diagnostics.
+                if extra.get("parsed") is False:
                     n_parser_rejected += 1
                 bucket = by_hardness.get(extra.get("hardness") or "")
                 if bucket is not None:
