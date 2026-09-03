@@ -5,7 +5,7 @@
 groups = ["default", "dev", "drop", "hle", "ifbench", "ifeval", "iheval", "math", "multi-if", "ruler", "ruler-gen", "scicode", "spider", "t-eval", "test", "wikisql"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:c12c4f3a125a71bc88f72c825b2a2cafde35c8233d05384e3b4370d60ce073d2"
+content_hash = "sha256:2241b03fdf1e94e7765236cd7b64d655658f79b8fc44b9d72ff2dca1817ee81d"
 
 [[metadata.targets]]
 requires_python = ">=3.12,<3.15"
@@ -2930,6 +2930,17 @@ groups = ["ruler-gen"]
 files = [
     {file = "soupsieve-2.9.1-py3-none-any.whl", hash = "sha256:4f4477399246b7a0c720a88ca2454b11cd6bb9ae4c9d170140786e916776c14c"},
     {file = "soupsieve-2.9.1.tar.gz", hash = "sha256:c33e6605bbc71dd628b00c632d58ae607c22bade247e52553928f83bbb75b4ba"},
+]
+
+[[package]]
+name = "sqlparse"
+version = "0.6.0"
+requires_python = ">=3.10"
+summary = "A non-validating SQL parser."
+groups = ["spider"]
+files = [
+    {file = "sqlparse-0.6.0-py3-none-any.whl", hash = "sha256:b861c0288ce2fa56209a9a6412d2e066ac664b3873b89c26c9d8415e8e32996f"},
+    {file = "sqlparse-0.6.0.tar.gz", hash = "sha256:113c35c75365ab9cc9c7231d68c6428fb11c085fc8e9eb1ad659b7ddbf6cd2b9"},
 ]
 
 [[package]]

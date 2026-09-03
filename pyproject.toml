@@ -122,9 +122,13 @@ scicode = ["h5py>=3.11", "numpy<=2.2", "scipy>=1.16.3"]
 # grade time, never at import and never baked into an image — a module-scope
 # download races under parallel test collection.
 #
+# `sqlparse` is reached the same way: the test-suite evaluator strips DISTINCT
+# with `parse.remove_distinct`, and `parse.py` imports sqlparse at module
+# scope, so importing the vendored package at all requires it.
+#
 # `deps_group` preflight scans only tasks/ and datasets/, so it cannot see a
 # dependency reached through community/; this entry is verified by hand.
-spider = ["nltk>=3.9.2"]
+spider = ["nltk>=3.9.2", "sqlparse>=0.5.3"]
 t-eval = ["numpy<=2.2", "sentence-transformers>=5.1.2"]
 # wikisql: babel backs upstream's `parse_decimal`, which coerces a condition
 # value against a `real`-typed column in lib/dbengine.py -- load-bearing, not
