@@ -168,8 +168,22 @@ def _task(**kwargs) -> SpiderZeroShotGenTask:
 
 
 def _final(
-    sample_id: int, *, execution: bool, exact: bool, hardness: str, error=None
+    sample_id: int,
+    *,
+    test_suite: bool,
+    execution: bool,
+    exact: bool,
+    hardness: str,
+    error=None,
+    test_suite_error=None,
+    parsed: bool = True,
 ) -> TaskContext:
+    """One graded rollout, with all three verdicts spelled out separately.
+
+    `test_suite` has no default on purpose: it is the headline, so a fixture
+    that forgot it would report zero rather than fail, and every test below
+    would then agree with a report that had lost its own score.
+    """
     return TaskContext(
         sample_id=sample_id,
         feedback_result=build_judgement_record(
@@ -177,9 +191,21 @@ def _final(
             [
                 build_rollout_judgement(
                     0,
-                    execution,
-                    metrics={"execution": execution, "exact_match": exact},
-                    extra={"hardness": hardness, "error": error},
+                    # Production derives `correct` from the headline, not from
+                    # the execution column; a fixture that derived it from the
+                    # other one would hide a swap.
+                    test_suite,
+                    metrics={
+                        "test_suite": test_suite,
+                        "execution": execution,
+                        "exact_match": exact,
+                    },
+                    extra={
+                        "hardness": hardness,
+                        "error": error,
+                        "test_suite_error": test_suite_error,
+                        "parsed": parsed,
+                    },
                 )
             ],
         ),
@@ -190,7 +216,7 @@ def _final(
 @pytest.mark.anyio
 async def test_report_declares_score_key_and_denominator():
     metrics = await _task().report([], [])
-    assert metrics["score_key"] == "execution_accuracy"
+    assert metrics["score_key"] == "test_suite_accuracy"
     assert metrics["denominator_policy"] == "requested"
 
 
@@ -198,24 +224,51 @@ async def test_report_declares_score_key_and_denominator():
 async def test_empty_run_still_declares_both_fields():
     """The empty-run guard is a return path too."""
     metrics = await _task().report([], [])
-    assert metrics["execution_accuracy"] == 0.0
+    assert metrics["test_suite_accuracy"] == 0.0
     assert metrics["score"] == 0.0
 
 
 @pytest.mark.anyio
 async def test_score_is_copied_from_the_key_it_names():
     finals = [
-        _final(0, execution=True, exact=True, hardness="easy"),
-        _final(1, execution=False, exact=False, hardness="hard"),
+        _final(0, test_suite=True, execution=True, exact=True, hardness="easy"),
+        _final(1, test_suite=False, execution=False, exact=False, hardness="hard"),
     ]
     metrics = await _task().report(finals, [])
-    assert metrics["score"] == metrics["execution_accuracy"] == 50.0
+    assert metrics["score"] == metrics["test_suite_accuracy"] == 50.0
+
+
+@pytest.mark.anyio
+async def test_the_headline_is_the_test_suite_column_not_the_execution_one():
+    """The point of the metric: it must be able to *disagree* with the others.
+
+    Both reference columns are parse-gated, so on real data they read lower
+    than the headline for predictions the pre-2020 parser refuses — and one
+    reading the wrong key would still look plausible, because on a prediction
+    the parser accepts all three usually agree. Only a rollout where they
+    differ can tell, so this builds one: right by the test suite, wrong by
+    both parse-gated columns.
+    """
+    finals = [_final(0, test_suite=True, execution=False, exact=False, hardness="easy")]
+    metrics = await _task().report(finals, [])
+    assert metrics["score"] == 100.0
+    assert metrics["test_suite_accuracy"] == 100.0
+    assert metrics["execution_accuracy"] == 0.0
+    assert metrics["exact_match"] == 0.0
+    # And the reverse: agreeing on the one shipped database is exactly what the
+    # metric exists to stop counting as correct.
+    finals = [_final(0, test_suite=False, execution=True, exact=True, hardness="easy")]
+    metrics = await _task().report(finals, [])
+    assert metrics["score"] == 0.0
+    assert metrics["execution_accuracy"] == 100.0
 
 
 @pytest.mark.anyio
 async def test_exact_match_is_reported_separately_from_execution():
-    """The two metrics are co-equal and must not be conflated."""
-    finals = [_final(0, execution=True, exact=False, hardness="medium")]
+    """The reference columns are distinct from each other, not just from score."""
+    finals = [
+        _final(0, test_suite=True, execution=True, exact=False, hardness="medium")
+    ]
     metrics = await _task().report(finals, [])
     assert metrics["execution_accuracy"] == 100.0
     assert metrics["exact_match"] == 0.0
@@ -224,9 +277,9 @@ async def test_exact_match_is_reported_separately_from_execution():
 @pytest.mark.anyio
 async def test_a_pipeline_failure_counts_as_wrong():
     """DENOMINATOR_REQUESTED: fails sit in the denominator, not outside it."""
-    finals = [_final(0, execution=True, exact=True, hardness="easy")]
+    finals = [_final(0, test_suite=True, execution=True, exact=True, hardness="easy")]
     metrics = await _task().report(finals, [TaskContext(sample_id=1)])
-    assert metrics["execution_accuracy"] == 50.0
+    assert metrics["test_suite_accuracy"] == 50.0
     assert metrics["fails"] == 1.0
     assert metrics["n"] == 2.0
 
@@ -234,29 +287,107 @@ async def test_a_pipeline_failure_counts_as_wrong():
 @pytest.mark.anyio
 async def test_per_hardness_rates_carry_their_own_counts():
     finals = [
-        _final(0, execution=True, exact=True, hardness="easy"),
-        _final(1, execution=False, exact=False, hardness="easy"),
-        _final(2, execution=True, exact=True, hardness="extra"),
+        _final(0, test_suite=True, execution=True, exact=True, hardness="easy"),
+        _final(1, test_suite=False, execution=False, exact=False, hardness="easy"),
+        _final(2, test_suite=True, execution=True, exact=True, hardness="extra"),
     ]
     metrics = await _task().report(finals, [])
-    assert metrics["execution_accuracy_easy"] == 50.0
+    assert metrics["test_suite_accuracy_easy"] == 50.0
     assert metrics["n_easy"] == 2.0
-    assert metrics["execution_accuracy_extra"] == 100.0
+    assert metrics["test_suite_accuracy_extra"] == 100.0
     assert metrics["n_extra"] == 1.0
     # A bucket nothing landed in reports zero over zero, not a crash.
-    assert metrics["execution_accuracy_hard"] == 0.0
+    assert metrics["test_suite_accuracy_hard"] == 0.0
     assert metrics["n_hard"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_the_hardness_split_follows_the_headline():
+    """One split, on `score`'s own column — not on a parse-gated one.
+
+    Same trap as the headline itself, and harder to see: a breakdown keyed on
+    `execution` would still be labelled `test_suite_accuracy_*`, so it would
+    read as the headline's own bucket while reporting where the parser loses.
+    """
+    finals = [_final(0, test_suite=True, execution=False, exact=False, hardness="easy")]
+    metrics = await _task().report(finals, [])
+    assert metrics["test_suite_accuracy_easy"] == 100.0
 
 
 @pytest.mark.anyio
 async def test_unexecutable_predictions_are_counted():
     """Separates 'wrong answer' from 'no answer', which the headline cannot."""
     finals = [
-        _final(0, execution=False, exact=False, hardness="easy", error="syntax error"),
-        _final(1, execution=False, exact=False, hardness="easy"),
+        _final(
+            0,
+            test_suite=False,
+            execution=False,
+            exact=False,
+            hardness="easy",
+            error="syntax error",
+        ),
+        _final(1, test_suite=False, execution=False, exact=False, hardness="easy"),
     ]
     metrics = await _task().report(finals, [])
     assert metrics["n_execution_errors"] == 1.0
+
+
+@pytest.mark.anyio
+async def test_a_failure_on_either_path_is_counted_once():
+    """Two graders, one count — and a prediction only the new path could not run.
+
+    The metrics now come from two executions, so a prediction can fail on the
+    test-suite path while the shipped database happened to answer it. Counting
+    only `error` would report that run as having had no execution failures at
+    all.
+    """
+    finals = [
+        _final(
+            0,
+            test_suite=False,
+            execution=True,
+            exact=True,
+            hardness="easy",
+            test_suite_error="result exceeded 500000 rows",
+        ),
+        # Both paths failing is still one unexecutable prediction, not two.
+        _final(
+            1,
+            test_suite=False,
+            execution=False,
+            exact=False,
+            hardness="easy",
+            error="syntax error",
+            test_suite_error="syntax error",
+        ),
+    ]
+    metrics = await _task().report(finals, [])
+    assert metrics["n_execution_errors"] == 2.0
+
+
+@pytest.mark.anyio
+async def test_the_parser_gate_is_sized_without_touching_the_score():
+    """`n_parser_rejected` is the size of the gate on the reference columns.
+
+    It is what makes those two rates readable, so it must be published even on
+    a run where the headline is perfect — and it must not move `score`, since
+    the headline never consults the parser.
+    """
+    finals = [
+        _final(
+            0,
+            test_suite=True,
+            execution=False,
+            exact=False,
+            hardness="easy",
+            parsed=False,
+        ),
+        _final(1, test_suite=True, execution=True, exact=True, hardness="easy"),
+    ]
+    metrics = await _task().report(finals, [])
+    assert metrics["n_parser_rejected"] == 1.0
+    assert metrics["score"] == 100.0
+    assert metrics["execution_accuracy"] == 50.0
 
 
 # --- grading failure: only a TIMEOUT is a wrong answer -----------------------
@@ -282,15 +413,24 @@ class _Raiser:
 def _gradeable(tmp_path) -> tuple[SpiderZeroShotGenTask, dict]:
     """A task with its paths staged, for tests that stub the grader out.
 
-    Both paths must exist — the staged-path properties check that before
-    handing either to the grader — but neither needs contents, since these
-    tests never let `grade_one` run.
+    All three paths must exist — the staged-path properties check that before
+    handing any of them to the grader — but none needs contents, since these
+    tests never let `grade_one` run. Staging is not optional even here: a
+    missing path raises `ValueError` from `_staged`, which is *also* one of the
+    classes the propagation test parametrises, so a fixture that skipped one
+    would let that param pass without the grader ever being called.
     """
     db_dir = tmp_path / "database"
     db_dir.mkdir()
+    suite_dir = tmp_path / "test_suite" / "database"
+    suite_dir.mkdir(parents=True)
     tables = tmp_path / "tables.json"
     tables.write_text("[]")
-    task = _task(db_dir=str(db_dir), tables_json_path=str(tables))
+    task = _task(
+        db_dir=str(db_dir),
+        tables_json_path=str(tables),
+        test_suite_db_dir=str(suite_dir),
+    )
     return task, {"db_id": "concert_singer", "query": "SELECT count(*) FROM singer"}
 
 
@@ -312,8 +452,12 @@ async def test_a_grader_timeout_is_a_wrong_answer(tmp_path, monkeypatch):
     )
     rollout = judgement["rollouts"][0]
     assert rollout["correct"] is False
+    assert rollout["metrics"]["test_suite"] is False
     assert rollout["metrics"]["execution"] is False
     assert rollout["extra"]["error"].startswith("TimeoutError")
+    # Recorded on both paths: one grading call computes both, so a timeout
+    # leaves neither measured, and `n_execution_errors` reads either key.
+    assert rollout["extra"]["test_suite_error"].startswith("TimeoutError")
     assert stub.calls > 0, "the grading call site moved; this test intercepted nothing"
 
 
@@ -346,40 +490,74 @@ async def test_a_broken_grader_propagates_instead_of_scoring_zero(
 # --- staged-path resolution -------------------------------------------------
 
 
-def test_missing_db_dir_is_a_loud_stop():
-    """A run that cannot find its databases must not grade zeros silently."""
-    with pytest.raises(ValueError, match="db_dir"):
-        _ = _task().db_dir
+@pytest.mark.parametrize(
+    "attribute", ["db_dir", "tables_json_path", "test_suite_db_dir"]
+)
+def test_a_missing_staged_path_is_a_loud_stop(attribute):
+    """A run that cannot find its data must not grade zeros silently.
 
-
-@pytest.mark.anyio
-async def test_full_pipeline_scores_a_correct_answer(tmp_path):
-    """preprocess -> infer -> postprocess -> feedback -> report, end to end.
-
-    Runs the real stages against a real (tiny) SQLite database rather than
-    stubbing the grader, so a break anywhere in the wiring shows up here.
+    Three paths, three separate stops, and the headline's own archive is the
+    one that would be easiest to lose: it is a 1.3 GB download the other two do
+    not need, so a machine with the dataset staged and the suite absent is the
+    ordinary way this goes wrong. Matched on the *quoted* attribute name rather
+    than a bare substring — `db_dir` occurs inside `test_suite_db_dir`, so the
+    loose pattern passes whichever path is actually missing.
     """
-    db_dir = tmp_path / "database"
-    (db_dir / "concert_singer").mkdir(parents=True)
-    target = db_dir / "concert_singer" / "concert_singer.sqlite"
-    conn = sqlite3.connect(target)
-    conn.execute("CREATE TABLE singer (id int, name text)")
-    conn.executemany("INSERT INTO singer VALUES (?, ?)", [(1, "Joe"), (2, "Ann")])
+    with pytest.raises(ValueError, match=f"'{attribute}'"):
+        _ = getattr(_task(), attribute)
+
+
+GOLD = "SELECT count(*) FROM singer"
+
+_TABLES_JSON = (
+    '[{"db_id": "concert_singer", "table_names_original": ["singer"], '
+    '"table_names": ["singer"], '
+    '"column_names_original": [[-1, "*"], [0, "id"], [0, "name"], [0, "age"]], '
+    '"column_names": [[-1, "*"], [0, "id"], [0, "name"], [0, "age"]], '
+    '"column_types": ["text", "number", "text", "number"], '
+    '"foreign_keys": [], "primary_keys": [1]}]'
+)
+
+
+def _write_db(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE singer (id int, name text, age int)")
+    conn.executemany("INSERT INTO singer VALUES (?, ?, ?)", rows)
     conn.commit()
     conn.close()
-    tables = tmp_path / "tables.json"
-    tables.write_text(
-        '[{"db_id": "concert_singer", "table_names_original": ["singer"], '
-        '"table_names": ["singer"], '
-        '"column_names_original": [[-1, "*"], [0, "id"], [0, "name"]], '
-        '"column_names": [[-1, "*"], [0, "id"], [0, "name"]], '
-        '"column_types": ["text", "number", "text"], '
-        '"foreign_keys": [], "primary_keys": [1]}]'
+
+
+def _pipeline(tmp_path, reply: str) -> tuple[SpiderZeroShotGenTask, dict]:
+    """A task staged with real data for both graders, and its one dev row.
+
+    Miniature version of the archive's own construction: the shipped database
+    and the first distilled one hold singers who are all over 30, the second
+    holds one who is not. A prediction that filters on age therefore agrees
+    with the gold everywhere except `_1` — which is the only place the two
+    metrics can be told apart, so it is what makes an end-to-end assertion on
+    the headline mean anything.
+    """
+    db_dir = tmp_path / "database"
+    _write_db(
+        db_dir / "concert_singer" / "concert_singer.sqlite",
+        [(1, "Joe", 41), (2, "Ann", 52)],
     )
+    suite_dir = tmp_path / "test_suite" / "database"
+    _write_db(
+        suite_dir / "concert_singer" / "concert_singer.sqlite",
+        [(1, "Joe", 41), (2, "Ann", 52)],
+    )
+    _write_db(
+        suite_dir / "concert_singer" / "concert_singer_1.sqlite",
+        [(1, "Joe", 41), (2, "Ann", 22)],
+    )
+    tables = tmp_path / "tables.json"
+    tables.write_text(_TABLES_JSON)
 
     row = {
         "db_id": "concert_singer",
-        "query": "SELECT count(*) FROM singer",
+        "query": GOLD,
         "query_toks": [],
         "query_toks_no_value": [],
         "question": "How many singers do we have?",
@@ -388,37 +566,93 @@ async def test_full_pipeline_scores_a_correct_answer(tmp_path):
     dataset = SpiderDataset(
         _hf_dict=HFDatasetDict({"test": HFDataset.from_list([row])})
     )
-    model = _ScriptedChatModel(reply="```sql\nSELECT count(*) FROM singer\n```")
     task = SpiderZeroShotGenTask(
-        dataset, model, db_dir=str(db_dir), tables_json_path=str(tables)
+        dataset,
+        _ScriptedChatModel(reply=reply),
+        db_dir=str(db_dir),
+        tables_json_path=str(tables),
+        test_suite_db_dir=str(suite_dir),
     )
+    return task, row
 
+
+async def _run(task, row) -> dict:
+    """preprocess -> infer -> postprocess -> feedback -> report, no stubs."""
     ctx = TaskContext(sample_id=0, raw_sample=row)
     pre = await task.preprocess(row, ctx)
     assert "CREATE TABLE singer" in pre["prompt"][0]["content"]
-    assert pre["reference"] == "SELECT count(*) FROM singer"
-
+    assert pre["reference"] == GOLD
     inf = await task.infer(pre, ctx)
     post = await task.postprocess(inf, ctx)
-    assert post["rollouts"][0]["prediction"] == "SELECT count(*) FROM singer"
-
     finalize, judgement = await task.feedback(post, ctx)
     assert finalize is True
-    rollout = judgement["rollouts"][0]
-    assert rollout["correct"] is True
-    assert rollout["metrics"]["exact_match"] is True
-    assert rollout["extra"]["hardness"] == "easy"
-
     scored = TaskContext(
         sample_id=0,
         raw_sample=row,
         feedback_result=judgement,
         postprocess_result=post,
     )
-    metrics = await task.report([scored], [])
+    return {
+        "prediction": post["rollouts"][0].get("prediction"),
+        "rollout": judgement["rollouts"][0],
+        "metrics": await task.report([scored], []),
+    }
+
+
+@pytest.mark.anyio
+async def test_full_pipeline_scores_a_correct_answer(tmp_path):
+    """Runs the real stages against real (tiny) databases rather than stubbing
+    the grader, so a break anywhere in the wiring shows up here."""
+    task, row = _pipeline(tmp_path, reply=f"```sql\n{GOLD}\n```")
+    result = await _run(task, row)
+
+    assert result["prediction"] == GOLD
+    rollout = result["rollout"]
+    assert rollout["correct"] is True
+    assert rollout["metrics"]["test_suite"] is True
+    assert rollout["metrics"]["exact_match"] is True
+    assert rollout["extra"]["hardness"] == "easy"
+
+    metrics = result["metrics"]
+    assert metrics["score"] == 100.0
+    assert metrics["test_suite_accuracy"] == 100.0
     assert metrics["execution_accuracy"] == 100.0
     assert metrics["exact_match"] == 100.0
     assert metrics["n_easy"] == 1.0
+
+
+@pytest.mark.anyio
+async def test_full_pipeline_fails_an_answer_that_only_agrees_coincidentally(
+    tmp_path,
+):
+    """The end-to-end proof that the headline is the *new* metric.
+
+    `WHERE age > 30` is not the question asked; it returns the gold's answer on
+    the shipped database only because every singer there happens to be over 30.
+    The pre-2020 reading has one database to ask and calls that correct — so it
+    is reported, unchanged, as the reference column. The headline asks the
+    distilled ones too, finds the disagreement, and scores it wrong. If the
+    fan-out were not wired, or the report crowned the wrong column, this test
+    is the one that says so rather than agreeing with both readings at once.
+    """
+    prediction = "SELECT count(*) FROM singer WHERE age > 30"
+    task, row = _pipeline(tmp_path, reply=f"```sql\n{prediction}\n```")
+    result = await _run(task, row)
+
+    assert result["prediction"] == prediction
+    rollout = result["rollout"]
+    assert rollout["correct"] is False
+    assert rollout["metrics"]["test_suite"] is False
+    assert rollout["metrics"]["execution"] is True
+    # It ran fine on both paths; disagreeing is not an execution error.
+    assert not rollout["extra"]["error"]
+    assert not rollout["extra"]["test_suite_error"]
+
+    metrics = result["metrics"]
+    assert metrics["score"] == 0.0
+    assert metrics["test_suite_accuracy"] == 0.0
+    assert metrics["execution_accuracy"] == 100.0
+    assert metrics["n_execution_errors"] == 0.0
 
 
 def test_db_path_is_built_from_the_staged_dir(tmp_path):

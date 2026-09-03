@@ -78,6 +78,19 @@ FORBIDDEN: dict[str, tuple[str, ...]] = {
         "sieval.community.iheval",
         "sieval.community.instruction_following_eval.evaluation_lib",
     ),
+    # Both Spider graders parse SQL, and the two parsers pull the `spider`
+    # group: the vendored `process_sql` imports nltk, and the test-suite
+    # evaluator's `parse` imports sqlparse. The prompt path needs neither, which
+    # is why the hardened connection lives in `_spider_sqlite` -- importing it
+    # from `_spider_exec` would put both back at module scope.
+    "spider_0shot_gen": (
+        "sieval.community.spider",
+        "sieval.community.spider_test_suite",
+        "sieval.tasks._spider_exec",
+        "sieval.tasks._spider_test_suite",
+        "nltk",
+        "sqlparse",
+    ),
     # The embedding backend is only needed when eval_thought is enabled.
     "t_eval_before_calling_0shot_gen": ("sentence_transformers",),
     # latex2sympy2 is behind the `math` group.
