@@ -130,11 +130,10 @@ def grade_one(
         # narrow `p_sql["from"]` to a union including `list`.
         p_sql: dict = dict(EMPTY_SQL)
         # Reported, not acted on. Both metrics below are computed from `p_sql`,
-        # so a prediction that lands here scores 0 on each of them whatever
-        # SQLite would have returned for it — which makes them uninterpretable
-        # without a count of how often it happens. The flag is the only place
-        # that count can come from: `error` stays `None` on this path, because
-        # the SQL itself may well run.
+        # so a prediction landing here scores 0 on each whatever SQLite would
+        # have returned — which makes them uninterpretable without a count of how
+        # often it happens. This flag is the only place that count can come from:
+        # `error` stays `None` here, because the SQL itself may well run.
         parsed = False
     else:
         parsed = True
@@ -145,18 +144,17 @@ def grade_one(
     p_valid = build_valid_col_units(p_sql["from"]["table_units"], schema)
     p_sql = rebuild_sql_col(p_valid, rebuild_sql_val(p_sql), kmap)
 
-    # Execution BEFORE exact match, which is upstream's order in `evaluate()`
-    # and is load-bearing: `eval_exact_match` mutates both parse trees in place
-    # (it sorts and rewrites their clauses), so scoring it first would hand
-    # `_res_map` corrupted select units and silently zero the execution column.
+    # Execution BEFORE exact match, upstream's order in `evaluate()` and
+    # load-bearing: `eval_exact_match` mutates both parse trees in place, so
+    # scoring it first would hand `_res_map` corrupted select units and silently
+    # zero the execution column.
     #
-    # Within execution, gold runs FIRST, where upstream runs the prediction
-    # first and returns False without ever touching the gold. The order is
-    # visible only when BOTH are unrunnable: upstream scores that a wrong
-    # answer, this raises and the sample lands in `fails`. Deliberate, and
-    # unreachable on the pinned data — all 1,034 dev golds execute — but it is
-    # the reading that keeps a gold we cannot run our bug rather than the
-    # model's, which is the same rule the parse above follows.
+    # Within execution, gold runs FIRST, where upstream runs the prediction first
+    # and returns False without touching the gold. The order shows only when BOTH
+    # are unrunnable: upstream scores that a wrong answer, this raises and the
+    # sample lands in `fails`. Unreachable on the pinned data — all 1,034 dev
+    # golds execute — but it keeps a gold we cannot run our bug rather than the
+    # model's, the same rule the parse above follows.
     execution = False
     conn = open_readonly(db_path)
     try:

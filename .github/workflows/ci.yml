@@ -23,11 +23,10 @@ env:
   # is `tests/unit/tasks/conftest.py`'s job, since the race is between test
   # imports and fires under any `-n`, not only here.
   # `spider` is here on the same terms: one pure-Python wheel (sqlparse) on top
-  # of that same nltk, and what it buys is the only route by which Spider's
-  # headline metric is tested at all. nltk alone is not enough -- the pre-2020
-  # grader reaches only nltk, so before sqlparse arrived the test-suite metric
-  # and the hardened read-only execution under it were both silently uncollected
-  # here while passing locally.
+  # of that same nltk, and it is the only route by which Spider's headline metric
+  # is tested at all. nltk alone is not enough -- the pre-2020 grader reaches
+  # only nltk, so without sqlparse the test-suite metric and the hardened
+  # execution under it are silently uncollected here while passing locally.
   INSTALL_GROUPS: >-
     -G drop -G ifbench -G ifeval -G iheval -G math -G scicode -G spider -G test
     -G dev

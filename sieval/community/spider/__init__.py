@@ -8,6 +8,12 @@ byte-for-byte except ``evaluation.py:29``, whose flat ``from process_sql import
 in ``evaluate()`` as the parse to score when a prediction will not parse. Lifted
 here so the caller reuses upstream's fallback instead of re-typing it.
 
+``eval_exec_match`` is exported for the anchor test alone
+(``tests/unit/tasks/spider/test__spider_exec.py``), which pins the hardened
+executor's verdicts against upstream's. It opens a read-write
+``sqlite3.connect`` and runs model SQL behind a bare ``except:``, so it must
+never be reached from a run; nothing outside that test imports it.
+
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 

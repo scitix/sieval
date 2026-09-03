@@ -19,10 +19,12 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import json
+import os
 import sqlite3
 
 import pytest
 
+from sieval.community.spider_test_suite import eval_exec_match
 from sieval.tasks.spider._spider_test_suite import (
     KEEP_DISTINCT,
     PLUG_VALUE,
@@ -352,3 +354,38 @@ def test_the_two_error_keys_are_independent(shipped, tables_json, suite, tmp_pat
     assert out["error"] is None
     assert out["test_suite_error"] is not None
     assert "concert_singer_2.sqlite" in out["test_suite_error"]
+
+
+# --- anchored against upstream ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "pred",
+    [
+        "SELECT name FROM singer WHERE age > 30",  # equivalent to the gold
+        "SELECT name FROM singer",  # agrees on v0 only
+        "SELECT s.name AS singer_name FROM singer s WHERE s.age > 30",  # aliased
+        "SELECT DISTINCT name FROM singer WHERE age > 30",  # DISTINCT is stripped
+        'SELECT "name" FROM "singer" WHERE age > 30',  # quoted identifiers
+        "SELECT name FROM singer WHERE age < 30",  # a different answer
+        "SELECT nope FROM singer",  # will not run at all
+    ],
+)
+def test_verdict_matches_upstream(suite, pred):
+    """The headline's whole claim: hardened execution, upstream's comparison.
+
+    Upstream is called with its own module globals, over the same directory of
+    databases and at the same two flags, so an agreement here is between two
+    implementations rather than between ours and a restatement of ours. Its
+    `eval_exec_match` globs the directory of the database it is *handed*, which
+    is why it takes the named `.sqlite` where ours takes the root.
+
+    Three of these are the cases the metric exists for: the aliased and quoted
+    predictions are ones the pre-2020 parser rejects outright, and the bare
+    select agrees with the gold on the first database and not the second.
+    """
+    gold = "SELECT name FROM singer WHERE age > 30"
+    named = os.path.join(suite, DB_ID, "concert_singer.sqlite")
+    ours, _ = suite_match(suite, DB_ID, pred, gold)
+    theirs = bool(eval_exec_match(named, pred, gold, PLUG_VALUE, KEEP_DISTINCT, False))
+    assert ours is theirs

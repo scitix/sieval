@@ -13,7 +13,17 @@ import sqlite3
 
 import pytest
 
-from sieval.community.spider import get_schema
+from sieval.community.spider import (
+    EMPTY_SQL,
+    Schema,
+    build_foreign_key_map_from_json,
+    build_valid_col_units,
+    eval_exec_match,
+    get_schema,
+    get_sql,
+    rebuild_sql_col,
+    rebuild_sql_val,
+)
 from sieval.tasks.spider._spider_exec import grade_one, read_schema_readonly
 from sieval.tasks.spider._spider_sqlite import open_readonly, run_bounded
 
@@ -206,3 +216,58 @@ def test_broken_gold_raises_rather_than_scoring_zero(db, tables_json):
         grade_one(
             str(db), str(tables_json), "concert_singer", "SELECT 1", "!!! not sql !!!"
         )
+
+
+# --- anchored against upstream ----------------------------------------------
+#
+# The hardened executor's whole claim is that it changes HOW a query runs and
+# never WHAT the comparison concludes. Naming each guard and arguing it is
+# verdict-preserving is not the same as having run both, so this pins ours
+# against upstream's own `eval_exec_match` -- called with its own module
+# globals, so `DISABLE_VALUE` and `res_map` are upstream's rather than a
+# reimplementation that could agree with us for the wrong reason.
+
+
+def _upstream_execution(db_path, db_id, tables_json_path, pred_sql, gold_sql):
+    """Upstream's `evaluate()` sequence, up to its execution verdict.
+
+    Fresh parses each call: `eval_exact_match` rewrites both trees in place, so
+    a shared parse would hand the second caller corrupted select units.
+    """
+    schema = Schema(get_schema(str(db_path)))
+    gold = get_sql(schema, gold_sql)
+    try:
+        pred = get_sql(schema, pred_sql)
+    except Exception:
+        pred = dict(EMPTY_SQL)
+    kmap = build_foreign_key_map_from_json(str(tables_json_path))[db_id]
+    gold = rebuild_sql_col(
+        build_valid_col_units(gold["from"]["table_units"], schema),
+        rebuild_sql_val(gold),
+        kmap,
+    )
+    pred = rebuild_sql_col(
+        build_valid_col_units(pred["from"]["table_units"], schema),
+        rebuild_sql_val(pred),
+        kmap,
+    )
+    return bool(eval_exec_match(str(db_path), pred_sql, gold_sql, pred, gold))
+
+
+@pytest.mark.parametrize(
+    "pred",
+    [
+        "SELECT count(*) FROM singer",  # identical to the gold
+        "SELECT COUNT(*) FROM singer",  # same query, different case
+        "SELECT count(*) FROM singer WHERE id > 0",  # same answer, other route
+        "SELECT count(*) FROM singer WHERE id > 1",  # a different answer
+        "SELECT name FROM singer",  # a different projection
+        "SELECT nope FROM singer",  # will not run at all
+        "SELECT c FROM singer s",  # runs nowhere; parser rejects it too
+    ],
+)
+def test_execution_verdict_matches_upstream(db, tables_json, pred):
+    gold = "SELECT count(*) FROM singer"
+    ours = grade_one(str(db), str(tables_json), "concert_singer", pred, gold)
+    theirs = _upstream_execution(db, "concert_singer", tables_json, pred, gold)
+    assert ours["execution"] is theirs

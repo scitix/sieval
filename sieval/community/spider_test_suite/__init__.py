@@ -8,8 +8,7 @@ This is upstream's official Spider metric since October 2020, and it replaces
 the column-keyed comparison rather than extending it: the fork deletes
 ``eval_exec_match`` and ``res_map`` from ``evaluation.py`` and rebuilds the
 comparison here, on raw result sets. That is why the two vendored trees coexist
--- ``community/spider`` still supplies exact set match and the hardness buckets,
-which this fork leaves in place.
+-- ``community/spider`` still supplies exact set match and the hardness buckets.
 
 The names re-exported below are the whole scoring decision: ``result_eq`` and
 its three text-normalisation helpers. Keeping them importable means the verdict
@@ -23,10 +22,13 @@ latter is in the scoring path, so it takes the bare name. ``exec_eval.TIMEOUT``
 and ``EXEC_TMP_DIR`` belong to upstream's own subprocess runner, which we do not
 call.
 
-``eval_exec_match`` is exported for the anchor test alone. It is upstream's
-whole loop -- unbounded ``sqlite3.connect`` on every ``.sqlite`` beside the
-named database, with an ``assert`` on the gold -- so it pins our port's verdicts
-against upstream's, but it is not what grades a run.
+``eval_exec_match`` is exported for the anchor test alone
+(``tests/unit/tasks/spider/test__spider_test_suite.py``), which pins our port's
+verdicts against upstream's. It is upstream's whole loop -- unbounded
+``sqlite3.connect`` on every ``.sqlite`` beside the named database, with an
+``assert`` on the gold -- so it must never be reached from a run: it is the
+unbounded reading this task exists to avoid, and nothing outside that test
+imports it.
 
 Five of upstream's regex literals are unescaped (``"\s"``, ``"\d"``, ``"\."``),
 which Python warns about at compile time. Editing them would buy silence with

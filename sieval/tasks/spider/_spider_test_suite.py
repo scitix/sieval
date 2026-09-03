@@ -1,34 +1,30 @@
 """Spider's post-2020 official metric: test-suite execution accuracy.
 
-Upstream replaced execution accuracy in October 2020 (``taoyds/test-suite-sql-eval``)
-because the pre-2020 metric it is built on cannot be trusted in either direction.
-Both of its failures are structural, not incidental:
+Upstream replaced execution accuracy in October 2020
+(``taoyds/test-suite-sql-eval``) because the pre-2020 metric it is built on fails
+in both directions, structurally rather than incidentally:
 
 * **It scores through a parser.** ``eval_exec_match`` keys each result column by
   the *parsed* select unit, so a prediction the parser rejects is compared as an
-  empty projection and scores 0 no matter what SQLite returned. The parse is a
-  hand-written tokeniser over Spider's own gold dialect; on the pinned dev data
-  it accepts 100% of golds and 30-59% of model predictions, so most of what a
-  chat model writes is scored on its syntax rather than its answer.
+  empty projection and scores 0 no matter what SQLite returned. That parser is a
+  hand-written tokeniser over Spider's own gold dialect, and on the pinned dev
+  data it accepts 100% of golds and 30-59% of model predictions.
 * **One database cannot separate the queries.** A prediction that happens to
   agree with the gold on the shipped rows is indistinguishable from one that is
   right, so the metric over-credits.
 
-This module implements the replacement. Two changes, both upstream's:
+This module implements the replacement. Two changes, both upstream's: **raw
+result sets** compared by ``result_eq`` under bag semantics, searching column
+permutations, with row order significant only when the gold has an ``ORDER BY``
+and nothing parsed at all; and **a distilled test suite** — every query runs
+against ~25-660 databases generated to distinguish neighbouring queries, and the
+prediction must agree with the gold on *all* of them, which is what turns "agrees
+here" into "equivalent".
 
-* **Raw result sets, no parse.** ``result_eq`` compares denotations directly,
-  searching column permutations under bag semantics, with row order compared only
-  when the gold has an ``ORDER BY``. Nothing is parsed, so the parse gate is gone.
-* **A distilled test suite.** Every query runs against ~25-660 databases
-  generated to distinguish neighbouring queries, and the prediction must agree
-  with the gold on *all* of them. That is what turns "agrees here" into
-  "equivalent".
-
-The comparison itself is upstream's own bytes -- ``result_eq``, ``postprocess``,
-``remove_distinct`` and ``replace_cur_year`` are imported from
-``sieval.community.spider_test_suite``, not reimplemented. What this module
-supplies is the part that has to differ: **execution**, through the same
-``_spider_sqlite`` guards and the same bounds the pre-2020 path runs under, so
+The comparison is upstream's own bytes -- ``result_eq``, ``postprocess``,
+``remove_distinct`` and ``replace_cur_year`` are imported, not reimplemented.
+What this module supplies is the part that has to differ: **execution**, through
+the same ``_spider_sqlite`` guards and bounds the pre-2020 path runs under, so
 the deadline and the row cap have one implementation rather than two that drift.
 Upstream opens an unbounded read-write ``sqlite3.connect`` per query; here every
 one of the ~39 databases per sample is opened ``mode=ro&immutable=1`` with
@@ -36,10 +32,9 @@ one of the ~39 databases per sample is opened ``mode=ro&immutable=1`` with
 
 Upstream's two flags are pinned to their CLI defaults, which is what its
 published numbers use: ``plug_value=False`` (a predicted literal is the model's
-responsibility, not substituted from the gold) and ``keep_distinct=False`` (so
-``DISTINCT`` is stripped from both sides before comparison). They are pinned
-rather than exposed because a run configured either way would not be comparable
-to a published Spider score, and there is no second reading worth offering.
+responsibility) and ``keep_distinct=False`` (``DISTINCT`` stripped from both
+sides). Pinned rather than exposed, because a run configured either way is not
+comparable to a published Spider score.
 
 **The unseeded RNG in upstream's ``get_constraint_permutation`` cannot move a
 verdict.** It samples 20 random rows to shrink the column-permutation search
@@ -47,14 +42,10 @@ space, and every permutation it discards is discarded on a *sound* necessary
 condition: a value present in one result column and absent from the other rules
 that pairing out for any sample. So the true permutation, if one exists, is never
 discarded, and if none exists the search returns ``False`` whatever it sampled.
-Different draws change how long the search runs, never what it concludes. That is
-why upstream's bytes are left unseeded rather than patched for reproducibility:
-seeding would buy a divergence from the published metric in exchange for a
-guarantee already held. The argument is above; the measurement behind it is in
-``tests/unit/community/test_spider_test_suite.py``, which pins all three parts --
-that the sampling path is reached at all, that the draw does change the search
-space, and that neither the verdict nor the surviving true permutation moves with
-it.
+Different draws change how long the search runs, never what it concludes — which
+is why upstream's bytes are left unseeded rather than patched for
+reproducibility. All three parts of that argument are pinned in
+``tests/unit/community/test_spider_test_suite.py``.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -94,10 +85,9 @@ def test_suite_databases(test_suite_db_dir: str, db_id: str) -> list[str]:
 
     The sort is ours. Upstream's directory order is filesystem-dependent, and
     because the loop below stops at the first database the prediction fails on,
-    that order decides *which* failure is reported and whether a bad gold is
-    reached at all. It cannot change a verdict -- the verdict is an AND over the
-    whole set, and the early exit only skips work whose outcome is already fixed
-    -- so sorting buys a reproducible diagnostic for free.
+    that order decides *which* failure is reported. It cannot change a verdict --
+    the verdict is an AND over the whole set -- so sorting buys a reproducible
+    diagnostic for free.
     """
     directory = os.path.join(test_suite_db_dir, db_id)
     return sorted(
@@ -123,25 +113,20 @@ def test_suite_match(
     from the *gold*, then require agreement on every database, stopping at the
     first disagreement.
 
-    A gold that will not run **raises**, where upstream ``assert``s. Same
-    posture as the pre-2020 path and for the same reason: a gold we cannot
-    execute is our bug -- a missing database, a stale archive, a bound of ours
-    that binds -- and scoring the sample would report the model wrong for it.
-    Upstream reaches its assert only on databases it visits before the
-    prediction fails; this keeps that order, so a bad gold behind an early
-    prediction failure goes unreported here exactly as it does upstream.
+    A gold that will not run **raises**, where upstream ``assert``s. Same posture
+    as the pre-2020 path: a gold we cannot execute is our bug -- a missing
+    database, a stale archive, a bound of ours that binds -- and scoring the
+    sample would report the model wrong for it. Upstream reaches its assert only
+    on databases it visits before the prediction fails; this keeps that order.
 
-    A **blank** prediction is decided here rather than executed, because there is
-    no upstream behaviour to preserve: upstream reads predictions from a file in
-    which a blank line is a *session boundary*, so an empty prediction cannot be
-    expressed in its input format at all, and ``remove_distinct`` -- the first
-    thing it would reach -- raises ``IndexError`` on the empty parse. Both of the
-    readings that are available are wrong. Passing it through would score it
-    against ``[]``, which is what SQLite returns for empty SQL, so an
-    unextracted answer would come out **correct** against any gold that returns
-    no rows; letting the ``IndexError`` propagate would fail the sample rather
-    than score it. So it is `False` with a reason, which is what the pre-2020
-    path already does with the same input via its empty parse.
+    A **blank** prediction is decided here rather than executed, the one place
+    with no upstream behaviour to preserve: upstream reads predictions from a
+    file in which a blank line is a *session boundary*, so it cannot receive one.
+    Both available readings are wrong -- passing it through would score it
+    against ``[]``, so an unextracted answer would come out **correct** against
+    any gold returning no rows, and letting ``remove_distinct``'s ``IndexError``
+    propagate would fail the sample rather than score it. So it is ``False`` with
+    a reason, which is what the pre-2020 path already does via its empty parse.
     """
     if not pred_sql.strip():
         return False, "blank prediction"

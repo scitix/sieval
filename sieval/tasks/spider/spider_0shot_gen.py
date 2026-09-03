@@ -1,37 +1,30 @@
-"""Spider 1.0 — 0-shot generative text-to-SQL, execution- and match-scored.
+"""Spider 1.0 — 0-shot generative text-to-SQL, execution-graded.
 
 Spider (Yu et al., EMNLP 2018) is the reference cross-domain text-to-SQL
 benchmark. This task evaluates its **dev** split — 1,034 questions over 20
 databases, the split the literature reports, because the real test set was held
 out for years. Three metrics, all upstream's, and the headline is the one
-upstream itself moved to:
+upstream itself moved to in October 2020:
 
-* **Test-suite accuracy** (headline) — upstream's official metric since October
-  2020 (``taoyds/test-suite-sql-eval``). The prediction and the gold are run
-  against ~39 *distilled* databases per question, generated to distinguish
-  neighbouring queries, and the prediction must return the same rows on **every**
-  one of them. Results are compared as raw result sets under bag semantics, with
-  no parsing involved.
+* **Test-suite accuracy** (headline) — prediction and gold are run against ~39
+  *distilled* databases per question, generated to distinguish neighbouring
+  queries, and the prediction must return the same rows on **every** one. Raw
+  result sets under bag semantics; nothing is parsed.
 * **Execution accuracy** — the pre-2020 metric, on the single shipped database,
-  compared through ``eval_exec_match``'s column-keyed projection.
+  through ``eval_exec_match``'s column-keyed projection.
 * **Exact set match** — upstream's clause-by-clause set comparison, at its
   ``DISABLE_VALUE = True`` default, so literal values are not compared.
 
 The last two are reference columns, reported because papers still quote them.
-Neither is the number to rank on, and the reason is not merely that upstream
-deprecated them — **both are scored through a parser**, and it rejects most of
-what a chat model writes. The parser is a hand-written tokeniser over Spider's
-own gold dialect; a prediction it rejects is compared as an *empty* projection
-and scores 0 on both columns no matter what SQLite returned for it. On the
-pinned dev data it accepts 100% of the golds and 30–59% of real model
-predictions, depending on the model. So the gap between the headline and those
-two columns is mostly dialect, not correctness, and ``n_parser_rejected`` is
-published beside them to make the size of that gate visible rather than leave
-two rates to be read as if they measured answers. ``score`` is deliberately not
-one of them.
+**Both are scored through a parser** — a hand-written tokeniser over Spider's own
+gold dialect — and a prediction it rejects is compared as an *empty* projection,
+scoring 0 whatever SQLite returned for it. On the pinned dev data it accepts 100%
+of golds and 30–59% of model predictions, so the gap between those two columns
+and the headline is mostly dialect, not correctness. ``n_parser_rejected`` is
+published beside them to make the size of that gate visible; ``score`` is
+deliberately not one of them.
 
-*Measured over two full dev passes* (2026-09-03), which is where that band and
-this warning come from:
+*Measured over two full dev passes* (2026-09-03):
 
 ===================  ==================  =========  ==========  =================
 model                test_suite (score)  execution  exact_set   n_parser_rejected
@@ -40,12 +33,10 @@ gpt-5.4-mini         66.05               24.47      21.76       724 / 1,034
 Qwen3.5-397B-A17B    78.05               53.87      51.74       419 / 1,034
 ===================  ==================  =========  ==========  =================
 
-The reference columns do not merely run low, they **rank differently**: they put
-Qwen ahead by 29.4 pp where the headline puts it ahead by 12.0 pp, because the
-weaker model is also the one whose dialect the parser likes less (70% rejected
-against 41%). A leaderboard built on either column would be reporting
-conformance about as much as correctness, which is the whole reason ``score``
-is the headline and these two are published beside their gate.
+They do not merely run low, they **rank differently**: they put Qwen ahead by
+29.4 pp where the headline puts it ahead by 12.0 pp, because the weaker model is
+also the one whose dialect the parser likes less (70% rejected against 41%). A
+leaderboard built on either would report conformance as much as correctness.
 
 **Prompt: Rajkumar et al. 2022**, the "Create Table + Select 3" format from
 *Evaluating the Text-to-SQL Capabilities of Large Language Models*
@@ -54,111 +45,80 @@ then the question. Spider predates LLM prompting and has no canonical prompt of
 its own; this is the most-cited LLM-era convention, which is what makes the
 number comparable to published work. **One divergence**: upstream's prompt ends
 in a bare ``SELECT`` for a completion model, and a chat turn cannot end
-mid-token, so the prompt asks for a fenced ``sql`` block instead. That is the
-one reason a chat-mode score is not bit-comparable to the paper's Codex figures;
-a completion-faithful ``spider_0shot_base_gen`` sibling is where those belong.
+mid-token, so the prompt asks for a fenced ``sql`` block instead — the one reason
+a chat-mode score is not bit-comparable to the paper's Codex figures. A
+completion-faithful ``spider_0shot_base_gen`` sibling is where those belong.
 
-**Execution safety.** Both of upstream's evaluators open a *read-write*
-``sqlite3.connect`` and run model-generated SQL with no timeout behind a bare
-``except:``. Grading is synchronous on one shared event loop, so an unbounded
-query stalls the session rather than one sample. This task therefore carries the
-hardened reading on both paths — read-only immutable connection,
-``ATTACH``/``DETACH`` denied, and a progress-handler deadline that aborts inside
-SQLite. Per ``sieval/tasks/CLAUDE.md`` this is the one divergence that does
-**not** earn a ``_fixed`` variant: a variant exists so two readings can be
-compared, and the unsafe reading is not one we will run. Details and the measured
-bounds live in ``sieval.tasks.spider._spider_exec``; what the test-suite path adds on
-top of them is in ``sieval.tasks.spider._spider_test_suite``.
+**Execution safety.** Both upstreams open a *read-write* ``sqlite3.connect`` and
+run model SQL with no timeout behind a bare ``except:``. Grading is synchronous
+on one shared event loop, so an unbounded query stalls the session rather than
+one sample. This task therefore carries the hardened reading on both paths —
+read-only immutable connection, ``ATTACH``/``DETACH`` denied, a progress-handler
+deadline and a row cap. Per ``sieval/tasks/CLAUDE.md`` this is the one divergence
+that does **not** earn a ``_fixed`` variant: a variant exists so two readings can
+be compared, and the unsafe reading is not one we will run. The bounds live in
+``_spider_sqlite``; what the test-suite path adds is in ``_spider_test_suite``.
 
-Only *execution* is ours. Every comparison is upstream's own bytes — ``result_eq``
-for the headline, ``eval_exec_match``'s projection and ``eval_exact_match`` for
-the reference columns — and upstream is preserved everywhere safety does not
-object, including where it is wrong: an unparseable prediction is still scored
-against upstream's empty parse rather than skipped, and exact match runs *after*
-execution because ``eval_exact_match`` mutates the parse trees in place.
+Only *execution* is ours. Every comparison is upstream's own bytes, and upstream
+is preserved everywhere safety does not object, including where it is wrong: an
+unparseable prediction is still scored against upstream's empty parse, and exact
+match runs *after* execution because ``eval_exact_match`` mutates the parse trees
+in place.
 
-**Safety delta, measured.** All three obligations the hardening owes are
+**What the hardening costs, measured.** All three obligations it owes are
 discharged on both paths, none of them needing a model.
 
-*No bound binds* (test-suite path, 2026-09-03). All 20 dev databases are present
-in the distilled archive, 25–60 variants each, 38.8 per sample and 40,167 gold
-executions for a full pass. Every one of them succeeds — **zero gold failures** —
-and gold-vs-gold scores 1,034/1,034. The largest gold result is 92,450 rows and
-the slowest 0.359 s, against a 500,000-row cap and a 5 s deadline; only four dev
-golds exceed 10,000 rows at all. The cap was *raised* from 100,000 for this
-measurement, because 92,450 clears that by 7.5% and a bound that close is not
-evidence of anything — see ``DEFAULT_MAX_ROWS`` for why the change cannot move a
-verdict. A whole gold pass takes 20 s, and the worst single sample 1.08 s, so the
-38.8x execution fan-out costs wall clock and no accuracy.
+*No bound binds.* All 1,034 dev golds run on the shipped databases (largest
+20,662 rows, slowest 0.486 s), and all 40,167 gold executions across the
+distilled suite succeed — 38.8 databases per sample, **zero gold failures**,
+largest 92,450 rows, slowest 0.359 s — against a 5 s deadline and a 500,000-row
+cap (raised from 100,000 because a real gold sat 7.5% under it; see
+``DEFAULT_MAX_ROWS``). Gold-vs-gold scores 1,034/1,034 on every metric, and its
+hardness split (248 easy / 446 medium / 174 hard / 166 extra) reproduces Spider's
+published dev distribution.
 
-*No bound binds* (pre-2020 path, 2026-08-22). Over all 1,034 dev golds the
-largest result is 20,662 rows and the slowest query 0.486 s. A gold-vs-gold pass
-scores 1,034/1,034 on both metrics with zero errors, and its hardness split
-(248 easy / 446 medium / 174 hard / 166 extra) reproduces Spider's published dev
-distribution.
+*Safety, not repair* (pre-2020 path, 2026-08-22). Against upstream's own
+``eval_exec_match`` over 1,033 comparable gold pairs the hardened executor agrees
+1,032 times, differs once, and survives one outright upstream crash. All three
+are ``wta_1`` and trace to the UTF-8 text factory: **the read-only connection,
+the ATTACH denial, the deadline and the row cap produced zero verdict
+differences.** Worst case 2 of 1,034 samples, 0.19 pp.
 
-*Quantified score impact: 99.903% verdict parity* (2026-08-22). Over 1,033
-comparable pairs — each dev gold graded against a sibling row's gold from the
-same database, so the mix is realistic and executable without an API — the
-hardened executor and upstream's own ``eval_exec_match`` (called with its own
-module globals, not a reimplementation) agree 1,032 times and differ once.
-Upstream additionally crashed outright on one further pair.
-
-*Safety, not repair.* Both of those two cases are ``wta_1`` and both trace to the
-same cause, the UTF-8 text factory: upstream's decode error surfaces as ``False``
-when it hits the prediction (caught by its bare ``except:``) and as a crash when
-it hits the gold. **The read-only connection, the ATTACH denial, the deadline and
-the row cap produced zero verdict differences.** Worst-case headline impact is
-2 of 1,034 samples, 0.19 pp, and only on models that get those two questions
-right.
-
-*The headline path does not inherit that divergence.* It runs on the same
-connection, but its upstream is the other repo, and that one **does** set a text
-factory — ``b.decode(errors="ignore")`` — so there is no crash to diverge from,
-only a lossier decode. Lossier is the direction that can move a verdict: dropping
-bytes can fold two distinct stored values onto one string and make result sets
-compare equal that ours separates. *Measured, 2026-09-03: zero effect on the
-pinned data.* Across all 715 databases the graded dev set reaches, exactly two
-values are not valid UTF-8 — one ``first_name`` and one ``last_name`` in
-``wta_1.players`` — and ``ignore`` is injective over every distinct value present
-in those two columns (0 collisions in 41,324), so the two factories induce the
-same equality relation. Details in ``_spider_sqlite.open_readonly``.
-
-So on the headline path every *known* cause of divergence now measures zero, each
-by its own measurement rather than by inheritance from the pre-2020 one.
+*The headline path does not inherit that* (2026-09-03). Its upstream sets a lossy
+``b.decode(errors="ignore")``, and lossy is the direction that can move a
+verdict. Measured: across all 715 databases the dev set reaches, exactly two
+values are not valid UTF-8, and ``ignore`` is injective over every distinct value
+in their two columns (0 collisions in 41,324), so both factories induce the same
+equality relation. Details in ``_spider_sqlite.open_readonly``.
 
 Target: published Spider dev test-suite accuracy for the model under test, and
 the two reference columns against papers that quote them.
 
 *Port vs upstream, end to end: 2,387 pairs, zero divergences* (2026-09-03).
-Every verdict this port reaches on the headline path was compared against
-upstream's own ``eval_exec_match`` — called with its own module globals over the
-same ``.sqlite`` set, at the same two flags — across three independent
-prediction sets: the two full dev passes above (1,031 + 1,034) and upstream's
-**own** shipped example predictions (``evaluation_examples/predict.txt``, 322
-pairs over 4 db_ids). All 2,387 agree, with zero upstream crashes and zero gold
-failures, the last of which the port asserts by construction: it *raises* on a
-gold it cannot run, so a clean pass over ~39 databases per sample is itself the
-evidence. This is the anchor the named-divergence measurements above could not
-supply — they show every cause we can *name* measures zero, which is not the
-same as having compared the two implementations.
+Every headline verdict was compared against upstream's own ``eval_exec_match`` —
+called with its own module globals over the same ``.sqlite`` set, at the same two
+flags — across three independent prediction sets: one full dev pass per model
+above (1,034 + 1,031 graded rollouts; the Qwen pass is an earlier one than the
+row tabulated) and upstream's **own** shipped example predictions
+(``evaluation_examples/predict.txt``, 322 pairs over 4 db_ids). All 2,387 agree,
+with zero upstream crashes and zero gold failures, the last by construction: the
+port *raises* on a gold it cannot run, so a clean pass over ~39 databases per
+sample is itself the evidence. This is the anchor the named-divergence
+measurements above cannot supply — they show every cause we can *name* measures
+zero, which is not the same as having compared the two implementations. The shape
+of that comparison is pinned hermetically in the tests, on both paths.
 
-``status="experimental"``: anchored against upstream by construction and now
-end to end, with **no published number to compare against** — and that is a
+``status="experimental"`` is the **terminal** status here rather than a
+placeholder: there is **no published number to compare against**, and that is a
 property of Spider, not a gap in this work. Its leaderboard is almost entirely
 fine-tuned systems, so it does not compare to a 0-shot chat model, and the one
-published figure using **this** prompt (Rajkumar et al.'s
-``code-davinci-002``) is a retired completion model, which is exactly the
-divergence documented above. So there is no measurement left to take here: a
-``spider_0shot_base_gen`` sibling is where a completion-faithful,
-paper-comparable number belongs, and only that sibling could carry a
+published figure using **this** prompt (Rajkumar's ``code-davinci-002``) is a
+retired completion model — exactly the divergence documented above. Only a
+completion-faithful ``spider_0shot_base_gen`` sibling could carry a
 ``Target:``/``Measured:`` block. Not "unvalidated"; validated against the only
 reference that exists, with a stated limit — the reading
-``gsm1k_kshot_base_gen`` uses for the same status.
-
-This is therefore the **terminal** status for this task rather than a
-placeholder, and the two dev passes above are reported as measurements, not as
-an alignment claim.
+``gsm1k_kshot_base_gen`` uses for the same status. The two dev passes above are
+reported as measurements, not as an alignment claim.
 
 References:
 
@@ -198,6 +158,7 @@ from sieval.core.tasks.metrics import (
     DENOMINATOR_REQUESTED,
     SCORE_KEY_FIELD,
     health_metrics,
+    interval_metrics,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 from sieval.datasets import SpiderDatasetSample
@@ -212,6 +173,15 @@ HARDNESS_LEVELS = ("easy", "medium", "hard", "extra")
 #: through to the raw reply and drags the closing backticks into the statement.
 _FENCE = re.compile(r"```[^\s`]*[ \t]*\r?\n(.*?)```", re.DOTALL)
 _STATEMENT = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
+#: ``WITH`` opening a real CTE: a name (bare or quoted), an optional column
+#: list, then ``AS``. Matched at the keyword to tell a CTE from the English word.
+_CTE = re.compile(
+    r"""WITH\s+(?:RECURSIVE\s+)?      # the keyword, and SQLite's one modifier
+        (?:"[^"]*"|`[^`]*`|\[[^\]]*\]|[\w$]+)   # the CTE's name, however quoted
+        \s*(?:\([^()]*\))?            # its optional column list
+        \s+AS\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
 
 
 def _mask_comments(sql: str) -> str:
@@ -275,23 +245,35 @@ def _terminator_index(masked: str) -> int | None:
     return None
 
 
-def _statement_from(candidate: str) -> str | None:
-    """Slice one statement out of *candidate*, or ``None`` if it holds no SQL.
+def _statement_start(masked: str) -> int | None:
+    """Offset where the SQL begins in *masked*, or ``None`` if none does.
 
-    The keyword search runs over the comment-masked text. A model that opens
-    with ``-- Find all cars with more than 4 cylinders`` would otherwise have
-    the statement start at that ``with``, and the slice — comment prose and all
-    — reaches SQLite as ``with more than 4 cylinders SELECT ...``, one syntax
-    error scored as a wrong answer and counted against `n_execution_errors`.
-    ``with`` and ``select`` are ordinary English words, so a leading comment is
-    enough on its own; no model in the two dev runs opened one, which is what
-    made this reachable but unobserved.
+    ``with`` and ``select`` are ordinary English words, so the first occurrence
+    of either is not necessarily the statement. Two things follow, and both are
+    reachable but were unobserved across the two dev runs:
+
+    * The search runs over the **comment-masked** text, so a model opening with
+      ``-- Find all cars with more than 4 cylinders`` does not start the
+      statement at that ``with``.
+    * A ``WITH`` is accepted only where a CTE can actually follow it. Masking
+      cannot help on the unfenced fallback, where the prose is not a comment:
+      ``Here is a query with a join: SELECT ...`` would otherwise reach SQLite
+      as ``with a join: SELECT ...``, one syntax error scored as a wrong answer.
+      ``SELECT`` needs no such test — it opens a statement wherever it appears.
     """
+    for match in _STATEMENT.finditer(masked):
+        if match.group(1).upper() == "SELECT" or _CTE.match(masked, match.start()):
+            return match.start()
+    return None
+
+
+def _statement_from(candidate: str) -> str | None:
+    """Slice one statement out of *candidate*, or ``None`` if it holds no SQL."""
     masked = _mask_comments(candidate)
-    match = _STATEMENT.search(masked)
-    if match is None:
+    start = _statement_start(masked)
+    if start is None:
         return None
-    statement, masked = candidate[match.start() :], masked[match.start() :]
+    statement, masked = candidate[start:], masked[start:]
     # A fence marker ends the statement. Reached only on the unfenced fallback,
     # where the reply can still carry a ``` the fence pattern did not consume;
     # leaving it in fails the query on `unrecognized token: "```"`.
@@ -353,7 +335,8 @@ def _ensure_punkt_tab() -> None:
     n_shot=0,
     tags=("english", "text-to-sql", "code-exec"),
     model_type="chat",
-    # Flipped to "stable" once the safety delta and an alignment run exist.
+    # Terminal, not provisional: Spider publishes no number this task could be
+    # aligned against. The docstring's closing paragraph has why.
     status="experimental",
     deps_group="spider",
     reference_kind="value",
@@ -409,8 +392,8 @@ def _ensure_punkt_tab() -> None:
             "no upstream behaviour to preserve — upstream reads predictions from "
             "a file in which a blank line is a session boundary, so it cannot "
             "receive one, and passing it through would score an unextracted "
-            "answer CORRECT against any gold returning no rows, since SQLite "
-            "returns [] for empty SQL. TEXT-FACTORY DELTA MEASURED (2026-09-03, "
+            "answer CORRECT against any gold returning no rows. "
+            "TEXT-FACTORY DELTA MEASURED (2026-09-03, "
             "headline path): zero. Over all 715 databases the dev set reaches, "
             "only those two columns hold invalid bytes, and ignore is injective "
             "over every distinct value in them (0 collisions in 41,324), so both "
@@ -424,10 +407,13 @@ def _ensure_punkt_tab() -> None:
             "ANCHORED END TO END (headline path): 2,387 pairs, ZERO "
             "divergences, against upstream's own eval_exec_match called with "
             "its own module globals over the same .sqlite set and the same two "
-            "flags -- the two full dev passes (1,031 + 1,034) plus upstream's "
-            "own shipped evaluation_examples/predict.txt (322 pairs, 4 db_ids). "
+            "flags -- one full dev pass per model quoted above (1,034 + 1,031 "
+            "graded rollouts; the Qwen pass is an earlier one than the row "
+            "quoted here) plus upstream's own shipped "
+            "evaluation_examples/predict.txt (322 pairs, 4 db_ids). "
             "Zero upstream crashes and zero gold failures, the latter asserted "
             "by construction since this port raises on a gold it cannot run. "
+            "The shape of both comparisons is pinned hermetically in the tests. "
             "NOTHING FURTHER IS OWED, and experimental is the TERMINAL status "
             "rather than a placeholder: there is no published number to anchor "
             "against, which is a property of Spider and not a gap in this work. "
@@ -435,8 +421,7 @@ def _ensure_punkt_tab() -> None:
             "published figure using this prompt (Rajkumar's code-davinci-002) "
             "is a retired completion model, which is the divergence this task "
             "documents -- so only a completion-faithful spider_0shot_base_gen "
-            "sibling could carry a Target:/Measured: block. Validated against "
-            "the only reference that exists, with a stated limit. "
+            "sibling could carry a Target:/Measured: block. "
             "Bounds measured on both paths and no bound binds: 1,034 dev "
             "golds on the shipped databases, largest result 20,662 rows and "
             "slowest 0.486s; 40,167 gold executions across the distilled suite "
@@ -459,9 +444,10 @@ class SpiderZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        # `float | str`: the report carries `score_key`, which names a column
-        # rather than measuring one.
-        dict[str, float | str],
+        # Beyond `float`: `score_key` names a column rather than measuring one,
+        # `score_ci95` is a bound pair, and `ci95_units` maps metric to
+        # population.
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -569,30 +555,24 @@ class SpiderZeroShotGenTask(
                     timeout=GRADE_TIMEOUT,
                 )
             except TimeoutError:
-                # A grade that could not be computed IN TIME stays a wrong
-                # answer -- the prediction is a shape the grader cannot bound,
-                # which is the model's problem, and `report` charges fails to
-                # the denominator either way. Every OTHER exception propagates
-                # and the sample lands in `fails` as `exception::<class>`, which
-                # `grade_one` depends on rather than merely tolerates: it
-                # *raises* on a gold it cannot parse, our bug and not a model
-                # failure, so swallowing here would record that as the model
-                # answering wrongly. SQL that will not run never reaches this
-                # path -- `grade_one` scores it `False` and names the reason in
-                # `error`, which is what `n_execution_errors` counts.
+                # Only a TIMEOUT is swallowed: the prediction is a shape the
+                # grader cannot bound, which is the model's problem. Every other
+                # exception propagates to `fails` as `exception::<class>`, which
+                # `grade_one` depends on rather than merely tolerates -- it
+                # *raises* on a gold it cannot run, our bug, so swallowing would
+                # record that as the model answering wrongly. SQL that will not
+                # run never reaches here; `grade_one` scores it `False` and names
+                # the reason in `error`.
                 #
-                # This is the one place the test-suite fan-out is visible as a
-                # risk rather than a cost. Every statement is individually
-                # bounded, but a sample now runs ~78 of them (gold and
-                # prediction against up to 60 distilled databases), so their sum
-                # can exceed the per-sample budget where two statements never
-                # could -- and a prediction slow enough to do that is scored
-                # wrong even if it is right. The slowest sample of the gold pass
-                # takes 1.08 s against a 30 s budget, so the exposure is real but
-                # far from the measured range. It cannot be reduced without
-                # changing the metric -- a shorter per-statement deadline would
-                # bind on a real gold -- so it is stated and counted rather than
-                # designed away.
+                # This is the one place the test-suite fan-out is a risk rather
+                # than a cost. Every statement is individually bounded, but a
+                # sample runs ~78 of them, so their sum can exceed the per-sample
+                # budget where two never could -- and a prediction slow enough to
+                # do that is scored wrong even if it is right. The slowest sample
+                # of the gold pass takes 1.08 s against a 30 s budget, so the
+                # exposure is real but far from the measured range, and it cannot
+                # be reduced without changing the metric: a shorter per-statement
+                # deadline would bind on a real gold.
                 logger.warning(
                     "Grading sample {} exceeded {}s and was scored wrong; every "
                     "statement is individually bounded, so the cost is either in "
@@ -606,14 +586,11 @@ class SpiderZeroShotGenTask(
                     "exact_match": False,
                     "execution": False,
                     "hardness": None,
-                    # `None`, not `False`: on this path the parser may never
-                    # have run, and `False` would charge a timeout to
-                    # `n_parser_rejected` -- the one number that makes the two
-                    # parse-gated columns readable. Measured at 30.3% (a
-                    # gpt-5.4-mini dev pass) and 57.2% (Qwen3.5-397B), it is
-                    # what explains a 43pp gap between the headline and
-                    # `execution_accuracy`, so a counter that quietly absorbs
-                    # unrelated failures is worse than one that omits them.
+                    # `None`, not `False`: the parser may never have run here,
+                    # and `False` would charge a timeout to `n_parser_rejected`
+                    # -- the one number that makes the two parse-gated columns
+                    # readable. A counter that quietly absorbs unrelated
+                    # failures is worse than one that omits them.
                     "parsed": None,
                     "error": f"TimeoutError: grading exceeded {GRADE_TIMEOUT}s",
                     "test_suite_error": (
@@ -636,12 +613,10 @@ class SpiderZeroShotGenTask(
                         "hardness": graded["hardness"],
                         "error": graded["error"],
                         "test_suite_error": graded["test_suite_error"],
-                        # Not a metric: the flag that says whether the two
-                        # reference metrics above scored this prediction's
-                        # answer or only its syntax. `None` when the parser did
-                        # not run at all, so it is passed through rather than
-                        # coerced -- `bool(None)` is exactly the misreport the
-                        # timeout branch above avoids.
+                        # Not a metric: says whether the two reference metrics
+                        # scored this prediction's answer or only its syntax.
+                        # Passed through rather than coerced -- `bool(None)` is
+                        # exactly the misreport the timeout branch avoids.
                         "parsed": graded["parsed"],
                     },
                 )
@@ -656,12 +631,16 @@ class SpiderZeroShotGenTask(
         n_execution_errors = 0
         n_parser_rejected = 0
         by_hardness: dict[str, list[int]] = {level: [0, 0] for level in HARDNESS_LEVELS}
+        #: Each sample's contribution to the headline, for the interval below.
+        per_sample: list[float] = []
         for final in finals:
+            passed_here = 0
             for rollout in (final.feedback_result or {}).get("rollouts", []):
                 metrics = rollout.get("metrics") or {}
                 extra = rollout.get("extra") or {}
                 passed = bool(metrics.get("test_suite"))
                 n_suite += passed
+                passed_here += passed
                 n_exec += bool(metrics.get("execution"))
                 n_exact += bool(metrics.get("exact_match"))
                 if extra.get("error") or extra.get("test_suite_error"):
@@ -677,13 +656,14 @@ class SpiderZeroShotGenTask(
                 if bucket is not None:
                     bucket[0] += passed
                     bucket[1] += 1
+            per_sample.append(float(passed_here))
 
         # Denominator spans the full requested set: a pipeline failure produced
         # no gradeable answer and counts as wrong, matching upstream (whose
         # total is every dev example) and the *_gen family.
         total = (len(finals) + len(fails)) * self._n
         rate = (lambda c: round(100 * c / total, 2)) if total else (lambda c: 0.0)
-        metrics: dict[str, float | str] = {
+        metrics: dict[str, float | str | list[float] | dict[str, str]] = {
             "score": rate(n_suite),
             "test_suite_accuracy": rate(n_suite),
             # Reference columns, both parse-gated -- read them next to
@@ -693,32 +673,46 @@ class SpiderZeroShotGenTask(
             "n": float(total),
             "fails": float(len(fails)),
             # Predictions that would not run at all (syntax error, deadline,
-            # row cap), on either path. They score 0 either way; the count
-            # separates "wrong answer" from "no answer", which the headline
-            # cannot.
+            # row cap), on either path. Separates "wrong answer" from "no
+            # answer", which the headline cannot.
             "n_execution_errors": float(n_execution_errors),
-            # Predictions the pre-2020 parser refused. These are scored 0 by
-            # both reference columns whatever SQLite returns for them, so the
-            # count is what makes those two rates readable -- it is the size of
-            # the gate, not a second error metric, and it does not touch
-            # `score`. Named for the actor, since this task has two graders and
-            # only one of them parses.
+            # The size of the parse gate: these score 0 on both reference
+            # columns whatever SQLite returns for them, which is what makes
+            # those two rates readable. Not an error metric, and it does not
+            # touch `score`. Named for the actor -- this task has two graders
+            # and only one of them parses.
             "n_parser_rejected": float(n_parser_rejected),
             SCORE_KEY_FIELD: "test_suite_accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
         # Per-hardness rates are over rollouts actually GRADED in each bucket,
-        # not the requested set: a failed sample never reveals which bucket its
-        # gold belongs to. The paired count makes each denominator visible
-        # rather than leaving four rates to be read as if they shared one.
-        #
-        # Split on the HEADLINE, matching upstream, which prints the breakdown
-        # for whichever `--etype` it ran. One split rather than three: the
-        # buckets exist to say where a model loses, and repeating them for two
-        # parse-gated columns would mostly report where the parser loses.
+        # not the requested set -- a failed sample never reveals which bucket its
+        # gold belongs to -- so each carries its own count. Split on the HEADLINE
+        # only, matching upstream, which prints the breakdown for whichever
+        # `--etype` it ran: repeating it for two parse-gated columns would mostly
+        # report where the parser loses.
         for level, (correct, seen) in by_hardness.items():
             metrics[f"test_suite_accuracy_{level}"] = (
                 round(100 * correct / seen, 2) if seen else 0.0
             )
             metrics[f"n_{level}"] = float(seen)
-        return metrics | health_metrics(finals)
+        grouping = self.problem_groups(finals)
+        # Clustered on problems, over the REQUESTED denominator, so a fail is
+        # charged as wrong here exactly as it is in `score`. Only the headline
+        # gets one: the two reference columns are gated by a parser whose
+        # rejections are not sampling noise, so an interval on them would
+        # describe the wrong source of variation, and the per-hardness rates are
+        # a breakdown rather than a headline.
+        return (
+            metrics
+            | health_metrics(finals)
+            | interval_metrics(
+                per_sample,
+                denominator=total,
+                group_keys=None if grouping is None else grouping.keys,
+                n_problems=None if grouping is None else grouping.n_problems,
+                # `test_suite_accuracy` is `score` under its own name, so it
+                # carries the same interval rather than a second estimate.
+                aliases=("test_suite_accuracy",),
+            )
+        )

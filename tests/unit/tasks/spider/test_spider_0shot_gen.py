@@ -195,6 +195,60 @@ def test_extract_does_not_treat_a_dash_dash_inside_a_literal_as_a_comment():
     assert extract_sql(reply) == "SELECT a FROM t WHERE note = 'a--b' AND x = 1"
 
 
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "Here is a query with a join:",
+        "You can do this with a subquery:",
+        "I built it with care, and with two joins.",
+        "Sure — starting with the singer table:",
+    ],
+)
+def test_extract_ignores_the_english_word_with_before_bare_sql(prose):
+    """Masking cannot reach this: on the fallback the prose is not a comment.
+
+    The comment branch above handles `-- ... with ...`; unfenced prose has no
+    marker to mask, so `WITH` is instead accepted only where a CTE can follow.
+    Without that the slice reaches SQLite as `with a join: SELECT ...` — one
+    syntax error, scored a wrong answer and charged to `n_execution_errors`, so
+    it reads as the model's fault rather than the extractor's.
+    """
+    assert extract_sql(f"{prose} SELECT a FROM t") == "SELECT a FROM t"
+
+
+def test_extract_returns_none_when_prose_says_with_and_holds_no_sql():
+    """No statement at all beats a slice of prose that cannot run."""
+    assert extract_sql("This has nothing to do with databases.") is None
+
+
+@pytest.mark.parametrize(
+    "cte",
+    [
+        "WITH x AS (SELECT 1) SELECT * FROM x",
+        "WITH x AS(SELECT 1) SELECT * FROM x",
+        "WITH RECURSIVE t(n) AS (SELECT 1) SELECT * FROM t",
+        "WITH x(a, b) AS (SELECT 1, 2) SELECT * FROM x",
+        'WITH "my cte" AS (SELECT 1) SELECT * FROM "my cte"',
+        "WITH [my cte] AS (SELECT 1) SELECT 1",
+        "WITH `my cte` AS (SELECT 1) SELECT 1",
+        "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a",
+        "WITH x\n  AS (\n SELECT 1\n)\nSELECT * FROM x",
+        "with x as (select 1) select * from x",
+        "WITH x AS MATERIALIZED (SELECT 1) SELECT 1",
+    ],
+)
+def test_extract_still_accepts_every_real_cte_form(cte):
+    """The guard above may not cost a real CTE.
+
+    Quoted names, a column list, `RECURSIVE`, `MATERIALIZED`, several CTEs and
+    newlines between the parts are all SQLite-legal openings, and a `WITH`
+    prediction is exactly the shape the pre-2020 parser already rejects — so
+    losing one here would be invisible in `n_parser_rejected` and visible only
+    as a lower headline.
+    """
+    assert extract_sql(cte) == cte
+
+
 def test_extract_ignores_a_semicolon_inside_a_comment():
     """A `;` in a comment terminates nothing, so the statement is not cut short."""
     reply = "```sql\nSELECT a FROM t\n-- watch out; this is prose\nWHERE x = 1\n```"
@@ -503,6 +557,92 @@ async def test_an_absent_parsed_flag_is_not_counted_as_a_rejection():
     )
     metrics = await _task().report([final], [])
     assert metrics["n_parser_rejected"] == 0.0
+
+
+# --- the headline interval --------------------------------------------------
+
+
+def _mixed_finals(n: int = 30) -> list[TaskContext]:
+    """*n* graded samples that are neither all right nor all wrong.
+
+    `wilson_interval` needs `0 < p < 1`, so a uniform fixture would publish no
+    interval at all and every assertion below would pass vacuously.
+    """
+    return [
+        _final(i, test_suite=i % 3 != 0, execution=False, exact=False, hardness="easy")
+        for i in range(n)
+    ]
+
+
+@pytest.mark.anyio
+async def test_the_headline_publishes_an_interval_with_its_population():
+    metrics = await _task().report(_mixed_finals(), [])
+    interval = metrics["score_ci95"]
+    score = metrics["score"]
+    assert isinstance(interval, list)
+    assert isinstance(score, float)
+    low, high = interval
+    assert low < score < high
+    assert metrics["n_problems"] == 30.0
+
+
+@pytest.mark.anyio
+async def test_every_published_interval_declares_its_unit():
+    """An interval whose unit is undeclared cannot be told from another axis."""
+    metrics = await _task().report(_mixed_finals(), [])
+    assert metrics["ci95_units"] == {
+        "score": "n_problems",
+        "test_suite_accuracy": "n_problems",
+    }
+
+
+@pytest.mark.anyio
+async def test_the_alias_carries_the_headline_interval_not_a_second_estimate():
+    """`test_suite_accuracy` is `score` under its own name, so it is the same
+    bound — a consumer keyed on the column name must not get a different one."""
+    metrics = await _task().report(_mixed_finals(), [])
+    assert metrics["test_suite_accuracy_ci95"] == metrics["score_ci95"]
+
+
+@pytest.mark.anyio
+async def test_the_interval_population_spans_the_requested_set():
+    """`DENOMINATOR_REQUESTED`, so a fail is charged as wrong here too.
+
+    The estimate is over the units that came back while scaled to the requested
+    denominator, which is what keeps the interval and `score` on one population.
+    """
+    fails = [TaskContext(sample_id=900), TaskContext(sample_id=901)]
+    metrics = await _task().report(_mixed_finals(), fails)
+    assert metrics["n_problems"] == 32.0
+
+
+@pytest.mark.anyio
+async def test_a_uniform_run_still_gets_a_one_sided_bound():
+    """p == 1 is not "no dispersion to report" — it is a bound touching 100.
+
+    Five for five is weak evidence and the interval says so; dropping it would
+    leave the strongest-looking column as the only one with no width.
+    """
+    finals = [
+        _final(i, test_suite=True, execution=True, exact=True, hardness="easy")
+        for i in range(5)
+    ]
+    metrics = await _task().report(finals, [])
+    interval = metrics["score_ci95"]
+    assert isinstance(interval, list)
+    low, high = interval
+    assert low < 100.0
+    assert high == 100.0
+
+
+@pytest.mark.anyio
+async def test_an_empty_run_publishes_no_interval_and_no_population():
+    """Emitted whole or not at all: a population with no bound beside it is a
+    count nothing asked for, and there is nothing here to estimate over."""
+    metrics = await _task().report([], [])
+    assert "score_ci95" not in metrics
+    assert "n_problems" not in metrics
+    assert "ci95_units" not in metrics
 
 
 # --- grading failure: only a TIMEOUT is a wrong answer -----------------------

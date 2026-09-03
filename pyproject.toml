@@ -117,15 +117,11 @@ ruler-gen = [
 ]
 scicode = ["h5py>=3.11", "numpy<=2.2", "scipy>=1.16.3"]
 # spider: the vendored Spider 1.0 parser tokenises every query with
-# `nltk.word_tokenize` (process_sql.py:29), which resolves through the
-# punkt_tab corpus on nltk >= 3.9. The corpus itself is fetched on demand at
-# grade time, never at import and never baked into an image — a module-scope
-# download races under parallel test collection.
-#
-# `sqlparse` is reached the same way: the test-suite evaluator strips DISTINCT
-# with `parse.remove_distinct`, and `parse.py` imports sqlparse at module
-# scope, so importing the vendored package at all requires it.
-#
+# `nltk.word_tokenize` (process_sql.py:29), which resolves through the punkt_tab
+# corpus on nltk >= 3.9; the corpus is fetched on demand at grade time, never at
+# import — a module-scope download races under parallel test collection.
+# `sqlparse` is reached the same way, by the test-suite evaluator's
+# `parse.remove_distinct`, whose module imports it at scope.
 # `deps_group` preflight scans only tasks/ and datasets/, so it cannot see a
 # dependency reached through community/; this entry is verified by hand.
 spider = ["nltk>=3.9.2", "sqlparse>=0.5.3"]

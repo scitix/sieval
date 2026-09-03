@@ -15,34 +15,27 @@ archives instead of a table of rows. Two of them, for two different jobs:
   test-suite accuracy the metric it is, and it is why the download is large.
 
 **Provenance.** Upstream distributes both archives through Google Drive only.
-For ``spider_data.zip``, which has no stable direct-download URL, this loader
-pulls a checksum-pinned mirror. The archive was verified against the official
-row set before pinning: ``dev.json`` carries exactly 1,034 rows over 20 distinct
-``db_id``s, every one of those databases ships its ``.sqlite``, and row 0 is
-Spider's canonical "How many singers do we have?" /
-``SELECT count(*) FROM singer``. The sha256 is what makes the mirror
-reproducible; if it ever fails, re-verify against the official release rather
-than re-pinning blind.
+``spider_data.zip`` has no stable direct-download URL, so this loader pulls a
+checksum-pinned mirror, verified against the official row set before pinning:
+``dev.json`` carries exactly 1,034 rows over 20 distinct ``db_id``s, every one
+of those databases ships its ``.sqlite``, and row 0 is Spider's canonical "How
+many singers do we have?" / ``SELECT count(*) FROM singer``.
 
-The checksum pins the bytes, so a tampered mirror cannot go unnoticed. What it
-cannot pin is *availability*: this is a low-traffic third-party repo, and if it
-disappears the recovery path is upstream's own Google Drive ``spider_data.zip``
+The checksum pins the bytes; what it cannot pin is *availability*. If the mirror
+disappears, the recovery path is upstream's own Drive ``spider_data.zip``
 (linked from <https://yale-lily.github.io/spider>), staged by hand and checked
-against the sha256 above — not a swap to whichever mirror is reachable. Note
-that the widely-used ``xlangai/spider`` on the Hub is **not** a substitute: it
-publishes the question rows only, with none of the ``.sqlite`` databases
-execution grading needs.
+against the same sha256 — not a swap to whichever mirror is reachable. The
+widely-used ``xlangai/spider`` on the Hub is **not** a substitute: it publishes
+the question rows only, without the ``.sqlite`` databases execution grading
+needs.
 
-``testsuite_databases.zip`` has **no mirror at all** — searched for, and there
-is none; the Hub's several "SPIDER" datasets are unrelated sets that happen to
-share the name. So it is fetched from Drive directly, which works without
-cookies or an interstitial because the file is public and the URL carries
-``confirm=t``. That is a weaker provenance story than the first archive's and
-the checksum is what carries it: the bytes are pinned, and a Drive link that
-starts serving something else fails the download rather than quietly changing a
-published score. If the link dies, upstream's README
-(<https://github.com/taoyds/test-suite-sql-eval>) is the place to look for its
-replacement.
+``testsuite_databases.zip`` has **no mirror at all** — the Hub's several
+"SPIDER" datasets are unrelated sets sharing the name — so it is fetched from
+Drive directly, which works without cookies because the file is public and the
+URL carries ``confirm=t``. That is a weaker provenance story and the checksum is
+what carries it: a Drive link that starts serving something else fails the
+download rather than quietly changing a published score. If it dies, upstream's
+README (<https://github.com/taoyds/test-suite-sql-eval>) has the replacement.
 
 **The ``sql`` column is dropped at load.** Upstream ships a pre-parsed query tree
 per row whose ``except``/``intersect``/``union`` slots are sometimes null and
@@ -101,13 +94,12 @@ TEST_SUITE_URL = (
     "?id=1mkCx2GOFIqNesD4y8TDAO1yX1QZORP5w&export=download&confirm=t"
 )
 TEST_SUITE_SHA256 = "9ec24ea8debc6bd04abfe137b5f1a739b5a8836f32c0464e4dfc94eb7f41da96"
-#: What the staged file is CALLED, which is not a choice. ``URLHandler`` names a
+#: What the staged file is CALLED, which is not a choice: ``URLHandler`` names a
 #: download after the URL's last path segment, and Google Drive's is
 #: ``/download`` — every identifying part of that URL is a query parameter.
 #: Renaming it would mean a filename override in the shared downloader plus a
-#: matching change to the checksum-key rule, which is a lot of shared machinery
-#: moved for one dataset's cosmetics; pinning the odd name here is the smaller
-#: surface. The checksum key below must equal it, so the two are one constant.
+#: matching change to the checksum-key rule, so pinning the odd name here is the
+#: smaller surface. The checksum key must equal it, so the two are one constant.
 TEST_SUITE_BASENAME = "download"
 #: Where the test suites are extracted, relative to the staged directory. The
 #: archive has NO single top-level directory — it opens straight onto
@@ -162,14 +154,14 @@ class SpiderDataset(Dataset[SpiderDatasetSample]):
         return HFDatasetDict(
             {
                 "train": self._read_split(root / "train_spider.json"),
-                # Upstream's `dev.json`, deliberately exposed as `test`. Two
-                # reasons, and the mismatch is worth the friction: the runner
-                # evaluates `Dataset.test_set`, which reads exactly this key, so
-                # any other name would silently evaluate nothing; and Spider's
-                # dev set is the split the literature reports, because the real
-                # test set was held out for years. The archive does ship
-                # `test.json`, but nothing here reads it — adding it would take
-                # this name and push the reported split somewhere unevaluated.
+                # Upstream's `dev.json`, deliberately exposed as `test`, and the
+                # mismatch is worth the friction: the runner evaluates
+                # `Dataset.test_set`, which reads exactly this key, so any other
+                # name would silently evaluate nothing — and Spider's dev set is
+                # the split the literature reports, because the real test set was
+                # held out for years. The archive does ship `test.json`, but
+                # adding it would take this name and push the reported split
+                # somewhere unevaluated.
                 "test": self._read_split(root / "dev.json"),
             }
         )
