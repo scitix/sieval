@@ -23,12 +23,29 @@ deprecated them — **both are scored through a parser**, and it rejects most of
 what a chat model writes. The parser is a hand-written tokeniser over Spider's
 own gold dialect; a prediction it rejects is compared as an *empty* projection
 and scores 0 on both columns no matter what SQLite returned for it. On the
-pinned dev data it accepts 100% of the golds and 30–57% of real model
+pinned dev data it accepts 100% of the golds and 30–59% of real model
 predictions, depending on the model. So the gap between the headline and those
 two columns is mostly dialect, not correctness, and ``n_parser_rejected`` is
 published beside them to make the size of that gate visible rather than leave
 two rates to be read as if they measured answers. ``score`` is deliberately not
 one of them.
+
+*Measured over two full dev passes* (2026-09-03), which is where that band and
+this warning come from:
+
+===================  ==================  =========  ==========  =================
+model                test_suite (score)  execution  exact_set   n_parser_rejected
+===================  ==================  =========  ==========  =================
+gpt-5.4-mini         66.05               24.47      21.76       724 / 1,034
+Qwen3.5-397B-A17B    78.05               53.87      51.74       419 / 1,034
+===================  ==================  =========  ==========  =================
+
+The reference columns do not merely run low, they **rank differently**: they put
+Qwen ahead by 29.4 pp where the headline puts it ahead by 12.0 pp, because the
+weaker model is also the one whose dialect the parser likes less (70% rejected
+against 41%). A leaderboard built on either column would be reporting
+conformance about as much as correctness, which is the whole reason ``score``
+is the headline and these two are published beside their gate.
 
 **Prompt: Rajkumar et al. 2022**, the "Create Table + Select 3" format from
 *Evaluating the Text-to-SQL Capabilities of Large Language Models*
@@ -113,17 +130,29 @@ by its own measurement rather than by inheritance from the pre-2020 one.
 Target: published Spider dev test-suite accuracy for the model under test, and
 the two reference columns against papers that quote them.
 
-**Why this ships ``experimental``.** Two anchors are still owed, and they are
-different measurements against different things:
+*Port vs upstream, end to end: 2,387 pairs, zero divergences* (2026-09-03).
+Every verdict this port reaches on the headline path was compared against
+upstream's own ``eval_exec_match`` — called with its own module globals over the
+same ``.sqlite`` set, at the same two flags — across three independent
+prediction sets: the two full dev passes above (1,031 + 1,034) and upstream's
+**own** shipped example predictions (``evaluation_examples/predict.txt``, 322
+pairs over 4 db_ids). All 2,387 agree, with zero upstream crashes and zero gold
+failures, the last of which the port asserts by construction: it *raises* on a
+gold it cannot run, so a clean pass over ~39 databases per sample is itself the
+evidence. This is the anchor the named-divergence measurements above could not
+supply — they show every cause we can *name* measures zero, which is not the
+same as having compared the two implementations.
 
-* *Port vs upstream*, on the headline path — this port's verdicts against
-  upstream's own ``eval_exec_match`` over the distilled suite, the way the
-  pre-2020 path is anchored above. It needs no model, only the archive; what
-  measures zero today is every divergence we can *name*, which is not the same
-  as having compared the two implementations end to end.
-* *This task vs a published number* — needs model access.
-
-The safety work does not depend on either and is already done.
+**Why this still ships ``experimental``.** One anchor is left, and it is the
+weaker of the two: *this task against a published number*. Spider's own
+leaderboard is almost entirely fine-tuned systems, so it does not compare to a
+0-shot chat model, and the one published figure using **this** prompt
+(Rajkumar et al.'s ``code-davinci-002``) is a retired completion model, which is
+exactly the divergence this task documents. So the remaining gap is not a
+measurement anyone has skipped; it is a comparison Spider does not currently
+offer, and the honest reading is that the harness is anchored and the score is
+not. A ``spider_0shot_base_gen`` sibling is where a completion-faithful,
+paper-comparable number belongs.
 
 References:
 
@@ -342,9 +371,15 @@ def _ensure_punkt_tab() -> None:
             "upstream's DISABLE_VALUE=True default; exact match runs AFTER "
             "execution because eval_exact_match mutates the parse trees in "
             "place. Both pre-2020 columns are scored through a parser that "
-            "accepts 100% of golds and 30-57% of model predictions, so they are "
+            "accepts 100% of golds and 30-59% of model predictions, so they are "
             "reported beside n_parser_rejected and are not the number to rank "
-            "on. Upstream's two test-suite flags are pinned to its CLI defaults "
+            "on -- measured over two full dev passes (2026-09-03), they also "
+            "RANK differently from the headline: gpt-5.4-mini scores 66.05 "
+            "test_suite / 24.47 execution / 21.76 exact_set with 724 of 1,034 "
+            "parser-rejected, and Qwen3.5-397B-A17B 78.05 / 53.87 / 51.74 with "
+            "419, so the reference columns put Qwen ahead by 29.4pp where the "
+            "headline puts it ahead by 12.0pp. "
+            "Upstream's two test-suite flags are pinned to its CLI defaults "
             "(plug_value=False, keep_distinct=False); a run configured either "
             "way is not comparable to a published Spider score. "
             "Both paths diverge for SAFETY ONLY: read-only immutable "
@@ -379,11 +414,20 @@ def _ensure_punkt_tab() -> None:
             "differs, plus 1 upstream crash); all three cases are wta_1 and all "
             "trace to the text factory — the read-only connection, ATTACH "
             "denial, deadline and row cap produced zero verdict differences. "
-            "Worst-case headline impact 2/1,034 = 0.19pp. STILL OWED, and why "
-            "this is experimental: the headline path has no end-to-end parity "
-            "run against upstream's own eval_exec_match yet (needs only the "
-            "archive, no model), and there is no published-anchor run (needs a "
-            "model). Bounds measured on both paths and no bound binds: 1,034 dev "
+            "Worst-case headline impact 2/1,034 = 0.19pp. PORT VS UPSTREAM "
+            "ANCHORED END TO END (headline path): 2,387 pairs, ZERO "
+            "divergences, against upstream's own eval_exec_match called with "
+            "its own module globals over the same .sqlite set and the same two "
+            "flags -- the two full dev passes (1,031 + 1,034) plus upstream's "
+            "own shipped evaluation_examples/predict.txt (322 pairs, 4 db_ids). "
+            "Zero upstream crashes and zero gold failures, the latter asserted "
+            "by construction since this port raises on a gold it cannot run. "
+            "STILL OWED, and the only reason this is experimental: a "
+            "published-anchor run. That one is structurally weak for Spider -- "
+            "its leaderboard is almost all fine-tuned systems, and the one "
+            "published figure using this prompt (Rajkumar's code-davinci-002) "
+            "is a retired completion model, which is the divergence this task "
+            "documents. Bounds measured on both paths and no bound binds: 1,034 dev "
             "golds on the shipped databases, largest result 20,662 rows and "
             "slowest 0.486s; 40,167 gold executions across the distilled suite "
             "(38.8 databases per sample), zero gold failures, gold-vs-gold "

@@ -8,7 +8,7 @@ Both of its failures are structural, not incidental:
   the *parsed* select unit, so a prediction the parser rejects is compared as an
   empty projection and scores 0 no matter what SQLite returned. The parse is a
   hand-written tokeniser over Spider's own gold dialect; on the pinned dev data
-  it accepts 100% of golds and 30-57% of model predictions, so most of what a
+  it accepts 100% of golds and 30-59% of model predictions, so most of what a
   chat model writes is scored on its syntax rather than its answer.
 * **One database cannot separate the queries.** A prediction that happens to
   agree with the gold on the shipped rows is indistinguishable from one that is
