@@ -15,15 +15,17 @@ AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
 import copy
+import json
 from collections.abc import Mapping
 from dataclasses import fields, replace
 from types import TracebackType
-from typing import Any, Self, TypedDict, cast
+from typing import Any, Protocol, Self, TypedDict, cast
 
 import anyio
 
 from sieval.core.types import JSONValue
 
+from ._legacy_binding import _legacy_provenance_projector_for_plan
 from ._legacy_bridge import (
     ModelMeta,
     ModelOutput,
@@ -38,6 +40,7 @@ from .capabilities import (
 )
 from .deployment import (
     BINDING_RESOURCE_KEYS,
+    ConnectionIdentity,
     ConnectionPool,
     Deployment,
 )
@@ -66,7 +69,7 @@ from .ir import (
     Request,
     Response,
 )
-from .reconcile import RuntimeBindingPlan
+from .reconcile import CheckStage, DeferredCheck, RuntimeBindingPlan
 
 
 class ModelQuotaSnapshot(TypedDict):
@@ -111,6 +114,147 @@ _RESPONSE_CHANNEL_BY_CAPABILITY: Mapping[str, str] = {
 
 _REQUEST_CHECK_VERIFIERS = frozenset({"validate_response_channel"})
 _REMOVED_SUBCLASS_HOOKS = frozenset({"_agenerate_impl", "_alogprobs_impl"})
+
+
+class _ProvenanceProjector(Protocol):
+    """Legacy seam for deriving stable evidence from a runtime plan."""
+
+    def __call__(
+        self, runtime_plan: RuntimeBindingPlan
+    ) -> RuntimeBindingPlan | None: ...
+
+
+_PROVENANCE_PROJECTABLE_PLAN_FIELDS = frozenset(
+    {
+        "binding_id",
+        "root_deployment_key",
+        "binding_plan_fingerprint",
+        "deployment_plan_fingerprint",
+    }
+)
+_PROVENANCE_SEMANTIC_PLAN_FIELDS = frozenset(
+    {
+        "requested_model_id",
+        "dialect_id",
+        "declared_capabilities",
+        "effective_capabilities",
+        "available_capabilities",
+        "capability_minimums",
+        "request_defaults",
+        "required_output_channels",
+        "deployment_fingerprint",
+        "resolved_route",
+    }
+)
+_PROVENANCE_SPECIAL_PLAN_FIELDS = frozenset({"request_checks", "connection_identity"})
+_PROVENANCE_COMPUTED_PLAN_FIELDS = frozenset(
+    {"fingerprint", "verification_fingerprint"}
+)
+_PROVENANCE_PROJECTABLE_CONNECTION_FIELDS = frozenset(
+    {"credential_scope", "quota_scope"}
+)
+_PROVENANCE_SEMANTIC_CONNECTION_FIELDS = frozenset(
+    {"endpoint", "connection_family", "retry_policy"}
+)
+_PROVENANCE_PROJECTABLE_CHECK_FIELDS = frozenset({"reason"})
+_PROVENANCE_SEMANTIC_CHECK_FIELDS = frozenset({"capability", "stage", "verifier"})
+
+
+def _validate_provenance_schema() -> None:
+    """Fail when a plan field has no explicit provenance policy."""
+
+    plan_fields = {item.name for item in fields(RuntimeBindingPlan)}
+    classified_plan_fields = (
+        _PROVENANCE_PROJECTABLE_PLAN_FIELDS
+        | _PROVENANCE_SEMANTIC_PLAN_FIELDS
+        | _PROVENANCE_SPECIAL_PLAN_FIELDS
+        | _PROVENANCE_COMPUTED_PLAN_FIELDS
+    )
+    if plan_fields != classified_plan_fields:
+        missing = sorted(plan_fields - classified_plan_fields)
+        stale = sorted(classified_plan_fields - plan_fields)
+        raise RuntimeError(
+            "RuntimeBindingPlan provenance policy is incomplete; "
+            f"missing={missing!r}, stale={stale!r}"
+        )
+
+    identity_fields = {item.name for item in fields(ConnectionIdentity)}
+    classified_identity_fields = (
+        _PROVENANCE_PROJECTABLE_CONNECTION_FIELDS
+        | _PROVENANCE_SEMANTIC_CONNECTION_FIELDS
+    )
+    if identity_fields != classified_identity_fields:
+        missing = sorted(identity_fields - classified_identity_fields)
+        stale = sorted(classified_identity_fields - identity_fields)
+        raise RuntimeError(
+            "ConnectionIdentity provenance policy is incomplete; "
+            f"missing={missing!r}, stale={stale!r}"
+        )
+
+    check_fields = {item.name for item in fields(DeferredCheck)}
+    classified_check_fields = (
+        _PROVENANCE_PROJECTABLE_CHECK_FIELDS | _PROVENANCE_SEMANTIC_CHECK_FIELDS
+    )
+    if check_fields != classified_check_fields:
+        missing = sorted(check_fields - classified_check_fields)
+        stale = sorted(classified_check_fields - check_fields)
+        raise RuntimeError(
+            "DeferredCheck provenance policy is incomplete; "
+            f"missing={missing!r}, stale={stale!r}"
+        )
+
+
+def _request_check_semantics(
+    checks: tuple[DeferredCheck, ...],
+) -> tuple[tuple[str, CheckStage, str], ...]:
+    """Return the executable part of checks; reasons are diagnostic evidence."""
+
+    return tuple((check.capability, check.stage, check.verifier) for check in checks)
+
+
+def _same_json_value(left: JSONValue, right: JSONValue) -> bool:
+    """Compare JSON values with the same type-sensitive rules as fingerprints."""
+
+    def encode(value: JSONValue) -> str:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    return encode(left) == encode(right)
+
+
+def _validate_provenance_plan(
+    runtime_plan: RuntimeBindingPlan,
+    provenance_plan: RuntimeBindingPlan,
+) -> None:
+    """Reject projections that change request or capability semantics."""
+
+    _validate_provenance_schema()
+    runtime_value = runtime_plan.to_json_value()
+    provenance_value = provenance_plan.to_json_value()
+    changed = [
+        name
+        for name in sorted(_PROVENANCE_SEMANTIC_PLAN_FIELDS)
+        if not _same_json_value(runtime_value[name], provenance_value[name])
+    ]
+    if _request_check_semantics(provenance_plan.request_checks) != (
+        _request_check_semantics(runtime_plan.request_checks)
+    ):
+        changed.append("request_checks")
+    changed.extend(
+        f"connection_identity.{name}"
+        for name in sorted(_PROVENANCE_SEMANTIC_CONNECTION_FIELDS)
+        if getattr(provenance_plan.connection_identity, name)
+        != getattr(runtime_plan.connection_identity, name)
+    )
+    if changed:
+        raise ValueError(
+            "provenance plan changes runtime semantics: " + ", ".join(changed)
+        )
 
 
 def _checked_builder_defaults(values: Mapping[str, object]) -> dict[str, object]:
@@ -240,11 +384,15 @@ class Model:
         extra: Mapping[str, JSONValue] | None,
         api_base: str | None,
         lifecycle_owner: "Model | None",
+        provenance_projector: _ProvenanceProjector | None = None,
+        provenance_plan: RuntimeBindingPlan | None = None,
     ) -> None:
         if dialect.dialect_id != runtime_plan.dialect_id:
             raise ValueError("bound dialect does not match the runtime plan")
         if dialect.connection_family != runtime_plan.resolved_route.connection_family:
             raise ValueError("bound dialect does not match the connection family")
+        if provenance_projector is None:
+            provenance_projector = _legacy_provenance_projector_for_plan(runtime_plan)
         self._deployment = deployment
         self._pool = pool
         self._runtime_plan = runtime_plan
@@ -258,6 +406,19 @@ class Model:
         self._parent_limiter = parent_limiter
         self._lifecycle_owner = lifecycle_owner
         self._client = pool.connection  # borrowed compatibility view; never owned here
+        # Canonical bindings persist their runtime plan verbatim. Legacy
+        # wrappers retain volatile pool ownership at runtime while projecting
+        # every derived/reconciled plan into stable persisted evidence.
+        self._provenance_projector = provenance_projector
+        if provenance_plan is None:
+            provenance_plan = (
+                runtime_plan
+                if provenance_projector is None
+                else provenance_projector(runtime_plan)
+            )
+        if provenance_plan is not None:
+            _validate_provenance_plan(runtime_plan, provenance_plan)
+        self._provenance_plan = provenance_plan
 
     @property
     def dialect_id(self) -> str:
@@ -357,6 +518,9 @@ class Model:
             self._pool,
             runtime_plan,
         )
+        provenance_plan = (
+            self._provenance_plan if runtime_plan == self._runtime_plan else None
+        )
         result = object.__new__(Model)
         result._initialize(
             deployment=self._deployment,
@@ -369,8 +533,38 @@ class Model:
             extra=self._extra,
             api_base=self._api_base,
             lifecycle_owner=self._lifecycle_owner,
+            provenance_projector=self._provenance_projector,
+            provenance_plan=provenance_plan,
         )
         return result
+
+    def _with_provenance_plan(
+        self,
+        provenance_plan: RuntimeBindingPlan,
+    ) -> Self:
+        """Return a copy carrying trusted composition-layer provenance."""
+
+        if self._provenance_projector is None and provenance_plan != self._runtime_plan:
+            raise ValueError(
+                "canonical models must persist their runtime plan verbatim"
+            )
+        _validate_provenance_plan(self._runtime_plan, provenance_plan)
+        if provenance_plan == self._provenance_plan:
+            return self
+        result = copy.copy(self)
+        result._provenance_plan = provenance_plan
+        return result
+
+    def _require_provenance_plan(self) -> RuntimeBindingPlan:
+        """Return complete persisted evidence or fail before request I/O."""
+
+        provenance_plan = self._provenance_plan
+        if provenance_plan is None:
+            raise RuntimeError(
+                "model provenance is incomplete: the reconciled binding and "
+                "deployment evidence must be attached by the composition layer"
+            )
+        return provenance_plan
 
     def as_compat_type(self, model_type: type["Model"]) -> "Model":
         """Expose a truthful one-cycle wrapper over this exact binding.
@@ -405,6 +599,8 @@ class Model:
             extra=self._extra,
             api_base=self._api_base,
             lifecycle_owner=None,
+            provenance_projector=self._provenance_projector,
+            provenance_plan=self._provenance_plan,
         )
         return result
 
@@ -496,6 +692,7 @@ class Model:
 
         if not isinstance(req, Request):
             raise TypeError(f"arun requires Request, got {type(req).__name__}")
+        self._require_provenance_plan()
         projected = _apply_request_defaults(req, self._runtime_plan.request_defaults)
         validate_request_invariants(projected)
         validate_runtime_binding_plan(self._runtime_plan, projected)
@@ -562,6 +759,7 @@ class Model:
 
     def _provenance(self, response: Response) -> ModelProvenance:
         plan = self._runtime_plan
+        provenance_plan = self._require_provenance_plan()
         deployment = self._deployment
         return ModelProvenance(
             dialect_id=plan.dialect_id,
@@ -577,8 +775,8 @@ class Model:
             capabilities=CapabilityEvidence(
                 declared=plan.declared_capabilities,
                 effective=plan.effective_capabilities,
-                plan_fingerprint=plan.fingerprint,
-                verification_fingerprint=plan.verification_fingerprint,
+                plan_fingerprint=provenance_plan.fingerprint,
+                verification_fingerprint=provenance_plan.verification_fingerprint,
             ),
         )
 
