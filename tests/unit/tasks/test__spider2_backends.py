@@ -119,11 +119,50 @@ def test_unknown_backend_is_rejected():
 # --- remote engines: credentials --------------------------------------------
 
 
-def test_bigquery_without_credentials_raises_missing_credentials(monkeypatch):
-    """Distinguishable from a wrong answer, and it names the variable."""
+@pytest.fixture
+def no_bigquery_credentials(monkeypatch):
+    """No environment key *and* no application default credentials.
+
+    Both halves are needed since `missing_credentials` learned to accept ADC:
+    deleting the variable alone leaves the answer dependent on whether the host
+    running the suite happens to have `gcloud auth application-default login`
+    in its state — green in CI, red on a developer box that uses GCP.
+    """
     monkeypatch.delenv(BIGQUERY_CREDENTIAL_ENV, raising=False)
+    try:
+        import google.auth
+    except ImportError:
+        # The `spider2` group is absent, so the probe's own ImportError branch
+        # already reports "unreachable" — nothing to patch.
+        return
+
+    def _nothing_configured(*_args, **_kwargs):
+        raise RuntimeError("no application default credentials")
+
+    monkeypatch.setattr(google.auth, "default", _nothing_configured)
+
+
+@pytest.mark.usefixtures("no_bigquery_credentials")
+def test_bigquery_without_credentials_raises_missing_credentials():
+    """Distinguishable from a wrong answer, and it names the variable."""
     with pytest.raises(MissingCredentials, match=BIGQUERY_CREDENTIAL_ENV):
         execute("bigquery", "SELECT 1")
+
+
+def test_application_default_credentials_count_as_configured(monkeypatch):
+    """`gcloud auth application-default login` is a configured host.
+
+    Upstream builds a bare `bigquery.Client()`, so Google's whole default chain
+    is in scope; treating only the environment variable as configured would
+    report all 205 BigQuery questions as `missing_credentials` on a host that
+    can reach BigQuery perfectly well.
+    """
+    google_auth = pytest.importorskip(
+        "google.auth", reason="requires the `spider2` extra"
+    )
+    monkeypatch.delenv(BIGQUERY_CREDENTIAL_ENV, raising=False)
+    monkeypatch.setattr(google_auth, "default", lambda *a, **k: (object(), "a-project"))
+    assert missing_credentials("bigquery") is None
 
 
 def test_snowflake_without_credentials_names_every_missing_variable(monkeypatch):
@@ -160,9 +199,9 @@ def test_missing_credentials_is_not_a_generic_error():
 # --- credentials, asked before anything runs --------------------------------
 
 
-def test_missing_credentials_names_the_variable_without_executing(monkeypatch):
+@pytest.mark.usefixtures("no_bigquery_credentials")
+def test_missing_credentials_names_the_variable_without_executing():
     """The question the task actually asks. No client, no query, no network."""
-    monkeypatch.delenv(BIGQUERY_CREDENTIAL_ENV, raising=False)
     reason = missing_credentials("bigquery")
     assert reason is not None
     assert BIGQUERY_CREDENTIAL_ENV in reason

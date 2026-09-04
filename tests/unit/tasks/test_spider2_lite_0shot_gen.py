@@ -3,6 +3,7 @@
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+import csv
 import json
 import sqlite3
 from pathlib import Path
@@ -25,6 +26,7 @@ from sieval.tasks._spider2_backends import caller_timeout, execute
 from sieval.tasks.spider2_lite_0shot_gen import (
     Spider2LiteZeroShotGenTask,
     _fit,
+    _resource_schema,
     _sqlite_schema,
 )
 from tests.conftest import HandlerTransport
@@ -221,6 +223,30 @@ def test_a_local_schema_over_budget_is_truncated_on_a_statement_boundary(tmp_pat
     # Sorted by name, so which tables survive is a property of the database
     # rather than of the order SQLite happened to store them in.
     assert "CREATE TABLE c" not in rendered
+
+
+def test_a_ddl_field_over_the_csv_default_limit_is_readable(tmp_path):
+    """`bigquery/pancancer_atlas_2`'s shape, at the size that used to crash.
+
+    `csv` caps a field at 131,072 characters by default, and that database
+    holds one longer, so `DictReader` raised `_csv.Error` out of `preprocess`
+    and its two questions (bq151, bq161) failed instead of scoring. The cap is
+    process-global, so the read raises it and puts it back.
+    """
+    root = tmp_path / "bigquery" / "wide"
+    root.mkdir(parents=True)
+    columns = ", ".join(f"c{i} STRING" for i in range(20_000))
+    statement = f"CREATE TABLE huge ({columns})"
+    assert len(statement) > 131_072, "fixture must exceed csv's default cap"
+    (root / "DDL.csv").write_text(
+        f'table_name,ddl\nhuge,"{statement}"\n', encoding="utf-8"
+    )
+
+    rendered = _resource_schema(str(tmp_path), "bigquery", "wide", 10**9)
+
+    assert rendered == statement
+    # And the global cap is what it was before the read.
+    assert csv.field_size_limit() == 131_072
 
 
 # --- end to end over the local engine ---------------------------------------

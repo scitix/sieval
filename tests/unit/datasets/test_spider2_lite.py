@@ -14,7 +14,9 @@ from datasets import DatasetDict as HFDatasetDict
 from sieval.core.datasets.meta import get_dataset_meta
 from sieval.datasets.spider2_lite import (
     ARCHIVE_BASENAME,
+    LOCALDB_BASENAME,
     LOCALDB_SHA256,
+    LOCALDB_URL,
     SPIDER2_ARCHIVE_SHA256,
     Spider2LiteDataset,
     backend_for,
@@ -68,7 +70,7 @@ def _make_archives(tmp_path: Path) -> Path:
     conn.execute("CREATE TABLE t (a int)")
     conn.commit()
     conn.close()
-    with zipfile.ZipFile(staged / "sqlite.zip", "w") as archive:
+    with zipfile.ZipFile(staged / LOCALDB_BASENAME, "w") as archive:
         archive.write(db_file, "tiny.sqlite")
         # The AppleDouble stub that makes an unfiltered extraction wrong.
         archive.writestr("__MACOSX/._tiny.sqlite", b"\x00\x05\x16\x07stub")
@@ -81,8 +83,25 @@ def test_both_sources_are_pinned_and_checksummed():
     assert all(s.startswith("url:") for s in meta.source)
     checksums = dict(meta.checksums)
     assert checksums[ARCHIVE_BASENAME] == f"sha256:{SPIDER2_ARCHIVE_SHA256}"
-    assert checksums["sqlite.zip"] == f"sha256:{LOCALDB_SHA256}"
+    assert checksums[LOCALDB_BASENAME] == f"sha256:{LOCALDB_SHA256}"
     assert meta.license == "MIT"
+
+
+def test_local_databases_come_from_upstreams_own_archive():
+    """Not the Hub's ``sqlite.zip``, which is a different corpus.
+
+    It ships 40 databases covering only 23 of the 30 the 135 ``local``
+    questions name, so seven databases and 48 questions have no file to open.
+    Pinning is what makes that choice legible, so assert the source rather than
+    leaving a comment: the Drive id upstream's README links, carried with
+    ``confirm=t`` because Drive interstitials anything this large.
+    """
+    meta = get_dataset_meta(Spider2LiteDataset)
+    localdb = next(s for s in meta.source if "github.com" not in s)
+    assert localdb == f"url:{LOCALDB_URL}"
+    assert "1coEVsCZq-Xvj9p2TnhBFoFTsY-UoYGmG" in localdb
+    assert "confirm=t" in localdb
+    assert "spider2-localdb" not in localdb
 
 
 @pytest.mark.parametrize(
@@ -134,9 +153,33 @@ def test_only_the_lite_subtree_is_extracted(tmp_path):
     assert (staged / "spider2-lite" / "spider2-lite.jsonl").is_file()
 
 
+def test_a_local_question_without_its_database_fails_at_load(tmp_path):
+    """The defect the Hub archive shipped: 48 questions, no file to open.
+
+    Left to the task, each one raises ``unable to open database file`` from
+    inside ``preprocess`` — naming no database, once per affected sample. The
+    loader knows the whole set, so it says which are missing, once.
+    """
+    staged = _make_archives(tmp_path)
+    # Stage everything, then remove the one local database the rows name.
+    Spider2LiteDataset(str(staged))
+    (
+        Path(staged, "spider2-lite", "resource/databases/spider2-localdb/tiny.sqlite")
+    ).unlink()
+    with pytest.raises(ValueError, match=r"missing 1 of 1 local databases"):
+        Spider2LiteDataset(str(staged))
+
+
+def test_load_accepts_a_complete_local_corpus(tmp_path):
+    """The guard must not fire on a staging that is actually complete."""
+    staged = _make_archives(tmp_path)
+    dataset = Spider2LiteDataset(str(staged))
+    assert len(dataset.dataset_dict["test"]) == 3
+
+
 def test_appledouble_stubs_are_filtered(tmp_path):
-    """Unfiltered, sqlite.zip yields ~40 files ending .sqlite that are 163-byte
-    AppleDouble stubs, not databases."""
+    """The pinned archive carries ``__MACOSX/._chinook.sqlite``, which ends in
+    ``.sqlite``, is a few hundred bytes, and is not a database."""
     staged = _make_archives(tmp_path)
     dataset = Spider2LiteDataset(str(staged))
     localdb_dir = dataset.localdb_dir

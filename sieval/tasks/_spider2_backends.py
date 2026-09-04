@@ -30,10 +30,16 @@ written here rather than vendored from it. A Snowflake number therefore has no
 upstream *lite* counterpart; the comparable published setting is Spider 2.0-Snow,
 which asks the same questions against the same warehouse.
 
-**Credentials are read from the environment and their absence is loud.** A
-missing credential raises :class:`MissingCredentials` naming the variable, which
-becomes a per-sample error rather than a silent zero — the alternative is a run
-that reports 24% and looks like a bad model instead of an unconfigured host.
+**Credentials are discovered the way each vendor's client does, and their
+absence is loud.** BigQuery accepts anything Google's default chain accepts —
+``GOOGLE_APPLICATION_CREDENTIALS``, or ``gcloud auth application-default
+login``, or workload identity — because upstream builds a bare
+``bigquery.Client()`` and narrowing that to one environment variable would
+report a working host as unconfigured. Snowflake reads its three variables.
+Either way a missing credential raises :class:`MissingCredentials` naming what
+is absent, which becomes a per-sample error rather than a silent zero — the
+alternative is a run that reports 24% and looks like a bad model instead of an
+unconfigured host.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -91,6 +97,33 @@ def caller_timeout(backend: str) -> float:
     return engine + _CALLER_HEADROOM_S
 
 
+def _bigquery_reachable() -> bool:
+    """Whether *any* credential this host offers would satisfy BigQuery.
+
+    ``GOOGLE_APPLICATION_CREDENTIALS`` is checked first because it is a plain
+    environment read and costs nothing. Falling back to ``google.auth.default``
+    is what makes ``gcloud auth application-default login`` — and workload
+    identity, and an external-account JSON — count: upstream builds a bare
+    ``bigquery.Client()``, so the whole default chain is in scope there, and
+    treating only the environment variable as "configured" would report 205
+    questions as ``missing_credentials`` on a host that can in fact reach
+    BigQuery. The import is inside the branch, so a run over the local engine
+    never pays for it.
+    """
+    if os.getenv(BIGQUERY_CREDENTIAL_ENV):
+        return True
+    try:
+        import google.auth
+
+        google.auth.default()
+    except Exception:
+        # `DefaultCredentialsError` when nothing is configured, `ImportError`
+        # when the `spider2` group is absent. Either way there is no credential
+        # to reach BigQuery with, which is what the caller asked.
+        return False
+    return True
+
+
 def missing_credentials(backend: str) -> str | None:
     """Why *backend* cannot be reached from this environment, or ``None``.
 
@@ -98,10 +131,12 @@ def missing_credentials(backend: str) -> str | None:
     from a bad prediction *without* an exception having to travel back through
     a worker process — see the note on ``execute`` below.
     """
-    if backend == "bigquery" and not os.getenv(BIGQUERY_CREDENTIAL_ENV):
+    if backend == "bigquery" and not _bigquery_reachable():
         return (
-            f"BigQuery instance needs {BIGQUERY_CREDENTIAL_ENV} pointing at a "
-            "service-account JSON key. See upstream's Bigquery_Guideline."
+            f"BigQuery instance needs credentials: either "
+            f"{BIGQUERY_CREDENTIAL_ENV} pointing at a service-account JSON key, "
+            "or application default credentials from 'gcloud auth "
+            "application-default login'. See upstream's Bigquery_Guideline."
         )
     if backend == "snowflake":
         missing = [name for name in SNOWFLAKE_ENV if not os.getenv(name)]
@@ -134,9 +169,9 @@ def _run_bigquery(sql: str, timeout_s: float, max_rows: int) -> "pd.DataFrame":
         raise MissingCredentials(reason)
     from google.cloud import bigquery
 
-    client = bigquery.Client.from_service_account_json(
-        os.environ[BIGQUERY_CREDENTIAL_ENV]
-    )
+    # Upstream's own construction. `from_service_account_json` would accept
+    # only one of the credential kinds `_bigquery_reachable` reports on.
+    client = bigquery.Client()
     job = client.query(sql)
     rows = job.result(timeout=timeout_s, max_results=max_rows + 1)
     frame = rows.to_dataframe()

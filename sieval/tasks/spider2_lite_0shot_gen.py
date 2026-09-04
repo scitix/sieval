@@ -24,9 +24,15 @@ the 2025-10-29 accuracy fix (NaN normalised to 0, an early break, an empty-gold
 guard) and the one in ``evaluate_utils.py`` does not. This task uses the former,
 vendored byte-identical, with each instance's own ``condition_cols`` and
 ``ignore_order`` from upstream's ``spider2lite_eval.jsonl``, and it branches on
-upstream's own ``is_single`` — one gold goes to ``compare_pandas_table``, several
-to ``compare_multi_pandas_table`` (1,544 gold CSVs over 547 instances, so most
-questions accept more than one correct answer shape).
+upstream's own ``is_single``.
+
+Note what that flag actually is, because the name misleads: ``resolve_gold_paths``
+returns ``is_single=True`` only when an **exact** ``<instance_id>.csv`` exists,
+which is true of **3 of the 547**. It is a filename shape, not a gold count —
+104 instances have exactly one gold file and still take the
+``compare_multi_pandas_table`` path. The 1,544 gold CSVs do mean most questions
+accept more than one answer shape (440 of 547 have two or more), but that is a
+separate fact from which branch runs.
 
 **The prediction reaches the comparison through a CSV.** Upstream writes the
 result frame out and reads it back before comparing, and that round trip is part
@@ -52,22 +58,42 @@ engines are bounded (timeout + row cap) rather than hardened: the query runs on
 someone else's server under their permissions.
 
 **The prompt is bounded too, for a different reason.** The cloud-schema block
-comes from the shipped resource tree, and that tree is not uniform: ``ga360``'s
-DDL renders 2.9 M characters across its daily partition tables, and 56 of the 412
-cloud databases exceed a megabyte. Rendering one whole is not a low score, it is
-a request no endpoint accepts — so the block stops at
-:data:`MAX_SCHEMA_CHARS`, on a statement boundary, and says how many tables it
-left out.
+comes from the shipped resource tree, and that tree is not uniform. The 412
+cloud questions run against 128 distinct databases, and rendering one of them
+whole can be enormous: ``ga360`` produces 2,894,566 characters across its daily
+partition tables, ``fec`` 13.5 M, and 56 of the 412 questions sit on a database
+whose ``DDL.csv`` alone exceeds a megabyte. That is not a low score, it is a
+request no endpoint accepts — so the block stops at :data:`MAX_SCHEMA_CHARS`, on
+a statement boundary, and says how many tables it left out. 83 of the 412 cloud
+questions are truncated; no local question is, since the largest local schema is
+about 7.5 kB.
 
-Target: upstream's Spider 2.0-lite leaderboard, for the BigQuery and SQLite
-subsets it scores; Spider 2.0-Snow for the Snowflake subset.
+Target: there is **no comparable published number**, and that is a property of
+the leaderboard rather than of this run. Upstream publishes one aggregate over
+all 547 with no per-engine breakdown, so the BigQuery- or SQLite-only score a
+credential-limited host can produce has nothing to be compared against. The
+board is also almost entirely agentic (schema linking, multi-turn, execution
+feedback, topping 76%); the nearest single-call entries are prompting frameworks
+at 1.5–5.7%. A 0-shot single call is a different setting from all of them. This
+is why the task ships ``experimental``: a faithful port with no reachable
+anchor, not a port awaiting one run.
 
-Measured: **not yet**, on either axis — no alignment run, and (unlike Spider 1.0)
-no end-to-end pass over the real archives either, because the host volume had no
-room to extract them. The loader and comparison are validated against the real
-archives' *contents* read in place, and the task's stages against synthetic
-fixtures. Treat every number this task produces as unverified until someone runs
-it on staged data.
+Measured, on the real staged archives:
+
+* **All 135 local questions run end to end** — prompt, execution, comparison,
+  report — with 0 pipeline failures, so ``n_local`` is 135 rather than a subset.
+* **24 of 24 verdicts agree with upstream's own evaluator.** Every local
+  instance for which upstream ships gold SQL was graded by both
+  ``evaluate_single_sql_instance`` and this task's path; they agree on all of
+  them, the 8 that score 0 included (upstream's ``gold/sql`` is stale against
+  its own ``gold/exec_result``, and both harnesses call those wrong identically).
+* **All 128 distinct cloud databases render a schema block** within
+  :data:`MAX_SCHEMA_CHARS`, so no cloud question fails at prompt time.
+
+Not measured: whether a *model* can answer these questions, and the BigQuery and
+Snowflake engines, which need credentials this environment does not have. The
+runs above script the model — upstream's gold SQL where it ships one — so they
+exercise every stage except inference quality.
 
 References:
 
@@ -135,6 +161,16 @@ _DIALECT = {
 #: the external-knowledge document and its own answer.
 MAX_SCHEMA_CHARS = 200_000
 
+#: Field cap for reading a shipped ``DDL.csv``. ``csv`` defaults to 131,072
+#: characters per field and one database exceeds it: ``bigquery`` /
+#: ``pancancer_atlas_2`` holds a single ``ddl`` value longer than that, so
+#: ``DictReader`` raises ``_csv.Error: field larger than field limit`` and its
+#: two questions (``bq151``, ``bq161``) die in ``preprocess`` rather than
+#: scoring. Not ``sys.maxsize``: the cap is a C long and a value it cannot hold
+#: raises ``OverflowError``, so this is the largest signed 32-bit value, which
+#: every platform accepts and no shipped field comes near.
+_CSV_FIELD_LIMIT = 2**31 - 1
+
 
 @sieval_task(
     name="spider2_lite_0shot_gen",
@@ -156,8 +192,11 @@ MAX_SCHEMA_CHARS = 200_000
             "copies and only evaluate.py's carries the 2025-10-29 fix: NaN "
             "normalised to 0, early break, empty-gold guard). Per-instance "
             "condition_cols/ignore_order from spider2lite_eval.jsonl, and "
-            "upstream's is_single branch over 1,544 gold CSVs: one gold goes to "
-            "compare_pandas_table, several to compare_multi_pandas_table. The "
+            "upstream's is_single branch over 1,544 gold CSVs. is_single is a "
+            "filename shape, not a gold count: resolve_gold_paths returns True "
+            "only when an exact <instance_id>.csv exists, which is 3 of 547, so "
+            "544 instances — including 104 that have exactly one gold file — go "
+            "to compare_multi_pandas_table. The "
             "prediction is written to CSV and read back before comparing, as "
             "upstream does — that round trip re-infers dtypes and is part of the "
             "metric. Three of the 1,544 golds are header-only (local275_a, "
@@ -166,6 +205,11 @@ MAX_SCHEMA_CHARS = 200_000
             "are valid); none is a bq/ga instance, which is the only prefix "
             "whose upstream path scores an empty result 0 without comparing, so "
             "not implementing that guard cannot change a verdict on this data. "
+            "It does cost one free point on the first-party Snowflake path: an "
+            "empty result matches sf_bq411_b's zero rows, so sf_bq411 scores 1 "
+            "for a query returning nothing. 1 of 207, kept rather than "
+            "special-cased because dropping an empty gold would itself be a "
+            "divergence in the comparison. "
             "SQL extraction is upstream's extract_sql_query. DIVERGENCE — "
             "Snowflake execution is first-party: upstream's current lite "
             "evaluator routes only bq/ga and "
@@ -523,7 +567,7 @@ def _grade_sync(
 def _eval_standard(path: str) -> dict:
     """Upstream's per-instance comparison rules, parsed once per process."""
     rules = {}
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         item = json.loads(line)
@@ -581,10 +625,16 @@ def _resource_schema(
 
     Upstream lays these out as ``<engine>/<db>/<schema>/`` holding a ``DDL.csv``
     (``table_name,ddl``) and one JSON per table. The DDL is preferred because it
-    is the engine's own text; the JSON files are the fallback for databases that
-    ship no DDL.csv.
+    is the engine's own text.
 
-    Cached, and not only to save the walk: 412 questions share ~50 databases,
+    The JSON branch is a **fallback that the pinned data never reaches**: all
+    128 distinct cloud databases ship a ``DDL.csv``, so no question renders a
+    schema from table JSON. It stays because the tree is upstream's to reshape
+    and a database arriving without DDL should degrade to a worse prompt rather
+    than to a failed sample — but it is untested against real data, and a
+    verdict has never depended on it.
+
+    Cached, and not only to save the walk: 412 questions share 128 databases,
     and the largest of them is a 26 MB tree that would otherwise be re-read and
     re-rendered once per question.
     """
@@ -592,12 +642,18 @@ def _resource_schema(
     if not root.is_dir():
         raise ValueError(f"No shipped schema for {backend} database {db!r}")
     blocks: list[str] = []
-    for ddl_path in sorted(root.rglob("DDL.csv")):
-        with ddl_path.open(newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                statement = (row.get("ddl") or "").strip()
-                if statement:
-                    blocks.append(statement)
+    # `csv`'s field cap is process-global, so it is raised for the read and put
+    # back. See `_CSV_FIELD_LIMIT` for the database that needs it.
+    previous_limit = csv.field_size_limit(_CSV_FIELD_LIMIT)
+    try:
+        for ddl_path in sorted(root.rglob("DDL.csv")):
+            with ddl_path.open(newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    statement = (row.get("ddl") or "").strip()
+                    if statement:
+                        blocks.append(statement)
+    finally:
+        csv.field_size_limit(previous_limit)
     if blocks:
         return _fit(blocks, budget)
     for json_path in sorted(root.rglob("*.json")):
