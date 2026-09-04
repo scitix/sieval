@@ -24,6 +24,7 @@ name, so it is the only place the distinction can live.
 | --- | --- |
 | *(none)* | Tracks upstream — its protocol, its grader, its defects |
 | `_fixed` | Ours, diverging to repair a defect in upstream's grader or data |
+| `_parse` | Upstream's *other* published protocol over the same benchmark and grader: same data, same scoring, a different prompt and an output extractor, each with its own published column |
 
 - **The unqualified name always tracks upstream, bugs included**, and is never
   repurposed by a local change. It stays free even if nothing will occupy it —
@@ -31,6 +32,17 @@ name, so it is the only place the distinction can live.
 - **`_fixed` is licensed by a defect, not a preference**, and owes two things:
   every divergence enumerated in `reference_impl.notes`, and its score impact
   **quantified**. An unmeasured fork is not a fix.
+- **`_parse` is licensed by upstream publishing two protocols**, not by a
+  preference between them: it exists only where the *same* upstream, over the
+  same data and the same grader, evaluates a second prompt plus an output
+  extractor and reports it as its own column. Both readings then owe their own
+  published numbers, and the unqualified name goes to the un-intervened one —
+  parsing is a method layered on the benchmark, not the benchmark.
+  `nl2sh_alfa_0shot_gen` / `_parse` is the case that earned the row: NL2SH-ALFA's
+  Table 5 publishes Base and Parse side by side, and the gap between them reaches
+  32%, so one number for "NL2SH accuracy" would hide whether a model was scored
+  on translation or on formatting compliance. Not for a prompt *we* prefer, and
+  not for an extractor we added: the second column has to be upstream's.
 - The mode is read positionally, so a variant may not spell one:
   `foo_0shot_clp_gen.py` has two readings and is rejected.
 - The table is the current vocabulary, not the limit — a new variant earns a row

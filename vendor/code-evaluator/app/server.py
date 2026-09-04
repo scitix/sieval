@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from .exec_js import execute_code as exec_js
 from .exec_py_code import execute_code as exec_py_code
 from .exec_py_test import execute_test as exec_py_test
+from .exec_sh import DEFAULT_TIMEOUT as SHELL_DEFAULT_TIMEOUT
+from .exec_sh import execute_shell, hosted_fs_id
 from .exec_ts import execute_code as exec_ts
 
 # logger
@@ -82,6 +84,96 @@ class ResourceMetrics(BaseModel):
 @app.get("/health")
 async def check_health() -> BasicResponse[None]:
     return BasicResponse(status=True, msg="healthy")
+
+
+class ShellFacts(BaseModel):
+    """What running one command pair against a prepared tree produced.
+
+    Facts, never a verdict. Deciding whether two Bash commands are functionally
+    equivalent needs an embedding model when their outputs differ, and this
+    service holds no model credentials -- so the caller owns the arithmetic and
+    the record of what decided each sample.
+
+    ``*_status`` are the raw ``git status --short`` text, not a parsed structure:
+    the caller re-parses them with its own vendored copy of upstream's parser,
+    and that copy is what scores. ``*_hashes`` map each added/untracked/copied
+    path to the **raw stdout** of upstream's hash command, because upstream
+    compares those strings rather than digests -- including when the command is
+    ``md5deep``, which no image installs, so both sides carry the same failure
+    text and compare equal.
+
+    ``*_exit_ok`` and ``*_timed_out`` describe the commands, not the request: a
+    command that failed or hung is a successful evaluation reporting exactly
+    that. ``gold_timed_out`` exists because bounding the gold command is this
+    service's own divergence from upstream, and a caller has to be able to say
+    the bound never bound.
+    """
+
+    fs_id: int
+    gold_output: str
+    model_output: str
+    gold_status: str
+    model_status: str
+    gold_hashes: dict[str, str]
+    model_hashes: dict[str, str]
+    gold_exit_ok: bool
+    model_exit_ok: bool
+    gold_timed_out: bool
+    model_timed_out: bool
+
+
+class ShellSample(BaseModel):
+    """One NL2SH-ALFA sample: the model's command and the graded gold.
+
+    ``fs_id`` travels with the sample rather than living in this service's
+    config alone, so that a sample routed to the instance hosting a *different*
+    prepared tree is refused instead of scored. Both are checked: the request
+    says which tree it needs, the instance says which it has.
+    """
+
+    uuid: str
+    fs_id: int
+    command: str
+    gold: str
+    timeout: float = SHELL_DEFAULT_TIMEOUT
+
+
+@app.post("/shell-evaluations")
+async def evaluate_shell(sample: ShellSample) -> BasicResponse[ShellFacts]:
+    """Run a command pair against this instance's prepared filesystem.
+
+    Separate from ``/evaluations`` rather than another ``source`` on it, for two
+    reasons that are both structural: the payload is a command *pair* against
+    shared state where that route's is one self-contained program, and the
+    response is execution facts where that route's is ``ResourceMetrics``.
+    FastAPI filters a response against the route's declared model, so returning
+    these fields through that one would silently drop every last one of them.
+    """
+    ok, msg, data = await execute_shell(
+        fs_id=sample.fs_id,
+        command=sample.command,
+        gold=sample.gold,
+        timeout=sample.timeout,
+    )
+    logger.info(
+        f"evaluate shell sample '{sample.uuid}' on fs {sample.fs_id} "
+        f"(hosted: {hosted_fs_id()}), timeout: {sample.timeout}, status: {ok}"
+        + (f", msg: {msg}" if msg else "")
+        + (
+            ""
+            if data is None
+            else (
+                f", gold_exit_ok: {data['gold_exit_ok']}, "
+                f"model_exit_ok: {data['model_exit_ok']}, "
+                f"gold_timed_out: {data['gold_timed_out']}, "
+                f"model_timed_out: {data['model_timed_out']}, "
+                f"changed: {len(data['model_hashes'])}/{len(data['gold_hashes'])}"
+            )
+        )
+    )
+    return BasicResponse(
+        status=ok, msg=msg, data=ShellFacts(**data) if data else None
+    )
 
 
 class LiveCodeBenchTest(BaseModel):

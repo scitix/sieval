@@ -95,6 +95,14 @@ math = [
   "math-verify[antlr4-11-0]==0.8.0",
   "regex>=2024.0.0",
 ]
+# nl2sh-alfa: scipy backs `1 - scipy.spatial.distance.cosine(...)`, the exact
+# expression InterCode-ALFA's embed FEH decides part 3 with, so it is the metric
+# and not a convenience -- a hand-rolled dot product could disagree with upstream
+# on a pair sitting within float noise of the 0.75 threshold. Reached from
+# `sieval.community.intercode_alfa` at grading time (the import is deferred to
+# that call), which `check_dep_coverage` cannot see because it scans tasks/ and
+# datasets/ only -- hence declared here and named as both tasks' `deps_group`.
+nl2sh-alfa = ["scipy>=1.16.3"]
 # ruler: benchmark eval + loader deps (what `sieval` needs to run RULER).
 ruler = [
   "tiktoken>=0.8.0",

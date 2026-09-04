@@ -973,6 +973,28 @@
       "checksums": {}
     },
     {
+      "name": "nl2sh_alfa",
+      "display_name": "NL2SH-ALFA",
+      "description": "Natural language to Bash; 300 verified instructions, execution-graded.",
+      "source": [
+        "hf:westenfelder/NL2SH-ALFA@a99cb5784cf5c2a42b1cc26c1903d9c3b35206ba"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        }
+      ],
+      "tags": [
+        "english",
+        "nl2bash",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
       "name": "openbookqa",
       "display_name": "OpenBookQA",
       "description": "OpenBookQA elementary-science open-book multiple-choice QA.",
@@ -2451,6 +2473,50 @@
         "notes": "Same vendored graders and multilingual checker fork as multi_if_0shot_gen, with three checkers replaced by the repaired subclasses in sieval.community.instruction_following_eval_fixed (shared with ifeval_0shot_gen_fixed; the two vendored copies of these three classes are logic-identical). DIVERGENCES (exhaustive): (1) length_constraints:nth_paragraph_first_word — paragraphs are counted and indexed on the same blank-filtered list, and the comparison spans as many tokens as the constraint's own value; 35 of 749 slots carry a first_word that is not one token (32 multi-token across 6 languages, 3 blank in conversation 2215:14:zh) and upstream FAILs every response on them unconditionally. The 3 blank slots stay ungradeable by design. (2) keywords:letter_frequency — the item's own character is kept instead of a fresh random.choice per call; 1 conversation, 1122:18:en, 3 turn-cells. (3) change_case:english_capital — langdetect runs on a case-folded copy, since ALL-CAPS text is off-distribution for every profile it ships. Nothing else differs: one method (_instruction_dict) is overridden and everything else inherited. SCORE IMPACT, measured by running this task's own feedback/report and the unqualified task's over 160 stored Qwen3-30B-A3B thinking-on conversations (1,218 slots), langdetect seeded identically per arm — score 69.07→70.52 (+1.45); per-turn overall 75.45→77.51 / 69.09→70.74 / 62.67→63.30; strict instruction-level 78.14→80.97 / 79.46→81.44 / 78.75→79.64. Flips 17 nth_paragraph_first_word + 3 english_capital (strict), 1 + 3 (loose), all FAIL→PASS. Loose moves less because its line-stripping retries already undo some instances of the paragraph defect. Coverage 1,121 slots over 515 of 4,501 conversations (11.4%). Unlike the IFEval sibling, which is seed-invariant after repair, score here still spans 0.18 over 5 langdetect seeds — the same 0.18 upstream spans, since that residue is language routing on genuinely multilingual text. REPRODUCTION NOTE: langdetect.detect is randomized and sieval never sets DetectorFactory.seed; pin it in both arms, since it also selects the counting algorithm behind every length constraint."
       },
       "status": "stable",
+      "reference_kind": "value"
+    },
+    {
+      "name": "nl2sh_alfa_0shot_gen",
+      "display_name": "NL2SH-ALFA (0-shot, generative)",
+      "description": "Natural language to Bash, execution-graded; upstream's Base prompt, reply used verbatim.",
+      "dataset": "nl2sh_alfa",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "nl2bash",
+        "code-exec"
+      ],
+      "deps_group": "nl2sh-alfa",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "intercode-alfa",
+        "url": "https://github.com/westenfelder/InterCode-ALFA/blob/2d3a69473a68569828ab0b4859073ef4a0ae482c/src/icalfa/envs/bash/bash_env.py",
+        "notes": "BASE reading: paper Figure 7's prompt, model reply graded verbatim with no markdown stripping. Table 5 Base column -- gpt-4o-2024-08-06 0.74, gpt-4o-mini-2024-07-18 0.71, gpt-4-0613 0.68, gpt-3.5-turbo-0125 0.58, at temperature 0 and seed 123. NOT byte-faithful in one respect that the _parse sibling is: no upstream script ships this prompt (neither example.ipynb nor model_comparison.ipynb contains its 'will not output markdown' sentences), so its split across a system and a user turn is inferred from how the shipped scripts render the sibling figure. experimental until a per-sample verdict comparison against upstream icalfa and an alignment run against those published numbers both land. Graded by InterCode-ALFA 0.3.6 (the version the paper states Table 5 was produced with), vendored as sieval.community.intercode_alfa: reward = 0.01 + git-status agreement (0.33) + md5 agreement on commonly added paths (0.33) + output equivalence (0.33), correct iff the sum is exactly 1.0. FEH = exec + mxbai-embed-large at cosine > 0.75, upstream's own reproduction setting, NOT submit_command's retired gpt-4-0613 default. 300 test rows (the card's '600 pairs' counts two verified commands per instruction). GRADED GOLD comes from the harness's own vendored table, not from the Hub's `bash` column: the two differ on 2 of 300 rows (index 38 echo -n vs echo, index 100 'length < 20' vs '< 40'), and 3 more rows have reworded instructions. Upstream's clean_cmd + docker-py shlex.split rewrites 37 golds and truncates index 230 into a syntax error; reproduced deliberately. DIVERGENCES: one container per image with a reset before each command instead of two peer containers; the 10s command wall also applied to the gold (n_gold_timeouts publishes that it does not bind); the embedding served over an OpenAI-compatible endpoint rather than Ollama, so the weights are the Hub's rather than its f16 GGUF conversion. Requires a shell-eval service per filesystem image (SIEVAL_SHELL_EVAL_API) and an embedding endpoint (SIEVAL_EMBED_API / SIEVAL_EMBED_API_KEY)."
+      },
+      "status": "experimental",
+      "reference_kind": "value"
+    },
+    {
+      "name": "nl2sh_alfa_0shot_gen_parse",
+      "display_name": "NL2SH-ALFA (0-shot, generative, parsed)",
+      "description": "Natural language to Bash, execution-graded; upstream's shipped prompt with markdown stripping.",
+      "dataset": "nl2sh_alfa",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "nl2bash",
+        "code-exec"
+      ],
+      "deps_group": "nl2sh-alfa",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "intercode-alfa",
+        "url": "https://github.com/westenfelder/InterCode-ALFA/blob/2d3a69473a68569828ab0b4859073ef4a0ae482c/src/icalfa/envs/bash/bash_env.py",
+        "notes": "PARSE reading: the prompt and extractor upstream ships runnable code for (NL2SH@b405201a code/example.ipynb and code/model_comparison.ipynb -- same system prompt, bare user turn, parse_bash, and submit_command(eval_mode='embed', eval_param=0.75)), so prompt, extraction and FEH setting are copied rather than inferred. Table 5 Parse column -- gpt-4o-2024-08-06 0.73, gpt-4o-mini-2024-07-18 0.72, gpt-4-0613 0.68, gpt-3.5-turbo-0125 0.67, qwen2.5-coder-7b-instruct 0.62, llama-3.1-8b-instruct 0.53, at temperature 0 and seed 123. parse_bash strips one fence (```bash, then ```, then `) and returns the reply unchanged otherwise. The sibling nl2sh_alfa_0shot_gen is the same benchmark without this method; the paper's finding is that the gap reaches 32%. experimental until a per-sample verdict comparison against upstream icalfa and an alignment run against those published numbers both land. Graded by InterCode-ALFA 0.3.6 (the version the paper states Table 5 was produced with), vendored as sieval.community.intercode_alfa: reward = 0.01 + git-status agreement (0.33) + md5 agreement on commonly added paths (0.33) + output equivalence (0.33), correct iff the sum is exactly 1.0. FEH = exec + mxbai-embed-large at cosine > 0.75, upstream's own reproduction setting, NOT submit_command's retired gpt-4-0613 default. 300 test rows (the card's '600 pairs' counts two verified commands per instruction). GRADED GOLD comes from the harness's own vendored table, not from the Hub's `bash` column: the two differ on 2 of 300 rows (index 38 echo -n vs echo, index 100 'length < 20' vs '< 40'), and 3 more rows have reworded instructions. Upstream's clean_cmd + docker-py shlex.split rewrites 37 golds and truncates index 230 into a syntax error; reproduced deliberately. DIVERGENCES: one container per image with a reset before each command instead of two peer containers; the 10s command wall also applied to the gold (n_gold_timeouts publishes that it does not bind); the embedding served over an OpenAI-compatible endpoint rather than Ollama, so the weights are the Hub's rather than its f16 GGUF conversion. Requires a shell-eval service per filesystem image (SIEVAL_SHELL_EVAL_API) and an embedding endpoint (SIEVAL_EMBED_API / SIEVAL_EMBED_API_KEY)."
+      },
+      "status": "experimental",
       "reference_kind": "value"
     },
     {

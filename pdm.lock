@@ -2,10 +2,10 @@
 # It is not intended for manual editing.
 
 [metadata]
-groups = ["default", "dev", "drop", "hle", "ifbench", "ifeval", "iheval", "math", "multi-if", "ruler", "ruler-gen", "scicode", "spider", "spider2", "t-eval", "test", "wikisql"]
+groups = ["default", "dev", "drop", "hle", "ifbench", "ifeval", "iheval", "math", "multi-if", "nl2sh-alfa", "ruler", "ruler-gen", "scicode", "spider", "spider2", "t-eval", "test", "wikisql"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:c7d52f0c72b1f4f5659a01286f65a53fc7ae69f5ef2af0039d62950fab4ef6a6"
+content_hash = "sha256:ee11aa0c7ca350d44ac483278e81a61f330b54a9b0d1119250001b418fac2e61"
 
 [[metadata.targets]]
 requires_python = ">=3.12,<3.15"
@@ -1983,7 +1983,7 @@ name = "numpy"
 version = "2.2.0"
 requires_python = ">=3.10"
 summary = "Fundamental package for array computing in Python"
-groups = ["default", "drop", "hle", "iheval", "ruler", "scicode", "spider2", "t-eval"]
+groups = ["default", "drop", "hle", "iheval", "nl2sh-alfa", "ruler", "scicode", "spider2", "t-eval"]
 files = [
     {file = "numpy-2.2.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:cff210198bb4cae3f3c100444c5eaa573a823f05c253e7188e1362a5555235b3"},
     {file = "numpy-2.2.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:58b92a5828bd4d9aa0952492b7de803135038de47343b2aa3cc23f3b71a3dc4e"},
@@ -3251,7 +3251,7 @@ name = "scipy"
 version = "1.16.3"
 requires_python = ">=3.11"
 summary = "Fundamental algorithms for scientific computing in Python"
-groups = ["drop", "ruler", "scicode", "t-eval"]
+groups = ["drop", "nl2sh-alfa", "ruler", "scicode", "t-eval"]
 dependencies = [
     "numpy<2.6,>=1.25.2",
 ]

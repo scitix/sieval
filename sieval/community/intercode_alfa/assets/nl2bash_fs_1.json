@@ -1,0 +1,920 @@
+[
+  {
+    "query":"list files in the current directory",
+    "gold":"ls",
+    "gold2":"ls -l",
+    "difficulty":0
+  },
+  {
+    "query":"list all files in the current directory including hidden files",
+    "gold":"ls -a",
+    "gold2":"ls -alh",
+    "difficulty":0
+  },
+  {
+    "query":"list open files",
+    "gold":"lsof",
+    "gold2":"lsof -P -i -n",
+    "difficulty":0
+  },
+  {
+    "query":"create a copy of \/testbed\/hello.php named \/testbed\/hello-COPY.php",
+    "gold":"cp \/testbed\/hello.php \/testbed\/hello-COPY.php",
+    "gold2":"cp \/testbed\/hello.php \/testbed\/hello-COPY.php -v",
+    "difficulty":0
+  },
+  {
+    "query":"create a file  \/testbed\/test.txt",
+    "gold":"touch \/testbed\/test.txt",
+    "gold2":"> \/testbed\/test.txt",
+    "difficulty":0
+  },
+  {
+    "query":"create a directory \/testbed\/test_dir",
+    "gold":"mkdir \/testbed\/test_dir",
+    "gold2":"mkdir \/testbed\/test_dir -v",
+    "difficulty":0
+  },
+  {
+    "query":"remove a file named does_not_exist.txt",
+    "gold":"rm does_not_exist.txt",
+    "gold2":"unlink does_not_exist.txt",
+    "difficulty":0
+  },
+  {
+    "query":"print hello world",
+    "gold":"echo hello world",
+    "gold2":"echo -n 'hello world'",
+    "difficulty":0
+  },
+  {
+    "query":"print the current working directory",
+    "gold":"pwd",
+    "gold2":"pwd .",
+    "difficulty":0
+  },
+  {
+    "query":"print the current date and time",
+    "gold":"date",
+    "gold2":"date -R",
+    "difficulty":0
+  },
+  {
+    "query":"print the current user",
+    "gold":"whoami",
+    "gold2":"id -un",
+    "difficulty":0
+  },
+  {
+    "query":"remove a directory named fake_dir",
+    "gold":"rmdir fake_dir",
+    "gold2":"rm -r fake_dir",
+    "difficulty":0
+  },
+  {
+    "query":"print the current shell",
+    "gold":"echo $0",
+    "gold2":"echo $SHELL",
+    "difficulty":0
+  },
+  {
+    "query":"print environment variables",
+    "gold":"env",
+    "gold2":"printenv",
+    "difficulty":0
+  },
+  {
+    "query":"print the current user's home directory",
+    "gold":"echo $HOME",
+    "gold2":"echo ~",
+    "difficulty":0
+  },
+  {
+    "query":"print the current user's path",
+    "gold":"echo $PATH",
+    "gold2":"printenv PATH",
+    "difficulty":0
+  },
+  {
+    "query":"display the contents of the setup_nl2b_fs_1.sh file",
+    "gold":"cat setup_nl2b_fs_1.sh",
+    "gold2":"nl setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"display the first 5 lines of the setup_nl2b_fs_1.sh file",
+    "gold":"head -n 5 setup_nl2b_fs_1.sh",
+    "gold2":"sed -n '1,5p' setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"display the last 5 lines of the setup_nl2b_fs_1.sh file",
+    "gold":"tail -n 5 setup_nl2b_fs_1.sh",
+    "gold2":"tac setup_nl2b_fs_1.sh | head -n 5",
+    "difficulty":0
+  },
+  {
+    "query":"print the tenth line of the setup_nl2b_fs_1.sh",
+    "gold":"sed -n 10p setup_nl2b_fs_1.sh",
+    "gold2":"awk 'NR==10' setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"print the path of the bash executable",
+    "gold":"which bash",
+    "gold2":"type bash",
+    "difficulty":0
+  },
+  {
+    "query":"display the shell history",
+    "gold":"history",
+    "gold2":"history | cut -c 8-",
+    "difficulty":0
+  },
+  {
+    "query":"print the system utilization stats",
+    "gold":"vmstat",
+    "gold2":"vmstat -t",
+    "difficulty":0
+  },
+  {
+    "query":"print the system uptime",
+    "gold":"uptime",
+    "gold2":"uptime -p",
+    "difficulty":0
+  },
+  {
+    "query":"print the system load averages",
+    "gold":"w",
+    "gold2":"w -s",
+    "difficulty":0
+  },
+  {
+    "query":"print running processes",
+    "gold":"ps",
+    "gold2":"ps -e",
+    "difficulty":0
+  },
+  {
+    "query":"print running processes in a tree format",
+    "gold":"pstree",
+    "gold2":"pstree -p",
+    "difficulty":0
+  },
+  {
+    "query":"print the system memory usage",
+    "gold":"free",
+    "gold2":"free -h",
+    "difficulty":0
+  },
+  {
+    "query":"print the system disk usage",
+    "gold":"df",
+    "gold2":"df -h",
+    "difficulty":0
+  },
+  {
+    "query":"print the kernel version",
+    "gold":"uname -a",
+    "gold2":"uname -r",
+    "difficulty":0
+  },
+  {
+    "query":"print the system hostname",
+    "gold":"hostname",
+    "gold2":"hostname -f",
+    "difficulty":0
+  },
+  {
+    "query":"print the system IP address",
+    "gold":"hostname -I",
+    "gold2":"hostname -i",
+    "difficulty":0
+  },
+  {
+    "query":"print the ip addresses of the system DNS servers",
+    "gold":"cat \/etc\/resolv.conf | grep nameserver",
+    "gold2":"grep nameserver \/etc\/resolv.conf",
+    "difficulty":0
+  },
+  {
+    "query":"display the network interfaces",
+    "gold":"ifconfig",
+    "gold2":"ifconfig -a",
+    "difficulty":0
+  },
+  {
+    "query":"display the routing table",
+    "gold":"route",
+    "gold2":"route -n",
+    "difficulty":0
+  },
+  {
+    "query":"show the last logged in users",
+    "gold":"last",
+    "gold2":"last -a",
+    "difficulty":0
+  },
+  {
+    "query":"print the last logged in users and show the full user and domain names",
+    "gold":"last -w",
+    "gold2":"last -w -i",
+    "difficulty":0
+  },
+  {
+    "query":"print the openssl version",
+    "gold":"openssl version",
+    "gold2":"openssl version -a",
+    "difficulty":0
+  },
+  {
+    "query":"base64 encode the string 'hello'",
+    "gold":"echo 'hello' | base64",
+    "gold2":"echo 'hello' | openssl enc -base64",
+    "difficulty":0
+  },
+  {
+    "query":"base64 decode the string 'aGVsbG8='",
+    "gold":"echo 'aGVsbG8=' | base64 -d",
+    "gold2":"echo 'aGVsbG8=' | openssl enc -base64 -d",
+    "difficulty":0
+  },
+  {
+    "query":"print lines containing 'console' in the file setup_nl2b_fs_1.sh",
+    "gold":"grep 'console' setup_nl2b_fs_1.sh",
+    "gold2":"awk '\/console\/' setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"list the stats and timestamps of the file setup_nl2b_fs_1.sh",
+    "gold":"stat setup_nl2b_fs_1.sh",
+    "gold2":"stat -t setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"gzip the file \/testbed\/hello.php keeping the original file",
+    "gold":"gzip -k \/testbed\/hello.php",
+    "gold2":"gzip --keep \/testbed\/hello.php",
+    "difficulty":0
+  },
+  {
+    "query":"tar the file \/testbed\/hello.php to \/testbed\/hello.tar",
+    "gold":"tar -cf \/testbed\/hello.tar \/testbed\/hello.php",
+    "gold2":"tar -cvf \/testbed\/hello.tar \/testbed\/hello.php",
+    "difficulty":0
+  },
+  {
+    "query":"show apt information about the curl package",
+    "gold":"apt show curl",
+    "gold2":"apt-cache show curl",
+    "difficulty":0
+  },
+  {
+    "query":"list background jobs",
+    "gold":"jobs",
+    "gold2":"jobs -p",
+    "difficulty":0
+  },
+  {
+    "query":"print the current terminal type",
+    "gold":"echo $TERM",
+    "gold2":"printenv TERM",
+    "difficulty":0
+  },
+  {
+    "query":"display the current process priority",
+    "gold":"nice",
+    "gold2":"nice",
+    "difficulty":0
+  },
+  {
+    "query":"display the pid of the current shell",
+    "gold":"echo $$",
+    "gold2":"pidof bash",
+    "difficulty":0
+  },
+  {
+    "query":"time how long it takes to run the command echo 'hello'",
+    "gold":"time echo 'hello'",
+    "gold2":"time echo 'hello'",
+    "difficulty":0
+  },
+  {
+    "query":"print the current user's groups",
+    "gold":"groups",
+    "gold2":"groups",
+    "difficulty":0
+  },
+  {
+    "query":"print the current user's id",
+    "gold":"id",
+    "gold2":"id -u",
+    "difficulty":0
+  },
+  {
+    "query":"list the cron tab",
+    "gold":"crontab -l",
+    "gold2":"crontab -l",
+    "difficulty":0
+  },
+  {
+    "query":"print the current user's umask",
+    "gold":"umask",
+    "gold2":"umask -p",
+    "difficulty":0
+  },
+  {
+    "query":"list cpu information",
+    "gold":"lscpu",
+    "gold2":"cat \/proc\/cpuinfo",
+    "difficulty":0
+  },
+  {
+    "query":"list memory information",
+    "gold":"lsmem",
+    "gold2":"cat \/proc\/meminfo",
+    "difficulty":0
+  },
+  {
+    "query":"print the installed ssh version",
+    "gold":"ssh -V",
+    "gold2":"ssh -V",
+    "difficulty":0
+  },
+  {
+    "query":"print the bash profile in the home directory",
+    "gold":"cat ~\/.bashrc",
+    "gold2":"nl ~\/.bashrc",
+    "difficulty":0
+  },
+  {
+    "query":"print the system's locale",
+    "gold":"locale",
+    "gold2":"locale",
+    "difficulty":0
+  },
+  {
+    "query":"list block devices",
+    "gold":"lsblk",
+    "gold2":"lsblk -f",
+    "difficulty":0
+  },
+  {
+    "query":"find all files larger than 100MB in the current dir",
+    "gold":"find . -size +100M -print",
+    "gold2":"find . -size +100M",
+    "difficulty":0
+  },
+  {
+    "query":"create a symbolic link to \/testbed\/hello.php named \/testbed\/link",
+    "gold":"ln -s \/testbed\/hello.php \/testbed\/link",
+    "gold2":"ln -s \/testbed\/hello.php \/testbed\/link",
+    "difficulty":0
+  },
+  {
+    "query":"change the ownership of \/testbed\/test.txt to user 'nobody'",
+    "gold":"chown nobody \/testbed\/test.txt",
+    "gold2":"chown nobody \/testbed\/test.txt",
+    "difficulty":0
+  },
+  {
+    "query":"change the group of \/testbed\/test.txt to group 'nogroup'",
+    "gold":"chgrp nogroup \/testbed\/test.txt",
+    "gold2":"chgrp nogroup \/testbed\/test.txt",
+    "difficulty":0
+  },
+  {
+    "query":"change permissions of \/testbed\/test.txt to read-only for everyone",
+    "gold":"chmod 444 \/testbed\/test.txt",
+    "gold2":"chmod a=r \/testbed\/test.txt",
+    "difficulty":0
+  },
+  {
+    "query":"count the lines, words, and characters in setup_nl2b_fs_1.sh",
+    "gold":"wc setup_nl2b_fs_1.sh",
+    "gold2":"wc setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"print the lines in setup_nl2b_fs_1.sh sorted alphabetically",
+    "gold":"sort setup_nl2b_fs_1.sh",
+    "gold2":"sort setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"print the unique lines in setup_nl2b_fs_1.sh",
+    "gold":"uniq setup_nl2b_fs_1.sh",
+    "gold2":"uniq setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"display network statistics",
+    "gold":"netstat --statistics",
+    "gold2":"netstat -s",
+    "difficulty":0
+  },
+  {
+    "query":"display network interfaces",
+    "gold":"netstat -i",
+    "gold2":"netstat --interfaces",
+    "difficulty":0
+  },
+  {
+    "query":"display a calendar for the next 3 months",
+    "gold":"cal -3",
+    "gold2":"cal -3",
+    "difficulty":0
+  },
+  {
+    "query":"show running daemons and services",
+    "gold":"service --status-all",
+    "gold2":"service --status-all",
+    "difficulty":0
+  },
+  {
+    "query":"print the system boot time",
+    "gold":"who -b",
+    "gold2":"uptime -s",
+    "difficulty":0
+  },
+  {
+    "query":"print current swap usage",
+    "gold":"swapon --show",
+    "gold2":"free -h | grep Swap",
+    "difficulty":0
+  },
+  {
+    "query":"print a list of active kernel parameters",
+    "gold":"sysctl -a",
+    "gold2":"sysctl --all",
+    "difficulty":0
+  },
+  {
+    "query":"list the installed software packages",
+    "gold":"dpkg --get-selections",
+    "gold2":"apt list --installed",
+    "difficulty":0
+  },
+  {
+    "query":"list available shells",
+    "gold":"cat \/etc\/shells",
+    "gold2":"cat \/etc\/shells",
+    "difficulty":0
+  },
+  {
+    "query":"list all users on the system",
+    "gold":"getent passwd",
+    "gold2":"cat \/etc\/passwd",
+    "difficulty":0
+  },
+  {
+    "query":"list all groups on the system",
+    "gold":"getent group",
+    "gold2":"cat \/etc\/group",
+    "difficulty":0
+  },
+  {
+    "query":"extract the filename from this path '\/usr\/local\/bin\/my_script.sh'",
+    "gold":"basename \/usr\/local\/bin\/my_script.sh",
+    "gold2":"echo 'my_script.sh'",
+    "difficulty":0
+  },
+  {
+    "query":"perform a dns lookup for google.com",
+    "gold":"nslookup google.com",
+    "gold2":"dig google.com",
+    "difficulty":0
+  },
+  {
+    "query":"extract the directory from this path '\/usr\/local\/bin\/my_script.sh'",
+    "gold":"dirname \/usr\/local\/bin\/my_script.sh",
+    "gold2":"echo '\/usr\/local\/bin\/'",
+    "difficulty":0
+  },
+  {
+    "query":"send the message 'System maintenance in 10 minutes!' to all logged in users",
+    "gold":"wall 'System maintenance in 10 minutes!'",
+    "gold2":"echo 'System maintenance in 10 minutes!' | wall",
+    "difficulty":0
+  },
+  {
+    "query":"print the file type of setup_nl2b_fs_1.sh",
+    "gold":"file setup_nl2b_fs_1.sh",
+    "gold2":"file setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"print the contents of setup_nl2b_fs_1.sh with lines wrapped to 40 characters",
+    "gold":"fold -w 40 setup_nl2b_fs_1.sh",
+    "gold2":"fmt -w 40 setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"print all system configuration variables",
+    "gold":"getconf -a",
+    "gold2":"getconf -a",
+    "difficulty":0
+  },
+  {
+    "query":"print the number of processors",
+    "gold":"nproc",
+    "gold2":"nproc",
+    "difficulty":0
+  },
+  {
+    "query":"print the max number of open file descriptors",
+    "gold":"ulimit -n",
+    "gold2":"ulimit -n",
+    "difficulty":0
+  },
+  {
+    "query":"print the max number of user processes",
+    "gold":"ulimit -u",
+    "gold2":"ulimit -u",
+    "difficulty":0
+  },
+  {
+    "query":"print the max cpu time",
+    "gold":"ulimit -t",
+    "gold2":"prlimit --cpu",
+    "difficulty":0
+  },
+  {
+    "query":"display the configured size of long integers",
+    "gold":"getconf LONG_BIT",
+    "gold2":"getconf LONG_BIT",
+    "difficulty":0
+  },
+  {
+    "query":"print the directory tree two levels deep",
+    "gold":"tree -L 2",
+    "gold2":"find . -maxdepth 2 -print",
+    "difficulty":0
+  },
+  {
+    "query":"print the number of times the word 'the' appears in setup_nl2b_fs_1.sh",
+    "gold":"grep -o 'the' setup_nl2b_fs_1.sh | wc -l",
+    "gold2":"grep -o 'the' setup_nl2b_fs_1.sh | nl",
+    "difficulty":0
+  },
+  {
+    "query":"print the number of files in the current directory",
+    "gold":"ls -a | wc -l",
+    "gold2":"ls -al | wc -l",
+    "difficulty":0
+  },
+  {
+    "query":"print first line of setup_nl2b_fs_1.sh",
+    "gold":"sed -n '1p' setup_nl2b_fs_1.sh",
+    "gold2":"awk 'NR == 1 {print}' setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"print the last line of setup_nl2b_fs_1.sh",
+    "gold":"sed -n '$p' setup_nl2b_fs_1.sh",
+    "gold2":"awk 'END {print}' setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"print lines 3 to 5 of setup_nl2b_fs_1.sh",
+    "gold":"sed -n '3,5p' setup_nl2b_fs_1.sh",
+    "gold2":"awk 'NR >= 3 && NR <= 5 {print}' setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"print every other line of setup_nl2b_fs_1.sh",
+    "gold":"sed -n '1~2p' setup_nl2b_fs_1.sh",
+    "gold2":"awk 'NR % 2 == 1 {print}' setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"print the number of words in setup_nl2b_fs_1.sh",
+    "gold":"wc -w setup_nl2b_fs_1.sh",
+    "gold2":"awk '{ total += NF } END { print total }' setup_nl2b_fs_1.sh",
+    "difficulty":0
+  },
+  {
+    "query":"find all empty files in the current directory, do not search sub directories",
+    "gold":"find . -maxdepth 1 -type f -empty",
+    "gold2":"find . -maxdepth 1 -type f -empty -print",
+    "difficulty":0
+  },
+  {
+    "query":"print lines in the file setup_nl2b_fs_1.sh that are less than 20 characters",
+    "gold":"awk 'length < 40' setup_nl2b_fs_1.sh",
+    "gold2":"grep -v '^.\\{40,\\}' setup_nl2b_fs_1.sh",
+    "difficulty":1
+  },
+  {
+    "query":"print lines in the file setup_nl2b_fs_1.sh that contain the characters 'the'",
+    "gold":"grep 'the' setup_nl2b_fs_1.sh",
+    "gold2":"awk '\/the\/' setup_nl2b_fs_1.sh",
+    "difficulty":1
+  },
+  {
+    "query":"print lines in the file setup_nl2b_fs_1.sh that contain the characters 'the' and 'a'",
+    "gold":"grep 'the' setup_nl2b_fs_1.sh | grep 'a'",
+    "gold2":"awk '\/the\/ && \/a\/' setup_nl2b_fs_1.sh",
+    "difficulty":1
+  },
+  {
+    "query":"display the sha512 digest of setup_nl2b_fs_1.sh",
+    "gold":"sha512sum setup_nl2b_fs_1.sh",
+    "gold2":"openssl dgst -sha512 setup_nl2b_fs_1.sh",
+    "difficulty":1
+  },
+  {
+    "query":"encrypt the file setup_nl2b_fs_1.sh using the aes-256-cbc algorithm with password 'password' and save it to out.enc",
+    "gold":"openssl enc -aes-256-cbc -in setup_nl2b_fs_1.sh -pass pass:password -out out.enc",
+    "gold2":"openssl enc -aes-256-cbc -in setup_nl2b_fs_1.sh -pass pass:password -out out.enc",
+    "difficulty":1
+  },
+  {
+    "query":"create a file named 'world.txt' with the text 'hello' inside",
+    "gold":"echo 'hello' > world.txt",
+    "gold2":"echo 'hello' | dd of=world.txt",
+    "difficulty":1
+  },
+  {
+    "query":"print the system's public ip address",
+    "gold":"curl ipinfo.io\/ip",
+    "gold2":"curl ifconfig.me\/ip",
+    "difficulty":1
+  },
+  {
+    "query":"Calculate a list of duplicate md5 sum hashes for all the \".java\" files in the \/testbed directory",
+    "gold":"md5sum \/testbed\/*.java | awk '{print $1}' | sort | uniq -d",
+    "gold2":"find \/testbed -type f -name \"*.java\" -exec md5sum {} + | sort | uniq -w32 -d -c | sort -nr",
+    "difficulty":2
+  },
+  {
+    "query":"Calculate the md5 sum of the md5 sum of all the files under \/testbed\/dir2\/subdir2 sorted by filename",
+    "gold":"find \/testbed\/dir2\/subdir2 -type f -print0 | sort -z | xargs -0 md5sum | awk '{print $1}' | md5sum",
+    "gold2":"ls -1 \/testbed\/dir2\/subdir2\/* | sort | xargs md5sum | awk '{print $1}' | md5sum",
+    "difficulty":2
+  },
+  {
+    "query":"Calculate the md5 sum of the contents of the sorted list of files \"$FILES\"",
+    "gold":"cat $(echo $FILES | tr ' ' '\\n' | sort) | md5sum",
+    "gold2":"echo \"$FILES\" | tr ' ' '\\n' | sort | xargs cat | md5sum",
+    "difficulty":1
+  },
+  {
+    "query":"Calculate the md5 sum of the sorted list of md5 sums of all \".py\" files under \/testbed\/dir1\/subdir1",
+    "gold":"find \/testbed\/dir1\/subdir1 -type f -name *.py -exec md5sum {} + | awk '{print $1}' | sort | md5sum",
+    "gold2":"find \/testbed\/dir1\/subdir1 -type f -name '*.py' -print0 | xargs -0 md5sum | awk '{print $1}' | sort | md5sum",
+    "difficulty":2
+  },
+  {
+    "query":"Calculate the total disk usage for each \".txt\" file on the \/testbed directory and prepend the system host name to the output",
+    "gold":"find \/testbed -name \"*.txt\" -exec du {} + | awk -v hostname=\"$(hostname)\" '{print hostname, $0}'",
+    "gold2":"find \/testbed -name \"*.txt\" -exec du -h {} + | awk -v hostname=\"$(hostname)\" '{print hostname, $0}'",
+    "difficulty":2
+  },
+  {
+    "query":"Change permissions for all PHP files under the \/testbed directory tree to 755 and print the number of files changed",
+    "gold":"find \/testbed -name \"*.php\" -exec chmod 755 {} \\; -exec \/bin\/echo {} \\; | wc -l",
+    "gold2":"find \/testbed -type f -name \"*.php\" -exec chmod 755 {} \\; -print | wc -l",
+    "difficulty":2
+  },
+  {
+    "query":"Check if the current shell is running within a 'screen' process and print \"True\" or \"False\"",
+    "gold":"pstree -s $$ | grep -q \"screen\" && echo \"True\" || echo \"False\"",
+    "gold2":"ps -o comm= $(pstree -sp $$ | awk -F '[^0-9]*' '{print $2}') | grep -q 'screen' && echo \"True\" || echo \"False\"",
+    "difficulty":2
+  },
+  {
+    "query":"Print \"True\" if the contents of file \/testbed\/dir3\/subdir1\/subsubdir1\/textfile3.txt is a subset of file \/testbed\/dir2\/subdir1\/textfile2.txt, otherwise print \"False\"",
+    "gold":"comm -23 <(sort \/testbed\/dir3\/subdir1\/subsubdir1\/textfile3.txt | uniq) <(sort \/testbed\/dir2\/subdir1\/textfile2.txt | uniq) | head -1 | grep -q '.' && echo \"False\" || echo \"True\"",
+    "gold2":"comm -23 <(sort \/testbed\/dir3\/subdir1\/subsubdir1\/textfile3.txt | uniq) <(sort \/testbed\/dir2\/subdir1\/textfile2.txt | uniq) | grep -q '.' && echo \"False\" || echo \"True\"",
+    "difficulty":2
+  },
+  {
+    "query":"Compute the mean average of the word count of *.txt files in the \/testbed directory",
+    "gold":"find \/testbed -name '*.txt' -print0 | xargs -0 wc -w | awk 'END { print $1\/(NR-1) }'",
+    "gold2":"find \/testbed -type f -name \"*.txt\" -exec wc -w {} + | awk '{total = $1} END {print total\/(NR-1)}'",
+    "difficulty":2
+  },
+  {
+    "query":"Compute the mean average of the word count of *.txt files smaller than 6 words in the \/testbed directory",
+    "gold":"find \/testbed -name '*.txt' -print0 | xargs -0 wc -w | awk '$1 < 6 {v += $1; c++} END {print v\/c}'",
+    "gold2":"find \/testbed -name '*.txt' -print0 | xargs -0 wc -w | awk '$1 < 6 {v += $1; c++} END {print v\/c, \"words\"}'",
+    "difficulty":2
+  },
+  {
+    "query":"Copy all files with \"FooBar\" in the path under the '\/testbed' directory to the '\/testbed\/dir3\/subdir1\/subsubdir1\/tmp' directory.",
+    "gold":"find \/testbed -path '*FooBar*' -print0 | xargs -0 -I{} cp -r {} \/testbed\/dir3\/subdir1\/subsubdir1\/tmp",
+    "gold2":"find \/testbed -path '*FooBar*' -print0 | xargs -0 -I{} cp -R {} \/testbed\/dir3\/subdir1\/subsubdir1\/tmp",
+    "difficulty":2
+  },
+  {
+    "query":"search for all .txt files in the \/testbed directory, prints their paths, and then search within each file for the word \"another\"",
+    "gold":"find \/testbed -name \"*.txt\" \\( -exec echo {} \\; -o -exec true \\; \\) -exec grep another {} \\;",
+    "gold2":"find \/testbed -type f -name \"*.txt\" -print -exec grep -H \"another\" {} \\;",
+    "difficulty":2
+  },
+  {
+    "query":"Convert the first 16 characters in \"\/testbed\/textfile7.txt\" to a single hexadecimal value",
+    "gold":"head \/testbed\/textfile7.txt -c16 | od -tx1 -w16 | head -n1 | cut -d' ' -f2- | tr -d ' '",
+    "gold2":"head -c 16 \/testbed\/textfile7.txt | od -An -tx1 | tr -d ' \\n'",
+    "difficulty":2
+  },
+  {
+    "query":"Copies all files under the \/testbed folder like \"file.txt\" with \"FooBar\" in the path to the root of the current folder, preserving mode, ownership and timestamp attributes.",
+    "gold":"find \/testbed -type f -path '*FooBar*' | xargs -i cp -p \"{}\" .",
+    "gold2":"find \/testbed -type f -path '*FooBar*' -exec cp --preserve=mode,ownership,timestamps {} .\/ \\;",
+    "difficulty":2
+  },
+  {
+    "query":"Copy all files and folders below the \/testbed directory whose names contain \"FooBar\" to directory '\/testbed\/dir3\/subdir1\/subsubdir1\/tmp'",
+    "gold":"find \/testbed -name '*FooBar*' -print0 | xargs -0 -I{} cp -R {} \/testbed\/dir3\/subdir1\/subsubdir1\/tmp",
+    "gold2":"find \/testbed -name \"*FooBar*\" -exec cp -r {} \/testbed\/dir3\/subdir1\/subsubdir1\/tmp \\;",
+    "difficulty":2
+  },
+  {
+    "query":"Count all the lines of all '*.c' files in \/testbed directory recursively",
+    "gold":"find \/testbed -name \"*.c\" -print0 | xargs -0 cat | wc -l",
+    "gold2":"find \/testbed -name \"*.c\" -exec wc -l {} + | awk '{s+=$1} END {print s}'",
+    "difficulty":2
+  },
+  {
+    "query":"Count all the lines of all files with names ending with 'php' in current directory and subdirectories recursively",
+    "gold":"find . -type f -name '*php' | xargs cat | wc -l",
+    "gold2":"find . -type f -name '*.php' -exec wc -l {} + | awk '{s=$1} END {print s}'",
+    "difficulty":1
+  },
+  {
+    "query":"Count all the lines of all php files in the \/testbed directory recursively",
+    "gold":"find \/testbed\/ -name '*.php' | xargs cat | wc -l",
+    "gold2":"find \/testbed\/ -type f -name '*.php' | xargs cat | wc -l",
+    "difficulty":1
+  },
+  {
+    "query":"Calculate the md5sum of all '*.py' files in \/testbed folder and sub folders.",
+    "gold":"find \/testbed -type f -name \"*.py\" -exec md5sum {} +",
+    "gold2":"find \/testbed -type f -name \"*.py\" -print0 | xargs -0 md5sum",
+    "difficulty":2
+  },
+  {
+    "query":"Count the *.html files residing in the \/testbed directory tree and containing string \"foo\"",
+    "gold":"find \/testbed -name \"*.html\" | xargs grep -l foo | wc -l",
+    "gold2":"find \/testbed -name \"*.html\" -exec grep -l foo {} + | wc -l",
+    "difficulty":2
+  },
+  {
+    "query":"Count the number of files\/directories with '.php' extension under \/testbed directory tree and change the permissions to 755",
+    "gold":"find \/testbed -name \"*.php\" -exec chmod 755 {} \\; -exec \/bin\/echo {} \\; | wc -l",
+    "gold2":"find \/testbed -type f -name '*.php' -exec chmod 755 {} \\; -print | wc -l",
+    "difficulty":2
+  },
+  {
+    "query":"Count the number of lines in all files in the \/testbed directory tree that match pattern '*file*'",
+    "gold":"find \/testbed\/ -name '*file*' | sort | xargs wc -l",
+    "gold2":"find \/testbed -type f -name '*file*' -exec wc -l {} +",
+    "difficulty":1
+  },
+  {
+    "query":"Count the number of regular files in directory tree ${DIRECTORY} that contain a vowel in their names",
+    "gold":"find ${DIRECTORY} -type f -print | sed -e 's@^.*\/@@' | grep '[aeiouyAEIOUY]' | wc -l",
+    "gold2":"find \"${DIRECTORY}\" -type f -print | awk -F\/ '{print $NF}' | grep -i '[aeiouy]' | wc -l",
+    "difficulty":2
+  },
+  {
+    "query":"Count the number of files for each unique file extensions in the \/testbed directory tree.",
+    "gold":"find \/testbed -type f | sed -e 's\/.*\\.\/\/' | sed -e 's\/.*\\\/\/\/' | sort | uniq -c | sort -rn",
+    "gold2":"find \/testbed -type f | awk -F. '{if (NF>1) print $NF}' | sort | uniq -c | sort -nr",
+    "difficulty":2
+  },
+  {
+    "query":"Count the total number of lines in all \"*.gz\" files in the \/testbed directory tree after decompression",
+    "gold":"find \/testbed -type f -name '*.gz' | xargs zcat | wc -l",
+    "gold2":"find \/testbed -type f -name \"*.gz\" -exec sh -c 'gunzip -c \"$0\" | wc -l' {} \\; | awk '{s+=$1} END {print s}'",
+    "difficulty":2
+  },
+  {
+    "query":"Counts all files in the \/testbed folder and subfolders.",
+    "gold":"find \/testbed -type f -exec ls -l {} \\; | wc -l",
+    "gold2":"find \/testbed -type f | wc -l",
+    "difficulty":1
+  },
+  {
+    "query":"Count lines in each *.php file sorted by file in \/testbed directory.",
+    "gold":"find \/testbed -name '*.php' -type f | sort | xargs wc -l",
+    "gold2":"find \/testbed -type f -name \"*.php\" -exec wc -l {} + | sort",
+    "difficulty":2
+  },
+  {
+    "query":"Counts lines in each *.php file in \/testbed directory, sorted by number of lines, descending.",
+    "gold":"find \/testbed -name '*.php' -type f | xargs wc -l | sort -nr",
+    "gold2":"find \/testbed -type f -name \"*.php\" -exec wc -l {} + | sort -rn",
+    "difficulty":2
+  },
+  {
+    "query":"Counts number of occurences of all ip addresses in '\/etc\/networks' file, and prints all addresses with number of occurences in a descending order.",
+    "gold":"grep -oE '([0-9]{1,3}\\.){3}[0-9]{1,3}' \/etc\/networks | sort | uniq -c | sort -nr",
+    "gold2":"awk '{for (i=1; i<=NF; i++) if ($i ~ \/([0-9]{1,3}\\.){3}[0-9]{1,3}\/) print $i}' \/etc\/networks | sort | uniq -c | sort -nr",
+    "difficulty":2
+  },
+  {
+    "query":"Counts total number of only lines with alphanumeric symbols in all *.php files in the \/testbed folder and subfolders.",
+    "gold":"find \/testbed -name '*.php' | xargs cat | awk '\/[a-zA-Z0-9]\/ {i++} END{print i}'",
+    "gold2":"find \/testbed -type f -name '*.php' -exec grep -H '.*[[:alnum:]].*' {} + | wc -l",
+    "difficulty":2
+  },
+  {
+    "query":"Counts total lines in PHP and JS files in \/testbed.",
+    "gold":"find \/testbed -name '*.js' -or -name '*.php' | xargs wc -l | grep 'total'  | awk '{print $1}'",
+    "gold2":"find \/testbed -type f \\( -name '*.php' -o -name '*.js' \\) -exec wc -l {} + | awk '{s=$1} END {print s}'",
+    "difficulty":2
+  },
+  {
+    "query":"Create an empty file \"abc.txt\" in each directory named \"dir1\" under testbed directory.",
+    "gold":"find \/testbed -type d -name \"dir1\" -print |  sed 's\/$\/\\\/abc.txt\/g' | xargs touch",
+    "gold2":"find testbed -type d -name \"dir1\" -exec touch {}\/abc.txt \\;",
+    "difficulty":2
+  },
+  {
+    "query":"Create logs.tar.gz of all older than one day logs of Ubuntu",
+    "gold":"find \/var\/log\/ -mtime +1 | xargs  tar -czvPf  \/testbed\/logs.tar.gz",
+    "gold2":"find \/var\/log -type f -mtime +1 -exec tar -czvPf \/testbed\/logs.tar.gz {} +",
+    "difficulty":2
+  },
+  {
+    "query":"Delete files in \"\/testbed\/dir3\/subdir1\/subsubdir1\/tmp\" that are older than 2 days",
+    "gold":"find \/testbed\/dir3\/subdir1\/subsubdir1\/tmp -type f -mtime +2 -print0 | xargs -0 rm -f",
+    "gold2":"find \/testbed\/dir3\/subdir1\/subsubdir1\/tmp -type f -mtime +2 -delete",
+    "difficulty":2
+  },
+  {
+    "query":"Display the 5 largest files in the \/testbed directory and its sub-directories.",
+    "gold":"find \/testbed -type f -exec du -b {} + | sort -rh | head -n 5",
+    "gold2":"find \/testbed -type f -print0 | xargs -0 du -b | sort -rn | head -n 5",
+    "difficulty":2
+  },
+  {
+    "query":"Display the 5 smallest files in the \/testbed directory and its sub-directories ignoring any empty files.",
+    "gold":"find \/testbed -type f -size +0c -exec du -b {} + | sort -n | head -n 5",
+    "gold2":"find \/testbed -type f -size +0c -exec du -b {} + | sort -rh | tail -n 5",
+    "difficulty":2
+  },
+  {
+    "query":"Display the 5 smallest files in the \/testbed directory and its sub-directories.",
+    "gold":"find \/testbed -type f -exec ls -s {} \\; | sort -n  | head -5",
+    "gold2":"find \/testbed -type f -exec du -b {} + | sort -n | head -n 5",
+    "difficulty":2
+  },
+  {
+    "query":"Display the five biggest file sizes only in the \/testbed directory",
+    "gold":"find \/testbed -type f -maxdepth 1 -exec du -b {} + | sort -rh | head -n 5",
+    "gold2":"ls -lS \/testbed | grep '^-' | head -n 5",
+    "difficulty":2
+  },
+  {
+    "query":"Find .java files in the testbed directory tree that contain 'Hello', and print their names",
+    "gold":"find \/testbed -name \"*.java\" -exec grep -Hin Hello {} + | cut -d \":\" -f 1 | xargs -I{} basename {}",
+    "gold2":"find testbed -type f -name \"*.java\" -exec grep -l 'Hello' {} +",
+    "difficulty":2
+  },
+  {
+    "query":"Print a list of all duplicate case insensitive filenames in the \/testbed directory tree",
+    "gold":"find \/testbed -type f | awk -F\/ '{print $NF}' | sort -f | uniq -i -d",
+    "gold2":"find \/testbed -type f | awk -F\/ '{print tolower($NF)}' | sort | uniq -d",
+    "difficulty":2
+  },
+  {
+    "query":"Print all unique file paths under \"testbed\/dir1\" compared to \"testbed\/dir2\"",
+    "gold":"comm -23 <(find \/testbed\/dir1 | sed 's#\/testbed\/dir1\/##' | sort) <(find \/testbed\/dir2 | sed 's#\/testbed\/dir2\/##' | sort) | sed 's#^#\/testbed\/dir1\/#'",
+    "gold2":"comm -23 <(find testbed\/dir1 -type f | sed 's|testbed\/dir1\/||' | sort) <(find testbed\/dir2 -type f | sed 's|testbed\/dir2\/||' | sort) | sed 's|^|testbed\/dir1\/|'",
+    "difficulty":2
+  },
+  {
+    "query":"Recursively finds all files containing text 'Hello' in \/testbed and prints folder where they are placed.",
+    "gold":"grep -rl 'Hello' \/testbed | xargs -I {} dirname {} | sort | uniq",
+    "gold2":"find \/testbed -type f -exec grep -l 'Hello' {} + | xargs -I {} dirname {} | sort | uniq",
+    "difficulty":2
+  },
+  {
+    "query":"Prints total number of lines of all *.java files in \/testbed folder and subfolders.",
+    "gold":"find \/testbed -name '*.java' -print0 |xargs -0 wc -l|grep 'total' |awk '{ print $1 }'",
+    "gold2":"find \/testbed -name \"*.java\" -exec wc -l {} + | awk '{s=$1} END {print s}'",
+    "difficulty":2
+  },
+  {
+    "query":"Create a symbolc link in the \/testbed\/dir3\/subdir1\/subsubdir1\/FooBar to root folder",
+    "gold":"ln \/testbed\/dir3\/subdir1\/subsubdir1\/FooBar -s \/",
+    "gold2":"ln -s \/testbed\/dir3\/subdir1\/subsubdir1\/FooBar \/",
+    "difficulty":1
+  },
+  {
+    "query":"search for all the files in the folder \/testbed\/dir1 which have sticky bit set and have the permissions 553",
+    "gold":"find \/testbed\/dir1 -perm 1553",
+    "gold2":"find \/testbed\/dir1 -type f -perm 1553",
+    "difficulty":1
+  },
+  {
+    "query":"search for php files in \/testbed directory and search for \"world\" in all these files",
+    "gold":"find \/testbed -name '*.php' -exec grep -iq \"world\" {} \\; -print",
+    "gold2":"find \/testbed -name \"*.php\" -exec grep -H \"world\" {} \\;",
+    "difficulty":2
+  }
+]

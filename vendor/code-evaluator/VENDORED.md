@@ -72,3 +72,44 @@
 - `README.md` — translated from Chinese to English, so the vendored docs match
   the rest of the repo. Content is otherwise unchanged apart from the case-count
   section above.
+- `app/exec_sh.py`, `app/server.py`, `docker/Dockerfile.nl2sh-{1..5}`,
+  `docker/nl2sh/`, `tests/test_exec_sh.py`, `README.md` — **NL2SH-ALFA support**:
+  a stateful shell route (`POST /shell-evaluations`) plus the five images that
+  carry its prepared filesystems.
+
+  This is the first route here that is stateful, and the first that needs a
+  *specific* image rather than any Python. NL2SH-ALFA scores a Bash command by
+  what it did to a prepared filesystem, so the unit of work is a command pair run
+  against one git-committed baseline tree with a reset in between, and that tree
+  is the image. Hence five images (four Ubuntu, one Alpine — its BusyBox
+  coreutils print differently, so its 18 samples cannot share the others),
+  `NL2SH_FS_ID` baked into each, a request for another id refused, and
+  `--workers 1` in every `CMD`.
+
+  The Dockerfiles are upstream's own
+  (`westenfelder/InterCode-ALFA@2d3a6947 src/icalfa/assets/docker/`) verbatim,
+  with only the two COPY sources reprefixed for this repo's build root, then a
+  service block appended. That prefix is checked line-by-line rather than
+  asserted. The service is installed under `/opt`, which upstream's
+  `docker.gitignore` already excludes — so the baseline commit cannot see it and
+  `git clean -fd` cannot delete it mid-run.
+
+  Two behaviours are reproduced deliberately even though they read like defects,
+  because the published numbers depend on them: upstream's `clean_cmd` wraps a
+  command in double quotes and docker-py `shlex.split`s the result (which
+  rewrites 37 of upstream's 300 golds and truncates one into a syntax error), and
+  `md5deep` — which no image installs — is still what the hash command picks for
+  a path with no dot. Two divergences are deliberate and documented in
+  `app/exec_sh.py`: one container with a reset before each command instead of two
+  peer containers, and the 10 s wall applied to the gold command as well as the
+  model's, reported as `gold_timed_out` so a caller can show it never bound.
+
+  The verdict is deliberately *not* computed here — it needs an embedding model
+  when the outputs differ, and this service holds no model credentials.
+
+  `tests/test_exec_sh.py` (17 tests, all passing) drives the whole protocol
+  against a throwaway git repo via `NL2SH_FS_ROOT`, so reset/status/hashing/the
+  quoting rewrite/the wall/the fs_id refusal are all covered with no container.
+  They live in the vendored tree rather than under sieval's `tests/` (which
+  mirrors `sieval/`) precisely so they travel upstream with the code. Not yet
+  upstream — land in `scitix/code-evaluator` and re-vendor.

@@ -1,0 +1,71 @@
+# NL2SH-ALFA filesystem 2 -- upstream's image, plus this service.
+#
+# Upstream: westenfelder/InterCode-ALFA@2d3a6947
+#           src/icalfa/assets/docker/nl2bash2.Dockerfile
+#
+# Everything above "# --- service" is that file verbatim, except that the two
+# COPY sources are prefixed with `docker/nl2sh/` because this repo builds from
+# its own root. Keep it that way: the prepared tree, the package set and the
+# baseline commit are what the published numbers were measured against, and a
+# diff against upstream is how that stays checkable.
+#
+# Build from the repo root:
+#   docker build -f docker/Dockerfile.nl2sh-2 -t code-evaluator-nl2sh-2 .
+#
+# Prepared tree: /system. 49 samples.
+
+FROM ubuntu:noble-20240429
+
+# Install required dependencies
+RUN apt-get update && \
+    apt-get install -y bash python3 psmisc bsdmainutils cron imagemagick dnsutils git tree net-tools iputils-ping coreutils curl cpio jq && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create custom file structure
+COPY ./docker/nl2sh/setup_nl2b_fs_2.sh /
+RUN chmod +x /setup_nl2b_fs_2.sh
+RUN /setup_nl2b_fs_2.sh
+
+# Commit custom file system to determine diffs
+COPY ./docker/nl2sh/docker.gitignore /
+RUN mv docker.gitignore .gitignore
+RUN git config --global user.email "intercode@pnlp.org"
+RUN git config --global user.name "intercode"
+RUN git init
+RUN git add -A
+RUN git commit -m 'initial commit'
+
+# Set the working directory
+WORKDIR /
+
+# --- service ---------------------------------------------------------------
+# Installed under /opt, which upstream's own docker.gitignore already excludes.
+# That matters twice over: the baseline commit above cannot see it, so it never
+# appears in a `git status --short` diff, and `git clean -fd` (which does not
+# remove ignored files) cannot delete the service while it is serving.
+#
+# A minimal dependency set rather than `-r requirements.txt`: only the shell
+# route runs here, every package added to the image is a divergence from what
+# upstream measured, and the Alpine variant has to resolve musl wheels for all
+# of it. Versions pinned to the same ones requirements.txt carries.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3-pip && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+RUN pip3 install --break-system-packages --no-cache-dir fastapi==0.116.1 uvicorn==0.35.0 pydantic==2.11.7 loguru==0.7.3 psutil==7.2.2
+COPY app/ /opt/code-evaluator/app/
+
+# No __pycache__ under /opt at runtime -- ignored by git anyway, but a directory
+# appearing mid-run is one less thing to reason about.
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Which prepared tree this instance hosts. A request for any other fs_id is
+# refused rather than scored, because a misrouted sample would report a
+# plausible zero with nothing in the logs.
+ENV NL2SH_FS_ID=2
+
+# ONE worker, deliberately. /shell-evaluations mutates the shared tree and
+# serializes requests with an in-process lock; a second worker process would not
+# see that lock and would interleave its resets with this one's commands.
+CMD ["python3", "-m", "uvicorn", "app.server:app", "--app-dir", "/opt/code-evaluator", "--host", "0.0.0.0", "--port", "11451", "--workers", "1"]
