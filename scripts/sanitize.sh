@@ -44,6 +44,13 @@ ALLOWLIST=(
   "0\.0\.0\.0"                      # bind-all is fine
   "\.venv/"                         # third-party packages
   "data/"                           # benchmark datasets (may contain example IPs/paths in data)
+  # Vendored upstream benchmark data, same category as `data/` above: NL2SH-ALFA
+  # asks a model to `ping 192.168.1.1`, so the address is the task. These files
+  # must stay byte-identical to upstream (they are the graded gold), so editing
+  # the data is not an option and an allowlist entry is the only fix. Scoped to
+  # this one directory rather than `community/*/assets/`: a wildcard would
+  # silently exempt vendored data nobody has read yet.
+  "sieval/community/intercode_alfa/assets/"
   '"10\.0\.1\.100:30001"'           # ServiceBinding.address field-docstring example
 )
 
