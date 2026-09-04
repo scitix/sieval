@@ -96,11 +96,19 @@ class ShellFacts(BaseModel):
 
     ``*_status`` are the raw ``git status --short`` text, not a parsed structure:
     the caller re-parses them with its own vendored copy of upstream's parser,
-    and that copy is what scores. ``*_hashes`` map each added/untracked/copied
+    and that copy is what scores. ``*_hashes`` map an added/untracked/copied
     path to the **raw stdout** of upstream's hash command, because upstream
     compares those strings rather than digests -- including when the command is
     ``md5deep``, which no image installs, so both sides carry the same failure
     text and compare equal.
+
+    ``*_hashes`` is the *scored* set, not an inventory: upstream hashes only the
+    paths both sides changed, so ``model_hashes`` covers the paths the gold also
+    touched and nothing more. A path only one side changed is still reported in
+    that side's ``*_status`` -- which is what part 1 reads -- and is simply never
+    hashed, because part 2 would not have looked at it. Both maps are therefore
+    empty whenever the two commands share no added path, which is the common
+    case.
 
     ``*_exit_ok`` and ``*_timed_out`` describe the commands, not the request: a
     command that failed or hung is a successful evaluation reporting exactly

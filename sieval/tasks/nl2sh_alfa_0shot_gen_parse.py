@@ -28,9 +28,10 @@ fix, so neither is ``_fixed``; neither is a different measurement regime, so
 neither is a mode.
 
 Why both readings ship: the gap between them is the paper's own headline finding.
-It is ~1 pp on gpt-4o and 9 pp on gpt-3.5-turbo, 20 pp on llama-3.2-3b -- so a
-single number for "NL2SH accuracy" hides whether a model was scored on
-translation or on formatting compliance.
+Reading Table 5's two columns, it is ~1 pp on gpt-4o, 9 pp on gpt-3.5-turbo,
+20 pp on llama-3.2-1b and 32 pp on llama-3.2-3b (0.17 to 0.49) -- so a single
+number for "NL2SH accuracy" hides whether a model was scored on translation or on
+formatting compliance.
 
 References:
 

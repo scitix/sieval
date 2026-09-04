@@ -38,8 +38,13 @@ defects, because reproducing the published number requires them:
 * ``parse_status`` splits on whitespace and re-pairs tokens two at a time, so a
   path containing a space, or a rename's ``->`` arrow, shifts every later pair.
 
-See ``docs/designs/specs/2026-09-04-nl2sh-alfa-design.md`` for the measurements
-behind each.
+Each is pinned by a test in ``tests/unit/community/test_intercode_alfa.py``
+(``hash_command`` reaching ``md5deep`` for a dotless path, ``shared_changes``
+dropping ``M``, ``parse_status`` desynchronizing on a path with a space and
+raising on an odd token count), and the service side asserts the property the
+metric actually reads -- that two ``md5deep`` failures compare *equal*.
+
+AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import json

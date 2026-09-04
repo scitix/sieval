@@ -34,6 +34,8 @@ from app.exec_sh import (  # noqa: E402
     execute_shell,
     fs_root,
     hosted_fs_id,
+    model_action,
+    simplify_path,
 )
 
 # Upstream's docker.gitignore: every standard root directory, so `git status`
@@ -157,6 +159,95 @@ def test_the_rewrite_reaches_the_shell(tree):
     assert data["model_output"] != ""
 
 
+def test_an_unbalanced_quote_is_graded_not_a_service_failure(tree):
+    # `shlex.split` raises on an odd number of double quotes, which an ordinary
+    # reply can carry -- truncation mid-string is the common route. Upstream
+    # reaches the same raise inside `exec_run` and `exec_action` catches it into
+    # `observation = f"Exception: {e}"` with `action_executed = False`, so the
+    # sample is still scored. Letting it escape would turn a wrong answer into a
+    # broken grader, which is the one confusion this route must not create.
+    with pytest.raises(ValueError, match="No closing quotation"):
+        _argv("/bin/bash", 'grep "Hello workspace/textfile1.txt')
+
+    data = _run('grep "Hello workspace/textfile1.txt', "true")
+    assert data["model_output"] == "Exception: No closing quotation"
+    assert data["model_exit_ok"] is False
+    assert data["model_timed_out"] is False
+    # Nothing ran, so the tree is untouched and part 1 still has facts to score.
+    assert data["model_status"] == ""
+
+
+def test_a_later_sample_is_unaffected_by_an_unbalanced_quote(tree):
+    _run('echo "oops', "true")
+    data = _run("cat workspace/textfile1.txt", "cat workspace/textfile1.txt")
+    assert data["model_output"] == "Hello, World!\n"
+    assert data["model_exit_ok"] is True
+
+
+# --------------------------------------------------------------------------- #
+# The `cd` rewrite
+# --------------------------------------------------------------------------- #
+def test_model_action_absolutizes_a_cd_argument():
+    # `exec_action` resolves the argument of any `cd` action against the working
+    # directory, which is the tree root for a single-turn sample.
+    assert model_action("cd workspace && ls") == "cd /workspace && ls"
+    assert model_action("cd ..") == "cd /"
+    # The cases where the rewrite changes the outcome rather than the text: a
+    # path bash would have expanded becomes a literal directory that does not
+    # exist.
+    assert model_action("cd ~") == "cd /~"
+    assert model_action("cd -") == "cd /-"
+    # Everything else is untouched.
+    assert model_action("ls -al") == "ls -al"
+    assert model_action("echo cd") == "echo cd"
+
+
+def test_simplify_path_resolves_against_the_working_directory():
+    # `BashEnv.simplify_path`, vendored verbatim: absolute arguments discard the
+    # current directory, `.` is dropped and `..` pops -- past the root it just
+    # stops, which is why `cd ../../..` lands at `/` rather than escaping.
+    assert simplify_path("/", "workspace") == "/workspace"
+    assert simplify_path("/workspace", "dir1") == "/workspace/dir1"
+    assert simplify_path("/workspace", "/etc") == "/etc"
+    assert simplify_path("/workspace/dir1", "..") == "/workspace"
+    assert simplify_path("/", "../../..") == "/"
+    assert simplify_path("/workspace", "./dir1") == "/workspace/dir1"
+    # An empty argument returns the current directory untouched.
+    assert simplify_path("/workspace", "") == "/workspace"
+
+
+def test_model_action_raises_where_upstream_scores_zero():
+    # `action.index("cd ")` sits outside `exec_action`'s try, so upstream lets
+    # this escape to `submit_command`, which reports 0 for the whole sample.
+    for command in ("cd", "cdparanoia -B"):
+        with pytest.raises(ValueError):
+            model_action(command)
+
+
+def test_a_cd_only_reply_runs_the_rewritten_command(tree):
+    # `cd /~` fails where the reply's own `cd ~` would have succeeded; that
+    # difference is upstream's, and reproducing it is the point.
+    data = _run("cd ~", "true")
+    assert data["model_exit_ok"] is False
+    assert "/~" in data["model_output"]
+
+
+def test_a_cd_without_a_space_reports_that_nothing_ran(tree):
+    data = _run("cd", "true")
+    assert data["model_output"].startswith("Exception: ")
+    assert data["model_exit_ok"] is False
+    assert data["model_status"] == ""
+
+
+def test_the_gold_command_never_has_its_cd_rewritten(tree):
+    # Upstream runs the gold as `container_eval.exec_run(clean_cmd(self.gold))`,
+    # which does not touch `exec_action`. None of the 300 golds starts with
+    # `cd`, but the asymmetry is what keeps that true if one ever does.
+    data = _run("true", "cd workspace && cat textfile1.txt")
+    assert data["gold_output"] == "Hello, World!\n"
+    assert data["gold_exit_ok"] is True
+
+
 # --------------------------------------------------------------------------- #
 # Outputs, status and hashes
 # --------------------------------------------------------------------------- #
@@ -180,13 +271,33 @@ def test_stderr_is_merged_into_the_output(tree):
 
 
 def test_a_created_file_is_reported_and_hashed(tree):
-    data = _run("echo new > workspace/created.txt", "true")
+    # Both sides create it, which is the case the metric reads: a path is hashed
+    # to settle whether two commands that touched it produced the same bytes.
+    made = "echo new > workspace/created.txt"
+    data = _run(made, made)
     assert data["model_status"].split() == ["??", "workspace/created.txt"]
+    assert data["gold_status"].split() == ["??", "workspace/created.txt"]
     # Raw `md5sum` stdout, not a digest: upstream compares these strings.
     assert data["model_hashes"]["workspace/created.txt"].endswith(
         "  workspace/created.txt\n"
     )
+    assert (
+        data["model_hashes"]["workspace/created.txt"]
+        == data["gold_hashes"]["workspace/created.txt"]
+    )
+
+
+def test_the_model_side_hashes_only_what_the_gold_also_changed(tree):
+    # Upstream hashes `diff_same` -- the paths BOTH sides changed. A path only
+    # the model touched cannot be in that set, so hashing it is work whose
+    # result is never read, and a reply touching many paths would pay for one
+    # per path. The change is still reported in the status listing, which is
+    # what part 1 scores; only the hash is skipped.
+    data = _run("echo new > workspace/created.txt", "true")
+    assert data["model_status"].split() == ["??", "workspace/created.txt"]
     assert data["gold_status"] == ""
+    assert data["gold_hashes"] == {}
+    assert data["model_hashes"] == {}
 
 
 def test_a_directory_change_hashes_through_the_missing_md5deep(tree):

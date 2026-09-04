@@ -94,15 +94,30 @@
   `docker.gitignore` already excludes — so the baseline commit cannot see it and
   `git clean -fd` cannot delete it mid-run.
 
-  Two behaviours are reproduced deliberately even though they read like defects,
-  because the published numbers depend on them: upstream's `clean_cmd` wraps a
-  command in double quotes and docker-py `shlex.split`s the result (which
-  rewrites 37 of upstream's 300 golds and truncates one into a syntax error), and
+  Three behaviours are reproduced deliberately even though they read like
+  defects, because the published numbers depend on them: upstream's `clean_cmd`
+  wraps a command in double quotes and docker-py `shlex.split`s the result (which
+  rewrites 37 of upstream's 300 golds and truncates one into a syntax error);
+  `exec_action` resolves the argument of any model reply starting with `cd`
+  against the working directory, so `cd ~` executes as `cd /~` and fails; and
   `md5deep` — which no image installs — is still what the hash command picks for
-  a path with no dot. Two divergences are deliberate and documented in
+  a path with no dot. Four divergences are deliberate and documented in
   `app/exec_sh.py`: one container with a reset before each command instead of two
-  peer containers, and the 10 s wall applied to the gold command as well as the
-  model's, reported as `gold_timed_out` so a caller can show it never bound.
+  peer containers; the 10 s wall applied to the gold command as well as the
+  model's, reported as `gold_timed_out` so a caller can show it never bound; a
+  reply starting with `cd` but carrying no `"cd "`, which upstream scores 0
+  outright and this reports as a command that did not execute; and hashing on the
+  second side restricted to the first side's changed paths, which leaves the
+  scored set identical because upstream only ever hashes the intersection.
+
+  Note that `/tmp` is not in upstream's `docker.gitignore` and is empty when the
+  baseline is committed, so the first `git reset --hard; git clean -fd` deletes
+  the directory outright and it does not come back (measured against a throwaway
+  tree, not assumed). That is upstream's behaviour too and must not be "fixed" —
+  adding `tmp` to the ignore file would change what `git status` reports and
+  therefore what the benchmark scores. It does mean the three stateless routes
+  that use `tempfile` (`exec_py_code`, `exec_js`, `exec_ts`) are unreliable on
+  these five images; they are not served there.
 
   The verdict is deliberately *not* computed here — it needs an embedding model
   when the outputs differ, and this service holds no model credentials.

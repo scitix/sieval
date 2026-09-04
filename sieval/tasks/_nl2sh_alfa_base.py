@@ -49,11 +49,16 @@ is not the one it hosts, because a misrouted sample would score zero silently.
   ``/api/embeddings``, so the weights are the Hub's rather than Ollama's f16 GGUF
   conversion of them. Both calls stay separate, as upstream's are.
 
-**The quoting quirk is reproduced, not repaired.** ``clean_cmd`` wraps a command
-in double quotes and docker-py ``shlex.split``s the result, which rewrites 37 of
-the 300 golds and truncates one (index 230) into a syntax error. The service
-builds its argv the same way; see
-``sieval.community.intercode_alfa.command_argv``.
+**Two upstream rewrites are reproduced, not repaired.** ``clean_cmd`` wraps a
+command in double quotes and docker-py ``shlex.split``s the result, which
+rewrites 37 of the 300 golds and truncates one (index 230) into a syntax error;
+and ``exec_action`` resolves the argument of any model reply starting with ``cd``
+against the working directory, so ``cd ~`` reaches bash as ``cd /~``. Both are
+text transforms applied before anything runs, both change the verdict on replies
+that carry them, and both live in the service -- see
+``sieval.community.intercode_alfa.command_argv`` for the first and the service's
+``model_action`` for the second. The ``cd`` rewrite reaches only the model's
+command: upstream runs the gold by a path that never touches ``exec_action``.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -125,9 +130,16 @@ NL2SH_ALFA_SHARED_NOTES = (
     "echo -n vs echo, index 100 'length < 20' vs '< 40'), and 3 more rows have "
     "reworded instructions. Upstream's clean_cmd + docker-py shlex.split "
     "rewrites 37 golds and truncates index 230 into a syntax error; reproduced "
-    "deliberately. DIVERGENCES: one container per image with a reset before "
-    "each command instead of two peer containers; the 10s command wall also "
-    "applied to the gold (n_gold_timeouts publishes that it does not bind); the "
+    "deliberately, as is exec_action's rewrite of any model reply starting with "
+    "'cd' (its argument is resolved against the tree root, so 'cd ~' executes "
+    "as 'cd /~' and fails). DIVERGENCES: one container per image with a reset "
+    "before each command instead of two peer containers; the 10s command wall "
+    "also applied to the gold (n_gold_timeouts publishes that it does not "
+    "bind); a reply starting with 'cd' but carrying no 'cd ' is reported as a "
+    "command that did not execute, where upstream raises out of exec_action and "
+    "scores the sample 0 outright; hashing on the second side is restricted to "
+    "the first side's changed paths, which leaves the scored set (diff_same) "
+    "identical; the "
     "embedding served over an OpenAI-compatible endpoint rather than Ollama, so "
     "the weights are the Hub's rather than its f16 GGUF conversion. Requires a "
     "shell-eval service per filesystem image (SIEVAL_SHELL_EVAL_API) and an "
