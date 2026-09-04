@@ -13,6 +13,7 @@ caller's budget must outlive the bound the engine enforces.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+import importlib
 import sqlite3
 
 import pandas as pd
@@ -130,7 +131,11 @@ def no_bigquery_credentials(monkeypatch):
     """
     monkeypatch.delenv(BIGQUERY_CREDENTIAL_ENV, raising=False)
     try:
-        import google.auth
+        # `import_module`, not a plain `import`: CI installs eight dependency
+        # groups and `spider2` is not one of them, so a static import here is an
+        # `unresolved-import` in the typecheck job — which the scoped override
+        # for `_spider2_backends.py` does not cover, because this is a test.
+        google_auth = importlib.import_module("google.auth")
     except ImportError:
         # The `spider2` group is absent, so the probe's own ImportError branch
         # already reports "unreachable" — nothing to patch.
@@ -139,7 +144,7 @@ def no_bigquery_credentials(monkeypatch):
     def _nothing_configured(*_args, **_kwargs):
         raise RuntimeError("no application default credentials")
 
-    monkeypatch.setattr(google.auth, "default", _nothing_configured)
+    monkeypatch.setattr(google_auth, "default", _nothing_configured)
 
 
 @pytest.mark.usefixtures("no_bigquery_credentials")
