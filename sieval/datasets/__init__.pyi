@@ -169,6 +169,14 @@ from .multi_if import (
     MultiIFDataset,
     MultiIFDatasetSample,
 )
+from .multipl_e_humaneval import (
+    MultiPLEHumanEvalDataset,
+    MultiPLEHumanEvalDatasetSample,
+)
+from .multipl_e_mbpp import (
+    MultiPLEMbppDataset,
+    MultiPLEMbppDatasetSample,
+)
 from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
@@ -311,6 +319,10 @@ __all__ = [
     "MMMLUDatasetSample",
     "MultiIFDataset",
     "MultiIFDatasetSample",
+    "MultiPLEHumanEvalDataset",
+    "MultiPLEHumanEvalDatasetSample",
+    "MultiPLEMbppDataset",
+    "MultiPLEMbppDatasetSample",
     "OpenBookQADataset",
     "OpenBookQADatasetSample",
     "PlatinumBenchDataset",

@@ -8,6 +8,7 @@ code either by running it directly or by checking it against test cases.
 ## Supported datasets
 
 - HumanEval (multi-language: python / javascript / typescript)
+- MultiPL-E (cpp / bash / perl, plus javascript via the HumanEval path)
 - LiveCodeBench (python only)
 - SciCode (python only)
 
@@ -60,6 +61,7 @@ docker build -f docker/Dockerfile.python -t code-evaluator-py .
 docker build -f docker/Dockerfile.javascript -t code-evaluator-js .
 docker build -f docker/Dockerfile.typescript -t code-evaluator-ts .
 docker build -f docker/Dockerfile.scicode -t code-evaluator-scicode .   # Python 3.11
+docker build -f docker/Dockerfile.multipl-e -t code-evaluator-multipl-e . # g++ / bash / perl / node
 ```
 
 ## Running the service
@@ -74,6 +76,20 @@ fastapi run app/server.py --port 11451
 
 GET /health -> `{"status": true, "msg": "healthy"}`
 
+### Language capabilities
+
+GET /languages -> `{"status": true, "msg": "", "data": ["bash", "cpp", ...]}`
+
+Which `lang` values this deployment accepts. A caller runs this **before**
+spending inference: without it, an unsupported language is only discoverable
+one sample at a time, by which point everything has been generated and the
+report reads as a model that scored zero rather than as an evaluator that
+cannot run the language.
+
+It answers for the source table, not for the image — a language whose toolchain
+is missing from the running container is still listed, and fails at spawn. Read
+it as "offered", one step short of "proven".
+
 ### Evaluation endpoint
 
 POST /evaluations
@@ -82,7 +98,8 @@ Fields:
 
 - `uuid`
 - `source`: `"human-eval"` | `"mbpp"` | `"livecodebench"` | `"scicode"`
-- `lang`: `python` | `javascript` | `typescript`
+- `lang`: `python` | `javascript` | `typescript` | `cpp` | `bash` | `perl` —
+  ask `GET /languages` rather than hard-coding this list
 - `code`: the code, as a string
 - `test`: LiveCodeBench-specific test description (`fn_name` / `inputs` / `outputs`)
 - `timeout`: float (optional, seconds; defaults below) — a wall for the **whole suite**
@@ -170,6 +187,11 @@ When a request omits `timeout`, these defaults apply:
 
 - python / js: 3s
 - typescript: 5s
+- bash / perl: 3s
+- cpp: 15s for the program, plus a separate fixed 60s for the compile — two
+  budgets, as upstream MultiPL-E gives each step its own. Charging a slow
+  compile against the program's wall would fail a correct submission on a cold
+  cache; charging it nothing would let a pathological one hang.
 - livecodebench: 6s + 2s * number of cases, or `(timeout_per_case + 1) * n + 5`
   when `timeout_per_case` was sent — upstream's own backstop shape
 
@@ -179,6 +201,12 @@ When a request omits `memory_limit`, the default is 1024 MB.
 
 - Python: limits the process address space via `resource.setrlimit`.
 - Node.js (JS/TS): limits the V8 heap via `--max-old-space-size`.
+- Table-driven languages (cpp / bash / perl): limits the address space with a
+  `ulimit -v` shell prologue that `exec`s the program, so its exit code,
+  signals and streams pass through untouched. Applied to the program only — the
+  compiler is trusted toolchain cost, and a cap the kernel refuses is left
+  unset rather than failing the submission. Verified binding: a 1 GiB
+  allocation is refused at `memory_limit=256` and succeeds uncapped.
 
 ## Layout
 

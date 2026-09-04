@@ -157,6 +157,18 @@ from .multi_if_0shot_gen import (
 from .multi_if_0shot_gen_fixed import (
     MultiIFZeroShotGenFixedTask,
 )
+from .multipl_e.multipl_e_humaneval_0shot_base_gen import (
+    MultiPLEHumanEvalZeroShotBaseGenTask,
+)
+from .multipl_e.multipl_e_humaneval_0shot_gen import (
+    MultiPLEHumanEvalZeroShotGenTask,
+)
+from .multipl_e.multipl_e_mbpp_0shot_base_gen import (
+    MultiPLEMbppZeroShotBaseGenTask,
+)
+from .multipl_e.multipl_e_mbpp_0shot_gen import (
+    MultiPLEMbppZeroShotGenTask,
+)
 from .openbookqa_kshot_gen import (
     OpenBookQAFewShotGenTask,
 )
@@ -265,6 +277,10 @@ __all__ = [
     "MMMLUKShotClpTask",
     "MultiIFZeroShotGenFixedTask",
     "MultiIFZeroShotGenTask",
+    "MultiPLEHumanEvalZeroShotBaseGenTask",
+    "MultiPLEHumanEvalZeroShotGenTask",
+    "MultiPLEMbppZeroShotBaseGenTask",
+    "MultiPLEMbppZeroShotGenTask",
     "OpenBookQAFewShotGenTask",
     "PlatinumGSM8KZeroShotGenTask",
     "PlatinumMultiArithZeroShotGenTask",

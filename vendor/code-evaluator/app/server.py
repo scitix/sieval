@@ -1,6 +1,7 @@
 import atexit
 import os
 import sys
+from functools import partial
 from typing import Any, Generic, TypeVar
 
 from fastapi import FastAPI
@@ -8,6 +9,8 @@ from loguru import logger
 from pydantic import BaseModel
 
 from .exec_js import execute_code as exec_js
+from .exec_lang import LANGUAGES
+from .exec_lang import execute_code as exec_lang
 from .exec_py_code import execute_code as exec_py_code
 from .exec_py_test import execute_test as exec_py_test
 from .exec_ts import execute_code as exec_ts
@@ -79,9 +82,40 @@ class ResourceMetrics(BaseModel):
     n_passed: int | None = None
 
 
+# Direct-run executors, by `lang`. The three hand-rolled modules keep their own
+# rows; every table-driven language contributes one automatically, so a new
+# toolchain is a row in `exec_lang.LANGUAGES` and nothing here.
+CODE_EXECUTOR_MAP: dict[str, tuple[Any, float]] = {
+    "javascript": (exec_js, 3.0),
+    "python": (exec_py_code, 3.0),
+    "typescript": (exec_ts, 5.0),
+} | {
+    name: (partial(exec_lang, spec=spec), spec.default_timeout)
+    for name, spec in LANGUAGES.items()
+}
+
+
 @app.get("/health")
 async def check_health() -> BasicResponse[None]:
     return BasicResponse(status=True, msg="healthy")
+
+
+@app.get("/languages")
+async def list_languages() -> BasicResponse[list[str]]:
+    """Which `lang` values this deployment can actually run, sorted.
+
+    A capability probe, so a caller can refuse a run BEFORE spending inference
+    on it. Without one, an unsupported language is only discoverable per sample,
+    at which point every sample has already been generated and the report reads
+    as a model that scored zero rather than as an evaluator that cannot run the
+    language. Advertising the set is what makes that distinguishable.
+
+    It answers for THIS deployment, not for the source tree: a row whose
+    toolchain is missing from the image still fails at spawn. Absent toolchains
+    are not probed here -- doing so would run the compiler on every health
+    check -- so treat this as "offered", one step short of "proven".
+    """
+    return BasicResponse(status=True, msg="", data=sorted(CODE_EXECUTOR_MAP))
 
 
 class LiveCodeBenchTest(BaseModel):
@@ -113,11 +147,6 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
         # so a clean run == pass, same as human-eval.
         logger.debug(f"code to exec:\n{sample.code}")
 
-        CODE_EXECUTOR_MAP = {
-            "javascript": (exec_js, 3.0),
-            "python": (exec_py_code, 3.0),
-            "typescript": (exec_ts, 5.0),
-        }
         if sample.lang in CODE_EXECUTOR_MAP:
             fn, default_timeout = CODE_EXECUTOR_MAP[sample.lang]
             timeout = sample.timeout if sample.timeout is not None else default_timeout
@@ -125,6 +154,11 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
                 code=sample.code, timeout=timeout, memory_limit=sample.memory_limit
             )
         else:
+            # `timeout` is bound on this path too: the log line below reads it
+            # unconditionally, so leaving it unset raised UnboundLocalError and
+            # answered a 500 instead of this branch's own message -- and this is
+            # exactly the path a language whose toolchain is not deployed takes.
+            timeout = sample.timeout
             ok, msg = False, f"not supported language: {sample.lang}"
             stats = None
 

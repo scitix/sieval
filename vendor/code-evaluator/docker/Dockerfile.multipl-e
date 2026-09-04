@@ -1,0 +1,48 @@
+FROM python:3.10-slim
+
+# MultiPL-E toolchains for the table-driven languages in app/exec_lang.py.
+# One image rather than one per language: MultiPL-E is graded per language but
+# run as one sweep, and a caller that has to route each `lang` to its own
+# endpoint gains nothing the table does not already give it.
+#
+# g++      -- humaneval-cpp / mbpp-cpp   (build step; `bits/stdc++.h`, which
+#                                         every cpp prompt includes, is GCC's)
+# bash     -- humaneval-sh  / mbpp-sh    (in the base image; named here so a
+#                                         base change that drops it is visible)
+# perl     -- humaneval-pl  / mbpp-pl
+# nodejs   -- humaneval-js  / mbpp-js    (served by app/exec_js.py; its tests
+#                                         `require('assert')`, a Node built-in)
+#
+# A test harness's own dependencies matter as much as the toolchain, and they
+# fail differently: a missing compiler is one error, a missing test library is
+# 100% of that language failing to compile while every other language is fine.
+# `libtest-deep-perl` is the live case -- EVERY MultiPL-E perl test opens with
+# `use Test::Deep`, so without it the language scores a clean 0. Upstream's own
+# `evaluation/Dockerfile` installs it for the same reason. Adding a language
+# means reading its test template for this, not just installing its compiler.
+#
+# A language absent here is still advertised by GET /languages, which answers
+# for the source table rather than for the image; it fails at spawn. Add a
+# toolchain and its `exec_lang.LANGUAGES` row together, or the endpoint promises
+# what the image cannot run.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        g++ \
+        bash \
+        perl \
+        libtest-deep-perl \
+        curl && \
+    curl -sL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# python evaluator
+WORKDIR /opt/code-evaluator
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app/ ./app/
+
+CMD ["fastapi", "run", "app/server.py", "--port", "11451"]
