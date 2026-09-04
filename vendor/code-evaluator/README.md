@@ -195,6 +195,14 @@ When a request omits `timeout`, these defaults apply:
 - livecodebench: 6s + 2s * number of cases, or `(timeout_per_case + 1) * n + 5`
   when `timeout_per_case` was sent — upstream's own backstop shape
 
+For the table-driven languages (cpp / bash / perl) the wall is enforced against
+the whole **process group**: the program is spawned in its own session and a
+timeout `SIGKILL`s the group, so a submission that forks cannot outlive its
+budget or leave the child running after the response. This is what upstream
+MultiPL-E's `safe_subprocess` does. Note that these walls are the service's own
+and do not match upstream's flat 15s-per-step in either direction — see
+`VENDORED.md`.
+
 ### Memory limit
 
 When a request omits `memory_limit`, the default is 1024 MB.

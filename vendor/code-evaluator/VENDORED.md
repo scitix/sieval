@@ -96,6 +96,29 @@
     `safe_subprocess.run` call does upstream. c++ takes upstream's own 15s for
     the program.
 
+  The **wall clocks themselves diverge from upstream**, in both directions, and
+  the tasks' `reference_impl.notes` enumerate it. Upstream gives every step a
+  flat 15s — each `eval_<lang>.py` call is a bare `safe_subprocess.run` taking
+  its default, the build included. Here an interpreted row keeps the service's
+  own 3s run default rather than tripling every other benchmark's wall to match
+  one, and a build gets 60s. So a submission needing between 3s and 15s to run
+  fails here and passes upstream, and a compile upstream abandons at 15s
+  completes here. The run wall has measured headroom rather than an assumed one:
+  a pure-bash prime sieve to n=20000 finishes in 0.6s.
+
+  A **timed-out program is killed by process group** — spawned with
+  `start_new_session=True` and reaped with `os.killpg(..., SIGKILL)` — which is
+  what upstream's own `safe_subprocess` does, and for the reason its comment
+  gives ("Without this line, test_fork_once fails"). Killing only the direct
+  child leaves the wall unenforced whenever the submission forks: measured
+  before the fix, `bash` running a program that spawns a 30s sleeper returned
+  after **30.1s against a 3s budget**, and the sleeper outlived the kill. After
+  it, 3.1s and no survivor. The reap is itself bounded (`KILL_GRACE_SECONDS`),
+  so a process wedged in uninterruptible sleep cannot re-introduce the unbounded
+  wait. `exec_js` / `exec_ts` have the same shape and are **not** fixed here —
+  they are untouched by this patch on purpose, and their fix belongs in its own
+  change.
+
   Upstream's four-way failure taxonomy (`SyntaxError` / `AssertionError` /
   `ReferenceError` / `Exception`) is **not** reproduced: the response carries one
   boolean and all four buckets are the same boolean. What is preserved is the

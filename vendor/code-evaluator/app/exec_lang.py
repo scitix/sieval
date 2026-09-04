@@ -24,11 +24,18 @@ does not have to learn a second spelling for the same thing.
 
 import asyncio
 import os
+import signal
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .resource_monitor import ResourceStats, monitor_process_resources
+
+#: How long to wait for a killed process group to be reaped before giving up on
+#: it. A SIGKILLed group is gone in microseconds; this exists so that a process
+#: wedged in uninterruptible sleep (a stuck NFS read) cannot re-introduce the
+#: unbounded wait the kill is here to remove.
+KILL_GRACE_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -60,14 +67,25 @@ class LanguageSpec:
     fail_on_output: tuple[str, ...] = field(default=())
 
 
-# Commands follow upstream MultiPL-E's `evaluation/src/eval_<lang>.py`, so a
-# program that passes here is one that passes there:
+# COMMANDS follow upstream MultiPL-E's `evaluation/src/eval_<lang>.py`, so a
+# program that passes here is one that passes there -- modulo the budgets below,
+# which are this service's and not upstream's:
 #   cpp   -- eval_cpp.py: `g++ ... -std=c++17`, build failure is its own status
 #   bash  -- eval_sh.py:  `bash path`, exit code only
 #   perl  -- eval_pl.py:  `perl path`, exit code AND "ERROR" in the output
-# Interpreted rows keep the 3s default the service already uses for js/python;
-# c++ gets upstream's own 15s, since `safe_subprocess.run` defaults to that and
-# a compiled binary that needs longer is not one MultiPL-E waits for either.
+#
+# Upstream gives every one of those a flat 15s, because each is a bare
+# `safe_subprocess.run` call taking its default -- the build included. Two rows
+# here differ, in opposite directions, and both are deliberate:
+#   * interpreted rows keep the 3s default the service already uses for js and
+#     python, rather than tripling every other benchmark's wall to match one.
+#     Measured headroom rather than a guess: a pure-bash prime sieve to n=20000
+#     finishes in 0.6s, two hundred times under the wall. A submission that
+#     would need between 3s and 15s fails here and passes upstream.
+#   * a build gets its own 60s, since charging a cold-cache compile against the
+#     program's budget fails a correct program for the toolchain's slowness. The
+#     other direction: a compile upstream would abandon at 15s completes here.
+# Both are enumerated in the tasks' `reference_impl.notes` as divergences.
 LANGUAGES: dict[str, LanguageSpec] = {
     "cpp": LanguageSpec(
         ext=".cpp",
@@ -113,6 +131,40 @@ def _capped(argv: list[str], memory_limit: int | None) -> list[str]:
     return ["/bin/sh", "-c", f'ulimit -v {kb} 2>/dev/null; exec "$0" "$@"', *argv]
 
 
+async def _kill_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL a timed-out process AND everything it forked.
+
+    ``proc.kill()`` alone signals the direct child. Anything that child forked
+    inherited this process's stdout and stderr, so an orphan holding those pipes
+    keeps them open, and the ``proc.wait()`` that has to follow the kill blocks
+    until *it* exits -- not until the budget is spent. The timeout then bounds
+    nothing: the verdict is still ``failed: timeout``, but the call returns
+    whenever the orphan decides to, which for a program that backgrounded a
+    sleeper or started a server is far past the wall or never. Measured before
+    this existed: `bash` running a program that forks a 30s sleeper returned
+    after 30.1s against a 3s budget, and the sleeper outlived the kill.
+
+    Upstream MultiPL-E's ``safe_subprocess`` does exactly this, and says why in
+    a comment: "Kills the process group. Without this line, test_fork_once
+    fails." The group is the session made at spawn time, so it holds the
+    submission and its descendants and nothing belonging to this server.
+
+    ``ProcessLookupError`` is the good case -- the program exited between the
+    timeout firing and the signal landing -- and is not worth reporting.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=KILL_GRACE_SECONDS)
+    except asyncio.TimeoutError:
+        # Unreapable within the grace period. Returning leaves the child to the
+        # event loop's watcher, which is strictly better than the caller
+        # inheriting an unbounded wait -- the thing this function exists to stop.
+        pass
+
+
 async def _spawn(
     argv: list[str], *, cwd: str, timeout: float, memory_limit: int | None, monitor: bool
 ) -> tuple[int | None, str, ResourceStats, bool]:
@@ -130,6 +182,11 @@ async def _spawn(
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
         env=os.environ.copy(),
+        # Its own session, so the timeout has a process GROUP to kill rather
+        # than one pid -- see `_kill_group`. Set at spawn because a group cannot
+        # be established after the fact, and `_capped`'s shell prologue `exec`s
+        # the program, so the leader is the submission itself either way.
+        start_new_session=True,
     )
 
     if monitor and proc.pid is not None:
@@ -145,8 +202,7 @@ async def _spawn(
         output = f"{stdout.decode(errors='replace')}\n{stderr.decode(errors='replace')}"
         return proc.returncode, output.strip(), stats, False
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await _kill_group(proc)
         return None, "", stats, True
     finally:
         stop_event.set()
