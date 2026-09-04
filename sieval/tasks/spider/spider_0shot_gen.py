@@ -89,7 +89,7 @@ differences.** Worst case 2 of 1,034 samples, 0.19 pp.
 verdict. Measured: across all 715 databases the dev set reaches, exactly two
 values are not valid UTF-8, and ``ignore`` is injective over every distinct value
 in their two columns (0 collisions in 41,324), so both factories induce the same
-equality relation. Details in ``_spider_sqlite.open_readonly``.
+equality relation. Details in ``sieval.tasks._sqlite_exec.open_readonly``.
 
 Target: published Spider dev test-suite accuracy for the model under test, and
 the two reference columns against papers that quote them.

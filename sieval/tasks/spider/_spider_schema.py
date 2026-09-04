@@ -25,7 +25,7 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 
 import sqlite3
 
-from ._spider_sqlite import open_readonly
+from sieval.tasks._sqlite_exec import open_readonly
 
 #: Number of sample rows shown per table — the "Select 3" half of the format.
 N_EXAMPLE_ROWS = 3

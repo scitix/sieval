@@ -1,9 +1,10 @@
 """Correctness tests for Spider 1.0's pre-2020 grading worker.
 
 Scope is the two parse-based metrics and the read-only schema substitution the
-parse depends on. The connection guards and the execution bounds they share with
-the prompt builder and the test-suite grader are tested in
-`test__spider_sqlite.py`, next to the module that owns them.
+parse depends on. The connection guards this shares with the prompt builder, the
+test-suite grader and Spider 2.0's local engine are tested in
+`tests/unit/tasks/test__sqlite_exec.py`, next to the module that owns them;
+Spider 1.0's own bounds are in `test__spider_sqlite.py`.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -24,8 +25,8 @@ from sieval.community.spider import (
     rebuild_sql_col,
     rebuild_sql_val,
 )
+from sieval.tasks._sqlite_exec import open_readonly, run_bounded
 from sieval.tasks.spider._spider_exec import grade_one, read_schema_readonly
-from sieval.tasks.spider._spider_sqlite import open_readonly, run_bounded
 
 
 @pytest.fixture
@@ -68,7 +69,7 @@ def tables_json(tmp_path):
 def test_runaway_prediction_is_scored_wrong_with_a_reason(db, tables_json):
     """The bound is plumbed through to a verdict, not just available.
 
-    `test__spider_sqlite.py` proves the abort happens; this proves `grade_one`
+    `test__sqlite_exec.py` proves the abort happens; this proves `grade_one`
     turns it into `execution=False` plus a named `error`, which is what
     `n_execution_errors` counts.
     """
@@ -178,11 +179,14 @@ def test_a_correct_prediction_the_parser_rejects_scores_zero_silently(
     gold = "SELECT name FROM singer"
     conn = open_readonly(str(db))
     try:
-        assert run_bounded(conn, prediction, 5.0, 1000) == run_bounded(
-            conn, gold, 5.0, 1000
-        )
+        # Rows only. `run_bounded` also returns the cursor's column names, and
+        # the first prediction here aliases one -- Spider compares values, so a
+        # header difference is not what makes these cases interesting.
+        _, predicted_rows = run_bounded(conn, prediction, 5.0, 1000)
+        _, gold_rows = run_bounded(conn, gold, 5.0, 1000)
     finally:
         conn.close()
+    assert predicted_rows == gold_rows
 
     out = grade_one(str(db), str(tables_json), "concert_singer", prediction, gold)
     assert out["parsed"] is False

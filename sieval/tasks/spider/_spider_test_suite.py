@@ -24,8 +24,9 @@ here" into "equivalent".
 The comparison is upstream's own bytes -- ``result_eq``, ``postprocess``,
 ``remove_distinct`` and ``replace_cur_year`` are imported, not reimplemented.
 What this module supplies is the part that has to differ: **execution**, through
-the same ``_spider_sqlite`` guards and bounds the pre-2020 path runs under, so
-the deadline and the row cap have one implementation rather than two that drift.
+the same ``_sqlite_exec`` guards and ``_spider_sqlite`` bounds the pre-2020 path
+runs under, so the deadline and the row cap have one implementation rather than
+two that drift.
 Upstream opens an unbounded read-write ``sqlite3.connect`` per query; here every
 one of the ~39 databases per sample is opened ``mode=ro&immutable=1`` with
 ``ATTACH``/``DETACH`` denied.
@@ -58,14 +59,10 @@ from sieval.community.spider_test_suite import (
     replace_cur_year,
     result_eq,
 )
+from sieval.tasks._sqlite_exec import open_readonly, run_bounded
 
 from ._spider_exec import grade_one as grade_reference
-from ._spider_sqlite import (
-    DEFAULT_DEADLINE_S,
-    DEFAULT_MAX_ROWS,
-    open_readonly,
-    run_bounded,
-)
+from ._spider_sqlite import DEFAULT_DEADLINE_S, DEFAULT_MAX_ROWS
 
 #: Upstream's ``--plug_value`` default: compare the prediction's own literals
 #: rather than substituting the gold's.
@@ -156,14 +153,16 @@ def test_suite_match(
         conn = open_readonly(db_path)
         try:
             try:
-                gold_rows = run_bounded(conn, gold, deadline_s, max_rows)
+                # `result_eq` compares row tuples; the column names the shared
+                # reader also returns belong to a caller building a frame.
+                _, gold_rows = run_bounded(conn, gold, deadline_s, max_rows)
             except Exception as exc:
                 raise ValueError(
                     f"Spider gold SQL failed on {os.path.basename(db_path)!r} "
                     f"for {db_id!r}: {type(exc).__name__}: {exc}"
                 ) from exc
             try:
-                pred_rows = run_bounded(conn, pred, deadline_s, max_rows)
+                _, pred_rows = run_bounded(conn, pred, deadline_s, max_rows)
             except Exception as exc:
                 name = os.path.basename(db_path)
                 return False, f"{type(exc).__name__} on {name}: {exc}"

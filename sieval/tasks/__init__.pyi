@@ -193,6 +193,9 @@ from .smt_2025_0shot_gen import (
 from .spider.spider_0shot_gen import (
     SpiderZeroShotGenTask,
 )
+from .spider2_lite_0shot_gen import (
+    Spider2LiteZeroShotGenTask,
+)
 from .sysbench_0shot_gen import (
     SysBenchZeroShotGenTask,
 )
@@ -273,6 +276,7 @@ __all__ = [
     "SciCodeZeroShotGenTask",
     "SciTaRCZeroShotGenTask",
     "SimpleQAVerifiedZeroShotGenTask",
+    "Spider2LiteZeroShotGenTask",
     "SpiderZeroShotGenTask",
     "SysBenchZeroShotGenTask",
     "TEvalBeforeCallingZeroShotGenTask",

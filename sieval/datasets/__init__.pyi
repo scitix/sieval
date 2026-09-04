@@ -201,6 +201,10 @@ from .spider import (
     SpiderDataset,
     SpiderDatasetSample,
 )
+from .spider2_lite import (
+    Spider2LiteDataset,
+    Spider2LiteDatasetSample,
+)
 from .sysbench import (
     SysBenchDataset,
     SysBenchDatasetSample,
@@ -321,6 +325,8 @@ __all__ = [
     "SciTaRCDatasetSample",
     "SimpleQAVerifiedDataset",
     "SimpleQAVerifiedDatasetSample",
+    "Spider2LiteDataset",
+    "Spider2LiteDatasetSample",
     "SpiderDataset",
     "SpiderDatasetSample",
     "SysBenchDataset",
