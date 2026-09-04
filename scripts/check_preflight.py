@@ -2370,6 +2370,73 @@ class PreflightRunner:
             )
         ]
 
+    def _resolve_base_class(
+        self, name: str, tree: ast.Module, path: Path, violations: list[str]
+    ) -> tuple[ast.ClassDef, ast.Module, Path] | None:
+        """The class *name* refers to from *path*, with the module holding it.
+
+        Its own module first, and only then an import. A shared base and the
+        subclasses that parameterize it commonly live in one ``_base.py``
+        (``multipl_e``, ``arc``), where there is no ``ImportFrom`` to resolve and
+        an import-only lookup finds nothing at all.
+        """
+        local = _class_named(tree, name)
+        if local is not None:
+            return local, tree, path
+        target = _resolve_intra_package(tree, name, path, self.project_root)
+        if target is None or not target.is_file():
+            return None
+        shared = self._parse_task_module(target, violations)
+        if shared is None:
+            return None
+        parent = _class_named(shared, name)
+        return None if parent is None else (parent, shared, target)
+
+    def _inherited_references(
+        self, cls: ast.ClassDef, tree: ast.Module, path: Path, violations: list[str]
+    ) -> list[ast.expr]:
+        """Every judgement reference up *cls*'s base chain, followed to the end.
+
+        Termination is by a visited set keyed on (module, class name) rather
+        than by a depth cap: the graph is finite, and a cap is a second number to
+        get wrong the next time a family nests one level deeper -- which is the
+        bug this walk replaces.
+
+        A base that resolves to nothing (``Task`` from ``sieval/core``, a stdlib
+        ``Generic``) is skipped, not reported: the tier is a union, and a hop
+        that leaves the tree cannot contribute call sites either way.
+        """
+        found: list[ast.expr] = []
+        seen: set[tuple[Path, str]] = {(path, cls.name)}
+        frontier: list[tuple[ast.ClassDef, ast.Module, Path]] = [(cls, tree, path)]
+        while frontier:
+            node, node_tree, node_path = frontier.pop()
+            for base in node.bases:
+                # A *generic* base is an `ast.Subscript` -- `DemoBase[TSample]`
+                # -- and the class it names is its `.value`. Unwrapped rather
+                # than skipped: a leaf that parameterizes its shared base still
+                # inherits that base's `feedback`, so skipping the subscript form
+                # drops the leaf out of this check entirely. It then reports as
+                # `unresolved`, which is a WARN -- so a mis-declaration on such a
+                # task would be announced as merely unread rather than raised as
+                # the FAIL it is.
+                named = base.value if isinstance(base, ast.Subscript) else base
+                if not isinstance(named, ast.Name):
+                    continue
+                resolved = self._resolve_base_class(
+                    named.id, node_tree, node_path, violations
+                )
+                if resolved is None:
+                    continue
+                parent, parent_tree, parent_path = resolved
+                key = (parent_path, parent.name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found += _judgement_references(parent)
+                frontier.append((parent, parent_tree, parent_path))
+        return found
+
     def _judgement_references_for(
         self, cls: ast.ClassDef, tree: ast.Module, path: Path, violations: list[str]
     ) -> tuple[list[ast.expr], str]:
@@ -2382,15 +2449,22 @@ class PreflightRunner:
         2. a helper the class calls, defined here or imported from a sibling
            inside ``sieval/tasks/`` -- ``arc/``'s four leaves share
            ``_base.arc_judgement_record``;
-        3. a base class resolved the same way -- ``platinum_bench``'s five leaves
-           inherit ``feedback`` and define none of their own. A *generic* base
-           counts: ``math_perturb``'s two leaves name theirs as
+        3. a base class, followed to the end of the chain -- ``platinum_bench``'s
+           five leaves inherit ``feedback`` and define none of their own, and
+           ``multipl_e``'s four sit a level below that again, on per-protocol
+           subclasses whose shared ``feedback`` is another level up. A *generic*
+           base counts: ``math_perturb``'s two leaves name theirs as
            ``MathPerturbZeroShotGenTask[TSample]``, an ``ast.Subscript`` whose
            ``.value`` is the class.
 
-        One level each, not a transitive walk: that covers every task today, and
-        a deeper chain reports as unresolved (the caller counts it) rather than
-        passing quietly.
+        The helper tier is one hop; the base tier is the whole chain. A helper
+        calling a helper is a refactor away from being inlined, but a class
+        hierarchy is a shape a benchmark family picks deliberately, and stopping
+        one level short of the ``feedback`` reports the leaf as ``unresolved``
+        -- a WARN meaning "could not read this one", which is indistinguishable
+        from what it says when the declaration is also wrong. A guard that goes
+        quiet on the first family to nest twice is worse than no guard, because
+        the run still ends green.
 
         All three are **unioned**; none short-circuits the others. A task whose
         two branches build the record two ways is the case that matters, and
@@ -2423,27 +2497,7 @@ class PreflightRunner:
             if fn is not None:
                 helper += _judgement_references(fn)
 
-        inherited: list[ast.expr] = []
-        for base in cls.bases:
-            # A *generic* base is an `ast.Subscript` -- `DemoBase[TSample]` --
-            # and the class it names is its `.value`. Unwrapped rather than
-            # skipped: a leaf that parameterizes its shared base still inherits
-            # that base's `feedback`, so skipping the subscript form drops the
-            # leaf out of this check entirely. It then reports as `unresolved`,
-            # which is a WARN -- so a mis-declaration on such a task would be
-            # announced as merely unread rather than raised as the FAIL it is.
-            named = base.value if isinstance(base, ast.Subscript) else base
-            if not isinstance(named, ast.Name):
-                continue
-            target = _resolve_intra_package(tree, named.id, path, self.project_root)
-            if target is None or not target.is_file():
-                continue
-            shared = self._parse_task_module(target, violations)
-            if shared is None:
-                continue
-            parent = _class_named(shared, named.id)
-            if parent is not None:
-                inherited += _judgement_references(parent)
+        inherited = self._inherited_references(cls, tree, path, violations)
 
         tiers = (
             ("class", _judgement_references(cls)),

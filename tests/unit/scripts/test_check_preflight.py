@@ -3416,6 +3416,57 @@ class TestCheckReferenceKind:
         assert r.status == "FAIL"
         assert "found via base" in r.details[0]
 
+    def test_a_base_chain_is_followed_past_its_first_level(self, tmp_path: Path):
+        """`multipl_e`'s layout: leaf -> per-protocol base -> shared `feedback`.
+
+        The middle class carries only the protocol and builds no record, so a
+        walk stopping at the first base finds nothing, and the leaf reports as
+        `unverified` — a WARN saying "could not read this one", which is exactly
+        what it says when the declaration underneath is *also* wrong. The four
+        leaves of that family went unchecked on that shape while the preflight
+        stayed green.
+
+        `DemoRoot` is reached through `DemoMiddle`'s own module rather than
+        through an import, which is where a shared base actually lives.
+        """
+        r = self._one(
+            tmp_path,
+            "from ._base import DemoMiddle\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n)\n"
+            "class DemoTask(DemoMiddle[int]):\n"
+            "    pass\n",
+            _base="class DemoRoot:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True, build_judgement_record(None, [])\n"
+            "class DemoMiddle(DemoRoot):\n"
+            "    def prompt_prefix(self, raw):\n"
+            "        return ''\n",
+        )
+        assert r.status == "FAIL"
+        assert "found via base" in r.details[0]
+        assert "declare 'procedure'" in r.details[0]
+
+    def test_a_base_outside_the_task_tree_ends_the_walk_quietly(self, tmp_path: Path):
+        """Every chain ends at something this check cannot open — `core`'s `Task`.
+
+        An unresolvable hop contributes no call sites in either direction, so it
+        must neither raise nor turn the tier into a finding of its own; the leaf
+        is then judged on what the chain did yield.
+        """
+        r = self._one(
+            tmp_path,
+            "from sieval.core.tasks import Task\n"
+            "from ._base import DemoBase\n"
+            "@sieval_task(\n    name='demo_0shot_gen',\n"
+            "    reference_kind='procedure',\n)\n"
+            "class DemoTask(DemoBase, Task[int]):\n"
+            "    pass\n",
+            _base="class DemoBase:\n"
+            "    async def feedback(self, post, ctx):\n"
+            "        return True, build_judgement_record(None, [])\n",
+        )
+        assert r.status == "PASS"
+
     # --- reach: what the check cannot read, it must not call clean ----------
 
     def test_an_unreachable_task_warns_rather_than_passing_silently(
