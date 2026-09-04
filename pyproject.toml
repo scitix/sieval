@@ -116,6 +116,15 @@ ruler-gen = [
   "certifi>=2024.7.4",
 ]
 scicode = ["h5py>=3.11", "numpy<=2.2", "scipy>=1.16.3"]
+# spider: the vendored Spider 1.0 parser tokenises every query with
+# `nltk.word_tokenize` (process_sql.py:29), which resolves through the punkt_tab
+# corpus on nltk >= 3.9; the corpus is fetched on demand at grade time, never at
+# import — a module-scope download races under parallel test collection.
+# `sqlparse` is reached the same way, by the test-suite evaluator's
+# `parse.remove_distinct`, whose module imports it at scope.
+# `deps_group` preflight scans only tasks/ and datasets/, so it cannot see a
+# dependency reached through community/; this entry is verified by hand.
+spider = ["nltk>=3.9.2", "sqlparse>=0.5.3"]
 t-eval = ["numpy<=2.2", "sentence-transformers>=5.1.2"]
 # wikisql: babel backs upstream's `parse_decimal`, which coerces a condition
 # value against a `real`-typed column in lib/dbengine.py -- load-bearing, not

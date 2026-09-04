@@ -2,10 +2,10 @@
 # It is not intended for manual editing.
 
 [metadata]
-groups = ["default", "dev", "drop", "hle", "ifbench", "ifeval", "iheval", "math", "multi-if", "ruler", "ruler-gen", "scicode", "t-eval", "test", "wikisql"]
+groups = ["default", "dev", "drop", "hle", "ifbench", "ifeval", "iheval", "math", "multi-if", "ruler", "ruler-gen", "scicode", "spider", "t-eval", "test", "wikisql"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:ffee2dc7dda5ff053c48432ce56567d7698e1fa43ad79e15e24ebbd7a3dc8aa3"
+content_hash = "sha256:2241b03fdf1e94e7765236cd7b64d655658f79b8fc44b9d72ff2dca1817ee81d"
 
 [[metadata.targets]]
 requires_python = ">=3.12,<3.15"
@@ -315,7 +315,7 @@ name = "click"
 version = "8.3.1"
 requires_python = ">=3.10"
 summary = "Composable command line interface toolkit"
-groups = ["default", "ifbench", "ifeval", "iheval", "multi-if", "ruler", "test"]
+groups = ["default", "ifbench", "ifeval", "iheval", "multi-if", "ruler", "spider", "test"]
 dependencies = [
     "colorama; platform_system == \"Windows\"",
 ]
@@ -329,7 +329,7 @@ name = "colorama"
 version = "0.4.6"
 requires_python = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
 summary = "Cross-platform colored terminal text."
-groups = ["default", "ifbench", "ifeval", "iheval", "multi-if", "ruler", "t-eval", "test"]
+groups = ["default", "ifbench", "ifeval", "iheval", "multi-if", "ruler", "spider", "t-eval", "test"]
 marker = "platform_system == \"Windows\" or sys_platform == \"win32\""
 files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
@@ -1004,7 +1004,7 @@ name = "joblib"
 version = "1.5.2"
 requires_python = ">=3.9"
 summary = "Lightweight pipelining with Python functions"
-groups = ["ifbench", "ifeval", "iheval", "multi-if", "ruler", "t-eval"]
+groups = ["ifbench", "ifeval", "iheval", "multi-if", "ruler", "spider", "t-eval"]
 files = [
     {file = "joblib-1.5.2-py3-none-any.whl", hash = "sha256:4e1f0bdbb987e6d843c70cf43714cb276623def372df3c22fe5266b2670bc241"},
     {file = "joblib-1.5.2.tar.gz", hash = "sha256:3faa5c39054b2f03ca547da9b2f52fde67c06240c31853f306aea97f13647b55"},
@@ -1567,7 +1567,7 @@ name = "nltk"
 version = "3.9.2"
 requires_python = ">=3.9"
 summary = "Natural Language Toolkit"
-groups = ["ifbench", "ifeval", "iheval", "multi-if", "ruler"]
+groups = ["ifbench", "ifeval", "iheval", "multi-if", "ruler", "spider"]
 dependencies = [
     "click",
     "joblib",
@@ -2523,7 +2523,7 @@ name = "regex"
 version = "2025.11.3"
 requires_python = ">=3.9"
 summary = "Alternative regular expression module, to replace re."
-groups = ["ifbench", "ifeval", "iheval", "math", "multi-if", "ruler", "t-eval"]
+groups = ["ifbench", "ifeval", "iheval", "math", "multi-if", "ruler", "spider", "t-eval"]
 files = [
     {file = "regex-2025.11.3-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:bc8ab71e2e31b16e40868a40a69007bc305e1109bd4658eb6cad007e0bf67c41"},
     {file = "regex-2025.11.3-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:22b29dda7e1f7062a52359fca6e58e548e28c6686f205e780b02ad8ef710de36"},
@@ -2933,6 +2933,17 @@ files = [
 ]
 
 [[package]]
+name = "sqlparse"
+version = "0.6.0"
+requires_python = ">=3.10"
+summary = "A non-validating SQL parser."
+groups = ["spider"]
+files = [
+    {file = "sqlparse-0.6.0-py3-none-any.whl", hash = "sha256:b861c0288ce2fa56209a9a6412d2e066ac664b3873b89c26c9d8415e8e32996f"},
+    {file = "sqlparse-0.6.0.tar.gz", hash = "sha256:113c35c75365ab9cc9c7231d68c6428fb11c085fc8e9eb1ad659b7ddbf6cd2b9"},
+]
+
+[[package]]
 name = "syllapy"
 version = "0.7.2"
 requires_python = ">=3.6, <4"
@@ -3122,7 +3133,7 @@ name = "tqdm"
 version = "4.67.1"
 requires_python = ">=3.7"
 summary = "Fast, Extensible Progress Meter"
-groups = ["default", "ifbench", "ifeval", "iheval", "multi-if", "ruler", "t-eval"]
+groups = ["default", "ifbench", "ifeval", "iheval", "multi-if", "ruler", "spider", "t-eval"]
 dependencies = [
     "colorama; platform_system == \"Windows\"",
 ]

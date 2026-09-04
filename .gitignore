@@ -185,6 +185,7 @@ docs/pitch.md
 docs/designs/
 docs/dialogues/
 docs/handover/
+docs/superpowers/
 
 # Local-only model reference (not for OSS distribution)
 models.yaml
