@@ -84,8 +84,8 @@ FORBIDDEN: dict[str, tuple[str, ...]] = {
     # Both Spider graders parse SQL, and the two parsers pull the `spider`
     # group: the vendored `process_sql` imports nltk, and the test-suite
     # evaluator's `parse` imports sqlparse. The prompt path needs neither, which
-    # is why the hardened connection lives in `_spider_sqlite` -- importing it
-    # from `_spider_exec` would put both back at module scope.
+    # is why the hardened connection lives in `sieval.tasks._sqlite_exec` --
+    # importing it from `_spider_exec` would put both back at module scope.
     # Keyed by module path under `sieval.tasks.`, so a task in a subpackage
     # spells the subpackage too -- the manifest builds `sieval.tasks.<key>`.
     "spider.spider_0shot_gen": (
@@ -95,6 +95,19 @@ FORBIDDEN: dict[str, tuple[str, ...]] = {
         "sieval.tasks.spider._spider_test_suite",
         "nltk",
         "sqlparse",
+    ),
+    # Spider 2.0's vendored evaluator reaches google.cloud at module scope, and
+    # importing it has side effects on top of that -- upstream's `evaluate.py`
+    # hijacks the process's stdout/stderr and truncates `log.txt` in the current
+    # directory, which the package wrapper undoes. Registration must pay neither,
+    # so `extract_sql_query` and the comparison are imported inside the stages
+    # that use them. (`pandas` is deliberately not on this list: the *loader*
+    # imports HuggingFace `datasets`, which pulls it in regardless, so naming it
+    # here would fail for a reason that has nothing to do with the grader.)
+    "spider2_lite_0shot_gen": (
+        "sieval.community.spider2",
+        "google.cloud.bigquery",
+        "snowflake.connector",
     ),
     # The embedding backend is only needed when eval_thought is enabled.
     "t_eval_before_calling_0shot_gen": ("sentence_transformers",),

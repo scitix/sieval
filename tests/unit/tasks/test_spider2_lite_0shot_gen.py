@@ -19,8 +19,14 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_rollout_judgement,
 )
+from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.datasets.spider2_lite import Spider2LiteDataset
-from sieval.tasks.spider2_lite_0shot_gen import Spider2LiteZeroShotGenTask
+from sieval.tasks._spider2_backends import caller_timeout, execute
+from sieval.tasks.spider2_lite_0shot_gen import (
+    Spider2LiteZeroShotGenTask,
+    _fit,
+    _sqlite_schema,
+)
 from tests.conftest import HandlerTransport
 
 
@@ -62,11 +68,19 @@ def staged(tmp_path):
     gold = tmp_path / "gold"
     gold.mkdir()
     (gold / "local001.csv").write_text("n\n3\n")
+    # `local002` has no base CSV, so upstream's `resolve_gold_paths` reports it
+    # as a multi-gold instance -- 1,544 golds over 547 questions, so this is the
+    # common shape rather than the exotic one. Only the `_b` answer is right.
+    (gold / "local002_a.csv").write_text("n\n99\n")
+    (gold / "local002_b.csv").write_text("n\n3\n")
 
     config = tmp_path / "eval.jsonl"
     config.write_text(
-        json.dumps(
-            {"instance_id": "local001", "condition_cols": [], "ignore_order": False}
+        "\n".join(
+            json.dumps(
+                {"instance_id": name, "condition_cols": [], "ignore_order": False}
+            )
+            for name in ("local001", "local002")
         )
     )
 
@@ -95,6 +109,34 @@ def _task(staged, reply="```sql\nSELECT count(*) AS n FROM t\n```", rows=None):
     return Spider2LiteZeroShotGenTask(
         dataset, _ScriptedChatModel(reply=reply), **staged
     )
+
+
+def _require_grader() -> None:
+    """Skip unless the ``spider2`` extra is installed.
+
+    Only the grading half needs it: `postprocess` and `feedback` reach the
+    vendored evaluator, which imports google-cloud-bigquery at module scope
+    whichever engine the sample runs on. Placed at this chokepoint rather than
+    on the module so the prompt, report and offload-budget tests keep running
+    where the extra is absent — CI installs eight dependency groups and this is
+    not one of them.
+
+    Gated on the third-party name rather than on `sieval.community.spider2`, so
+    a genuine ImportError from the package wrapper fails loudly instead of
+    quietly skipping the tests that would have caught it.
+    """
+    pytest.importorskip("google.cloud.bigquery", reason="requires the `spider2` extra")
+
+
+async def _judge(task, raw=_ROW):
+    """Run the whole pipeline over one sample; return prediction and judgement."""
+    _require_grader()
+    ctx = TaskContext(sample_id=0, raw_sample=raw)
+    post = await task.postprocess(
+        await task.infer(await task.preprocess(raw, ctx), ctx), ctx
+    )
+    _, judgement = await task.feedback(post, ctx)
+    return post, judgement
 
 
 # --- prompt -----------------------------------------------------------------
@@ -136,20 +178,59 @@ async def test_absent_external_knowledge_adds_nothing(staged):
     assert "External knowledge" not in pre["prompt"][0]["content"]
 
 
+# --- the schema block is bounded --------------------------------------------
+
+
+def test_the_schema_block_drops_whole_statements_and_says_how_many():
+    blocks = [f"CREATE TABLE {name} (x int)" for name in ("a", "b", "c")]
+    fitted = _fit(blocks, 30)
+    assert "CREATE TABLE a" in fitted
+    assert "CREATE TABLE b" not in fitted
+    assert "2 of 3 tables omitted" in fitted
+
+
+def test_a_statement_is_never_cut_in_half():
+    """Half a `CREATE TABLE` reads as a schema that really does end there.
+
+    A truncated prompt should make the model answer over fewer tables, not
+    over a table it thinks has three columns when it has thirty.
+    """
+    blocks = ["CREATE TABLE a (x int)", "CREATE TABLE b (y int)"]
+    kept = _fit(blocks, 30).splitlines()[0]
+    assert kept == "CREATE TABLE a (x int)"
+
+
+def test_one_oversized_statement_still_gives_the_model_something():
+    """The first block goes in whatever it costs — otherwise a database whose
+    first table exceeds the budget renders as a prompt with no schema at all."""
+    huge = "CREATE TABLE wide (" + ", ".join(f"c{i} int" for i in range(500)) + ")"
+    assert _fit([huge], 100) == huge
+
+
+def test_a_local_schema_over_budget_is_truncated_on_a_statement_boundary(tmp_path):
+    """The same bound, reached through the introspection the prompt uses."""
+    path = tmp_path / "many.sqlite"
+    conn = sqlite3.connect(path)
+    for name in ("a", "b", "c"):
+        conn.execute(f"CREATE TABLE {name} (x int)")
+    conn.commit()
+    conn.close()
+    rendered = _sqlite_schema(str(path), budget=30)
+    assert rendered.startswith("CREATE TABLE a")
+    assert "2 of 3 tables omitted" in rendered
+    # Sorted by name, so which tables survive is a property of the database
+    # rather than of the order SQLite happened to store them in.
+    assert "CREATE TABLE c" not in rendered
+
+
 # --- end to end over the local engine ---------------------------------------
 
 
 @pytest.mark.anyio
 async def test_full_pipeline_scores_a_correct_answer(staged):
     task = _task(staged)
-    ctx = TaskContext(sample_id=0, raw_sample=_ROW)
-    pre = await task.preprocess(_ROW, ctx)
-    inf = await task.infer(pre, ctx)
-    post = await task.postprocess(inf, ctx)
+    post, judgement = await _judge(task)
     assert post["rollouts"][0]["prediction"] == "SELECT count(*) AS n FROM t"
-
-    finalize, judgement = await task.feedback(post, ctx)
-    assert finalize is True
     rollout = judgement["rollouts"][0]
     assert rollout["correct"] is True
     assert rollout["extra"]["backend"] == "local"
@@ -159,22 +240,14 @@ async def test_full_pipeline_scores_a_correct_answer(staged):
 @pytest.mark.anyio
 async def test_wrong_answer_scores_zero(staged):
     task = _task(staged, reply="```sql\nSELECT 99 AS n\n```")
-    ctx = TaskContext(sample_id=0, raw_sample=_ROW)
-    post = await task.postprocess(
-        await task.infer(await task.preprocess(_ROW, ctx), ctx), ctx
-    )
-    _, judgement = await task.feedback(post, ctx)
+    _, judgement = await _judge(task)
     assert judgement["rollouts"][0]["correct"] is False
 
 
 @pytest.mark.anyio
 async def test_unrunnable_sql_is_recorded_as_an_error(staged):
     task = _task(staged, reply="```sql\nSELECT * FROM no_such_table\n```")
-    ctx = TaskContext(sample_id=0, raw_sample=_ROW)
-    post = await task.postprocess(
-        await task.infer(await task.preprocess(_ROW, ctx), ctx), ctx
-    )
-    _, judgement = await task.feedback(post, ctx)
+    _, judgement = await _judge(task)
     rollout = judgement["rollouts"][0]
     assert rollout["correct"] is False
     assert rollout["extra"]["error"] is not None
@@ -188,15 +261,129 @@ async def test_missing_cloud_credentials_are_flagged_not_silently_wrong(
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     row = dict(_ROW, instance_id="bq001", db="warehouse")
     task = _task(staged, rows=[row])
-    ctx = TaskContext(sample_id=0, raw_sample=row)
-    post = await task.postprocess(
-        await task.infer(await task.preprocess(row, ctx), ctx), ctx
-    )
-    _, judgement = await task.feedback(post, ctx)
+    _, judgement = await _judge(task, row)
     rollout = judgement["rollouts"][0]
     assert rollout["correct"] is False
     assert rollout["extra"]["missing_credentials"] is True
     assert rollout["extra"]["backend"] == "bigquery"
+
+
+# --- the comparison: upstream's two branches and the CSV round trip ----------
+
+
+@pytest.mark.anyio
+async def test_a_text_typed_number_is_scored_as_the_number_it_spells(staged):
+    """The CSV round trip, seen from the outside.
+
+    `count(*)` cast to `text` is the same answer as `count(*)`, and upstream
+    scores it right because it writes the result out and reads it back before
+    comparing. Drop the round trip and this verdict flips — see the next test,
+    which is that same query compared without it.
+    """
+    task = _task(staged, reply="```sql\nSELECT CAST(count(*) AS TEXT) AS n FROM t\n```")
+    _, judgement = await _judge(task)
+    assert judgement["rollouts"][0]["correct"] is True
+
+
+def test_comparing_the_driver_frame_directly_would_call_that_answer_wrong(staged):
+    """The counterfactual, so the test above cannot pass for another reason.
+
+    Upstream's comparison takes `a != b` for any pair that is not two numbers,
+    so the string `"3"` the SQLite driver returns never matches the int64 the
+    gold CSV parses to. This is what makes `to_csv`/`read_csv` part of the
+    metric rather than plumbing: it is the step that re-infers the dtype.
+    """
+    _require_grader()
+    from sieval.community.spider2 import compare_pandas_table, load_gold_csv
+
+    frame = execute(
+        "sqlite",
+        "SELECT CAST(count(*) AS TEXT) AS n FROM t",
+        db_path=str(Path(staged["localdb_dir"], "tiny.sqlite")),
+    )
+    gold = load_gold_csv(str(Path(staged["gold_dir"], "local001.csv")))
+    assert frame["n"].tolist() == ["3"]
+    assert compare_pandas_table(frame, gold) == 0
+
+
+@pytest.mark.anyio
+async def test_several_golds_are_a_disjunction_over_answer_shapes(staged):
+    """`local002` ships `_a` and `_b`; agreeing with either one is correct.
+
+    Pinned because upstream's `is_single` flag is easy to drop on the way
+    through: comparing against `gold_paths[0]` alone would score this answer
+    wrong, and would do it silently on the majority of the 547 questions.
+    """
+    row = dict(_ROW, instance_id="local002")
+    task = _task(staged, rows=[row])
+    _, judgement = await _judge(task, row)
+    assert judgement["rollouts"][0]["correct"] is True
+
+
+@pytest.mark.anyio
+async def test_a_missing_gold_raises_rather_than_scoring_the_model_wrong(staged):
+    """Gold ships for all 547, so an absent one is a staging fault of ours.
+
+    `.claude/rules/records.md`: a value-reference task that finds no gold
+    fails the sample instead of recording a verdict it had nothing to compare
+    against. Scoring 0 — which is what upstream does — would report the model
+    wrong for an unpacked archive.
+    """
+    row = dict(_ROW, instance_id="local999")
+    task = _task(staged, rows=[row])
+    with pytest.raises(ValueError, match="No Spider 2.0-lite gold result"):
+        await _judge(task, row)
+
+
+# --- the grade is offloaded with the right budget ----------------------------
+
+
+@pytest.mark.anyio
+async def test_the_grade_is_offloaded_with_the_backend_s_own_budget(
+    staged, monkeypatch
+):
+    """`run_cpu_bound`'s 30 s default is shorter than either engine bound.
+
+    A process pool cannot interrupt a running call, so a caller that gives up
+    first turns every in-engine deadline into decoration and reports a timeout
+    where the engine would have reported a bad query. The call site therefore
+    passes `caller_timeout(backend)`, and this pins it — including that the
+    offload happens at all, which an assertion about the budget alone would not.
+    """
+    seen: list[float | None] = []
+
+    async def _spy(_func, *_args, timeout=None):
+        seen.append(timeout)
+        return True, None
+
+    monkeypatch.setattr(
+        "sieval.tasks.spider2_lite_0shot_gen.run_cpu_bound", _spy, raising=True
+    )
+    task = _task(staged)
+    ctx = TaskContext(sample_id=0, raw_sample=_ROW)
+    await task.feedback(build_prediction_record(["SELECT count(*) AS n FROM t"]), ctx)
+    assert seen == [caller_timeout("sqlite")]
+    # Named rather than implied: this is the value the call site gets by
+    # omitting `timeout=`, and it is shorter than the engine's own deadline.
+    assert GRADE_TIMEOUT not in seen
+
+
+@pytest.mark.anyio
+async def test_an_unextracted_answer_is_not_offloaded_at_all(staged, monkeypatch):
+    """Nothing to run, so no worker is paid for and no gold is read."""
+
+    async def _spy(*_args, **_kwargs):
+        raise AssertionError("a blank prediction must not reach a worker")
+
+    monkeypatch.setattr(
+        "sieval.tasks.spider2_lite_0shot_gen.run_cpu_bound", _spy, raising=True
+    )
+    task = _task(staged)
+    ctx = TaskContext(sample_id=0, raw_sample=_ROW)
+    _, judgement = await task.feedback(build_prediction_record(["   "]), ctx)
+    rollout = judgement["rollouts"][0]
+    assert rollout["correct"] is False
+    assert rollout["extra"]["error"] == "empty prediction"
 
 
 # --- report -----------------------------------------------------------------
@@ -263,6 +450,29 @@ async def test_execution_errors_are_counted_apart_from_wrong_answers(staged):
     ]
     metrics = await _task(staged).report(finals, [])
     assert metrics["n_execution_errors"] == 1.0
+
+
+@pytest.mark.anyio
+async def test_a_credential_miss_is_not_an_execution_error(staged):
+    """It carries a reason in `error` too, and nothing was executed.
+
+    Counting it as one makes `n_execution_errors` read as 412 broken queries on
+    the very run — no cloud credentials — where it should read 0, and that is
+    the run most people have.
+    """
+    finals = [
+        _final(
+            0,
+            correct=False,
+            backend="bigquery",
+            missing=True,
+            error="GOOGLE_APPLICATION_CREDENTIALS is not set",
+        ),
+        _final(1, correct=False, backend="local", error="no such table"),
+    ]
+    metrics = await _task(staged).report(finals, [])
+    assert metrics["n_execution_errors"] == 1.0
+    assert metrics["n_missing_credentials"] == 1.0
 
 
 @pytest.mark.anyio

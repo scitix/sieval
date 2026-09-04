@@ -22,7 +22,7 @@ from the ids themselves; the upstream README's table is approximate.
 **Two pinned sources, because the data is split across two hosts.** The
 questions, per-database schemas, external-knowledge documents and gold results
 live in the GitHub repo, which ships no release archive — and the gold set alone
-is 1,545 CSVs, far past what enumerating ``url:`` entries could express, so the
+is 1,544 CSVs, far past what enumerating ``url:`` entries could express, so the
 whole repo archive is taken at a pinned commit and only ``spider2-lite/`` is
 extracted (909 MB rather than the full 1.9 GB). The local SQLite databases are a
 separate 573 MB download from the Hub, which upstream tells you to unzip into
@@ -215,8 +215,19 @@ class Spider2LiteDataset(Dataset[Spider2LiteDatasetSample]):
 
     @staticmethod
     def _extract_subtree(archive: Path, root: Path) -> None:
-        """Extract only ``spider2-lite/`` from the repo archive, unprefixed."""
+        """Extract only ``spider2-lite/`` from the repo archive, unprefixed.
+
+        Member names are archive-controlled, so each destination is checked to
+        be inside *root* before anything is written — a member named
+        ``spider2-lite/../../.bashrc`` would otherwise be extracted where its
+        name says. Unreachable on the pinned archive, whose members are all
+        plain paths under the subtree; the guard is here because a checksum
+        pins the archive we verified, not the one a mirror serves next year,
+        and ``_extract_localdb``'s ``Path(name).name`` already has the same
+        property for free.
+        """
         root.mkdir(parents=True, exist_ok=True)
+        inside = root.resolve()
         with zipfile.ZipFile(archive) as handle:
             for member in handle.infolist():
                 if not member.filename.startswith(_SUBTREE):
@@ -225,6 +236,11 @@ class Spider2LiteDataset(Dataset[Spider2LiteDatasetSample]):
                 if not relative:
                     continue
                 target = root / relative
+                if inside not in target.resolve().parents:
+                    raise ValueError(
+                        "Spider 2.0-lite archive member escapes the staging "
+                        f"directory: {member.filename!r}"
+                    )
                 if member.is_dir():
                     target.mkdir(parents=True, exist_ok=True)
                     continue

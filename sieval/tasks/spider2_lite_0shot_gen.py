@@ -23,9 +23,17 @@ report always publishes a **per-backend breakdown** (``execution_accuracy_local`
 the 2025-10-29 accuracy fix (NaN normalised to 0, an early break, an empty-gold
 guard) and the one in ``evaluate_utils.py`` does not. This task uses the former,
 vendored byte-identical, with each instance's own ``condition_cols`` and
-``ignore_order`` from upstream's ``spider2lite_eval.jsonl`` and multi-gold via
-``compare_multi_pandas_table`` (1,545 gold CSVs over 547 instances, so most
+``ignore_order`` from upstream's ``spider2lite_eval.jsonl``, and it branches on
+upstream's own ``is_single`` — one gold goes to ``compare_pandas_table``, several
+to ``compare_multi_pandas_table`` (1,544 gold CSVs over 547 instances, so most
 questions accept more than one correct answer shape).
+
+**The prediction reaches the comparison through a CSV.** Upstream writes the
+result frame out and reads it back before comparing, and that round trip is part
+of the metric rather than plumbing: it is what re-infers dtypes, so a SQLite
+column typed ``text`` holding ``"3"`` arrives as an integer and a BigQuery
+``DATE`` arrives as the string the gold CSV also holds. Comparing the frame the
+driver returned instead flips real verdicts in both directions.
 
 **Snowflake is sieval's own, because upstream lite no longer has one.**
 ``evaluate_single_sql_instance`` routes BigQuery and SQLite and sends every other
@@ -36,11 +44,20 @@ same questions, same warehouse. See ``sieval.tasks._spider2_backends``.
 
 **Execution safety.** The local engine runs model SQL, so it carries the same
 hardening as Spider 1.0 — read-only immutable connection, ATTACH/DETACH denied,
-progress-handler deadline, row cap. Upstream instead copies the whole database
-into memory per query; that stops writes but not runaway queries, and the largest
-local database is 372 MB, which a concurrent grader cannot copy per call. The
-remote engines are bounded (timeout + row cap) rather than hardened: the query
-runs on someone else's server under their permissions.
+progress-handler deadline, row cap — from the same module, ``_sqlite_exec``,
+rather than a second copy. Upstream instead copies the whole database into memory
+per query; that stops writes but not runaway queries, and the largest local
+database is 372 MB, which a concurrent grader cannot copy per call. The remote
+engines are bounded (timeout + row cap) rather than hardened: the query runs on
+someone else's server under their permissions.
+
+**The prompt is bounded too, for a different reason.** The cloud-schema block
+comes from the shipped resource tree, and that tree is not uniform: ``ga360``'s
+DDL renders 2.9 M characters across its daily partition tables, and 56 of the 412
+cloud databases exceed a megabyte. Rendering one whole is not a low score, it is
+a request no endpoint accepts — so the block stops at
+:data:`MAX_SCHEMA_CHARS`, on a statement boundary, and says how many tables it
+left out.
 
 Target: upstream's Spider 2.0-lite leaderboard, for the BigQuery and SQLite
 subsets it scores; Spider 2.0-Snow for the Snowflake subset.
@@ -67,15 +84,8 @@ from functools import cache
 from pathlib import Path
 from typing import override
 
-import pandas as pd
 from loguru import logger
 
-from sieval.community.spider2 import (
-    compare_multi_pandas_table,
-    extract_sql_query,
-    load_gold_csv,
-    resolve_gold_paths,
-)
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
     EvalMode,
@@ -97,11 +107,12 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     health_metrics,
 )
-from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
+from sieval.core.utils.offload import run_cpu_bound
 from sieval.datasets import Spider2LiteDatasetSample
 from sieval.datasets.spider2_lite import backend_for
 
-from ._spider2_backends import MissingCredentials, execute, open_readonly
+from ._spider2_backends import caller_timeout, execute, missing_credentials
+from ._sqlite_exec import open_readonly
 
 #: Engines, in report order. Local first: it is the subset most runs can score.
 BACKENDS = ("local", "bigquery", "snowflake")
@@ -113,6 +124,16 @@ _DIALECT = {
     "bigquery": "BigQuery Standard SQL",
     "snowflake": "Snowflake SQL",
 }
+
+#: Character budget for one prompt's schema block. Bounds a *first-party* choice
+#: rather than diverging from an upstream one: upstream lite's baselines build
+#: their own prompt, so nothing published depends on this rendering. It exists
+#: because the shipped schema tree is not uniform — ``ga360`` renders 2.9 M
+#: characters (~724k tokens) across its daily partition tables — and an
+#: unbounded block is a request that fails rather than a question that scores.
+#: 200k characters is roughly 50k tokens, leaving a 128k-context model room for
+#: the external-knowledge document and its own answer.
+MAX_SCHEMA_CHARS = 200_000
 
 
 @sieval_task(
@@ -134,10 +155,20 @@ _DIALECT = {
             "(NOT evaluate_utils.py — the repo ships two compare_pandas_table "
             "copies and only evaluate.py's carries the 2025-10-29 fix: NaN "
             "normalised to 0, early break, empty-gold guard). Per-instance "
-            "condition_cols/ignore_order from spider2lite_eval.jsonl, multi-gold "
-            "via compare_multi_pandas_table over 1,545 gold CSVs. SQL extraction "
-            "is upstream's extract_sql_query. DIVERGENCE — Snowflake execution is "
-            "first-party: upstream's current lite evaluator routes only bq/ga and "
+            "condition_cols/ignore_order from spider2lite_eval.jsonl, and "
+            "upstream's is_single branch over 1,544 gold CSVs: one gold goes to "
+            "compare_pandas_table, several to compare_multi_pandas_table. The "
+            "prediction is written to CSV and read back before comparing, as "
+            "upstream does — that round trip re-infers dtypes and is part of the "
+            "metric. Three of the 1,544 golds are header-only (local275_a, "
+            "sf001_b, and sf_bq411_b, which holds upstream's own error string "
+            "rather than a result — a corrupt gold, though its _a/_c siblings "
+            "are valid); none is a bq/ga instance, which is the only prefix "
+            "whose upstream path scores an empty result 0 without comparing, so "
+            "not implementing that guard cannot change a verdict on this data. "
+            "SQL extraction is upstream's extract_sql_query. DIVERGENCE — "
+            "Snowflake execution is first-party: upstream's current lite "
+            "evaluator routes only bq/ga and "
             "local and rejects every other prefix as 'Unsupported instance id "
             "prefix', leaving 207 of 547 unscoreable despite gold shipping for "
             "all 547; the stale evaluate_utils.get_snowflake_sql_result was not "
@@ -150,7 +181,10 @@ _DIALECT = {
             "runaway queries, and the largest local database is 372 MB. Remote "
             "engines are bounded (90s timeout + row cap), not hardened. "
             "Local-schema prompts introspect the .sqlite file; cloud-schema "
-            "prompts read upstream's resource/databases tree. Upstream runs one "
+            "prompts read upstream's resource/databases tree, truncated on a "
+            "statement boundary at MAX_SCHEMA_CHARS — the prompt is first-party "
+            "either way (upstream lite's baselines build their own), and ga360 "
+            "renders 2.9 M characters unbounded. Upstream runs one "
             "deterministic pass per question; n=1 is the protocol."
         ),
     ),
@@ -248,6 +282,13 @@ class Spider2LiteZeroShotGenTask(
 
     @override
     async def postprocess(self, inf, ctx):
+        # Imported here, not at module scope: `sieval.community.spider2` reaches
+        # google.cloud on the way in, so registering this task would need the
+        # whole optional group -- and importing it has side effects the package
+        # wrapper has to undo, which is not something `sieval task list` should
+        # be paying for. See sieval/community/spider2/__init__.py.
+        from sieval.community.spider2 import extract_sql_query
+
         # Upstream's own extractor: the fenced block if present, else the whole
         # reply. It never returns nothing, so a miss is an unrunnable query
         # rather than an unextracted one.
@@ -268,12 +309,25 @@ class Spider2LiteZeroShotGenTask(
         standard = _eval_standard(self._staged("eval_config_path")).get(instance_id, {})
         gold_dir = self._staged("gold_dir")
 
+        # Asked once per sample, before anything is offloaded. The distinction
+        # between "the host is unconfigured" and "the model wrote bad SQL" is
+        # the whole point of the per-backend breakdown, and it cannot be drawn
+        # on the far side of a worker process: telling one exception class from
+        # another there means catching broadly at the call site below, which is
+        # exactly what `.claude/rules/tasks.md` forbids. So it is drawn here,
+        # where it is a plain environment read and no query has run yet.
+        unreachable = missing_credentials(backend)
+
         rollouts: list[RolloutJudgement] = []
         for rollout in post["rollouts"]:
             prediction = rollout.get("prediction") or ""
-            correct, error, missing = await self._grade_one(
-                backend, prediction, db_path, instance_id, gold_dir, standard
-            )
+            if unreachable:
+                correct, error, missing = False, unreachable, True
+            else:
+                correct, error = await self._grade_one(
+                    backend, prediction, db_path, instance_id, gold_dir, standard
+                )
+                missing = False
             rollouts.append(
                 build_rollout_judgement(
                     rollout["index"],
@@ -296,39 +350,38 @@ class Spider2LiteZeroShotGenTask(
         instance_id: str,
         gold_dir: str,
         standard: dict,
-    ) -> tuple[bool, str | None, bool]:
+    ) -> tuple[bool, str | None]:
+        """Verdict and, when there is one, the reason it is not a real answer.
+
+        Query, gold load and comparison go over in **one** dispatch. They are
+        one unit of work per rollout -- the comparison is meaningless without
+        the frame -- and splitting them would pay two process hand-offs for one
+        row while leaving the gold's ``read_csv`` on the shared event loop,
+        where a 100k-row result stalls every other task in the session.
+        """
         if not prediction.strip():
-            return False, "empty prediction", False
+            return False, "empty prediction"
+        budget = caller_timeout(backend)
         try:
-            frame = await run_cpu_bound(
-                _execute_sync,
+            return await run_cpu_bound(
+                _grade_sync,
                 backend,
                 prediction,
                 db_path,
-                timeout=GRADE_TIMEOUT,
-            )
-        except MissingCredentials as exc:
-            # Loud and distinguishable: an unconfigured host is not a bad model.
-            return False, str(exc), True
-        except Exception as exc:
-            return False, f"{type(exc).__name__}: {exc}", False
-        try:
-            gold_paths, _ = resolve_gold_paths(instance_id, gold_dir)
-            if not gold_paths:
-                raise ValueError(f"no gold result for {instance_id}")
-            golds = [load_gold_csv(str(path)) for path in gold_paths]
-            score = compare_multi_pandas_table(
-                frame,
-                golds,
+                instance_id,
+                gold_dir,
                 standard.get("condition_cols"),
-                standard.get("ignore_order", False),
+                bool(standard.get("ignore_order", False)),
+                timeout=budget,
             )
-        except Exception as exc:
-            logger.warning(
-                "Spider 2.0-lite comparison failed for {}: {}", instance_id, exc
-            )
-            return False, f"compare: {type(exc).__name__}: {exc}", False
-        return bool(score), None, False
+        except TimeoutError:
+            # A grade that could not be computed *in time* is a wrong answer:
+            # the prediction is a query neither the engine's own deadline nor
+            # this budget could see the end of. Every other exception -- a dead
+            # worker, `pandas` absent, a gold that is not there -- propagates,
+            # so it lands in `fails` as `exception::<class>` rather than looking
+            # like a model that answered badly.
+            return False, f"TimeoutError after {budget}s"
 
     # -- report ----------------------------------------------------------
 
@@ -336,19 +389,26 @@ class Spider2LiteZeroShotGenTask(
     async def report(self, finals, fails):
         n_correct = 0
         n_errors = 0
+        n_missing = 0
         per_backend = {name: [0, 0, 0] for name in BACKENDS}
         for final in finals:
             for rollout in (final.feedback_result or {}).get("rollouts", []):
                 extra = rollout.get("extra") or {}
                 correct = bool(rollout["correct"])
+                missing = bool(extra.get("missing_credentials"))
                 n_correct += correct
-                if extra.get("error"):
+                n_missing += missing
+                # A credential miss carries a reason in `error` too, and it is
+                # not an execution error: nothing was executed. Counting it as
+                # one makes `n_execution_errors` read as 412 broken queries on
+                # the very run where it should read 0.
+                if extra.get("error") and not missing:
                     n_errors += 1
                 bucket = per_backend.get(extra.get("backend") or "")
                 if bucket is not None:
                     bucket[0] += correct
                     bucket[1] += 1
-                    bucket[2] += bool(extra.get("missing_credentials"))
+                    bucket[2] += missing
 
         total = (len(finals) + len(fails)) * self._n
         rate = (lambda c: round(100 * c / total, 2)) if total else (lambda c: 0.0)
@@ -358,6 +418,7 @@ class Spider2LiteZeroShotGenTask(
             "n": float(total),
             "fails": float(len(fails)),
             "n_execution_errors": float(n_errors),
+            "n_missing_credentials": float(n_missing),
             SCORE_KEY_FIELD: "execution_accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
@@ -376,9 +437,86 @@ class Spider2LiteZeroShotGenTask(
 # --- module-level helpers (picklable for run_cpu_bound) ---------------------
 
 
-def _execute_sync(backend: str, sql: str, db_path: str | None) -> pd.DataFrame:
-    """Thin picklable wrapper so the query runs off the event loop."""
-    return execute(backend, sql, db_path=db_path)
+def _grade_sync(
+    backend: str,
+    sql: str,
+    db_path: str | None,
+    instance_id: str,
+    gold_dir: str,
+    condition_cols: list | None,
+    ignore_order: bool,
+) -> tuple[bool, str | None]:
+    """Run *sql*, compare it against gold, and say why if it is not right.
+
+    Module-level and picklable by name so ``run_cpu_bound`` can ship it to a
+    worker process. Everything the vendored evaluator needs is imported here
+    rather than at module scope, and deliberately **outside** the two ``try``
+    blocks: an absent ``pandas`` is a broken environment, not a wrong answer,
+    and must reach the caller as an exception.
+    """
+    import io
+
+    import pandas as pd
+
+    from sieval.community.spider2 import (
+        compare_multi_pandas_table,
+        compare_pandas_table,
+        load_gold_csv,
+        resolve_gold_paths,
+    )
+
+    # Resolved before the query runs, because a gold that is not there is our
+    # bug: upstream scores that sample 0, which would report the model wrong for
+    # a staging fault of ours. Unreachable on the pinned data -- gold ships for
+    # all 547 instances -- and `.claude/rules/records.md` is what decides it.
+    gold_paths, is_single = resolve_gold_paths(instance_id, gold_dir)
+    if not gold_paths:
+        raise ValueError(
+            f"No Spider 2.0-lite gold result for {instance_id!r} under "
+            f"{gold_dir!r}; re-stage with 'sieval dataset download "
+            "spider2_lite --force'."
+        )
+
+    try:
+        frame = execute(backend, sql, db_path=db_path)
+    except Exception as exc:
+        # Upstream's behaviour for a prediction that will not run: score 0 and
+        # keep the engine's message, which is what separates "wrong answer" from
+        # "could not ask".
+        return False, f"{type(exc).__name__}: {exc}"
+
+    try:
+        # Upstream writes the result out and reads it back before comparing.
+        # That round trip is part of the metric, not plumbing: `read_csv`
+        # re-infers dtypes, so a SQLite `text` column holding "3" arrives as an
+        # int64 and a BigQuery DATE arrives as the string the gold also holds.
+        # Comparing the driver's own frame flips verdicts in both directions.
+        buffer = io.StringIO()
+        frame.to_csv(buffer, index=False)
+        buffer.seek(0)
+        predicted = pd.read_csv(buffer)
+        # Upstream's own branch. One gold is compared directly; several are a
+        # disjunction over answer shapes, and `compare_multi_pandas_table`
+        # broadcasts `condition_cols` only when it is given more than one.
+        if is_single:
+            score = compare_pandas_table(
+                predicted,
+                load_gold_csv(str(gold_paths[0])),
+                condition_cols,
+                ignore_order,
+            )
+        else:
+            golds = [load_gold_csv(str(path)) for path in gold_paths]
+            score = compare_multi_pandas_table(
+                predicted, golds, condition_cols, ignore_order
+            )
+    except Exception as exc:
+        # Also upstream's: a comparison that raises is a 0 with the reason kept
+        # ("Python Script Error" there). Changing it to a failure would change
+        # the published score, so it stays a verdict -- prefixed, so the report
+        # can tell it from a query that would not run.
+        return False, f"compare: {type(exc).__name__}: {exc}"
+    return bool(score), None
 
 
 @cache
@@ -393,8 +531,37 @@ def _eval_standard(path: str) -> dict:
     return rules
 
 
-def _sqlite_schema(db_path: str) -> str:
-    """CREATE TABLE statements for every user table in *db_path*."""
+def _fit(blocks: list[str], budget: int) -> str:
+    """Join *blocks*, dropping whole statements once *budget* is spent.
+
+    Whole statements, never a cut one: half a ``CREATE TABLE`` reads as a schema
+    that really does end there, which is a worse prompt than a shorter one. The
+    first block always goes in, so a single oversized statement still gives the
+    model something to work from. Both callers build *blocks* in sorted order, so
+    which tables survive is a property of the database rather than of the
+    filesystem — the same reason the test-suite walk sorts.
+    """
+    kept: list[str] = []
+    used = 0
+    for index, block in enumerate(blocks):
+        if kept and used + len(block) > budget:
+            kept.append(
+                f"-- [{len(blocks) - index} of {len(blocks)} tables omitted: "
+                f"schema exceeds this prompt's {budget}-character budget]"
+            )
+            break
+        kept.append(block)
+        used += len(block) + 2
+    return "\n\n".join(kept)
+
+
+@cache
+def _sqlite_schema(db_path: str, budget: int = MAX_SCHEMA_CHARS) -> str:
+    """CREATE TABLE statements for every user table in *db_path*.
+
+    Cached: the 135 local questions cover far fewer databases, so a run
+    re-introspects the same file many times over otherwise.
+    """
     conn = open_readonly(db_path)
     try:
         rows = conn.execute(
@@ -403,16 +570,23 @@ def _sqlite_schema(db_path: str) -> str:
         ).fetchall()
     finally:
         conn.close()
-    return "\n\n".join(row[0].strip() for row in rows if row[0])
+    return _fit([row[0].strip() for row in rows if row[0]], budget)
 
 
-def _resource_schema(schema_root: str, backend: str, db: str) -> str:
+@cache
+def _resource_schema(
+    schema_root: str, backend: str, db: str, budget: int = MAX_SCHEMA_CHARS
+) -> str:
     """Schema for a cloud database, from upstream's shipped resource tree.
 
     Upstream lays these out as ``<engine>/<db>/<schema>/`` holding a ``DDL.csv``
     (``table_name,ddl``) and one JSON per table. The DDL is preferred because it
     is the engine's own text; the JSON files are the fallback for databases that
     ship no DDL.csv.
+
+    Cached, and not only to save the walk: 412 questions share ~50 databases,
+    and the largest of them is a 26 MB tree that would otherwise be re-read and
+    re-rendered once per question.
     """
     root = Path(schema_root, backend, db)
     if not root.is_dir():
@@ -425,7 +599,7 @@ def _resource_schema(schema_root: str, backend: str, db: str) -> str:
                 if statement:
                     blocks.append(statement)
     if blocks:
-        return "\n\n".join(blocks)
+        return _fit(blocks, budget)
     for json_path in sorted(root.rglob("*.json")):
         payload = json.loads(json_path.read_text(encoding="utf-8"))
         columns = payload.get("column_names") or []
@@ -437,4 +611,4 @@ def _resource_schema(schema_root: str, backend: str, db: str) -> str:
         blocks.append(f"-- {json_path.stem}\n({rendered})")
     if not blocks:
         raise ValueError(f"Shipped schema for {db!r} held no DDL or table JSON")
-    return "\n\n".join(blocks)
+    return _fit(blocks, budget)
