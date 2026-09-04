@@ -253,6 +253,17 @@ include = ["sieval/tasks/t_eval_before_calling_0shot_gen.py"]
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
 
+# Spider 2.0-lite's remote engines lazy-import google-cloud-bigquery and
+# snowflake-connector-python, both in the `spider2` group and neither in CI's
+# light env. Same intent as t_eval above: the local engine and the prompt path
+# are what CI exercises, and installing two warehouse clients to type-check two
+# import lines would put a cloud SDK in every CI run.
+[[tool.ty.overrides]]
+include = ["sieval/tasks/_spider2_backends.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
 # ruler: wonderwords, tiktoken; not in CI light env. Tests import tiktoken behind try/except.
 [[tool.ty.overrides]]
 include = [
