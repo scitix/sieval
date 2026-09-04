@@ -13,7 +13,9 @@ deliberate: reproducing the published 0.74 requires them, and a future reader
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+import importlib.util
 import math
+import pathlib
 
 import pytest
 
@@ -41,6 +43,25 @@ from sieval.community.intercode_alfa import (
 )
 
 _TOTAL_ROWS = 300
+
+#: The shell service's own copy of the quoting rewrite. It is a separate
+#: deployable that cannot import sieval, so the transform exists twice; this
+#: loads the file directly to keep the two provably in step.
+_EXEC_SH = (
+    pathlib.Path(__file__).resolve().parents[3]
+    / "vendor"
+    / "code-evaluator"
+    / "app"
+    / "exec_sh.py"
+)
+
+
+def _load_exec_sh():
+    spec = importlib.util.spec_from_file_location("_nl2sh_exec_sh", _EXEC_SH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_gold_table_is_300_rows_matching_the_split_table():
@@ -212,6 +233,24 @@ def test_thirty_seven_golds_are_rewritten_and_index_230_is_truncated():
     # so what bash sees as $0 is " $1}'" -- pinned exactly, because a port that
     # normalized it would be a different command.
     assert argv[3] == " $1}'"
+
+
+def test_the_service_builds_the_same_argv_over_every_gold():
+    # `command_argv` is the documented mirror; the copy that actually executes
+    # commands lives in the shell service, which is a separate deployable and
+    # cannot import sieval. So the 37-rewrite sweep above pins the mirror, and
+    # this pins the mirror to the original -- otherwise "repair" the service's
+    # copy and every assertion here still passes while scores move.
+    exec_sh = _load_exec_sh()
+    table = gold_table()
+    for entrypoint in ("/bin/bash", "/bin/sh"):
+        for row in table:
+            assert exec_sh._argv(entrypoint, row["gold"]) == command_argv(
+                entrypoint, row["gold"]
+            )
+    # Including the shapes that make the two disagree if either is normalized.
+    for command in ("ls -al", 'echo "True"', "awk '{print $2 \" \" $1}'", "  ls  "):
+        assert exec_sh._argv("/bin/bash", command) == command_argv("/bin/bash", command)
 
 
 def test_the_two_golds_that_disagree_with_the_hub():

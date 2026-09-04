@@ -31,7 +31,24 @@ truncates one into a syntax error. Building the argv as
 ``[entrypoint, "-c", command]`` -- the obviously-correct thing -- would disagree
 with every published number, so ``_argv`` does what docker-py does instead.
 
-**Divergences from upstream**, both deliberate:
+**So is upstream's ``cd`` rewriting**, which reaches only the model's command:
+see ``model_action``. Both rewrites are text transforms applied before anything
+executes, and both change the verdict on replies that carry them.
+
+**``/tmp`` does not survive the first reset.** Upstream's ``docker.gitignore``
+excludes 16 FHS directories but not ``tmp``, and ``/tmp`` is empty when the
+baseline is committed -- so git tracks nothing there, the directory is untracked,
+and the first ``git clean -fd`` removes it outright (measured, not assumed).
+Upstream's containers do the same, so it is faithful and must not be "fixed": a
+model command using ``mktemp`` fails identically on both sides. It does constrain
+*this* service, which upstream's containers never had to host -- nothing on this
+route may rely on ``tempfile``, and it does not. The stateless routes in
+``exec_py_code`` / ``exec_js`` / ``exec_ts`` do, so they are unreliable on these
+five images after the first sample; they are not served here, and an image that
+needs both would have to add ``tmp`` to the ignore file, which changes what
+``git status`` reports and therefore what the benchmark scores.
+
+**Divergences from upstream**, all deliberate:
 
 * Upstream runs the model's command and the gold's in two *peer containers*. Here
   they run in one, with a reset before each, which preserves the property that
@@ -43,6 +60,14 @@ with every published number, so ``_argv`` does what docker-py does instead.
   gold hangs the service rather than one sample. A gold that hits it is a
   fidelity problem and is reported (``gold_timed_out``) so the caller can say
   the bound never bound.
+* A reply starting with ``cd`` but carrying no ``"cd "`` scores 0 for the whole
+  sample upstream, raised out of ``exec_action`` before anything runs. A
+  facts-only response cannot return a verdict, so this one reports that nothing
+  ran; ``execute_shell`` has why that reaches the same answer.
+* The second side's hashing is restricted to the first side's changed paths. The
+  scored set (``diff_same``) is unchanged -- see ``_hashes`` -- but upstream
+  hashes the intersection on both sides and this cannot, because the
+  intersection is unknowable while the first side's tree is still standing.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -78,6 +103,13 @@ TIMEOUT_OBSERVATION = "Command timed out"
 #: `sieval/community/intercode_alfa` for why that is preserved.
 HASHED_STATUS_CODES = ("A", "??", "C")
 
+#: `IntercodeEnv.workdir` at the moment the model's command runs. `reset_container`
+#: sets it to "/" and only a `cd` action advances it, so on a single-turn benchmark
+#: -- one command, then `submit` -- it is always the tree root. Upstream passes it
+#: as `exec_run(..., workdir=...)`, and every one of the five images declares
+#: `WORKDIR /`, so both sides run at the root.
+_WORKDIR = "/"
+
 def fs_root() -> str:
     """Root of the git-committed baseline tree.
 
@@ -110,13 +142,89 @@ def _argv(entrypoint: str, command: str) -> list[str]:
     return shlex.split(f'{entrypoint} -c "{command.strip()}"')
 
 
-async def _run(argv: list[str], timeout: float) -> tuple[str, bool, bool]:
-    """Run *argv* at the tree root; return (combined output, exit_ok, timed_out).
+def simplify_path(current: str, changed: str) -> str:
+    """`BashEnv.simplify_path`, verbatim: resolve *changed* against *current*."""
+    if not changed:
+        return current
+    if changed[0] == "/":
+        current = ""
+
+    path = []
+
+    for segment in (current + "/" + changed).split("/"):
+        if segment == "..":
+            if path:
+                path.pop()
+        elif segment and segment != ".":
+            path.append(segment)
+
+    return "/" + "/".join(path)
+
+
+def model_action(command: str) -> str:
+    """`exec_action`'s ``cd`` pre-processing, applied to the MODEL's command only.
+
+    Upstream rewrites any action starting with ``cd``: it takes everything after
+    the first ``"cd "``, resolves it against the working directory with
+    ``simplify_path``, and re-emits ``cd <absolute path>``. That is multi-turn
+    machinery (``self.workdir`` tracks the cwd across an interactive session)
+    reaching a single-turn benchmark, where the working directory is always the
+    tree root -- so it degenerates to "absolutize the argument against ``/``".
+
+    Reproduced rather than skipped, for the same reason the quoting rewrite is:
+    it changes what bash receives. ``cd testbed && ls`` and ``cd ..`` come out
+    equivalent at the root, but ``cd ~`` becomes ``cd /~`` and fails, where the
+    un-rewritten reply would have succeeded.
+
+    **The gold command never comes through here.** Upstream runs it as
+    ``container_eval.exec_run(clean_cmd(self.gold))``, which does not touch
+    ``exec_action`` -- and none of the 300 golds starts with ``cd`` anyway.
+
+    Raises ``ValueError`` when the command starts with ``cd`` but carries no
+    ``"cd "`` (a bare ``cd``, or ``cdparanoia``): upstream's ``action.index("cd ")``
+    sits *outside* ``exec_action``'s try, so it escapes to ``submit_command``,
+    which reports a score of 0 for the whole sample. The caller reproduces that
+    as a command that did not execute -- see ``execute_shell``.
+    """
+    if not command.startswith("cd"):
+        return command
+    cd_arg = command[command.index("cd ") + 3 :].strip()
+    return f"cd {simplify_path(_WORKDIR, cd_arg)}"
+
+
+async def _run(
+    command: str, timeout: float, entrypoint: str | None = None
+) -> tuple[str, bool, bool]:
+    """Run *command* at the tree root; return (combined output, exit_ok, timed_out).
+
+    ``entrypoint`` wraps the command the way ``clean_cmd`` does; ``None`` runs it
+    bare, which is how upstream issues its hash commands (``exec_run(hash_cmd)``,
+    no shell). Either way the string is split the way docker-py splits it.
+
+    **The split happens inside this function's error handling, deliberately.**
+    ``shlex.split`` raises ``ValueError`` on an unbalanced quote, which an
+    ordinary model reply can carry -- a command truncated mid-string is the
+    common route. Upstream reaches the same raise (docker-py normalizes a string
+    command through ``shlex.split`` inside ``exec_run``) and ``exec_action``
+    catches it, so the sample is still *graded*, with the exception as its
+    observation. Building the argv at the call site instead would let that
+    ValueError escape the request and turn a wrong answer into a service
+    failure, which is the one thing this route must never do.
 
     stdout and stderr are merged because docker's ``exec_run`` attaches both by
     default and upstream decodes the single stream it gets. Which stream a line
     came from is not recoverable there, so it is not recoverable here either.
     """
+    try:
+        argv = (
+            _argv(entrypoint, command)
+            if entrypoint is not None
+            else shlex.split(command)
+        )
+    except ValueError as exc:
+        # `exec_action`'s `except Exception as e: self.observation = f"Exception:
+        # {e}"`, reproduced -- same text, same `action_executed = False`.
+        return f"Exception: {exc}", False, False
     if not argv:
         # `shlex.split` of an empty command yields the entrypoint and `-c` only,
         # never nothing -- but an empty argv would raise from exec, so refuse it
@@ -152,7 +260,7 @@ async def _run(argv: list[str], timeout: float) -> tuple[str, bool, bool]:
 
 async def _reset(entrypoint: str) -> None:
     output, exit_ok, timed_out = await _run(
-        _argv(entrypoint, GIT_RESET_SCRIPT), DEFAULT_TIMEOUT
+        GIT_RESET_SCRIPT, DEFAULT_TIMEOUT, entrypoint
     )
     if not exit_ok or timed_out:
         # The baseline could not be restored, so the next command would run on a
@@ -165,7 +273,7 @@ async def _reset(entrypoint: str) -> None:
 
 async def _status(entrypoint: str) -> str:
     output, exit_ok, _ = await _run(
-        _argv(entrypoint, GIT_STATUS_SCRIPT), DEFAULT_TIMEOUT
+        GIT_STATUS_SCRIPT, DEFAULT_TIMEOUT, entrypoint
     )
     if not exit_ok:
         raise RuntimeError(f"`git status` failed at {fs_root()!r}: {output!r}")
@@ -187,7 +295,7 @@ def _parse_status(status: str) -> list[tuple[str, str]]:
     return changes
 
 
-async def _hashes(status: str) -> dict[str, str]:
+async def _hashes(status: str, restrict_to: set[str] | None = None) -> dict[str, str]:
     """`get_hash_cmd` over every added/untracked/copied path, as raw stdout.
 
     Raw stdout rather than a digest, because upstream compares the two command
@@ -195,6 +303,16 @@ async def _hashes(status: str) -> dict[str, str]:
     (``exec_run(hash_cmd)``), so neither does this -- and ``md5deep`` is absent
     from every image, so the directory branch always fails. Identically on both
     sides, which is why it still compares equal.
+
+    ``restrict_to`` bounds the work. Upstream hashes only ``diff_same`` -- the
+    paths *both* sides changed -- but that set is unknowable while the first
+    side's tree is still standing, so the first side hashes all of its own
+    candidates and the second is restricted to those. ``diff_same`` is a subset
+    of the first side's hashed paths (a shared change is, by definition, one the
+    first side made under a hashed code), so nothing the caller looks up goes
+    missing and its ``KeyError`` contract is untouched. Without this, a reply
+    that touches many paths pays a hash per path on both sides for an
+    intersection that is usually empty.
     """
     out: dict[str, str] = {}
     try:
@@ -207,10 +325,10 @@ async def _hashes(status: str) -> dict[str, str]:
     for path, code in changes:
         if code not in HASHED_STATUS_CODES:
             continue
+        if restrict_to is not None and path not in restrict_to:
+            continue
         command = f"md5sum {path}" if "." in path else f"md5deep -r {path}"
-        output, _exit_ok, _timed_out = await _run(
-            shlex.split(command), DEFAULT_TIMEOUT
-        )
+        output, _exit_ok, _timed_out = await _run(command, DEFAULT_TIMEOUT)
         out[path] = output
     return out
 
@@ -257,18 +375,40 @@ async def execute_shell(
         # command that wedges the tree cannot corrupt the reference it is about
         # to be compared against within this sample.
         await _reset(entrypoint)
+        # The gold does NOT go through `model_action`: upstream runs it as
+        # `container_eval.exec_run(clean_cmd(self.gold))`, which never reaches
+        # `exec_action` and so never has its `cd` rewritten.
         gold_output, gold_exit_ok, gold_timed_out = await _run(
-            _argv(entrypoint, gold), timeout
+            gold, timeout, entrypoint
         )
         gold_status = await _status(entrypoint)
         gold_hashes = await _hashes(gold_status)
 
         await _reset(entrypoint)
-        model_output, model_exit_ok, model_timed_out = await _run(
-            _argv(entrypoint, command), timeout
-        )
+        try:
+            action = model_action(command)
+        except ValueError as exc:
+            # A reply starting with `cd` but carrying no `"cd "`. Upstream lets
+            # this escape to `submit_command`, which scores the whole sample 0
+            # without running anything. A facts-only response cannot say "0", so
+            # it says what actually happened -- nothing ran -- which reaches the
+            # same verdict: the tree is untouched, so part 1 diverges from any
+            # gold that changed something, and against a read-only gold part 3
+            # compares this text to the gold's output. The two readings part only
+            # if that comparison were to embed above threshold.
+            model_output, model_exit_ok, model_timed_out = (
+                f"Exception: {exc}",
+                False,
+                False,
+            )
+        else:
+            model_output, model_exit_ok, model_timed_out = await _run(
+                action, timeout, entrypoint
+            )
         model_status = await _status(entrypoint)
-        model_hashes = await _hashes(model_status)
+        # Restricted to what the gold changed: `diff_same` cannot contain a path
+        # the gold did not touch, and the gold's tree is already gone.
+        model_hashes = await _hashes(model_status, restrict_to=set(gold_hashes))
 
         await _reset(entrypoint)
 
