@@ -4,18 +4,16 @@ One safety contract, shared by every task that executes model-generated SQL
 against a local file: Spider 1.0's two graders and its prompt builder, and
 Spider 2.0-lite's local engine. They disagree about what to *do* with a result —
 row tuples for one, a frame for the other — and must never disagree about how to
-run one, which is the coupling that puts this here rather than in either
-benchmark's own tree.
+run one. That coupling is what puts this here rather than in either benchmark's
+tree.
 
-The **bounds** are not shared. A deadline and a row cap are measured against a
-particular corpus, and a number carried across from another benchmark is a guess
-wearing a measurement's clothes, so each caller passes its own; this module has
-no defaults to fall back on.
+The **bounds** are not shared: a deadline and a row cap are measured against a
+particular corpus, so each caller passes its own and this module has no defaults.
 
 Both upstreams open a read-write connection, run model SQL with no timeout behind
 a bare ``except:``, and fetch the whole result. That cannot be bounded, so the
 hardened reading is what ships — the one divergence that does **not** earn a
-``_fixed`` variant, because a variant exists so two readings can be compared and
+``_fixed`` variant, since a variant exists so two readings can be compared and
 the unsafe reading is not one we will run. Three guards:
 
 * **Read-only** — a ``mode=ro&immutable=1`` URI, so writes fail in the driver
@@ -56,38 +54,32 @@ def open_readonly(db_path: str) -> sqlite3.Connection:
     uri = f"{Path(db_path).absolute().as_uri()}?mode=ro&immutable=1"
     conn = sqlite3.connect(uri, uri=True)
     conn.set_authorizer(_authorizer)
-    # Real corpora carry bytes that are not valid UTF-8 — Spider 1.0's
-    # `wta_1.players` holds one `first_name` and one `last_name` that are
-    # truncated 3-byte sequences, and warehouse exports do it routinely — and
-    # sqlite3's default text factory raises on them. The two Spider 1.0
-    # upstreams differ: `taoyds/spider` sets no factory and fetches the gold
-    # OUTSIDE its bare `except:`, so it *dies* on those two dev examples, while
-    # `taoyds/test-suite-sql-eval` sets a lossy `b.decode(errors="ignore")`.
+    # Real corpora carry bytes that are not valid UTF-8 (Spider 1.0's
+    # `wta_1.players` holds two truncated 3-byte sequences; warehouse exports do
+    # it routinely) and sqlite3's default text factory raises on them. The two
+    # Spider 1.0 upstreams differ: `taoyds/spider` sets no factory and fetches
+    # the gold OUTSIDE its bare `except:`, so it *dies* on those two dev
+    # examples; `taoyds/test-suite-sql-eval` sets a lossy `errors="ignore"`.
     #
-    # `surrogateescape` is chosen over both deliberately: it is
-    # round-trip-lossless, so two different invalid byte sequences stay
-    # different. Both sides of a comparison are decoded by the same factory, so
-    # equality is preserved exactly — this turns a crash into a verdict without
-    # being able to change one.
+    # `surrogateescape` is chosen over both because it is round-trip-lossless:
+    # two different invalid sequences stay different, and both sides of a
+    # comparison decode through the same factory, so a crash becomes a verdict
+    # without the factory being able to change one.
     #
-    # Against `ignore` the argument runs the other way and needs measuring,
-    # because a *lossy* decode is the one that can move a verdict: it can fold
-    # two distinct stored values onto one string. **Measured on Spider 1.0,
-    # 2026-09-03: it never does on the pinned data.** Over all 715 databases the
-    # graded dev set reaches, exactly two columns hold invalid bytes, and
-    # `ignore` is injective over every distinct value in them (0 collisions in
-    # 41,324), so the two factories induce the *same* equality relation. A
-    # prediction computing new bytes with `substr`/`upper` is covered by the
-    # general guarantee above: ours cannot merge what upstream separates, only
-    # the reverse.
+    # Only the *lossy* alternative could move a verdict, by folding two stored
+    # values onto one string, so that is the direction needing measurement.
+    # **Measured on Spider 1.0, 2026-09-03: it never does on the pinned data.**
+    # Across all 715 databases the graded dev set reaches, exactly two columns
+    # hold invalid bytes and `ignore` is injective over every distinct value in
+    # them (0 collisions in 41,324) — the two factories induce the same equality
+    # relation.
     #
-    # That covers GRADING, where the surrogates never leave the process. A
-    # PROMPT path is the other consumer, and its output goes into an HTTP JSON
-    # body, where a lone surrogate raises `UnicodeEncodeError` under an
-    # `ensure_ascii=False` encoder. It does not fire on either benchmark's
-    # pinned data — no sampled row carries the bad bytes — which holds by data
-    # rather than by construction, so a mirror with different rows would need
-    # the prompt path to sanitise instead.
+    # That covers GRADING, where surrogates never leave the process. A PROMPT
+    # path writes into an HTTP JSON body, where a lone surrogate raises
+    # `UnicodeEncodeError` under `ensure_ascii=False`. It does not fire on
+    # either benchmark's pinned data — no sampled row carries the bad bytes —
+    # which holds by data, not construction, so a mirror with different rows
+    # would need the prompt path to sanitise.
     conn.text_factory = lambda raw: raw.decode("utf-8", "surrogateescape")
     return conn
 

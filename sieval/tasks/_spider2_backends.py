@@ -3,43 +3,33 @@
 One entry point, :func:`execute`, routes by engine and returns a pandas frame.
 Everything above it — prompt, comparison, reporting — is engine-agnostic.
 
-**SQLite is hardened, for the same reason Spider 1.0's is.** Upstream copies the
-whole database into memory (``conn.backup``) and runs the prediction against the
-copy, which stops writes reaching disk but does nothing about an unbounded
-query, and costs a full copy of a database that can run to hundreds of megabytes
-— per call, while sieval grades concurrently. A read-only connection buys the
-same write protection without the copy, and the deadline is what upstream has no
-answer for at all. The guards are not re-implemented here: they are
-``sieval.tasks._sqlite_exec``, shared with Spider 1.0's graders and prompt
-builder, so the two benchmarks cannot drift on what "hardened" means. Only the
-*bounds* are this benchmark's own.
+**SQLite is hardened**, for the same reason Spider 1.0's is: upstream copies the
+whole database into memory (``conn.backup``) per call, which stops writes but
+does nothing about an unbounded query — and does it to databases running to
+hundreds of megabytes, while sieval grades concurrently. The guards are not
+re-implemented here; they are ``_sqlite_exec``, shared with Spider 1.0 so the
+two cannot drift on what "hardened" means. Only the *bounds* are this
+benchmark's own.
 
-**BigQuery and Snowflake are not hardened, because there is nothing here to
-harden.** The query runs on someone else's server under someone else's
-permissions; what this module can control is the *bound*, so both carry a
-timeout and a row cap, and BigQuery additionally runs read-only by construction
-(the client is only ever asked to run a query job).
+**BigQuery and Snowflake are bounded, not hardened** — the query runs on someone
+else's server under their permissions, so all this module controls is a timeout
+and a row cap. BigQuery is read-only by construction (the client is only ever
+asked to run a query job).
 
-**Snowflake is first-party, and that is a divergence worth knowing about.**
-Upstream's current lite evaluator routes ``bq``/``ga`` and ``local`` and sends
-everything else to "Unsupported instance id prefix" — 207 of the 547 instances,
-even though gold results ship for all 547. An older ``evaluate_utils.py`` in the
-same repo still has ``get_snowflake_sql_result``, but it is the stale module
-whose comparison logic upstream has already superseded, so this backend is
-written here rather than vendored from it. A Snowflake number therefore has no
-upstream *lite* counterpart; the comparable published setting is Spider 2.0-Snow,
-which asks the same questions against the same warehouse.
+**Snowflake is first-party, a divergence worth knowing about.** Upstream's
+current lite evaluator routes ``bq``/``ga`` and ``local`` and rejects every
+other prefix as "Unsupported instance id prefix" — 207 of 547, despite gold
+shipping for all of them. The older ``evaluate_utils.get_snowflake_sql_result``
+was not vendored because its sibling comparison is superseded. Compare a
+Snowflake number against Spider 2.0-Snow, not against lite.
 
-**Credentials are discovered the way each vendor's client does, and their
-absence is loud.** BigQuery accepts anything Google's default chain accepts —
-``GOOGLE_APPLICATION_CREDENTIALS``, or ``gcloud auth application-default
-login``, or workload identity — because upstream builds a bare
-``bigquery.Client()`` and narrowing that to one environment variable would
-report a working host as unconfigured. Snowflake reads its three variables.
-Either way a missing credential raises :class:`MissingCredentials` naming what
-is absent, which becomes a per-sample error rather than a silent zero — the
-alternative is a run that reports 24% and looks like a bad model instead of an
-unconfigured host.
+**Credentials follow each vendor's own discovery.** BigQuery accepts anything
+Google's default chain accepts — ``GOOGLE_APPLICATION_CREDENTIALS``, ``gcloud
+auth application-default login``, workload identity — because upstream builds a
+bare ``bigquery.Client()``, and narrowing to one variable would report a working
+host as unconfigured. Snowflake reads its three variables. Either way a miss
+raises :class:`MissingCredentials` naming what is absent, so it becomes a
+per-sample error rather than a silent zero.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -58,17 +48,14 @@ if TYPE_CHECKING:
 
 #: Per-query wall-clock budget for the local engine, enforced inside SQLite.
 #:
-#: **Measured on the staged corpus.** The bound has to clear every *gold* query
-#: without clearing a runaway one, and it does: the slowest of upstream's 24
-#: local gold queries completes in 27.8 s (``local099`` on ``Db-IMDB``) and the
-#: rest are under 3.2 s, so no comparison is truncated — which is the property
-#: a safety bound owes, since a bound that cuts a real result is a scoring
-#: change wearing a safety label. On the other side, a 135-question run with a
-#: frontier model had exactly one prediction abort here (``local170``,
-#: ``OperationalError: interrupted``), so the deadline does bind on model SQL.
-#: Headroom over gold is ~2.2x, tighter than Spider 1.0's ~10x, because these
-#: queries are aggregates over databases up to 372 MB rather than Spider 1.0's
-#: sub-second lookups.
+#: **Measured on the staged corpus**, and it has to clear every gold query
+#: without clearing a runaway one. It does: the slowest of upstream's 24 local
+#: golds takes 27.8 s (``local099`` on ``Db-IMDB``), the rest under 3.2 s, so no
+#: comparison is truncated — a bound that cuts a real result would be a scoring
+#: change wearing a safety label. Meanwhile a 135-question run had exactly one
+#: prediction abort here (``local170``), so it does bind on model SQL. Headroom
+#: over gold is ~2.2x against Spider 1.0's ~10x, because these are aggregates
+#: over databases up to 372 MB rather than sub-second lookups.
 DEFAULT_DEADLINE_S = 60.0
 #: Remote engines are slower and billed; upstream uses 90s for BigQuery.
 DEFAULT_REMOTE_TIMEOUT_S = 90.0
@@ -108,15 +95,11 @@ def caller_timeout(backend: str) -> float:
 def _bigquery_reachable() -> bool:
     """Whether *any* credential this host offers would satisfy BigQuery.
 
-    ``GOOGLE_APPLICATION_CREDENTIALS`` is checked first because it is a plain
-    environment read and costs nothing. Falling back to ``google.auth.default``
-    is what makes ``gcloud auth application-default login`` — and workload
-    identity, and an external-account JSON — count: upstream builds a bare
-    ``bigquery.Client()``, so the whole default chain is in scope there, and
-    treating only the environment variable as "configured" would report 205
-    questions as ``missing_credentials`` on a host that can in fact reach
-    BigQuery. The import is inside the branch, so a run over the local engine
-    never pays for it.
+    The environment variable is checked first as a free read. The
+    ``google.auth.default`` fallback is what makes ``gcloud auth
+    application-default login`` and workload identity count — upstream builds a
+    bare ``bigquery.Client()``, so its whole default chain is in scope. Imported
+    inside the branch, so a local-engine run never pays for it.
     """
     if os.getenv(BIGQUERY_CREDENTIAL_ENV):
         return True

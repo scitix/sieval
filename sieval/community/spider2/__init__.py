@@ -5,43 +5,34 @@ byte-for-byte — no deviation at all, unlike the Spider 1.0 mirror, because its
 imports already resolve inside a package.
 
 **Take the comparison from here, not from ``evaluate_utils.py``.** The repo ships
-two copies of ``compare_pandas_table`` and they no longer agree: the one in
-``evaluate.py`` is the live evaluator's and carries the 2025-10-29 accuracy fix
-(a ``normalize`` that maps NaN to 0 before comparing, an early ``break`` once a
-gold column finds no match, and an empty-``multi_gold`` guard). ``evaluate_utils``
-has none of the three. Both are named the same and sit in the same directory, so
-the stale one is the easy mistake — and it computes different verdicts.
+two ``compare_pandas_table`` copies and they no longer agree: ``evaluate.py``'s
+is the live evaluator's and carries the 2025-10-29 accuracy fix (``normalize``
+mapping NaN to 0, an early ``break`` once a gold column finds no match, an
+empty-``multi_gold`` guard); ``evaluate_utils`` has none of the three. Same
+name, same directory, different verdicts — the stale one is the easy mistake.
 
-What upstream's current lite evaluator does **not** ship is a Snowflake branch:
-``evaluate_single_sql_instance`` routes ``bq``/``ga`` to BigQuery and ``local`` to
-SQLite, and everything else falls through to "Unsupported instance id prefix".
-That leaves 207 of the 547 instances unscoreable by upstream even though gold
-results exist for all 547. sieval's Snowflake execution is therefore first-party
-and lives in ``sieval.tasks._spider2_backends``, not here — there is no upstream
-lite implementation to mirror.
+Upstream's current lite evaluator ships **no Snowflake branch**:
+``evaluate_single_sql_instance`` routes ``bq``/``ga`` and ``local``, and
+everything else falls through to "Unsupported instance id prefix", leaving 207
+of 547 unscoreable despite gold existing for all of them. sieval's Snowflake
+execution is therefore first-party, in ``sieval.tasks._spider2_backends``.
 
-**Importing it has two side effects, and this module undoes both.** ``evaluate.py``
-is upstream's *command-line entry point* as well as its comparison library, and
-at module scope it does::
+**Importing it has two side effects, and this module undoes both.** At module
+scope ``evaluate.py`` — a command-line entry point as well as a library — does::
 
     sys.stdout = TeeOutput("log.txt")
     sys.stderr = sys.stdout
 
-which opens ``log.txt`` in the current directory for writing — truncating a file
-that is not ours — and points the whole process's stdout and stderr at it, for
-the rest of the run. In a script that is a logging convenience; in a library
-import it silently swallows every other task's output in a shared session, and
-in a worker process it does the same to whatever the pool writes. Neither is a
-divergence we can fix upstream-side without editing a byte-identical file, so
-the fix is here, at the only door into the package: the streams are saved and
-put back, the handle upstream opened is closed, and an existing ``log.txt`` is
-moved aside for the duration and moved back.
+which truncates a ``log.txt`` that is not ours and redirects the whole process's
+output for the rest of the run, swallowing every other task's logs in a shared
+session. Fixing it upstream-side would mean editing a byte-identical file, so
+the fix is here, at the only door in: the streams are saved and put back, the
+handle upstream opened is closed, and an existing ``log.txt`` is moved aside and
+back.
 
-This is the one place it can go. ``evaluate`` is a submodule, so any route to it
-— ``import sieval.community.spider2.evaluate`` included — runs this file first,
-and by the time that import is evaluated the module is already in
-``sys.modules``. The one thing to keep in mind when editing: whatever imports
-``.evaluate`` must go through :func:`_import_evaluate`.
+This is the one place it can go — ``evaluate`` is a submodule, so every route to
+it runs this file first. When editing: whatever imports ``.evaluate`` must go
+through :func:`_import_evaluate`.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """

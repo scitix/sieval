@@ -1,112 +1,80 @@
 """Spider 2.0-lite — 0-shot generative text-to-SQL over real warehouses.
 
 Spider 2.0 (Lei et al., ICLR 2025) is Spider's enterprise-scale successor. The
-**lite** setting is its single-call text-to-SQL reading: 547 questions, no agent
-loop, against schemas with hundreds of columns and questions that routinely need
-an external document to answer. Scoring is execution-result comparison against
-gold result frames upstream ships for all 547.
+**lite** setting is its single-call reading: 547 questions over warehouse
+schemas, scored by execution-result comparison against gold frames upstream
+ships for all 547. The ``instance_id`` prefix picks the engine — ``bq``/``ga``
+BigQuery (205), ``sf_bq``/``sf`` Snowflake (207), ``local`` SQLite (135).
 
-**Three engines, and the ``instance_id`` prefix is what picks one**: ``bq``/``ga``
-BigQuery (205), ``sf_bq``/``sf`` Snowflake (207), ``local`` SQLite (135). Only
-the 135 local questions run with no credentials.
+**Default selection is the 135 SQLite questions, not all 547**
+(:data:`~sieval.datasets.spider2_lite.DEFAULT_ENGINES`). ``missing_credentials``
+can only be asked once a sample exists — after its prompt is built and inferred
+— so an unconfigured host running everything pays for the 412 largest prompts in
+the benchmark (~6.84 M prompt tokens against ~158 k for the local subset) to be
+told it cannot ask.
 
-**By default this task runs the 135 SQLite questions, not all 547.** The
-selection is the dataset's ``engines`` argument
-(:data:`~sieval.datasets.spider2_lite.DEFAULT_ENGINES`), and the reason is that
-``missing_credentials`` can only be asked once a sample exists, which is after
-its prompt has been built and inferred: a host without cloud credentials would
-pay for the 412 largest prompts in the benchmark — ~6.84 M prompt tokens against
-~158 k for the whole local subset — to be told 412 times that it cannot ask.
-
-``denominator_policy`` is ``DENOMINATOR_REQUESTED``, so the rate is over what
-the run *asked for*. Two things follow. A default run's ``score`` is over 135
-and is **not** upstream's ``correct/547``; the report writes the engine set into
-an ``engines`` field so the two are never confused. And a run that does ask for
-all three engines without credentials caps near 24.7%, which is the honest
-reading — a benchmark you cannot run is not one you passed — but is unreadable
-as a headline, so the report always publishes a **per-backend breakdown**
-(``execution_accuracy_local`` / ``_bigquery`` / ``_snowflake``, each with its own
-``n_*`` and ``n_missing_credentials_*``). Read those before reading ``score``.
+**Read the denominator.** ``DENOMINATOR_REQUESTED`` means the rate is over what
+was asked for, so a default run's ``score`` is over 135 and is *not* upstream's
+``correct/547``; the report writes an ``engines`` field so the two cannot be
+confused. Asking for all three without credentials caps near 24.7%, which is
+honest but unreadable alone, so the report always publishes a per-backend
+breakdown (``execution_accuracy_local`` / ``_bigquery`` / ``_snowflake``, each
+with its own ``n_*`` and ``n_missing_credentials_*``). Read those first.
 
 **Comparison is upstream's, from the right copy.** The repo ships two
-``compare_pandas_table`` implementations; the live one in ``evaluate.py`` carries
-the 2025-10-29 accuracy fix (NaN normalised to 0, an early break, an empty-gold
-guard) and the one in ``evaluate_utils.py`` does not. This task uses the former,
-vendored byte-identical, with each instance's own ``condition_cols`` and
-``ignore_order`` from upstream's ``spider2lite_eval.jsonl``, and it branches on
-upstream's own ``is_single``.
+``compare_pandas_table`` implementations; only ``evaluate.py``'s carries the
+2025-10-29 accuracy fix (NaN normalised to 0, an early break, an empty-gold
+guard). Vendored byte-identical, with each instance's ``condition_cols`` and
+``ignore_order`` from ``spider2lite_eval.jsonl``.
 
-Note what that flag actually is, because the name misleads: ``resolve_gold_paths``
-returns ``is_single=True`` only when an **exact** ``<instance_id>.csv`` exists,
-which is true of **3 of the 547**. It is a filename shape, not a gold count —
-104 instances have exactly one gold file and still take the
-``compare_multi_pandas_table`` path. The 1,544 gold CSVs do mean most questions
-accept more than one answer shape (440 of 547 have two or more), but that is a
-separate fact from which branch runs.
+``is_single`` misleads: ``resolve_gold_paths`` returns it ``True`` only when an
+exact ``<instance_id>.csv`` exists, which is **3 of 547**. It is a filename
+shape, not a gold count — 104 instances have one gold file and still take the
+``compare_multi_pandas_table`` path. (Separately, the 1,544 golds do mean 440 of
+547 accept more than one answer shape.)
 
-**The prediction reaches the comparison through a CSV.** Upstream writes the
-result frame out and reads it back before comparing, and that round trip is part
-of the metric rather than plumbing: it is what re-infers dtypes, so a SQLite
-column typed ``text`` holding ``"3"`` arrives as an integer and a BigQuery
-``DATE`` arrives as the string the gold CSV also holds. Comparing the frame the
-driver returned instead flips real verdicts in both directions.
+**The prediction reaches the comparison through a CSV**, as upstream does, and
+that round trip is part of the metric: ``read_csv`` re-infers dtypes, so a
+SQLite ``text`` column holding ``"3"`` arrives as an integer and a BigQuery
+``DATE`` as the string the gold also holds. Comparing the driver's own frame
+flips verdicts in both directions.
 
-**Snowflake is sieval's own, because upstream lite no longer has one.**
-``evaluate_single_sql_instance`` routes BigQuery and SQLite and sends every other
-prefix to "Unsupported instance id prefix" — 207 of 547 unscoreable by upstream
-even though gold ships for them. A Snowflake number here therefore has **no
-upstream lite counterpart**; the comparable published setting is Spider 2.0-Snow,
-same questions, same warehouse. See ``sieval.tasks._spider2_backends``.
+**DIVERGENCE — Snowflake execution is first-party.**
+``evaluate_single_sql_instance`` routes only BigQuery and SQLite, sending every
+other prefix to "Unsupported instance id prefix" — 207 of 547 unscoreable by
+upstream despite gold shipping for them. A Snowflake number here has no upstream
+lite counterpart; compare against Spider 2.0-Snow. See ``_spider2_backends``.
 
-**Execution safety.** The local engine runs model SQL, so it carries the same
-hardening as Spider 1.0 — read-only immutable connection, ATTACH/DETACH denied,
-progress-handler deadline, row cap — from the same module, ``_sqlite_exec``,
-rather than a second copy. Upstream instead copies the whole database into memory
-per query; that stops writes but not runaway queries, and the largest local
-database is 372 MB, which a concurrent grader cannot copy per call. The remote
-engines are bounded (timeout + row cap) rather than hardened: the query runs on
-someone else's server under their permissions.
+**DIVERGENCE — the local engine is hardened**, from the shared ``_sqlite_exec``
+rather than a second copy: read-only immutable connection, ATTACH/DETACH denied,
+progress-handler deadline, row cap. Upstream instead copies the whole database
+into memory per query, which stops writes but not runaway queries — and the
+largest local database is 372 MB, which a concurrent grader cannot copy per
+call. Remote engines are bounded (timeout + row cap), not hardened: the query
+runs on someone else's server.
 
-**The prompt is bounded too, for a different reason.** The cloud-schema block
-comes from the shipped resource tree, and that tree is not uniform. The 412
-cloud questions run against 128 distinct databases, and rendering one of them
-whole can be enormous: ``ga360`` produces 2,894,566 characters across its daily
-partition tables, ``fec`` 13.5 M, and 56 of the 412 questions sit on a database
-whose ``DDL.csv`` alone exceeds a megabyte. That is not a low score, it is a
-request no endpoint accepts — so the block stops at :data:`MAX_SCHEMA_CHARS`, on
-a statement boundary, and says how many tables it left out. 83 of the 412 cloud
-questions are truncated; no local question is, since the largest local schema is
-about 7.5 kB.
+**The prompt is bounded too.** The 412 cloud questions run against 128 distinct
+databases and the shipped tree is not uniform: ``ga360`` renders 2,894,566
+characters, ``fec`` 13.5 M, and 56 of the 412 sit on a database whose
+``DDL.csv`` alone exceeds a megabyte. Unbounded that is a request no endpoint
+accepts, so the block stops at :data:`MAX_SCHEMA_CHARS` on a statement boundary
+and says how many tables it dropped. 85 of the 412 are truncated; no local
+question is, the 30 local schemas running 956 to 8,679 characters.
 
-Target: there is **no comparable published number**, and that is a property of
-the leaderboard rather than of this run. Upstream publishes one aggregate over
-all 547 with no per-engine breakdown, so the BigQuery- or SQLite-only score a
-credential-limited host can produce has nothing to be compared against. The
-board is also almost entirely agentic (schema linking, multi-turn, execution
-feedback, topping 76%); the nearest single-call entries are prompting frameworks
-at 1.5–5.7%. A 0-shot single call is a different setting from all of them. This
-is why the task ships ``experimental``: a faithful port with no reachable
-anchor, not a port awaiting one run.
+Target: **no comparable published number exists**, which is a property of the
+leaderboard. It publishes one aggregate over 547 with no per-engine breakdown,
+and it is almost entirely agentic (topping 76%) while the nearest single-call
+entries are prompting frameworks at 1.5–5.7%. Hence ``experimental``: a faithful
+port with no reachable anchor, not one awaiting a run.
 
-Measured, on the real staged archives:
-
-* **All 135 local questions run end to end** — prompt, execution, comparison,
-  report — with 0 pipeline failures, so ``n_local`` is 135 rather than a subset.
-* **24 of 24 verdicts agree with upstream's own evaluator.** Every local
-  instance for which upstream ships gold SQL was graded by both
-  ``evaluate_single_sql_instance`` and this task's path; they agree on all of
-  them, the 8 that score 0 included (upstream's ``gold/sql`` is stale against
-  its own ``gold/exec_result``, and both harnesses call those wrong identically).
-* **All 128 distinct cloud databases render a schema block** within
-  :data:`MAX_SCHEMA_CHARS`, so no cloud question fails at prompt time.
-* **A real 135-question run scores.** A frontier chat model over the default
-  SQLite selection: ``execution_accuracy`` 48.89 (66/135), 0 fails, 0
-  unextracted predictions, 3 execution errors — two malformed queries and one
-  that the engine deadline aborted. Not an alignment number (see Target), a
-  demonstration that every stage carries a real reply end to end.
-
-Not measured: the BigQuery and Snowflake engines, which need credentials this
-environment does not have.
+Measured on the real staged archives: all **135** local questions run end to end
+with 0 pipeline failures; **24 of 24** verdicts agree with upstream's own
+``evaluate_single_sql_instance``, the 8 scoring 0 included (its ``gold/sql`` is
+stale against its own ``gold/exec_result`` and both call those wrong
+identically); all **128** cloud databases render within the budget; and a real
+run over the default selection scored ``execution_accuracy`` 48.89 (66/135) with
+0 fails and 0 unextracted. Not measured: the BigQuery and Snowflake engines,
+which need credentials this environment does not have.
 
 References:
 
@@ -175,13 +143,10 @@ _DIALECT = {
 MAX_SCHEMA_CHARS = 200_000
 
 #: Field cap for reading a shipped ``DDL.csv``. ``csv`` defaults to 131,072
-#: characters per field and one database exceeds it: ``bigquery`` /
-#: ``pancancer_atlas_2`` holds a single ``ddl`` value longer than that, so
-#: ``DictReader`` raises ``_csv.Error: field larger than field limit`` and its
-#: two questions (``bq151``, ``bq161``) die in ``preprocess`` rather than
-#: scoring. Not ``sys.maxsize``: the cap is a C long and a value it cannot hold
-#: raises ``OverflowError``, so this is the largest signed 32-bit value, which
-#: every platform accepts and no shipped field comes near.
+#: characters and ``bigquery/pancancer_atlas_2`` holds one ``ddl`` value longer
+#: (147,830), so ``DictReader`` raised ``_csv.Error`` and its two questions
+#: (``bq151``, ``bq161``) died in ``preprocess``. Not ``sys.maxsize``: the cap is
+#: a C long, so this is the largest value every platform accepts.
 _CSV_FIELD_LIMIT = 2**31 - 1
 
 
@@ -214,14 +179,13 @@ _CSV_FIELD_LIMIT = 2**31 - 1
             "upstream does — that round trip re-infers dtypes and is part of the "
             "metric. Three of the 1,544 golds are header-only (local275_a, "
             "sf001_b, and sf_bq411_b, which holds upstream's own error string "
-            "rather than a result — a corrupt gold, though its _a/_c siblings "
-            "are valid); none is a bq/ga instance, which is the only prefix "
-            "whose upstream path scores an empty result 0 without comparing, so "
-            "not implementing that guard cannot change a verdict on this data. "
-            "It does cost one free point on the first-party Snowflake path: an "
-            "empty result matches sf_bq411_b's zero rows, so sf_bq411 scores 1 "
-            "for a query returning nothing. 1 of 207, kept rather than "
-            "special-cased because dropping an empty gold would itself be a "
+            "instead of a result — corrupt, though its _a/_c siblings are "
+            "valid); none is bq/ga, the only prefix whose upstream path scores "
+            "an empty result 0 without comparing, so omitting that guard cannot "
+            "change a verdict here. It does cost one free point on the "
+            "first-party Snowflake path: an empty result matches sf_bq411_b's "
+            "zero rows, so sf_bq411 scores 1 for a query returning nothing. "
+            "1 of 207, kept because dropping an empty gold would itself be a "
             "divergence in the comparison. "
             "SQL extraction is upstream's extract_sql_query. DIVERGENCE — "
             "Snowflake execution is first-party: upstream's current lite "
@@ -366,13 +330,9 @@ class Spider2LiteZeroShotGenTask(
         standard = _eval_standard(self._staged("eval_config_path")).get(instance_id, {})
         gold_dir = self._staged("gold_dir")
 
-        # Asked once per sample, before anything is offloaded. The distinction
-        # between "the host is unconfigured" and "the model wrote bad SQL" is
-        # the whole point of the per-backend breakdown, and it cannot be drawn
-        # on the far side of a worker process: telling one exception class from
-        # another there means catching broadly at the call site below, which is
-        # exactly what `.claude/rules/tasks.md` forbids. So it is drawn here,
-        # where it is a plain environment read and no query has run yet.
+        # Asked here, not in the worker: telling "host unconfigured" from "model
+        # wrote bad SQL" across a process boundary would mean catching broadly
+        # at the grading call site, which `.claude/rules/tasks.md` forbids.
         unreachable = missing_credentials(backend)
 
         rollouts: list[RolloutJudgement] = []
@@ -476,11 +436,9 @@ class Spider2LiteZeroShotGenTask(
             "fails": float(len(fails)),
             "n_execution_errors": float(n_errors),
             "n_missing_credentials": float(n_missing),
-            # Which engines were asked for, so the rate above is readable years
-            # later. `score` is over what the run requested, and the default
-            # request is the 135 SQLite questions rather than all 547 — a
-            # number over 135 and upstream's `correct/547` are different
-            # measurements, and `n` alone does not say which one this is.
+            # What the rate is over. A default run's 135 and upstream's
+            # `correct/547` are different measurements; `n` alone cannot say
+            # which one this report holds.
             "engines": ",".join(_requested_engines(self.dataset)),
             SCORE_KEY_FIELD: "execution_accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
@@ -498,11 +456,11 @@ class Spider2LiteZeroShotGenTask(
 
 
 def _requested_engines(dataset) -> tuple[str, ...]:
-    """Engines the dataset was loaded for, or every one it could have been.
+    """Engines the dataset was loaded for, or all of them if it carries none.
 
-    A dataset built straight from an ``HFDatasetDict`` — a test, or a caller
-    slicing rows itself — carries no selection, so fall back to naming them all
-    rather than asserting a subset nobody asked for.
+    A dataset built straight from an ``HFDatasetDict`` (a test, or a caller
+    slicing rows itself) made no selection, so naming them all beats asserting
+    a subset nobody asked for.
     """
     engines = getattr(dataset, "engines", None)
     return tuple(engines) if engines else ALL_ENGINES
@@ -654,19 +612,15 @@ def _resource_schema(
     """Schema for a cloud database, from upstream's shipped resource tree.
 
     Upstream lays these out as ``<engine>/<db>/<schema>/`` holding a ``DDL.csv``
-    (``table_name,ddl``) and one JSON per table. The DDL is preferred because it
-    is the engine's own text.
+    (``table_name,ddl``) and one JSON per table; the DDL is preferred as the
+    engine's own text.
 
-    The JSON branch is a **fallback that the pinned data never reaches**: all
-    128 distinct cloud databases ship a ``DDL.csv``, so no question renders a
-    schema from table JSON. It stays because the tree is upstream's to reshape
-    and a database arriving without DDL should degrade to a worse prompt rather
-    than to a failed sample — but it is untested against real data, and a
-    verdict has never depended on it.
+    The JSON branch is a **fallback the pinned data never reaches** — all 128
+    cloud databases ship a ``DDL.csv`` — kept so a database arriving without one
+    degrades to a worse prompt rather than a failed sample. Untested against
+    real data; no verdict has depended on it.
 
-    Cached, and not only to save the walk: 412 questions share 128 databases,
-    and the largest of them is a 26 MB tree that would otherwise be re-read and
-    re-rendered once per question.
+    Cached: 412 questions share 128 databases, the largest a 26 MB tree.
     """
     root = Path(schema_root, backend, db)
     if not root.is_dir():

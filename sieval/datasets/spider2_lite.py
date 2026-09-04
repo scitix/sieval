@@ -1,72 +1,45 @@
 """Spider 2.0-lite dataset loader (XLang Lab).
 
-Spider 2.0 (Lei et al., ICLR 2025) is Spider's enterprise-scale successor: real
-warehouse schemas with hundreds of columns, questions needing external
-documentation, and SQL that is routinely dozens of lines. The **lite** setting
-is its single-call text-to-SQL reading — 547 questions, no agent loop.
-
-The 547 split three ways by ``instance_id`` prefix, and the prefix is the only
-thing that says which engine a question runs on:
-
-===============  =========================  =======
-Prefix           Engine                     Count
-===============  =========================  =======
-``bq`` / ``ga``  BigQuery                   205
-``sf_bq`` / ``sf``  Snowflake               207
-``local``        SQLite (shipped locally)   135
-===============  =========================  =======
-
-Only the 135 ``local`` questions run without cloud credentials. The counts come
-from the ids themselves; the upstream README's table is approximate (it says
-BigQuery 214 / Snowflake 198, and the ids say 205 / 207).
+Spider 2.0 (Lei et al., ICLR 2025) is Spider's enterprise-scale successor. The
+**lite** setting is its single-call reading — 547 questions, no agent loop —
+split by ``instance_id`` prefix, which is the only thing saying which engine a
+question runs on: ``bq``/``ga`` BigQuery (205), ``sf_bq``/``sf`` Snowflake (207),
+``local`` SQLite (135). Counts are from the ids; the upstream README's table is
+approximate (it says BigQuery 214 / Snowflake 198).
 
 **The default selection is the SQLite subset**, not all 547 — see
-:data:`DEFAULT_ENGINES` for why, and for what it means for the denominator.
-``engines`` is a load argument, so a config asks for more with
-``args: {engines: [sqlite, bigquery, snowflake]}``.
+:data:`DEFAULT_ENGINES`. ``engines`` is a load argument, so a config asks for
+more with ``args: {engines: [sqlite, bigquery, snowflake]}``.
 
 **Two pinned sources, because the data is split across two hosts.** The
-questions, per-database schemas, external-knowledge documents and gold results
-live in the GitHub repo, which ships no release archive — and the gold set alone
-is 1,544 CSVs, far past what enumerating ``url:`` entries could express, so the
-whole repo archive is taken at a pinned commit and only ``spider2-lite/`` is
-extracted (909 MB rather than the full 1.9 GB). The local SQLite databases are a
-separate 457 MB download, which upstream tells you to unzip into
-``resource/databases/spider2-localdb`` — this loader puts them exactly there.
+questions, schemas, external-knowledge documents and gold results live in the
+GitHub repo, which ships no release archive — and the gold set alone is 1,544
+CSVs, far past what enumerating ``url:`` entries could express — so the whole
+repo archive is taken at a pinned commit and only ``spider2-lite/`` extracted
+(909 MB rather than 1.9 GB). ``codeload`` zips are not contractually
+byte-stable; three downloads of this commit agreed on the sha256, which is
+evidence rather than a promise.
 
-**Take the local databases from the archive upstream's README links, not from
-the Hub.** ``xlangai/spider2-localdb`` also publishes a ``sqlite.zip``, and it is
-tempting because a Hub URL pins by revision while a Drive URL pins only by file
-id plus checksum. It is the wrong corpus: it ships 40 databases, of which only
-23 of the 30 the 135 ``local`` questions actually name, plus 17 no question
-references. The seven it omits — ``bank_sales_trading`` (15 questions),
-``city_legislation`` (10), ``modern_data`` (7), ``sqlite-sakila`` (7),
-``education_business`` (5), ``California_Traffic_Collision`` (3) and ``music``
-(1) — are **48 of the 135**, and each one raises
+**Take the local databases from the archive upstream's README links, not the
+Hub's.** ``xlangai/spider2-localdb/sqlite.zip`` is tempting — a Hub URL pins by
+revision, a Drive URL only by file id plus checksum — but it is the wrong
+corpus: 40 databases covering only 23 of the 30 the 135 ``local`` questions
+name, plus 17 no question references. The seven it omits are **48 of the 135**
+(``bank_sales_trading`` 15 questions, ``city_legislation`` 10, ``modern_data``
+7, ``sqlite-sakila`` 7, ``education_business`` 5,
+``California_Traffic_Collision`` 3, ``music`` 1), each raising
 ``sqlite3.OperationalError: unable to open database file`` at prompt time.
-``local_sqlite.zip`` holds exactly the 30 the questions name, no more and no
-fewer, so :meth:`_verify_local_dbs` asserts that set equality at load rather
-than trusting either archive.
+``local_sqlite.zip`` holds exactly those 30, so :meth:`_verify_local_dbs`
+asserts the set equality at load rather than trusting either archive. The cost
+is the pin: a Drive download-quota block serves an HTML page, which fails the
+checksum — on a mismatch here, retry rather than re-pin.
 
-The cost of that choice is the pin: Drive has no revision, so the checksum is
-the whole guarantee, and a download-quota block serves an HTML page instead of
-the zip. That page fails the checksum, which is the loud failure — if
-``dataset download`` reports a mismatch on this file, retry rather than
-re-pinning.
-
-**Two traps in the archives.** ``local_sqlite.zip`` interleaves
-``__MACOSX/._*`` AppleDouble stubs with the real files, and one of them
+**Two traps.** ``local_sqlite.zip`` carries ``__MACOSX/._*`` stubs and one
 (``._chinook.sqlite``) ends in ``.sqlite``, so an unfiltered extraction yields a
 file that looks like a database and is not. And 37 of the 547 rows carry a
 ``temporal`` key the other 510 omit, which Arrow cannot infer across — it is
-normalised to ``None`` here rather than dropped, since it marks the questions
-whose answer depends on when they are asked.
-
-**A note on the GitHub archive's checksum.** ``codeload`` zips are not
-contractually byte-stable, so a pin over one is a maintenance risk rather than a
-guarantee. Three independent downloads of this commit produced the same sha256,
-which is evidence and not a promise; if it ever fails, re-verify the contents
-before re-pinning.
+normalised to ``None`` rather than dropped, since it marks the questions whose
+answer depends on when they are asked.
 
 References:
 
@@ -139,17 +112,14 @@ ALL_ENGINES = ("sqlite", "bigquery", "snowflake")
 
 #: Engines a run asks for unless it says otherwise — **the SQLite subset only**.
 #:
-#: The default is a subset rather than the whole benchmark because the other two
-#: engines need credentials, and asking a question that cannot be executed costs
-#: the full prompt to produce a guaranteed-wrong verdict. Cloud schemas are the
-#: largest prompts here: ~6.84 M prompt tokens across the 412 cloud questions
-#: against ~158 k for all 135 local ones, so an unconfigured host that ran
-#: everything would spend 43x for nothing and report ~24.7% as a ceiling.
+#: A subset by default because the other two need credentials, and a question
+#: that cannot be executed still costs its whole prompt to reach a
+#: guaranteed-wrong verdict: ~6.84 M prompt tokens across the 412 cloud
+#: questions against ~158 k for all 135 local ones, 43x for nothing.
 #:
-#: The consequence to keep in mind is the **denominator**: upstream publishes
-#: ``correct/547``, so a default run's rate is over 135 and is not that number.
-#: The task writes the engine set into its report so the two cannot be confused,
-#: and `engines=ALL_ENGINES` asks the full benchmark.
+#: Watch the **denominator**: upstream publishes ``correct/547``, so a default
+#: run's rate is over 135 and is not that number. The task reports the engine
+#: set so the two cannot be confused; ``engines=ALL_ENGINES`` asks for all 547.
 DEFAULT_ENGINES = ("sqlite",)
 
 
@@ -165,10 +135,9 @@ def normalise_engines(engines: str | Iterable[str]) -> tuple[str, ...]:
     """Validate an engine selection and put it in :data:`ALL_ENGINES` order.
 
     A bare string is one engine, never a set of characters. The order is fixed
-    rather than the caller's so that two configs naming the same engines produce
-    the same sample ids, and an unknown name raises rather than silently
-    selecting nothing — an empty split would otherwise surface as a run that
-    scored zero questions.
+    rather than the caller's, so two configs naming the same engines produce the
+    same sample ids. An unknown name raises: silently selecting nothing would
+    surface as a run that scored zero questions and looked fine.
     """
     requested = (engines,) if isinstance(engines, str) else tuple(engines)
     if not requested:
@@ -285,13 +254,10 @@ class Spider2LiteDataset(Dataset[Spider2LiteDatasetSample]):
     def _verify_local_dbs(localdb_dir: Path, rows: list[dict]) -> None:
         """Every ``local`` question's database must be on disk.
 
-        The archive this loader pins holds exactly the databases the questions
-        name, so a miss here is a staging fault or a swapped archive rather
-        than an upstream gap — and it is worth one ``listdir`` to say so now,
-        naming the databases, instead of letting each affected sample raise
-        ``unable to open database file`` from inside ``preprocess`` with no
-        clue which file it wanted. The Hub's ``sqlite.zip`` fails this on seven
-        databases and 48 questions; see the module docstring.
+        The pinned archive holds exactly the databases the questions name, so a
+        miss is a staging fault or a swapped archive. Worth one check to say so
+        here, naming them, rather than letting each affected sample raise
+        ``unable to open database file`` from ``preprocess`` naming nothing.
         """
         wanted = {
             row["db"] for row in rows if backend_for(row["instance_id"]) == "sqlite"
