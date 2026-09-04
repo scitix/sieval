@@ -239,7 +239,10 @@ def _upstream_execution(db_path, db_id, tables_json_path, pred_sql, gold_sql):
     try:
         pred = get_sql(schema, pred_sql)
     except Exception:
-        pred = dict(EMPTY_SQL)
+        # Annotated for the same reason `grade_one` annotates its own copy: the
+        # literal's inferred value type would otherwise narrow `pred["from"]` to
+        # a union including `list` and `None`.
+        pred: dict = dict(EMPTY_SQL)
     kmap = build_foreign_key_map_from_json(str(tables_json_path))[db_id]
     gold = rebuild_sql_col(
         build_valid_col_units(gold["from"]["table_units"], schema),
