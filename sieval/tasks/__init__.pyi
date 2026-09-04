@@ -157,6 +157,12 @@ from .multi_if_0shot_gen import (
 from .multi_if_0shot_gen_fixed import (
     MultiIFZeroShotGenFixedTask,
 )
+from .nl2sh_alfa_0shot_gen import (
+    NL2SHAlfaZeroShotGenTask,
+)
+from .nl2sh_alfa_0shot_gen_parse import (
+    NL2SHAlfaZeroShotGenParseTask,
+)
 from .openbookqa_kshot_gen import (
     OpenBookQAFewShotGenTask,
 )
@@ -265,6 +271,8 @@ __all__ = [
     "MMMLUKShotClpTask",
     "MultiIFZeroShotGenFixedTask",
     "MultiIFZeroShotGenTask",
+    "NL2SHAlfaZeroShotGenParseTask",
+    "NL2SHAlfaZeroShotGenTask",
     "OpenBookQAFewShotGenTask",
     "PlatinumGSM8KZeroShotGenTask",
     "PlatinumMultiArithZeroShotGenTask",

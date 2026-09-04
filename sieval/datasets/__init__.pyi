@@ -169,6 +169,10 @@ from .multi_if import (
     MultiIFDataset,
     MultiIFDatasetSample,
 )
+from .nl2sh_alfa import (
+    NL2SHAlfaDataset,
+    NL2SHAlfaDatasetSample,
+)
 from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
@@ -311,6 +315,8 @@ __all__ = [
     "MMMLUDatasetSample",
     "MultiIFDataset",
     "MultiIFDatasetSample",
+    "NL2SHAlfaDataset",
+    "NL2SHAlfaDatasetSample",
     "OpenBookQADataset",
     "OpenBookQADatasetSample",
     "PlatinumBenchDataset",

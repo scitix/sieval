@@ -10,10 +10,18 @@ code either by running it directly or by checking it against test cases.
 - HumanEval (multi-language: python / javascript / typescript)
 - LiveCodeBench (python only)
 - SciCode (python only)
+- NL2SH-ALFA / InterCode-ALFA (Bash) — **separate route, separate images**
 
 HumanEval and SciCode run the submitted code directly; LiveCodeBench needs a
 function name and compares inputs against expected outputs. A SciCode program
 carries its own inlined test cases, so a run that raises nothing counts as a pass.
+
+NL2SH-ALFA is the odd one out and has its own route (`POST /shell-evaluations`),
+because it is **stateful**: it scores a Bash command by what it did to a prepared
+filesystem, so the unit of work is a command *pair* run against one git-committed
+baseline tree with a reset in between. That tree comes from the image, which is
+upstream's, so there are five of them — one per prepared filesystem — and one
+service instance hosts exactly one. See "Shell endpoint" below.
 
 ## Setup
 
@@ -62,10 +70,28 @@ docker build -f docker/Dockerfile.typescript -t code-evaluator-ts .
 docker build -f docker/Dockerfile.scicode -t code-evaluator-scicode .   # Python 3.11
 ```
 
+The five NL2SH images are built the same way and are **not** interchangeable —
+each carries a different prepared filesystem, and `NL2SH_FS_ID` is baked in:
+
+```sh
+for fs in 1 2 3 4 5; do
+  docker build -f docker/Dockerfile.nl2sh-$fs -t code-evaluator-nl2sh-$fs .
+done
+```
+
 ## Running the service
 
 ```sh
 fastapi run app/server.py --port 11451
+```
+
+The NL2SH images run their own entrypoint (`uvicorn`, **one worker**) and expose
+port 11451 each, so a full NL2SH run needs five endpoints up at once:
+
+```sh
+for fs in 1 2 3 4 5; do
+  docker run -d --name nl2sh-$fs -p 1145$fs:11451 code-evaluator-nl2sh-$fs
+done
 ```
 
 ## API
@@ -180,11 +206,53 @@ When a request omits `memory_limit`, the default is 1024 MB.
 - Python: limits the process address space via `resource.setrlimit`.
 - Node.js (JS/TS): limits the V8 heap via `--max-old-space-size`.
 
+## Shell endpoint (NL2SH-ALFA)
+
+POST /shell-evaluations
+
+```jsonc
+{
+  "uuid": "42-1234567890",   // caller's correlation id
+  "fs_id": 3,                // 1..5; must be the one this instance hosts
+  "command": "find /workspace -type f",   // the model's Bash command
+  "gold": "find /workspace -type f",      // the graded ground truth
+  "timeout": 10.0            // per command; upstream's TIMEOUT_DURATION
+}
+```
+
+The response carries **execution facts, never a verdict**: both combined
+outputs, both raw `git status --short` listings, per-path hash-command stdout for
+added/untracked/copied paths, and per-command `*_exit_ok` / `*_timed_out` flags.
+Deciding functional equivalence needs an embedding model when the outputs differ,
+and this service holds no model credentials, so the caller owns the arithmetic
+and the record of what decided each sample.
+
+`status: false` is about the *request*, not the model: a wrong `fs_id`, or a
+baseline that would not restore. A command that failed, hung or changed the wrong
+files is `status: true` reporting exactly that.
+
+Per request the service resets the tracked tree, runs the gold, snapshots, resets
+again, runs the model's command, snapshots, and resets once more. Two things
+follow, and both are load-bearing:
+
+- **One worker.** Every request mutates the shared tree. An in-process lock
+  serializes them; a second worker *process* would not see it. The images'
+  `CMD` pins `--workers 1` — do not raise it.
+- **One filesystem per instance.** `NL2SH_FS_ID` is baked into each image, and a
+  request for a different one is refused. A misrouted sample would be scored
+  against the wrong prepared tree and report a plausible zero with nothing in
+  the logs, which on a 300-sample benchmark is indistinguishable from a bad model.
+
+`NL2SH_FS_ROOT` (default `/`) exists so `tests/test_exec_sh.py` can drive the
+whole protocol against a throwaway git repo with no container.
+
 ## Layout
 
 - `app/`: service and execution logic
-- `docker/`: per-language image files
+- `docker/`: per-language image files, plus `Dockerfile.nl2sh-{1..5}`
+- `docker/nl2sh/`: upstream InterCode-ALFA filesystem setup scripts + gitignore
 - `requirements/`: extra dependencies (`livecodebench.txt` / `scicode.txt`)
+- `tests/`: the shell backend's tests (no container required)
 - `README.md`: this document
 
 ## Note
