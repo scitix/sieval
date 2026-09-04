@@ -9,9 +9,10 @@ copy, which stops writes reaching disk but does nothing about an unbounded
 query, and costs a full copy of a database that can run to hundreds of megabytes
 — per call, while sieval grades concurrently. A read-only connection buys the
 same write protection without the copy, and the deadline is what upstream has no
-answer for at all. Guards match ``_spider_exec``: ``mode=ro&immutable=1``,
-``ATTACH``/``DETACH`` denied, a progress-handler deadline that aborts inside
-SQLite, and a row cap.
+answer for at all. The guards are not re-implemented here: they are
+``sieval.tasks._sqlite_exec``, shared with Spider 1.0's graders and prompt
+builder, so the two benchmarks cannot drift on what "hardened" means. Only the
+*bounds* are this benchmark's own.
 
 **BigQuery and Snowflake are not hardened, because there is nothing here to
 harden.** The query runs on someone else's server under someone else's
@@ -38,78 +39,104 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import os
-import sqlite3
-import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pandas as pd
+from ._sqlite_exec import open_readonly, run_bounded
 
-#: Per-query wall-clock budget for the local engine.
+if TYPE_CHECKING:
+    # pandas is behind the `spider2` group. Importing it here would put it at
+    # module scope for anything that merely *registers* the task, so the runtime
+    # imports are inside the two functions that build a frame and every
+    # annotation naming it is a string.
+    import pandas as pd
+
+#: Per-query wall-clock budget for the local engine, enforced inside SQLite.
+#: **Not measured** — unlike Spider 1.0's, whose 5 s is checked against every
+#: gold, this one cannot be until someone runs the task on staged data. It is
+#: set from what the questions look like: enterprise schemas, multi-CTE
+#: aggregates, and a local corpus whose largest database is 372 MB.
 DEFAULT_DEADLINE_S = 60.0
 #: Remote engines are slower and billed; upstream uses 90s for BigQuery.
 DEFAULT_REMOTE_TIMEOUT_S = 90.0
 #: Result rows kept. Spider 2.0 answers are aggregates, so this is far above
 #: any gold; it exists so a runaway prediction cannot exhaust memory.
 DEFAULT_MAX_ROWS = 100_000
-_PROGRESS_INTERVAL = 1_000
+
+#: Slack between an engine's own bound and the caller's, covering what happens
+#: after the query returns: handing a frame back across the process boundary,
+#: then loading gold and comparing.
+_CALLER_HEADROOM_S = 30.0
 
 #: Environment variables each remote engine needs.
 BIGQUERY_CREDENTIAL_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
 SNOWFLAKE_ENV = ("SNOWFLAKE_ACCOUNT", "SNOWFLAKE_USER", "SNOWFLAKE_PASSWORD")
-
-_DENIED = frozenset({sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH})
 
 
 class MissingCredentials(RuntimeError):
     """A remote engine was asked for without the credentials to reach it."""
 
 
-def _authorizer(action: int, *_args) -> int:
-    return sqlite3.SQLITE_DENY if action in _DENIED else sqlite3.SQLITE_OK
+def caller_timeout(backend: str) -> float:
+    """The ``run_cpu_bound`` budget a caller must allow *backend*.
+
+    Derived here rather than left to the caller because the two numbers are one
+    decision: a bound the engine enforces is only real if the caller waits
+    longer than it. Give the caller less — ``GRADE_TIMEOUT``'s 30 s against this
+    module's 60 s and 90 s, say — and every engine bound becomes decorative,
+    since the caller gives up first and the query keeps running in a worker the
+    pool cannot interrupt. The deadline that was supposed to stop it never
+    fires, and the failure reads as a timeout rather than as a bad query.
+    """
+    engine = DEFAULT_DEADLINE_S if backend == "sqlite" else DEFAULT_REMOTE_TIMEOUT_S
+    return engine + _CALLER_HEADROOM_S
 
 
-def open_readonly(db_path: str) -> sqlite3.Connection:
-    """Open *db_path* read-only and immutable, with ATTACH/DETACH denied."""
-    uri = f"{Path(db_path).absolute().as_uri()}?mode=ro&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
-    conn.set_authorizer(_authorizer)
-    # Warehouse exports routinely carry bytes that are not valid UTF-8; the
-    # default text factory would raise on them mid-fetch. Round-trip-lossless,
-    # and applied to predictions and gold alike.
-    conn.text_factory = lambda raw: raw.decode("utf-8", "surrogateescape")
-    return conn
+def missing_credentials(backend: str) -> str | None:
+    """Why *backend* cannot be reached from this environment, or ``None``.
+
+    Asked before any query is attempted, so an unconfigured host is separated
+    from a bad prediction *without* an exception having to travel back through
+    a worker process — see the note on ``execute`` below.
+    """
+    if backend == "bigquery" and not os.getenv(BIGQUERY_CREDENTIAL_ENV):
+        return (
+            f"BigQuery instance needs {BIGQUERY_CREDENTIAL_ENV} pointing at a "
+            "service-account JSON key. See upstream's Bigquery_Guideline."
+        )
+    if backend == "snowflake":
+        missing = [name for name in SNOWFLAKE_ENV if not os.getenv(name)]
+        if missing:
+            return (
+                f"Snowflake instance needs {', '.join(missing)}. Access is "
+                "granted by upstream's 'Spider2 Snowflake Access' form; note "
+                "upstream recorded an evaluation-account suspension on "
+                "2026-08-12."
+            )
+    return None
 
 
 def _run_sqlite(
     db_path: str, sql: str, deadline_s: float, max_rows: int
-) -> pd.DataFrame:
+) -> "pd.DataFrame":
+    import pandas as pd
+
     conn = open_readonly(db_path)
-    end = time.monotonic() + deadline_s
-    conn.set_progress_handler(
-        lambda: 1 if time.monotonic() > end else 0, _PROGRESS_INTERVAL
-    )
     try:
-        cursor = conn.execute(sql)
-        columns = [description[0] for description in cursor.description or []]
-        rows = cursor.fetchmany(max_rows + 1)
-        if len(rows) > max_rows:
-            raise RuntimeError(f"result exceeded {max_rows} rows")
-        return pd.DataFrame(rows, columns=pd.Index(columns))
+        columns, rows = run_bounded(conn, sql, deadline_s, max_rows)
     finally:
-        conn.set_progress_handler(None, 0)
         conn.close()
+    return pd.DataFrame(rows, columns=pd.Index(columns))
 
 
-def _run_bigquery(sql: str, timeout_s: float, max_rows: int) -> pd.DataFrame:
-    credential = os.getenv(BIGQUERY_CREDENTIAL_ENV)
-    if not credential:
-        raise MissingCredentials(
-            f"BigQuery instance needs {BIGQUERY_CREDENTIAL_ENV} pointing at a "
-            "service-account JSON key. See upstream's Bigquery_Guideline."
-        )
+def _run_bigquery(sql: str, timeout_s: float, max_rows: int) -> "pd.DataFrame":
+    reason = missing_credentials("bigquery")
+    if reason:
+        raise MissingCredentials(reason)
     from google.cloud import bigquery
 
-    client = bigquery.Client.from_service_account_json(credential)
+    client = bigquery.Client.from_service_account_json(
+        os.environ[BIGQUERY_CREDENTIAL_ENV]
+    )
     job = client.query(sql)
     rows = job.result(timeout=timeout_s, max_results=max_rows + 1)
     frame = rows.to_dataframe()
@@ -118,14 +145,11 @@ def _run_bigquery(sql: str, timeout_s: float, max_rows: int) -> pd.DataFrame:
     return frame
 
 
-def _run_snowflake(sql: str, timeout_s: float, max_rows: int) -> pd.DataFrame:
-    missing = [name for name in SNOWFLAKE_ENV if not os.getenv(name)]
-    if missing:
-        raise MissingCredentials(
-            f"Snowflake instance needs {', '.join(missing)}. Access is granted "
-            "by upstream's 'Spider2 Snowflake Access' form; note upstream "
-            "recorded an evaluation-account suspension on 2026-08-12."
-        )
+def _run_snowflake(sql: str, timeout_s: float, max_rows: int) -> "pd.DataFrame":
+    reason = missing_credentials("snowflake")
+    if reason:
+        raise MissingCredentials(reason)
+    import pandas as pd
     import snowflake.connector
 
     conn = snowflake.connector.connect(
@@ -159,13 +183,24 @@ def execute(
     deadline_s: float = DEFAULT_DEADLINE_S,
     remote_timeout_s: float = DEFAULT_REMOTE_TIMEOUT_S,
     max_rows: int = DEFAULT_MAX_ROWS,
-) -> pd.DataFrame:
+) -> "pd.DataFrame":
     """Run *sql* on *backend* and return the result frame.
 
-    Raises :class:`MissingCredentials` when a remote engine is unconfigured, and
-    lets any engine-level error propagate — the caller turns both into a scored
-    zero with the reason recorded, which is what separates "wrong answer" from
-    "could not ask".
+    Every engine-level error propagates: the caller turns it into a scored zero
+    with the reason recorded, which is what separates "wrong answer" from "could
+    not ask".
+
+    :class:`MissingCredentials` is raised here too, but a caller running this in
+    a worker process should not be *relying* on it — ask
+    :func:`missing_credentials` first. An exception crossing a process boundary
+    is re-raised as whatever unpickled, and telling classes apart on the far
+    side means catching broadly at a grading call site, which is exactly what
+    must not happen there (``.claude/rules/tasks.md``). The raise stays for a
+    direct caller, and as the backstop for a credential that is present but
+    rejected by the host.
+
+    A caller must give this at least :func:`caller_timeout` for *backend*, or
+    the bounds below never get to fire.
     """
     if backend == "sqlite":
         if not db_path:

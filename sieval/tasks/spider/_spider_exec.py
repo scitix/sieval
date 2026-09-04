@@ -10,8 +10,9 @@ Everything upstream does that safety does not object to is preserved, including
 where upstream is wrong: the comparison is still ``eval_exec_match``'s
 column-keyed ``res_map`` equality rather than a plain result-set compare, and an
 unparseable prediction is still scored against an empty parse rather than
-skipped. The guards safety *does* object to, and the bounds they apply, are in
-``_spider_sqlite``.
+skipped. The guards safety *does* object to are in ``sieval.tasks._sqlite_exec``,
+shared with every task that runs model SQL against a local file; the bounds they
+are applied with are Spider 1.0's own, in ``_spider_sqlite``.
 
 One further substitution, for the same reason: upstream's ``get_schema`` opens
 its own **read-write** connection. It runs only fixed introspection, so it cannot
@@ -36,13 +37,9 @@ from sieval.community.spider import (
     rebuild_sql_col,
     rebuild_sql_val,
 )
+from sieval.tasks._sqlite_exec import open_readonly, run_bounded
 
-from ._spider_sqlite import (
-    DEFAULT_DEADLINE_S,
-    DEFAULT_MAX_ROWS,
-    open_readonly,
-    run_bounded,
-)
+from ._spider_sqlite import DEFAULT_DEADLINE_S, DEFAULT_MAX_ROWS
 
 
 def read_schema_readonly(db_path: str) -> dict:
@@ -158,9 +155,11 @@ def grade_one(
     execution = False
     conn = open_readonly(db_path)
     try:
-        gold_rows = run_bounded(conn, gold_sql, deadline_s, max_rows)
+        # Column names are for a caller that builds a frame; this one compares
+        # tuples through `_res_map`, which keys off the parse tree instead.
+        _, gold_rows = run_bounded(conn, gold_sql, deadline_s, max_rows)
         try:
-            pred_rows = run_bounded(conn, pred_sql, deadline_s, max_rows)
+            _, pred_rows = run_bounded(conn, pred_sql, deadline_s, max_rows)
         except Exception as exc:
             # Upstream returns False for any prediction that will not run.
             error = f"{type(exc).__name__}: {exc}"

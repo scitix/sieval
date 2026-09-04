@@ -1,9 +1,14 @@
 """Tests for Spider 2.0-lite's execution backends.
 
-The local engine's guards are proved by deletion, as Spider 1.0's are. The
-remote engines are covered only for the paths reachable without an account: a
-missing credential must raise something the task can distinguish from a wrong
-answer.
+The guards themselves are proved by deletion once, in
+`tests/unit/tasks/test__sqlite_exec.py`, where the shared module lives. What
+this file owns is that the local engine is **wired** to them — every guard is
+exercised through `execute`, which is the only entry point the task uses, so
+re-implementing the connection here would fail these rather than pass them.
+
+The remote engines are covered only for the paths reachable without an account:
+a missing credential must be nameable *before* a query is attempted, and the
+caller's budget must outlive the bound the engine enforces.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -13,12 +18,16 @@ import sqlite3
 import pandas as pd
 import pytest
 
+from sieval.core.utils.offload import GRADE_TIMEOUT
 from sieval.tasks._spider2_backends import (
     BIGQUERY_CREDENTIAL_ENV,
+    DEFAULT_DEADLINE_S,
+    DEFAULT_REMOTE_TIMEOUT_S,
     SNOWFLAKE_ENV,
     MissingCredentials,
+    caller_timeout,
     execute,
-    open_readonly,
+    missing_credentials,
 )
 
 
@@ -33,21 +42,22 @@ def db(tmp_path):
     return str(path)
 
 
-# --- local engine: the guards -----------------------------------------------
+# --- local engine: the guards are reached through `execute` ------------------
 
 
 def test_write_is_rejected(db):
-    conn = open_readonly(db)
+    """Asked through `execute`, so this fails if the engine stops using the
+    shared connection — which is the only thing this file can add to the
+    deletion tests in `test__sqlite_exec.py`."""
     with pytest.raises(sqlite3.OperationalError, match="readonly"):
-        conn.execute("DROP TABLE t")
-    conn.close()
+        execute("sqlite", "DROP TABLE t", db_path=db)
 
 
 def test_attach_is_rejected(db, tmp_path):
-    conn = open_readonly(db)
     with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
-        conn.execute(f"ATTACH DATABASE '{tmp_path / 'evil.db'}' AS evil")
-    conn.close()
+        execute(
+            "sqlite", f"ATTACH DATABASE '{tmp_path / 'evil.db'}' AS evil", db_path=db
+        )
 
 
 def test_runaway_query_is_aborted(db):
@@ -136,5 +146,84 @@ def test_snowflake_reports_only_the_variables_actually_missing(monkeypatch):
 
 
 def test_missing_credentials_is_not_a_generic_error():
-    """The task branches on this type to count it separately."""
+    """A direct caller can still tell it apart from an engine error.
+
+    The *task* does not rely on this — it asks `missing_credentials` before it
+    offloads anything, because an exception crossing a process boundary can only
+    be classified by catching broadly at the grading call site. This is the
+    backstop for a credential that is present and rejected, and for a caller
+    using `execute` in-process.
+    """
     assert issubclass(MissingCredentials, RuntimeError)
+
+
+# --- credentials, asked before anything runs --------------------------------
+
+
+def test_missing_credentials_names_the_variable_without_executing(monkeypatch):
+    """The question the task actually asks. No client, no query, no network."""
+    monkeypatch.delenv(BIGQUERY_CREDENTIAL_ENV, raising=False)
+    reason = missing_credentials("bigquery")
+    assert reason is not None
+    assert BIGQUERY_CREDENTIAL_ENV in reason
+
+
+def test_snowflake_reason_lists_only_what_is_absent(monkeypatch):
+    monkeypatch.setenv("SNOWFLAKE_ACCOUNT", "acct")
+    monkeypatch.setenv("SNOWFLAKE_USER", "user")
+    monkeypatch.delenv("SNOWFLAKE_PASSWORD", raising=False)
+    reason = missing_credentials("snowflake")
+    assert reason is not None
+    assert "SNOWFLAKE_PASSWORD" in reason
+    assert "SNOWFLAKE_ACCOUNT" not in reason
+
+
+def test_a_configured_remote_engine_has_no_reason(monkeypatch):
+    """Otherwise every cloud sample would be reported unreachable on a host
+    that is in fact configured — the failure this function must not have."""
+    monkeypatch.setenv(BIGQUERY_CREDENTIAL_ENV, "/tmp/key.json")
+    for name in SNOWFLAKE_ENV:
+        monkeypatch.setenv(name, "set")
+    assert missing_credentials("bigquery") is None
+    assert missing_credentials("snowflake") is None
+
+
+def test_sqlite_needs_no_credentials():
+    """The 135 local questions are the subset a credential-less run scores."""
+    assert missing_credentials("sqlite") is None
+
+
+# --- the caller's budget must outlive the engine's bound ---------------------
+
+
+@pytest.mark.parametrize(
+    ("backend", "engine_bound"),
+    [
+        ("sqlite", DEFAULT_DEADLINE_S),
+        ("bigquery", DEFAULT_REMOTE_TIMEOUT_S),
+        ("snowflake", DEFAULT_REMOTE_TIMEOUT_S),
+    ],
+)
+def test_caller_timeout_is_longer_than_the_bound_it_covers(backend, engine_bound):
+    """A process pool cannot interrupt a running call.
+
+    Give the caller less than the engine's own deadline and that deadline never
+    fires: the caller gives up first, the query keeps running in a worker
+    nothing can reclaim, and the sample is reported as a timeout rather than as
+    a bad query. Fails if either number is edited without the other.
+    """
+    assert caller_timeout(backend) > engine_bound
+
+
+def test_the_shared_default_would_invert_every_bound():
+    """Why `caller_timeout` exists at all, stated as a number.
+
+    `run_cpu_bound`'s own default is 30 s, which is *below* this benchmark's
+    60 s local deadline and 90 s remote one — so a grading call site that simply
+    omitted `timeout=` would make all three decorative. This is the inequality
+    that makes passing it load-bearing rather than tidy.
+    """
+    assert GRADE_TIMEOUT < DEFAULT_DEADLINE_S
+    assert GRADE_TIMEOUT < DEFAULT_REMOTE_TIMEOUT_S
+    for backend in ("sqlite", "bigquery", "snowflake"):
+        assert caller_timeout(backend) > GRADE_TIMEOUT
