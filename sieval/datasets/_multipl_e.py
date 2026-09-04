@@ -111,7 +111,20 @@ def normalize_languages(
     Order comes from *available* rather than from the caller, so two runs
     requesting the same set in a different order produce the same row order --
     which is what keeps a resume's sample ids stable.
+
+    An EMPTY ``languages`` list is refused rather than read as "all". The two
+    readings are 24 languages of inference apart, and an empty list reaches here
+    from a config that computed a selection and came up with nothing far more
+    often than from an author who meant the whole suite -- which omitting the
+    argument already says, unambiguously.
     """
+    if languages is not None and not languages:
+        raise ValueError(
+            f"MultiPL-E {suite}: `languages` is an empty list, which names no "
+            f"language to run. Omit it (or pass `config='all'`) to run all "
+            f"{len(available)} languages; list registry tags to run a subset."
+        )
+
     requested: list[str] = []
     if config is not None and config != "all":
         requested.append(config)

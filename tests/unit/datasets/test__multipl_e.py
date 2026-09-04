@@ -58,6 +58,18 @@ def test_default_selects_every_language():
     assert _he(config="all") == HUMANEVAL_LANGUAGES
 
 
+def test_an_empty_language_list_is_refused_rather_than_read_as_all():
+    """Omitting the argument means "all"; an empty list means a config bug.
+
+    The two readings are 24 languages of inference apart, so the silent one is
+    the expensive one — and a caller that computed a selection and came up with
+    nothing is far likelier than one who spelled "everything" as `[]`.
+    """
+    for select in (_he, _mbpp):
+        with pytest.raises(ValueError, match="empty list"):
+            select([])
+
+
 def test_bare_tags_and_full_config_names_both_resolve():
     assert _he(["cpp", "js"]) == ("cpp", "js")
     assert _he(config="humaneval-rs") == ("rs",)
