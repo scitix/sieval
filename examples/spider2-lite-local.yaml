@@ -1,30 +1,35 @@
 # ------------------------------------------------------------------------------
-# Spider 2.0-lite — the SQLite subset only
+# Spider 2.0-lite — the SQLite subset (the default)
 # ------------------------------------------------------------------------------
-# The 135 `local` questions are the ones that run with no cloud credentials.
-# This config narrows to them explicitly, and the reason is cost rather than
-# tidiness: `missing_credentials` is asked in `feedback`, so a run over all 547
-# infers the 412 cloud questions first and only then scores every one of them
-# wrong. Their schemas are the largest in the benchmark — measured on the pinned
-# data, ~6.84M prompt tokens against ~158k for the whole local subset, so 43x
-# the spend for nothing.
+# The 135 `local` questions are the ones that run with no cloud credentials, and
+# the dataset selects them by default, so this config names no subset at all.
 #
 #   1. sieval dataset download spider2_lite
-#   2. export OPENAI_API_KEY=...          # `api_key` is read from the env
+#   2. export OPENAI_API_KEY=... OPENAI_BASE_URL=...
 #   3. sieval eval examples/spider2-lite-local.yaml
 #
-# Read `execution_accuracy_local` and `n_local` (must be 135), not `score`:
-# `score` is over the requested denominator, which here is the 135 asked for.
+# `score` here is over the 135 questions requested — NOT upstream's
+# `correct/547`. The report writes `engines: sqlite` so the two cannot be
+# confused. To run the whole benchmark instead, ask for every engine:
 #
-# Edit `models.gateway.model` / `api_base` for your endpoint. n=1 and
-# temperature 0 are upstream's protocol — one deterministic pass per question.
+#   datasets:
+#     spider2_lite:
+#       args:
+#         engines: [sqlite, bigquery, snowflake]
+#
+# which needs GOOGLE_APPLICATION_CREDENTIALS (or `gcloud auth
+# application-default login`) and the three SNOWFLAKE_* variables; without them
+# those 412 questions are inferred and then scored `missing_credentials`, which
+# is ~43x the prompt spend of this config for no verdict.
+#
+# n=1 and temperature 0 are upstream's protocol: one deterministic pass each.
 # ------------------------------------------------------------------------------
 result_dir: ./outputs/spider2-lite-local
 
 models:
   gateway:
-    model: <your-model-id>                  # EDIT ME
-    api_base: <https://your-endpoint/v1>    # EDIT ME
+    model: gpt-5.3-codex                    # EDIT ME
+    api_base: https://your-endpoint/v1      # EDIT ME (or set OPENAI_BASE_URL)
     args:
       concurrency_limit: 8
       temperature: 0.0
@@ -34,43 +39,6 @@ datasets:
   spider2_lite:
     class: Spider2LiteDataset
     path: ${SIEVAL_DATA_DIR}/spider2_lite
-    operations:
-      # No prefix predicate is expressible in YAML, and the local rows are not a
-      # prefix of the split (they are rows 394-528), so `slice` cannot express
-      # this either. The ids are listed, and `require_all` makes a stale list a
-      # loud stop rather than a quietly smaller run.
-      - filter:
-          by: instance_id
-          require_all: true
-          value: [
-              local002, local003, local004, local007, local008,
-              local009, local010, local015, local017, local018,
-              local019, local026, local020, local021, local022,
-              local023, local024, local025, local028, local031,
-              local029, local030, local032, local034, local037,
-              local035, local038, local039, local040, local041,
-              local049, local054, local055, local198, local056,
-              local058, local059, local060, local063, local061,
-              local050, local062, local067, local070, local071,
-              local072, local068, local073, local066, local065,
-              local074, local064, local297, local298, local299,
-              local300, local075, local077, local078, local081,
-              local085, local096, local097, local098, local099,
-              local100, local114, local128, local130, local131,
-              local133, local132, local141, local152, local230,
-              local156, local157, local163, local168, local169,
-              local171, local167, local170, local193, local194,
-              local195, local196, local197, local199, local201,
-              local202, local209, local210, local212, local218,
-              local219, local221, local220, local228, local229,
-              local244, local253, local258, local259, local262,
-              local263, local264, local269, local270, local272,
-              local273, local274, local275, local277, local279,
-              local283, local284, local285, local286, local301,
-              local302, local329, local330, local331, local358,
-              local360, local344, local336, local335, local309,
-              local310, local311, local354, local355, local356
-          ]
 
 tasks:
   spider2_lite_local:

@@ -17,7 +17,13 @@ Prefix           Engine                     Count
 ===============  =========================  =======
 
 Only the 135 ``local`` questions run without cloud credentials. The counts come
-from the ids themselves; the upstream README's table is approximate.
+from the ids themselves; the upstream README's table is approximate (it says
+BigQuery 214 / Snowflake 198, and the ids say 205 / 207).
+
+**The default selection is the SQLite subset**, not all 547 — see
+:data:`DEFAULT_ENGINES` for why, and for what it means for the denominator.
+``engines`` is a load argument, so a config asks for more with
+``args: {engines: [sqlite, bigquery, snowflake]}``.
 
 **Two pinned sources, because the data is split across two hosts.** The
 questions, per-database schemas, external-knowledge documents and gold results
@@ -72,6 +78,7 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 
 import json
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TypedDict, override
 
@@ -127,12 +134,54 @@ BACKEND_BY_PREFIX = (
 )
 
 
+#: Every engine the 547 questions run on.
+ALL_ENGINES = ("sqlite", "bigquery", "snowflake")
+
+#: Engines a run asks for unless it says otherwise — **the SQLite subset only**.
+#:
+#: The default is a subset rather than the whole benchmark because the other two
+#: engines need credentials, and asking a question that cannot be executed costs
+#: the full prompt to produce a guaranteed-wrong verdict. Cloud schemas are the
+#: largest prompts here: ~6.84 M prompt tokens across the 412 cloud questions
+#: against ~158 k for all 135 local ones, so an unconfigured host that ran
+#: everything would spend 43x for nothing and report ~24.7% as a ceiling.
+#:
+#: The consequence to keep in mind is the **denominator**: upstream publishes
+#: ``correct/547``, so a default run's rate is over 135 and is not that number.
+#: The task writes the engine set into its report so the two cannot be confused,
+#: and `engines=ALL_ENGINES` asks the full benchmark.
+DEFAULT_ENGINES = ("sqlite",)
+
+
 def backend_for(instance_id: str) -> str:
     """Engine that answers *instance_id*, from its prefix alone."""
     for prefix, backend in BACKEND_BY_PREFIX:
         if instance_id.startswith(prefix):
             return backend
     raise ValueError(f"Unrecognised Spider 2.0-lite instance id: {instance_id!r}")
+
+
+def normalise_engines(engines: str | Iterable[str]) -> tuple[str, ...]:
+    """Validate an engine selection and put it in :data:`ALL_ENGINES` order.
+
+    A bare string is one engine, never a set of characters. The order is fixed
+    rather than the caller's so that two configs naming the same engines produce
+    the same sample ids, and an unknown name raises rather than silently
+    selecting nothing — an empty split would otherwise surface as a run that
+    scored zero questions.
+    """
+    requested = (engines,) if isinstance(engines, str) else tuple(engines)
+    if not requested:
+        raise ValueError(
+            f"Spider 2.0-lite needs at least one engine; pick from {list(ALL_ENGINES)}."
+        )
+    unknown = sorted(set(requested) - set(ALL_ENGINES))
+    if unknown:
+        raise ValueError(
+            f"Unknown Spider 2.0-lite engine(s) {unknown}; "
+            f"pick from {list(ALL_ENGINES)}."
+        )
+    return tuple(name for name in ALL_ENGINES if name in set(requested))
 
 
 class Spider2LiteDatasetSample(TypedDict):
@@ -163,14 +212,41 @@ class Spider2LiteDatasetSample(TypedDict):
 )
 class Spider2LiteDataset(Dataset[Spider2LiteDatasetSample]):
     @override
-    def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
+    def load(
+        self,
+        name_or_path: str,
+        *,
+        engines: str | Iterable[str] = DEFAULT_ENGINES,
+        **kwargs,
+    ) -> HFDatasetDict:
+        """Stage the archives and yield the questions for *engines*.
+
+        *engines* defaults to :data:`DEFAULT_ENGINES` — SQLite only, the subset
+        that runs with no credentials. Pass :data:`ALL_ENGINES` for all 547.
+        """
         _ = kwargs
         staged = Path(name_or_path)
         root = self._extract(staged)
         self._root = str(root)
-        rows = self._read_rows(root / "spider2-lite.jsonl")
+        self._engines = normalise_engines(engines)
+        rows = [
+            row
+            for row in self._read_rows(root / "spider2-lite.jsonl")
+            if backend_for(row["instance_id"]) in self._engines
+        ]
+        if not rows:
+            raise ValueError(
+                f"No Spider 2.0-lite questions for engines {list(self._engines)}."
+            )
+        # Only the engines actually asked for: a BigQuery-only run needs no
+        # local database, so it must not be stopped by one being absent.
         self._verify_local_dbs(root / _LOCALDB_SUBDIR, rows)
         return HFDatasetDict({"test": HFDataset.from_list(rows)})
+
+    @property
+    def engines(self) -> tuple[str, ...]:
+        """Engines this instance's questions run on, in :data:`ALL_ENGINES` order."""
+        return getattr(self, "_engines", DEFAULT_ENGINES)
 
     # -- staged paths the task reads -------------------------------------
 

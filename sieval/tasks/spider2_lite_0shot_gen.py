@@ -10,13 +10,23 @@ gold result frames upstream ships for all 547.
 BigQuery (205), ``sf_bq``/``sf`` Snowflake (207), ``local`` SQLite (135). Only
 the 135 local questions run with no credentials.
 
-**A credential-less run caps near 24.7%, by design.** ``denominator_policy`` is
-``DENOMINATOR_REQUESTED``, so the 412 cloud questions count as wrong when they
-cannot be asked. That is the honest reading — a benchmark you cannot run is not
-a benchmark you passed — but it makes the headline unreadable on its own, so the
-report always publishes a **per-backend breakdown** (``execution_accuracy_local``
-/ ``_bigquery`` / ``_snowflake``, each with its own ``n_*`` and
-``n_missing_credentials_*``). Read those before reading ``score``.
+**By default this task runs the 135 SQLite questions, not all 547.** The
+selection is the dataset's ``engines`` argument
+(:data:`~sieval.datasets.spider2_lite.DEFAULT_ENGINES`), and the reason is that
+``missing_credentials`` can only be asked once a sample exists, which is after
+its prompt has been built and inferred: a host without cloud credentials would
+pay for the 412 largest prompts in the benchmark — ~6.84 M prompt tokens against
+~158 k for the whole local subset — to be told 412 times that it cannot ask.
+
+``denominator_policy`` is ``DENOMINATOR_REQUESTED``, so the rate is over what
+the run *asked for*. Two things follow. A default run's ``score`` is over 135
+and is **not** upstream's ``correct/547``; the report writes the engine set into
+an ``engines`` field so the two are never confused. And a run that does ask for
+all three engines without credentials caps near 24.7%, which is the honest
+reading — a benchmark you cannot run is not one you passed — but is unreadable
+as a headline, so the report always publishes a **per-backend breakdown**
+(``execution_accuracy_local`` / ``_bigquery`` / ``_snowflake``, each with its own
+``n_*`` and ``n_missing_credentials_*``). Read those before reading ``score``.
 
 **Comparison is upstream's, from the right copy.** The repo ships two
 ``compare_pandas_table`` implementations; the live one in ``evaluate.py`` carries
@@ -89,11 +99,14 @@ Measured, on the real staged archives:
   its own ``gold/exec_result``, and both harnesses call those wrong identically).
 * **All 128 distinct cloud databases render a schema block** within
   :data:`MAX_SCHEMA_CHARS`, so no cloud question fails at prompt time.
+* **A real 135-question run scores.** A frontier chat model over the default
+  SQLite selection: ``execution_accuracy`` 48.89 (66/135), 0 fails, 0
+  unextracted predictions, 3 execution errors — two malformed queries and one
+  that the engine deadline aborted. Not an alignment number (see Target), a
+  demonstration that every stage carries a real reply end to end.
 
-Not measured: whether a *model* can answer these questions, and the BigQuery and
-Snowflake engines, which need credentials this environment does not have. The
-runs above script the model — upstream's gold SQL where it ships one — so they
-exercise every stage except inference quality.
+Not measured: the BigQuery and Snowflake engines, which need credentials this
+environment does not have.
 
 References:
 
@@ -135,7 +148,7 @@ from sieval.core.tasks.metrics import (
 )
 from sieval.core.utils.offload import run_cpu_bound
 from sieval.datasets import Spider2LiteDatasetSample
-from sieval.datasets.spider2_lite import backend_for
+from sieval.datasets.spider2_lite import ALL_ENGINES, backend_for
 
 from ._spider2_backends import caller_timeout, execute, missing_credentials
 from ._sqlite_exec import open_readonly
@@ -463,6 +476,12 @@ class Spider2LiteZeroShotGenTask(
             "fails": float(len(fails)),
             "n_execution_errors": float(n_errors),
             "n_missing_credentials": float(n_missing),
+            # Which engines were asked for, so the rate above is readable years
+            # later. `score` is over what the run requested, and the default
+            # request is the 135 SQLite questions rather than all 547 — a
+            # number over 135 and upstream's `correct/547` are different
+            # measurements, and `n` alone does not say which one this is.
+            "engines": ",".join(_requested_engines(self.dataset)),
             SCORE_KEY_FIELD: "execution_accuracy",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
@@ -476,6 +495,17 @@ class Spider2LiteZeroShotGenTask(
             metrics[f"n_{name}"] = float(seen)
             metrics[f"n_missing_credentials_{name}"] = float(missing)
         return metrics | health_metrics(finals)
+
+
+def _requested_engines(dataset) -> tuple[str, ...]:
+    """Engines the dataset was loaded for, or every one it could have been.
+
+    A dataset built straight from an ``HFDatasetDict`` — a test, or a caller
+    slicing rows itself — carries no selection, so fall back to naming them all
+    rather than asserting a subset nobody asked for.
+    """
+    engines = getattr(dataset, "engines", None)
+    return tuple(engines) if engines else ALL_ENGINES
 
 
 # --- module-level helpers (picklable for run_cpu_bound) ---------------------

@@ -13,6 +13,7 @@ from datasets import DatasetDict as HFDatasetDict
 
 from sieval.core.datasets.meta import get_dataset_meta
 from sieval.datasets.spider2_lite import (
+    ALL_ENGINES,
     ARCHIVE_BASENAME,
     LOCALDB_BASENAME,
     LOCALDB_SHA256,
@@ -20,6 +21,7 @@ from sieval.datasets.spider2_lite import (
     SPIDER2_ARCHIVE_SHA256,
     Spider2LiteDataset,
     backend_for,
+    normalise_engines,
 )
 
 _SUBTREE = f"Spider2-{ARCHIVE_BASENAME[:-4]}/spider2-lite/"
@@ -125,13 +127,66 @@ def test_unknown_prefix_is_rejected():
 
 
 def test_load_reads_every_row(tmp_path):
-    dataset = Spider2LiteDataset(str(_make_archives(tmp_path)))
+    dataset = Spider2LiteDataset(str(_make_archives(tmp_path)), engines=ALL_ENGINES)
     assert len(dataset.dataset_dict["test"]) == 3
+
+
+# --- engine selection -------------------------------------------------------
+
+
+def test_the_default_selection_is_sqlite_only(tmp_path):
+    """The subset that runs with no credentials, and the reason is spend.
+
+    `missing_credentials` cannot be asked before a sample exists, so a cloud
+    question is inferred — at the largest prompt sizes in the benchmark — and
+    only then scored unreachable.
+    """
+    dataset = Spider2LiteDataset(str(_make_archives(tmp_path)))
+    rows = list(dataset.dataset_dict["test"])
+    assert [r["instance_id"] for r in rows] == ["local001"]
+    assert dataset.engines == ("sqlite",)
+
+
+def test_engines_selects_and_is_reported_in_all_engines_order(tmp_path):
+    dataset = Spider2LiteDataset(
+        str(_make_archives(tmp_path)), engines=["snowflake", "sqlite"]
+    )
+    # Requested out of order; reported and applied in ALL_ENGINES order so two
+    # configs naming the same engines produce the same sample ids.
+    assert dataset.engines == ("sqlite", "snowflake")
+    assert [r["instance_id"] for r in dataset.dataset_dict["test"]] == [
+        "local001",
+        "sf_bq001",
+    ]
+
+
+def test_a_single_engine_may_be_named_as_a_bare_string(tmp_path):
+    dataset = Spider2LiteDataset(str(_make_archives(tmp_path)), engines="bigquery")
+    assert dataset.engines == ("bigquery",)
+    assert [r["instance_id"] for r in dataset.dataset_dict["test"]] == ["bq001"]
+
+
+@pytest.mark.parametrize("bad", ["postgres", ["sqlite", "duckdb"], []])
+def test_an_unusable_engine_selection_is_a_loud_stop(bad):
+    """Not a quietly empty split, which scores zero questions and looks fine."""
+    with pytest.raises(ValueError, match="engine"):
+        normalise_engines(bad)
+
+
+def test_a_bigquery_only_run_is_not_stopped_by_an_absent_local_database(tmp_path):
+    """The completeness guard covers the engines asked for, and no others."""
+    staged = _make_archives(tmp_path)
+    Spider2LiteDataset(str(staged))
+    Path(
+        staged, "spider2-lite", "resource/databases/spider2-localdb/tiny.sqlite"
+    ).unlink()
+    dataset = Spider2LiteDataset(str(staged), engines="bigquery")
+    assert [r["instance_id"] for r in dataset.dataset_dict["test"]] == ["bq001"]
 
 
 def test_temporal_is_normalised_across_rows(tmp_path):
     """37 of 547 real rows carry `temporal`; Arrow needs one schema."""
-    dataset = Spider2LiteDataset(str(_make_archives(tmp_path)))
+    dataset = Spider2LiteDataset(str(_make_archives(tmp_path)), engines=ALL_ENGINES)
     rows = dataset.dataset_dict["test"]
     assert rows.column_names == [
         "instance_id",
@@ -174,7 +229,8 @@ def test_load_accepts_a_complete_local_corpus(tmp_path):
     """The guard must not fire on a staging that is actually complete."""
     staged = _make_archives(tmp_path)
     dataset = Spider2LiteDataset(str(staged))
-    assert len(dataset.dataset_dict["test"]) == 3
+    # The default selection is SQLite only, so this is the one local row.
+    assert [r["instance_id"] for r in dataset.dataset_dict["test"]] == ["local001"]
 
 
 def test_appledouble_stubs_are_filtered(tmp_path):
