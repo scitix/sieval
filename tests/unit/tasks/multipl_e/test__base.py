@@ -494,6 +494,36 @@ async def test_report_buckets_failures_by_stage():
 
 
 @pytest.mark.anyio
+async def test_a_build_error_quoting_the_word_timeout_is_not_a_timeout():
+    """The bucket is read off the message PREFIX, not by substring.
+
+    A compiler's diagnostic is pasted into the message tail verbatim, so a
+    program whose build fails on an identifier called `timeout` would otherwise
+    land in the one bucket that says the model's program ran and was slow. The
+    verdict is unaffected either way — this is the diagnostic split, and a
+    diagnostic that lies about which stage failed is worse than none.
+    """
+    rows = [row("cpp"), row("cpp", name="b")]
+    task = _base_task(rows)
+    try:
+        report = await task.report(
+            _finals(
+                ("cpp", [(False, "failed [build exit 1]: error: no member 'timeout'")]),
+                # A build that exceeds its own wall is a BUILD failure: the run
+                # never started, and build-versus-run is the split being carried.
+                ("cpp", [(False, "failed: build timeout")]),
+                rows=rows,
+            ),
+            [],
+        )
+        assert report["n_build_errors"] == 2
+        assert report["timeouts"] == 0
+        assert report["n_execution_errors"] == 0
+    finally:
+        await task.shutdown()
+
+
+@pytest.mark.anyio
 async def test_report_tolerates_a_null_message():
     # A null msg is absent on disk; bucketing must not crash on it.
     rows = [row("cpp")]

@@ -119,7 +119,14 @@ _SHARED_NOTES = (
     "when its output contains `ERROR` is implemented in the service, and is "
     "unreachable through the shipped test templates — 0 of 161 `humaneval-pl` "
     "rows mention `ERROR` and all 161 signal failure with `exit 1` — so it "
-    "fires only on model stdout. "
+    "fires only on model stdout. (4) the per-step wall clocks are the service's "
+    "rather than upstream's: every `safe_subprocess.run` call upstream takes its "
+    "flat 15s default, the build included, while here an interpreted row (bash, "
+    "perl) gets 3s to run and a c++ build gets 60s. Both directions are "
+    "reachable — a program needing between 3s and 15s fails here and passes "
+    "upstream; a compile upstream abandons at 15s completes here — though the "
+    "run wall has measured headroom: a pure-bash prime sieve to n=20000 "
+    "finishes in 0.6s. "
     "UNMEASURED: no published-score alignment run has been made, so the score "
     "is not yet anchored to a MultiPL-E table — hence `experimental`. "
     "Upstream's per-language row counts differ (161 c++, 158 bash), so the "
@@ -186,9 +193,10 @@ MBPP_SUITE_NOTES = (
 # it cannot run is named as such instead of scoring zero.
 #
 # Names on the right follow the evaluator's existing spelling (`javascript`,
-# `typescript`, `python` -- English names, not tags), and upstream's own
-# `containerized_eval.EVALUATORS` accepts both spellings, so neither side is
-# being bent to fit the other.
+# `typescript`, `python` -- English names, not tags), which is this service's
+# vocabulary and only ever this service's: nothing here is passed to upstream's
+# `containerized_eval`, whose `EVALUATORS` keys are the tags. Left column
+# upstream's, right column the evaluator's, and the map is the seam.
 EVALUATOR_LANG_BY_TAG: dict[str, str] = {
     "adb": "ada",
     "clj": "clojure",
@@ -366,7 +374,11 @@ class MultiPLETask[TSample](
         this benchmark needs beyond js/ts, and treating "cannot ask" as "can
         run" is what turns a deployment gap into a run of zeros.
         """
-        url = self._code_eval_api.rsplit("/", 1)[0] + "/languages"
+        # `rstrip` first: a trailing slash would otherwise make `rsplit` drop the
+        # empty last segment instead of `evaluations`, probing
+        # `.../evaluations/languages` -- a 404, reported as "this deployment
+        # predates table-driven languages" when the deployment is in fact fine.
+        url = self._code_eval_api.rstrip("/").rsplit("/", 1)[0] + "/languages"
         try:
             resp = await self._http_client.get(url, timeout=10.0)
         except Exception as e:
@@ -592,6 +604,16 @@ class MultiPLETask[TSample](
         ``n_execution_errors`` keeps the name it has in every other task that
         executes a prediction; the build bucket is new because no other task has
         a compile step to lose a program in.
+
+        Matched on the message's PREFIX, not by substring. The evaluator's
+        messages are a small closed vocabulary it documents, but their tails
+        carry the compiler's and the program's own output — so a build error
+        whose diagnostic happens to contain the word "timeout" (``error: no
+        member named 'timeout'``) reads as a timed-out run under a substring
+        test, in the one bucket that suggests the model's program was slow
+        rather than broken. A build that exceeds ITS wall lands in the build
+        bucket rather than under ``timeouts``: the run never started, and
+        build-versus-run is the split these three keys exist to carry.
         """
         timeouts = build_errors = execution_errors = 0
         for final in finals:
@@ -603,10 +625,10 @@ class MultiPLETask[TSample](
                     continue
                 # A null msg from the evaluator is absent on disk -- default it.
                 msg = (rollout["extra"].get("msg") or "").lower()
-                if "timeout" in msg:
-                    timeouts += 1
-                elif "build exit" in msg:
+                if msg.startswith(("failed: build timeout", "failed [build exit")):
                     build_errors += 1
+                elif msg.startswith("failed: timeout"):
+                    timeouts += 1
                 else:
                     execution_errors += 1
         return {
