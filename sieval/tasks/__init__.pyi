@@ -169,6 +169,12 @@ from .multipl_e.multipl_e_mbpp_0shot_base_gen import (
 from .multipl_e.multipl_e_mbpp_0shot_gen import (
     MultiPLEMbppZeroShotGenTask,
 )
+from .nl2sh_alfa_0shot_gen import (
+    NL2SHAlfaZeroShotGenTask,
+)
+from .nl2sh_alfa_0shot_gen_parse import (
+    NL2SHAlfaZeroShotGenParseTask,
+)
 from .openbookqa_kshot_gen import (
     OpenBookQAFewShotGenTask,
 )
@@ -281,6 +287,8 @@ __all__ = [
     "MultiPLEHumanEvalZeroShotGenTask",
     "MultiPLEMbppZeroShotBaseGenTask",
     "MultiPLEMbppZeroShotGenTask",
+    "NL2SHAlfaZeroShotGenParseTask",
+    "NL2SHAlfaZeroShotGenTask",
     "OpenBookQAFewShotGenTask",
     "PlatinumGSM8KZeroShotGenTask",
     "PlatinumMultiArithZeroShotGenTask",

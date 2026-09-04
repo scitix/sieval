@@ -177,6 +177,10 @@ from .multipl_e_mbpp import (
     MultiPLEMbppDataset,
     MultiPLEMbppDatasetSample,
 )
+from .nl2sh_alfa import (
+    NL2SHAlfaDataset,
+    NL2SHAlfaDatasetSample,
+)
 from .openbookqa import (
     OpenBookQADataset,
     OpenBookQADatasetSample,
@@ -323,6 +327,8 @@ __all__ = [
     "MultiPLEHumanEvalDatasetSample",
     "MultiPLEMbppDataset",
     "MultiPLEMbppDatasetSample",
+    "NL2SHAlfaDataset",
+    "NL2SHAlfaDatasetSample",
     "OpenBookQADataset",
     "OpenBookQADatasetSample",
     "PlatinumBenchDataset",

@@ -1,0 +1,140 @@
+[
+  {
+    "query":"Retrieve only build number of current kernel, ie. #104",
+    "gold":"uname -v | grep -o '#[0-9]\\+'",
+    "gold2":"uname -r | awk -F'-' '{print $2}'",
+    "difficulty":1
+  },
+  {
+    "query":"Print reverse lookup for adress 127.0.0.1",
+    "gold":"dig -x 127.0.0.1",
+    "gold2":"nslookup 127.0.0.1",
+    "difficulty":1
+  },
+  {
+    "query":"List file information of the full path of command \"grep\"",
+    "gold":"ls -ald `which grep`",
+    "gold2":"stat $(which grep)",
+    "difficulty":1
+  },
+  {
+    "query":"Extract host name part from \"http:\/\/www.google.com\"",
+    "gold":"echo \"http:\/\/www.google.com\" | cut -d'\/' -f3",
+    "gold2":"echo \"http:\/\/www.google.com\" | sed -E 's|https?:\/\/([^\/]+).*|\\1|'",
+    "difficulty":1
+  },
+  {
+    "query":"List environment variables and their values, escaping all semicolons with a backslash.",
+    "gold":"env | sed 's\/;\/\\\\;\/g'",
+    "gold2":"while IFS= read -r line; do echo \"${line\/\/;\/\\\\;}\"; done < <(env)",
+    "difficulty":1
+  },
+  {
+    "query":"Displays a tree of all process alongside their command line arguments.",
+    "gold":"pstree -a",
+    "gold2":"ps -eo pid,ppid,cmd --forest",
+    "difficulty":1
+  },
+  {
+    "query":"Create intermediate directories \"dir\" and \"subdir\" as required and create \"subsubdir\"",
+    "gold":"mkdir -p dir\/subdir\/subsubdir",
+    "gold2":"mkdir -p dir\/subdir\/subsubdir",
+    "difficulty":1
+  },
+  {
+    "query":"Print numbers 1 through 10 separated by \":\"",
+    "gold":"yes | head -n10 | grep -n . | cut -d: -f1 | paste -sd:",
+    "gold2":"echo $(seq -s \":\" 1 10)",
+    "difficulty":2
+  },
+  {
+    "query":"print all readline bindings",
+    "gold":"bind -P",
+    "gold2":"bind -P",
+    "difficulty":1
+  },
+  {
+    "query":"list names of bind functions containing \"p\"",
+    "gold":"bind -l | grep p",
+    "gold2":"bind -l | egrep 'p'",
+    "difficulty":1
+  },
+  {
+    "query":"Save first IP address of domain 'google.com' in 'address' variable and display it",
+    "gold":"address=$(dig +short google.com | grep -E '^[0-9.]+$' | head -n 1) && echo $address",
+    "gold2":"address=$(dig +short google.com | grep -m 1 '^[0-9]' | head -n 1) && echo $address",
+    "difficulty":2
+  },
+  {
+    "query":"Remove all characters except \";\" and digits from the string \"  Hello world;876\t  \"",
+    "gold":"echo '  Hello world;876\t  ' | tr -cd ';0-9'",
+    "gold2":"echo \"  Hello world;876     \" | sed 's\/[^0-9;]\/\/g'",
+    "difficulty":1
+  },
+  {
+    "query":"Remove leading and trailing spaces or tabs from \"  Hello world!\t  \"",
+    "gold":"echo '  Hello world!\t  ' | sed -e 's\/^[ \\t]*\/\/' | sed -e 's\/[ \\t]*$\/\/'",
+    "gold2":"echo -n \"  Hello world!    \" | sed 's\/^[ \\t]*\/\/;s\/[ \\t]*$\/\/'",
+    "difficulty":2
+  },
+  {
+    "query":"Remove the last 3 characters from \"987654321\"",
+    "gold":"echo 987654321 | rev | cut -c 4- | rev",
+    "gold2":"echo \"987654321\" | sed 's\/...$\/\/'",
+    "difficulty":1
+  },
+  {
+    "query":"Print source of the file system containing current working directory.",
+    "gold":"df . | tail -1 | awk '{print $1}'",
+    "gold2":"df -P . | awk 'NR==2 {print $1}'",
+    "difficulty":1
+  },
+  {
+    "query":"List all variables (names only) with names containing \"H\".",
+    "gold":"env | awk -F= '{if($1 ~ \/H\/) print $1}'",
+    "gold2":"env | grep '^[^=]*H[^=]*=' | awk -F= '{print $1}'",
+    "difficulty":1
+  },
+  {
+    "query":"Print a list of unique users who are logged in",
+    "gold":"who | cut -d' ' -f1 | sort | uniq",
+    "gold2":"who | awk '{print $1}' | sort | uniq",
+    "difficulty":1
+  },
+  {
+    "query":"ping 192.168.1.1",
+    "gold":"ping -w 1 192.168.1.1",
+    "gold2":"ping -w 1 192.168.1.1",
+    "difficulty":1
+  },
+  {
+    "query":"Print a line of 99 '=' characters",
+    "gold":"seq -s= 100|tr -d '[:digit:]'",
+    "gold2":"printf '=%.0s' {1..99}",
+    "difficulty":1
+  },
+  {
+    "query":"Count number of users logged in",
+    "gold":"who | awk -F' ' '{print $1}' | sort -u | wc -l",
+    "gold2":"who | wc -l",
+    "difficulty":1
+  },
+  {
+    "query":"Displays calendar of a previous, current and next month for December of 2120 year.",
+    "gold":"cal -3 12 2120",
+    "gold2":"cal -3 12 2120",
+    "difficulty":1
+  },
+  {
+    "query":"Extract, sort and print only group names from \/etc\/group.",
+    "gold":"cut -d: -f1 \/etc\/group | sort",
+    "gold2":"cut -d: -f1 \/etc\/group | sort | uniq",
+    "difficulty":1
+  },
+  {
+    "query":"Calculate the sum of all the numbers from 1 to 10",
+    "gold":"seq 10 | jq -s 'add'",
+    "gold2":"echo $(( (10 * (10 + 1)) \/ 2 ))",
+    "difficulty":1
+  }
+]
