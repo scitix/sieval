@@ -175,6 +175,12 @@ from .platinum_bench.platinum_singleq_0shot_gen import (
 from .platinum_bench.platinum_svamp_0shot_gen import (
     PlatinumSVAMPZeroShotGenTask,
 )
+from .quotebench_nested_shell_0shot_gen import (
+    QuoteBenchNestedShellZeroShotGenTask,
+)
+from .quotebench_raw_0shot_gen import (
+    QuoteBenchRawZeroShotGenTask,
+)
 from .ruler_0shot_gen import (
     RulerZeroShotGenTask,
 )
@@ -271,6 +277,8 @@ __all__ = [
     "PlatinumSVAMPZeroShotGenTask",
     "PlatinumSingleEqZeroShotGenTask",
     "PlatinumSingleOpZeroShotGenTask",
+    "QuoteBenchNestedShellZeroShotGenTask",
+    "QuoteBenchRawZeroShotGenTask",
     "RulerZeroShotGenTask",
     "SMT2025ZeroShotGenTask",
     "SciCodeZeroShotGenTask",
