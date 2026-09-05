@@ -973,6 +973,48 @@
       "checksums": {}
     },
     {
+      "name": "multipl_e_humaneval",
+      "display_name": "MultiPL-E (HumanEval)",
+      "description": "HumanEval translated into 24 programming languages; graded by compiling and running the program.",
+      "source": [
+        "hf:nuprl/MultiPL-E@28441b6024e71d4a1c1c0f6bf171c935cd5a43f2"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        }
+      ],
+      "tags": [
+        "multilingual",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
+      "name": "multipl_e_mbpp",
+      "display_name": "MultiPL-E (MBPP)",
+      "description": "MBPP translated into 23 programming languages; graded by compiling and running the program.",
+      "source": [
+        "hf:nuprl/MultiPL-E@28441b6024e71d4a1c1c0f6bf171c935cd5a43f2"
+      ],
+      "categories": [
+        {
+          "level1": "Code",
+          "level2": "CodeGeneration"
+        }
+      ],
+      "tags": [
+        "multilingual",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {}
+    },
+    {
       "name": "openbookqa",
       "display_name": "OpenBookQA",
       "description": "OpenBookQA elementary-science open-book multiple-choice QA.",
@@ -2452,6 +2494,92 @@
       },
       "status": "stable",
       "reference_kind": "value"
+    },
+    {
+      "name": "multipl_e_humaneval_0shot_base_gen",
+      "display_name": "MultiPL-E HumanEval (0-shot, base generative)",
+      "description": "HumanEval in 24 languages for base models, graded by compiling and running the program.",
+      "dataset": "multipl_e_humaneval",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "multilingual",
+        "code-exec",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "MultiPL-E",
+        "url": "https://github.com/nuprl/MultiPL-E/blob/3025a531af7450e7df8b96fe0440e9804480bbad/evaluation/src/main.py",
+        "notes": "Follows MultiPL-E's base-model path: the prompt is upstream's partial program verbatim, the continuation is truncated at the row's own `stop_tokens` (per language) with upstream's `stop_at_stop_token`, and the graded program is `prompt + completion + \"\\n\" + tests` — `evaluation/src/main.py`'s own assembly, separator included. A program passes iff it builds and exits 0; nothing is parsed or compared. Per-language build and run commands follow `evaluation/src/eval_<lang>.py` and live in the code-eval service, not here. DIVERGENCES: (1) execution runs through the SiEval code-eval API rather than upstream's own container, so only languages that service deploys can be graded — validated end-to-end for cpp / js / sh / pl; the task refuses at setup, before spending inference, for any requested language it cannot run. (2) Upstream's four-way failure taxonomy (SyntaxError / AssertionError / ReferenceError / Exception) is reduced to the build-vs-run split the service's one boolean can carry, reported as `n_build_errors` / `n_execution_errors` / `timeouts`; scoring is unaffected. (3) upstream's perl rule that an otherwise-passing run fails when its output contains `ERROR` is implemented in the service, and is unreachable through the shipped test templates — 0 of 161 `humaneval-pl` rows mention `ERROR` and all 161 signal failure with `exit 1` — so it fires only on model stdout. (4) the per-step wall clocks are the service's rather than upstream's: every `safe_subprocess.run` call upstream takes its flat 15s default, the build included, while here an interpreted row (bash, perl) gets 3s to run and a c++ build gets 60s. Both directions are reachable — a program needing between 3s and 15s fails here and passes upstream; a compile upstream abandons at 15s completes here — though the run wall has measured headroom: a pure-bash prime sieve to n=20000 finishes in 0.6s. UNMEASURED: no published-score alignment run has been made, so the score is not yet anchored to a MultiPL-E table — hence `experimental`. Upstream's per-language row counts differ (161 c++, 158 bash), so the per-language `pass@1_<tag>` keys are the paper-comparable ones; the headline is a size-weighted pool over whatever languages ran, with `pass@1_macro` beside it. PROTOCOL: upstream publishes pass@1 from 20 completions at temperature 0.2 (`--completion-limit 20`), and pass@10/pass@100 need temperature 0.8 and more samples. This task defaults to n=1, so match upstream with `args.n: 20` plus `infer_args.temperature: 0.2`."
+      },
+      "status": "experimental",
+      "reference_kind": "procedure"
+    },
+    {
+      "name": "multipl_e_humaneval_0shot_gen",
+      "display_name": "MultiPL-E HumanEval (0-shot, generative)",
+      "description": "HumanEval in 24 languages for chat models, graded by compiling and running the program.",
+      "dataset": "multipl_e_humaneval",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "multilingual",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "MultiPL-E",
+        "url": "https://github.com/nuprl/MultiPL-E/blob/3025a531af7450e7df8b96fe0440e9804480bbad/dataset_builder/chat_completions.py",
+        "notes": "Follows MultiPL-E's chat path (`dataset_builder/chat_completions.py`). The instruction — repeat the prefix verbatim, complete only the incomplete function, add no tests or usage examples — is upstream's `Completion` signature text carried verbatim, and `postprocess_completion` is reproduced exactly: a reply starting with a fence loses its first and last lines, then the reply is split at `len(prompt)` characters and only the tail is scanned for `stop_tokens`. Critically, the graded program uses upstream's blank prompt — `\"\" + completion + \"\\n\" + tests` — so the MODEL's restatement of the prefix is what compiles. Upstream's comment gives the reason: models paraphrase docstrings and parameter names, and failing a program over that would be a spurious error. Prepending the dataset prompt instead would define the function twice and fail to compile in most of these languages. A further divergence: upstream drives this through DSPy `ChainOfThought`, so its rendered prompt carries DSPy's field markers and a reasoning field; reproducing that would pin the port to a DSPy version rather than to MultiPL-E, so the instruction text and field descriptions are carried in a plain chat prompt and the scaffolding is not. A program passes iff it builds and exits 0; nothing is parsed or compared. Per-language build and run commands follow `evaluation/src/eval_<lang>.py` and live in the code-eval service, not here. DIVERGENCES: (1) execution runs through the SiEval code-eval API rather than upstream's own container, so only languages that service deploys can be graded — validated end-to-end for cpp / js / sh / pl; the task refuses at setup, before spending inference, for any requested language it cannot run. (2) Upstream's four-way failure taxonomy (SyntaxError / AssertionError / ReferenceError / Exception) is reduced to the build-vs-run split the service's one boolean can carry, reported as `n_build_errors` / `n_execution_errors` / `timeouts`; scoring is unaffected. (3) upstream's perl rule that an otherwise-passing run fails when its output contains `ERROR` is implemented in the service, and is unreachable through the shipped test templates — 0 of 161 `humaneval-pl` rows mention `ERROR` and all 161 signal failure with `exit 1` — so it fires only on model stdout. (4) the per-step wall clocks are the service's rather than upstream's: every `safe_subprocess.run` call upstream takes its flat 15s default, the build included, while here an interpreted row (bash, perl) gets 3s to run and a c++ build gets 60s. Both directions are reachable — a program needing between 3s and 15s fails here and passes upstream; a compile upstream abandons at 15s completes here — though the run wall has measured headroom: a pure-bash prime sieve to n=20000 finishes in 0.6s. UNMEASURED: no published-score alignment run has been made, so the score is not yet anchored to a MultiPL-E table — hence `experimental`. Upstream's per-language row counts differ (161 c++, 158 bash), so the per-language `pass@1_<tag>` keys are the paper-comparable ones; the headline is a size-weighted pool over whatever languages ran, with `pass@1_macro` beside it. PROTOCOL: upstream's chat script takes `--max-completions` with `--temperature 0.2` for pass@1 (20 in its own example). This task defaults to n=1; match upstream with `args.n: 20` plus `infer_args.temperature: 0.2`. No `stop` is sent, deliberately — the reply is asked to contain the prefix, whose text holds this language's stop tokens."
+      },
+      "status": "experimental",
+      "reference_kind": "procedure"
+    },
+    {
+      "name": "multipl_e_mbpp_0shot_base_gen",
+      "display_name": "MultiPL-E MBPP (0-shot, base generative)",
+      "description": "MBPP in 23 languages for base models, graded by compiling and running the program.",
+      "dataset": "multipl_e_mbpp",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "multilingual",
+        "code-exec",
+        "base-model"
+      ],
+      "deps_group": null,
+      "model_type": "gen",
+      "reference_impl": {
+        "source": "MultiPL-E",
+        "url": "https://github.com/nuprl/MultiPL-E/blob/3025a531af7450e7df8b96fe0440e9804480bbad/evaluation/src/main.py",
+        "notes": "Follows MultiPL-E's base-model path: the prompt is upstream's partial program verbatim, the continuation is truncated at the row's own `stop_tokens` (per language) with upstream's `stop_at_stop_token`, and the graded program is `prompt + completion + \"\\n\" + tests` — `evaluation/src/main.py`'s own assembly, separator included. A program passes iff it builds and exits 0; nothing is parsed or compared. Per-language build and run commands follow `evaluation/src/eval_<lang>.py` and live in the code-eval service, not here. DIVERGENCES: (1) execution runs through the SiEval code-eval API rather than upstream's own container, so only languages that service deploys can be graded — validated end-to-end for cpp / js / sh / pl; the task refuses at setup, before spending inference, for any requested language it cannot run. (2) Upstream's four-way failure taxonomy (SyntaxError / AssertionError / ReferenceError / Exception) is reduced to the build-vs-run split the service's one boolean can carry, reported as `n_build_errors` / `n_execution_errors` / `timeouts`; scoring is unaffected. (3) upstream's perl rule that an otherwise-passing run fails when its output contains `ERROR` is implemented in the service, and is unreachable through the shipped test templates — 0 of 161 `humaneval-pl` rows mention `ERROR` and all 161 signal failure with `exit 1` — so it fires only on model stdout. (4) the per-step wall clocks are the service's rather than upstream's: every `safe_subprocess.run` call upstream takes its flat 15s default, the build included, while here an interpreted row (bash, perl) gets 3s to run and a c++ build gets 60s. Both directions are reachable — a program needing between 3s and 15s fails here and passes upstream; a compile upstream abandons at 15s completes here — though the run wall has measured headroom: a pure-bash prime sieve to n=20000 finishes in 0.6s. UNMEASURED: no published-score alignment run has been made, so the score is not yet anchored to a MultiPL-E table — hence `experimental`. Upstream's per-language row counts differ (161 c++, 158 bash), so the per-language `pass@1_<tag>` keys are the paper-comparable ones; the headline is a size-weighted pool over whatever languages ran, with `pass@1_macro` beside it. PROTOCOL: upstream publishes pass@1 from 20 completions at temperature 0.2 (`--completion-limit 20`), and pass@10/pass@100 need temperature 0.8 and more samples. This task defaults to n=1, so match upstream with `args.n: 20` plus `infer_args.temperature: 0.2`. SUITE: MBPP, 23 languages — upstream translated HumanEval to Dart and MBPP not, so there is no `mbpp-dart` config. Upstream's translator also rewrote the word `python` inside MBPP's docstrings along with the code, so prompts read \"Write a cppthon function\" and similar: 132/397 `mbpp-cpp` rows, 131/382 `mbpp-sh`, 131/396 `mbpp-pl`, 132/397 `mbpp-js` — about a third of each language. Carried as-is: the unqualified task tracks upstream, and a prompt fix would be a `datasets/` concern rather than a task one."
+      },
+      "status": "experimental",
+      "reference_kind": "procedure"
+    },
+    {
+      "name": "multipl_e_mbpp_0shot_gen",
+      "display_name": "MultiPL-E MBPP (0-shot, generative)",
+      "description": "MBPP in 23 languages for chat models, graded by compiling and running the program.",
+      "dataset": "multipl_e_mbpp",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "multilingual",
+        "code-exec"
+      ],
+      "deps_group": null,
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "MultiPL-E",
+        "url": "https://github.com/nuprl/MultiPL-E/blob/3025a531af7450e7df8b96fe0440e9804480bbad/dataset_builder/chat_completions.py",
+        "notes": "Follows MultiPL-E's chat path (`dataset_builder/chat_completions.py`). The instruction — repeat the prefix verbatim, complete only the incomplete function, add no tests or usage examples — is upstream's `Completion` signature text carried verbatim, and `postprocess_completion` is reproduced exactly: a reply starting with a fence loses its first and last lines, then the reply is split at `len(prompt)` characters and only the tail is scanned for `stop_tokens`. Critically, the graded program uses upstream's blank prompt — `\"\" + completion + \"\\n\" + tests` — so the MODEL's restatement of the prefix is what compiles. Upstream's comment gives the reason: models paraphrase docstrings and parameter names, and failing a program over that would be a spurious error. Prepending the dataset prompt instead would define the function twice and fail to compile in most of these languages. A further divergence: upstream drives this through DSPy `ChainOfThought`, so its rendered prompt carries DSPy's field markers and a reasoning field; reproducing that would pin the port to a DSPy version rather than to MultiPL-E, so the instruction text and field descriptions are carried in a plain chat prompt and the scaffolding is not. A program passes iff it builds and exits 0; nothing is parsed or compared. Per-language build and run commands follow `evaluation/src/eval_<lang>.py` and live in the code-eval service, not here. DIVERGENCES: (1) execution runs through the SiEval code-eval API rather than upstream's own container, so only languages that service deploys can be graded — validated end-to-end for cpp / js / sh / pl; the task refuses at setup, before spending inference, for any requested language it cannot run. (2) Upstream's four-way failure taxonomy (SyntaxError / AssertionError / ReferenceError / Exception) is reduced to the build-vs-run split the service's one boolean can carry, reported as `n_build_errors` / `n_execution_errors` / `timeouts`; scoring is unaffected. (3) upstream's perl rule that an otherwise-passing run fails when its output contains `ERROR` is implemented in the service, and is unreachable through the shipped test templates — 0 of 161 `humaneval-pl` rows mention `ERROR` and all 161 signal failure with `exit 1` — so it fires only on model stdout. (4) the per-step wall clocks are the service's rather than upstream's: every `safe_subprocess.run` call upstream takes its flat 15s default, the build included, while here an interpreted row (bash, perl) gets 3s to run and a c++ build gets 60s. Both directions are reachable — a program needing between 3s and 15s fails here and passes upstream; a compile upstream abandons at 15s completes here — though the run wall has measured headroom: a pure-bash prime sieve to n=20000 finishes in 0.6s. UNMEASURED: no published-score alignment run has been made, so the score is not yet anchored to a MultiPL-E table — hence `experimental`. Upstream's per-language row counts differ (161 c++, 158 bash), so the per-language `pass@1_<tag>` keys are the paper-comparable ones; the headline is a size-weighted pool over whatever languages ran, with `pass@1_macro` beside it. PROTOCOL: upstream's chat script takes `--max-completions` with `--temperature 0.2` for pass@1 (20 in its own example). This task defaults to n=1; match upstream with `args.n: 20` plus `infer_args.temperature: 0.2`. No `stop` is sent, deliberately — the reply is asked to contain the prefix, whose text holds this language's stop tokens. SUITE: MBPP, 23 languages — upstream translated HumanEval to Dart and MBPP not, so there is no `mbpp-dart` config. Upstream's translator also rewrote the word `python` inside MBPP's docstrings along with the code, so prompts read \"Write a cppthon function\" and similar: 132/397 `mbpp-cpp` rows, 131/382 `mbpp-sh`, 131/396 `mbpp-pl`, 132/397 `mbpp-js` — about a third of each language. Carried as-is: the unqualified task tracks upstream, and a prompt fix would be a `datasets/` concern rather than a task one."
+      },
+      "status": "experimental",
+      "reference_kind": "procedure"
     },
     {
       "name": "openbookqa_kshot_gen",

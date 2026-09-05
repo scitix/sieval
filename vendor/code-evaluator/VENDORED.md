@@ -72,3 +72,83 @@
 - `README.md` — translated from Chinese to English, so the vendored docs match
   the rest of the repo. Content is otherwise unchanged apart from the case-count
   section above.
+- `app/exec_lang.py` (new), `app/server.py`, `docker/Dockerfile.multipl-e`
+  (new), `README.md` — **table-driven languages, for MultiPL-E.** Adds `cpp`,
+  `bash` and `perl` to the direct-run path as rows in one declarative table
+  (`ext` + build argv + run argv + budgets) behind a single executor, instead of
+  a fourth, fifth and sixth copy of the write-file/spawn/wait/decode/classify
+  sequence that `exec_py_code` / `exec_js` / `exec_ts` each hand-roll. Those
+  three modules are **untouched**, so no existing task's grading moves; the
+  `CODE_EXECUTOR_MAP` merely moved to module scope (it was rebuilt per request)
+  and gains the table's rows.
+
+  Commands follow upstream MultiPL-E's `evaluation/src/eval_<lang>.py`
+  (`g++ -std=c++17`, `bash path`, `perl path`). Two of its conventions are
+  carried deliberately:
+
+  - **perl fails on `ERROR` in the output even at exit 0** (`eval_pl.py`).
+    Checked only on an otherwise-passing run, so it can turn a pass into a
+    failure and never the reverse. Not reachable through the shipped test
+    templates — 0 of 161 `humaneval-pl` rows mention `ERROR`, and all 161 signal
+    failure with `exit 1` — so it fires only on model stdout. Kept because it is
+    upstream's rule, not because the data exercises it.
+  - **A build gets its own wall** (60s) separate from the program's, as each
+    `safe_subprocess.run` call does upstream. c++ takes upstream's own 15s for
+    the program.
+
+  The **wall clocks themselves diverge from upstream**, in both directions, and
+  the tasks' `reference_impl.notes` enumerate it. Upstream gives every step a
+  flat 15s — each `eval_<lang>.py` call is a bare `safe_subprocess.run` taking
+  its default, the build included. Here an interpreted row keeps the service's
+  own 3s run default rather than tripling every other benchmark's wall to match
+  one, and a build gets 60s. So a submission needing between 3s and 15s to run
+  fails here and passes upstream, and a compile upstream abandons at 15s
+  completes here. The run wall has measured headroom rather than an assumed one:
+  a pure-bash prime sieve to n=20000 finishes in 0.6s.
+
+  A **timed-out program is killed by process group** — spawned with
+  `start_new_session=True` and reaped with `os.killpg(..., SIGKILL)` — which is
+  what upstream's own `safe_subprocess` does, and for the reason its comment
+  gives ("Without this line, test_fork_once fails"). Killing only the direct
+  child leaves the wall unenforced whenever the submission forks: measured
+  before the fix, `bash` running a program that spawns a 30s sleeper returned
+  after **30.1s against a 3s budget**, and the sleeper outlived the kill. After
+  it, 3.1s and no survivor. The reap is itself bounded (`KILL_GRACE_SECONDS`),
+  so a process wedged in uninterruptible sleep cannot re-introduce the unbounded
+  wait. `exec_js` / `exec_ts` have the same shape and are **not** fixed here —
+  they are untouched by this patch on purpose, and their fix belongs in its own
+  change.
+
+  Upstream's four-way failure taxonomy (`SyntaxError` / `AssertionError` /
+  `ReferenceError` / `Exception`) is **not** reproduced: the response carries one
+  boolean and all four buckets are the same boolean. What is preserved is the
+  part a caller cannot reconstruct — build failure vs run failure — spelled in
+  `msg`, reusing the vocabulary the hand-rolled modules already established
+  (`failed: timeout`, `failed [exit N]: ...`).
+
+  Memory is capped with a `ulimit -v` prologue that `exec`s the program, not
+  `preexec_fn`: neither sibling module uses one, and it runs between fork and
+  exec inside a threaded server, where a lock another thread holds at fork is
+  held forever in the child. Verified binding rather than assumed — a 1 GiB
+  allocation is refused at `memory_limit=256` and succeeds uncapped, and a
+  trivial program still passes under the cap.
+
+  **Also fixes a latent bug** on exactly this path: for an unsupported `lang`
+  the direct-run branch never bound `timeout`, which the `logger.info` below it
+  reads unconditionally, so the request died with `UnboundLocalError` (a 500)
+  instead of returning the branch's own `not supported language: <lang>`. That is
+  the path every MultiPL-E language whose toolchain is not deployed takes —
+  20 of 24 today — so it would have been hit immediately. Reproduced before and
+  after against the real endpoint.
+- `app/server.py`, `README.md` — **`GET /languages`**, advertising the `lang`
+  values a deployment accepts. A caller probes it *before* spending inference:
+  without it, an unsupported language is discoverable only per sample, by which
+  point every sample is generated and the report reads as a model that scored
+  zero rather than an evaluator that cannot run the language. It answers for the
+  source table rather than for the image (a row whose toolchain is missing is
+  still listed and fails at spawn), so it means "offered", not "proven" —
+  probing toolchains for real would run every compiler on each health check.
+
+  The two entries above are **not yet upstream** — land them in
+  `scitix/code-evaluator` and re-vendor. Their tests belong there rather than
+  under `tests/`, which mirrors `sieval/`.
