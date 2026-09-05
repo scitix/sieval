@@ -38,8 +38,13 @@ COPY app/ ./app/
 COPY quotebench/ ./quotebench/
 
 # `local` is correct *inside* this image: the container is the isolation
-# boundary, so a second docker layer would need a docker socket. Run the
-# container itself with --network none.
+# boundary, so a second docker layer would need a docker socket handed in.
+#
+# That boundary is the container, NOT `--network none` -- this container has to
+# be reachable to be called, so it cannot have networking removed. To deny it
+# egress while keeping it callable, attach it to an internal network
+# (`docker network create --internal`); the `docker` executor is the other
+# route, and enforces `--network none` per attempt in upstream's own argv.
 ENV QUOTEBENCH_EXECUTOR=local
 
 CMD ["fastapi", "run", "app/server.py", "--port", "11451"]

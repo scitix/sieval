@@ -9,9 +9,10 @@ except the system prompt and the transport name lives here.
 sieval executes nothing. The reply is POSTed to the vendored code-evaluator's
 `quotebench` source, which builds the task's filesystem fixture, runs one
 `bash -c` payload inside it, and returns the exact-final-state verdict plus a
-failure class. Both sides vendor upstream's task definitions; the response
-carries the digest the evaluator graded with, and this module refuses to score a
-verdict whose digest does not match the one the prompts were built from.
+failure class. Both sides vendor upstream's task definitions, and the two copies
+are pinned to each other by a digest: `setup` reads the evaluator's before the
+run spends anything and aborts on a skew, and every verdict carries it again so
+an evaluator swapped mid-run is refused rather than scored.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -23,6 +24,7 @@ from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import ClassVar, override
+from urllib.parse import urljoin
 
 import httpx
 from loguru import logger
@@ -86,6 +88,17 @@ def local_digest() -> str:
     return digest.hexdigest()
 
 
+def digest_url(evaluations_api: str) -> str:
+    """The handshake endpoint beside a configured `/evaluations` URL.
+
+    A RELATIVE join, so a service mounted under a prefix keeps it:
+    ``http://h/api/evaluations`` -> ``http://h/api/quotebench/digest``. An
+    absolute ``/quotebench/digest`` would silently drop the prefix and 404
+    against a correctly deployed evaluator.
+    """
+    return urljoin(evaluations_api.rstrip("/"), "quotebench/digest")
+
+
 def assert_digest(*, local: str, remote: str | None) -> None:
     """Refuse to score unless both sides hold the same task definitions."""
     if remote is None:
@@ -137,8 +150,30 @@ class QuoteBenchTask(
         timed-out command returns a verdict rather than hanging, so this only has
         to be comfortably outside that. It is not the command's budget and
         changing it does not change what upstream measures.
+
+        *n* is accepted only as 1. See the check below.
         """
         super().__init__(dataset=dataset, model=model, name=name)
+        if n != 1:
+            # Refused rather than defaulted. `report()` reads ONE rollout per
+            # sample on every axis it publishes -- the headline, the seven
+            # failure-class counts, and the per-tier and per-scenario rates --
+            # so a larger budget would be generated, graded, paid for and then
+            # dropped, leaving a score that looks like a complete run.
+            #
+            # The fix is not to average the extras in: a failure class and a
+            # tier rate have no agreed reading across rollouts (is a sample
+            # `timeout` if one draw timed out, or if the majority did?), and
+            # upstream's released grid -- the thing this port is anchored on --
+            # is single-draw, so there is no reference answer to port. That is a
+            # design decision with a measurement behind it, not a default, and
+            # until someone makes it a raise is the honest response.
+            raise ValueError(
+                f"{type(self).__name__} scores one rollout per sample, so n must "
+                f"be 1, got {n}. Upstream's released rollout grid is single-draw "
+                "and the per-class / per-tier breakdowns have no defined reading "
+                "across repeats."
+            )
         self._n = n
         self._grade_timeout = grade_timeout
         self._code_eval_api = os.getenv(
@@ -147,6 +182,34 @@ class QuoteBenchTask(
         self._http_client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=max_concurrency)
         )
+
+    @override
+    async def setup(self):
+        """Settle the handshake before the run spends anything.
+
+        This is the only stage that can stop a run. `feedback` raising is caught
+        per sample and turned into a FAILED context, so a mismatch discovered
+        there does not abort: it fails every sample and still writes a
+        `report.json` reading 0.0 -- a plausible number for a hard shell-quoting
+        benchmark, which is exactly the outcome the check exists to prevent.
+        Checked here, a skewed evaluator costs one GET and no inference.
+        """
+        url = digest_url(self._code_eval_api)
+        try:
+            resp = await self._http_client.get(url, timeout=self._grade_timeout)
+        except Exception as e:
+            raise RuntimeError(
+                f"quotebench handshake could not reach the evaluator at {url}: "
+                f"[{type(e).__name__}] {e}"
+            ) from e
+
+        # 404 is a build that predates this source rather than a transport
+        # fault, and `assert_digest` already says so for a missing digest.
+        remote = None
+        if resp.status_code != 404:
+            resp.raise_for_status()
+            remote = resp.json().get("data")
+        assert_digest(local=local_digest(), remote=remote)
 
     @override
     async def preprocess(self, raw, ctx):
@@ -217,6 +280,11 @@ class QuoteBenchTask(
                     f"quotebench evaluator rejected sample {task_id!r} on "
                     f"contract {self.CONTRACT!r}: {reason}"
                 )
+            # Second line, not the first: `setup` settled this before the run
+            # started, so reaching here means the evaluator was replaced
+            # mid-run (a rolling deploy behind one address). That cannot abort
+            # what has already been scored, but failing the remaining samples
+            # loudly beats scoring them against fixtures nobody prompted from.
             assert_digest(local=expected_digest, remote=data.get("scenarios_digest"))
 
             rollouts.append(
@@ -252,9 +320,9 @@ class QuoteBenchTask(
         total = len(finals) + len(fails)
         grouping = self.problem_groups(finals)
 
-        # First rollout per sample, in percentage points -- the units
-        # `pass_rate_pct` is published in, so the interval brackets the number
-        # printed beside it.
+        # The sample's one rollout (`n` is pinned to 1 in `__init__`), in
+        # percentage points -- the units `pass_rate_pct` is published in, so the
+        # interval brackets the number printed beside it.
         first_pct = [
             100.0
             if ((f.feedback_result or {}).get("rollouts") or [{}])[0].get("correct")
