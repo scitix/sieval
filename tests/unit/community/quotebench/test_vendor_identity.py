@@ -10,7 +10,7 @@ Digests are of the upstream files at the pin, taken from the upstream tree
 rather than from these copies -- a digest read off the copy would pin whatever
 was copied, including a corrupted copy.
 
-AI-Generated Code - Claude Opus 5 (Anthropic)
+AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import hashlib

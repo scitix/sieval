@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import os
 import sys
@@ -93,6 +94,23 @@ class ResourceMetrics(BaseModel):
 @app.get("/health")
 async def check_health() -> BasicResponse[None]:
     return BasicResponse(status=True, msg="healthy")
+
+
+@app.get("/quotebench/digest")
+async def quotebench_digest() -> BasicResponse[str]:
+    """The task definitions this build grades with, before anything is graded.
+
+    A client prompts from its own vendored copy and this service grades with
+    its own; a build skew between them mixes two fixture sets into one score
+    that still looks plausible. `/evaluations` already returns the digest beside
+    every verdict, but by then the run has spent its inference, and a client
+    that refuses the verdict has nowhere to put the refusal except a failed
+    sample. Reading it here is what lets the client refuse before it starts.
+
+    Deliberately not folded into `/health`, which is source-agnostic and is what
+    a load balancer polls.
+    """
+    return BasicResponse(status=True, msg="ok", data=scenarios_digest())
 
 
 class LiveCodeBenchTest(BaseModel):
@@ -242,12 +260,27 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
                 msg="quotebench requires kwargs.task_id and kwargs.contract",
                 data=None,
             )
-        # `local` runs bash in a fresh temp dir with a trimmed env; the shipped
-        # path sets this to `docker` so untrusted replies execute in the
-        # network-disabled GNU image (docker/Dockerfile.quotebench).
+        # `local` runs bash in a fresh temp dir with a trimmed env and NO
+        # network isolation. `docker` runs each attempt through upstream's
+        # `harness.exec_docker`, whose argv carries `--network none` itself, and
+        # needs a reachable docker daemon plus its `quotebench-runner` image.
+        # Which one is safe depends on where this service is deployed, so the
+        # choice is the operator's -- see the README's QuoteBench section.
         executor = os.getenv("QUOTEBENCH_EXECUTOR", "local")
         try:
-            ok, reason, error_class, exit_code, timed_out = execute_quotebench(
+            # Off the loop: `execute_quotebench` is fully blocking (it shells
+            # out under `subprocess.run`, bounded at 15 s), and this endpoint is
+            # `async def`, so FastAPI runs it ON the loop rather than in the
+            # threadpool it gives a plain `def`. Called directly, one slow reply
+            # stalls `/health` and every other source's grading on this worker,
+            # and the concurrent replies never overlap.
+            #
+            # The other sources never had the problem: js/ts await
+            # `asyncio.create_subprocess_exec`, and the two python ones already
+            # await `asyncio.to_thread(q.get)` over a `multiprocessing.Process`.
+            # So this is the package's own idiom, not a new one.
+            ok, reason, error_class, exit_code, timed_out = await asyncio.to_thread(
+                execute_quotebench,
                 task_id=str(task_id),
                 contract=str(contract),
                 reply=sample.code,

@@ -49,8 +49,12 @@ pdm run pytest tests/acceptance/quotebench -v
 The released records spell the transport `nested`. Upstream's own
 `public_cli.command_for_transport` accepts only `raw` / `native` /
 `nested-shell` and raises `ValueError: nested`, so `python -m quotebench score`
-cannot read upstream's own release — `crossover.py` handles the spelling and
-`public_cli.py` does not. The anchor therefore goes through our
+cannot read upstream's own release. `rollouts.py` does read the released
+spelling, but only as literal dict keys over already-stored verdicts — it never
+turns a contract name into a command, so it needs no mapping. Both modules that
+*do* build a command reject it: `public_cli.command_for_transport`, and
+`crossover.canonical_contract`, which raises `contract crossover supports
+raw/nested-shell records, got 'nested'`. The anchor therefore goes through our
 name → transport mapping in `app/exec_quotebench.py`, which is why that mapping
 lives on our side rather than being borrowed.
 

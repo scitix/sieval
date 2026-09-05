@@ -70,6 +70,11 @@ docker build -f docker/Dockerfile.quotebench -t code-evaluator-quotebench .  # G
 fastapi run app/server.py --port 11451
 ```
 
+That runs it directly on the host, which is fine for a trusted local run and is
+what the test suites assume. For untrusted submissions, see
+[QuoteBench](#quotebench) — the service itself cannot be put on
+`--network none`, because it has to be reachable to be called.
+
 ## API
 
 ### Health check
@@ -180,13 +185,28 @@ A protocol error — unknown task id, unknown contract, missing `kwargs` — ret
 `status: false` with `data: null`. A command that merely did the wrong thing
 returns `status: false` with `data` present, so the two are distinguishable.
 
-`QUOTEBENCH_EXECUTOR` picks the executor: `local` (default; fresh temp dir per
-attempt, `bash -c` via argv, trimmed env, 15 s timeout) or `docker`. Isolation
-here is no more hardened than anywhere else in this service, and a Bash payload
-is as unbounded as a Python one — run the service inside
-`docker/Dockerfile.quotebench` with `--network none` for untrusted replies. That
-image pins upstream's base digest and GNU tool set on purpose: QuoteBench scores
-BSD and GNU userlands separately, and the published numbers are the GNU replay.
+`QUOTEBENCH_EXECUTOR` picks the executor. A Bash payload is as unbounded as a
+Python one, and the two differ in what they isolate:
+
+- `local` (default) — fresh temp dir per attempt, `bash -c` via argv, trimmed
+  env, 15 s timeout, and **no network isolation**. Right for oracle validation
+  and for replaying stored replies; not for untrusted model output on a host you
+  care about.
+- `docker` — upstream's `harness.exec_docker`, which runs each attempt as
+  `docker run --rm --network none -v <task dir>:/work … quotebench-runner bash
+  -c <cmd>`. The isolation is in that argv, not in an operator flag, so it holds
+  whenever this executor is selected. Needs a reachable docker daemon and the
+  `quotebench-runner` image to exist.
+
+`docker/Dockerfile.quotebench` takes the other route: it sets
+`QUOTEBENCH_EXECUTOR=local` and makes the service's own container the boundary,
+since nesting a second docker layer would mean handing in a docker socket. Note
+that container **cannot** run with `--network none` — it has to be reachable to
+be called. To deny it egress while keeping it callable, put it on an internal
+network (`docker network create --internal …`) rather than removing networking.
+The image pins upstream's base digest and GNU tool set on purpose: QuoteBench
+scores BSD and GNU userlands separately, and the published numbers are the GNU
+replay.
 
 ### Case counts
 
