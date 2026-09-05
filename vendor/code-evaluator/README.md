@@ -10,6 +10,7 @@ code either by running it directly or by checking it against test cases.
 - HumanEval (multi-language: python / javascript / typescript)
 - LiveCodeBench (python only)
 - SciCode (python only)
+- QuoteBench (bash only; fixture + final-state grading, see below)
 
 HumanEval and SciCode run the submitted code directly; LiveCodeBench needs a
 function name and compares inputs against expected outputs. A SciCode program
@@ -60,6 +61,7 @@ docker build -f docker/Dockerfile.python -t code-evaluator-py .
 docker build -f docker/Dockerfile.javascript -t code-evaluator-js .
 docker build -f docker/Dockerfile.typescript -t code-evaluator-ts .
 docker build -f docker/Dockerfile.scicode -t code-evaluator-scicode .   # Python 3.11
+docker build -f docker/Dockerfile.quotebench -t code-evaluator-quotebench .  # GNU userland
 ```
 
 ## Running the service
@@ -67,6 +69,11 @@ docker build -f docker/Dockerfile.scicode -t code-evaluator-scicode .   # Python
 ```sh
 fastapi run app/server.py --port 11451
 ```
+
+That runs it directly on the host, which is fine for a trusted local run and is
+what the test suites assume. For untrusted submissions, see
+[QuoteBench](#quotebench) — the service itself cannot be put on
+`--network none`, because it has to be reachable to be called.
 
 ## API
 
@@ -81,9 +88,11 @@ POST /evaluations
 Fields:
 
 - `uuid`
-- `source`: `"human-eval"` | `"mbpp"` | `"livecodebench"` | `"scicode"`
-- `lang`: `python` | `javascript` | `typescript`
-- `code`: the code, as a string
+- `source`: `"human-eval"` | `"mbpp"` | `"livecodebench"` | `"scicode"` |
+  `"quotebench"`
+- `lang`: `python` | `javascript` | `typescript` (ignored by `quotebench`, which
+  is Bash-only)
+- `code`: the code, as a string — for `quotebench`, the model's reply
 - `test`: LiveCodeBench-specific test description (`fn_name` / `inputs` / `outputs`)
 - `timeout`: float (optional, seconds; defaults below) — a wall for the **whole suite**
 - `timeout_per_case`: float (optional, seconds) — budget each test case
@@ -133,6 +142,71 @@ Response:
 ```
 
 On failure, `msg` carries the reason.
+
+### QuoteBench
+
+A different unit of work: a task id plus one command, not a program plus test
+cases. The task builds its own filesystem fixture, the reply runs inside it as a
+single `bash -c` payload, and the verdict is the exact final state — file bytes,
+argv, JSON, directory contents, or Git history. `code` carries the reply; the
+task and the transport go in `kwargs`:
+
+```json
+{
+  "uuid": "qb1",
+  "source": "quotebench",
+  "code": "printf '%s' \"it's here\" > out.txt",
+  "kwargs": {"task_id": "write-file/t1-apostrophe", "contract": "raw"}
+}
+```
+
+- `kwargs.task_id` — one of the 56 frozen task ids, `"<scenario>/<instance>"`.
+- `kwargs.contract` — `raw` (the reply executes verbatim) or `nested` (the reply
+  is interpolated, deliberately unescaped, into an outer double-quoted
+  `bash -c "R"`). These are the spellings upstream's released rollout dataset
+  uses. The CLI-only spellings (`nested-shell`, `native`, `manual-json`) are
+  rejected.
+
+`status` is the verdict and `msg` is the check's reason. `data` additionally
+carries:
+
+- `error_class` — the failure taxonomy: `pass`, `shell-syntax`, `tool-error`,
+  `runtime-error`, `silent-wrong`, `timeout`, `environment-invalid`.
+- `exit_code`, `timed_out` — from the executed command.
+- `scenarios_digest` — sha256 over the vendored `core.py`, `scenarios.py` and
+  `shellesc.py`. A caller holding its own copy of the task definitions should
+  assert this matches before trusting the verdict; otherwise the two copies can
+  drift and every number still looks plausible.
+
+The four resource numbers are `0.0` here: the payload runs in its own process
+tree, so the in-process monitor would report its own idle numbers.
+
+A protocol error — unknown task id, unknown contract, missing `kwargs` — returns
+`status: false` with `data: null`. A command that merely did the wrong thing
+returns `status: false` with `data` present, so the two are distinguishable.
+
+`QUOTEBENCH_EXECUTOR` picks the executor. A Bash payload is as unbounded as a
+Python one, and the two differ in what they isolate:
+
+- `local` (default) — fresh temp dir per attempt, `bash -c` via argv, trimmed
+  env, 15 s timeout, and **no network isolation**. Right for oracle validation
+  and for replaying stored replies; not for untrusted model output on a host you
+  care about.
+- `docker` — upstream's `harness.exec_docker`, which runs each attempt as
+  `docker run --rm --network none -v <task dir>:/work … quotebench-runner bash
+  -c <cmd>`. The isolation is in that argv, not in an operator flag, so it holds
+  whenever this executor is selected. Needs a reachable docker daemon and the
+  `quotebench-runner` image to exist.
+
+`docker/Dockerfile.quotebench` takes the other route: it sets
+`QUOTEBENCH_EXECUTOR=local` and makes the service's own container the boundary,
+since nesting a second docker layer would mean handing in a docker socket. Note
+that container **cannot** run with `--network none` — it has to be reachable to
+be called. To deny it egress while keeping it callable, put it on an internal
+network (`docker network create --internal …`) rather than removing networking.
+The image pins upstream's base digest and GNU tool set on purpose: QuoteBench
+scores BSD and GNU userlands separately, and the published numbers are the GNU
+replay.
 
 ### Case counts
 

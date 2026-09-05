@@ -158,6 +158,14 @@ data_backup/
 outputs/
 tmp/
 
+# ...except a checked-in test fixture. `data/` matches at any depth, so it also
+# swallows a `data/` directory under tests/ — and because git will not descend
+# into an excluded directory, the directory itself has to be re-included before
+# anything inside it can be. A silently-absent fixture is worse than a large
+# diff: the acceptance test that reads it passes locally and fails only in CI.
+!tests/acceptance/*/data/
+!tests/acceptance/*/data/**
+
 # Claude Code
 #   Exclude non-team-level configs
 .claude/commands/

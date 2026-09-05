@@ -6,6 +6,16 @@
 
 ## Local patches on top of that commit
 
+Two kinds, and the difference is a decision rather than a status:
+
+- **Upstream-bound** — everything marked "not yet upstream" below. These are
+  divergences we would rather not own; they are meant to land in
+  `scitix/code-evaluator` and come back by re-vendoring.
+- **In-tree by decision** — the `quotebench` source. It is not staged for
+  upstream and carries no "not yet upstream" line: sieval owns it here. Edit it
+  in place; a future re-vendor of the base commit has to preserve it rather than
+  expect it to have been absorbed.
+
 - `app/exec_py_test.py` — clearer checker messages + opt-in float tolerance
   (`CODE_EVAL_FLOAT_TOL`); from fork branch `fix/checker-messages-float-tol`
   (`cfc47d8`), plus a docstring note on `_value_close`'s type-based tolerance.
@@ -72,3 +82,89 @@
 - `README.md` — translated from Chinese to English, so the vendored docs match
   the rest of the repo. Content is otherwise unchanged apart from the case-count
   section above.
+- `app/exec_quotebench.py`, `app/server.py`, `quotebench/`,
+  `docker/Dockerfile.quotebench`, `README.md` — **the `quotebench` source**
+  (in-tree by decision; not staged for upstream).
+
+  A source whose unit of work is a task id plus one command rather than a
+  program plus test cases. The task builds its own filesystem fixture in Python,
+  the reply runs inside it as a single `bash -c` payload, and the verdict is the
+  exact final state — file bytes, argv, JSON, directory contents, or Git
+  history. There is no reference command string to compare against, which is why
+  none of the existing `exec_*` modules could carry it.
+
+  `quotebench/` vendors upstream QuoteBench's `core`, `scenarios`, `shellesc`
+  and `harness` byte-identically from
+  [`LeonardNJU/quoteBench`](https://github.com/LeonardNJU/quoteBench/tree/693325a671e65f889e5cd9d83965db9cc3b26dc2)
+  @ `693325a6`, Apache-2.0. sieval vendors the first three again under
+  `sieval/community/quotebench/` and uses only the prompt-building half; the two
+  copies are pinned to each other by `scenarios_digest`, echoed in every
+  response, which the calling task asserts before trusting a verdict.
+
+  `ResourceMetrics` gains four optional fields (`error_class`, `exit_code`,
+  `timed_out`, `scenarios_digest`) rather than a per-source subclass — FastAPI
+  filters the response against the route's declared model, so a subclass's extra
+  fields would be silently stripped. The four resource numbers are reported as
+  `0.0`: the payload runs in its own process tree, so the in-process monitor
+  would report its own idle numbers, not the command's.
+
+  The contract-to-transport mapping lives in `exec_quotebench.py`, not in the
+  vendored package. Upstream's `public_cli.command_for_transport` accepts only
+  `raw` / `native` / `nested-shell` and raises `ValueError` on `nested` — the
+  spelling upstream's own released rollout dataset uses — so upstream's public
+  scorer cannot read its own release. We accept the released spellings (`raw`,
+  `nested`) and reject the CLI-only ones.
+
+  **Verified at two levels, and they are gated differently** — worth stating
+  plainly, because the stronger of the two is the one CI does not run:
+
+  - *Grading core, in CI.* All 56 oracles pass, asserted by
+    `tests/unit/vendor/code_evaluator/test_exec_quotebench.py` calling
+    `execute_quotebench` directly.
+    This runs on every push, and does **not** exercise HTTP or pydantic.
+  - *Whole HTTP path, run locally.* Replaying the stored replies of upstream's
+    `raw-vs-nested` arm (HF `lsamc/QuoteBench-Rollouts` @ `69957a53`) against a
+    live `uvicorn app.server` reproduces the GNU verdicts upstream recorded for
+    them **224/224 on `passed` and 224/224 on failure class**, across all four
+    crossover cells. This is where pydantic validation and the declared response
+    model are in play — but `tests/acceptance/quotebench/` skips when no server
+    is reachable, so the response-model layer has no standing CI gate. Adding
+    one would mean a `TestClient` test, and `fastapi` is the evaluator's
+    dependency rather than sieval's, so it is not importable from `tests/unit/`.
+
+  A protocol error (unknown task, unknown contract, missing kwargs) answers with
+  `data=None`; a wrong command answers with `data` present, which is how a
+  caller tells them apart.
+
+  `GET /quotebench/digest` returns the same `scenarios_digest` every verdict
+  carries, so a client can settle the handshake before it spends anything on
+  inference. Read-only and executes nothing; deliberately not folded into
+  `/health`, which is source-agnostic.
+
+  The grading call goes through `asyncio.to_thread`. `execute_quotebench` is
+  fully blocking — it shells out under `subprocess.run` — and `evaluate` is
+  `async def`, so FastAPI runs it **on** the event loop rather than in the
+  threadpool it gives a plain `def`; called directly it stalls the whole worker.
+  Measured on this box, four concurrent gradings of a `sleep 3` reply while
+  polling `/health` as a load balancer would:
+
+  | | direct call | `asyncio.to_thread` |
+  | --- | --- | --- |
+  | wall clock for the four | 12.02 s (serialized) | 3.01 s (overlapped) |
+  | `/health` polls served | 2 | 59 |
+  | `/health` worst latency | 11 969 ms | 1.9 ms |
+
+  The stall is not confined to `quotebench`: it is one shared loop, so a slow
+  Bash reply also holds up LiveCodeBench and HumanEval grading on that worker.
+  Only this source needed the change — `exec_js` / `exec_ts` await
+  `asyncio.create_subprocess_exec`, and `exec_py_code` / `exec_py_test` already
+  await `asyncio.to_thread(q.get)` over a `multiprocessing.Process` — so the
+  fix is the package's own idiom rather than a new one. No verdict changes: the
+  224/224 anchor replays identically through the threaded path.
+
+  `QUOTEBENCH_EXECUTOR` selects upstream's executor (`local` default, or
+  `docker`). **The image is unbuilt and unrun so far** — no container runtime was
+  available where this landed — so the sieval tasks ship `experimental` until it
+  has been. `Dockerfile.quotebench` pins upstream's base digest and its seven GNU
+  packages, because QuoteBench scores BSD and GNU separately and the published
+  crossover table is the GNU replay.
