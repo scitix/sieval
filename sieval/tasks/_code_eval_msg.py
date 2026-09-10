@@ -1,4 +1,4 @@
-"""How a task reads a timeout verdict out of the code-eval service's ``msg``.
+"""How a task reads a verdict out of the code-eval service's ``msg``.
 
 Every task that grades by executing a prediction reports a ``timeouts`` count and
 has to decide, from a message string, whether the failure was the clock. That is
@@ -71,4 +71,36 @@ def is_timeout_message(msg: str | None) -> bool:
     return msg.strip().lower().startswith(CODE_EVAL_TIMEOUT_PREFIXES)
 
 
-__all__ = ["CODE_EVAL_TIMEOUT_PREFIXES", "is_timeout_message"]
+#: How the service reports an uncaught exception: ``failed: [<Class>] <str(e)>``.
+_EXC_MSG_PREFIX = "failed: ["
+
+
+def exception_class_name(msg: str | None) -> str | None:
+    """The exception class the service formatted into *msg*, lowercased.
+
+    The class is a structured SLOT; everything after it is the program's own
+    output. Reading the slot is what separates ``[MemoryError] ...`` from a
+    program that merely printed the word. ``None`` when *msg* is not that shape.
+
+    Returns the name rather than comparing it, so a caller can match a *family*.
+    That matters: the counters reading this want subclasses too, and the class
+    the service names is not always the builtin — ``ZipImportError`` is an
+    ``ImportError``, ``OutOfMemoryError`` a ``MemoryError``. Testing for the
+    exact builtin would drop them, which a bare substring test did not.
+    """
+    if not msg:
+        return None
+    text = msg.strip()
+    if not text.lower().startswith(_EXC_MSG_PREFIX):
+        return None
+    end = text.find("]", len(_EXC_MSG_PREFIX))
+    if end == -1:
+        return None
+    return text[len(_EXC_MSG_PREFIX) : end].lower()
+
+
+__all__ = [
+    "CODE_EVAL_TIMEOUT_PREFIXES",
+    "exception_class_name",
+    "is_timeout_message",
+]

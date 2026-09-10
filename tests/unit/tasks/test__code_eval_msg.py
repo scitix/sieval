@@ -11,7 +11,11 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 
 import pytest
 
-from sieval.tasks._code_eval_msg import CODE_EVAL_TIMEOUT_PREFIXES, is_timeout_message
+from sieval.tasks._code_eval_msg import (
+    CODE_EVAL_TIMEOUT_PREFIXES,
+    exception_class_name,
+    is_timeout_message,
+)
 
 # Every timeout spelling the code-eval service emits, verbatim from
 # `vendor/code-evaluator/app/exec_*.py`.
@@ -78,3 +82,49 @@ def test_every_prefix_is_itself_recognized():
     """No prefix is shadowed by another, and each one is reachable."""
     for prefix in CODE_EVAL_TIMEOUT_PREFIXES:
         assert is_timeout_message(prefix) is True
+
+
+@pytest.mark.parametrize(
+    ("msg", "expected"),
+    [
+        ("failed: [MemoryError] unable to allocate 8 GiB", "memoryerror"),
+        (
+            "failed: [ModuleNotFoundError] No module named 'numba'",
+            "modulenotfounderror",
+        ),
+        # A subclass: the service names the concrete class, not the builtin.
+        ("failed: [ZipImportError] bad local file header", "zipimporterror"),
+        ("  FAILED: [AssertionError] x  ", "assertionerror"),
+        ("failed: [CaseTimeout] ", "casetimeout"),
+        # Not the exception shape at all.
+        ("failed: subprocess timeout: 3.0s", None),
+        ("failed: compile error", None),
+        # The word in the TAIL, which is the program's own output.
+        ("failed: output ['memoryerror'] != expect ['ok']", None),
+        # Malformed: opened but never closed.
+        ("failed: [MemoryError unable to allocate", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_exception_class_name_reads_only_the_slot(msg, expected):
+    assert exception_class_name(msg) == expected
+
+
+def test_class_families_are_matched_not_just_the_builtin():
+    """The counters match a family, so a subclass the service names still counts.
+
+    A bare `"importerror" in msg` caught `ZipImportError` by accident; testing
+    the slot for equality with the builtin would silently drop it, turning a
+    precision fix into a completeness regression.
+    """
+    zip_err = exception_class_name("failed: [ZipImportError] bad local file header")
+    assert zip_err is not None and zip_err.endswith("importerror")
+
+    oom = exception_class_name("failed: [OutOfMemoryError] cuda ran out")
+    assert oom is not None and oom.endswith("memoryerror")
+
+    # ...while the tail no longer reaches either counter.
+    tail = exception_class_name("failed: [ValueError] simulated memoryerror path")
+    assert tail == "valueerror"
+    assert not tail.endswith("memoryerror")
