@@ -186,6 +186,7 @@ class TestDetectTruncatedOutput:
         """Single-sample (n=1) finish reason variants."""
         cases = [
             (["length"], {0}, "length"),
+            (["max_output_tokens"], {0}, "max_output_tokens"),
             (["max_tokens"], {0}, "max_tokens"),
             (["content_filter"], {0}, "content_filter"),
             (["stop"], set(), "stop"),

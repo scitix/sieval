@@ -305,10 +305,16 @@ class TestCountTruncatedRollouts:
         assert count_truncated_rollouts([one, four]) == 5
 
     def test_every_provider_spelling_counts(self):
-        # The IR keeps finish_reasons provider-verbatim: an OpenAI-compatible
-        # server says `length`, Anthropic says `max_tokens`. A set holding only
-        # one spelling would read zero on the other provider.
-        for reason in ("length", "max_tokens", "content_filter"):
+        # The IR keeps finish_reasons provider-verbatim: OpenAI-compatible
+        # Chat/Completions and SGLang native say `length`, Responses says
+        # `max_output_tokens`, and Anthropic says `max_tokens`. A set holding only
+        # one spelling would silently read zero on another provider.
+        for reason in (
+            "length",
+            "max_output_tokens",
+            "max_tokens",
+            "content_filter",
+        ):
             assert (
                 count_truncated_rollouts([_inferred({"finish_reasons": [reason]})]) == 1
             )

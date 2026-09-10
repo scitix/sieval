@@ -37,6 +37,7 @@ from sieval.core.models.deployment import (
 from sieval.core.models.dialect_registry import DialectRegistryError, bind_dialect
 from sieval.core.models.dialects.openai_chat import OpenAIChatDialect
 from sieval.core.models.dialects.openai_completions import OpenAICompletionsDialect
+from sieval.core.models.dialects.openai_responses import OpenAIResponsesDialect
 from sieval.core.models.reconcile import (
     BindingCapabilityPlan,
     BindingReconcileInput,
@@ -1564,6 +1565,7 @@ class TestRuntimePlanAndBinding:
         [
             ("openai_chat", OpenAIChatDialect),
             ("openai_completions", OpenAICompletionsDialect),
+            ("openai_responses", OpenAIResponsesDialect),
         ],
     )
     def test_runtime_plan_binds_only_to_exact_pool_identity(

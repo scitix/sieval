@@ -70,6 +70,7 @@ from sieval.cli.validation import _VALID_OPERATIONS
 from sieval.core.models.capabilities import CapabilityIntent, RequestDefaults
 from sieval.core.models.connection_factory import DEFAULT_REQUEST_TIMEOUT
 from sieval.core.models.deployment import RouteIntent
+from sieval.core.models.dialect import RequestAuditError
 from sieval.core.models.dialect_registry import RequestSeedSupport
 from sieval.core.models.model import Model
 from sieval.core.models.reconcile import (
@@ -6865,9 +6866,9 @@ class TestDeterministicRequestSeedPolicy:
         assert args == {"seed": 0, "temperature": 0.5}
 
     def test_reserved_seed_policy_fails_loudly(self):
-        with pytest.raises(ValueError, match="openai_responses.*has not declared"):
+        with pytest.raises(ValueError, match="anthropic_messages.*has not declared"):
             _resolve_deterministic_request_seed(
-                dialect_id="openai_responses",
+                dialect_id="anthropic_messages",
                 explicit_seed_present=False,
             )
 
@@ -6963,6 +6964,41 @@ class TestDeterministicMode:
             session._setup_postlaunch_reconciliation()
             session._setup_models()
         return session
+
+    @staticmethod
+    def _responses_connection() -> tuple[types.SimpleNamespace, AsyncMock]:
+        response = types.SimpleNamespace(
+            id="resp_1",
+            status="completed",
+            output=[
+                types.SimpleNamespace(
+                    type="message",
+                    id="msg_1",
+                    role="assistant",
+                    status="completed",
+                    content=[
+                        types.SimpleNamespace(
+                            type="output_text",
+                            text="ok",
+                            annotations=[],
+                            logprobs=None,
+                        )
+                    ],
+                )
+            ],
+            incomplete_details=None,
+            error=None,
+            usage=None,
+            model="served-responses",
+            reasoning=types.SimpleNamespace(effort=None),
+            system_fingerprint=None,
+        )
+        create = AsyncMock(return_value=response)
+        connection = types.SimpleNamespace(
+            close=AsyncMock(),
+            responses=types.SimpleNamespace(create=create),
+        )
+        return connection, create
 
     # ------------------------------------------------------------------
     # EvalSession resolves deterministic internally: the kwarg is the
@@ -7128,6 +7164,114 @@ class TestDeterministicMode:
         assert call.kwargs["seed"] == DETERMINISTIC_DEFAULT_SEED
         assert output.request_params is not None
         assert output.request_params["seed"] == DETERMINISTIC_DEFAULT_SEED
+
+    @pytest.mark.anyio
+    async def test_responses_deterministic_skips_automatic_seed_end_to_end(
+        self, tmp_path
+    ):
+        connection, create = self._responses_connection()
+        session = self._bind_models(
+            tmp_path,
+            {
+                "deterministic": True,
+                "models": {
+                    "m1": {
+                        "name": "mock-responses",
+                        "type": "chat",
+                        "dialect": "openai_responses",
+                    }
+                },
+            },
+            connection=connection,
+        )
+
+        try:
+            session._stamp_deterministic_seed_contract()
+            model = session.models["m1"]
+            assert model.dialect_id == "openai_responses"
+            assert "seed" not in model.meta()["default_params"]
+
+            output = await model.agenerate("hello", stream=False)
+
+            call = create.await_args
+            assert call is not None
+            assert "seed" not in call.kwargs
+            assert output.request_params is not None
+            assert "seed" not in output.request_params
+            contract = session._reified_config[_DETERMINISTIC_SEED_CONTRACT_KEY]
+            binding = contract["bindings"]["model:m1"]
+            assert binding["request_seed_support"] == "unsupported"
+            assert binding["seed_present"] is False
+            assert binding["seed"] is None
+            assert binding["seed_provenance"] == "none"
+        finally:
+            await session._close_owned_model_resources()
+
+    @pytest.mark.anyio
+    async def test_responses_explicit_seed_rejects_before_sdk_io(self, tmp_path):
+        connection, create = self._responses_connection()
+        session = self._bind_models(
+            tmp_path,
+            {
+                "deterministic": True,
+                "models": {
+                    "m1": {
+                        "name": "mock-responses",
+                        "type": "chat",
+                        "dialect": "openai_responses",
+                        "args": {"seed": 7},
+                    }
+                },
+            },
+            connection=connection,
+        )
+
+        try:
+            model = session.models["m1"]
+            assert model.meta()["default_params"]["seed"] == 7
+            with pytest.raises(RequestAuditError, match="sampling.seed"):
+                await model.agenerate("hello", stream=False)
+            create.assert_not_awaited()
+        finally:
+            await session._close_owned_model_resources()
+
+    @pytest.mark.anyio
+    async def test_responses_child_strips_chat_base_automatic_seed(self, tmp_path):
+        connection, create = self._responses_connection()
+        session = self._bind_models(
+            tmp_path,
+            {
+                "deterministic": True,
+                "models": {
+                    "base": {
+                        "name": "mock-chat",
+                        "type": "chat",
+                        "dialect": "openai_chat",
+                    },
+                    "responses": {
+                        "base": "base",
+                        "dialect": "openai_responses",
+                    },
+                },
+            },
+            connection=connection,
+        )
+
+        try:
+            base = session.models["base"]
+            responses = session.models["responses"]
+            assert base.meta()["default_params"]["seed"] == 0
+            assert "seed" not in responses.meta()["default_params"]
+
+            output = await responses.agenerate("hello", stream=False)
+
+            call = create.await_args
+            assert call is not None
+            assert "seed" not in call.kwargs
+            assert output.request_params is not None
+            assert "seed" not in output.request_params
+        finally:
+            await session._close_owned_model_resources()
 
     @pytest.mark.anyio
     async def test_task_infer_seed_contract_matches_each_candidate_wire(self, tmp_path):

@@ -13,12 +13,16 @@ from sieval.core.tasks.context import TaskStageMeta
 #: Finish reasons that mean the generation stopped before the model chose to.
 #:
 #: Every spelling, not one canonical name: the IR does not normalize these, so a
-#: set holding only ``length`` (OpenAI-compatible) would read zero against
-#: ``max_tokens`` (Anthropic). ``content_filter`` is in because the output is cut
-#: short the same way; separating causes is what the raw ``finish_reasons`` are
-#: for. Shared with :func:`sieval.core.tasks.anomaly.detect_truncated_output` so
-#: the rule and the report key cannot drift apart.
-TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens", "content_filter"})
+#: set holding only ``length`` (OpenAI-compatible Chat/Completions and SGLang
+#: native) would read zero against ``max_output_tokens`` (OpenAI Responses) or
+#: ``max_tokens`` (Anthropic).
+#: ``content_filter`` is in because the output is cut short the same way;
+#: separating causes is what the raw ``finish_reasons`` are for. Shared with
+#: :func:`sieval.core.tasks.anomaly.detect_truncated_output` so the rule and the
+#: report key cannot drift apart.
+TRUNCATION_FINISH_REASONS = frozenset(
+    {"length", "max_output_tokens", "max_tokens", "content_filter"}
+)
 
 
 def build_model_call_meta(output: ModelOutput) -> ModelCallMeta:

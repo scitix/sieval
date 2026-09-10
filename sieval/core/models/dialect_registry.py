@@ -1,4 +1,4 @@
-"""Stable dialect descriptors and executable PR-1 binders.
+"""Stable dialect descriptors and executable adapter binders.
 
 Descriptors are serializable symbol metadata.  Binders are ordinary functions
 and exist only for dialect packages that are executable in the current delivery
@@ -38,6 +38,10 @@ from .dialects.openai_completions import (
     CAPABILITY_DECISIONS as OPENAI_COMPLETIONS_CAPABILITY_DECISIONS,
 )
 from .dialects.openai_completions import OpenAICompletionsDialect
+from .dialects.openai_responses import (
+    CAPABILITY_DECISIONS as OPENAI_RESPONSES_CAPABILITY_DECISIONS,
+)
+from .dialects.openai_responses import OpenAIResponsesDialect
 from .ir import (
     ChatInput,
     ChatMessage,
@@ -313,6 +317,10 @@ def _bind_openai_completions(connection: Any, requested_model_id: str) -> Dialec
     return OpenAICompletionsDialect(connection, requested_model_id)
 
 
+def _bind_openai_responses(connection: Any, requested_model_id: str) -> Dialect:
+    return OpenAIResponsesDialect(connection, requested_model_id)
+
+
 def _binder(
     function: Callable[[Any, str], Dialect],
     decisions: Mapping[str, DialectCapabilityDecision],
@@ -338,6 +346,13 @@ DIALECT_BINDERS: Mapping[str, DialectBinder] = MappingProxyType(
             cast(
                 Mapping[str, DialectCapabilityDecision],
                 OPENAI_COMPLETIONS_CAPABILITY_DECISIONS,
+            ),
+        ),
+        "openai_responses": _binder(
+            _bind_openai_responses,
+            cast(
+                Mapping[str, DialectCapabilityDecision],
+                OPENAI_RESPONSES_CAPABILITY_DECISIONS,
             ),
         ),
     }
@@ -372,7 +387,8 @@ DIALECT_SPECS: Mapping[str, DialectSpec] = MappingProxyType(
         "openai_responses": _spec(
             "openai_responses",
             "openai_sdk",
-            request_seed_support=RequestSeedSupport.RESERVED,
+            decisions=_registered_decisions("openai_responses"),
+            request_seed_support=RequestSeedSupport.UNSUPPORTED,
             input_kinds=("chat",),
             input_modalities=("text", "image", "tool_call", "tool_result"),
         ),

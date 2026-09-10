@@ -47,6 +47,7 @@ from sieval.core.models.dialect_registry import (
 )
 from sieval.core.models.dialects.openai_chat import OpenAIChatDialect
 from sieval.core.models.dialects.openai_completions import OpenAICompletionsDialect
+from sieval.core.models.dialects.openai_responses import OpenAIResponsesDialect
 
 EXPECTED_DIALECTS = (
     "openai_chat",
@@ -64,7 +65,9 @@ class _Connection:
         pass
 
 
-def _runtime_binding() -> tuple[Deployment, ConnectionPool[Any], SimpleNamespace]:
+def _runtime_binding(
+    dialect_id: str = "openai_chat",
+) -> tuple[Deployment, ConnectionPool[Any], SimpleNamespace]:
     deployment = Deployment(
         deployment_id="deployment",
         plan=DeploymentPlanProjection("sha256:plan", "vllm"),
@@ -76,7 +79,7 @@ def _runtime_binding() -> tuple[Deployment, ConnectionPool[Any], SimpleNamespace
         metrics_url=None,
         facts=ServingFacts(),
     )
-    route = resolve_route(deployment, "openai_chat", "openai_sdk")
+    route = resolve_route(deployment, dialect_id, "openai_sdk")
     identity = ConnectionIdentity(
         endpoint=route.endpoint,
         connection_family=route.connection_family,
@@ -85,7 +88,7 @@ def _runtime_binding() -> tuple[Deployment, ConnectionPool[Any], SimpleNamespace
         quota_scope="deployment",
     )
     plan = SimpleNamespace(
-        dialect_id="openai_chat",
+        dialect_id=dialect_id,
         requested_model_id="requested-model",
         deployment_fingerprint=deployment.fingerprint,
         resolved_route=route,
@@ -121,20 +124,24 @@ class TestDialectDescriptors:
         } == {
             "openai_chat": RequestSeedSupport.SUPPORTED,
             "openai_completions": RequestSeedSupport.SUPPORTED,
-            "openai_responses": RequestSeedSupport.RESERVED,
+            "openai_responses": RequestSeedSupport.UNSUPPORTED,
             "anthropic_messages": RequestSeedSupport.RESERVED,
             "google_genai": RequestSeedSupport.RESERVED,
             "sglang_native": RequestSeedSupport.RESERVED,
             "vllm_native": RequestSeedSupport.RESERVED,
         }
 
-    def test_only_pr1_dialects_are_active_and_bindable(self) -> None:
+    def test_implemented_dialects_are_active_and_bindable(self) -> None:
         active = {
             dialect_id
             for dialect_id, spec in DIALECT_SPECS.items()
             if spec.implementation_status is DialectImplementationStatus.ACTIVE
         }
-        assert active == {"openai_chat", "openai_completions"}
+        assert active == {
+            "openai_chat",
+            "openai_completions",
+            "openai_responses",
+        }
         assert set(DIALECT_BINDERS) == active
         assert all(inspect.isfunction(binder) for binder in DIALECT_BINDERS.values())
 
@@ -245,6 +252,7 @@ class TestDialectDescriptors:
 
     def test_capability_decisions_are_available_only_for_active_dialects(self) -> None:
         assert set(capability_decisions_for("openai_chat")) == set(CAPABILITY_KEYS)
+        assert set(capability_decisions_for("openai_responses")) == set(CAPABILITY_KEYS)
         with pytest.raises(DialectNotImplemented, match="later #25 adapter"):
             capability_decisions_for("anthropic_messages")
 
@@ -255,7 +263,6 @@ class TestDialectBinders:
         [
             ("vllm_native", "explicitly deferred"),
             ("sglang_native", "legacy bypass"),
-            ("openai_responses", "later #25 adapter PR"),
         ],
     )
     def test_reserved_dialects_fail_with_named_error(
@@ -275,9 +282,10 @@ class TestDialectBinders:
         [
             ("openai_chat", OpenAIChatDialect),
             ("openai_completions", OpenAICompletionsDialect),
+            ("openai_responses", OpenAIResponsesDialect),
         ],
     )
-    def test_two_binders_construct_expected_dialect(
+    def test_active_binders_construct_expected_dialect(
         self, dialect_id: str, expected_type: type
     ) -> None:
         binder = DIALECT_BINDERS[dialect_id]
@@ -287,14 +295,24 @@ class TestDialectBinders:
         assert dialect.dialect_id == dialect_id
         assert dialect.connection_family == "openai_sdk"
 
-    def test_validated_runtime_plan_binds_active_dialect(self) -> None:
-        deployment, pool, plan = _runtime_binding()
+    @pytest.mark.parametrize(
+        ("dialect_id", "expected_type"),
+        [
+            ("openai_chat", OpenAIChatDialect),
+            ("openai_completions", OpenAICompletionsDialect),
+            ("openai_responses", OpenAIResponsesDialect),
+        ],
+    )
+    def test_validated_runtime_plan_binds_active_dialect(
+        self, dialect_id: str, expected_type: type
+    ) -> None:
+        deployment, pool, plan = _runtime_binding(dialect_id)
 
         dialect = bind_dialect(
-            "openai_chat", "requested-model", deployment, pool, cast(Any, plan)
+            dialect_id, "requested-model", deployment, pool, cast(Any, plan)
         )
 
-        assert isinstance(dialect, OpenAIChatDialect)
+        assert isinstance(dialect, expected_type)
 
     @pytest.mark.parametrize(
         ("requested_model_id", "changes", "message"),

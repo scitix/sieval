@@ -450,9 +450,21 @@ class TestValidateModelCapabilities:
                 capabilities={"input_scoring": True, "fim": {}},
             )
         )
+        responses = validate_eval_config(
+            self._config(
+                dialect="openai_responses",
+                capabilities={
+                    "reasoning": {"effort": "high", "summary": "detailed"},
+                    "hosted_tools": {"kinds": ["web_search"]},
+                    "stateful_session": True,
+                    "input_scoring": False,
+                },
+            )
+        )
 
         assert chat.ok, chat.errors
         assert completions.ok, completions.errors
+        assert responses.ok, responses.errors
 
     @pytest.mark.parametrize("dialect", [None, "", 7, ["openai_chat"]])
     def test_explicit_malformed_dialect_is_rejected(self, dialect):
@@ -504,7 +516,6 @@ class TestValidateModelCapabilities:
     @pytest.mark.parametrize(
         ("dialect", "message"),
         [
-            ("openai_responses", "reserved for a later"),
             ("sglang_native", "legacy bypass"),
             ("vllm_native", "explicitly deferred"),
         ],
@@ -1591,7 +1602,6 @@ class TestRunDryRun:
         [
             "    dialect: chat\n",
             "    dialect: null\n",
-            "    dialect: openai_responses\n",
             "    dialect: openai_chat\n    capabilities: null\n",
             (
                 "    dialect: openai_chat\n"
@@ -1621,6 +1631,31 @@ class TestRunDryRun:
         assert not direct.ok
         assert schema_check["ok"] is False
         assert schema_check["detail"] == "; ".join(direct.errors)
+
+    def test_active_responses_dialect_reconciles_to_its_runtime_plan(self, tmp_path):
+        """Dry-run carries Responses through task reconciliation, not just schema."""
+        from sieval.cli.validation import run_dry_run
+
+        config = self._capability_config(tmp_path, dialect="openai_responses")
+        content = config.read_text(encoding="utf-8")
+
+        direct = validate_eval_config(yaml.safe_load(content))
+        dry_run = run_dry_run(config)
+        schema_check = next(
+            check for check in dry_run["checks"] if check["name"] == "schema"
+        )
+        reconcile_check = next(
+            check
+            for check in dry_run["checks"]
+            if check["name"] == "capability_reconcile"
+        )
+
+        assert direct.ok, direct.errors
+        assert schema_check["ok"] is True
+        assert reconcile_check["ok"] is True
+        binding_plans = reconcile_check["plan"]["binding_plans"]
+        assert len(binding_plans) == 1
+        assert next(iter(binding_plans.values()))["dialect_id"] == "openai_responses"
 
     def test_schema_validation_failure(self, tmp_path):
         """Config with bad schema returns schema check failure."""
