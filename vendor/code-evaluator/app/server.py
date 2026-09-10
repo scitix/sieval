@@ -110,19 +110,14 @@ async def list_languages() -> BasicResponse[list[str]]:
     as a model that scored zero rather than as an evaluator that cannot run the
     language. Advertising the set is what makes that distinguishable.
 
-    It answers for THIS DEPLOYMENT, and a table row whose toolchain is missing
-    from the image is withheld rather than advertised: `toolchain_present`
-    resolves the row's entry command on PATH. That is the difference between
-    "offered" and "present", and it is the whole value of the endpoint --
-    advertising a row the image cannot run moves the silent-zeros failure from
-    "language not in the table" to "language in the table, compiler absent",
-    which is the same run of zeros the probe exists to prevent.
+    It answers for THIS DEPLOYMENT: a table row whose toolchain is missing from
+    the image is withheld, not advertised. Otherwise the guard only moves the
+    silent-zeros failure from "language not in the table" to "row present,
+    compiler absent" -- the same run of zeros it exists to prevent.
 
-    An existence check, not an invocation: nothing is compiled or executed here,
-    so this stays a PATH lookup (~0.1 ms for the whole table) rather than
-    running every compiler on each call. It therefore still does not prove the
-    toolchain WORKS -- only that its entry point exists -- but the gap left is a
-    broken install rather than an absent one.
+    An existence check, not an invocation: a PATH lookup (~0.1 ms for the whole
+    table), so nothing is compiled to answer a probe. It proves the entry point
+    exists, not that the toolchain works.
     """
     return BasicResponse(
         status=True,
@@ -179,11 +174,10 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
             # answered a 500 instead of this branch's own message -- and this is
             # exactly the path a language whose toolchain is not deployed takes.
             timeout = sample.timeout
-            # A table row whose toolchain is absent lands here rather than at a
-            # `FileNotFoundError` from the spawn, so this endpoint and
-            # `GET /languages` answer the same question the same way. Naming the
-            # missing command is the difference between a deployment gap a
-            # reader can fix and a per-sample failure that reads as the model's.
+            # A row whose toolchain is absent lands here rather than at a
+            # `FileNotFoundError` from the spawn, so this and `GET /languages`
+            # answer alike. Naming the missing command separates a deployment
+            # gap from a per-sample failure that reads as the model's.
             ok, msg = False, f"not supported language: {sample.lang}"
             if spec is not None:
                 msg = (

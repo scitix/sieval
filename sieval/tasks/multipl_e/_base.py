@@ -164,15 +164,15 @@ CHAT_NOTES = (
     "in most of these languages. A further divergence: upstream drives this "
     "through DSPy `ChainOfThought`, so its rendered prompt carries DSPy's field "
     "markers and a reasoning field; reproducing that would pin the port to a "
-    "DSPy version rather than to MultiPL-E, so the instruction text and all "
-    "three field descriptions (both inputs and the output's `The complete "
-    "program including the full prefix`, which restates the prefix-repetition "
-    "the blank-prompt path depends on) are carried in a plain chat prompt and "
-    "the scaffolding is not. The instruction is sent as a `system` message, "
-    "which is where DSPy itself puts a signature docstring, so the role split "
-    "is upstream's too — and it is required regardless, since a chat template "
-    "enforcing strict alternation (Mistral's) rejects two consecutive `user` "
-    "messages outright. " + _SHARED_NOTES + " PROTOCOL: upstream's chat script takes "
+    "DSPy version rather than to MultiPL-E, so the instruction and all three "
+    "field descriptions (including the output's `The complete program including "
+    "the full prefix`, which restates the prefix-repetition the blank-prompt "
+    "path depends on) are carried in a plain chat prompt and the scaffolding is "
+    "not. The instruction is a `system` message, where DSPy also puts a "
+    "signature docstring; a chat template enforcing strict alternation "
+    "(Mistral's) rejects two consecutive `user` messages anyway. "
+    + _SHARED_NOTES
+    + " PROTOCOL: upstream's chat script takes "
     "`--max-completions` with `--temperature 0.2` for pass@1 (20 in its own "
     "example). This task defaults to n=1; match upstream with `args.n: 20` plus "
     "`infer_args.temperature: 0.2`. No `stop` is sent, deliberately — the reply "
@@ -401,11 +401,9 @@ class MultiPLETask[TSample](
                 f"support and cannot run this benchmark. Redeploy from "
                 f"`vendor/code-evaluator` (see docker/Dockerfile.multipl-e)."
             )
-        # Wrapped like the connection failure above, and for the same reason: a
-        # 5xx from the evaluator is a deployment answer, not a bug in the task,
-        # and it reaches a human who has to decide what to redeploy. Left bare,
-        # a service erroring on this path surfaced as `HTTPStatusError` with a
-        # URL and no reading -- the one branch of this probe with no guidance.
+        # Wrapped like the connection failure above: a 5xx here is a deployment
+        # answer, not a task bug, and bare it was the one branch of this probe
+        # that surfaced as an `HTTPStatusError` with no reading.
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -564,13 +562,12 @@ class MultiPLETask[TSample](
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
         if total == 0:
-            # The declarations belong on this path too, so an empty report is
-            # not less readable than a full one -- and so do the COUNTS, zeroed:
-            # a key the full path always writes but this one omits makes the
-            # schema depend on whether any sample survived, which a reader
-            # diffing two runs sees as a missing measurement rather than as an
-            # empty one. No interval pair, though: there is nothing to estimate,
-            # and a zeroed population would read as measured.
+            # Declarations and COUNTS both belong on this path: a key the full
+            # report always writes but this one omits makes the schema depend on
+            # whether any sample survived, which reads as a missing measurement
+            # rather than an empty one. No interval pair, though -- there is
+            # nothing to estimate, and a zeroed population would read as
+            # measured.
             return {
                 "score": 0.0,
                 "pass@1": 0.0,
@@ -582,16 +579,11 @@ class MultiPLETask[TSample](
                 "pass@1_macro": 0.0,
                 SCORE_KEY_FIELD: "pass@1",
                 DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-                # Extraction health is a fact about the parser, and zero samples
-                # parsed is a real zero rather than a missing cell -- the same
-                # reason the full path reports it outside the n>1 gate.
-                #
-                # Merged with `|` rather than spread with `**` INSIDE the
-                # literal: a `**` makes one of the dict's keys unnameable to
-                # `check_report_declarations`, which then stops verifying this
-                # report's `score_key` at all -- and stays PASS while doing it,
-                # because the same flag suppresses the rule. A merge it can
-                # follow into `metrics.py` costs nothing and keeps the check.
+                # Merged with `|`, never spread with `**` inside the literal: a
+                # `**` leaves a key unnameable to `check_report_declarations`,
+                # which then stops verifying this report's `score_key` while
+                # still reporting PASS. A merge it can follow into `metrics.py`
+                # keeps the check.
             } | health_metrics([])
 
         buckets = self._failure_buckets(finals)
@@ -790,22 +782,17 @@ class MultiPLEChatTask[TSample](MultiPLETask[TSample]):
     One documented divergence: upstream drives this through DSPy's
     ``ChainOfThought``, whose rendered prompt carries DSPy's own field markers
     and a reasoning field. Reproducing that byte-for-byte would pin the port to
-    a DSPy version rather than to MultiPL-E, so the instruction text and the
-    INPUT field descriptions are carried verbatim in a plain chat prompt and the
-    scaffolding is not. The instruction is the load-bearing half -- it is what
-    makes the reply contain a repeated prefix for the blank-prompt path to
-    grade, and upstream's output-field description says the same thing a second
-    time, so it is carried too rather than dropped as scaffolding.
+    a DSPy version rather than to MultiPL-E, so all three field descriptions and
+    the instruction are carried verbatim in a plain chat prompt and the
+    scaffolding is not. The instruction is the load-bearing part -- it is what
+    makes the reply repeat the prefix for the blank-prompt path to grade -- and
+    upstream's output-field description restates it, so that is carried too.
 
     The instruction rides in a ``system`` message, which is where DSPy puts a
-    signature's docstring (``dspy/adapters/base.py`` appends it as
-    ``{"role": "system", ...}``) -- so this is upstream's shape, not a
-    reinterpretation of it. It also has to be: two consecutive ``user`` messages
-    are rejected outright by every chat template that enforces strict
-    alternation, and Mistral's is the live case ("After the optional system
-    message, conversation roles must alternate user/assistant/..."). Nothing in
-    this repo merges same-role messages -- ``normalize_chat_input`` passes them
-    through as written -- so the split would be visible to the server.
+    signature's docstring, so the role split is upstream's. It is also required:
+    a chat template enforcing strict alternation (Mistral's) rejects two
+    consecutive ``user`` messages, and ``normalize_chat_input`` does not merge
+    them.
     """
 
     @override

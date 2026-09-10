@@ -112,10 +112,8 @@ def _argv(template: tuple[str, ...], path: Path) -> list[str]:
 def toolchain_entry(spec: LanguageSpec) -> str:
     """The command *spec* needs on PATH for anything to run at all.
 
-    The BUILD command when the language has one, because that is the step that
-    runs first and, for a compiled row, ``run`` names the compiler's OUTPUT
-    (``{stem}``) rather than anything installed -- so testing ``run`` would ask
-    whether a file this request has not produced yet exists.
+    The BUILD command where there is one: it runs first, and a compiled row's
+    ``run`` names the compiler's OUTPUT (``{stem}``), not anything installed.
     """
     return spec.build[0] if spec.build else spec.run[0]
 
@@ -123,12 +121,11 @@ def toolchain_entry(spec: LanguageSpec) -> str:
 def toolchain_present(spec: LanguageSpec) -> bool:
     """Whether *spec*'s entry command resolves on PATH.
 
-    Existence, not health: nothing is compiled or run, so this is a PATH lookup
-    and stays cheap enough to answer a capability endpoint on every call. It is
-    what lets that endpoint mean "this deployment can run the row" instead of
-    "the source tree has a row for it" -- the two differ exactly when an image
-    ships the server without the toolchain, and advertising the row there buys a
-    full generation budget spent on programs that fail at spawn.
+    Existence, not health -- a PATH lookup, so a capability endpoint can call it
+    every time. It is what lets that endpoint mean "this deployment can run the
+    row" rather than "the source tree has a row for it"; advertising a row the
+    image cannot run costs a full generation budget on programs that fail at
+    spawn.
     """
     return shutil.which(toolchain_entry(spec)) is not None
 
@@ -150,15 +147,14 @@ def _capped(argv: list[str], memory_limit: int | None) -> list[str]:
     than aborting: a cap that cannot be set is the platform's answer, and
     failing the submission over it would score a model on the host's limits.
 
-    ``-v`` caps the ADDRESS SPACE, which suits every row in the table today
-    (a c++ binary, bash, perl) and does not generalise to a managed runtime: a
-    JVM or a Go program reserves virtual address space far beyond what it
-    commits, so ``java`` / ``scala`` / ``go`` rows would fail to start under any
-    cap worth setting rather than being limited by it. Adding one of those means
-    picking a different mechanism (an RSS cap via cgroups, or the runtime's own
-    heap flag, as ``exec_js`` does with ``--max-old-space-size``) -- so memory
-    is a third thing a new language needs decided, beside its toolchain and its
-    test harness's dependencies.
+    ``-v`` caps the ADDRESS SPACE, which suits every row today (a c++ binary,
+    bash, perl) but not a managed runtime: a JVM or Go program reserves far more
+    virtual space than it commits, so ``java`` / ``scala`` / ``go`` would fail
+    to start under any useful cap rather than be limited by it. Those need
+    another mechanism (a cgroup RSS cap, or the runtime's own heap flag as
+    ``exec_js`` uses ``--max-old-space-size``) -- so memory is a third thing a
+    new language needs decided, beside its toolchain and its test harness's
+    dependencies.
     """
     if not memory_limit:
         return argv
@@ -242,11 +238,9 @@ async def _spawn(
     finally:
         stop_event.set()
         if monitor:
-            # Only when a monitor was actually started -- this hands it time to
-            # observe the stop and write its last sample. On the build step
-            # there is no monitor (the compiler's memory is toolchain cost, not
-            # the submission's), so the wait bought nothing and cost 0.1s on
-            # every compiled-language grade.
+            # Give the monitor time to finish -- but only if one was started.
+            # The build step has none, so this cost 0.1s per compiled grade for
+            # nothing.
             await asyncio.sleep(0.1)
 
 

@@ -317,11 +317,9 @@ async def test_chat_prompt_carries_upstreams_instruction():
 async def test_chat_prompt_never_sends_two_consecutive_same_role_messages():
     """The instruction goes in `system`, which is where DSPy puts it.
 
-    Asserted on the ROLES rather than on the joined text, because the text is
-    identical either way: a chat template that enforces strict alternation
-    (Mistral's raises "After the optional system message, conversation roles
-    must alternate user/assistant/...") rejects the request outright, and
-    nothing between here and the server merges same-role messages.
+    Asserted on the ROLES, not the joined text -- the text is identical either
+    way, while a template enforcing strict alternation (Mistral's) rejects two
+    `user` messages outright and nothing downstream merges them.
     """
     task = _chat_task()
     try:
@@ -604,11 +602,11 @@ async def test_empty_report_declares_without_faking_a_population():
 
 @pytest.mark.anyio
 async def test_empty_report_writes_every_count_the_full_path_writes():
-    """The COUNTS are zeroed on the empty path; only the intervals are absent.
+    """Counts are zeroed on the empty path; only the intervals are absent.
 
-    A key the full report always writes but the empty one omits makes the
-    schema depend on whether any sample survived, which a reader diffing two
-    runs cannot tell from a measurement that went missing.
+    A key the full report writes and the empty one omits makes the schema depend
+    on whether any sample survived -- indistinguishable, to a reader diffing two
+    runs, from a measurement gone missing.
     """
     rows = [row("cpp")]
     task = _base_task(rows)
@@ -618,10 +616,9 @@ async def test_empty_report_writes_every_count_the_full_path_writes():
             [],
         )
         empty = await task.report([], [])
-        # Per-LANGUAGE keys (`pass@1_cpp`, `n_problems_cpp`) are excluded: they
-        # are dimensioned by which languages ran, so their absence at zero
-        # samples is the schema working rather than a hole. `pass@1_macro` is
-        # not one of those -- it is a single key at every population.
+        # Per-LANGUAGE keys are excluded: dimensioned by which languages ran, so
+        # their absence at zero samples is the schema working, not a hole.
+        # `pass@1_macro` is not one of those -- it is one key at any population.
         per_language = {f"pass@1_{lang}" for lang in ("cpp", "sh", "js", "pl")}
         counts = {
             key
