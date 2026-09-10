@@ -23,7 +23,7 @@ QUOTEBENCH_COMMIT = "693325a671e65f889e5cd9d83965db9cc3b26dc2"
     n_shot=0,
     tags=("english", "shell", "code-exec"),
     model_type="chat",
-    status="experimental",
+    status="stable",
     reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="quotebench",
@@ -43,9 +43,18 @@ QUOTEBENCH_COMMIT = "693325a671e65f889e5cd9d83965db9cc3b26dc2"
             "through the HTTP path reproduces upstream's recorded GNU verdicts "
             "224/224 on `passed` and 224/224 on failure class, across all four "
             "crossover cells, and recomputes the published gpt-5.5 row exactly. "
-            "`experimental`: the shipped path grades inside a GNU userland image "
-            "that has not yet been built or run, so no score impact is "
-            "quantified against it. Upstream bounds each command at 15s; "
+            "That anchor holds in BOTH userlands the shipped path can grade in: "
+            "on an ordinary host, and inside the pinned GNU image "
+            "(debian@sha256:328d1649, gawk 5.2.1), materialized under "
+            "udocker/PRoot because no Docker daemon is available. Both reach "
+            "224/224, so they agree with upstream and with each other and the "
+            "userland pin moves no verdict on the anchor data; `docker build` "
+            "itself stays unexercised. Live crossover through that container, "
+            "gpt-5.5: 96.4 / 30.4 / 44.6 / 98.2 against a published 100.0 / "
+            "28.6 / 50.0 / 89.3, with all 19 per-task disagreements attributed "
+            "to reply text rather than to grading -- re-running upstream's own "
+            "stored reply reproduces its verdict and failure class 19/19. "
+            "Upstream bounds each command at 15s; "
             "measured cost on the frozen core is a 2ms median and a 17ms max "
             "per attempt, so no bound binds. Single-draw upstream: the published "
             "crossover is one reply per (task, contract), so n=1 matches it — "

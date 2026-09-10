@@ -311,8 +311,12 @@ Two kinds, and the difference is a decision rather than a status:
   224/224 anchor replays identically through the threaded path.
 
   `QUOTEBENCH_EXECUTOR` selects upstream's executor (`local` default, or
-  `docker`). **The image is unbuilt and unrun so far** — no container runtime was
-  available where this landed — so the sieval tasks ship `experimental` until it
-  has been. `Dockerfile.quotebench` pins upstream's base digest and its seven GNU
-  packages, because QuoteBench scores BSD and GNU separately and the published
-  crossover table is the GNU replay.
+  `docker`). `Dockerfile.quotebench` pins upstream's base digest and its seven
+  GNU packages, because QuoteBench scores BSD and GNU separately and the
+  published crossover table is the GNU replay. **That userland has been run**:
+  the layers were replayed into a udocker/PRoot container (no Docker daemon
+  available here) from the pinned base *by digest* — `debian:stable-slim` has
+  since moved, so a tag pull would grade elsewhere — and the anchor reaches the
+  same 224/224 inside it as on the host, which is what promoted the sieval tasks
+  to `stable`. `docker build` itself stays unexercised; the reproduction recipe
+  is in `tests/acceptance/quotebench/README.md`.

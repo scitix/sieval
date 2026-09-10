@@ -255,6 +255,13 @@ since nesting a second docker layer would mean handing in a docker socket. Note
 that container **cannot** run with `--network none` — it has to be reachable to
 be called. To deny it egress while keeping it callable, put it on an internal
 network (`docker network create --internal …`) rather than removing networking.
+
+That userland has been exercised: replaying upstream's stored rollouts inside it
+reaches the same 224/224 the host executor does, so the pin moves no verdict on
+the anchor data. Where no Docker daemon is available, the same image can be
+materialized with udocker — the recipe, and the reason the base must be pulled
+by **digest** rather than by tag, are in
+[`tests/acceptance/quotebench/README.md`](../../tests/acceptance/quotebench/README.md).
 The image pins upstream's base digest and GNU tool set on purpose: QuoteBench
 scores BSD and GNU userlands separately, and the published numbers are the GNU
 replay.

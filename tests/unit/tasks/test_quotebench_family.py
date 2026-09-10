@@ -134,9 +134,20 @@ def test_nested_carries_v2_and_not_the_confounded_v1() -> None:
     )
 
 
-def test_both_ship_experimental_until_the_image_is_run() -> None:
+def test_both_ship_stable_and_still_name_what_licenses_it() -> None:
+    # These shipped `experimental` on one sentence: the GNU userland image had
+    # not been built or run, so nothing was quantified against it. It has now
+    # been run and the anchor holds inside it, which is what promotes the
+    # status -- so the promotion and the evidence must not be separable edits.
+    # A `stable` whose notes no longer name the containerized anchor is the
+    # failure mode pinned here, not the literal word "stable".
     for name in (RAW_NAME, NESTED_NAME):
-        assert TASK_REGISTRY[name].status == "experimental"
+        meta = TASK_REGISTRY[name]
+        assert meta.status == "stable"
+        assert meta.reference_impl is not None
+        notes = meta.reference_impl.notes
+        assert "224/224" in notes
+        assert "udocker" in notes
 
 
 def test_neither_declares_a_value_reference() -> None:

@@ -24,7 +24,7 @@ QUOTEBENCH_COMMIT = "693325a671e65f889e5cd9d83965db9cc3b26dc2"
     n_shot=0,
     tags=("english", "shell", "code-exec"),
     model_type="chat",
-    status="experimental",
+    status="stable",
     reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="quotebench",
@@ -47,9 +47,15 @@ QUOTEBENCH_COMMIT = "693325a671e65f889e5cd9d83965db9cc3b26dc2"
             "public_cli accepts only `nested-shell` and raises on `nested`, so "
             "it cannot score its own release. Grading runs in the vendored "
             "code-evaluator's `quotebench` source; anchored 224/224 on `passed` "
-            "and on failure class against upstream's recorded GNU verdicts. "
-            "`experimental`: the GNU userland image has not been built or run, "
-            "so no score impact is quantified against it. Single-draw upstream, "
+            "and on failure class against upstream's recorded GNU verdicts, in "
+            "both userlands it can grade in -- an ordinary host, and the pinned "
+            "GNU image materialized under udocker/PRoot, which reach the same "
+            "224/224 and so move no verdict between them. Live gpt-5.5 through "
+            "that container scores 98.2 here against a published 89.3; the "
+            "seven per-task disagreements are reply text, not grading -- "
+            "upstream's own replies still fail in our container exactly as "
+            "upstream recorded, all four `shell-syntax` verdicts included. "
+            "Single-draw upstream, "
             "and n!=1 is refused at construction rather than defaulted — see "
             "quotebench_raw_0shot_gen for why. See "
             "quotebench_raw_0shot_gen for the matched baseline; the off-diagonal "
