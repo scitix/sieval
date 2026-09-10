@@ -41,15 +41,22 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 #:   ``_unsafe_execute``'s own handler is formatted by the worker's outer
 #:   ``except`` as a class name. Service-internal ``BaseException``, so the name
 #:   cannot come from submitted code.
-#: * ``failed: timeout`` — the js/ts wall (``exec_js``, ``exec_ts``)
+#: * ``failed: timeout`` — the run wall for a non-Python ``lang`` (``exec_js``,
+#:   ``exec_ts``, ``exec_lang``)
 #: * ``failed: build timeout`` — a compile wall (``exec_lang``)
 #:
-#: The last two are forward-looking: no in-tree task sends a non-default ``lang``
-#: today, and ``exec_lang`` arrives with the MultiPL-E executor (#138).
+#: The last two reach MultiPL-E, not this module's readers, which are all Python.
 #:
 #: Excluded, and each a live false positive under a substring test:
 #: ``failed: [TimeoutError] ...`` (the program raised) and any
 #: ``failed: output ... != expect ...`` quoting program output.
+#:
+#: **"The service stopped the clock" is not "belongs in ``timeouts``."** This
+#: answers the first question only; the counter is the caller's call. MultiPL-E
+#: routes ``failed: build timeout`` to ``n_build_errors`` rather than here,
+#: deliberately — the run never started, and build-versus-run is the split its
+#: three keys exist to carry (``multipl_e/_base.py``). A task adopting this
+#: module gets the vocabulary, and still owes its own bucketing.
 CODE_EVAL_TIMEOUT_PREFIXES: tuple[str, ...] = (
     "failed: subprocess timeout",
     "failed: case timeout",

@@ -27,8 +27,8 @@ TIMEOUTS = [
     # worker's outer `except (Exception, CaseTimeout)` formats it as a class
     # name. The trailing space is the empty `{e}`; the message is verbatim.
     "failed: [CaseTimeout] ",
-    "failed: build timeout",  # exec_lang (arrives with #138), compile wall
-    "failed: timeout",  # exec_js / exec_ts wall
+    "failed: build timeout",  # exec_lang compile wall (MultiPL-E)
+    "failed: timeout",  # exec_js / exec_ts / exec_lang run wall
 ]
 
 # Messages that are NOT the service stopping a clock, but DO contain the word --
@@ -40,7 +40,7 @@ NOT_TIMEOUTS = [
     # LiveCodeBench prints the program's own stdout next to the expectation.
     "failed: output ['timeout'] != expect ['ok']",
     "failed: output mismatch: got 'timeout' expected 'done'",
-    # A c++ diagnostic quoting an identifier (exec_lang / MultiPL-E, #138).
+    # A c++ diagnostic quoting an identifier (exec_lang / MultiPL-E).
     "failed [build exit 1]: error: no member named 'timeout' in 'Config'",
     # A non-zero exit whose stderr mentions it.
     "failed [exit 1]: Traceback ...\nTimeoutError: x",
