@@ -306,6 +306,30 @@ async def test_chat_prompt_carries_upstreams_instruction():
         assert "do not alter the prefix but repeat it exactly" in text
         assert raw["prompt"] in text
         assert "cpp" in text
+        # Upstream's OUTPUT field description, which restates the same
+        # requirement -- carried, not dropped with the DSPy scaffolding.
+        assert "complete program including the full prefix" in text
+    finally:
+        await task.shutdown()
+
+
+@pytest.mark.anyio
+async def test_chat_prompt_never_sends_two_consecutive_same_role_messages():
+    """The instruction goes in `system`, which is where DSPy puts it.
+
+    Asserted on the ROLES rather than on the joined text, because the text is
+    identical either way: a chat template that enforces strict alternation
+    (Mistral's raises "After the optional system message, conversation roles
+    must alternate user/assistant/...") rejects the request outright, and
+    nothing between here and the server merges same-role messages.
+    """
+    task = _chat_task()
+    try:
+        raw = row()
+        pre = await task.preprocess(raw, TaskContext(sample_id=0, raw_sample=raw))
+        roles = [m["role"] for m in pre["prompt"]]
+        assert roles == ["system", "user"]
+        assert all(a != b for a, b in zip(roles, roles[1:], strict=False))
     finally:
         await task.shutdown()
 
@@ -574,6 +598,42 @@ async def test_empty_report_declares_without_faking_a_population():
         assert "n_problems" not in report
         assert "score_ci95" not in report
         assert interval_declaration_problems(report) == []
+    finally:
+        await task.shutdown()
+
+
+@pytest.mark.anyio
+async def test_empty_report_writes_every_count_the_full_path_writes():
+    """The COUNTS are zeroed on the empty path; only the intervals are absent.
+
+    A key the full report always writes but the empty one omits makes the
+    schema depend on whether any sample survived, which a reader diffing two
+    runs cannot tell from a measurement that went missing.
+    """
+    rows = [row("cpp")]
+    task = _base_task(rows)
+    try:
+        full = await task.report(
+            _finals(("cpp", [(True, "")]), rows=rows),
+            [],
+        )
+        empty = await task.report([], [])
+        # Per-LANGUAGE keys (`pass@1_cpp`, `n_problems_cpp`) are excluded: they
+        # are dimensioned by which languages ran, so their absence at zero
+        # samples is the schema working rather than a hole. `pass@1_macro` is
+        # not one of those -- it is a single key at every population.
+        per_language = {f"pass@1_{lang}" for lang in ("cpp", "sh", "js", "pl")}
+        counts = {
+            key
+            for key in full
+            if key.startswith(("n_", "timeouts", "pass@1_", "fails"))
+            and not key.endswith("_ci95")
+            and not key.startswith("n_problems_")
+            and key not in per_language
+        }
+        assert counts, "expected the full path to publish counts"
+        missing = sorted(counts - set(empty))
+        assert missing == [], f"empty report omits {missing}"
     finally:
         await task.shutdown()
 

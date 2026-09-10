@@ -140,14 +140,30 @@
   the path every MultiPL-E language whose toolchain is not deployed takes —
   20 of 24 today — so it would have been hit immediately. Reproduced before and
   after against the real endpoint.
-- `app/server.py`, `README.md` — **`GET /languages`**, advertising the `lang`
-  values a deployment accepts. A caller probes it *before* spending inference:
-  without it, an unsupported language is discoverable only per sample, by which
-  point every sample is generated and the report reads as a model that scored
-  zero rather than an evaluator that cannot run the language. It answers for the
-  source table rather than for the image (a row whose toolchain is missing is
-  still listed and fails at spawn), so it means "offered", not "proven" —
-  probing toolchains for real would run every compiler on each health check.
+- `app/server.py`, `app/exec_lang.py`, `README.md` — **`GET /languages`**,
+  advertising the `lang` values a deployment accepts. A caller probes it
+  *before* spending inference: without it, an unsupported language is
+  discoverable only per sample, by which point every sample is generated and the
+  report reads as a model that scored zero rather than an evaluator that cannot
+  run the language.
+
+  It answers for the **image**, not for the source table: `toolchain_present`
+  resolves each table row's entry command on `PATH` (the *build* command where
+  there is one — a compiled row's `run` names the compiler's output, not
+  anything installed) and a row whose command is absent is withheld.
+  `POST /evaluations` applies the same test, so the two endpoints agree and a
+  missing toolchain reads as `not supported language: cpp (row exists but
+  `g++` is not on PATH in this image)` rather than as a per-sample
+  `FileNotFoundError` that looks like the model's fault. Without this the guard
+  only moved the silent-zeros failure one step, from "language not in the table"
+  to "row present, compiler absent" — the same run of zeros it exists to
+  prevent, and reachable by deploying any of the other Dockerfiles with this
+  server.
+
+  It is an existence check, not an invocation: a `PATH` lookup over the whole
+  table costs ~0.1 ms, so nothing is compiled to answer a probe. What remains
+  unproven is that an installed toolchain *works* — a broken install still
+  fails per sample.
 
   The two entries above are **not yet upstream** — land them in
   `scitix/code-evaluator` and re-vendor. Their tests belong there rather than

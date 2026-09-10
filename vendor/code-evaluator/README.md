@@ -86,9 +86,13 @@ one sample at a time, by which point everything has been generated and the
 report reads as a model that scored zero rather than as an evaluator that
 cannot run the language.
 
-It answers for the source table, not for the image — a language whose toolchain
-is missing from the running container is still listed, and fails at spawn. Read
-it as "offered", one step short of "proven".
+It answers for **this image**, not for the source table: a table-driven
+language whose toolchain is not on `PATH` is withheld from the list rather than
+advertised, and `POST /evaluations` refuses it with the same reading (naming the
+missing command) instead of failing at spawn. The check is a `PATH` lookup, not
+an invocation — around 0.1 ms for the whole table, so nothing is compiled to
+answer a probe. It therefore proves the entry point *exists*, not that the
+toolchain works; a broken install is the remaining gap.
 
 ### Evaluation endpoint
 
@@ -215,6 +219,10 @@ When a request omits `memory_limit`, the default is 1024 MB.
   compiler is trusted toolchain cost, and a cap the kernel refuses is left
   unset rather than failing the submission. Verified binding: a 1 GiB
   allocation is refused at `memory_limit=256` and succeeds uncapped.
+  An address-space cap does **not** generalise to a managed runtime — a JVM or
+  Go program reserves far more virtual space than it commits — so a future
+  `java` / `scala` / `go` row needs a different mechanism (a cgroup RSS cap, or
+  the runtime's own heap flag) rather than this one.
 
 ## Layout
 

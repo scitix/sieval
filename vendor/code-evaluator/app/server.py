@@ -9,7 +9,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from .exec_js import execute_code as exec_js
-from .exec_lang import LANGUAGES
+from .exec_lang import LANGUAGES, toolchain_entry, toolchain_present
 from .exec_lang import execute_code as exec_lang
 from .exec_py_code import execute_code as exec_py_code
 from .exec_py_test import execute_test as exec_py_test
@@ -110,12 +110,29 @@ async def list_languages() -> BasicResponse[list[str]]:
     as a model that scored zero rather than as an evaluator that cannot run the
     language. Advertising the set is what makes that distinguishable.
 
-    It answers for THIS deployment, not for the source tree: a row whose
-    toolchain is missing from the image still fails at spawn. Absent toolchains
-    are not probed here -- doing so would run the compiler on every health
-    check -- so treat this as "offered", one step short of "proven".
+    It answers for THIS DEPLOYMENT, and a table row whose toolchain is missing
+    from the image is withheld rather than advertised: `toolchain_present`
+    resolves the row's entry command on PATH. That is the difference between
+    "offered" and "present", and it is the whole value of the endpoint --
+    advertising a row the image cannot run moves the silent-zeros failure from
+    "language not in the table" to "language in the table, compiler absent",
+    which is the same run of zeros the probe exists to prevent.
+
+    An existence check, not an invocation: nothing is compiled or executed here,
+    so this stays a PATH lookup (~0.1 ms for the whole table) rather than
+    running every compiler on each call. It therefore still does not prove the
+    toolchain WORKS -- only that its entry point exists -- but the gap left is a
+    broken install rather than an absent one.
     """
-    return BasicResponse(status=True, msg="", data=sorted(CODE_EXECUTOR_MAP))
+    return BasicResponse(
+        status=True,
+        msg="",
+        data=sorted(
+            lang
+            for lang in CODE_EXECUTOR_MAP
+            if lang not in LANGUAGES or toolchain_present(LANGUAGES[lang])
+        ),
+    )
 
 
 class LiveCodeBenchTest(BaseModel):
@@ -147,7 +164,10 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
         # so a clean run == pass, same as human-eval.
         logger.debug(f"code to exec:\n{sample.code}")
 
-        if sample.lang in CODE_EXECUTOR_MAP:
+        spec = LANGUAGES.get(sample.lang)
+        if sample.lang in CODE_EXECUTOR_MAP and (
+            spec is None or toolchain_present(spec)
+        ):
             fn, default_timeout = CODE_EXECUTOR_MAP[sample.lang]
             timeout = sample.timeout if sample.timeout is not None else default_timeout
             ok, msg, stats = await fn(
@@ -159,7 +179,17 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
             # answered a 500 instead of this branch's own message -- and this is
             # exactly the path a language whose toolchain is not deployed takes.
             timeout = sample.timeout
+            # A table row whose toolchain is absent lands here rather than at a
+            # `FileNotFoundError` from the spawn, so this endpoint and
+            # `GET /languages` answer the same question the same way. Naming the
+            # missing command is the difference between a deployment gap a
+            # reader can fix and a per-sample failure that reads as the model's.
             ok, msg = False, f"not supported language: {sample.lang}"
+            if spec is not None:
+                msg = (
+                    f"{msg} (row exists but `{toolchain_entry(spec)}` is not on "
+                    f"PATH in this image)"
+                )
             stats = None
 
         logger.info(
