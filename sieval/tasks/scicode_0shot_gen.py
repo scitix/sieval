@@ -576,13 +576,13 @@ class SciCodeZeroShotGenTask(
                 1 for fb in feedbacks if fb.get("empty_extraction")
             )
             messages = [str(fb.get("msg", "")).lower() for fb in feedbacks]
-            # Two readings, both kept, because this counter's NEIGHBOURS are
-            # exception-class counters: the service's own wall (a message
-            # prefix) and a `TimeoutError` the step itself raised (a class name
-            # in the tail, matched the way `memoryerror` below is). What a bare
-            # `"timeout" in msg` also caught, and should not, is the word
-            # appearing anywhere else in an interpolated message —
-            # `[ValueError] timeout must be positive` is not a timeout.
+            # Two readings, both kept: the service's wall (a message prefix) and
+            # a `TimeoutError` the step raised — a class name in the tail, in
+            # scope because this counter's NEIGHBOURS below are exception-class
+            # counters. Only the word elsewhere in an interpolated message goes
+            # (`[ValueError] timeout must be positive`). The class test anchors
+            # on the brackets `failed: [{type}] ...` always supplies; the
+            # neighbours match bare — looser, but their own metric to change.
             timeouts += sum(
                 is_timeout_message(msg) or "[timeouterror]" in msg for msg in messages
             )

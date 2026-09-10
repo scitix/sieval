@@ -314,9 +314,6 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
             1
             for f in finals
             for r in f.feedback_result["rollouts"]
-            # Prefix, not substring: the message tail quotes the program's
-            # own output, so `[TimeoutError] ...` and a comparison failure
-            # printing the word both read as timeouts under `in`.
             if is_timeout_message(r["extra"].get("msg"))
         )
         # `votes=False`: two correct programs are not one answer, so there is

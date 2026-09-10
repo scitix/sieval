@@ -1,8 +1,10 @@
-"""The timeout predicate, and the false positives a substring test let through.
+"""The timeout predicate: the false positives a substring test lets through, and
+the one true timeout a prefix set is easy to leave out.
 
-Each `not_a_timeout` case below contains the word "timeout" somewhere, so the
-whole file passes trivially against `"timeout" in msg.lower()` -- which is what
-these assertions exist to reject.
+Every `NOT_TIMEOUTS` case contains the word, so this file passes trivially
+against `"timeout" in msg.lower()` -- rejecting them is what the assertions are
+for. `failed: [CaseTimeout]` is the mirror case: a real wall that arrives
+formatted as a class name, which the substring test caught by accident.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -17,7 +19,11 @@ TIMEOUTS = [
     "failed: subprocess timeout: 3.0s",  # exec_py_code / exec_py_test wall
     "failed: case timeout: 6.0s",  # exec_py_test, per case
     "failed: compile timeout: 6.0s",  # exec_py_test, per-case compile
-    "failed: build timeout",  # exec_lang, compile wall
+    # The per-case wall landing past `_unsafe_execute`'s own handler, so the
+    # worker's outer `except (Exception, CaseTimeout)` formats it as a class
+    # name. The trailing space is the empty `{e}`; the message is verbatim.
+    "failed: [CaseTimeout] ",
+    "failed: build timeout",  # exec_lang (arrives with #138), compile wall
     "failed: timeout",  # exec_js / exec_ts wall
 ]
 
@@ -30,7 +36,7 @@ NOT_TIMEOUTS = [
     # LiveCodeBench prints the program's own stdout next to the expectation.
     "failed: output ['timeout'] != expect ['ok']",
     "failed: output mismatch: got 'timeout' expected 'done'",
-    # A c++ diagnostic quoting an identifier (exec_lang / MultiPL-E).
+    # A c++ diagnostic quoting an identifier (exec_lang / MultiPL-E, #138).
     "failed [build exit 1]: error: no member named 'timeout' in 'Config'",
     # A non-zero exit whose stderr mentions it.
     "failed [exit 1]: Traceback ...\nTimeoutError: x",
@@ -46,6 +52,17 @@ def test_service_timeouts_are_recognized(msg):
 def test_the_word_elsewhere_in_a_message_is_not_a_timeout(msg):
     assert "timeout" in msg.lower(), "case must be a substring-test false positive"
     assert is_timeout_message(msg) is False
+
+
+def test_a_late_case_timeout_is_not_confused_with_a_raised_one():
+    """The two class-name shapes differ only by which class, and split opposite ways.
+
+    `CaseTimeout` is service-internal, so submitted code cannot produce the name;
+    `TimeoutError` is the program's. Getting this pair backwards is the whole
+    reason the predicate is not a substring test in either direction.
+    """
+    assert is_timeout_message("failed: [CaseTimeout] ") is True
+    assert is_timeout_message("failed: [TimeoutError] deadline exceeded") is False
 
 
 @pytest.mark.parametrize("msg", ["", None, "failed: compile error", "ok"])

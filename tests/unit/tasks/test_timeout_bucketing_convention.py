@@ -3,12 +3,10 @@
 The defect is argued in `sieval/tasks/_code_eval_msg.py`: a code-eval message
 interpolates the failing program's own output, so `"timeout" in msg` counts a
 `[TimeoutError]`, a compiler diagnostic naming an identifier, and any comparison
-failure printing the word — all as the service having stopped a clock.
-
-Six tasks carried that test independently, which is why this is a survey and not
-a list. Nothing the six scored was wrong (`correct` comes from the service's
-boolean), so no metric test would ever have caught the drift, and the next task
-copying an older template back in would re-introduce it silently.
+failure printing the word. Six tasks carried that test independently, and nothing
+they scored was wrong (`correct` comes from the service's boolean), so no metric
+test would ever have caught the drift — which is why this is a survey and not a
+hand-kept list.
 
 Deliberately narrow: it forbids the BARE literal only. `"[timeouterror]" in msg`
 is a different test with a different meaning — an exception class name in the
@@ -43,6 +41,9 @@ def test_no_task_substring_matches_the_bare_word():
         for node in ast.walk(tree):
             if not isinstance(node, ast.Compare):
                 continue
+            # `n` ops against `n + 1` operands: each op pairs with its own left
+            # side and the trailing comparator has none, so the mismatch is the
+            # point — `strict=True` would raise on every chained compare.
             for op, left in zip(node.ops, [node.left, *node.comparators], strict=False):
                 if not isinstance(op, ast.In):
                     continue
@@ -64,11 +65,9 @@ def test_no_task_substring_matches_the_bare_word():
 def test_the_shared_predicate_actually_has_readers():
     """Guards the other direction: a correct helper nobody calls fixes nothing.
 
-    Counts CALL nodes, not occurrences of the name: a file whose only mention is
-    the `import` line reads the predicate nowhere, and grepping the text would
-    score that as a reader. Verified by reverse-mutation — replacing a call while
-    leaving its import behind is exactly the shape that got past the first
-    version of this test.
+    Counts CALL nodes, not occurrences of the name — a file whose only mention
+    is the `import` line reads the predicate nowhere, and that is exactly the
+    shape that got past the first version of this test.
     """
     readers: list[str] = []
     for path in _task_sources():
