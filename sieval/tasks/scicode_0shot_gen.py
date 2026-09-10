@@ -76,6 +76,8 @@ from sieval.core.types import JSONValue
 from sieval.core.utils.meta import build_stage_meta
 from sieval.datasets import SciCodeDatasetSample
 
+from ._code_eval_msg import is_timeout_message
+
 
 class StepCode(TypedDict):
     step_number: str
@@ -574,7 +576,16 @@ class SciCodeZeroShotGenTask(
                 1 for fb in feedbacks if fb.get("empty_extraction")
             )
             messages = [str(fb.get("msg", "")).lower() for fb in feedbacks]
-            timeouts += sum("timeout" in msg for msg in messages)
+            # Two readings, both kept, because this counter's NEIGHBOURS are
+            # exception-class counters: the service's own wall (a message
+            # prefix) and a `TimeoutError` the step itself raised (a class name
+            # in the tail, matched the way `memoryerror` below is). What a bare
+            # `"timeout" in msg` also caught, and should not, is the word
+            # appearing anywhere else in an interpolated message —
+            # `[ValueError] timeout must be positive` is not a timeout.
+            timeouts += sum(
+                is_timeout_message(msg) or "[timeouterror]" in msg for msg in messages
+            )
             memory_errors += sum("memoryerror" in msg for msg in messages)
             # ModuleNotFoundError is an ImportError subclass, but the evaluator
             # reports the concrete class name, which does not contain

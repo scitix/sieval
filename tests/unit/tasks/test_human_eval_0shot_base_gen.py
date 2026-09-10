@@ -128,12 +128,23 @@ async def test_report_counts_finals_and_fails_like_chat_human_eval_task():
                 TaskContext(
                     sample_id=0,
                     raw_sample=_sample(),
-                    feedback_result=_judgement((True, "passed"), (False, "timeout")),
+                    # The evaluator's own wording (`exec_py_code`), not the word
+                    # on its own: `timeouts` is read off the message PREFIX, and
+                    # a fixture the service cannot emit would pass against any
+                    # implementation.
+                    feedback_result=_judgement(
+                        (True, "passed"), (False, "failed: subprocess timeout: 3.0s")
+                    ),
                 ),
                 TaskContext(
                     sample_id=1,
                     raw_sample=_sample(),
-                    feedback_result=_judgement((False, "failed"), (False, "failed")),
+                    # Contains the word and is NOT a timeout -- the program
+                    # raised, which a substring test used to charge to the clock.
+                    feedback_result=_judgement(
+                        (False, "failed: [TimeoutError] x"),
+                        (False, "failed: [AssertionError] y"),
+                    ),
                 ),
             ],
             [TaskContext(sample_id=2, raw_sample=_sample())],
