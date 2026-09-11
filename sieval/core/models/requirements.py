@@ -48,6 +48,7 @@ class TaskRequirements:
     input_scoring: bool = False
     sampled_logprobs: bool = False
     min_top_logprobs: int | None = None
+    function_tools: bool = False
 
     def __post_init__(self) -> None:
         if self.input is not None and not isinstance(self.input, InputKind):
@@ -67,6 +68,8 @@ class TaskRequirements:
             raise TypeError("input_scoring must be a boolean")
         if not isinstance(self.sampled_logprobs, bool):
             raise TypeError("sampled_logprobs must be a boolean")
+        if not isinstance(self.function_tools, bool):
+            raise TypeError("function_tools must be a boolean")
 
         minimum = self.min_top_logprobs
         if minimum is not None:

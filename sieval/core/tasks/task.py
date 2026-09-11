@@ -65,6 +65,8 @@ def _required_capabilities(requires: TaskRequirements) -> frozenset[str]:
         capabilities.add("sampled_logprobs")
     if requires.min_top_logprobs is not None:
         capabilities.add("top_logprobs")
+    if requires.function_tools:
+        capabilities.add("function_tools")
     return frozenset(capabilities)
 
 

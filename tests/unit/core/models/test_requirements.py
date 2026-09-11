@@ -101,6 +101,22 @@ class TestTaskRequirements:
         with pytest.raises((TypeError, ValueError), match=message):
             TaskRequirements(**cast(Any, kwargs))
 
+    def test_function_tools_defaults_off_and_requires_no_capability(self) -> None:
+        from sieval.core.tasks.task import _required_capabilities
+
+        assert TaskRequirements().function_tools is False
+        assert "function_tools" not in _required_capabilities(TaskRequirements())
+
+    def test_function_tools_flag_demands_the_capability(self) -> None:
+        from sieval.core.tasks.task import _required_capabilities
+
+        requires = TaskRequirements(function_tools=True)
+        assert _required_capabilities(requires) == frozenset({"function_tools"})
+
+    def test_function_tools_rejects_a_non_bool(self) -> None:
+        with pytest.raises(TypeError, match="function_tools must be a boolean"):
+            TaskRequirements(function_tools=cast(Any, "yes"))
+
 
 class TestNormalizedBindings:
     def test_all_bindings_are_frozen_and_hold_only_setup_values(self) -> None:
