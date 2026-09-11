@@ -408,6 +408,13 @@ Two kinds, and the difference is a decision rather than a status:
     manifest's own `Docker-Content-Digest`). A language with no pinned digest is
     **refused** (`infra:unpinned-lang`) rather than floated — an unpinned
     verifier scores silently, which is the failure the table exists to prevent.
+    The refusal covers the **override path too**, where it originally did not:
+    a template containing `{image}` is asking this table for a digest, so an
+    unpinned language raises there as well instead of substituting an empty
+    string into the argv. That distinction matters because podman is the one
+    runtime that needs no override — every other deployment, upstream's own
+    `apptainer` included, runs the branch the guarantee used to skip. A template
+    *without* `{image}` names its own image and is still left alone.
     All eight are single-platform **linux/amd64** manifests, so the pin binds the
     architecture as well; arm64 needs the override. The resolved reference is
     returned as `data.verifier_image` so the verdict's provenance reaches the run
@@ -436,14 +443,32 @@ Two kinds, and the difference is a decision rather than a status:
   existing `monitor_process_resources` watches the pid it spawned. Reported anyway
   so `data` is never null, but do not read them as the submission's cost.
 
-  Verified against a local stub verifier speaking the protocol (no podman on the
-  dev box): `success` / `fail:wrong-output` / `fail:error` pass through verbatim,
-  and `infra:timeout` / `infra:bad-lang` / `infra:no-test` all fire. Separately,
-  on the default (table-driven) path: all four of `lua` / `jl` / `ml` / `f90`
-  resolve to their digests and report them, `julia` and `rust` are refused as
-  `infra:unpinned-lang`, and an override templated on `{lang}` reports no image.
+  Verified against the **real** `ghcr.io/nuprl/agnostics` lua verifier at its
+  pinned digest, run under `udocker` (2026-09-11; the dev box has no podman, see
+  the runtime note below): `success` / `fail:wrong-output` / `fail:error` come
+  back verbatim from the container, `infra:timeout` / `infra:bad-lang` /
+  `infra:no-test` all fire, and `data.verifier_image` carries the digest that
+  ran. A hand-written correct Lua solution scored `success` on a real decoded
+  LiveCodeBench suite while a deliberately wrong variant scored
+  `fail:wrong-output`, which is what rules out the decode and whitespace paths.
+  On the digest table: `lua` / `jl` / `ml` / `f90` resolve and report, `julia`
+  and `rust` are refused as `infra:unpinned-lang` on the default path *and*
+  under an `{image}` override, and an override templated on `{lang}` reports no
+  image. All eight pinned digests still matched the registry on 2026-09-11.
   Not yet upstream -- land in `scitix/code-evaluator` and re-vendor; tests belong
   there rather than under `tests/`, which mirrors `sieval/`.
+
+  **Running the verifier without podman.** `CODE_EVAL_AGNOSTICS_COMMAND` is the
+  supported hook, but two things podman gives for free have to be rebuilt. A
+  udocker container is a *persistent directory* and the Agnostics harness writes
+  the submission to a fixed path in its cwd, so concurrent requests overwrite
+  each other's code -- measured 19 of 40 wrong verdicts against one shared
+  container, 0 of 40 once each invocation got its own bind-mounted workdir. And
+  `udocker run` prints a banner to **stdout**, which this module json-decodes
+  whole (as upstream does), so it needs `--quiet`. Point the env var at a
+  wrapper that asserts the `{image}` it was handed equals the digest its
+  container was built from; otherwise the reported provenance is a label rather
+  than a fact.
 
   **Re-pinning.** The digests are a snapshot. If upstream rebuilds an image, the
   table keeps scoring against the old one, which is the intended behaviour --

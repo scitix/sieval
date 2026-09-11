@@ -89,11 +89,24 @@ def verifier_command(lang: str) -> tuple[list[str], str | None]:
     Raises ``KeyError`` for a language with no pinned digest, rather than falling
     back to the floating tag. An unpinned verifier is the failure this function
     exists to prevent, so a new language is added to ``_IMAGE_DIGESTS`` (or run
-    through the override), never silently floated.
+    through an override that names its own image), never silently floated. That
+    holds on **both** paths: an override whose template contains ``{image}`` is
+    asking this table for a digest, so it is refused the same way.
     """
     override = os.environ.get(_COMMAND_ENV_VAR)
     if override:
         digest = _IMAGE_DIGESTS.get(lang)
+        wants_image = "{image}" in override
+        if wants_image and digest is None:
+            # The template asked this table for a pinned digest and there is
+            # none. Substituting "" would hand the runtime an empty argv slot,
+            # so the operator would read whatever it says about a missing
+            # argument instead of the one diagnostic that names the cause --
+            # and `infra:unpinned-lang` is the split this module exists to make.
+            # A template WITHOUT `{image}` names its own image and is left
+            # alone: that is the override taking responsibility, which is the
+            # point of having one.
+            raise KeyError(lang)
         image = f"{_REGISTRY}@{digest}" if digest else None
         argv = [
             part.replace("{image}", image or "").replace("{lang}", lang)
@@ -104,7 +117,7 @@ def verifier_command(lang: str) -> tuple[list[str], str | None]:
         # something this table cannot vouch for, and naming a digest that did not
         # run is worse than reporting nothing -- the value is the verdict's
         # provenance in the run record.
-        return argv, (image if "{image}" in override else None)
+        return argv, (image if wants_image else None)
 
     image = f"{_REGISTRY}@{_IMAGE_DIGESTS[lang]}"
     argv = [
