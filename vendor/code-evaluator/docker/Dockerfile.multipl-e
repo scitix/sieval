@@ -7,6 +7,13 @@ FROM python:3.10-slim
 #
 # g++      -- humaneval-cpp / mbpp-cpp   (build step; `bits/stdc++.h`, which
 #                                         every cpp prompt includes, is GCC's)
+#             AND source="liveoibench"   (app/exec_cpp.py, a different C++ path:
+#                                         per-test-case, `-static`, under the
+#                                         problem's own RLIMIT_CPU/RLIMIT_AS.
+#                                         It needs `libstdc++-*-dev` +
+#                                         `libc6-dev` to link statically, which
+#                                         `g++` already depends on -- verified in
+#                                         this base, do not "simplify" g++ away)
 # bash     -- humaneval-sh  / mbpp-sh    (in the base image; named here so a
 #                                         base change that drops it is visible)
 # perl     -- humaneval-pl  / mbpp-pl

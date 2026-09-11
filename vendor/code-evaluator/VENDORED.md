@@ -481,8 +481,8 @@ Two kinds, and the difference is a decision rather than a status:
     -H "Accept: application/vnd.oci.image.manifest.v1+json" \
     "https://ghcr.io/v2/nuprl/agnostics/manifests/lua" | grep -i docker-content-digest
   ```
-- `app/exec_cpp.py`, `app/server.py`, `docker/Dockerfile.cpp` — **C++ execution**,
-  for `source="liveoibench"`. The first non-Python language the evaluator runs as
+- `app/exec_cpp.py`, `app/server.py` — **C++ execution**, for
+  `source="liveoibench"`. The first non-Python language the evaluator runs as
   a *compiled* artifact: `g++ -std=gnu++17 -Wall -O2 -pipe -static -g`, then one
   child per test case under `RLIMIT_CPU` / `RLIMIT_AS`. Both limits carry
   upstream LiveOIBench's explicit 20% buffer, and a 10 ms poller kills a child
@@ -514,17 +514,27 @@ Two kinds, and the difference is a decision rather than a status:
   it; renaming it would widen the diff against upstream without changing the
   wire format.
 
-  `Dockerfile.cpp` exists because the base image has no toolchain: g++ without
-  `libstdc++-*-dev` / `libc6-dev` links nothing statically, and every submission
-  would fail identically. Verified against g++ 14.2 on Debian: correct, partial,
-  TLE, MLE, compile-error, float-tolerance and grader-linked submissions all
-  produce the expected verdict vectors. Not yet upstream — land in
-  `scitix/code-evaluator` and re-vendor.
+  **Deploy `docker/Dockerfile.multipl-e`** — there is no separate image for this
+  source. The base image has no toolchain, and a `-static` link additionally
+  needs `libstdc++-*-dev` and `libc6-dev`, but `apt-get install g++` already
+  pulls both: Debian's `g++` metapackage depends on the versioned compiler, which
+  depends on the matching `libstdc++-N-dev`, which depends on `libc6-dev`.
+  Measured inside the real base rather than reasoned about — on the current
+  `python:3.10-slim` (Debian 13.6), `g++` alone brings `libc6-dev 2.41` and
+  `libstdc++-14-dev`, `libstdc++.a` and `libc.a` both resolve, and the judge's
+  exact link (`g++ -std=gnu++17 -Wall -O2 -pipe -static -g`) builds and runs a
+  `bits/stdc++.h` program.
 
-  `Dockerfile.multipl-e` also serves this source — it installs `g++`, which
-  depends on `libstdc++-*-dev` and so pulls `libc6-dev` with it, the same two
-  packages named explicitly here. An operator running both benchmarks needs one
-  image, not two; this one stays as the minimal single-purpose build.
+  An earlier `Dockerfile.cpp` named those two packages explicitly and was
+  otherwise byte-identical to `Dockerfile.multipl-e` minus its other toolchains.
+  It was removed: it pinned `libstdc++-12-dev` while the base has since moved to
+  gcc 14, so it installed a dev tree the compiler no longer uses — a second image
+  to maintain that was both redundant and drifting.
+
+  Verified against g++ 14.2 on Debian: correct, partial, TLE, MLE,
+  compile-error, float-tolerance and grader-linked submissions all produce the
+  expected verdict vectors. Not yet upstream — land in `scitix/code-evaluator`
+  and re-vendor.
 
   **Not the same C++ path as `exec_lang`'s `cpp` row above**, and the two are not
   merge candidates. That one is direct-run: one program, one all-or-nothing
