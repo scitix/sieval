@@ -23,6 +23,7 @@ from sieval.core.models import (
     ConnectionIdentity,
     ConnectionPool,
     DialectOptions,
+    FunctionToolCall,
     GenModel,
     InputScoringResult,
     Model,
@@ -1586,6 +1587,40 @@ class TestResponseBridge:
             Response(texts=("t",), reasoning=(ReasoningOutput(text=""),))
         )
         assert out.reasoning_texts is None
+
+    def test_tool_calls_reach_the_task_in_order(self):
+        """A task that declares ``function_tools`` reads the calls back here.
+
+        The bridge rebuilds the record field by field, so a channel it does not
+        name is dropped without a failure anywhere.
+        """
+        out = self._bridge(
+            Response(
+                texts=("",),
+                tool_calls=(
+                    FunctionToolCall("call_1", "get_weather", '{"city":"Paris"}'),
+                    FunctionToolCall("call_2", "get_time", '{"tz":"UTC"}'),
+                ),
+            )
+        )
+        assert out.tool_calls == (
+            FunctionToolCall("call_1", "get_weather", '{"city":"Paris"}'),
+            FunctionToolCall("call_2", "get_time", '{"tz":"UTC"}'),
+        )
+
+    def test_tool_calls_absent_stays_none(self):
+        out = self._bridge(Response(texts=("t",), tool_calls=None))
+        assert out.tool_calls is None
+
+    def test_tool_calls_present_but_empty_survives(self):
+        """Calling nothing is a reply about the tools; absence is not."""
+        out = self._bridge(Response(texts=("t",), tool_calls=()))
+        assert out.tool_calls == ()
+
+    def test_tool_calls_default_to_none_when_omitted(self):
+        """Every existing construction site omits the field."""
+        model = GenModel(model="m", api_key="k")
+        assert ModelOutput(model=model.meta(), texts=["t"]).tool_calls is None
 
     def test_caller_mapping_is_not_mutated_and_not_shared(self):
         """Provenance is attached to a copy.
