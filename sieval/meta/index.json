@@ -1624,6 +1624,28 @@
       "reference_kind": "value"
     },
     {
+      "name": "aime_2025_0shot_gen_tool",
+      "display_name": "AIME 2025 (0-shot, generative, code tool)",
+      "description": "AIME 2025 with a Python tool during the solve, graded exactly as the no-tool task.",
+      "dataset": "aime_2025",
+      "eval_mode": "gen",
+      "n_shot": 0,
+      "tags": [
+        "english",
+        "open-ended",
+        "tool-use"
+      ],
+      "deps_group": "math",
+      "model_type": "chat",
+      "reference_impl": {
+        "source": "simple-evals",
+        "url": "https://github.com/openai/simple-evals/blob/ee3b0318d8d1d9d72755a4120879be65f7c07e9e/math_eval.py",
+        "notes": "Prompt template, answer extraction and grading are simple-evals', identical to aime_2025_0shot_gen. The tool affordance is not upstream's: no upstream publishes a tool-augmented AIME column, so this task is anchored on the paired difference against the no-tool task (same data, same extractor, same verifier, same n) rather than on an external score. The protocol prompt is pinned in _math_tool_base.TOOL_SYSTEM_PROMPT; editing it invalidates any previously measured difference. Execution runs on the code-evaluator /code-runs route, one fresh interpreter per call."
+      },
+      "status": "experimental",
+      "reference_kind": "value"
+    },
+    {
       "name": "aime_2026_0shot_gen",
       "display_name": "AIME 2026 (0-shot, generative)",
       "description": "AIME 2026 — American Invitational Mathematics Examination, 30 problems.",

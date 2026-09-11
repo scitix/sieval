@@ -496,12 +496,56 @@ async def test_a_failed_request_mid_loop_keeps_what_was_answered():
     assert len(traj.outputs) == 1
 
 
+@pytest.fixture
+def aime_tool_task():
+    """A 2-rollout AIME tool task over a scripted model and sandbox.
+
+    Constructed through a real leaf rather than a bare `MathToolTask` subclass
+    defined here: `infer` is what boxes the stage meta, and the boxing has to be
+    exercised on the same path a registered task takes -- a test-local subclass
+    would pin its own copy of the class shape and stop covering the leaf.
+
+    The model is `_ScriptedModel`, a real `ChatModel` over a stub transport,
+    because `Task.__init__` validates the model's dialect and runtime plan.
+
+    Imports are inside the fixture so this module does not drag the dataset and
+    the leaf into every test in the file, and so the two stub classes above can
+    be imported FROM here by the leaf's own test module without a cycle.
+    """
+    from datasets import Dataset as HFDataset
+    from datasets import DatasetDict as HFDatasetDict
+
+    from sieval.datasets.aime_2025 import AIME2025Dataset
+    from sieval.tasks.aime_2025_0shot_gen_tool import AIME2025ZeroShotGenToolTask
+
+    rows = HFDataset.from_list([{"question": "What is 6 times 7?", "answer": "42"}])
+    task = AIME2025ZeroShotGenToolTask(
+        AIME2025Dataset(_hf_dict=HFDatasetDict({"train": rows, "test": rows})),
+        # Two rollouts. Rollout 0 runs code then answers (2 requests); rollout 1
+        # answers straight away (1 request). Three requests total -- which is the
+        # number the accounting test asserts.
+        _ScriptedModel(["```python\nprint(42)\n```", r"\boxed{42}", r"\boxed{42}"]),
+        n=2,
+        max_tool_calls=4,
+    )
+    task._sandbox = _ScriptedSandbox(["42\n"])
+    return task
+
+
 @pytest.mark.anyio
 async def test_infer_reports_every_model_call_in_its_stage_meta(aime_tool_task):
     # Three model calls across two rollouts must all appear in `model_calls`.
     # Asserting the COUNT, not that a helper was called: a later refactor that
     # moves the boxing would keep a call-shape assertion green while the token
     # spend silently vanished from profile.json.
+    #
+    # The count is also the only assertion available here: rollouts run
+    # concurrently under `asyncio.gather`, so which rollout pops which scripted
+    # reply is not deterministic. The fixture is built so every reply leads to
+    # the same answer, and a claim that a SPECIFIC rollout ran the code would be
+    # a flake rather than a check. The per-rollout request count is pinned
+    # deterministically by `test_loop_runs_code_then_answers` above, which drives
+    # one rollout and reads the transport's requests directly.
     boxed = await aime_tool_task.infer(
         {"prompt": [{"role": "user", "content": "q"}]},
         aime_tool_task.make_context(0),

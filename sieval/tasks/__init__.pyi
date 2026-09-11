@@ -19,6 +19,9 @@ from .aime_2024_0shot_gen import (
 from .aime_2025_0shot_gen import (
     AIME2025ZeroShotGenTask,
 )
+from .aime_2025_0shot_gen_tool import (
+    AIME2025ZeroShotGenToolTask,
+)
 from .aime_2026_0shot_gen import (
     AIME2026ZeroShotGenTask,
 )
@@ -259,6 +262,7 @@ __all__ = [
     "AGIEvalZeroShotGenTask",
     "AIME2024ZeroShotGenTask",
     "AIME2025ZeroShotGenTask",
+    "AIME2025ZeroShotGenToolTask",
     "AIME2026ZeroShotGenTask",
     "ARCChallengeFewShotClpTask",
     "ARCChallengeFewShotPplTask",
