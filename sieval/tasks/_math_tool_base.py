@@ -89,10 +89,23 @@ class ToolCall:
     code: str
     stdout: str
     stderr: str
-    exit_code: int | None
-    timed_out: bool
-    truncated: bool
-    wall_s: float
+    #: `None` on a genuine sandbox outage (a call that never reached the
+    #: service at all), not merely "the program set no exit code". Defaulted
+    #: to `None` because serialization drops any field whose value is `None`
+    #: before persisting a record, so an outage call is written to disk with
+    #: no `exit_code` key at all. Reconstruction rebuilds the object by calling
+    #: the class with whatever keys survived; without a default here, the
+    #: missing key makes that call raise, and the failure is swallowed and
+    #: papered over with the raw dict instead of a real `ToolCall` -- silently
+    #: breaking every reader that expects to access `.exit_code` as an
+    #: attribute. `timed_out`, `truncated` and `wall_s` must default too: a
+    #: dataclass cannot default one field while leaving a later one required,
+    #: so they take the values that mean "nothing was observed" -- `False`,
+    #: `False`, `0.0`.
+    exit_code: int | None = None
+    timed_out: bool = False
+    truncated: bool = False
+    wall_s: float = 0.0
     #: Reserved for a future stateful backend; always None while execution is
     #: one fresh process per call. Absent rather than null once serialized.
     session_id: str | None = None

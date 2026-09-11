@@ -190,6 +190,52 @@ def test_trajectory_round_trips_and_omits_a_null_session_id():
     assert back.protocol == "text"
 
 
+def test_a_sandbox_outage_call_round_trips_as_a_tool_call_not_a_dict():
+    # An outage-shaped call has exit_code=None, which obj_to_dict drops from the
+    # persisted record the same way it drops a null session_id. Unlike
+    # session_id, exit_code IS read back as an attribute (postprocess reads
+    # call.exit_code, call.timed_out, call.discarded_tail), so if ToolCall
+    # cannot be reconstructed from a payload missing that key, dict_to_obj's
+    # `suppress(Exception)` around `target(**payload)` swallows the TypeError
+    # and hands back a raw dict -- and the first attribute access on it raises
+    # AttributeError on a resume, long after the run that produced the record.
+    trajectory = MathToolTrajectory(
+        rollouts=[
+            RolloutTrajectory(
+                index=0,
+                outputs=[],
+                tool_calls=[
+                    ToolCall(
+                        index=0,
+                        code="print(1)",
+                        stdout="",
+                        stderr="sandbox unreachable: [ConnectError] refused",
+                        exit_code=None,
+                        timed_out=False,
+                        truncated=False,
+                        wall_s=0.0,
+                        object="sandbox",
+                        reason="unreachable",
+                    )
+                ],
+                stop_reason="sandbox_unreachable",
+            )
+        ],
+        protocol="text",
+        sandbox={"service_version": None, "fully_served": False},
+    )
+    flat = obj_to_dict(trajectory, add_type=True)
+    back = dict_to_obj(flat, {})
+    call = back.rollouts[0].tool_calls[0]
+    assert isinstance(call, ToolCall)
+    assert call.object == "sandbox"
+    assert call.reason == "unreachable"
+    # These three are exactly what MathToolTask.postprocess reads off a call.
+    assert call.exit_code is None
+    assert call.timed_out is False
+    assert call.discarded_tail == ""
+
+
 @pytest.mark.anyio
 async def test_live_service_honours_the_contract():
     """Skipped unless a code-evaluator is reachable.
