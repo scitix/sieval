@@ -56,15 +56,17 @@ written from observed behaviour and pinned by tests, in the shape
 
 Divergences from upstream, each with what it costs:
 
-* **No JSONAdapter retry.** ``ChatAdapter.__call__`` catches *any* exception from
-  its own parse and re-issues the whole call through ``JSONAdapter`` — a second,
-  differently shaped prompt with a JSON response format. This port makes one
-  call. A reply that omits either marker therefore scores 0 here where upstream
-  gets one more chance, so this number is a **lower bound**, and the size of the
-  gap is exactly ``n_unextracted``. Read it before comparing against a published
-  row; upstream's own README warns that truncation at its default
-  ``max_tokens=5000`` is common enough to mention, and truncation is precisely
-  what strips the closing marker.
+* **No JSONAdapter retry.** ``ChatAdapter.__call__`` catches every exception its
+  own call raises, ``ContextWindowExceededError`` excepted, and re-issues the
+  whole call through ``JSONAdapter`` — a second, differently shaped prompt with a
+  JSON response format. This port makes one call. A reply that omits either
+  marker therefore scores 0 here where upstream gets one more chance, so this
+  number is a **lower bound**, and the size of the gap is exactly
+  ``n_unextracted``. (The one exception upstream re-raises does not narrow the
+  gap: a context-window overflow fails on both sides.) Read it before comparing
+  against a published row; upstream's own README warns that truncation at its
+  default ``max_tokens=5000`` is common enough to mention, and truncation is
+  precisely what strips the closing marker.
 * **The container is run by the evaluator, not by this task, and pinned by
   digest.** Upstream shells out to ``podman run ... ghcr.io/nuprl/agnostics:<lang>``
   (or ``apptainer`` for a ``.sif``) from the harness process, against the mutable
@@ -216,6 +218,19 @@ _OUTPUT_FIELDS = frozenset({"reasoning", "solution"})
 # Whether a `result` counts as a pass is the evaluator's call, not read back from
 # this string here -- the task reads the response's `status`.
 _INFRA_PREFIX = "infra:"
+
+# The evaluator's own budget for writing the payload (`_STDIN_WRITE_TIMEOUT` in
+# `exec_agnostics`), which keeps upstream's `stdin_write_timeout=300` because a
+# decoded LiveCodeBench suite is tens of MB. It is spent BEFORE the container
+# wall is armed, not instead of it, so one request can legitimately occupy the
+# evaluator for this plus `timeout` in series.
+_EVALUATOR_STDIN_WRITE_BUDGET = 300.0
+
+# On top of those two: container spawn, the resource monitor's teardown, and
+# network latency. The HTTP deadline has to sit strictly outside everything the
+# evaluator may spend, or the request is abandoned while the server is still
+# entitled to answer -- see `feedback`.
+_HTTP_DEADLINE_MARGIN = 30.0
 
 # Upstream tags its published verifiers by **file extension**, not by language
 # name: `ghcr.io/nuprl/agnostics` ships exactly
@@ -424,9 +439,13 @@ class AgLiveCodeBenchXZeroShotGenTask(
         ModelOutput,
         PredictionRecord,
         JudgementRecord,
-        # `float | str`: the report names its own score column and the language
-        # it measured, neither of which is a measurement.
-        dict[str, float | str],
+        # `str`: the report names its own score column and the language it
+        # measured, neither of which is a measurement. `list[float]` and
+        # `dict[str, str]`: the interval bounds and the `ci95_units` map that
+        # `ungated_intervals` contributes -- the slot has to admit them, since
+        # nothing checks it (the stage methods carry no return annotations, so
+        # a narrower declaration here is simply wrong rather than caught).
+        dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
     def __init__(
@@ -526,10 +545,20 @@ class AgLiveCodeBenchXZeroShotGenTask(
                         "test": {"inputs": inputs, "outputs": outputs},
                         "timeout": self._timeout,
                     },
-                    # Beyond the container wall, for network latency and for the
-                    # test suite itself: a decoded suite runs to tens of MB, and
-                    # writing it is inside this deadline.
-                    timeout=self._timeout + 300.0,
+                    # Strictly outside what the evaluator may spend on one
+                    # request, which is its stdin-write budget and THEN the
+                    # container wall, in series -- not one covering the other.
+                    # Sized at `timeout + 300` the two are exactly equal, so the
+                    # deadline expires while the server is still entitled to
+                    # answer, and the `infra:stdin` verdict it exists to report
+                    # can never arrive. That matters beyond the diagnostic: a
+                    # verdict fails one rollout, whereas the transport error a
+                    # too-tight deadline raises propagates out of `feedback` and
+                    # fails the whole sample, which `DENOMINATOR_REQUESTED` then
+                    # charges as wrong.
+                    timeout=self._timeout
+                    + _EVALUATOR_STDIN_WRITE_BUDGET
+                    + _HTTP_DEADLINE_MARGIN,
                 )
                 resp.raise_for_status()
                 res = resp.json()

@@ -374,10 +374,17 @@ async def test_the_default_timeout_is_upstreams_fifteen_seconds():
 
     (body,) = evaluator.bodies
     assert body["timeout"] == 15.0
-    # The HTTP deadline must sit outside the container wall, or a timing-out
-    # submission surfaces as a transport error instead of a verdict. The margin
-    # is large because writing a decoded suite (tens of MB) is inside it.
-    assert evaluator.deadlines == [15.0 + 300.0]
+    # The HTTP deadline must sit STRICTLY outside everything the evaluator may
+    # spend on one request -- its 300s stdin-write budget and then the container
+    # wall, in series. At exactly `timeout + 300` the two are equal, so the
+    # request is abandoned while the server is still entitled to answer and the
+    # `infra:stdin` verdict never arrives; worse, a transport error fails the
+    # whole sample where a verdict would have failed one rollout. Asserted as
+    # the inequality rather than only as a literal, so the reason survives a
+    # later change to either budget.
+    (deadline,) = evaluator.deadlines
+    assert deadline > 15.0 + 300.0
+    assert deadline == 15.0 + 300.0 + 30.0
 
 
 @pytest.mark.anyio
