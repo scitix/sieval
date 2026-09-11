@@ -46,14 +46,13 @@ name, so it is the only place the distinction can live.
   not for an extractor we added: the second column has to be upstream's.
 - **`_fc` is licensed by a capability, not a prompt.** It exists where upstream
   publishes a native-function-calling column beside its prompting one, and it is
-  a different axis from `_parse`: `_parse` layers a second extractor over the
-  same model interface, while `_fc` changes *which model capability is
-  exercised* — it gates on `function_tools`, so it changes which models can run
-  the task at all. The unqualified name goes to the prompting reading, because
-  every model on a function-calling leaderboard has that row while only some
-  have an FC row, and a default name that half the fleet cannot run is the
-  narrow one. `bfcl_v3_non_live_0shot_gen` / `_fc` is the case that earned the
-  row.
+  a different axis from `_parse`: that one layers a second extractor over the
+  same model interface, while `_fc` changes *which capability is exercised* — it
+  gates on `function_tools`, so it changes which models can run the task at all.
+  The unqualified name goes to the prompting reading, since every model on such a
+  leaderboard has that row while only some have an FC row, and a default name
+  half the fleet cannot run is the narrow one.
+  `bfcl_v3_non_live_0shot_gen` / `_fc` earned the row.
 - The mode is read positionally, so a variant may not spell one:
   `foo_0shot_clp_gen.py` has two readings and is rejected.
 - The table is the current vocabulary, not the limit — a new variant earns a row

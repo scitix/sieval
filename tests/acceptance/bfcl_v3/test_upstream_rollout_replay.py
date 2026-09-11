@@ -1,26 +1,26 @@
 """Anchor BFCL v3 grading on upstream's own released rollouts and verdicts.
 
-BFCL publishes an evaluation archive beside the leaderboard -- per model, per
-protocol, per category, it releases both the model's recorded replies and its
-own per-row verdicts. That is per-prediction ground truth, so the port can be
-pinned exactly, with no model spend.
+BFCL publishes an evaluation archive beside the leaderboard: per model, per
+protocol, per category, both the model's recorded replies and its own per-row
+verdicts. That is per-prediction ground truth, so the port pins exactly with no
+model spend.
 
-This is strictly stronger than `test_gold_replay.py`, which feeds gold back as
-the reply. Gold replay can only ever exercise the *correct* path: it never sees
-a wrong answer, a decode failure, or -- because it drives the checker directly
--- either protocol's decoder. This module replays a real model's output, of
-which 9% is wrong, through the production `_decode` of both mixins. `java` at
-64% is the point: a third of those rows are graded wrong by upstream, and we
-have to agree about which third.
+Stronger than `test_gold_replay.py`, which feeds gold back and so only ever
+exercises the *correct* path -- never a wrong answer, a decode failure, or
+either protocol's decoder. This replays real output, 9% of it wrong, through the
+production `_decode` of both mixins. `java` at 64% is the point: a third of
+those rows are wrong and we have to agree about which third.
 
-What it does NOT cover is prompt construction: the replies are upstream's, so
-nothing here proves our prompt is upstream's prompt. That rests on
-`system_prompt_pre_processing_chat_model` and
-`func_doc_language_specific_pre_processing` being byte-identical to upstream
-(pinned by `tests/unit/community/bfcl_v3/test_identity.py`) and running on a
-row-for-row verified snapshot -- a construction argument, not a measurement.
+It does NOT cover prompt construction -- the replies are upstream's. That rests
+on the two model-facing helpers being byte-identical to upstream (pinned by
+`test_identity.py`) and running on a row-for-row verified snapshot: a
+construction argument, not a measurement.
 
-Staging (opt-in, like the gold replay -- ~6MB, so it is not vendored):
+No file hashes are pinned, and they would be redundant: a swapped archive fails
+the :data:`PUBLISHED` header assertion, and a doctored `result` file fails the
+comparison it feeds.
+
+Staging is opt-in, like the gold replay -- ~6MB, so not vendored:
 
     R=https://raw.githubusercontent.com/HuanzhiMao/BFCL-Result/main/2025-06-14
     D="$SIEVAL_DATA_DIR/HuanzhiMao/BFCL-Result/2025-06-14"
@@ -35,10 +35,6 @@ Staging (opt-in, like the gold replay -- ~6MB, so it is not vendored):
         done
       done
     done
-
-No file hashes are pinned, because they would be redundant: every score file's
-header is asserted against :data:`PUBLISHED` below, so a swapped archive fails;
-and a doctored `result` file fails the row-for-row comparison it feeds.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -145,14 +141,11 @@ def _jsonl(path: pathlib.Path) -> list[dict]:
 def _model_output(protocol: str, recorded) -> ModelOutput:
     """Upstream's recorded reply, in the shape the mixin's `_decode` reads.
 
-    Built as a real `ModelOutput` so the production decoders run on the type
-    they run on in a live eval, rather than on a stand-in that happens to have
-    the two attributes they touch.
-
-    The FC archive stores each call as `{name: arguments-JSON-string}`, which is
-    exactly what the OpenAI dialects put on `FunctionToolCall.arguments`, so the
-    calls are rebuilt rather than pre-parsed -- `_call_arguments` is then part of
-    what this anchors.
+    A real `ModelOutput`, not a stand-in with the two attributes `_decode`
+    touches. The FC archive stores each call as `{name: arguments-JSON-string}`,
+    which is what the OpenAI dialects put on `FunctionToolCall.arguments`, so
+    the calls are rebuilt rather than pre-parsed and `_call_arguments` is part
+    of what this anchors.
     """
     meta = GenModel(model="archive-replay", api_key="none").meta()
     if protocol == "prompt":
@@ -176,14 +169,12 @@ def _model_output(protocol: str, recorded) -> ModelOutput:
 def _decode_or_fail(decoder, protocol: str, recorded, language):
     """The mixin's production `_decode`, under `postprocess`'s failure semantic.
 
-    `postprocess` wraps the call in `except Exception -> [None]`, because an
-    undecodable reply is upstream's `ast_decoder:decoder_failed` -- a SCORE, not
-    a fault -- and that boundary has to be mirrored here or a real reply takes
-    the test out. It is reached often on this data: a model that declines in
-    prose ("None of the functions can be used, as ...") raises `SyntaxError`
-    straight out of `ast.parse`. Only the two lines of that semantic are
-    mirrored; the decoder itself is the shipped one, and `postprocess`'s
-    narrower re-raise of `ImportError` is pinned in the unit tests.
+    `postprocess` wraps the call in `except Exception -> [None]`: an undecodable
+    reply is upstream's `ast_decoder:decoder_failed`, a SCORE rather than a
+    fault. Mirrored here or a real reply takes the test out -- a model that
+    declines in prose raises `SyntaxError` straight out of `ast.parse`. Only
+    those two lines are mirrored; the decoder is the shipped one, and
+    `postprocess`'s narrower `ImportError` re-raise is pinned in the unit tests.
     """
     try:
         return decoder._decode(_model_output(protocol, recorded), language)
@@ -279,10 +270,9 @@ def test_replaying_upstream_rollouts_reproduces_every_published_cell(
 def test_the_live_rollup_is_the_pooled_rate_over_every_live_row(protocol: str):
     """The weighted rollup's own claim, checked rather than asserted in prose.
 
-    `BfclV3LiveTask` documents its sample-count-weighted mean as algebraically
-    the pooled rate over the union of the six categories' rows. If that holds,
-    the headline is reconstructible from the published counts alone -- which is
-    what makes it a genuine per-sample rate and so interval-bearing.
+    `BfclV3LiveTask` documents its weighted mean as algebraically the pooled
+    rate over the union of the six categories' rows -- which is what makes the
+    headline a genuine per-sample rate, and so interval-bearing.
     """
     model_dir, _ = PROTOCOLS[protocol]
     cells = {c: PUBLISHED[model_dir][c] for c in LIVE}
@@ -296,9 +286,8 @@ def test_the_live_rollup_is_the_pooled_rate_over_every_live_row(protocol: str):
             "display_accuracy": accuracy,
         }
 
-    # Built without `__init__`, which would demand a live model binding: the
-    # rollup reads only ClassVars. This runs the PRODUCTION aggregation rather
-    # than a second copy of its arithmetic.
+    # Built without `__init__` (which would demand a live model binding); the
+    # rollup reads only ClassVars. Runs the PRODUCTION aggregation.
     task = object.__new__(BfclV3LiveTask)
     rollup = task._aggregate(cell)  # noqa: SLF001 -- tests are the carve-out
     pooled = (

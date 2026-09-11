@@ -1,25 +1,19 @@
 """Pin the vendored BFCL v3 files, and keep their provenance resolvable.
 
-A sha256 taken over our own copy pins whatever was copied -- it detects drift
-after vendoring and proves nothing about what was vendored. The non-circular
-anchor is the `Upstream blob:` line in each vendored module's docstring: a git
-blob id, resolvable in upstream's repository by anyone, independent of this
-checkout. All twelve were resolved against `ShishirPatil/gorilla` at
-`ea13468e`, and all twelve matched.
+A sha256 over our own copy pins whatever was copied: it detects drift after
+vendoring and proves nothing about what was vendored. The non-circular anchor is
+each module's `Upstream blob:` line -- a git blob id anyone can resolve in
+upstream's repository. All twelve were resolved against `ShishirPatil/gorilla`
+at `ea13468e` and matched.
 
-So the two tests here divide the work deliberately:
+Hence two tests: one detects drift (its digests can only be read off the copy),
+the other keeps the real anchor *present*. The second cannot resolve the blob --
+no test may reach for upstream's repository -- so it checks the claim is
+recorded in a resolvable shape; without it, a re-vendoring that drops the
+docstring leaves the first passing over bytes with no stated origin.
 
-* :func:`test_vendored_file_has_not_drifted` is the drift detector. Its digests
-  are read off the copy, on purpose -- that is the only thing they can be.
-* :func:`test_vendored_file_records_resolvable_provenance` keeps the real anchor
-  present. It cannot resolve the blob (that needs upstream's repository, which
-  no test may reach for), so it checks the claim is *recorded* in a shape a
-  reader can resolve. Without it, a re-vendoring that drops the docstring leaves
-  the first test passing over bytes with no stated origin.
-
-`Upstream path:` is relative to `berkeley-function-call-leaderboard/`, the
-package root inside upstream's monorepo -- not to the repository root, where
-none of these paths exist.
+`Upstream path:` is relative to `berkeley-function-call-leaderboard/`, not to
+the repository root, where none of these paths exist.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -45,20 +39,20 @@ VENDORED_SHA256 = {
         "cebc6f9a1b28e277483dd13b2a3fd3ceb95ad8a4631daf50933ad1af3015c698"
     ),
     "type_convertor/java_type_converter.py": (
-        "4b450f96bfe528823de681e9d6b0b7fb748ca51a534b2d7a59d76d1047dfebf2"
+        "41082275fda22106130db71d65902786884ca58379814124291a1274ae40451b"
     ),
     "type_convertor/js_type_converter.py": (
-        "ef9562e296bcd7aeeff8b2b88f0fba1c996951b91b229fc91a03bf0f855fcfe2"
+        "32ec360c519e3813c2159993ce78e290152b1a79abdfa3e35f03c6ed3af24202"
     ),
     "source_parser/java_parser.py": (
-        "024dfc247dbb7890c4ed969ab48a9fab3212b85bdb74402528a5ce7b8abab5fe"
+        "e31322b491601ab0e5ca3a3ae5a227f9478ed93783f740813d51228ef20a999b"
     ),
     "source_parser/js_parser.py": (
-        "3a096d914cc54514009e11915e8d4cc4c35af26b5a1c9f21ced640cd896dc737"
+        "abf44b3f6d38b1cfb14d57b005e0ea7d133543a393bfd54c0056c7c74482e23a"
     ),
-    "parser.py": ("bed1fd6c50b4164dd6f4277ef54b1eae908491f5476e7830f742f614fe7266f9"),
+    "parser.py": ("e5655d4e60f40388f7b061cd551d29769c9f1cab1e67d7c1699a556531d8d17e"),
     "tool_convert.py": (
-        "11b758572a09fca738479243e4cc3005387def672786b3231c868e6d73ad386e"
+        "f6474e2a5348e521b16e51fc5a3f669aef85343a1307a723715209696c407804"
     ),
     "output_checks.py": (
         "683a43d71e3e55d52b5edc7afd94def3ce449261642c3dbde543ae82ceab5268"

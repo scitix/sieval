@@ -5,23 +5,17 @@ Upstream blob: f78acc240bee3c43b18de3d4195fbf6ee1a207f1
 License: Apache-2.0
 
 Symbols taken (bodies unchanged): `convert_to_tool`, `_cast_to_openai_type`.
-This is a partial extraction, not a whole-file copy -- the rest of
-`model_handler/utils.py` is out of scope for this port.
+A partial extraction -- the rest of `model_handler/utils.py` is out of scope.
 
 Deviations, beyond the usual import rewrite:
 
 - `_cast_to_openai_type` compares its `mapping` argument against the module
-  global `GORILLA_TO_OPENAPI`, so that name is imported from the already-vendored
-  `.type_mappings` -- the same relative-import rewrite Step 3's whole-file
-  modules get, just landing in a partial module instead.
-- `convert_to_tool` branches on upstream's `ModelStyle` enum
-  (`bfcl_eval.model_handler.model_style.ModelStyle`). Rather than vendor that
-  whole file -- most of whose members name providers sieval does not model --
-  only the members these two functions actually reference are copied below as
-  a plain enum: `OpenAI_Completions`, `OpenAI_Responses`, `Anthropic`,
-  `Mistral`, `GOOGLE`, `AMAZON`, `FIREWORK_AI`, `OSSMODEL`, `COHERE`, `WRITER`,
-  `NOVITA_AI`. Omitted: `Gorilla`, `NEXUS` (present upstream, never read by
-  either copied function).
+  global `GORILLA_TO_OPENAPI`, imported here from the vendored `.type_mappings`.
+- `convert_to_tool` branches on upstream's `ModelStyle`
+  (`bfcl_eval.model_handler.model_style`). Rather than vendor that file, the
+  enum below copies the 11 members these two functions reference, with
+  upstream's values. `Gorilla` and `NEXUS` are omitted: present upstream, read
+  by neither copied function.
 """
 
 import copy

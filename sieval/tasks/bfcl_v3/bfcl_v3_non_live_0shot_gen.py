@@ -1,20 +1,13 @@
 """BFCL v3 non-live categories, 0-shot, upstream's prompting protocol.
 
 Seven hand-written categories, 1390 rows: four Python AST categories, Java and
-JavaScript simple-call categories, and irrelevance detection. The headline is
-upstream's `Non_Live Overall Acc` -- the UNWEIGHTED mean of five numbers, one of
-which (`simple_ast`) is itself the unweighted mean of three. It publishes no
-confidence interval for that reason: it is a mean of rates, not the pooled rate
-over 1390 rows, and an interval computed over those rows would bracket a
-different statistic than the one printed beside it. Every per-category rate does
-carry one.
+JavaScript simple-call categories, and irrelevance detection.
 
-This is the `(Prompt)` column: the function schemas arrive in the system turn
-and the reply is parsed with `ast_parse`. The `_fc` sibling is the `(FC)`
-column, where the same schemas arrive as tools. The unqualified name is this one
-because every model on the leaderboard has a Prompt row, while an FC row exists
-only where the provider exposes a tools API -- and because FC gates on the
-`function_tools` capability, which would make the default name the narrow one.
+Upstream's `(Prompt)` column: schemas arrive in the system turn and the reply is
+parsed with `ast_parse`. The `_fc` sibling is the `(FC)` column, where the same
+schemas arrive as tools. Headline, interval policy and the published numbers are
+in `reference_impl.notes`; why the unqualified name is this one is in the
+variants table.
 
 References:
 
@@ -62,19 +55,17 @@ from ._base import (
             "PROMPT protocol -- upstream's `(Prompt)` leaderboard column. "
             "Headline is `Non_Live Overall Acc`: unweighted mean of simple_ast "
             "(itself the unweighted mean of simple/java/javascript), multiple, "
-            "parallel, parallel_multiple and irrelevance. NO interval is "
-            "published on the headline, nor on simple_ast or ast_summary: an "
-            "unweighted mean of category rates is not the pooled rate over the "
-            "rows (javascript's 50 weigh as much as simple's 400), so a "
-            "sample-clustered CI would bracket a different statistic. Every "
-            "per-category rate carries its own. underscore_to_dot=False: "
-            "schemas reach the model verbatim, so dotted function names survive "
-            "and gold needs no rewrite. Replaying upstream's released "
-            "gpt-4.1-2025-04-14 (Prompt) rollouts reproduces all seven "
-            "published category accuracies exactly and agrees with upstream's "
-            "own verdict on 1390/1390 rows: simple 95.50, multiple 94.00, "
-            "parallel 93.00, parallel_multiple 87.50, java 64.00, javascript "
-            "82.00, irrelevance 88.75 -- so simple_ast 80.50 and Non_Live "
+            "parallel, parallel_multiple and irrelevance. No interval on the "
+            "headline, simple_ast or ast_summary: an unweighted mean of category "
+            "rates is not the pooled rate (javascript's 50 rows weigh as much as "
+            "simple's 400), so a sample-clustered CI would bracket a different "
+            "statistic. Every per-category rate carries its own. "
+            "underscore_to_dot=False: schemas reach the model verbatim, so "
+            "dotted function names survive and gold needs no rewrite. Replay of "
+            "upstream's gpt-4.1-2025-04-14 (Prompt) rollouts agrees on 1390/1390 "
+            "rows and reproduces every published cell: simple 95.50, multiple "
+            "94.00, parallel 93.00, parallel_multiple 87.50, java 64.00, "
+            "javascript 82.00, irrelevance 88.75; simple_ast 80.50, Non_Live "
             f"Overall Acc 88.75. {BFCL_V3_SHARED_NOTES}"
         ),
     ),

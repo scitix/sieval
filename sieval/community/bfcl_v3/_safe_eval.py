@@ -3,47 +3,38 @@
 `resolve_ast_by_type` resolves each keyword argument of a decoded function call
 into a Python value, and for `ast.BinOp` upstream does it with
 ``eval(ast.unparse(value))``. The node comes from a model's reply, so that line
-runs model-authored code: a reply carrying
-``f(x=__import__('os').system('...') + 0)`` parses to a `BinOp`, `eval` runs the
-call, and the decoder returns an ordinary-looking number. Nothing in the run
-looks unusual afterwards -- the sample grades, the score is plausible, and the
-only trace is whatever the payload did.
+runs model-authored code: ``f(x=__import__('os').system('...') + 0)`` parses to
+a `BinOp`, `eval` runs the call, and the decoder hands back an ordinary-looking
+number with nothing else in the run looking unusual.
 
 :func:`safe_eval` replaces that one call. It walks the node instead of unparsing
-it, so there is no string and no namespace to escape from, and it admits only
-literals, their containers, and the arithmetic/bitwise operators. A `Name`,
-`Call`, `Attribute`, `Subscript` or comprehension is refused outright, which is
-the entire divergence: every expression upstream's `eval` computes *without*
-executing something is computed here too, to the same value.
+it, so there is no string and no namespace to escape from, and admits only
+literals, their containers, and the arithmetic/bitwise operators; a `Name`,
+`Call`, `Attribute`, `Subscript` or comprehension is refused. That is the entire
+divergence: every expression upstream's `eval` computes *without* executing
+something is computed here too, to the same value.
 
-Three shapes are refused that do not execute, and all three are deliberate:
+Three shapes are refused that do not execute:
 
-* An f-string, even one with no placeholders. `ast.literal_eval` draws the line
-  in the same place, and the alternative is a `FormattedValue` walker guarding a
-  shape no function argument has been observed to carry.
-* An expression whose *cost* is unbounded -- see :data:`MAX_RESULT_SIZE`.
-  Decoding runs inline on the session's event loop with no timeout around it
-  (the grade timeout is in the `feedback` worker, a stage later), so
-  ``f(x=9**9**9)`` would not return a wrong answer; it would stall every other
-  sample in the run.
-* ``%`` formatting on a string or bytes left operand. It belongs to the class
-  above, but it is the one member of it that cannot be *screened*: every other
-  eager operator's cost is a function of its operands' sizes, while a printf
-  precision field sets the result size on its own -- ``"%.400000000f" % 1.0``
-  asks for a 400MB string from two tiny inputs. There is nothing to measure
-  before the fact, and :func:`_bounded` would see it only after the allocation
-  it exists to prevent, so the shape is refused outright. Integer ``%`` is
-  bounded by its right operand and stays admissible.
+* An f-string, even with no placeholders -- where `ast.literal_eval` draws the
+  line, and the alternative is a `FormattedValue` walker for a shape no argument
+  has been observed to carry.
+* An expression whose *cost* is unbounded (:data:`MAX_RESULT_SIZE`). Decoding
+  runs inline on the event loop with no timeout -- the grade timeout is a stage
+  later -- so ``f(x=9**9**9)`` would stall the whole run, not one sample.
+* ``%`` on a str/bytes left operand. Same class, but the one member that cannot
+  be *screened*: a printf precision field sets the result size independently of
+  both operands (``"%.400000000f" % 1.0`` is 400MB from two tiny inputs), so
+  there is nothing to measure and :func:`_bounded` would see it only after the
+  allocation. Integer ``%`` is bounded by its right operand and stays allowed.
 
-Refusal raises `ValueError`, which reaches the decoder's caller as a decode
-failure and scores the sample wrong. That is the right outcome and not a
-softening of it: a reply that puts executable code in an argument slot has not
-produced the function call it was asked for, and upstream scores every other
-unparseable reply the same way.
+Refusal raises `ValueError`, which reaches the caller as a decode failure and
+scores the sample wrong -- the right outcome, since a reply putting executable
+code in an argument slot has not produced the call it was asked for.
 
-This is a restriction on what is evaluated, not a sandbox. It holds because the
-accepted node types cannot name anything outside the expression; it would stop
-holding the moment one that can is added.
+A restriction on what is evaluated, not a sandbox: it holds because the accepted
+node types cannot name anything outside the expression, and would stop holding
+the moment one that can is added.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -51,15 +42,13 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 import ast
 import operator
 
-#: Largest intermediate any step may produce, counted in bits for integers and
-#: in items for everything sized. A bound is needed because the operators are
-#: eager: `9 ** 9 ** 9` asks for a 369-million-digit integer and does not
-#: return, and `'a' * 10**9` allocates a gigabyte before anything can inspect
-#: it. 2**20 leaves a million-bit integer and a million-character string
-#: admissible, against a largest integer literal of 13 digits (about 41 bits)
-#: across the gold answers of all 2351 gradeable Python rows in the pinned
-#: snapshot -- and no argument there reaches this module at all, since none of
-#: them is written as an expression.
+#: Largest intermediate any step may produce -- bits for integers, items for
+#: anything sized. Needed because the operators are eager: `9 ** 9 ** 9` asks
+#: for a 369-million-digit integer and does not return. 2**20 admits a
+#: million-bit integer and a million-character string, against a largest gold
+#: literal of 13 digits (~41 bits) across all 2351 gradeable Python rows in the
+#: pinned snapshot -- none of which reaches this module at all, since no gold
+#: argument is written as an expression.
 MAX_RESULT_SIZE = 1 << 20
 
 _BIN_OPS = {
@@ -103,15 +92,11 @@ def _size(value) -> int:
 def _refuse_if_unbounded(op, left, right) -> None:
     """Screen the operators whose cost their operands' size does not bound.
 
-    Checked *before* the operator runs, which is the only time it can be: the
-    cost of `9 ** 9 ** 9` cannot be measured after the fact. Addition and the
-    bitwise operators need no entry -- their result is at most as large as the
-    sum of their inputs, so :func:`safe_eval`'s check on the value that comes
-    back catches them one step later.
-
-    String `%` is the one shape here that is refused rather than screened,
-    because its result size comes from the format spec instead of from the
-    operands -- see the module docstring.
+    Checked *before* the operator runs, the only time it can be: the cost of
+    `9 ** 9 ** 9` cannot be measured after the fact. Addition and the bitwise
+    operators need no entry -- their result is at most the sum of their inputs,
+    so :func:`_bounded` catches them one step later. String `%` is refused
+    rather than screened; see the module docstring.
     """
     grown = None
     if isinstance(op, ast.Mod) and isinstance(left, (str, bytes)):

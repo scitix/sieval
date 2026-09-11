@@ -1,28 +1,16 @@
 """BFCL v3 live categories, 0-shot, upstream's function-calling protocol.
 
 Six user-contributed categories, 2251 rows: four Python AST categories plus
-irrelevance and relevance detection. The headline is upstream's `Live Overall
-Acc` -- the SAMPLE-COUNT-WEIGHTED mean of the six, which is algebraically the
-pooled rate over all 2251 rows. That is why this group publishes an interval
-where the non-live group cannot: a weighted mean of category rates over their
-own row counts is the rate over their union, so a problem-clustered interval
-brackets the number printed beside it. `ast_summary`, weighted over the four AST
-categories, carries one on `n_ast` for the same reason.
+irrelevance and relevance detection. Unlike the non-live group this one carries
+intervals, because its weighted rollup IS the pooled rate over the union of its
+rows -- see `BfclV3LiveTask`.
 
-This is the `(FC)` column: the same schemas reach the model through the
-provider's tools API, and the calls are read back off structured tool calls
-rather than parsed out of the reply. The sibling without the suffix is the
-`(Prompt)` column, and it holds the unqualified name because every model on the
-leaderboard has a Prompt row, while an FC row exists only where the provider
-exposes a tools API -- and because this task gates on the `function_tools`
-capability, which would make the default name the narrow one.
-
-One scoring divergence follows from the transport and it is upstream's. A native
-tool name cannot carry a dot in the OpenAI dialects, so `convert_to_tool`
-rewrites `geometry.triangle_area` to `geometry_triangle_area` on the way out;
-gold still spells the dot, so the comparison rewrites gold to match. That is
-`underscore_to_dot=True`, and it is the only behavioural difference from the
-Prompt sibling beyond how the schemas and the calls travel.
+Upstream's `(FC)` column: the same schemas reach the model through the provider's
+tools API and the calls are read off structured `tool_calls` rather than parsed
+out of the reply. Beyond that transport, the only behavioural difference from
+the Prompt sibling is `underscore_to_dot=True` -- upstream's own reversal of the
+`.`->`_` rewrite a native tool name forces, explained in `_base`. Headline,
+interval policy and the published numbers are in `reference_impl.notes`.
 
 References:
 
@@ -70,15 +58,14 @@ from ._base import (
             "way out, because a native tool name cannot carry a dot, so gold is "
             "rewritten to match before comparison. Requires the "
             "`function_tools` capability; a binding that does not offer it is "
-            "rejected when the task is constructed, which prelaunch "
-            "reconciliation reaches before the first request and before a "
-            "result directory exists. Replaying upstream's released "
-            "gpt-4.1-2025-04-14-FC rollouts reproduces all six published "
-            "category accuracies exactly and agrees with upstream's own "
-            "verdict on 2251/2251 rows: live_simple 80.23, live_multiple "
-            "78.35, live_parallel 68.75, live_parallel_multiple 66.67, "
-            "live_irrelevance 82.31, live_relevance 77.78 -- so ast_summary "
-            f"78.39 and Live Overall Acc 79.92. {BFCL_V3_SHARED_NOTES}"
+            "rejected at task construction, which prelaunch reconciliation "
+            "reaches before the first request and before a result directory "
+            "exists. Replay of upstream's gpt-4.1-2025-04-14-FC rollouts agrees "
+            "on 2251/2251 rows and reproduces every published cell: live_simple "
+            "80.23, live_multiple 78.35, live_parallel 68.75, "
+            "live_parallel_multiple 66.67, live_irrelevance 82.31, "
+            "live_relevance 77.78; ast_summary 78.39, Live Overall Acc "
+            f"79.92. {BFCL_V3_SHARED_NOTES}"
         ),
     ),
 )

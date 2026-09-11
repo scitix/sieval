@@ -4,34 +4,25 @@ Source: https://github.com/ShishirPatil/gorilla
 Revision: v1.3 (ea13468e4423454d0c213704fb87cf7cb3990433)
 License: Apache-2.0
 
-Upstream's evaluation surface is `bfcl_eval`, an installable package that
-imports its own submodules by absolute path (`bfcl_eval.constants...`,
-`bfcl_eval.model_handler...`). A vendored copy cannot keep those imports, since
-`bfcl_eval` itself is not installed here -- rewriting them to relative imports
-within this package is the only edit made to any vendored file, with one
-exception: `parser.py`'s `ast.BinOp` branch resolves a model-authored expression
-with `eval`, and calls `_safe_eval.safe_eval` instead. Each vendored module's
-docstring records upstream's blob SHA at the pin and the exact edits applied, so
-a reviewer can re-derive the copy from a fresh checkout.
+Upstream's evaluation surface is `bfcl_eval`, which imports its own submodules
+by absolute path. A vendored copy cannot keep those imports, so rewriting them
+is the only edit made to any vendored file -- with one exception: `parser.py`'s
+`ast.BinOp` branch calls `_safe_eval.safe_eval` where upstream `eval`s a
+model-authored expression. Each vendored module records upstream's blob SHA at
+the pin and its exact edits, so the copy can be re-derived from a fresh checkout.
 
-Whole-file vendored modules: `ast_checker.py`, `type_mappings.py`,
-`type_convertor/java_type_converter.py`, `type_convertor/js_type_converter.py`,
-`source_parser/java_parser.py`, `source_parser/js_parser.py`.
+Whole-file: `ast_checker.py`, `type_mappings.py`, `type_convertor/*.py`,
+`source_parser/*.py`, and `prompts.py` (upstream's `constants/default_prompts`).
+Partial -- named subsets of a larger upstream file, listed in each module's own
+docstring: `parser.py`, `tool_convert.py`, `output_checks.py`, `preprocess.py`,
+`aggregate.py`.
 
-Partial vendored modules (named subsets of a larger upstream file -- see each
-module's own docstring for exactly which symbols were taken and why):
-`parser.py`, `tool_convert.py`, `output_checks.py`, `preprocess.py`,
-`aggregate.py`. `prompts.py` is `constants/default_prompts.py` copied whole.
-
-First-party modules: `_model_config.py` supplies the `MODEL_CONFIG_MAPPING`
-global `ast_checker.convert_func_name` reads, since upstream's own 2044-line
-registry has no entries for sieval's models. `_tables.py` holds the BFCL v3
-category tables (row counts, which categories have no gold answer file, which
-are non-Python) shared by the dataset loader and the tasks -- neither of which
-may reach into the other's private module, so the tables live here instead.
-`_safe_eval.py` evaluates a literal expression without executing it, and is the
-one deviation `parser.py` carries; it is held outside that file so the boundary
-stays lintable, which vendored code is not.
+First-party: `_model_config.py` supplies the `MODEL_CONFIG_MAPPING` global
+`ast_checker.convert_func_name` reads, since upstream's 2044-line registry has no
+entry for sieval's models. `_tables.py` holds the category tables shared by the
+dataset loader and the tasks, neither of which may reach into the other's private
+module. `_safe_eval.py` is the deviation `parser.py` carries, held outside that
+file so the boundary stays lintable -- vendored code is not.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """

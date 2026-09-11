@@ -5,13 +5,10 @@ Upstream blob: 7d2b141dfcb8e527df6424893e60a833eb69f3e1
 License: Apache-2.0
 
 Only deviation: `from bfcl_eval.constants.type_mappings import JAVA_TYPE_CONVERSION`
-rewritten to `from sieval.community.bfcl_v3.type_mappings import
-JAVA_TYPE_CONVERSION`. Spelled absolutely rather than as the shorter
-`..type_mappings`: this module sits one package deeper than `type_mappings.py`,
-and the import policy reserves relative imports for the same package. Upstream's
-line was absolute too, so this is one rewritten import either way -- and writing
-it relatively would have cost the whole `community/` tree its exemption from
-that rule. No other edit.
+rewritten to the absolute `sieval.community.bfcl_v3.type_mappings` path. Absolute
+rather than `..type_mappings` because the import policy reserves relative imports
+for the same package, and upstream's line was absolute anyway -- one rewritten
+import either way. No other edit.
 """
 
 import re

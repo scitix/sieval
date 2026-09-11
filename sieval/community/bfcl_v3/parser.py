@@ -5,37 +5,30 @@ Upstream blob: f78acc240bee3c43b18de3d4195fbf6ee1a207f1
 License: Apache-2.0
 
 Symbols taken (bodies unchanged): `ast_parse`, `resolve_ast_call`,
-`resolve_ast_by_type`. This is a partial extraction, not a whole-file copy --
-the rest of `model_handler/utils.py` (prompt construction, decoders for other
-model styles, retry helpers) is out of scope for this port.
+`resolve_ast_by_type`. A partial extraction -- the rest of
+`model_handler/utils.py` (prompt construction, other model styles' decoders,
+retry helpers) is out of scope.
 
 Deviations:
-1. The module needs no `bfcl_eval.*` imports at all for these three
-   functions (`import ast` is stdlib), so their bodies needed no rewrite.
-2. Upstream's `utils.py:13-14` imports `parse_java_function_call` and
-   `parse_javascript_function_call` from `bfcl_eval.model_handler.parser.*`.
-   Rewritten to `from .source_parser.java_parser import
-   parse_java_function_call` and the `js_parser` twin -- same rename as
-   `source_parser/`'s own docstrings explain (this package's `parser.py`
-   already occupies upstream's directory name).
-3. `resolve_ast_by_type`'s `ast.BinOp` branch calls `safe_eval` where upstream
+1. The two source-parser imports are rewritten to `.source_parser.*`, renamed
+   from upstream's `parser/` because this file already occupies that name.
+   Nothing else needed rewriting: these three functions reach no `bfcl_eval.*`.
+2. `resolve_ast_by_type`'s `ast.BinOp` branch calls `safe_eval` where upstream
    calls `eval(ast.unparse(value))`. That node is model output, so upstream's
    line executes model-authored code -- `f(x=__import__('os').system('...')
    + 0)` runs the call and hands back an ordinary-looking number. `safe_eval`
    computes the same value for every expression that does not execute
-   something, and refuses the rest; the argument for where it lives, and for
-   the non-executing shapes it also refuses, is in `_safe_eval.py`.
+   something; what it refuses, and why it lives outside this file, is in
+   `_safe_eval.py`.
 
-   The `ast.Lambda` branch below keeps upstream's `eval` untouched, because it
-   cannot reach it: `Lambda.body` is a single expression node, so `value.body[0]`
-   raises `TypeError` while the argument is still being built. Hardening a
-   branch that cannot execute would be a deviation bought for nothing, and the
-   raise it produces today is already the decode failure upstream scores.
+   The `ast.Lambda` branch keeps upstream's `eval` because it cannot reach it:
+   `Lambda.body` is a single expression node, so `value.body[0]` raises
+   `TypeError` first -- and that raise is already the decode failure upstream
+   scores. Hardening an unreachable branch buys nothing.
 
-The Java/JavaScript branches of `ast_parse` dispatch to those two functions:
-a `java`/`javascript`-category sample's model output is Java/JavaScript
-source text, not Python call syntax, so `ast_parse` parses it with the
-matching tree-sitter grammar rather than `ast.parse`.
+`ast_parse` dispatches `java`/`javascript` rows to the tree-sitter parsers
+rather than `ast.parse`: their model output is source text, not Python call
+syntax.
 """
 
 import ast

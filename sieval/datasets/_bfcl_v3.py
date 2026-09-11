@@ -1,33 +1,29 @@
 """Shared loader for the BFCL v3 single-turn category files.
 
 One HF repo holds every category as its own JSONL file, with ground truth in a
-parallel `possible_answer/` file. Three categories ship no gold at all --
-`irrelevance`, `live_irrelevance` and `live_relevance` are scored on whether a
-call was produced, not on which call it was.
+parallel `possible_answer/` file. Three categories ship no gold -- `irrelevance`,
+`live_irrelevance` and `live_relevance` are scored on whether a call was
+produced, not on which call it was.
 
 The join key is the **universal index** -- the `<index>` of
-`<category>_<index>[-<sub>-<sub>]` -- not the whole `id` string. That is
-upstream's key: its runner sorts both files on `(category, universal_index)`,
-discarding the sub-indices, then pairs them positionally. The distinction is
-load-bearing on exactly one row at the pinned revision: the prompt file's
-`live_multiple_1052-79-0` is graded against the gold file's
-`live_multiple_1052-279-0`. One of the two sub-indices is an upstream typo, but
-because it never enters upstream's key, upstream grades the row and cannot see
-the disagreement. Joining on the whole `id` would instead score 1052 of
-`live_multiple`'s 1053 rows and report a column upstream never published.
+`<category>_<index>[-<sub>-<sub>]` -- not the whole `id`. That is upstream's key:
+its runner sorts both files on `(category, universal_index)` and pairs them
+positionally, discarding the sub-indices. It is load-bearing on exactly one row
+at the pinned revision, where prompt `live_multiple_1052-79-0` is graded against
+gold `live_multiple_1052-279-0`: one sub-index is an upstream typo, invisible to
+upstream because it never enters the key. Joining on the whole `id` would score
+1052 of `live_multiple`'s 1053 rows and publish a column upstream never did.
 
-The key is unique within every file that is joined, which is what makes an index
-join and upstream's positional join the same pairing; the loader asserts that
-rather than assuming it, and so is strictly stricter than upstream, which only
-checks that the two files are the same length. It is deliberately not asserted
-for the goldless three, which are never joined -- `live_relevance` ships the
-same row twice and is 18 rows over 17 distinct ids.
+An index join equals upstream's positional one only while the key is unique per
+joined file, so the loader asserts that instead of assuming it -- stricter than
+upstream, which only checks the two files are the same length. Not asserted for
+the goldless three, which are never joined: `live_relevance` ships one row twice,
+18 rows over 17 distinct ids.
 
-Row counts are asserted per category, against the gold file as well as the
-prompt file -- the pair of them is what covers upstream's own
-`len(prompt) == len(possible_answer)`. The revision pin already prevents a
-silent re-upload; what it cannot prevent is someone bumping the pin, so a count
-that moves fails here rather than quietly rescoring a leaderboard column.
+Row counts are asserted per category on the gold file as well as the prompt file,
+which together cover upstream's own `len(prompt) == len(possible_answer)`. The
+revision pin stops a silent re-upload but not a pin bump, so a count that moves
+fails here rather than quietly rescoring a leaderboard column.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """

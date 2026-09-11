@@ -5,13 +5,10 @@ Upstream blob: f9081a958f1d173427064c3505d25ecbebf8aa70
 License: Apache-2.0
 
 Only deviation: none beyond this docstring. The module imports only
-`tree_sitter` and `tree_sitter_java` -- neither is `bfcl_eval.*` -- so there
-was no import to rewrite.
+`tree_sitter` and `tree_sitter_java`, neither of which is `bfcl_eval.*`.
 
-Held in `source_parser/`, not upstream's `parser/`: this package's
-`parser.py` (the vendored `ast_parse`) already occupies that name, so
-upstream's containing directory was renamed to avoid the collision. Nothing
-inside the file changed for the rename.
+Held in `source_parser/` rather than upstream's `parser/`, whose name this
+package's own `parser.py` already occupies. Nothing inside the file changed.
 """
 
 from tree_sitter import Language, Parser

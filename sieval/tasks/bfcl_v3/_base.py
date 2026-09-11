@@ -1,36 +1,23 @@
 """Shared stages for the BFCL v3 single-turn task family.
 
-Four leaves come out of two independent choices, and this module holds what
-every one of them shares.
+Four leaves come out of two independent choices, and this module holds what they
+share.
 
-**Group** (``non_live`` / ``live``) selects the dataset and the aggregation
-rule. It is the generic base, because it is what binds the concrete sample type
-and what picks the rollup.
+**Group** (``non_live`` / ``live``) selects the dataset and the rollup, so it is
+the generic base.
 
-**Protocol** (``Prompt`` / ``FC``) is upstream's own pair of published columns,
-and it is the axis the two mixins here carry. They differ in exactly two
-places: how the function schemas reach the model -- rendered into a system
-turn, or sent as native tools -- and how calls are read back -- parsed out of
-the reply text, or read off structured tool calls. Nothing else about the two
-runs differs, which is why the protocol is a stateless mixin rather than a
-second class hierarchy.
+**Protocol** (``Prompt`` / ``FC``) is upstream's own pair of published columns.
+The two mixins differ in exactly two places -- how the schemas reach the model
+(a rendered system turn, or native tools) and how calls are read back (parsed
+out of the reply, or off structured tool calls) -- which is why the protocol is
+a stateless mixin rather than a second class hierarchy.
 
 **One divergence follows from the protocol, and it is upstream's.** A native
 tool name cannot carry a dot in the OpenAI dialects, so upstream rewrites
 ``geometry.triangle_area`` to ``geometry_triangle_area`` on the way out and
 reverses the rewrite before comparing against gold. That reversal is the
-``underscore_to_dot`` flag: true for FC, false for Prompt.
-
-**The flag travels as a call argument, never as a module global set by the
-caller.** The vendored checker reads it from a global, and `grade_single_turn`
-writes that global and consumes it with no `await` in between -- which is what
-makes the pair atomic, and is the whole reason grading goes through one
-module-level function instead of a method. Offloading does not supply that
-guarantee on its own: `run_cpu_bound` falls back to running inline on the event
-loop whenever no worker pool is available, so a caller that set the global and
-then awaited would let another sample's grade land between the set and the use.
-Cross-wiring the two protocols is silent -- every one of the 734 gradeable rows
-whose gold name carries a dot grades wrong, with nothing reported.
+``underscore_to_dot`` flag -- true for FC, false for Prompt -- and
+:func:`grade_single_turn` says why it travels as an argument.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -97,8 +84,10 @@ def grade_single_turn(
     `underscore_to_dot` is an ARGUMENT, not a module global set by the caller,
     so that the write below and the read inside `ast_checker` cannot be
     separated: this function has no `await` in it, and an async caller setting
-    the global before awaiting would. Getting it wrong grades an FC run under
-    the Prompt convention and produces a plausible score rather than an error.
+    the global before awaiting would. Cross-wiring the two protocols is silent
+    -- all 734 gradeable rows whose gold name carries a dot grade wrong, with
+    nothing reported -- so the atomicity is the whole reason grading goes
+    through one module-level function rather than a method.
 
     `decoded` is None when the reply could not be decoded into calls at all.
     """
@@ -154,16 +143,14 @@ BFCL_V3_SHARED_NOTES = (
     "parses no source text, so it never reaches that code). "
     "exec_*, rest, sql and chatable are excluded -- upstream has them commented "
     "out of its own TEST_FILE_MAPPING and they need live API keys. "
-    "Anchored on upstream's own released evaluation archive "
-    "(HuanzhiMao/BFCL-Result, 2025-06-14 snapshot): its recorded "
-    "gpt-4.1-2025-04-14 replies are replayed through this grader and every "
-    "row's verdict compared against upstream's own per-row score file. That "
-    "pins the grader against a real model's output -- wrong answers, decode "
-    "failures and the FC name rewrite included -- none of which feeding gold "
-    "back can reach. The anchor does NOT measure prompt construction: the two "
-    "model-facing helpers are byte-identical to upstream and run on a "
-    "row-for-row verified snapshot, so prompt fidelity follows by "
-    "construction, not by measurement."
+    "Anchored on upstream's released evaluation archive (HuanzhiMao/BFCL-Result, "
+    "2025-06-14): its recorded gpt-4.1-2025-04-14 replies are replayed through "
+    "this grader and every verdict compared against upstream's own per-row score "
+    "file, which pins the grader against real output -- wrong answers, decode "
+    "failures and the FC name rewrite included. It does not cover prompt "
+    "construction: the replies are upstream's, so that rests on the two "
+    "model-facing helpers being byte-identical to upstream rather than on a "
+    "measurement."
 )
 
 
@@ -239,13 +226,11 @@ class BfclV3Task[TSample](
         try:
             decoded = self._decode(inf, language)
         except ImportError:
-            # NOT a decode failure. `_decode` defers its import of the vendored
-            # parser, which lives behind the optional `bfcl-v3` extra, so an
-            # environment missing tree-sitter raises from inside this `try`.
-            # Scoring that as an undecodable reply is the worst available
-            # outcome: every row of the run grades wrong, `fails` stays 0, and
-            # the run looks like a model that cannot call a function at all.
-            # Propagating costs the sample and names the cause.
+            # NOT a decode failure: `_decode` defers its import of the vendored
+            # parser, which lives behind the optional `bfcl-v3` extra. Scoring a
+            # missing tree-sitter as an undecodable reply would grade every row
+            # of the run wrong with `fails` still 0; propagating costs the one
+            # sample and names the cause.
             raise
         except Exception as exc:  # noqa: BLE001 -- a decode failure is a SCORE
             # Upstream's `ast_decoder:decoder_failed`: the model produced
@@ -295,13 +280,11 @@ class BfclV3Task[TSample](
         )
 
     async def report(self, finals: list, fails: list) -> dict:
-        # One 0/1 per sample that came back, NOT one percentage point: this list
-        # is both what the cells average and what the interval estimators are
-        # handed, and those read `sum(values) / denominator` as a probability.
-        # Hand them percent and any rate above a single point reads as a
-        # saturated set, which still publishes a whole triple -- an interval
-        # bracketing 100 beside a rate that is nothing of the kind. The rate is
-        # scaled to percentage points once, in `cell`, so the two agree.
+        # One 0/1 per sample that came back, NOT one percentage point: the same
+        # list feeds the cells and the interval estimators, and those read
+        # `sum(values) / denominator` as a probability -- hand them percent and
+        # any rate above 1 point reads as saturated. Scaling happens once, in
+        # `cell`, so the rate and its bounds agree.
         correct_by_category: dict[str, list[float]] = defaultdict(list)
         for ctx in finals:
             fb = ctx.feedback_result
@@ -314,21 +297,16 @@ class BfclV3Task[TSample](
 
             `total_count` is the category's row count, not the number that came
             back: `DENOMINATOR_REQUESTED` charges a missing sample as wrong, and
-            a sample that failed before `preprocess` has no category to be
-            attributed to anyway.
+            a sample that failed before `preprocess` has no category anyway.
 
-            All three of upstream's keys, because both aggregation helpers read
-            `display_accuracy` unconditionally and a two-key cell raises
-            `KeyError`. It is never "N/A" here: that marks a category upstream
-            did not evaluate, and this task always scores the full declared set.
-            Their return value carries the same three keys, which is what lets
-            `simple_ast` nest straight back in as a cell.
+            All three of upstream's keys: both aggregation helpers read
+            `display_accuracy` unconditionally, and they return the same three,
+            which is what lets `simple_ast` nest back in as a cell. Never "N/A"
+            -- that marks a category upstream did not evaluate.
             """
             values = correct_by_category.get(category, [])
             denominator = self.CATEGORY_COUNTS[category]
-            # Percentage points -- the units every rate here is published in,
-            # and the units the estimators return their bounds in.
-            accuracy = 100.0 * sum(values) / denominator
+            accuracy = 100.0 * sum(values) / denominator  # percentage points
             return {
                 "accuracy": accuracy,
                 "total_count": denominator,
@@ -455,9 +433,8 @@ class BfclV3LiveTask[TSample](BfclV3Task[TSample]):
             for value in correct_by_category.get(category, [])
         ]
         return [
-            # The headline and `live_overall_acc` are ONE number under two key
-            # names, so the alias rides along on the same call -- never a second
-            # call with the same arguments. This emits `n_problems` itself.
+            # `score` and `live_overall_acc` are ONE number, so the alias rides
+            # along on this call. Emits `n_problems` itself.
             interval_metrics(
                 all_values,
                 denominator=sum(self.CATEGORY_COUNTS.values()),

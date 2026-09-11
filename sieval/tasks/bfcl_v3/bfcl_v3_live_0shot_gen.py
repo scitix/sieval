@@ -1,20 +1,15 @@
 """BFCL v3 live categories, 0-shot, upstream's prompting protocol.
 
 Six user-contributed categories, 2251 rows: four Python AST categories plus
-irrelevance and relevance detection. The headline is upstream's `Live Overall
-Acc` -- the SAMPLE-COUNT-WEIGHTED mean of the six, which is algebraically the
-pooled rate over all 2251 rows. That is why this group publishes an interval
-where the non-live group cannot: a weighted mean of category rates over their
-own row counts is the rate over their union, so a problem-clustered interval
-brackets the number printed beside it. `ast_summary`, weighted over the four AST
-categories, carries one on `n_ast` for the same reason.
+irrelevance and relevance detection. Unlike the non-live group this one carries
+intervals, because its weighted rollup IS the pooled rate over the union of its
+rows -- see `BfclV3LiveTask`.
 
-This is the `(Prompt)` column: the function schemas arrive in the system turn
-and the reply is parsed with `ast_parse`. The `_fc` sibling is the `(FC)`
-column, where the same schemas arrive as tools. The unqualified name is this one
-because every model on the leaderboard has a Prompt row, while an FC row exists
-only where the provider exposes a tools API -- and because FC gates on the
-`function_tools` capability, which would make the default name the narrow one.
+Upstream's `(Prompt)` column: schemas arrive in the system turn and the reply is
+parsed with `ast_parse`. The `_fc` sibling is the `(FC)` column, where the same
+schemas arrive as tools. Headline, interval policy and the published numbers are
+in `reference_impl.notes`; why the unqualified name is this one is in the
+variants table.
 
 References:
 
@@ -66,13 +61,12 @@ from ._base import (
             "`ast_summary` (weighted over the four AST categories) carries one "
             "on `n_ast` for the same reason. underscore_to_dot=False: schemas "
             "reach the model verbatim, so dotted function names survive and "
-            "gold needs no rewrite. Replaying upstream's released "
-            "gpt-4.1-2025-04-14 (Prompt) rollouts reproduces all six published "
-            "category accuracies exactly and agrees with upstream's own "
-            "verdict on 2251/2251 rows: live_simple 85.66, live_multiple "
-            "76.54, live_parallel 93.75, live_parallel_multiple 75.00, "
-            "live_irrelevance 77.89, live_relevance 88.89 -- so ast_summary "
-            f"78.46 and Live Overall Acc 78.32. {BFCL_V3_SHARED_NOTES}"
+            "gold needs no rewrite. Replay of upstream's gpt-4.1-2025-04-14 "
+            "(Prompt) rollouts agrees on 2251/2251 rows and reproduces every "
+            "published cell: live_simple 85.66, live_multiple 76.54, "
+            "live_parallel 93.75, live_parallel_multiple 75.00, "
+            "live_irrelevance 77.89, live_relevance 88.89; ast_summary 78.46, "
+            f"Live Overall Acc 78.32. {BFCL_V3_SHARED_NOTES}"
         ),
     ),
 )
