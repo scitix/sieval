@@ -1,0 +1,110 @@
+[
+  {
+    "query":"Count the number of files and directories in the entire testbed directory",
+    "gold":"find \/testbed | wc -l",
+    "gold2":"find \/testbed -print | wc -l",
+    "difficulty":1
+  },
+  {
+    "query":"Print the number of python files in the testbed directory.",
+    "gold":"find testbed -type f -name \"*.py\" | wc -l",
+    "gold2":"find testbed -type f -name \"*.py\" -print | wc -l",
+    "difficulty":1
+  },
+  {
+    "query":"Sort the lines of textfile1.txt in reverse alphabetical order and save the result to a new file",
+    "gold":"sort -r \/testbed\/dir1\/textfile1.txt > \/testbed\/dir1\/textfile1_reverse_sorted.txt",
+    "gold2":"sort -r \/testbed\/dir1\/textfile1.txt > \/testbed\/dir1\/textfile1_reverse_sorted.txt",
+    "difficulty":2
+  },
+  {
+    "query":"Search for all files containing the word 'Shell' in testbed.",
+    "gold":"find \/testbed -type f -exec grep -l 'Shell' {} +",
+    "gold2":"grep -r 'Shell' \/testbed",
+    "difficulty":1
+  },
+  {
+    "query":"Find all symbolic links in the testbed directory.",
+    "gold":"find \/testbed -type l",
+    "gold2":"find \/testbed -type l -print",
+    "difficulty":1
+  },
+  {
+    "query":"Get the total size of all files in testbed\/ and save it to total_size.txt",
+    "gold":"du -sh testbed\/ | awk '{print $1}' > total_size.txt",
+    "gold2":"du -s testbed\/ | awk '{print $1}' > total_size.txt",
+    "difficulty":1
+  },
+  {
+    "query":"List all files in the directory \/testbed\/dir1 and sort them by size in human-readable format",
+    "gold":"ls -lhS \/testbed\/dir1",
+    "gold2":"ls -lhS \/testbed\/dir1",
+    "difficulty":1
+  },
+  {
+    "query":"Count the number of lines in files under the directory \/testbed\/dir2.",
+    "gold":"grep -rl . \/testbed\/dir2 | xargs wc -l",
+    "gold2":"find \/testbed\/dir2 -type f -exec wc -l {} +",
+    "difficulty":1
+  },
+  {
+    "query":"Print the name and size of the 3 largest files in the directory \/testbed\/dir3",
+    "gold":"find \/testbed\/dir3 -type f -exec ls -lhS {} + | sort -rh -k5 | head -n 3",
+    "gold2":"find \/testbed\/dir3 -type f -exec ls -lhS {} + 2>\/dev\/null | sort -rh -k5 | head -n 3",
+    "difficulty":2
+  },
+  {
+    "query":"Find all files modified in the last 2 hours and compress them into a tarball named archive.tar.gz in the directory \/testbed",
+    "gold":"find \/testbed -type f -mmin -120 -print0 | xargs -0 tar -czf \/testbed\/archive.tar.gz",
+    "gold2":"find \/testbed -type f -mmin -120 -print0 | xargs -0 tar -czf \/testbed\/archive.tar.gz",
+    "difficulty":2
+  },
+  {
+    "query":"List all subdirectories of \/testbed that are not named subdir1",
+    "gold":"ls -d \/testbed\/*\/ | grep -v \/subdir1\/",
+    "gold2":"find \/testbed -mindepth 1 -maxdepth 1 -type d ! -name \"subdir1\"",
+    "difficulty":1
+  },
+  {
+    "query":"Search for all files that contain the string 'text file' under the directory \/testbed",
+    "gold":"grep -r 'text file' \/testbed",
+    "gold2":"grep -rl 'text file' \/testbed",
+    "difficulty":1
+  },
+  {
+    "query":"Compute the MD5 hash of all files under the directory \/testbed and store them in a file named hashes.txt in the same directory",
+    "gold":"find \/testbed -type f -exec md5sum {} + > \/testbed\/hashes.txt",
+    "gold2":"find \/testbed -type f -exec md5sum {} + > \/testbed\/hashes.txt",
+    "difficulty":2
+  },
+  {
+    "query":"Print the last 10 lines of the file \/testbed\/dir3\/subdir1\/subsubdir1\/textfile3.txt",
+    "gold":"tail -n 10 \/testbed\/dir3\/subdir1\/subsubdir1\/textfile3.txt",
+    "gold2":"tail -n 10 \/testbed\/dir3\/subdir1\/subsubdir1\/textfile3.txt",
+    "difficulty":2
+  },
+  {
+    "query":"Print the line number and contents of all lines containing the string 'value3' in the file \/testbed\/dir1\/subdir1\/jsonfile1.json",
+    "gold":"grep -n 'value3' \/testbed\/dir1\/subdir1\/jsonfile1.json",
+    "gold2":"grep -n 'value3' \/testbed\/dir1\/subdir1\/jsonfile1.json",
+    "difficulty":2
+  },
+  {
+    "query":"Find all files in the directory \/testbed that have been modified in the last 24 hours and print their path",
+    "gold":"find \/testbed -type f -mtime -1 -print",
+    "gold2":"find \/testbed -type f -mtime -1",
+    "difficulty":1
+  },
+  {
+    "query":"Search for all the files in \/testbed directory and its subdirectories that contain the word 'Hello' and replace it with 'Hi' in-place.",
+    "gold":"grep -rl \"Hello\" \/testbed | xargs sed -i 's\/Hello\/Hi\/g'",
+    "gold2":"grep -rl 'Hello' \/testbed | xargs sed -i 's\/Hello\/Hi\/g'",
+    "difficulty":2
+  },
+  {
+    "query":"Display the contents of textfile3.txt and textfile4.txt side by side, with line numbers and a separator between them.",
+    "gold":"paste <(nl \/testbed\/dir3\/subdir1\/subsubdir1\/textfile3.txt) <(nl \/testbed\/dir1\/subdir1\/textfile4.txt)",
+    "gold2":"paste <(nl \/testbed\/dir3\/subdir1\/subsubdir1\/textfile3.txt) <(nl \/testbed\/dir1\/subdir1\/textfile4.txt)",
+    "difficulty":2
+  }
+]

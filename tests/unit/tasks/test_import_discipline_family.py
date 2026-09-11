@@ -61,6 +61,12 @@ FORBIDDEN: dict[str, tuple[str, ...]] = {
     ),
     # evaluation_lib pulls absl/langdetect/nltk.
     "ifeval_0shot_gen": ("sieval.community.instruction_following_eval.evaluation_lib",),
+    # The task imports `output_similarity` at module scope, so the discipline
+    # rests on that function deferring its own `from scipy...`. Named here
+    # because the manifest is parametrized over its own keys: a task left out is
+    # not checked but merely absent.
+    "nl2sh_alfa_0shot_gen": ("scipy",),
+    "nl2sh_alfa_0shot_gen_parse": ("scipy",),
     # multi_if's fork adds emoji and a 3.5k-line checker; `_ensure_punkt_tab`
     # imports nltk when called, so registration must not drag that in either.
     "multi_if_0shot_gen": ("sieval.community.multi_if.evaluation_lib", "nltk"),
