@@ -2,17 +2,14 @@
 
 `exec_agnostics` is an upstream-bound patch (`vendor/code-evaluator/VENDORED.md`),
 whose convention puts tests beside the code so they travel with it. These are
-here instead, deliberately: `[tool.pytest] testpaths` covers `tests/` only, so a
-test under `vendor/code-evaluator/tests/` is never collected by this suite and
-gates nothing. The contract below has already regressed once -- `verifier_command`
-enforced the pin on the default path but not on the override -- and was caught by
-a manual validation run rather than by CI, which is the gap this file closes. A
-re-vendor that moves these upstream should leave an equivalent gate behind.
+here instead: `[tool.pytest] testpaths` covers `tests/` only, so a test under
+`vendor/code-evaluator/tests/` gates nothing. The contract has already regressed
+once -- the pin was enforced on the default path but not on the override, caught
+by a manual run rather than by CI -- so a re-vendor should leave a gate behind.
 
-Only `app.exec_agnostics` is imported, never `app.server` -- the latter needs
-fastapi, which is the evaluator service's dependency and not sieval's. Nothing
-here spawns a container: `verifier_command` is a pure function of the environment,
-and the two `execute_agnostics` cases asserted below both return before the spawn.
+Only `app.exec_agnostics` is imported, never `app.server`, which needs fastapi --
+the evaluator service's dependency, not sieval's. Nothing here spawns a
+container: every case below returns before the spawn.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
@@ -37,10 +34,8 @@ from app.exec_agnostics import (  # noqa: E402  # type: ignore[unresolved-import
     verifier_command,
 )
 
-# What `ghcr.io/nuprl/agnostics` actually publishes. Spelled out rather than
-# derived from `_IMAGE_DIGESTS`, so a tag deleted from or misspelled in the table
-# fails here instead of the table agreeing with itself. Note these are FILE
-# EXTENSIONS, not language names -- Julia is `jl`, OCaml `ml`, Fortran `f90`.
+# What `ghcr.io/nuprl/agnostics` publishes. Spelled out rather than derived from
+# `_IMAGE_DIGESTS`, so a misspelled tag fails here instead of agreeing with itself.
 _PUBLISHED_TAGS = frozenset({"lua", "r", "python", "jl", "java", "cpp", "ml", "f90"})
 
 # Upstream publishes no image for these, so the table must not carry one.
@@ -62,8 +57,8 @@ def test_the_table_covers_exactly_upstreams_published_tags() -> None:
 
 @pytest.mark.parametrize("lang", sorted(_PUBLISHED_TAGS))
 def test_every_pinned_entry_is_a_wellformed_digest(lang) -> None:
-    # A tag slipping in where a digest belongs is the failure the pin exists to
-    # prevent, and it reads as a plausible string everywhere else.
+    # A tag slipping in where a digest belongs reads as a plausible string
+    # everywhere else, so nothing but this shape check catches it.
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", _IMAGE_DIGESTS[lang])
 
 
@@ -74,17 +69,13 @@ def test_the_default_path_runs_the_pinned_digest_and_reports_it() -> None:
     argv, image = verifier_command("lua")
 
     assert image == f"{_REGISTRY}@{_IMAGE_DIGESTS['lua']}"
-    # By digest, never `registry:lua` -- a tag moved under a finished
-    # leaderboard would otherwise change a score with nothing on disk changing.
     assert argv[-1] == image
-    assert ":lua" not in argv[-1]
+    assert ":lua" not in argv[-1]  # by digest, never the mutable tag
     assert argv[:3] == ["podman", "run", "--rm"]
 
 
 @pytest.mark.parametrize("lang", _UNPINNED)
 def test_the_default_path_refuses_an_unpinned_language(lang) -> None:
-    # Refusing beats floating the mutable tag: an unpinned verifier scores
-    # silently, which is the whole reason the table exists.
     with pytest.raises(KeyError):
         verifier_command(lang)
 
@@ -97,10 +88,8 @@ def test_an_image_templated_override_refuses_an_unpinned_language(
     monkeypatch, lang
 ) -> None:
     # REGRESSION: this branch once substituted "" into the `{image}` slot instead
-    # of raising, so the documented `infra:unpinned-lang` refusal never fired
-    # under any non-podman runtime -- upstream's own apptainer included, since
-    # podman is the one runtime needing no override. A template asking this table
-    # for a digest is asking for the pin, and gets the pin's refusal.
+    # of raising, so the refusal never fired under any non-podman runtime --
+    # i.e. everywhere, podman being the one that needs no override.
     monkeypatch.setenv(_COMMAND_ENV_VAR, "apptainer run --contain {image}")
 
     with pytest.raises(KeyError):
@@ -120,11 +109,10 @@ def test_an_image_templated_override_still_reports_the_pinned_digest(
 
 @pytest.mark.parametrize("lang", ["lua", *_UNPINNED])
 def test_an_override_naming_its_own_image_is_left_alone(monkeypatch, lang) -> None:
-    # The override taking responsibility, which is the point of having one: no
-    # `{image}`, so the table is never consulted and an unpinned language is not
-    # refused. It reports NO image even for a language the table could name --
-    # what ran is the override's own, and naming a digest that did not run is
-    # worse than naming none.
+    # No `{image}`, so the table is never consulted and an unpinned language is
+    # not refused -- the override taking responsibility. Note it reports NO image
+    # even for `lua`, which the table could name: naming a digest that did not
+    # run is worse than naming none.
     monkeypatch.setenv(_COMMAND_ENV_VAR, "apptainer run --contain /opt/{lang}.sif")
 
     argv, image = verifier_command(lang)
@@ -138,8 +126,7 @@ def test_an_override_naming_its_own_image_is_left_alone(monkeypatch, lang) -> No
 # --------------------------------------------------------------------------- #
 @pytest.mark.anyio
 async def test_an_unpinned_language_is_refused_with_its_own_code() -> None:
-    # The split this module exists to make: the operator reads the cause, not
-    # whatever the runtime says about a missing argument.
+    # The operator reads the cause, not whatever the runtime says downstream.
     passed, msg, _stats, image = await execute_agnostics(
         code="print(1)", inputs=["1"], expect_outputs=["1"], lang="rust", timeout=15.0
     )
