@@ -807,6 +807,59 @@ async def test_report_surfaces_step_execution_failures():
 
 
 @pytest.mark.anyio
+async def test_step_counters_read_the_class_slot_not_the_message_tail():
+    """The tail is the program's own output; only the class slot is vocabulary.
+
+    Each message below contains the counter's word somewhere, so all three
+    counters would be non-zero under the substring tests these replaced.
+    """
+    task = _task(_ScriptedChatModel([]))
+    finals = [
+        _final(
+            0,
+            [False, False, False],
+            messages=[
+                "failed: [ValueError] simulated memoryerror path",
+                "failed: output ['importerror'] != expect ['ok']",
+                "failed: [AssertionError] timeout must be positive",
+            ],
+        )
+    ]
+
+    report = await task.report(finals, fails=[])
+
+    assert report["memory_errors"] == 0
+    assert report["import_errors"] == 0
+    assert report["timeouts"] == 0
+
+
+@pytest.mark.anyio
+async def test_step_counters_still_match_subclasses_of_the_builtin():
+    """Anchoring on the slot must not narrow to the builtin name.
+
+    The service reports the concrete class, so a subclass is what actually
+    arrives. A bare substring test caught these; equality with the builtin
+    would drop them, trading a false positive for a false negative.
+    """
+    task = _task(_ScriptedChatModel([]))
+    finals = [
+        _final(
+            0,
+            [False, False],
+            messages=[
+                "failed: [OutOfMemoryError] cuda ran out",
+                "failed: [ZipImportError] bad local file header",
+            ],
+        )
+    ]
+
+    report = await task.report(finals, fails=[])
+
+    assert report["memory_errors"] == 1
+    assert report["import_errors"] == 1
+
+
+@pytest.mark.anyio
 async def test_report_counts_pipeline_fails_as_unsolved_problems():
     model = _ScriptedChatModel([])
     task = _task(model)

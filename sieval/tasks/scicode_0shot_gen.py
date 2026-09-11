@@ -76,6 +76,8 @@ from sieval.core.types import JSONValue
 from sieval.core.utils.meta import build_stage_meta
 from sieval.datasets import SciCodeDatasetSample
 
+from ._code_eval_msg import exception_class_name, is_timeout_message
+
 
 class StepCode(TypedDict):
     step_number: str
@@ -574,14 +576,35 @@ class SciCodeZeroShotGenTask(
                 1 for fb in feedbacks if fb.get("empty_extraction")
             )
             messages = [str(fb.get("msg", "")).lower() for fb in feedbacks]
-            timeouts += sum("timeout" in msg for msg in messages)
-            memory_errors += sum("memoryerror" in msg for msg in messages)
+            # All three counters read the exception CLASS SLOT, never the tail:
+            # `failed: [{type}] {e}` interpolates the program's own output after
+            # the class, so a bare `"memoryerror" in msg` also counted
+            # `[ValueError] simulated memoryerror path`. Matching the family
+            # (`endswith`) rather than the builtin keeps the subclasses the bare
+            # test happened to catch -- `ZipImportError` is an `ImportError`,
+            # `OutOfMemoryError` a `MemoryError` -- so this drops false
+            # positives only, and never a class the service actually named.
+            exc_classes = [exception_class_name(msg) for msg in messages]
+            # `timeouts` alone keeps a second reading: the service's own wall is
+            # a message prefix, not an exception at all.
+            timeouts += sum(
+                is_timeout_message(msg)
+                or (cls is not None and cls.endswith("timeouterror"))
+                for msg, cls in zip(messages, exc_classes, strict=True)
+            )
+            memory_errors += sum(
+                cls is not None and cls.endswith("memoryerror") for cls in exc_classes
+            )
             # ModuleNotFoundError is an ImportError subclass, but the evaluator
-            # reports the concrete class name, which does not contain
+            # reports the concrete class name, which does not END in
             # "importerror". It is the signature of a package missing from the
-            # code-eval image, so it must not read as import_errors=0.
+            # code-eval image, so it must not read as import_errors=0. Its own
+            # family is matched the same way the other two are, rather than by
+            # equality: the rule here is "the service named a class in this
+            # family", and a subclass is what the service actually reports.
             import_errors += sum(
-                "importerror" in msg or "modulenotfounderror" in msg for msg in messages
+                cls is not None and cls.endswith(("importerror", "modulenotfounderror"))
+                for cls in exc_classes
             )
 
         # A pipeline failure is an unsolved problem in BOTH accuracies. Its tested

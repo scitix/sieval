@@ -80,6 +80,10 @@ from sieval.core.tasks.metrics import (
     sampling_report,
     ungated_intervals,
 )
+from sieval.tasks._code_eval_msg import (
+    CODE_EVAL_BUILD_TIMEOUT_PREFIXES,
+    CODE_EVAL_RUN_TIMEOUT_PREFIXES,
+)
 
 # Commit-pinned: `main` moves, and a divergence is argued against the code that
 # was actually read. `main.py` is where the graded program is assembled.
@@ -626,8 +630,9 @@ class MultiPLETask[TSample](
         / ``ReferenceError`` / ``Exception``); the code-eval API answers with one
         boolean and a message, so what survives is the split a caller cannot
         reconstruct from the verdict — build versus run. Read off the message
-        prefixes the service documents, the same way the HumanEval tasks read
-        theirs for `timeouts`.
+        prefixes the service documents, out of the same shared vocabulary the
+        HumanEval tasks read theirs for `timeouts` from
+        (``sieval/tasks/_code_eval_msg.py``).
 
         ``n_execution_errors`` keeps the name it has in every other task that
         executes a prediction; the build bucket is new because no other task has
@@ -641,7 +646,17 @@ class MultiPLETask[TSample](
         test, in the one bucket that suggests the model's program was slow
         rather than broken. A build that exceeds ITS wall lands in the build
         bucket rather than under ``timeouts``: the run never started, and
-        build-versus-run is the split these three keys exist to carry.
+        build-versus-run is the split these three keys exist to carry. That is
+        why this takes the two prefix GROUPS and not ``is_timeout_message``,
+        which answers "did the service stop the clock" and would therefore move
+        a build wall into ``timeouts``.
+
+        Each group carries prefixes this task cannot see — none of its 24
+        languages is Python, so ``exec_py_code`` / ``exec_py_test`` never
+        answer it. Routing them anyway costs nothing and is what keeps the
+        vocabulary in one place: were a Python row ever added, a subprocess
+        wall would already land in ``timeouts`` rather than silently in
+        ``n_execution_errors``.
         """
         timeouts = build_errors = execution_errors = 0
         for final in finals:
@@ -652,10 +667,16 @@ class MultiPLETask[TSample](
                 if rollout["correct"]:
                     continue
                 # A null msg from the evaluator is absent on disk -- default it.
+                # Lowercased because the shared prefixes are: `[casetimeout]` is
+                # the one entry whose match depends on it.
                 msg = (rollout["extra"].get("msg") or "").lower()
-                if msg.startswith(("failed: build timeout", "failed [build exit")):
+                # `failed [build exit` is a build failure but not a timeout, so
+                # it is not the shared module's vocabulary and stays here.
+                if msg.startswith(
+                    (*CODE_EVAL_BUILD_TIMEOUT_PREFIXES, "failed [build exit")
+                ):
                     build_errors += 1
-                elif msg.startswith("failed: timeout"):
+                elif msg.startswith(CODE_EVAL_RUN_TIMEOUT_PREFIXES):
                     timeouts += 1
                 else:
                     execution_errors += 1

@@ -83,6 +83,8 @@ from sieval.core.tasks.metrics import (
 )
 from sieval.datasets import LiveCodeBenchDatasetSample
 
+from ._code_eval_msg import is_timeout_message
+
 N_SHOT = 3
 STOP_SEQUENCES = ("###",)
 
@@ -312,8 +314,7 @@ class LiveCodeBenchCodeGenerationFewShotBaseGenTask(
             1
             for f in finals
             for r in f.feedback_result["rollouts"]
-            # A null msg from the evaluator is absent on disk -- default it.
-            if "timeout" in (r["extra"].get("msg") or "").lower()
+            if is_timeout_message(r["extra"].get("msg"))
         )
         # `votes=False`: two correct programs are not one answer, so there is
         # nothing well-defined to take a majority over (RFC #74).

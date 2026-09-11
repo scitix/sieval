@@ -151,7 +151,10 @@ async def test_report_pass_at_k_and_timeouts():
     task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), n_shot=0, k=2, n=2)
     finals = [
         # 1 of 2 samples correct → pass@1 = 0.5, pass@2 = 1.0
-        _final(_judgement((True, "ok"), (False, "Timeout exceeded"))),
+        # The failing rollout carries the evaluator's own wording
+        # (`exec_py_code`): `timeouts` is read off the message PREFIX, so a
+        # fixture the service cannot emit would pass against any implementation.
+        _final(_judgement((True, "ok"), (False, "failed: subprocess timeout: 3.0s"))),
     ]
 
     report = await task.report(finals, [])
@@ -162,6 +165,23 @@ async def test_report_pass_at_k_and_timeouts():
     assert report["pass@k"] == pytest.approx(100.0)
     assert "pass@2" not in report  # the key carries a literal `k`
     assert report["timeouts"] == 1
+
+
+@pytest.mark.anyio
+async def test_a_raised_timeout_error_is_not_charged_to_the_clock():
+    """`failed: [TimeoutError] ...` is the program failing, not the wall.
+
+    The substring test this replaced counted it as a timeout, pointing a reader
+    at efficiency instead of at the exception in front of them.
+    """
+    task = MBPPFewShotBaseGenTask(_dataset(), _CapturingGenModel(), n_shot=0, k=1, n=1)
+    finals = [_final(_judgement((False, "failed: [TimeoutError] deadline exceeded")))]
+
+    report = await task.report(finals, [])
+    await task.shutdown()
+
+    assert report["timeouts"] == 0
+    assert report["score"] == pytest.approx(0.0)
 
 
 @pytest.mark.anyio

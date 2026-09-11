@@ -32,6 +32,8 @@ from sieval.core.tasks.metrics import (
 )
 from sieval.datasets import HumanEvalDatasetSample
 
+from ._code_eval_msg import is_timeout_message
+
 
 @sieval_task(
     name="human_eval_0shot_gen",
@@ -182,8 +184,7 @@ class HumanEvalZeroShotGenTask(
             1
             for f in finals
             for r in f.feedback_result["rollouts"]
-            # A null msg from the evaluator is absent on disk -- default it.
-            if "timeout" in (r["extra"].get("msg") or "").lower()
+            if is_timeout_message(r["extra"].get("msg"))
         )
         # `votes=False`: two correct programs are not one answer, so there is
         # nothing well-defined to take a majority over (RFC #74).
