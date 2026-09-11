@@ -153,7 +153,17 @@ BFCL_V3_SHARED_NOTES = (
     "for every expression that does not execute something (the FC protocol "
     "parses no source text, so it never reaches that code). "
     "exec_*, rest, sql and chatable are excluded -- upstream has them commented "
-    "out of its own TEST_FILE_MAPPING and they need live API keys."
+    "out of its own TEST_FILE_MAPPING and they need live API keys. "
+    "Anchored on upstream's own released evaluation archive "
+    "(HuanzhiMao/BFCL-Result, 2025-06-14 snapshot): its recorded "
+    "gpt-4.1-2025-04-14 replies are replayed through this grader and every "
+    "row's verdict compared against upstream's own per-row score file. That "
+    "pins the grader against a real model's output -- wrong answers, decode "
+    "failures and the FC name rewrite included -- none of which feeding gold "
+    "back can reach. The anchor does NOT measure prompt construction: the two "
+    "model-facing helpers are byte-identical to upstream and run on a "
+    "row-for-row verified snapshot, so prompt fidelity follows by "
+    "construction, not by measurement."
 )
 
 

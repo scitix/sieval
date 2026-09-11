@@ -53,7 +53,7 @@ from ._base import (
     # inference, and then every sample dies at postprocess.
     deps_group="bfcl-v3",
     model_type="chat",
-    status="experimental",
+    status="stable",
     reference_kind="value",
     reference_impl=ReferenceImpl(
         source="gorilla/berkeley-function-call-leaderboard",
@@ -66,8 +66,13 @@ from ._base import (
             "`ast_summary` (weighted over the four AST categories) carries one "
             "on `n_ast` for the same reason. underscore_to_dot=False: schemas "
             "reach the model verbatim, so dotted function names survive and "
-            "gold needs no rewrite. experimental until an alignment run "
-            f"against a published BFCL v3 number lands. {BFCL_V3_SHARED_NOTES}"
+            "gold needs no rewrite. Replaying upstream's released "
+            "gpt-4.1-2025-04-14 (Prompt) rollouts reproduces all six published "
+            "category accuracies exactly and agrees with upstream's own "
+            "verdict on 2251/2251 rows: live_simple 85.66, live_multiple "
+            "76.54, live_parallel 93.75, live_parallel_multiple 75.00, "
+            "live_irrelevance 77.89, live_relevance 88.89 -- so ast_summary "
+            f"78.46 and Live Overall Acc 78.32. {BFCL_V3_SHARED_NOTES}"
         ),
     ),
 )

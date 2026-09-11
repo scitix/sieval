@@ -54,7 +54,7 @@ from ._base import (
     n_shot=0,
     tags=("english", "function-calling"),
     model_type="chat",
-    status="experimental",
+    status="stable",
     reference_kind="value",
     reference_impl=ReferenceImpl(
         source="gorilla/berkeley-function-call-leaderboard",
@@ -74,9 +74,13 @@ from ._base import (
             "comparison. Requires the `function_tools` capability; a binding "
             "that does not offer it is rejected when the task is constructed, "
             "which prelaunch reconciliation reaches before the first request "
-            "and before a result directory exists. experimental until an "
-            f"alignment run against a published BFCL v3 number lands. "
-            f"{BFCL_V3_SHARED_NOTES}"
+            "and before a result directory exists. Replaying upstream's "
+            "released gpt-4.1-2025-04-14-FC rollouts reproduces all seven "
+            "published category accuracies exactly and agrees with upstream's "
+            "own verdict on 1390/1390 rows: simple 93.50, multiple 90.50, "
+            "parallel 91.00, parallel_multiple 86.00, java 61.00, javascript "
+            "68.00, irrelevance 89.58 -- so simple_ast 74.17 and Non_Live "
+            f"Overall Acc 86.25. {BFCL_V3_SHARED_NOTES}"
         ),
     ),
 )
