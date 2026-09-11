@@ -4,8 +4,10 @@ Upstream path: bfcl_eval/eval_checker/ast_eval/type_convertor/js_type_converter.
 Upstream blob: 4205b92e05af83d2e61a7bf4bd2530718b57acee
 License: Apache-2.0
 
-Only deviation: absolute `bfcl_eval.*` imports rewritten to relative ones
-(`.type_mappings`, `.type_convertor.*`, `._model_config`). No other edit.
+Only deviation: `from bfcl_eval.constants.type_mappings import JS_TYPE_CONVERSION`
+rewritten to `from ..type_mappings import JS_TYPE_CONVERSION` (this module lives
+one package level deeper than `type_mappings.py`, hence the double dot). No
+other edit.
 """
 
 import re

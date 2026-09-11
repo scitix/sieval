@@ -13,13 +13,13 @@ VENDORED_SHA256 = {
         "66ba103f5dd17d9e2b4ee597ebfdb013486add739412366e65c4cb6691acb936"
     ),
     "type_mappings.py": (
-        "90e843fe10cc0a12868b11ef9634e1feb7361ec1f1526b83a0b3a0104ae6eec5"
+        "cebc6f9a1b28e277483dd13b2a3fd3ceb95ad8a4631daf50933ad1af3015c698"
     ),
     "type_convertor/java_type_converter.py": (
-        "ead108a53b7ee0d4e4e165d735ab586a0befa3e34df934287d5a6db950431f9a"
+        "d33be3f7e65f0302ef729b0ae328e4d7395758b9b92d8d4562365f97dbc84942"
     ),
     "type_convertor/js_type_converter.py": (
-        "943afe13025dc48ef3902777fc48e45d5ab10e2a439f4c4d0abc3cf311fab595"
+        "dfb0373b58b51c45e63346e1a893c055168dd6ae39e27307436fefa45981e6cc"
     ),
     "parser.py": ("4bba883c1f537a3ae0ad0c85260974861d056ffe25ab50a90bd07d7bb8dec2a3"),
     "tool_convert.py": (

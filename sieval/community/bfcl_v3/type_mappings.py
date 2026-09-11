@@ -4,9 +4,8 @@ Upstream path: bfcl_eval/constants/type_mappings.py
 Upstream blob: fdbdde48402f8f2812b146f9b7341b6aae9e55b8
 License: Apache-2.0
 
-Only deviation: absolute `bfcl_eval.*` imports rewritten to relative ones
-(`.type_mappings`, `.type_convertor.*`, `._model_config`). No other edit.
-This file has no imports, so no rewrite was needed here.
+This file has no imports of its own, so there was nothing to rewrite. It is
+byte-identical to upstream.
 """
 
 GORILLA_TO_OPENAPI = {

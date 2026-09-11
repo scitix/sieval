@@ -4,8 +4,10 @@ Upstream path: bfcl_eval/eval_checker/ast_eval/type_convertor/java_type_converte
 Upstream blob: 7d2b141dfcb8e527df6424893e60a833eb69f3e1
 License: Apache-2.0
 
-Only deviation: absolute `bfcl_eval.*` imports rewritten to relative ones
-(`.type_mappings`, `.type_convertor.*`, `._model_config`). No other edit.
+Only deviation: `from bfcl_eval.constants.type_mappings import JAVA_TYPE_CONVERSION`
+rewritten to `from ..type_mappings import JAVA_TYPE_CONVERSION` (this module lives
+one package level deeper than `type_mappings.py`, hence the double dot). No
+other edit.
 """
 
 import re
