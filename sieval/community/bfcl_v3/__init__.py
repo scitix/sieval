@@ -31,6 +31,8 @@ may reach into the other's private module, so the tables live here instead.
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
+from typing import TYPE_CHECKING
+
 from ._model_config import set_underscore_to_dot
 from ._tables import (
     CALL_EXPECTED,
@@ -44,6 +46,14 @@ from .ast_checker import ast_checker
 from .output_checks import is_empty_output, is_function_calling_format_output
 from .prompts import DEFAULT_SYSTEM_PROMPT
 from .tool_convert import convert_to_tool
+
+if TYPE_CHECKING:
+    # A module `__getattr__` types *every* attribute of the package as its own
+    # return type, so `ast_parse` would resolve to `object` and every call site
+    # would read as calling a non-callable. An explicitly declared symbol takes
+    # precedence over the fallback; `TYPE_CHECKING` is False at runtime, so the
+    # import below stays deferred.
+    from .parser import ast_parse
 
 
 __all__ = [
