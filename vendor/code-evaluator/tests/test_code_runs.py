@@ -2,11 +2,15 @@
 
 Covers what only the FastAPI route adds on top of ``exec_py_run.execute_run``:
 the response shape (field set, ``service_version``, the always-null
-``session_id``), the truncation flag on an oversized stream, and the refusal
-of any non-python ``lang`` before anything executes. Execution semantics --
-stdout capture, traceback-on-raise, partial stdout surviving a later raise,
-timeout reporting, statelessness -- are tested directly against
-``execute_run`` in ``test_exec_py_run.py`` instead, one layer down.
+``session_id``), the truncation flag on an oversized stream, the refusal of
+any non-python ``lang`` before anything executes, and the route's own
+``ok = exit_code == 0 and not timed_out`` derivation -- that a raising or
+timed-out run still comes back as HTTP 200 with ``status: false`` rather
+than an HTTP error. Execution semantics -- stdout capture, traceback content
+on raise, partial stdout surviving a later raise, timeout reporting,
+statelessness -- are tested directly against ``execute_run`` in
+``test_exec_py_run.py`` instead, one layer down; here we only check that the
+route maps that raw tuple to the right response fields.
 
 ``fastapi`` and ``httpx`` are already pinned in ``requirements.txt`` for the
 service itself, so ``TestClient`` adds no new dependency here.
@@ -66,3 +70,37 @@ def test_non_python_lang_is_refused_before_executing():
     # Refused before anything ran: no partial result to report, unlike a
     # snippet that ran and raised.
     assert out["data"] is None
+
+
+def test_raising_snippet_is_a_result_not_an_http_error():
+    # This is the route's derived ``ok = exit_code == 0 and not timed_out``
+    # logic, exercised at the transport layer: a raising snippet must come
+    # back as a normal 200 with status false and the traceback in stderr,
+    # never as an HTTP error -- an inverted condition here would still pass
+    # every other test in this file.
+    response = client.post(
+        "/code-runs", json={"uuid": "t1", "lang": "python", "code": "1 / 0"}
+    )
+    assert response.status_code == 200
+    out = response.json()
+    assert out["status"] is False
+    data = out["data"]
+    assert "ZeroDivisionError" in data["stderr"]
+    assert data["exit_code"] != 0
+    assert data["timed_out"] is False
+
+
+def test_timed_out_run_is_a_result_not_an_http_error():
+    response = client.post(
+        "/code-runs",
+        json={
+            "uuid": "t1",
+            "lang": "python",
+            "code": "while True: pass",
+            "timeout": 1.0,
+        },
+    )
+    assert response.status_code == 200
+    out = response.json()
+    assert out["status"] is False
+    assert out["data"]["timed_out"] is True
