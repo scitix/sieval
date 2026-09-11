@@ -45,6 +45,14 @@ from .arc_easy import (
     ARCEasyDataset,
     ARCEasyDatasetSample,
 )
+from .bfcl_v3_live import (
+    BfclV3LiveDataset,
+    BfclV3LiveDatasetSample,
+)
+from .bfcl_v3_non_live import (
+    BfclV3NonLiveDataset,
+    BfclV3NonLiveDatasetSample,
+)
 from .browsecomp import (
     BrowseCompDataset,
     BrowseCompDatasetSample,
@@ -275,6 +283,10 @@ __all__ = [
     "ApexShortlist2025DatasetSample",
     "BRUMO2025Dataset",
     "BRUMO2025DatasetSample",
+    "BfclV3LiveDataset",
+    "BfclV3LiveDatasetSample",
+    "BfclV3NonLiveDataset",
+    "BfclV3NonLiveDatasetSample",
     "BrowseCompDataset",
     "BrowseCompDatasetSample",
     "CEvalDataset",

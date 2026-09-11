@@ -285,6 +285,48 @@
       "checksums": {}
     },
     {
+      "name": "bfcl_v3_live",
+      "display_name": "BFCL v3 (live)",
+      "description": "Berkeley Function Calling Leaderboard v3 live: user-contributed AST, irrelevance, relevance.",
+      "source": [
+        "hf:gorilla-llm/Berkeley-Function-Calling-Leaderboard@61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
+      ],
+      "categories": [
+        {
+          "level1": "Agent",
+          "level2": "ToolUseSimple"
+        }
+      ],
+      "tags": [
+        "english",
+        "function-calling"
+      ],
+      "deps_group": null,
+      "license": "Apache-2.0",
+      "checksums": {}
+    },
+    {
+      "name": "bfcl_v3_non_live",
+      "display_name": "BFCL v3 (non-live)",
+      "description": "Berkeley Function Calling Leaderboard v3 non-live: Python/Java/JS AST plus irrelevance.",
+      "source": [
+        "hf:gorilla-llm/Berkeley-Function-Calling-Leaderboard@61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
+      ],
+      "categories": [
+        {
+          "level1": "Agent",
+          "level2": "ToolUseSimple"
+        }
+      ],
+      "tags": [
+        "english",
+        "function-calling"
+      ],
+      "deps_group": null,
+      "license": "Apache-2.0",
+      "checksums": {}
+    },
+    {
       "name": "browsecomp",
       "display_name": "BrowseComp",
       "description": "BrowseComp — 1,266-question hard live-web browsing benchmark.",

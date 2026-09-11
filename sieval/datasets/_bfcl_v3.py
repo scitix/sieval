@@ -1,0 +1,138 @@
+"""Shared loader for the BFCL v3 single-turn category files.
+
+One HF repo holds every category as its own JSONL file, with ground truth in a
+parallel `possible_answer/` file. Three categories ship no gold at all --
+`irrelevance`, `live_irrelevance` and `live_relevance` are scored on whether a
+call was produced, not on which call it was.
+
+The join key is the **universal index** -- the `<index>` of
+`<category>_<index>[-<sub>-<sub>]` -- not the whole `id` string. That is
+upstream's key: its runner sorts both files on `(category, universal_index)`,
+discarding the sub-indices, then pairs them positionally. The distinction is
+load-bearing on exactly one row at the pinned revision: the prompt file's
+`live_multiple_1052-79-0` is graded against the gold file's
+`live_multiple_1052-279-0`. One of the two sub-indices is an upstream typo, but
+because it never enters upstream's key, upstream grades the row and cannot see
+the disagreement. Joining on the whole `id` would instead score 1052 of
+`live_multiple`'s 1053 rows and report a column upstream never published.
+
+The key is unique within every file that is joined, which is what makes an index
+join and upstream's positional join the same pairing; the loader asserts that
+rather than assuming it, and so is strictly stricter than upstream, which only
+checks that the two files are the same length. It is deliberately not asserted
+for the goldless three, which are never joined -- `live_relevance` ships the
+same row twice and is 18 rows over 17 distinct ids.
+
+Row counts are asserted per category. The revision pin already prevents a silent
+re-upload; what it cannot prevent is someone bumping the pin, so a count that
+moves fails here rather than quietly rescoring a leaderboard column.
+
+AI-Generated Code - Claude Opus 5 (Anthropic)
+"""
+
+import json
+from collections.abc import Mapping
+from pathlib import Path
+
+from datasets import Dataset as HFDataset
+from datasets import DatasetDict as HFDatasetDict
+
+from sieval.community.bfcl_v3 import GOLDLESS_CATEGORIES, LANGUAGE_BY_CATEGORY
+
+#: Pinned snapshot. Verified row-for-row against the harness's own
+#: `bfcl_eval/data/` at gorilla v1.3.
+BFCL_V3_REVISION = "61fc0608cfd831fcfbbaa676ebdfef0ed963eeda"
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    with path.open(encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def _universal_index(row_id: str) -> int:
+    """The join key of one row: the index in `<category>_<index>[-<sub>-<sub>]`.
+
+    Mirrors the index that upstream's own sort key extracts -- it splits on the
+    last underscore and keeps only what precedes the first dash, so the two
+    sub-indices the live categories carry are discarded here exactly as they
+    are there.
+    """
+    index = row_id.rsplit("_", 1)[-1]
+    return int(index.split("-")[0])
+
+
+def _index_rows(rows: list[dict], category: str, what: str) -> dict[int, dict]:
+    by_index = {_universal_index(row["id"]): row for row in rows}
+    if len(by_index) != len(rows):
+        raise ValueError(
+            f"BFCL v3 category {category!r} has {len(rows) - len(by_index)} "
+            f"{what} rows sharing a universal index. The index is the join key "
+            "and upstream's runner pairs the two files positionally under it, "
+            "so a repeat makes the pairing ambiguous rather than merely odd."
+        )
+    return by_index
+
+
+def load_categories(name_or_path: str, counts: Mapping[str, int]) -> HFDatasetDict:
+    root = Path(name_or_path)
+    rows: list[dict] = []
+    for category, expected in counts.items():
+        prompts = _read_jsonl(root / f"BFCL_v3_{category}.json")
+        if len(prompts) != expected:
+            raise ValueError(
+                f"BFCL v3 category {category!r} has {len(prompts)} rows at the "
+                f"pinned revision, expected {expected}. A count that moved means "
+                "the pin was bumped; re-verify the category against upstream and "
+                "update the table deliberately, do not relax this check."
+            )
+
+        gold_by_index: dict[int, str] = {}
+        if category not in GOLDLESS_CATEGORIES:
+            # Only a category that is actually joined needs a unique key. The
+            # goldless three are not joined, and one of them must not be held to
+            # this: `live_relevance` ships `live_relevance_3-3-0` twice, so it
+            # has 18 rows and 17 distinct ids. Upstream scores all 18 and so do
+            # we -- deduplicating here would publish a denominator upstream
+            # never used.
+            prompt_by_index = _index_rows(prompts, category, "prompt")
+            answers = _index_rows(
+                _read_jsonl(root / "possible_answer" / f"BFCL_v3_{category}.json"),
+                category,
+                "possible_answer",
+            )
+            gold_by_index = {
+                index: json.dumps(entry["ground_truth"], ensure_ascii=False)
+                for index, entry in answers.items()
+            }
+            missing = set(prompt_by_index) - set(gold_by_index)
+            if missing:
+                examples = [prompt_by_index[i]["id"] for i in sorted(missing)[:3]]
+                raise ValueError(
+                    f"BFCL v3 category {category!r} has {len(missing)} prompt rows "
+                    f"with no possible_answer entry (e.g. {examples}). The join key "
+                    "is the universal index; a miss means the two files disagree."
+                )
+
+        for row in prompts:
+            turns = row["question"]
+            # Every phase-1 category is single-turn. Asserting beats taking [0]:
+            # a multi-turn file loaded here would silently score only its first
+            # turn and look like a very poor model.
+            if len(turns) != 1:
+                raise ValueError(
+                    f"BFCL v3 row {row['id']!r} in {category!r} has {len(turns)} "
+                    "turns; the single-turn datasets accept exactly one. "
+                    "Multi-turn categories are phase 2 and must not be loaded here."
+                )
+            rows.append(
+                {
+                    "id": row["id"],
+                    "category": category,
+                    "language": LANGUAGE_BY_CATEGORY.get(category, "Python"),
+                    "question": turns[0],
+                    "function": json.dumps(row["function"], ensure_ascii=False),
+                    "ground_truth": gold_by_index.get(_universal_index(row["id"])),
+                }
+            )
+
+    return HFDatasetDict({"test": HFDataset.from_list(rows)})
