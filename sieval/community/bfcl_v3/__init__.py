@@ -42,9 +42,9 @@ from ._tables import (
 from .aggregate import calculate_unweighted_accuracy, calculate_weighted_accuracy
 from .ast_checker import ast_checker
 from .output_checks import is_empty_output, is_function_calling_format_output
-from .parser import ast_parse
 from .prompts import DEFAULT_SYSTEM_PROMPT
 from .tool_convert import convert_to_tool
+
 
 __all__ = [
     "ast_checker",
@@ -62,3 +62,17 @@ __all__ = [
     "CALL_EXPECTED",
     "LANGUAGE_BY_CATEGORY",
 ]
+
+
+def __getattr__(name: str) -> object:
+    """`ast_parse` is deferred because `parser.py` is the only module here that
+    reaches tree-sitter, which lives in the optional `bfcl-v3` extra. Importing
+    it eagerly makes that extra a hard requirement for importing this package at
+    all -- and `sieval/datasets/` imports it for two pure-data tables, so the
+    whole dataset registry died on a base install.
+    """
+    if name == "ast_parse":
+        from .parser import ast_parse
+
+        return ast_parse
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

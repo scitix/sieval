@@ -1,9 +1,15 @@
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from sieval.community.bfcl_v3 import GOLDLESS_CATEGORIES
 from sieval.datasets._bfcl_v3 import load_categories
+
+_ROOT = Path(__file__).parents[3]
 
 
 def _write(root, category, rows, gold=None):
@@ -164,6 +170,63 @@ def test_a_repeated_universal_index_raises(tmp_path):
     )
     with pytest.raises(ValueError, match="sharing a universal index"):
         load_categories(str(tmp_path), {"live_multiple": 2})
+
+
+def test_the_dataset_registry_loads_without_the_bfcl_v3_extra():
+    """Both loaders import `sieval.community.bfcl_v3` for two pure-data tables,
+    and `import_all_datasets()` imports every dataset module in a bare loop with
+    no per-module `except`. So anything that package pulls in at import time is a
+    hard requirement for *every* dataset in the repo -- `sieval dataset list`
+    included -- and tree-sitter, which only the vendored `parser.py` needs, is in
+    the optional `bfcl-v3` extra.
+
+    Out of process with the extra blocked at `sys.meta_path`: this venv has
+    tree-sitter installed (CI's `INSTALL_GROUPS` carries `-G bfcl-v3` so the
+    Java/JavaScript decode path is exercised), so an in-process check would pass
+    with the eager import restored.
+    """
+    child = f"""
+import sys
+
+class _NoTreeSitter:
+    def find_spec(self, name, path=None, target=None):
+        if name == "tree_sitter" or name.startswith("tree_sitter."):
+            raise ModuleNotFoundError("No module named " + name)
+        return None
+
+sys.meta_path.insert(0, _NoTreeSitter())
+
+import sieval
+
+# The editable install may name a different checkout than the tree this test
+# was loaded from; without this the child would probe that one instead.
+assert sieval.__file__.startswith({str(_ROOT)!r}), sieval.__file__
+
+from sieval.core.datasets.meta import import_all_datasets
+
+import_all_datasets()
+assert "sieval.datasets.bfcl_v3_non_live" in sys.modules
+assert "sieval.datasets.bfcl_v3_live" in sys.modules
+"""
+    inherited = os.environ.get("PYTHONPATH")
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            [str(_ROOT), *([inherited] if inherited else [])]
+        ),
+    }
+    completed = subprocess.run(
+        [sys.executable, "-c", child],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+        env=env,
+    )
+    assert completed.returncode == 0, (
+        "the dataset registry must import without the optional `bfcl-v3` "
+        f"extra:\n{completed.stderr}"
+    )
 
 
 def test_a_gold_miss_raises(tmp_path):
