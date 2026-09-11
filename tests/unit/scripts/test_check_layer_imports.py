@@ -800,14 +800,26 @@ class TestCheckRelativeScope:
         f = self._write(tmp_path, "scripts/x.py", "from ..y import z\n")
         assert _check_relative_scope(f, ast.parse(f.read_text())) == []
 
-    def test_community_tree_is_exempt(self, tmp_path: Path):
-        # Vendored files mirror upstream byte-for-byte and a hash test pins
-        # them, so the only fix this rule can offer — rewrite the import — is
-        # the one edit that tree forbids.
+    def test_community_tree_is_not_exempt(self, tmp_path: Path):
+        # Vendored code gets no carve-out from this rule. A copy cannot keep
+        # upstream's absolute `bfcl_eval.*` import, so the line is rewritten
+        # either way and can be spelled absolutely for free; exempting the tree
+        # to allow `..x` would drop the rule over every future drop.
         f = self._write(
             tmp_path,
             "sieval/community/bfcl_v3/type_convertor/java_type_converter.py",
             "from ..type_mappings import JAVA_TYPE_CONVERSION\n",
+        )
+        errors = _check_relative_scope(f, ast.parse(f.read_text()))
+        assert len(errors) == 1
+        assert "cross-package relative import '..type_mappings'" in errors[0]
+
+    def test_community_absolute_import_passes(self, tmp_path: Path):
+        """The spelling the vendored converters actually ship."""
+        f = self._write(
+            tmp_path,
+            "sieval/community/bfcl_v3/type_convertor/java_type_converter.py",
+            "from sieval.community.bfcl_v3.type_mappings import JAVA_TYPE_CONVERSION\n",
         )
         assert _check_relative_scope(f, ast.parse(f.read_text())) == []
 
@@ -953,13 +965,12 @@ class TestCheckFileRelativeScopeIntegration:
         )
         assert _check_file(f) == []
 
-    def test_community_exempt_from_rule_3_only(self, tmp_path: Path):
-        # The vendored carve-out is scoped to the relative-import rule and to
-        # nothing else. Hoisting it into `_check_file` — or excluding
-        # `community/` from the preflight wrapper's file list, which is what
-        # pre-commit's global `exclude` effectively does — would also drop the
-        # private-access, layer and sub-package rules over the whole tree. This
-        # is the half that stops a later widening.
+    def test_community_gets_every_rule(self, tmp_path: Path):
+        # `community/` has no carve-out from any of the four rules. Preflight is
+        # the only surface that checks this tree at all — pre-commit's global
+        # `exclude` skips it for every hook — so a carve-out added here, in
+        # `_check_relative_scope`, or in the preflight wrapper's file list would
+        # take private-module protection with it. This pins both halves.
         f = self._write(
             tmp_path,
             "sieval/community/bfcl_v3/type_convertor/java_type_converter.py",
@@ -967,7 +978,7 @@ class TestCheckFileRelativeScopeIntegration:
             "from sieval.core.utils import _private_helper\n",
         )
         errors = _check_file(f)
-        assert not any("cross-package relative import" in e for e in errors)
+        assert any("cross-package relative import" in e for e in errors)
         assert any("import of private name '_private_helper'" in e for e in errors)
 
 

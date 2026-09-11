@@ -47,7 +47,7 @@ bfcl-v3 = [
   # break -- the vendored parsers call `Language(ptr, name)` and
   # `Parser.set_language()`, both removed later -- so this is a hard pin, not a
   # floor. It has no wheel for Python 3.13 and builds from sdist.
-  "tree_sitter==0.21.3",
+  "tree-sitter==0.21.3",
   "tree-sitter-java==0.21.0",
   "tree-sitter-javascript==0.21.4",
 ]

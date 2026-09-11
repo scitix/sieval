@@ -10,7 +10,7 @@ their heterogeneous nesting -- the same reason `t_eval.py` stores its
 References:
 
 * Blog: <https://gorilla.cs.berkeley.edu/blogs/13_bfcl_v3_multi_turn.html>
-* Harness: <https://github.com/ShishirPatil/gorilla/tree/v1.3/berkeley-function-call-leaderboard>
+* Harness: <https://github.com/ShishirPatil/gorilla/tree/ea13468e4423454d0c213704fb87cf7cb3990433/berkeley-function-call-leaderboard>
 * Dataset: <https://huggingface.co/datasets/gorilla-llm/Berkeley-Function-Calling-Leaderboard>
 
 AI-Generated Code - Claude Opus 5 (Anthropic)

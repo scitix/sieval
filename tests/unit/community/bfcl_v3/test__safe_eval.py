@@ -131,6 +131,34 @@ def test_an_unbounded_expression_is_refused_before_it_is_computed(source):
         resolve_ast_by_type(_argument(source))
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "f(x='%.400000000f' % 1.0)",  # ~400MB of string from two tiny operands
+        "f(x='%.20f' % 1.0)",  # 22 chars -- admissible by SIZE, refused anyway
+        "f(x=b'%.400000000f' % 1.0)",
+    ],
+)
+def test_percent_formatting_on_a_string_is_refused_outright(source):
+    """Refused by SHAPE, not by size -- which is the whole point.
+
+    A precision field sets the result size independently of both operands, so
+    there is nothing for `_refuse_if_unbounded` to measure and `_bounded` would
+    see the value only after the allocation it exists to prevent. The 22-char
+    case is the discriminating one: it is far under `MAX_RESULT_SIZE`, so a
+    post-hoc size check admits it. Only a categorical refusal rejects it, and
+    only a categorical refusal bounds the 400MB sibling before it is built.
+    """
+    with pytest.raises(ValueError, match="refusing `%` formatting"):
+        resolve_ast_by_type(_argument(source))
+
+
+def test_integer_modulo_is_still_admissible():
+    """`%` on integers is bounded by its right operand, so it keeps working."""
+    assert safe_eval(_argument("f(x=10 % 3)")) == 1
+    assert safe_eval(_argument("f(x=10 ** 100 % 7)")) == 10**100 % 7
+
+
 def test_the_bound_admits_far_more_than_any_real_argument():
     """Evidence the cap does not bind: the pinned largest literal is 13 digits."""
     assert safe_eval(_argument("f(x=2 ** 4096)")) == 2**4096

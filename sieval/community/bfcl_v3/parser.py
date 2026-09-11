@@ -24,7 +24,7 @@ Deviations:
    + 0)` runs the call and hands back an ordinary-looking number. `safe_eval`
    computes the same value for every expression that does not execute
    something, and refuses the rest; the argument for where it lives, and for
-   the two non-executing shapes it also refuses, is in `_safe_eval.py`.
+   the non-executing shapes it also refuses, is in `_safe_eval.py`.
 
    The `ast.Lambda` branch below keeps upstream's `eval` untouched, because it
    cannot reach it: `Lambda.body` is a single expression node, so `value.body[0]`

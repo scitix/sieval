@@ -45,10 +45,10 @@ VENDORED_SHA256 = {
         "cebc6f9a1b28e277483dd13b2a3fd3ceb95ad8a4631daf50933ad1af3015c698"
     ),
     "type_convertor/java_type_converter.py": (
-        "d33be3f7e65f0302ef729b0ae328e4d7395758b9b92d8d4562365f97dbc84942"
+        "4b450f96bfe528823de681e9d6b0b7fb748ca51a534b2d7a59d76d1047dfebf2"
     ),
     "type_convertor/js_type_converter.py": (
-        "dfb0373b58b51c45e63346e1a893c055168dd6ae39e27307436fefa45981e6cc"
+        "ef9562e296bcd7aeeff8b2b88f0fba1c996951b91b229fc91a03bf0f855fcfe2"
     ),
     "source_parser/java_parser.py": (
         "024dfc247dbb7890c4ed969ab48a9fab3212b85bdb74402528a5ce7b8abab5fe"
@@ -56,7 +56,7 @@ VENDORED_SHA256 = {
     "source_parser/js_parser.py": (
         "3a096d914cc54514009e11915e8d4cc4c35af26b5a1c9f21ced640cd896dc737"
     ),
-    "parser.py": ("a3e1606a074e664c2fe180afad853c53c4635feb0e5b99044d5e8740fd163683"),
+    "parser.py": ("bed1fd6c50b4164dd6f4277ef54b1eae908491f5476e7830f742f614fe7266f9"),
     "tool_convert.py": (
         "11b758572a09fca738479243e4cc3005387def672786b3231c868e6d73ad386e"
     ),

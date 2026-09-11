@@ -457,28 +457,18 @@ def _check_relative_scope(path: Path, tree: ast.AST) -> list[str]:
     not a package, so a relative import there fails at runtime and needs no
     lint. (The pre-commit hook feeds both trees; this check narrows on purpose.)
 
-    ``sieval/community/`` is exempt from **this rule only**. Vendored files
-    mirror upstream byte-for-byte and a hash test pins them, so the only fix
-    this rule can offer there — rewrite the import — is the one edit that tree
-    forbids. The exemption is deliberately narrower than pre-commit's global
-    ``exclude: ^(sieval/community/|vendor/)``, which skips every hook and so
-    every rule: we drop the style half and keep the other three over
-    ``community/``, a tree pre-commit does not check at all.
-
-    Be precise about what that is worth, because the number is one and not
-    three: only **private-module protection** actually binds under
-    ``community/``. The layer and sub-package rules are vacuous there —
-    ``FORBIDDEN`` and ``FORBIDDEN_SUBPACKAGE`` have no ``community`` entry, so
-    a vendored file may import anything it likes. Losing the private-module
-    rule is therefore the entire cost of a wider exemption, and it is reason
-    enough: do not "finish the job" by widening this to ``_check_file``.
+    ``sieval/community/`` is **not** exempt, and a vendored drop is not a reason
+    to make it one. A vendored file that reaches across packages has already had
+    that import rewritten — upstream's own was absolute (``from
+    bfcl_eval.constants...``), and a copy cannot keep it — so spelling the
+    replacement absolutely costs exactly what spelling it ``..x`` costs: one
+    line, already being edited. Exempting the tree to permit the relative form
+    would buy nothing and would drop this rule over every future drop, which is
+    a ratchet: lint exemptions are not narrowed back.
     """
-    layer = _get_layer(path)
-    if layer is None:
+    if _get_layer(path) is None:
         return []
     if "tests" in path.parts:
-        return []
-    if layer == "community":
         return []
 
     file_pkg = _file_package(path)

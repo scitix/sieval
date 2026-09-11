@@ -16,7 +16,7 @@ literals, their containers, and the arithmetic/bitwise operators. A `Name`,
 the entire divergence: every expression upstream's `eval` computes *without*
 executing something is computed here too, to the same value.
 
-Two shapes are refused that do not execute, and both are deliberate:
+Three shapes are refused that do not execute, and all three are deliberate:
 
 * An f-string, even one with no placeholders. `ast.literal_eval` draws the line
   in the same place, and the alternative is a `FormattedValue` walker guarding a
@@ -26,6 +26,14 @@ Two shapes are refused that do not execute, and both are deliberate:
   (the grade timeout is in the `feedback` worker, a stage later), so
   ``f(x=9**9**9)`` would not return a wrong answer; it would stall every other
   sample in the run.
+* ``%`` formatting on a string or bytes left operand. It belongs to the class
+  above, but it is the one member of it that cannot be *screened*: every other
+  eager operator's cost is a function of its operands' sizes, while a printf
+  precision field sets the result size on its own -- ``"%.400000000f" % 1.0``
+  asks for a 400MB string from two tiny inputs. There is nothing to measure
+  before the fact, and :func:`_bounded` would see it only after the allocation
+  it exists to prevent, so the shape is refused outright. Integer ``%`` is
+  bounded by its right operand and stays admissible.
 
 Refusal raises `ValueError`, which reaches the decoder's caller as a decode
 failure and scores the sample wrong. That is the right outcome and not a
@@ -100,8 +108,18 @@ def _refuse_if_unbounded(op, left, right) -> None:
     bitwise operators need no entry -- their result is at most as large as the
     sum of their inputs, so :func:`safe_eval`'s check on the value that comes
     back catches them one step later.
+
+    String `%` is the one shape here that is refused rather than screened,
+    because its result size comes from the format spec instead of from the
+    operands -- see the module docstring.
     """
     grown = None
+    if isinstance(op, ast.Mod) and isinstance(left, (str, bytes)):
+        raise ValueError(
+            "refusing `%` formatting on a str/bytes operand: a precision field "
+            "sets the result size independently of both operands, so the cost "
+            "cannot be bounded before the allocation"
+        )
     if isinstance(op, (ast.Pow, ast.LShift)) and isinstance(right, int):
         if isinstance(right, bool) or right < 0:
             return

@@ -3076,17 +3076,18 @@ class PreflightRunner:
         #
         # KNOWN divergence, not parity: pre-commit additionally applies the
         # global `exclude: ^(sieval/community/|vendor/)`, so it skips
-        # `sieval/community/` for every hook while this wrapper checks it. The
-        # vendored drop this comment used to predict has arrived — a file using
-        # `from ..x import y`, whose only offered fix was to edit code kept
-        # byte-identical to upstream. The call was made in
-        # `_check_relative_scope`: `community/` is exempt from the
-        # relative-import rule and from nothing else, so private-module
-        # protection still covers a tree pre-commit does not check at all.
-        # That one rule is the whole of what is protected here — the layer and
-        # sub-package rules have no `community` entry and are vacuous on it —
-        # and it is enough. Keep the exemption there. Hoisting it here, or into
-        # `_check_file`, would silently drop it.
+        # `sieval/community/` for every hook while this wrapper checks it. That
+        # makes this wrapper the only enforcement `community/` gets, which is
+        # the reason to keep feeding it the tree rather than to carve it out.
+        #
+        # The vendored drop this comment used to predict has arrived — a file
+        # reaching across packages, where upstream's own import was absolute and
+        # the copy could not keep it. It is spelled absolutely, so the rule is
+        # satisfied without an exemption: rewriting that import was unavoidable
+        # either way, and the relative spelling was the only version that would
+        # have needed one. Do not add the carve-out here, in `_check_file`, or
+        # in `_check_relative_scope` — it would silently drop private-module
+        # protection over a tree nothing else checks.
         enforced_py = [
             f
             for f in self._git_tracked_files(".py")
