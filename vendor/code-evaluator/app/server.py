@@ -726,6 +726,11 @@ async def code_run(sample: CodeRun) -> BasicResponse[CodeRunResult]:
     )
     out, out_cut = truncate_stream(out)
     err, err_cut = truncate_stream(err)
+    # `not timed_out` is belt-and-braces: no current input reaches it, since
+    # execute_run reports a timeout with exit_code=None (never 0), so
+    # `exit_code == 0` alone already excludes it. Kept anyway so a future
+    # executor that signals a timeout differently can't silently report the
+    # run as successful.
     ok = exit_code == 0 and not timed_out
     logger.info(
         f"code-run '{sample.uuid}': ok={ok} exit={exit_code} "

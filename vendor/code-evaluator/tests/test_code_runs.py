@@ -104,3 +104,9 @@ def test_timed_out_run_is_a_result_not_an_http_error():
     out = response.json()
     assert out["status"] is False
     assert out["data"]["timed_out"] is True
+    # Pins the invariant the handler's `not timed_out` clause relies on: a
+    # timeout always carries a null exit code, which is why `exit_code == 0`
+    # alone already excludes it and that clause is currently unreachable. If
+    # a future executor ever signals a timeout with a zero exit code, this
+    # assertion is what breaks first.
+    assert out["data"]["exit_code"] is None
