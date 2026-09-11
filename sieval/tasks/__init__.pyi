@@ -130,6 +130,9 @@ from .livecodebench_code_generation_0shot_gen import (
 from .livecodebench_code_generation_kshot_base_gen import (
     LiveCodeBenchCodeGenerationFewShotBaseGenTask,
 )
+from .liveoibench_0shot_gen import (
+    LiveOIBenchZeroShotGenTask,
+)
 from .math_500_0shot_gen import (
     MATH500ZeroShotGenTask,
 )
@@ -283,6 +286,7 @@ __all__ = [
     "InverseIFEvalZeroShotGenTask",
     "LiveCodeBenchCodeGenerationFewShotBaseGenTask",
     "LiveCodeBenchCodeGenerationZeroShotGenTask",
+    "LiveOIBenchZeroShotGenTask",
     "MATH500ZeroShotGenTask",
     "MATHPerturbHardZeroShotGenTask",
     "MATHPerturbSimpleZeroShotGenTask",

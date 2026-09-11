@@ -481,3 +481,73 @@ Two kinds, and the difference is a decision rather than a status:
     -H "Accept: application/vnd.oci.image.manifest.v1+json" \
     "https://ghcr.io/v2/nuprl/agnostics/manifests/lua" | grep -i docker-content-digest
   ```
+- `app/exec_cpp.py`, `app/server.py` — **C++ execution**, for
+  `source="liveoibench"`. The first non-Python language the evaluator runs as
+  a *compiled* artifact: `g++ -std=gnu++17 -Wall -O2 -pipe -static -g`, then one
+  child per test case under `RLIMIT_CPU` / `RLIMIT_AS`. Both limits carry
+  upstream LiveOIBench's explicit 20% buffer, and a 10 ms poller kills a child
+  whose CPU time passes the buffered limit — the rule its `BatchJudge` applies,
+  ported rather than reinvented, along with its output comparison (strip;
+  single-number outputs compare at `rel_tol=abs_tol=1e-6`; else exact; else line
+  count plus stripped per-line match).
+
+  Four differences from upstream LiveOIBench, all documented in the module:
+  compilation is bounded (`timeout`, default 60 s) where upstream's
+  `subprocess.run` has no timeout; every test always runs, since subtask scoring
+  needs the whole verdict vector; no checker path exists, because the published
+  dataset ships no `checkers/` directory, so upstream's own judge compares
+  outputs directly on this data; and a suite with **no** test case is refused
+  by name (`status=False`, `"no test cases to run"`) rather than graded. That
+  last one is a deployment fault — a half-written materialized directory — and
+  the two readings it otherwise gets are both wrong: an empty verdict vector
+  scores every subtask at zero, and the failure message has no first failure to
+  name, which raised `StopIteration` out of a coroutine.
+
+  `Sample` gains `files` (extra sources compiled alongside — `grader.cpp`,
+  `{task}.h`) and `entry_filename`; the test model gains `names`, used only in
+  the failure message. `ResourceMetrics` gains `case_verdicts` — one bool per
+  case, in request order — because an olympiad subtask scores on its own test
+  group, so `n_passed` alone cannot be attributed. All fields are optional and
+  the other sources are untouched.
+
+  The test model is still named `LiveCodeBenchTest` though two sources now share
+  it; renaming it would widen the diff against upstream without changing the
+  wire format.
+
+  **`test_dir` is a trusted-caller field**, the only one here that steers the
+  server at an arbitrary host path. Not a read primitive — only `{name}.in` /
+  `{name}.out` are opened and their contents reach the child's stdin rather than
+  the response — but it assumes the trust boundary the `agnostics` entry above
+  spells out: in-cluster callers, a mounted corpus, the service not exposed. A
+  deployment that cannot hold that should send `inline_tests=True` instead and
+  reject `test_dir` at the ingress.
+
+  **Deploy `docker/Dockerfile.multipl-e`** — there is no separate image for this
+  source. The base image has no toolchain, and a `-static` link additionally
+  needs `libstdc++-*-dev` and `libc6-dev`, but `apt-get install g++` already
+  pulls both: Debian's `g++` metapackage depends on the versioned compiler, which
+  depends on the matching `libstdc++-N-dev`, which depends on `libc6-dev`.
+  Measured inside the real base rather than reasoned about — on the current
+  `python:3.10-slim` (Debian 13.6), `g++` alone brings `libc6-dev 2.41` and
+  `libstdc++-14-dev`, `libstdc++.a` and `libc.a` both resolve, and the judge's
+  exact link (`g++ -std=gnu++17 -Wall -O2 -pipe -static -g`) builds and runs a
+  `bits/stdc++.h` program.
+
+  An earlier `Dockerfile.cpp` named those two packages explicitly and was
+  otherwise byte-identical to `Dockerfile.multipl-e` minus its other toolchains.
+  It was removed: it pinned `libstdc++-12-dev` while the base has since moved to
+  gcc 14, so it installed a dev tree the compiler no longer uses — a second image
+  to maintain that was both redundant and drifting.
+
+  Verified against g++ 14.2 on Debian: correct, partial, TLE, MLE,
+  compile-error, float-tolerance and grader-linked submissions all produce the
+  expected verdict vectors. Not yet upstream — land in `scitix/code-evaluator`
+  and re-vendor.
+
+  **Not the same C++ path as `exec_lang`'s `cpp` row above**, and the two are not
+  merge candidates. That one is direct-run: one program, one all-or-nothing
+  verdict, budgets from the table. This one compiles against the problem's own
+  grader, runs one child *per official test case* under that problem's
+  `RLIMIT_CPU` / `RLIMIT_AS`, and returns the whole verdict vector — which is the
+  only shape IOI subtask scoring can be computed from. They are reached by
+  different `source` values and share no code.

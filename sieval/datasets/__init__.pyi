@@ -141,6 +141,10 @@ from .livecodebench_code_generation import (
     LiveCodeBenchDataset,
     LiveCodeBenchDatasetSample,
 )
+from .liveoibench import (
+    LiveOIBenchDataset,
+    LiveOIBenchDatasetSample,
+)
 from .math_500 import (
     MATH500Dataset,
     MATH500DatasetSample,
@@ -317,6 +321,8 @@ __all__ = [
     "InverseIFEvalDatasetSample",
     "LiveCodeBenchDataset",
     "LiveCodeBenchDatasetSample",
+    "LiveOIBenchDataset",
+    "LiveOIBenchDatasetSample",
     "MATH500Dataset",
     "MATH500DatasetSample",
     "MATHPerturbHardDataset",
