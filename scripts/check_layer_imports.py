@@ -462,9 +462,16 @@ def _check_relative_scope(path: Path, tree: ast.AST) -> list[str]:
     this rule can offer there — rewrite the import — is the one edit that tree
     forbids. The exemption is deliberately narrower than pre-commit's global
     ``exclude: ^(sieval/community/|vendor/)``, which skips every hook and so
-    every rule: we drop the style half and keep the layer, sub-package and
-    private-module rules over ``community/``, which pre-commit does not check
-    at all. Do not "finish the job" by widening this to ``_check_file``.
+    every rule: we drop the style half and keep the other three over
+    ``community/``, a tree pre-commit does not check at all.
+
+    Be precise about what that is worth, because the number is one and not
+    three: only **private-module protection** actually binds under
+    ``community/``. The layer and sub-package rules are vacuous there —
+    ``FORBIDDEN`` and ``FORBIDDEN_SUBPACKAGE`` have no ``community`` entry, so
+    a vendored file may import anything it likes. Losing the private-module
+    rule is therefore the entire cost of a wider exemption, and it is reason
+    enough: do not "finish the job" by widening this to ``_check_file``.
     """
     layer = _get_layer(path)
     if layer is None:

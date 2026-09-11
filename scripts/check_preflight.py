@@ -3081,10 +3081,12 @@ class PreflightRunner:
         # `from ..x import y`, whose only offered fix was to edit code kept
         # byte-identical to upstream. The call was made in
         # `_check_relative_scope`: `community/` is exempt from the
-        # relative-import rule and from nothing else, so the layer, sub-package
-        # and private-module rules still cover a tree pre-commit does not check
-        # at all. Keep the exemption there. Hoisting it here — or into
-        # `_check_file` — would silently drop those other three.
+        # relative-import rule and from nothing else, so private-module
+        # protection still covers a tree pre-commit does not check at all.
+        # That one rule is the whole of what is protected here — the layer and
+        # sub-package rules have no `community` entry and are vacuous on it —
+        # and it is enough. Keep the exemption there. Hoisting it here, or into
+        # `_check_file`, would silently drop it.
         enforced_py = [
             f
             for f in self._git_tracked_files(".py")
