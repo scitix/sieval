@@ -447,8 +447,14 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
         except (KeyError, ValueError) as exc:
             # A protocol error, not a wrong command. `data=None` is how this
             # service already distinguishes "nothing ran" from a real verdict.
-            logger.error(f"quotebench sample '{sample.uuid}' rejected: {exc}")
-            return BasicResponse(status=False, msg=str(exc), data=None)
+            #
+            # `str()` on a KeyError is the *repr* of its argument, so a message
+            # written as a sentence comes back wrapped in quotes. Read the
+            # argument directly instead, so both raisers reach `msg` spelled the
+            # way they were written.
+            detail = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
+            logger.error(f"quotebench sample '{sample.uuid}' rejected: {detail}")
+            return BasicResponse(status=False, msg=str(detail), data=None)
 
         logger.info(
             f"evaluate sample '{sample.uuid}' from 'quotebench', "

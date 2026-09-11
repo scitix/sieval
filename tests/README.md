@@ -8,6 +8,8 @@
 
 **Convention:** `tests/unit/` mirrors `sieval/` — e.g. `sieval/core/runners/foo.py` → `tests/unit/core/runners/test_foo.py`. Scripts with non-trivial logic (`scripts/*.py`) go in `tests/unit/scripts/`. Non-`sieval/` top-level artifact dirs get their own sibling under `tests/` that mirrors them directly — e.g. `leaderboards/alignment/<tr-slug>/<stage>.md` → `tests/leaderboards/test_*.py`.
 
+**One carve-out: `tests/unit/vendor/code_evaluator/`.** `vendor/` is a non-`sieval/` top-level dir, so the rule above would put its tests in `tests/vendor/` — but CI runs `pytest tests/unit tests/integration tests/acceptance`, and nothing else, so a sibling directory would be collected by nobody. The carve-out is therefore narrow and conditional: it covers **only** patches that `vendor/code-evaluator/VENDORED.md` marks *in-tree by decision* (today, the `quotebench` source), which have no upstream to be tested in. A patch marked *upstream-bound* still keeps its tests in `scitix/code-evaluator` and must not acquire a file here — that is why the thirteen written against the per-case-timeout patch were removed (recoverable at commit `7c426a69`). Written down because that removal looks, from the directory alone, like a precedent for deleting these too.
+
 The mirror is **directory-level**; four file layouts are in use within a directory:
 
 | Layout | When | Example |

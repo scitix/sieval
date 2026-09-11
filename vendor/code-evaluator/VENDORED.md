@@ -256,6 +256,23 @@ Two kinds, and the difference is a decision rather than a status:
   `0.0`: the payload runs in its own process tree, so the in-process monitor
   would report its own idle numbers, not the command's.
 
+  **That flat model widens every other source's response**, which is the price
+  of the above and is called out here because it is otherwise discovered by
+  diffing artifacts. `ResourceMetrics` is shared, so a `human-eval` verdict now
+  carries `"error_class": null, "exit_code": null, "timed_out": null,
+  "scenarios_digest": null` alongside its own fields — and sieval's tasks
+  persist it, because they bucket whatever they do not recognise into a
+  catch-all (`resources = {k: v for k, v in data.items() if k not in
+  ("n_cases", "n_passed")}`). Six modules do that — `human_eval_0shot_gen`,
+  `human_eval_0shot_base_gen`, both `livecodebench_code_generation_*`,
+  `mbpp_kshot_base_gen` and `multipl_e/_base.py` — so their rollout records gain
+  four always-null keys from this commit onward. (`scicode_0shot_gen` reads
+  named fields and is unaffected.) Nothing reads them and no score moves; it is
+  a record-shape change, not a behavioural one. Narrowing it would mean either a per-source response model (stripped, as
+  above) or `response_model_exclude_none`, which would also drop `n_cases` /
+  `n_passed` — and `None` there means *unknown*, not zero. Accepted rather than
+  worked around.
+
   The contract-to-transport mapping lives in `exec_quotebench.py`, not in the
   vendored package. Upstream's `public_cli.command_for_transport` accepts only
   `raw` / `native` / `nested-shell` and raises `ValueError` on `nested` — the
@@ -268,17 +285,27 @@ Two kinds, and the difference is a decision rather than a status:
 
   - *Grading core, in CI.* All 56 oracles pass, asserted by
     `tests/unit/vendor/code_evaluator/test_exec_quotebench.py` calling
-    `execute_quotebench` directly.
-    This runs on every push, and does **not** exercise HTTP or pydantic.
-  - *Whole HTTP path, run locally.* Replaying the stored replies of upstream's
-    `raw-vs-nested` arm (HF `lsamc/QuoteBench-Rollouts` @ `69957a53`) against a
-    live `uvicorn app.server` reproduces the GNU verdicts upstream recorded for
-    them **224/224 on `passed` and 224/224 on failure class**, across all four
-    crossover cells. This is where pydantic validation and the declared response
-    model are in play — but `tests/acceptance/quotebench/` skips when no server
-    is reachable, so the response-model layer has no standing CI gate. Adding
-    one would mean a `TestClient` test, and `fastapi` is the evaluator's
+    `execute_quotebench` directly — and, beside it,
+    `test_exec_quotebench_anchor.py` replays the **whole 224-execution crossover
+    grid** through the same entry point, requiring agreement with upstream's
+    recorded verdicts on both `passed` and failure class. Neither exercises HTTP
+    or pydantic; together they take about a second.
+
+    The grid is there because the oracle sweep is weaker than it looks: it
+    covers the `raw` contract only, and never grades a real model reply. A
+    wiring bug that ignored `contract` and graded every nested sample as raw
+    passed the entire suite green before this was added, and lands at 158/224
+    against the grid.
+  - *Whole HTTP path, run locally.* The same replay against a live
+    `uvicorn app.server` (HF `lsamc/QuoteBench-Rollouts` @ `69957a53`) reaches
+    the same **224/224 on `passed` and 224/224 on failure class**. What this
+    adds over the in-CI grid is exactly the transport: pydantic validation and
+    the declared response model. `tests/acceptance/quotebench/` skips when no
+    server is reachable, so **that layer alone** has no standing CI gate —
+    closing it would mean a `TestClient` test, and `fastapi` is the evaluator's
     dependency rather than sieval's, so it is not importable from `tests/unit/`.
+    The arm file's hash pin and the published-row recompute do run on every
+    push, since neither needs a server.
 
   A protocol error (unknown task, unknown contract, missing kwargs) answers with
   `data=None`; a wrong command answers with `data` present, which is how a

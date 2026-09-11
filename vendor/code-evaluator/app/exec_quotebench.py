@@ -63,12 +63,19 @@ def transport(contract: str, reply: str) -> str:
     return wrap(reply)
 
 
+@lru_cache(maxsize=1)
 def scenarios_digest() -> str:
     """sha256 over the modules that define the tasks and their acceptance.
 
     Echoed in every response so the caller can assert it prompted from the same
     fixtures this graded. Two vendored copies drifting apart is otherwise
     silent -- every number still looks plausible.
+
+    Cached because it is read on EVERY verdict and would otherwise re-read three
+    files from the event loop -- `evaluate` is `async def`, so this runs on the
+    loop rather than in a threadpool. It is a build identity, so caching also
+    means swapping the vendored files under a live process needs a restart:
+    the digest a response carries then still describes what actually graded it.
     """
     import quotebench
 
@@ -92,8 +99,19 @@ def execute_quotebench(
     contract, so the caller can answer a protocol error differently from a
     command that simply did the wrong thing.
     """
+    index = _task_index()
+    if task_id not in index:
+        # Spelled out rather than left to the bare `KeyError`, whose str() is
+        # just the repr of the key: the server stringifies it into `msg`, so an
+        # operator reading the log would see only `'no-such/task'` with nothing
+        # naming the field or the source. Mirrors `transport`'s message.
+        raise KeyError(
+            f"unknown quotebench task_id: {task_id!r} "
+            f"(the frozen core has {len(index)} tasks, e.g. "
+            f"{sorted(index)[0]!r})"
+        )
     attempt = run_attempt(
-        _task_index()[task_id], transport(contract, reply), executor=executor
+        index[task_id], transport(contract, reply), executor=executor
     )
     return (
         attempt.passed,

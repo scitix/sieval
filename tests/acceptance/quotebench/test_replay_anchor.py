@@ -13,6 +13,14 @@ Two tests, deliberately split by what they need:
 * the replay needs a running code-evaluator with the `quotebench` source, and
   pins OUR grading path against upstream's recorded verdicts.
 
+The same 224 executions are replayed WITHOUT a server, against
+`execute_quotebench` directly, in
+`tests/unit/vendor/code_evaluator/test_exec_quotebench_anchor.py` — that one is
+the standing CI gate, since this module skips when nothing is listening. What
+this module adds on top is the transport: pydantic validation and the declared
+response model. The arm file and its hash pin live here and are read from there,
+so there is one copy of both.
+
 Note that upstream's own `python -m quotebench score` cannot read these records:
 they spell the transport `nested`, and `public_cli.command_for_transport` accepts
 only `raw` / `native` / `nested-shell` and raises `ValueError: nested`. The anchor
@@ -30,6 +38,10 @@ from pathlib import Path
 
 import httpx
 import pytest
+
+# The task's own derivation, not a second copy of it: the probe below has to ask
+# the address the shipped code would have asked, prefix-mount included.
+from sieval.tasks._quotebench_base import digest_url
 
 #: HF `lsamc/QuoteBench-Rollouts` @ this revision, Apache-2.0.
 ROLLOUTS_REVISION = "69957a53a1a2190ec2f6e790034678d5dbdf61e9"
@@ -63,11 +75,21 @@ def _gnu_cells(records: list[dict]):
 
 
 def _evaluator_reachable() -> bool:
+    """Whether the thing on that port is an evaluator carrying THIS source.
+
+    Probing `/health` only establishes that something answered: it is
+    source-agnostic by design, and any unrelated service bound to the port
+    satisfies it. The skip then does not fire and the replay dies partway
+    through on a 404 that reads like a grading failure. `/quotebench/digest` is
+    specific to this source, so it separates the three cases that should all
+    skip -- nothing listening, an evaluator predating the source, someone else's
+    service -- from the one that should run.
+    """
     try:
-        httpx.get(_API.replace("/evaluations", "/health"), timeout=2.0)
-    except httpx.HTTPError:
+        resp = httpx.get(digest_url(_API), timeout=2.0)
+        return resp.status_code == 200 and bool(resp.json().get("data"))
+    except (httpx.HTTPError, ValueError):
         return False
-    return True
 
 
 def test_arm_file_is_the_pinned_release() -> None:

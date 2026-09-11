@@ -334,6 +334,7 @@ class QuoteBenchTask(
         classes: Counter[str] = Counter()
         by_tier: dict[int, list[float]] = {}
         by_scenario: dict[str, list[float]] = {}
+        graded: list[tuple[int, str, float]] = []
         for final in finals:
             judgement = final.feedback_result or {}
             rollouts = judgement.get("rollouts") or [{}]
@@ -341,8 +342,32 @@ class QuoteBenchTask(
             hit = 100.0 if head.get("correct") else 0.0
             classes[str((head.get("extra") or {}).get("error_class") or "unknown")] += 1
             extra = judgement.get("extra") or {}
-            scenario = str(extra.get("scenario", "unknown"))
-            by_tier.setdefault(int(extra.get("tier", -1)), []).append(hit)
+            graded.append(
+                (int(extra.get("tier", -1)), str(extra.get("scenario", "unknown")), hit)
+            )
+
+        # A failed sample counts as wrong in its own tier and scenario, for the
+        # same reason it counts as wrong in the headline (DENOMINATOR_REQUESTED).
+        # It never reached a verdict, so its axes come from the row rather than
+        # from a judgement -- `raw_sample` rides along on a failed context too.
+        # Attributing it is what keeps the breakdown reconcilable with the
+        # headline: counting it only in the headline would leave every per-axis
+        # row reading HIGHER than the score above it, and an evaluator outage --
+        # which `feedback` now turns into failed samples by raising -- is exactly
+        # when someone would read those rows.
+        for failed in fails:
+            raw = failed.raw_sample
+            if raw is None:
+                # Nothing to attribute it to. It still lands in `total`, so the
+                # headline charges it; silently pooling it into a `tier-1` row
+                # would invent an axis value the sample never had.
+                continue
+            graded.append(
+                (int(raw.get("tier", -1)), str(raw.get("scenario", "unknown")), 0.0)
+            )
+
+        for tier, scenario, hit in graded:
+            by_tier.setdefault(tier, []).append(hit)
             by_scenario.setdefault(scenario, []).append(hit)
 
         metrics: dict[str, float | str | list[float] | dict[str, str]] = {
@@ -359,9 +384,10 @@ class QuoteBenchTask(
         unknown = sum(v for k, v in classes.items() if k not in FAILURE_CLASSES)
         metrics["n_unknown_class"] = unknown
 
-        # Per-tier and per-scenario rates carry no interval: each is a different
-        # population from the headline's, and publishing an interval would owe a
-        # per-axis population count that means something else in every row.
+        # These share the headline's denominator POLICY (a failure counts as
+        # wrong) but not its population -- each row is its own slice. So they
+        # still carry no interval: publishing one would owe a per-axis
+        # population count that means something else in every row.
         for tier, hits in sorted(by_tier.items()):
             metrics[f"pass_rate_pct_tier{tier}"] = sum(hits) / len(hits)
         for scenario, hits in sorted(by_scenario.items()):

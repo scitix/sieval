@@ -36,6 +36,25 @@ would be satisfied by a grader that reached the right answer for the wrong
 reason; the failure class is upstream's own `harness.classify`, so matching both
 says the fixture, the transport and the check all landed where upstream had them.
 
+### The same grid also runs without a server, and that one is the CI gate
+
+`tests/unit/vendor/code_evaluator/test_exec_quotebench_anchor.py` replays the
+identical 224 executions through `execute_quotebench` directly — no HTTP, no
+`fastapi`, ~0.7 s — reading **this** fixture rather than copying it, so there is
+one arm file and one hash pin. It runs on every push.
+
+The two are not redundant, and neither should be deleted as a duplicate of the
+other:
+
+| | in-CI grid | this acceptance replay |
+| --- | --- | --- |
+| fixture, transport mapping, grading, failure taxonomy | ✅ | ✅ |
+| pydantic validation + the declared response model | ❌ | ✅ |
+| needs a running service | no | yes (skips) |
+
+So the thing the acceptance test uniquely buys is the transport layer; the thing
+the unit grid uniquely buys is that any of it is enforced at all.
+
 Run it with:
 
 ```sh

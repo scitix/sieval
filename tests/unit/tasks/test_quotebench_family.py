@@ -48,6 +48,19 @@ RAW_NAME = "quotebench_raw_0shot_gen"
 NESTED_NAME = "quotebench_nested_shell_0shot_gen"
 
 
+@pytest.fixture(autouse=True)
+def _unset_evaluator_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hold the evaluator address at its default for every test here.
+
+    `QuoteBenchTask.__init__` resolves `SIEVAL_CODE_EVAL_API` from the ambient
+    environment, and this repo's own docs tell you to export it to run the
+    acceptance replay. Without this, the URL assertion below goes red for anyone
+    who followed them -- naming neither the variable nor the reason -- and the
+    handshake tests would quietly exercise whatever address happened to be set.
+    """
+    monkeypatch.delenv("SIEVAL_CODE_EVAL_API", raising=False)
+
+
 # --------------------------------------------------------------- digest guard
 
 
@@ -280,7 +293,7 @@ async def test_a_run_that_failed_every_sample_publishes_a_believable_zero() -> N
     caught per sample and turned into a FAILED context, so the run completes and
     writes this report -- 0.0 with every declaration intact, which on a hard
     shell-quoting benchmark is a number someone would act on."""
-    report = await _task(QuoteBenchRawZeroShotGenTask).report([], [object()] * 56)
+    report = await _task(QuoteBenchRawZeroShotGenTask).report([], [_Failed()] * 56)
     assert report["pass_rate_pct"] == 0.0
     assert report["fails"] == 56
     assert report[SCORE_KEY_FIELD] == "pass_rate_pct"
@@ -333,6 +346,17 @@ class _Final:
         }
 
 
+class _Failed:
+    """Minimal stand-in for a failed sample: report reads only `raw_sample`.
+
+    `tier=None` models the context that lost its row -- the field is declared
+    nullable, and a failure can predate every stage that would fill it.
+    """
+
+    def __init__(self, *, tier: int | None = None, scenario: str = "write-file"):
+        self.raw_sample = None if tier is None else {"tier": tier, "scenario": scenario}
+
+
 class _Inference:
     """Minimal stand-in for ModelOutput: postprocess reads only `texts`."""
 
@@ -365,7 +389,7 @@ async def test_headline_is_a_percentage_over_requested_samples() -> None:
     assert report["score"] == report["pass_rate_pct"]
     # DENOMINATOR_REQUESTED: a pipeline failure counts as wrong, so one fail
     # alongside three samples takes a two-of-three rate down to two-of-four.
-    with_fail = await _task(cls).report(finals, [object()])
+    with_fail = await _task(cls).report(finals, [_Failed()])
     assert with_fail["pass_rate_pct"] == pytest.approx(50.0)
     assert with_fail["fails"] == 1
 
@@ -394,6 +418,40 @@ async def test_per_tier_and_per_scenario_rates_are_published() -> None:
     assert report["pass_rate_pct_tier3"] == 0.0
     assert report["pass_rate_pct_write_file"] == 100.0
     assert report["pass_rate_pct_find_glob"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_a_failed_sample_is_charged_to_its_own_tier_and_scenario() -> None:
+    """The breakdown has to reconcile with the headline it sits under.
+
+    `feedback` raises on an evaluator or protocol fault, so a partial outage is
+    exactly what produces failed samples -- and it is exactly when someone reads
+    the per-tier rows. Counting a failure only in the headline would leave every
+    row above the score, which reads as "the score is dragged down by something
+    that is not in any of these tiers".
+    """
+    finals = [_Final(correct=True, error_class="pass", tier=0, scenario="write-file")]
+    report = await _task(QuoteBenchRawZeroShotGenTask).report(
+        finals, [_Failed(tier=0, scenario="write-file")]
+    )
+    assert report["pass_rate_pct"] == 50.0
+    assert report["pass_rate_pct_tier0"] == 50.0
+    assert report["pass_rate_pct_write_file"] == 50.0
+
+
+@pytest.mark.anyio
+async def test_a_failure_that_lost_its_row_is_charged_only_to_the_headline() -> None:
+    """It still counts as wrong in `total`; it just cannot name an axis.
+
+    Pooling it into some default row would put a sample in a tier it was never
+    in -- a quieter error than the one being avoided above.
+    """
+    finals = [_Final(correct=True, error_class="pass", tier=0, scenario="write-file")]
+    report = await _task(QuoteBenchRawZeroShotGenTask).report(finals, [_Failed()])
+    assert report["pass_rate_pct"] == 50.0
+    assert report["pass_rate_pct_tier0"] == 100.0
+    assert report["fails"] == 1
+    assert "pass_rate_pct_tier-1" not in report
 
 
 @pytest.mark.anyio

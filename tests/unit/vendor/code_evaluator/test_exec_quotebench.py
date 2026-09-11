@@ -102,8 +102,14 @@ def test_the_two_vendored_copies_are_byte_identical() -> None:
         ).read_bytes(), f"{name} differs between the two vendored copies"
 
 
-def test_unknown_task_id_raises_keyerror() -> None:
-    with pytest.raises(KeyError):
+def test_unknown_task_id_raises_keyerror_naming_the_field() -> None:
+    """The message matters because the server puts it straight into `msg`.
+
+    Left to the bare `KeyError` from a dict lookup, an operator reading the log
+    sees only `'no-such/task'` -- no field name, no source, nothing separating it
+    from any other lookup in the service.
+    """
+    with pytest.raises(KeyError, match="unknown quotebench task_id"):
         execute_quotebench(
             task_id="no-such/task", contract="raw", reply=":", executor="local"
         )
