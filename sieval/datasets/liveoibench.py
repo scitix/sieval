@@ -87,11 +87,10 @@ def problem_tests_dir(tests_root: str, problem_id: str) -> str:
 
 
 class LiveOIBenchDatasetSample(TypedDict):
-    # Every column the problems parquet carries, because rows are passed through
-    # whole (`row | {...}` below) rather than projected -- including the three
-    # this task never reads. `setup_script` / `evaluation_script` are non-empty
-    # only on the 5 script-judged problems, all of which are `interactive` and so
-    # are already filtered out by the default `task_type`.
+    # Every column the parquet carries, since rows pass through whole
+    # (`row | {...}`) rather than projected -- including the three never read.
+    # `setup_script` / `evaluation_script` are non-empty only on the 5
+    # script-judged problems, all interactive and so already filtered out.
     id: int
     problem_id: str
     competition: str
@@ -252,9 +251,9 @@ def _read_subtasks(tests_repo: str) -> dict[str, str]:
     between a 20 KB read and the whole corpus.
     """
     subtasks: dict[str, str] = {}
-    # Tracked separately from `subtasks` being non-empty: those are two different
-    # failures. No file is "the corpus was never downloaded"; a file whose rubrics
-    # are all absent is a join failure the loader below reports per problem.
+    # Not the same test as `subtasks` being non-empty: no file means the corpus
+    # was never downloaded, where a file with no rubrics is a join failure the
+    # loader reports per problem.
     found_a_parquet = False
     for year in TEST_YEARS:
         path = os.path.join(tests_repo, year_parquet_name(year))
@@ -267,10 +266,9 @@ def _read_subtasks(tests_repo: str) -> dict[str, str]:
             table.column("subtasks").to_pylist(),
             strict=True,
         ):
-            # NOT `payload or "{}"`: a NULL cell would then read as a present but
-            # empty rubric, pass the loader's `is None` check below, and only
-            # surface per sample at grading time. Keep the absence, so the one
-            # place that decides what a missing rubric means is the loader.
+            # NOT `payload or "{}"`, which would turn a NULL cell into a present
+            # but empty rubric, passing the loader's own check below and only
+            # surfacing per sample at grading time.
             if payload is not None:
                 subtasks[problem_id] = payload
     if not found_a_parquet:

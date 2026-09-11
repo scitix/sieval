@@ -649,11 +649,9 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
             status=ok,
             msg=msg,
             data=ResourceMetrics(
-                # Both CPU fields are 0.0 on this path and that is measured, not
-                # missing: the per-case poller samples each child's CPU *time* in
-                # seconds to enforce RLIMIT_CPU, and there is no meaningful way to
-                # render that as the whole-service percentage this field means.
-                # Per-case CPU seconds stay inside the runner's verdict detail.
+                # Both CPU fields stay 0.0 here by construction: the per-case
+                # poller measures each child's CPU *seconds* to enforce
+                # RLIMIT_CPU, which is not this field's whole-service percentage.
                 avg_cpu_percent=stats.cpu_percent,
                 peak_cpu_percent=stats.peak_cpu_percent,
                 avg_memory_mb=stats.memory_mb,

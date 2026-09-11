@@ -514,17 +514,13 @@ Two kinds, and the difference is a decision rather than a status:
   it; renaming it would widen the diff against upstream without changing the
   wire format.
 
-  **`test_dir` is a trusted-caller field, and the only one on this service.**
-  It names a host directory for the evaluator to list and read, so a client that
-  can reach `/evaluations` can point it anywhere the process can read. It is not
-  a read primitive — only `{name}.in` / `{name}.out` are opened, contents go to
-  the child's stdin and the comparison rather than into the response, and the
-  reply carries only case names and verdicts — but it is the first field that
-  steers the server at an arbitrary path, so it assumes the same trust boundary
-  the `agnostics` entry above spells out for `CODE_EVAL_AGNOSTICS_COMMAND`:
-  callers are in-cluster, the corpus is a mounted volume, and the service is not
-  exposed. A deployment that cannot hold that should run the client with
-  `inline_tests=True` and reject `test_dir` at the ingress.
+  **`test_dir` is a trusted-caller field**, the only one here that steers the
+  server at an arbitrary host path. Not a read primitive — only `{name}.in` /
+  `{name}.out` are opened and their contents reach the child's stdin rather than
+  the response — but it assumes the trust boundary the `agnostics` entry above
+  spells out: in-cluster callers, a mounted corpus, the service not exposed. A
+  deployment that cannot hold that should send `inline_tests=True` instead and
+  reject `test_dir` at the ingress.
 
   **Deploy `docker/Dockerfile.multipl-e`** — there is no separate image for this
   source. The base image has no toolchain, and a `-static` link additionally
