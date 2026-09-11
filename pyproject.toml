@@ -16,6 +16,10 @@ dependencies = [
   "openai>=2.6.0",
   "orjson>=3.11.4",
   "packaging>=21.0",
+  # Direct, not just via datasets: sieval/datasets/liveoibench.py reads the
+  # LiveOIBench parquets with pyarrow, projecting columns so a 33.5 GB `tests`
+  # column stays unread. Floor matches the one datasets 4.2 already imposes.
+  "pyarrow>=21.0.0",
   "pyyaml>=6.0.3",
   "tqdm>=4.67.1",
   "typer>=0.24.1",

@@ -23,6 +23,7 @@ AI-Generated Code - Claude Opus 4.5 (Anthropic)
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -38,6 +39,33 @@ from sieval.datasets.liveoibench import (  # noqa: E402
     problem_tests_dir,
     year_parquet_name,
 )
+
+
+def write_problem_tests(out_dir: Path, tests: dict) -> None:
+    """Write one problem's cases so the directory only ever exists complete.
+
+    A 33.5 GB unpack is long enough to be interrupted — Ctrl-C, a full disk, an
+    OOM kill — and both the skip check above and the dataset loader's
+    ``require_tests`` guard read a directory's *existence* as "this problem is
+    materialized". Writing in place would make a half-written problem
+    indistinguishable from a whole one, and it would surface much later as a
+    subtask naming a test case that is not there.
+
+    So the cases land in a sibling ``tests.partial`` and are renamed over the
+    target in one step. A leftover ``.partial`` is a crash marker, and is
+    discarded the next time this problem is written.
+    """
+    staging = out_dir.with_name(out_dir.name + ".partial")
+    if staging.is_dir():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
+    for name, case in tests.items():
+        case = case or {}
+        (staging / f"{name}.in").write_text(case.get("input", ""), encoding="utf-8")
+        (staging / f"{name}.out").write_text(case.get("output", ""), encoding="utf-8")
+    if out_dir.is_dir():
+        shutil.rmtree(out_dir)
+    os.replace(staging, out_dir)
 
 
 def materialize_year(
@@ -63,15 +91,7 @@ def materialize_year(
             tests = json.loads(payload or "{}")
             if not isinstance(tests, dict):
                 raise ValueError(f"Malformed tests payload for {problem_id!r}")
-            out_dir.mkdir(parents=True, exist_ok=True)
-            for name, case in tests.items():
-                case = case or {}
-                (out_dir / f"{name}.in").write_text(
-                    case.get("input", ""), encoding="utf-8"
-                )
-                (out_dir / f"{name}.out").write_text(
-                    case.get("output", ""), encoding="utf-8"
-                )
+            write_problem_tests(out_dir, tests)
             written += 1
             if verbose:
                 print(f"  {problem_id}: {len(tests)} cases")

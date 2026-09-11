@@ -134,6 +134,7 @@ def test_load_joins_subtasks_and_derives_the_columns_the_task_reads(tmp_path):
     path = _stage(tmp_path, [_problem(BATCH_ID)])
     dataset = LiveOIBenchDataset(name_or_path=path)
 
+    assert dataset.test_set is not None
     (row,) = list(dataset.test_set)
     assert json.loads(row["subtasks"]) == SUBTASKS
     assert row["contest_id"] == "IOI-2025-contest"
@@ -155,18 +156,21 @@ def test_interactive_problems_are_filtered_out_by_default(tmp_path):
         tmp_path,
         [_problem(BATCH_ID), _problem(INTERACTIVE_ID, task_type="interactive")],
     )
-    assert [
-        r["problem_id"] for r in LiveOIBenchDataset(name_or_path=path).test_set
-    ] == [BATCH_ID]
+    default = LiveOIBenchDataset(name_or_path=path).test_set
+    assert default is not None
+    assert [r["problem_id"] for r in default] == [BATCH_ID]
     both = LiveOIBenchDataset(name_or_path=path, task_type=None).test_set
+    assert both is not None
     assert len(both) == 2
 
 
 def test_year_and_competition_filters_apply(tmp_path):
     path = _stage(tmp_path, [_problem(BATCH_ID), _problem(DASHED_ID)])
     by_year = LiveOIBenchDataset(name_or_path=path, year="2024").test_set
+    assert by_year is not None
     assert [r["problem_id"] for r in by_year] == [DASHED_ID]
     by_competition = LiveOIBenchDataset(name_or_path=path, competition="IOI").test_set
+    assert by_competition is not None
     assert [r["problem_id"] for r in by_competition] == [BATCH_ID]
 
 
@@ -185,6 +189,7 @@ def test_a_missing_test_corpus_names_the_command_that_builds_it(tmp_path):
 def test_prompts_can_be_loaded_without_the_corpus(tmp_path):
     path = _stage(tmp_path, [_problem(BATCH_ID)], with_tests=False)
     dataset = LiveOIBenchDataset(name_or_path=path, require_tests=False)
+    assert dataset.test_set is not None
     assert len(dataset.test_set) == 1
 
 
@@ -194,6 +199,7 @@ def test_an_external_tests_root_is_honoured(tmp_path):
     case_dir = problem_tests_dir(str(external), BATCH_ID)
     os.makedirs(case_dir)
     dataset = LiveOIBenchDataset(name_or_path=path, tests_root=str(external))
+    assert dataset.test_set is not None
     assert list(dataset.test_set)[0]["tests_dir"] == case_dir
 
 

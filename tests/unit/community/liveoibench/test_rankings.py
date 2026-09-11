@@ -8,11 +8,16 @@ would understate every model by however much it skipped.
 AI-Generated Code - Claude Opus 4.5 (Anthropic)
 """
 
+import json
+
 from sieval.community.liveoibench.rankings import (
+    build_problem_to_contest_map,
     calculate_percentile,
     identify_task_columns,
     medal_from_cutoffs,
+    normalize_contest_identifier,
     normalize_name,
+    resolve_contest_id,
     score_contest,
 )
 
@@ -144,3 +149,161 @@ def test_medals_use_the_contests_published_cutoffs():
     )
     assert result["medal"] == "Gold"
     assert result["n_contestants"] == 4
+
+
+# --------------------------------------------------------------------------- #
+# Contest identity — USACO splits one round into two rankings
+# --------------------------------------------------------------------------- #
+def test_the_contest_map_reads_the_division_split_out_of_the_problems_column():
+    """The only place the split is stated is the contestant row's own list."""
+    rows = [
+        {
+            "contest_id": "USACO-2025-January_Contest-platinum",
+            "problems": json.dumps(["USACO-2025-January_Contest-platinum_Cow"]),
+        },
+        {
+            "contest_id": "USACO-2025-January_Contest-combined",
+            "problems": json.dumps(
+                [
+                    "USACO-2025-January_Contest-bronze_Moo",
+                    "USACO-2025-January_Contest-gold_Hay",
+                ]
+            ),
+        },
+        {"contest_id": "IOI-2025-contest", "problems": ["IOI-2025-contest-beechtree"]},
+    ]
+    mapping = build_problem_to_contest_map(rows)
+    assert (
+        mapping["USACO-2025-January_Contest-platinum_Cow"]
+        == "USACO-2025-January_Contest-platinum"
+    )
+    assert (
+        mapping["USACO-2025-January_Contest-bronze_Moo"]
+        == "USACO-2025-January_Contest-combined"
+    )
+    assert mapping["IOI-2025-contest-beechtree"] == "IOI-2025-contest"
+
+
+def test_a_division_listed_by_the_wrong_row_is_not_mapped():
+    """Upstream's filter: a `-combined` row never claims a platinum problem."""
+    rows = [
+        {
+            "contest_id": "USACO-2025-January_Contest-combined",
+            "problems": json.dumps(["USACO-2025-January_Contest-platinum_Cow"]),
+        }
+    ]
+    assert build_problem_to_contest_map(rows) == {}
+
+
+def test_the_contestant_table_wins_over_the_id_derived_contest():
+    """Upstream reads the mapping out of the table first and only derives one
+    when the table lists nothing.
+
+    On the published data the two routes happen to agree everywhere, so nothing
+    else here would notice the table being ignored — but the table is the only
+    one of the two that can follow a release that regroups a round.
+    """
+    mapping = build_problem_to_contest_map(
+        [{"contest_id": "IOI-2025-day2", "problems": ["IOI-2025-contest-beechtree"]}]
+    )
+    assert (
+        resolve_contest_id(
+            "IOI-2025-contest-beechtree",
+            "IOI-2025-contest",
+            mapping,
+            {"IOI-2025-day2", "IOI-2025-contest"},
+        )
+        == "IOI-2025-day2"
+    )
+
+
+def test_an_unlisted_usaco_problem_falls_back_to_its_division_suffix():
+    resolved = resolve_contest_id(
+        "USACO-2025-January_Contest-platinum_Cow",
+        "USACO-2025-January_Contest",
+        {},
+        {"USACO-2025-January_Contest-platinum"},
+    )
+    assert resolved == "USACO-2025-January_Contest-platinum"
+
+
+def test_a_non_usaco_problem_resolves_to_the_contest_its_id_names():
+    assert (
+        resolve_contest_id("IOI-2025-contest-beechtree", "IOI-2025-contest", {}, set())
+        == "IOI-2025-contest"
+    )
+
+
+def test_the_cco_rename_falls_back_to_the_identifier_the_table_actually_uses():
+    """Upstream renames the CCO rounds and the published table does not, so the
+    ladder has to come back to the raw identifier or CCO stops matching."""
+    raw = "CCO-2024-Canadian_Computing_Competition_Senior"
+    assert normalize_contest_identifier(raw) == "CCO-2024-Senior"
+    assert resolve_contest_id(f"{raw}-x", raw, {}, {raw}) == raw
+
+
+# --------------------------------------------------------------------------- #
+# Recalculated_Total — upstream prefers it wherever it exists
+# --------------------------------------------------------------------------- #
+def test_a_recalculated_total_column_replaces_the_per_task_sum():
+    """The two are not the same number: the column is the contest's own
+    re-derivation, and on the published data it differs from the per-task sum
+    for 20-83% of contestants on each of the 10 contests that carry it."""
+    rankings = [
+        {"alpha": 0, "beta": 0, "Recalculated_Total": 300},
+        {"alpha": 100, "beta": 100, "Recalculated_Total": 10},
+    ]
+    result = score_contest(rankings, {"alpha": 100, "beta": 0})
+    assert result["matched_columns"] == ["Recalculated_Total"]
+    # Against the column the model's 100 beats only the 10 -> 50th. Summing the
+    # task columns would have compared it against 0 and 200 instead; the column
+    # name above is what discriminates, the percentile pins the values.
+    assert result["human_percentile"] == 50.0
+
+
+def test_the_recalculated_branch_drops_unparseable_rows_rather_than_zeroing_them():
+    """Upstream's `.dropna()`. Zeroing instead would invent contestants the
+    model outscores, which inflates the percentile."""
+    rankings = [
+        {"Recalculated_Total": 300},
+        {"Recalculated_Total": None},
+        {"Recalculated_Total": "n/a"},
+    ]
+    result = score_contest(rankings, {"alpha": 10})
+    # One usable contestant, who beat the model. Zeroing the other two would
+    # have reported 66.7 instead.
+    assert result["human_percentile"] == 0.0
+
+
+def test_rows_without_the_column_still_take_the_per_task_branch():
+    result = score_contest(RANKINGS, {"alpha": 100, "beta": 100})
+    assert result["matched_columns"] == ["alpha", "beta"]
+
+
+# --------------------------------------------------------------------------- #
+# Contests that publish cutoffs but no contestants
+# --------------------------------------------------------------------------- #
+def test_an_empty_field_still_awards_the_medal_its_cutoffs_imply():
+    """Upstream's `df.empty` branch. Every USACO row in the release is this
+    shape, so reporting no medal here would lose all 22 of them."""
+    result = score_contest(
+        [], {"alpha": 100}, gold_cutoff=90.0, silver_cutoff=60.0, bronze_cutoff=30.0
+    )
+    assert result["human_percentile"] is None
+    assert result["medal"] == "Gold"
+    assert result["n_contestants"] == 0
+
+
+def test_a_usaco_combined_contest_reports_nothing():
+    """Its metric is a promotion threshold that the published dataset does not
+    carry; upstream returns no medal and no percentile for it."""
+    result = score_contest(
+        [],
+        {"bronze_Moo": 100},
+        contest_id="USACO-2025-January_Contest-combined",
+        gold_cutoff=800.0,
+        silver_cutoff=750.0,
+        bronze_cutoff=700.0,
+    )
+    assert result["human_percentile"] is None
+    assert result["medal"] is None

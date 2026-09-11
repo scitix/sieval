@@ -19,6 +19,7 @@ cannot see that volume.
 AI-Generated Code - Claude Opus 4.5 (Anthropic)
 """
 
+import asyncio
 import json
 import os
 import time
@@ -31,7 +32,11 @@ from loguru import logger
 from sieval.community.liveoibench.code_extractor import CodeExtractor
 from sieval.community.liveoibench.payloads import load_code_bundle, load_subtasks
 from sieval.community.liveoibench.prompts import build_prompt
-from sieval.community.liveoibench.rankings import score_contest
+from sieval.community.liveoibench.rankings import (
+    build_problem_to_contest_map,
+    resolve_contest_id,
+    score_contest,
+)
 from sieval.community.liveoibench.scoring import interprete_task_result, total_points
 from sieval.core.models import ModelOutput
 from sieval.core.tasks import (
@@ -59,6 +64,29 @@ from sieval.core.tasks.metrics import (
 from sieval.datasets import LiveOIBenchDatasetSample
 
 _UPSTREAM = "https://github.com/LiveOIBench/LiveOIBench-Evaluation/blob/7759e3b8672307cfbdc8ab8e679bd87cc1dd4c12"
+
+# Case count assumed when this process cannot read the test tree but the
+# evaluator can. Only sizes the HTTP deadline, so it is deliberately above the
+# largest published problem (429 cases, JOI-2024-JOI_spring-2024-sp_Table_Tennis;
+# median 42): too generous costs a slow failure, too tight aborts a live grade.
+_ASSUMED_CASES = 450
+
+
+def _cutoff(value) -> float | None:
+    """A medal cutoff cell as a float, or ``None`` when the contest publishes none.
+
+    Upstream spells this ``float(x) if not pd.isna(x) else None``. The distinction
+    matters to :func:`medal_from_cutoffs`: a NaN that survives as a float reads as
+    a published cutoff nothing can clear, so the contest reports the medal
+    ``"None"`` and joins the medal denominator instead of staying out of it.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if number != number else number
 
 
 @sieval_task(
@@ -90,7 +118,18 @@ _UPSTREAM = "https://github.com/LiveOIBench/LiveOIBench-Evaluation/blob/7759e3b8
             "to n=1, so match it with n=8. Scope: the 380 'batch' problems -- the 23 "
             "interactive ones are filtered out by the dataset (no interactor process "
             "yet), so numbers are over 380 problems and are NOT comparable to the "
-            "paper's 403-problem table. Codeforces Elo is not computed."
+            "paper's 403-problem table. Aggregation follows upstream's overall block: "
+            "relative_score is meaned within a contest and then across contests, "
+            "pass_rate is the fraction of problems fully solved, and tests_passed_pct "
+            "the fraction of test cases. Human ranking resolves a contest through the "
+            "contestant table's own 'problems' column, which is where USACO's division "
+            "split (-platinum / -combined) lives; all 22 USACO rows publish medal "
+            "cutoffs but no contestant list, so they yield a medal and no percentile, "
+            "and -combined yields neither -- upstream scores it from promotion "
+            "thresholds the published dataset does not carry. Three IATI problems "
+            "(senior-game, senior-ones, junior-twins) link against a grader whose "
+            "header the prompt never shows, so they cannot compile and score 0; "
+            "upstream behaves identically. Codeforces Elo is not computed."
         ),
     ),
 )
@@ -177,14 +216,18 @@ class LiveOIBenchZeroShotGenTask(
                 f"{raw['problem_id']}: no subtasks to score against"
             )
         maximum = total_points(subtasks)
-        payload_tests = self._test_payload(raw)
+        # Both halves touch the test directory -- a `listdir`, and in inline mode
+        # ~140 MB of reads. Off the event loop, and once per sample rather than
+        # once per rollout.
+        payload_tests, n_cases = await asyncio.to_thread(self._test_payload, raw)
+        timeout = self._request_timeout(raw, n_cases)
 
         rollouts: list[RolloutJudgement] = []
         best_index, best_key = None, None
         for rollout in post["rollouts"]:
             idx = rollout["index"]
             verdicts, case_names, msg, resources = await self._grade(
-                raw, rollout.get("prediction") or "", payload_tests, idx
+                raw, rollout.get("prediction") or "", payload_tests, idx, timeout
             )
 
             results = [
@@ -252,31 +295,53 @@ class LiveOIBenchZeroShotGenTask(
             },
         )
 
-    def _test_payload(self, raw) -> dict:
-        """The request's test half: a directory to read, or the cases inline."""
+    def _test_payload(self, raw) -> tuple[dict, int]:
+        """The request's test half, and how many cases it names.
+
+        A directory for the evaluator to read, or the cases inline. The count
+        only sizes the HTTP deadline — the evaluator decides the real case list.
+        Blocking; called from a worker thread.
+        """
         tests_dir = raw["tests_dir"]
+        try:
+            stems = sorted(
+                name[: -len(".in")]
+                for name in os.listdir(tests_dir)
+                if name.endswith(".in")
+            )
+        except OSError:
+            if self._inline_tests:
+                raise
+            # Directory mode only needs the evaluator to see the tree, not this
+            # process; fall back to a deadline wide enough for a large problem.
+            return {"test_dir": tests_dir}, _ASSUMED_CASES
+
         if not self._inline_tests:
-            return {"test_dir": tests_dir}
+            return {"test_dir": tests_dir}, len(stems)
 
         inputs, outputs, names = [], [], []
-        for filename in sorted(f for f in os.listdir(tests_dir) if f.endswith(".in")):
-            stem = filename[: -len(".in")]
+        for stem in stems:
             output_path = os.path.join(tests_dir, f"{stem}.out")
             if not os.path.exists(output_path):
                 raise NonRetriableSampleError(
                     f"{raw['problem_id']}: test {stem!r} has no .out in {tests_dir}"
                 )
-            with open(
-                os.path.join(tests_dir, filename), encoding="utf-8", errors="replace"
-            ) as f:
+            input_path = os.path.join(tests_dir, f"{stem}.in")
+            with open(input_path, encoding="utf-8", errors="replace") as f:
                 inputs.append(f.read())
             with open(output_path, encoding="utf-8", errors="replace") as f:
                 outputs.append(f.read())
             names.append(stem)
-        return {"test": {"inputs": inputs, "outputs": outputs, "names": names}}
+        payload = {"inputs": inputs, "outputs": outputs, "names": names}
+        return {"test": payload}, len(names)
 
     async def _grade(
-        self, raw, code: str, payload_tests: dict, idx: int
+        self,
+        raw,
+        code: str,
+        payload_tests: dict,
+        idx: int,
+        timeout: httpx.Timeout,
     ) -> tuple[list[bool], list[str], str, dict]:
         """One rollout through the evaluator; returns verdicts and their names."""
         task_name = raw["task_name"]
@@ -303,10 +368,7 @@ class LiveOIBenchZeroShotGenTask(
                     "memory_limit": int(raw["memory_limit"]),
                     **payload_tests,
                 },
-                # Every case is bounded, so this only has to outlast the whole
-                # suite: the per-case wall the evaluator enforces is 120s, and a
-                # problem can carry a few hundred cases.
-                timeout=self._request_timeout(raw),
+                timeout=timeout,
             )
             resp.raise_for_status()
             res = resp.json()
@@ -333,6 +395,14 @@ class LiveOIBenchZeroShotGenTask(
                 f"(msg: {msg}); it needs the liveoibench C++ source "
                 "(vendor/code-evaluator/VENDORED.md)."
             )
+        if not case_names:
+            # An empty verdict vector scores every subtask at zero, so say what
+            # it is instead: the evaluator saw the directory and found nothing.
+            raise NonRetriableSampleError(
+                f"{raw['problem_id']}: the evaluator found no test cases in "
+                f"{raw['tests_dir']!r} (msg: {msg}). Re-run "
+                "`python scripts/materialize_liveoibench_tests.py --overwrite`."
+            )
 
         resources = {
             key: value
@@ -341,92 +411,160 @@ class LiveOIBenchZeroShotGenTask(
         }
         return verdicts, case_names, msg, resources
 
-    def _request_timeout(self, raw) -> float:
+    def _request_timeout(self, raw, n_cases: int) -> httpx.Timeout:
         """HTTP deadline, outside every budget the evaluator can spend.
 
         Compilation is bounded at the evaluator's 60s default and each case at
         its own 120s wall, which only a process burning no CPU can reach. The
         suite runs at most 4 cases at a time there, so the bound is derived from
         the case count rather than assumed.
+
+        ``pool=None`` because a bare float would also cap the wait for a free
+        connection, and these deadlines differ by an order of magnitude across
+        problems: a ten-case problem queued behind hour-long ones would fail on
+        the pool without ever being graded.
         """
-        try:
-            n_cases = sum(1 for f in os.listdir(raw["tests_dir"]) if f.endswith(".in"))
-        except OSError:
-            n_cases = 100
         per_case = min(120.0, float(raw["time_limit"]) * 1.2 + 5.0)
-        return 60.0 + per_case * n_cases + 30.0
+        return httpx.Timeout(60.0 + per_case * n_cases + 30.0, pool=None)
 
     @override
     async def report(self, finals, fails):
         total = len(finals) + len(fails)
-        if not finals:
-            return {
-                "score": 0.0,
-                "fails": float(len(fails)),
-                "relative_score": 0.0,
-                SCORE_KEY_FIELD: "relative_score",
-                DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
-            }
+        contestants = self._load_contestants()
+        by_contest = self._group_by_contest(finals, fails, contestants)
 
-        # A failed sample scores 0 rather than dropping out of the mean, so the
-        # denominator is every sample requested.
+        # Upstream's `overall` block (generate_rankings.py): `relative_score` is
+        # meaned inside a contest and then across contests, so a 12-problem round
+        # does not outweigh a 2-problem one. Problem counts here run 1..12, and
+        # the eleven largest rounds are all USACO, so the two weightings are not
+        # interchangeable.
+        contest_relative = [
+            sum(r["relative_score"] for r in rows) / len(rows)
+            for rows in by_contest.values()
+        ]
+        contest_tests = [
+            sum(r["tests_passed_pct"] for r in rows) / len(rows)
+            for rows in by_contest.values()
+        ]
         relative = (
-            sum(f.feedback_result["metrics"]["relative_score"] for f in finals) / total
+            sum(contest_relative) / len(contest_relative) if contest_relative else 0.0
         )
-        pass_rate = (
-            sum(f.feedback_result["metrics"]["tests_passed_pct"] for f in finals)
-            / total
-        )
-        ace_rate = (
-            sum(1 for f in finals if f.feedback_result["metrics"]["ace"]) / total * 100
-        )
+        # Upstream's `pass_rate` is problem-level -- `total_solved /
+        # total_problem_count` -- and counts a problem only when every test in it
+        # passed. A failed sample counts as unsolved rather than dropping out of
+        # the denominator, which is what DENOMINATOR_REQUESTED means here.
+        solved = sum(1 for rows in by_contest.values() for r in rows if r["solved"])
 
         metrics: dict[str, float | str] = {
             "score": relative,
             "fails": float(len(fails)),
             "relative_score": relative,
-            "pass_rate": pass_rate,
-            "ace_rate": ace_rate,
-            "n_problems": float(len(finals)),
+            "pass_rate": (solved / total * 100) if total else 0.0,
+            "tests_passed_pct": (
+                sum(contest_tests) / len(contest_tests) if contest_tests else 0.0
+            ),
+            "n_problems": float(total),
+            "n_scored": float(len(finals)),
+            "n_contests": float(len(by_contest)),
             SCORE_KEY_FIELD: "relative_score",
             DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
         }
-        metrics |= self._human_metrics(finals)
+        metrics |= self._human_metrics(by_contest, contestants)
         metrics |= budget_metrics(
-            [f.feedback_result["n_rollouts"] for f in finals], n=self._n, k=self._n
+            [f.feedback_result["n_rollouts"] for f in finals],
+            n=self._n,
+            # `k = n`: the headline is best-of-n, not pass@k, so every rollout
+            # drawn is a candidate for the one that scores.
+            k=self._n,
         )
         return metrics | health_metrics(finals)
 
-    def _human_metrics(self, finals) -> dict[str, float]:
+    def _group_by_contest(self, finals, fails, contestants) -> dict[str, list[dict]]:
+        """Every requested problem, keyed by the contest it is *ranked* in.
+
+        Not the contest its id names: USACO splits one round into a ``-platinum``
+        and a ``-combined`` ranking, and only the contestant table says which
+        problems went where. :func:`resolve_contest_id` walks upstream's ladder,
+        falling back to the id-derived contest when the table has nothing.
+
+        Failed samples ride along at zero — the denominator is every sample
+        requested, so a sample that never produced a judgement has to depress its
+        contest's mean rather than vanish from it.
+        """
+        problem_to_contest = build_problem_to_contest_map(contestants.values())
+        available = set(contestants)
+
+        grouped: dict[str, list[dict]] = defaultdict(list)
+        unplaced = 0
+
+        def place(ctx, result) -> None:
+            nonlocal unplaced
+            raw = ctx.raw_sample
+            if raw is None:
+                unplaced += 1
+                return
+            contest_id = (
+                resolve_contest_id(
+                    raw["problem_id"], raw["contest_id"], problem_to_contest, available
+                )
+                or raw["contest_id"]
+            )
+            grouped[contest_id].append(
+                {
+                    "task_name": raw["task_name"],
+                    "score": float(result["score"]) if result else 0.0,
+                    "relative_score": (
+                        result["metrics"]["relative_score"] if result else 0.0
+                    ),
+                    "tests_passed_pct": (
+                        result["metrics"]["tests_passed_pct"] if result else 0.0
+                    ),
+                    "solved": bool(result["metrics"]["ace"]) if result else False,
+                }
+            )
+
+        for ctx in finals:
+            place(ctx, ctx.feedback_result)
+        for ctx in fails:
+            # A failed context never contributes a judgement, even when it
+            # produced one before failing: the run did not accept it.
+            place(ctx, None)
+
+        if unplaced:
+            logger.warning(
+                "{} sample(s) carried no dataset row and are absent from the "
+                "per-contest means; they still count in the denominator.",
+                unplaced,
+            )
+        return dict(grouped)
+
+    def _human_metrics(self, by_contest, contestants) -> dict[str, float]:
         """Percentile and medals, per contest, against that contest's field.
 
         Upstream re-totals the humans over exactly the tasks the model was scored
         on, so a contest whose interactive problems were filtered out still
         compares like with like. Contests are averaged unweighted, as upstream
         averages its per-contest percentiles.
+
+        The two counts are always reported once a contestant table was read, so
+        ``n_contests_ranked`` of 0 reads as measured rather than as missing —
+        every USACO contest in the release publishes cutoffs but no contestant
+        list, so a USACO-only run legitimately ranks nothing and still medals.
         """
-        contestants = self._load_contestants()
         if not contestants:
             return {}
 
-        by_contest: dict[str, dict[str, float]] = defaultdict(dict)
-        for final in finals:
-            extra = final.feedback_result["extra"]
-            by_contest[extra["contest_id"]][extra["task_name"]] = final.feedback_result[
-                "score"
-            ]
-
         percentiles: list[float] = []
         medals: list[str] = []
-        unmatched = 0
-        for contest_id, model_scores in by_contest.items():
+        unmatched: list[str] = []
+        for contest_id, rows in by_contest.items():
             contest = contestants.get(contest_id)
             if contest is None:
-                unmatched += 1
+                unmatched.append(contest_id)
                 continue
             result = score_contest(
                 contest["rankings"],
-                model_scores,
+                {row["task_name"]: row["score"] for row in rows},
                 contest_id=contest_id,
                 gold_cutoff=contest["gold_cutoff"],
                 silver_cutoff=contest["silver_cutoff"],
@@ -439,15 +577,18 @@ class LiveOIBenchZeroShotGenTask(
 
         if unmatched:
             logger.warning(
-                "{} contest(s) had no contestant record; excluded from the "
-                "human metrics.",
-                unmatched,
+                "{} contest(s) had no contestant record and are excluded from the "
+                "human metrics: {}",
+                len(unmatched),
+                ", ".join(sorted(unmatched)),
             )
 
-        metrics: dict[str, float] = {"n_contests": float(len(by_contest))}
+        metrics: dict[str, float] = {
+            "n_contests_ranked": float(len(percentiles)),
+            "n_contests_medalled": float(len(medals)),
+        }
         if percentiles:
             metrics["human_percentile"] = sum(percentiles) / len(percentiles)
-            metrics["n_contests_ranked"] = float(len(percentiles))
         if medals:
             metrics["medal_rate"] = (
                 sum(1 for m in medals if m in ("Gold", "Silver", "Bronze"))
@@ -479,10 +620,14 @@ class LiveOIBenchZeroShotGenTask(
             except json.JSONDecodeError:
                 continue
             contestants[row["contest_id"]] = {
+                # `contest_id` and `problems` are what builds the problem-to-contest
+                # map; upstream reads the division split out of the same column.
+                "contest_id": row["contest_id"],
+                "problems": row.get("problems"),
                 "rankings": rankings,
-                "gold_cutoff": row["gold_cutoff"],
-                "silver_cutoff": row["silver_cutoff"],
-                "bronze_cutoff": row["bronze_cutoff"],
+                "gold_cutoff": _cutoff(row["gold_cutoff"]),
+                "silver_cutoff": _cutoff(row["silver_cutoff"]),
+                "bronze_cutoff": _cutoff(row["bronze_cutoff"]),
             }
         return contestants
 

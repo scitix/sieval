@@ -491,12 +491,17 @@ Two kinds, and the difference is a decision rather than a status:
   single-number outputs compare at `rel_tol=abs_tol=1e-6`; else exact; else line
   count plus stripped per-line match).
 
-  Three differences from upstream LiveOIBench, all documented in the module:
+  Four differences from upstream LiveOIBench, all documented in the module:
   compilation is bounded (`timeout`, default 60 s) where upstream's
   `subprocess.run` has no timeout; every test always runs, since subtask scoring
-  needs the whole verdict vector; and no checker path exists, because the
-  published dataset ships no `checkers/` directory, so upstream's own judge
-  compares outputs directly on this data.
+  needs the whole verdict vector; no checker path exists, because the published
+  dataset ships no `checkers/` directory, so upstream's own judge compares
+  outputs directly on this data; and a suite with **no** test case is refused
+  by name (`status=False`, `"no test cases to run"`) rather than graded. That
+  last one is a deployment fault — a half-written materialized directory — and
+  the two readings it otherwise gets are both wrong: an empty verdict vector
+  scores every subtask at zero, and the failure message has no first failure to
+  name, which raised `StopIteration` out of a coroutine.
 
   `Sample` gains `files` (extra sources compiled alongside — `grader.cpp`,
   `{task}.h`) and `entry_filename`; the test model gains `names`, used only in

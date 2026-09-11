@@ -246,7 +246,12 @@ async def test_the_http_deadline_outlasts_every_budget_the_evaluator_can_spend(
         _raw(tests_dir=str(tmp_path)), ["int main(){}"], [[True, True, True]]
     )
     # 60s compile bound + 3 cases * (1.5 * 1.2 + 5) + 30s slack.
-    assert evaluator.deadlines[0] == pytest.approx(60.0 + 3 * 6.8 + 30.0)
+    deadline = evaluator.deadlines[0]
+    assert deadline.read == pytest.approx(60.0 + 3 * 6.8 + 30.0)
+    # `pool` is deliberately unset: these deadlines differ by an order of
+    # magnitude across problems, and a bare float would make a small problem
+    # queued behind large ones fail while waiting for a connection.
+    assert deadline.pool is None
 
 
 # --------------------------------------------------------------------------- #
@@ -330,6 +335,39 @@ async def test_an_evaluator_without_the_cpp_path_is_an_error_not_a_zero():
 
 
 @pytest.mark.anyio
+async def test_an_empty_test_directory_names_itself_instead_of_scoring_zero():
+    """A half-written materialized problem would otherwise read as a submission
+    that failed every subtask, since an empty verdict vector scores nothing."""
+
+    class _NoCases(_Evaluator):
+        async def post(self, url, *, json, timeout):
+            self.bodies.append(json)
+            return _Response(
+                {
+                    "status": False,
+                    "msg": "no test cases to run",
+                    "data": {
+                        "n_cases": 0,
+                        "n_passed": 0,
+                        "case_verdicts": [],
+                        "case_names": [],
+                        "peak_memory_mb": 0.0,
+                    },
+                }
+            )
+
+    task = _task(_raw(), _NoCases([]))
+    try:
+        with pytest.raises(NonRetriableSampleError, match="no test cases"):
+            await task.feedback(
+                build_prediction_record(["int main(){}"]),
+                TaskContext(sample_id=0, raw_sample=_raw()),
+            )
+    finally:
+        await task.shutdown()
+
+
+@pytest.mark.anyio
 async def test_a_problem_with_no_rubric_fails_the_sample_without_retrying():
     task = _task(_raw(subtasks="{}"))
     try:
@@ -346,14 +384,52 @@ async def test_a_problem_with_no_rubric_fails_the_sample_without_retrying():
 # Report
 # --------------------------------------------------------------------------- #
 class _Final:
-    """A finalized sample as `report` reads it: the judgement plus the
-    prediction record `health_metrics` counts extraction misses from."""
+    """A finalized sample as `report` reads it: the dataset row it came from
+    (which names its contest), the judgement, and the prediction record
+    `health_metrics` counts extraction misses from."""
 
-    def __init__(self, judgement: dict, predictions: list[str | None] | None = None):
+    def __init__(
+        self,
+        judgement: dict,
+        predictions: list[str | None] | None = None,
+        raw: dict | None = None,
+    ):
+        self.raw_sample = raw if raw is not None else _raw()
         self.feedback_result = judgement
         self.postprocess_result = build_prediction_record(
             predictions if predictions is not None else ["int main(){}"]
         )
+
+
+class _Fail:
+    """A sample that never produced a judgement. It still carries its dataset
+    row, so it can depress the mean of the contest it belongs to."""
+
+    def __init__(self, raw: dict | None = None):
+        self.raw_sample = raw if raw is not None else _raw()
+        self.feedback_result = None
+        self.postprocess_result = None
+
+
+def _contestant_table(path, rows: list[dict]):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    return path
+
+
+def _contest_row(
+    contest_id: str, problems: list[str], ranking: list[dict], **overrides
+):
+    return {
+        "contest_id": contest_id,
+        "problems": json.dumps(problems),
+        "gold_cutoff": 90.0,
+        "silver_cutoff": 60.0,
+        "bronze_cutoff": 30.0,
+        "contestants_ranking": json.dumps(ranking),
+    } | overrides
 
 
 @pytest.mark.anyio
@@ -361,51 +437,79 @@ async def test_the_report_averages_over_every_requested_sample():
     task = _task(_raw())
     judgement, _ = await _grade(_raw(), ["int main(){}"], [[True, True, True]])
     try:
-        # One perfect problem plus one pipeline failure -> 50, not 100.
-        report = await task.report([_Final(judgement)], [object()])
+        # One perfect problem plus one pipeline failure -> 50, not 100. Both are
+        # in the same contest, so the contest mean is the problem mean here.
+        report = await task.report([_Final(judgement)], [_Fail()])
     finally:
         await task.shutdown()
     assert report["relative_score"] == 50.0
     assert report["score"] == report["relative_score"]
     assert report["score_key"] == "relative_score"
     assert report["denominator_policy"] == "requested"
-    assert report["ace_rate"] == 50.0
+    # Upstream's names: `pass_rate` counts problems fully solved, and a failed
+    # sample is not one of them.
+    assert report["pass_rate"] == 50.0
+    assert report["tests_passed_pct"] == 50.0
     assert report["fails"] == 1.0
+    assert report["n_problems"] == 2.0
+    assert report["n_scored"] == 1.0
+
+
+@pytest.mark.anyio
+async def test_relative_score_weights_contests_equally_not_problems():
+    """Upstream means inside a contest, then across contests.
+
+    A 1-problem contest and a 3-problem contest therefore weigh the same. Under
+    problem-weighting the perfect singleton would pull the headline to 25.0.
+    """
+    solved, _ = await _grade(_raw(), ["int main(){}"], [[True, True, True]])
+    big = [
+        _Fail(_raw(problem_id="IOI-2025-contest-a", task_name="a")),
+        _Fail(_raw(problem_id="IOI-2025-contest-b", task_name="b")),
+        _Fail(_raw(problem_id="IOI-2025-contest-c", task_name="c")),
+    ]
+    small = _Final(
+        solved,
+        raw=_raw(problem_id="APIO-2025-contest-x", contest_id="APIO-2025-contest"),
+    )
+    task = _task(_raw())
+    try:
+        report = await task.report([small], big)
+    finally:
+        await task.shutdown()
+    assert report["relative_score"] == 50.0
+    assert report["n_contests"] == 2.0
+    # `pass_rate` stays problem-level, which is where the two differ.
+    assert report["pass_rate"] == 25.0
 
 
 @pytest.mark.anyio
 async def test_an_empty_run_still_declares_its_headline():
     task = _task(_raw())
     try:
-        report = await task.report([], [object()])
+        report = await task.report([], [_Fail()])
     finally:
         await task.shutdown()
     assert report["score"] == 0.0
     assert report["score_key"] == "relative_score"
     assert report["denominator_policy"] == "requested"
+    # The all-fail report carries the same columns as any other, so a reader
+    # does not KeyError on exactly the run that went worst.
+    for key in ("relative_score", "pass_rate", "tests_passed_pct", "n_problems"):
+        assert key in report
 
 
 @pytest.mark.anyio
 async def test_human_metrics_come_from_the_staged_contestant_table(tmp_path):
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    contestants = tmp_path / "contest_results.parquet"
-    pq.write_table(
-        pa.Table.from_pylist(
-            [
-                {
-                    "contest_id": "IOI-2025-contest",
-                    "gold_cutoff": 90.0,
-                    "silver_cutoff": 60.0,
-                    "bronze_cutoff": 30.0,
-                    "contestants_ranking": json.dumps(
-                        [{"Rank": 1, "beechtree": 100}, {"Rank": 2, "beechtree": 40}]
-                    ),
-                }
-            ]
-        ),
-        contestants,
+    contestants = _contestant_table(
+        tmp_path / "contest_results.parquet",
+        [
+            _contest_row(
+                "IOI-2025-contest",
+                [PROBLEM_ID],
+                [{"Rank": 1, "beechtree": 100}, {"Rank": 2, "beechtree": 40}],
+            )
+        ],
     )
 
     judgement, _ = await _grade(_raw(), ["int main(){}"], [[True, True, True]])
@@ -420,6 +524,87 @@ async def test_human_metrics_come_from_the_staged_contestant_table(tmp_path):
     assert report["human_percentile"] == 50.0
     assert report["gold_rate"] == 100.0
     assert report["n_contests"] == 1.0
+    assert report["n_contests_ranked"] == 1.0
+
+
+@pytest.mark.anyio
+async def test_usaco_problems_rank_against_their_division_row(tmp_path):
+    """The contestant table keys USACO by division, not by the round in the id.
+
+    Without the routing every USACO problem misses the join and drops out of the
+    human metrics entirely — 132 of the 380 scored problems on the real data.
+    """
+    platinum_id = "USACO-2025-January_Contest-platinum_Cowpatibility"
+    contestants = _contestant_table(
+        tmp_path / "contest_results.parquet",
+        [
+            _contest_row(
+                "USACO-2025-January_Contest-platinum",
+                [platinum_id],
+                [],  # every published USACO row ships cutoffs and no ranking
+                gold_cutoff=250.0,
+                silver_cutoff=150.0,
+                bronze_cutoff=50.0,
+            )
+        ],
+    )
+    raw = _raw(
+        problem_id=platinum_id,
+        task_name="platinum_Cowpatibility",
+        contest_id="USACO-2025-January_Contest",
+    )
+    judgement, _ = await _grade(raw, ["int main(){}"], [[True, True, True]])
+    task = _task(raw)
+    task.dataset._contestants_path = str(contestants)
+    try:
+        report = await task.report([_Final(judgement, raw=raw)], [])
+    finally:
+        await task.shutdown()
+
+    # Matched: the contest publishes no contestants, so there is no percentile,
+    # but the medal cutoffs still apply (upstream's `df.empty` branch).
+    assert "human_percentile" not in report
+    assert report["n_contests_ranked"] == 0.0
+    assert report["n_contests_medalled"] == 1.0
+    assert report["medal_rate"] == 100.0
+
+
+@pytest.mark.anyio
+async def test_a_usaco_combined_contest_reports_neither_percentile_nor_medal(tmp_path):
+    """Upstream scores `-combined` from promotion thresholds that ship in its
+    own repository, not in the dataset, so it computes nothing here either."""
+    bronze_id = "USACO-2025-January_Contest-bronze_Cowmpetition"
+    contestants = _contestant_table(
+        tmp_path / "contest_results.parquet",
+        [
+            _contest_row(
+                "USACO-2025-January_Contest-combined",
+                [bronze_id],
+                [],
+                gold_cutoff=800.0,
+                silver_cutoff=750.0,
+                bronze_cutoff=700.0,
+            )
+        ],
+    )
+    raw = _raw(
+        problem_id=bronze_id,
+        task_name="bronze_Cowmpetition",
+        contest_id="USACO-2025-January_Contest",
+    )
+    judgement, _ = await _grade(raw, ["int main(){}"], [[True, True, True]])
+    task = _task(raw)
+    task.dataset._contestants_path = str(contestants)
+    try:
+        report = await task.report([_Final(judgement, raw=raw)], [])
+    finally:
+        await task.shutdown()
+
+    assert "human_percentile" not in report
+    assert "medal_rate" not in report
+    assert report["n_contests_medalled"] == 0.0
+    # The problem is still scored; only its human comparison is unavailable.
+    assert report["relative_score"] == 100.0
 
 
 @pytest.mark.anyio
@@ -433,6 +618,9 @@ async def test_a_missing_contestant_table_leaves_the_scores_reportable(tmp_path)
         await task.shutdown()
     assert report["relative_score"] == 100.0
     assert "human_percentile" not in report
+    # No table read at all, so not even the counts are reported: a 0 here would
+    # read as "measured, nothing ranked".
+    assert "n_contests_ranked" not in report
 
 
 @pytest.mark.anyio

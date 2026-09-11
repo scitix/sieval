@@ -319,7 +319,9 @@ def build_cases(
             input_data=input_data,
             expected=expected,
         )
-        for i, (input_data, expected) in enumerate(zip(inputs, expect_outputs))
+        for i, (input_data, expected) in enumerate(
+            zip(inputs, expect_outputs, strict=True)
+        )
     ]
 
 
@@ -350,6 +352,13 @@ async def execute_tests(
     """
     files = dict(files or {})
     stats = ResourceStats()
+
+    if not cases:
+        # A problem with no test case is a deployment fault -- an empty or
+        # half-written materialized directory -- not a verdict on the submission.
+        # Said here rather than left to the failure message below, which would
+        # otherwise look for a first failure among no results and raise.
+        return False, "no test cases to run", stats, 0, []
 
     with tempfile.TemporaryDirectory(prefix="liveoibench-") as workdir:
         for filename, contents in files.items():
