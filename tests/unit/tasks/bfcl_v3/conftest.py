@@ -55,6 +55,46 @@ def dotted_row(simple_row):
 
 
 @pytest.fixture
+def java_row(simple_row):
+    """A `java` row -- the cohort upstream's schema preprocessing rewrites.
+
+    100 non-live rows are Java and 50 more are JavaScript; on those, upstream
+    restates every parameter as a `string` before the schema reaches the model,
+    because the model is being asked for Java source rather than for JSON.
+    """
+    row = dict(simple_row)
+    row["id"] = "java_0"
+    row["category"] = "java"
+    row["language"] = "Java"
+    functions = json.loads(row["function"])
+    functions[0]["parameters"]["properties"]["tags"] = {
+        "type": "ArrayList",
+        "description": "tags",
+        "items": {"type": "String"},
+    }
+    row["function"] = json.dumps(functions)
+    return row
+
+
+@pytest.fixture
+def system_turn_row(simple_row):
+    """A row that already opens with its own system turn.
+
+    92 live rows do. Upstream merges the schema block into that turn; a port
+    that prepends a second one instead sends a two-system-turn conversation no
+    upstream run ever produced.
+    """
+    row = dict(simple_row)
+    row["id"] = "live_simple_0"
+    row["category"] = "live_simple"
+    row["question"] = [
+        {"role": "system", "content": "You are a geometry tutor."},
+        {"role": "user", "content": "Area of a 10x5 triangle?"},
+    ]
+    return row
+
+
+@pytest.fixture
 def irrelevance_row(simple_row):
     row = dict(simple_row)
     row["id"] = "irrelevance_0"

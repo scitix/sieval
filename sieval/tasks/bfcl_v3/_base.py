@@ -37,7 +37,6 @@ from typing import ClassVar
 
 from sieval.community.bfcl_v3 import (
     CALL_EXPECTED,
-    DEFAULT_SYSTEM_PROMPT,
     GOLDLESS_CATEGORIES,
     LIVE_COUNTS,
     NON_LIVE_COUNTS,
@@ -45,9 +44,11 @@ from sieval.community.bfcl_v3 import (
     calculate_unweighted_accuracy,
     calculate_weighted_accuracy,
     convert_to_tool,
+    func_doc_language_specific_pre_processing,
     is_empty_output,
     is_function_calling_format_output,
     set_underscore_to_dot,
+    system_prompt_pre_processing_chat_model,
 )
 from sieval.community.bfcl_v3.tool_convert import ModelStyle
 from sieval.community.bfcl_v3.type_mappings import GORILLA_TO_OPENAPI
@@ -459,14 +460,48 @@ def _call_arguments(call) -> dict:
     return dict(arguments) if arguments else {}
 
 
+def _model_facing_functions(raw) -> list:
+    """The function schemas as upstream shows them to the model.
+
+    Both protocols run this, and they must run the *same* one: it is what makes
+    the Prompt and FC columns two readings of one benchmark rather than two
+    benchmarks. It rewrites Java and JavaScript parameter types to ``string``
+    and appends a language hint to every description, so a model asked for a
+    `java` row is told it is reading Java 8 -- without it, the 150 Java and
+    JavaScript rows are posed in a language the schema never names.
+
+    It does not touch grading. Upstream's `ast_file_runner` reads `function`
+    back out of the dataset and hands it to `ast_checker` unprocessed, so the
+    checker still compares against the real declared types -- which is why the
+    preprocessed list is built here, per protocol, instead of replacing what
+    `preprocess` stores for `feedback`.
+
+    `json.loads` is not incidental: the vendored helper mutates the list it is
+    given, so it needs a private copy and gets one for free by re-parsing the
+    row's JSON.
+    """
+    return func_doc_language_specific_pre_processing(
+        json.loads(raw["function"]), raw["category"]
+    )
+
+
 class BfclV3PromptMixin:
     """Upstream's prompting protocol: schemas in the system turn, calls in text."""
 
     UNDERSCORE_TO_DOT: ClassVar[bool] = False
 
     def _build_messages(self, raw) -> tuple[list, list[dict] | None]:
-        system = DEFAULT_SYSTEM_PROMPT.format(functions=raw["function"])
-        return [{"role": "system", "content": system}, *raw["question"]], None
+        # Upstream merges rather than prepends: a row that already opens with a
+        # system turn keeps its own text, with the schema block in front of it.
+        # 92 live rows do, and prepending a second system turn instead is a
+        # shape no upstream run ever sent. Copy each message -- the helper
+        # rewrites `content` in place, and `raw` is the stored sample.
+        messages = system_prompt_pre_processing_chat_model(
+            [dict(message) for message in raw["question"]],
+            _model_facing_functions(raw),
+            raw["category"],
+        )
+        return messages, None
 
     def _decode(self, output: ModelOutput, language: str) -> list | None:
         # Deferred on purpose: `ast_parse` is the one symbol in the vendored
@@ -494,7 +529,7 @@ class BfclV3FCMixin:
 
     def _build_messages(self, raw) -> tuple[list, list[dict] | None]:
         tools = convert_to_tool(
-            json.loads(raw["function"]),
+            _model_facing_functions(raw),
             GORILLA_TO_OPENAPI,
             ModelStyle.OpenAI_Completions,
         )

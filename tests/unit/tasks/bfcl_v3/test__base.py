@@ -13,6 +13,11 @@ from sieval.tasks.bfcl_v3._base import (
     BfclV3PromptMixin,
     grade_single_turn,
 )
+from sieval.tasks.bfcl_v3.bfcl_v3_non_live_0shot_gen import BfclV3NonLiveZeroShotGenTask
+from sieval.tasks.bfcl_v3.bfcl_v3_non_live_0shot_gen_fc import (
+    BfclV3NonLiveZeroShotGenFCTask,
+)
+from tests.conftest import MockChatModel, MockDataset
 
 _META: ModelMeta = {"model": "mock-chat", "api_base": None, "default_params": {}}
 
@@ -214,6 +219,85 @@ def test_the_prompt_mixin_puts_the_schemas_in_a_system_turn_and_sends_no_tools(
     # is why its `UNDERSCORE_TO_DOT` is False.
     assert "geometry.triangle_area" in messages[0]["content"]
     assert messages[1:] == dotted_row["question"]
+
+
+def test_the_prompt_mixin_merges_into_a_row_that_already_has_a_system_turn(
+    system_turn_row,
+):
+    """Upstream merges; prepending a second system turn is a different payload.
+
+    92 live rows open with their own system turn. What makes this worth a test
+    of its own is that the wrong shape is not visibly wrong: two system turns
+    is a conversation every provider accepts and answers, so the run completes
+    and the score is merely somewhat off.
+    """
+    messages, _ = BfclV3PromptMixin()._build_messages(system_turn_row)
+    assert [m["role"] for m in messages] == ["system", "user"]
+    content = messages[0]["content"]
+    assert "calculate_triangle_area" in content
+    # The row's own instruction survives, after the schema block rather than
+    # in a turn of its own.
+    assert content.endswith("You are a geometry tutor.")
+
+
+def test_building_messages_leaves_the_stored_row_untouched(system_turn_row, java_row):
+    """Both vendored helpers rewrite their argument in place.
+
+    Reached without a copy, they would edit the sample the runner holds, and
+    the damage is invisible on a first pass -- it surfaces only on the second
+    (a resume, a retry, `max_iterations > 1`), as a schema block appended twice
+    or a type already flattened. Idempotence is the discriminating check: one
+    call looks correct either way.
+    """
+    for mixin in (BfclV3PromptMixin(), BfclV3FCMixin()):
+        for row in (system_turn_row, java_row):
+            before = json.dumps(row, sort_keys=True)
+            first = mixin._build_messages(row)
+            second = mixin._build_messages(row)
+            assert first == second
+            assert json.dumps(row, sort_keys=True) == before
+
+
+def test_both_protocols_restate_java_parameters_as_strings(java_row):
+    """Upstream's language preprocessing, which both columns share.
+
+    It is shared on purpose: the Prompt and FC numbers are two readings of one
+    benchmark only while the schemas they carry agree. So this asserts the same
+    property through both protocols rather than trusting one to stand for both.
+    """
+    messages, _ = BfclV3PromptMixin()._build_messages(java_row)
+    prompt_text = messages[0]["content"]
+    _, tools = BfclV3FCMixin()._build_messages(java_row)
+    assert tools is not None
+    fc_properties = tools[0]["function"]["parameters"]["properties"]
+
+    assert [v["type"] for v in fc_properties.values()] == ["string", "string", "string"]
+    assert "'type': 'string'" in prompt_text
+    # The Java 8 hint, and the element type carried over from the deleted
+    # `items` -- both protocols, because both call the same helper.
+    for rendered in (prompt_text, json.dumps(tools)):
+        assert "Java 8 SDK syntax" in rendered
+        assert "The list elements are of type String" in rendered
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "task_cls", [BfclV3NonLiveZeroShotGenTask, BfclV3NonLiveZeroShotGenFCTask]
+)
+async def test_preprocess_stores_the_unprocessed_schema_for_grading(task_cls, java_row):
+    """Preprocessing is model-facing only; the grader must see the real types.
+
+    Upstream's `ast_file_runner` reads `function` back out of the dataset and
+    hands it to `ast_checker` unprocessed, so a port that stored the flattened
+    copy would compare a Java row's real `ArrayList` gold against a schema
+    claiming every parameter is a `string`.
+    """
+    task = task_cls(MockDataset(), MockChatModel())
+    record = await task.preprocess(java_row, None)
+    assert record["extra"]["function"] == java_row["function"]
+    assert json.loads(record["extra"]["function"])[0]["parameters"]["properties"][
+        "tags"
+    ] == {"type": "ArrayList", "description": "tags", "items": {"type": "String"}}
 
 
 def test_the_fc_mixin_sends_tools_and_renames_the_dotted_function(dotted_row):

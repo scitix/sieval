@@ -18,8 +18,8 @@ Whole-file vendored modules: `ast_checker.py`, `type_mappings.py`,
 
 Partial vendored modules (named subsets of a larger upstream file -- see each
 module's own docstring for exactly which symbols were taken and why):
-`parser.py`, `tool_convert.py`, `output_checks.py`, `aggregate.py`. `prompts.py`
-is `constants/default_prompts.py` copied whole.
+`parser.py`, `tool_convert.py`, `output_checks.py`, `preprocess.py`,
+`aggregate.py`. `prompts.py` is `constants/default_prompts.py` copied whole.
 
 First-party modules: `_model_config.py` supplies the `MODEL_CONFIG_MAPPING`
 global `ast_checker.convert_func_name` reads, since upstream's own 2044-line
@@ -44,6 +44,10 @@ from ._tables import (
 from .aggregate import calculate_unweighted_accuracy, calculate_weighted_accuracy
 from .ast_checker import ast_checker
 from .output_checks import is_empty_output, is_function_calling_format_output
+from .preprocess import (
+    func_doc_language_specific_pre_processing,
+    system_prompt_pre_processing_chat_model,
+)
 from .prompts import DEFAULT_SYSTEM_PROMPT
 from .tool_convert import convert_to_tool
 
@@ -62,6 +66,8 @@ __all__ = [
     "convert_to_tool",
     "is_function_calling_format_output",
     "is_empty_output",
+    "func_doc_language_specific_pre_processing",
+    "system_prompt_pre_processing_chat_model",
     "calculate_weighted_accuracy",
     "calculate_unweighted_accuracy",
     "DEFAULT_SYSTEM_PROMPT",
