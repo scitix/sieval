@@ -364,10 +364,13 @@ class _ScriptedModel(ChatModel):
     def __init__(self, replies):
         self._replies = list(replies)
         self.n_requests = 0
+        # Kept on the model so tests can reach the `Request`s the transport
+        # recorded, rather than only observing the loop's own outputs.
+        self.transport = HandlerTransport(self._stub_arun, "openai_chat")
         super().__init__(model="mock-chat", api_key="fake")
 
     def _build_default_transport(self) -> HandlerTransport:
-        return HandlerTransport(self._stub_arun, "openai_chat")
+        return self.transport
 
     async def _stub_arun(self, req: Request) -> Response:
         self.n_requests += 1
@@ -427,6 +430,18 @@ async def test_loop_runs_code_then_answers():
     assert len(traj.outputs) == 2
     assert [c.code for c in traj.tool_calls] == ["print(42)\n"]
     assert sandbox.codes == ["print(42)\n"]
+    # The stop sequence is the only thing that stops the model generating past
+    # its own closing fence, inventing an output, and reasoning from it -- the
+    # one failure here that produces a plausible wrong answer instead of an
+    # error. Dropping `stop=` from the loop's `agenerate` call leaves every
+    # other assertion in this file green, so it is asserted against the Request
+    # the transport actually received. The literal is spelled out rather than
+    # read off `FENCE_STOP`: comparing the constant to itself cannot fail, and
+    # the wire is what the model obeys.
+    assert [req.sampling.stop for req in model.transport.requests] == [
+        ("```\n",),
+        ("```\n",),
+    ]
 
 
 @pytest.mark.anyio
