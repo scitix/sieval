@@ -4,7 +4,47 @@
 - Vendored at commit: `e4802268f2b491c7ea3d7ed7704dd8582bc079be`
   (previously a git submodule at `submodules/code-evaluator`)
 
+## Two shell routes, and which one a third should copy
+
+There are now two ways to grade a Bash command here, added independently
+(NL2SH-ALFA first, `quotebench` second). They are **not** redundant, and neither
+should be folded into the other — but a third shell benchmark must not invent a
+shape without reading this first.
+
+| | `POST /shell-evaluations` (NL2SH-ALFA) | `POST /evaluations`, `source="quotebench"` |
+| --- | --- | --- |
+| state | **stateful** — one git-committed baseline tree, reset between commands | **stateless** — a fresh fixture per attempt, built in Python |
+| where the environment comes from | the **image** (five of them, `NL2SH_FS_ID` baked in) | the task's own `setup(tmp)`, any GNU userland |
+| unit of work | a command **pair** (model + gold) against one tree | one task id plus one command |
+| what comes back | **facts** (`ShellFacts`), the caller scores | a **verdict** plus upstream's failure class |
+| why | equivalence needs an embedding model, and this service holds no credentials | the check is an exact final-state comparison, so it is decidable here |
+| concurrency | `--workers 1`; the tree is shared mutable state | safe in parallel (measured: 672 executions at 32-way, no verdict moved) |
+
+The split is forced by the benchmarks, not chosen: a route that returns facts
+cannot return a verdict without credentials it does not have, and a route whose
+environment is a per-attempt temp dir cannot be pinned to a baked image without
+losing the property that makes it parallel. So the rule for a third one is to
+pick the row it matches rather than to add a column:
+
+- graded by **what the filesystem became**, with a prepared tree it cannot build
+  itself → extend the shell route;
+- graded by an **exact, decidable check** over a fixture the task constructs →
+  add a `source` on `/evaluations`.
+
+They are also not co-deployable: `quotebench` needs `/tmp`, which the NL2SH
+images delete (see that entry below), so the two never share an image.
+
 ## Local patches on top of that commit
+
+Two kinds, and the difference is a decision rather than a status:
+
+- **Upstream-bound** — everything marked "not yet upstream" below. These are
+  divergences we would rather not own; they are meant to land in
+  `scitix/code-evaluator` and come back by re-vendoring.
+- **In-tree by decision** — the `quotebench` source. It is not staged for
+  upstream and carries no "not yet upstream" line: sieval owns it here. Edit it
+  in place; a future re-vendor of the base commit has to preserve it rather than
+  expect it to have been absorbed.
 
 - `app/exec_py_test.py` — clearer checker messages + opt-in float tolerance
   (`CODE_EVAL_FLOAT_TOL`); from fork branch `fix/checker-messages-float-tol`
@@ -207,9 +247,13 @@
   the directory outright and it does not come back (measured against a throwaway
   tree, not assumed). That is upstream's behaviour too and must not be "fixed" —
   adding `tmp` to the ignore file would change what `git status` reports and
-  therefore what the benchmark scores. It does mean the three stateless routes
-  that use `tempfile` (`exec_py_code`, `exec_js`, `exec_ts`) are unreliable on
-  these five images; they are not served there.
+  therefore what the benchmark scores. It does mean the stateless routes that use
+  `tempfile` (`exec_py_code`, `exec_js`, `exec_ts`, and `quotebench`, whose
+  `run_attempt` allocates a fresh `mkdtemp` per attempt) are unreliable on these
+  five images; they are not served there. `quotebench` was added to that list
+  when it landed after this entry — the failure is not subtle there, since a
+  missing `/tmp` makes `mkdtemp` raise before any command runs, but it would
+  read as a broken grader rather than as a route on the wrong image.
 
   The verdict is deliberately *not* computed here — it needs an embedding model
   when the outputs differ, and this service holds no model credentials.
@@ -220,3 +264,120 @@
   They live in the vendored tree rather than under sieval's `tests/` (which
   mirrors `sieval/`) precisely so they travel upstream with the code. Not yet
   upstream — land in `scitix/code-evaluator` and re-vendor.
+- `app/exec_quotebench.py`, `app/server.py`, `quotebench/`,
+  `docker/Dockerfile.quotebench`, `README.md` — **the `quotebench` source**
+  (in-tree by decision; not staged for upstream).
+
+  A source whose unit of work is a task id plus one command rather than a
+  program plus test cases. The task builds its own filesystem fixture in Python,
+  the reply runs inside it as a single `bash -c` payload, and the verdict is the
+  exact final state — file bytes, argv, JSON, directory contents, or Git
+  history. There is no reference command string to compare against, which is why
+  none of the existing `exec_*` modules could carry it.
+
+  `quotebench/` vendors upstream QuoteBench's `core`, `scenarios`, `shellesc`
+  and `harness` byte-identically from
+  [`LeonardNJU/quoteBench`](https://github.com/LeonardNJU/quoteBench/tree/693325a671e65f889e5cd9d83965db9cc3b26dc2)
+  @ `693325a6`, Apache-2.0. sieval vendors the first three again under
+  `sieval/community/quotebench/` and uses only the prompt-building half; the two
+  copies are pinned to each other by `scenarios_digest`, echoed in every
+  response, which the calling task asserts before trusting a verdict.
+
+  `ResourceMetrics` gains four optional fields (`error_class`, `exit_code`,
+  `timed_out`, `scenarios_digest`) rather than a per-source subclass — FastAPI
+  filters the response against the route's declared model, so a subclass's extra
+  fields would be silently stripped. The four resource numbers are reported as
+  `0.0`: the payload runs in its own process tree, so the in-process monitor
+  would report its own idle numbers, not the command's.
+
+  **That flat model widens every other source's response**, which is the price
+  of the above and is called out here because it is otherwise discovered by
+  diffing artifacts. `ResourceMetrics` is shared, so a `human-eval` verdict now
+  carries `"error_class": null, "exit_code": null, "timed_out": null,
+  "scenarios_digest": null` alongside its own fields — and sieval's tasks
+  persist it, because they bucket whatever they do not recognise into a
+  catch-all (`resources = {k: v for k, v in data.items() if k not in
+  ("n_cases", "n_passed")}`). Six modules do that — `human_eval_0shot_gen`,
+  `human_eval_0shot_base_gen`, both `livecodebench_code_generation_*`,
+  `mbpp_kshot_base_gen` and `multipl_e/_base.py` — so their rollout records gain
+  four always-null keys from this commit onward. (`scicode_0shot_gen` reads
+  named fields and is unaffected.) Nothing reads them and no score moves; it is
+  a record-shape change, not a behavioural one. Narrowing it would mean either a per-source response model (stripped, as
+  above) or `response_model_exclude_none`, which would also drop `n_cases` /
+  `n_passed` — and `None` there means *unknown*, not zero. Accepted rather than
+  worked around.
+
+  The contract-to-transport mapping lives in `exec_quotebench.py`, not in the
+  vendored package. Upstream's `public_cli.command_for_transport` accepts only
+  `raw` / `native` / `nested-shell` and raises `ValueError` on `nested` — the
+  spelling upstream's own released rollout dataset uses — so upstream's public
+  scorer cannot read its own release. We accept the released spellings (`raw`,
+  `nested`) and reject the CLI-only ones.
+
+  **Verified at two levels, and they are gated differently** — worth stating
+  plainly, because the stronger of the two is the one CI does not run:
+
+  - *Grading core, in CI.* All 56 oracles pass, asserted by
+    `tests/unit/vendor/code_evaluator/test_exec_quotebench.py` calling
+    `execute_quotebench` directly — and, beside it,
+    `test_exec_quotebench_anchor.py` replays the **whole 224-execution crossover
+    grid** through the same entry point, requiring agreement with upstream's
+    recorded verdicts on both `passed` and failure class. Neither exercises HTTP
+    or pydantic; together they take about a second.
+
+    The grid is there because the oracle sweep is weaker than it looks: it
+    covers the `raw` contract only, and never grades a real model reply. A
+    wiring bug that ignored `contract` and graded every nested sample as raw
+    passed the entire suite green before this was added, and lands at 158/224
+    against the grid.
+  - *Whole HTTP path, run locally.* The same replay against a live
+    `uvicorn app.server` (HF `lsamc/QuoteBench-Rollouts` @ `69957a53`) reaches
+    the same **224/224 on `passed` and 224/224 on failure class**. What this
+    adds over the in-CI grid is exactly the transport: pydantic validation and
+    the declared response model. `tests/acceptance/quotebench/` skips when no
+    server is reachable, so **that layer alone** has no standing CI gate —
+    closing it would mean a `TestClient` test, and `fastapi` is the evaluator's
+    dependency rather than sieval's, so it is not importable from `tests/unit/`.
+    The arm file's hash pin and the published-row recompute do run on every
+    push, since neither needs a server.
+
+  A protocol error (unknown task, unknown contract, missing kwargs) answers with
+  `data=None`; a wrong command answers with `data` present, which is how a
+  caller tells them apart.
+
+  `GET /quotebench/digest` returns the same `scenarios_digest` every verdict
+  carries, so a client can settle the handshake before it spends anything on
+  inference. Read-only and executes nothing; deliberately not folded into
+  `/health`, which is source-agnostic.
+
+  The grading call goes through `asyncio.to_thread`. `execute_quotebench` is
+  fully blocking — it shells out under `subprocess.run` — and `evaluate` is
+  `async def`, so FastAPI runs it **on** the event loop rather than in the
+  threadpool it gives a plain `def`; called directly it stalls the whole worker.
+  Measured on this box, four concurrent gradings of a `sleep 3` reply while
+  polling `/health` as a load balancer would:
+
+  | | direct call | `asyncio.to_thread` |
+  | --- | --- | --- |
+  | wall clock for the four | 12.02 s (serialized) | 3.01 s (overlapped) |
+  | `/health` polls served | 2 | 59 |
+  | `/health` worst latency | 11 969 ms | 1.9 ms |
+
+  The stall is not confined to `quotebench`: it is one shared loop, so a slow
+  Bash reply also holds up LiveCodeBench and HumanEval grading on that worker.
+  Only this source needed the change — `exec_js` / `exec_ts` await
+  `asyncio.create_subprocess_exec`, and `exec_py_code` / `exec_py_test` already
+  await `asyncio.to_thread(q.get)` over a `multiprocessing.Process` — so the
+  fix is the package's own idiom rather than a new one. No verdict changes: the
+  224/224 anchor replays identically through the threaded path.
+
+  `QUOTEBENCH_EXECUTOR` selects upstream's executor (`local` default, or
+  `docker`). `Dockerfile.quotebench` pins upstream's base digest and its seven
+  GNU packages, because QuoteBench scores BSD and GNU separately and the
+  published crossover table is the GNU replay. **That userland has been run**:
+  the layers were replayed into a udocker/PRoot container (no Docker daemon
+  available here) from the pinned base *by digest* — `debian:stable-slim` has
+  since moved, so a tag pull would grade elsewhere — and the anchor reaches the
+  same 224/224 inside it as on the host, which is what promoted the sieval tasks
+  to `stable`. `docker build` itself stays unexercised; the reproduction recipe
+  is in `tests/acceptance/quotebench/README.md`.

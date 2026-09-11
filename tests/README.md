@@ -8,6 +8,10 @@
 
 **Convention:** `tests/unit/` mirrors `sieval/` — e.g. `sieval/core/runners/foo.py` → `tests/unit/core/runners/test_foo.py`. Scripts with non-trivial logic (`scripts/*.py`) go in `tests/unit/scripts/`. Non-`sieval/` top-level artifact dirs get their own sibling under `tests/` that mirrors them directly — e.g. `leaderboards/alignment/<tr-slug>/<stage>.md` → `tests/leaderboards/test_*.py`.
 
+**One carve-out: `tests/unit/vendor/code_evaluator/`.** `vendor/` is a non-`sieval/` top-level dir, so the rule above would put its tests in `tests/vendor/` — but CI runs `pytest tests/unit tests/integration tests/acceptance`, and nothing else, so a sibling directory would be collected by nobody. The carve-out is therefore narrow and conditional: it covers **only** patches that `vendor/code-evaluator/VENDORED.md` marks *in-tree by decision* (today, the `quotebench` source), which have no upstream to be tested in.
+
+A patch marked *upstream-bound* does **not** get a file here, because its tests have to travel with the code when it lands in `scitix/code-evaluator`. Those go in `vendor/code-evaluator/tests/` instead — `test_exec_sh.py` (NL2SH-ALFA) is the live example. The trade is explicit: that directory is outside CI's collection, so those tests are run deliberately rather than on every push, which is the price of their travelling. Written down because the two locations look interchangeable from the tree alone, and because thirteen tests were once removed from `tests/unit/vendor/` for exactly this reason (recoverable at commit `7c426a69`) — a removal that, read without this note, looks like a precedent for deleting the `quotebench` ones too.
+
 The mirror is **directory-level**; four file layouts are in use within a directory:
 
 | Layout | When | Example |
