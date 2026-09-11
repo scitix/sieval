@@ -157,6 +157,25 @@ def test_underscore_to_dot_reconciles_the_fc_tool_name(dotted_row):
     )
 
 
+def test_a_missing_gold_raises_rather_than_scoring_the_row(simple_row):
+    """A value-reference row with no gold fails; it is never graded as wrong.
+
+    The distinction is the whole point: scoring it `False` would charge the
+    model for a dataset fault, and under `DENOMINATOR_REQUESTED` the two read
+    the same in the headline. Reached only past the produced-call guard, so the
+    call passed here has to be a valid one.
+    """
+    with pytest.raises(ValueError, match="not goldless"):
+        grade_single_turn(
+            simple_row["function"],
+            [{"calculate_triangle_area": {"base": 10, "height": 5}}],
+            None,
+            "Python",
+            "simple",
+            False,
+        )
+
+
 # --------------------------------------------------------------------------
 # The protocol axis. Both mixins are stateless, so they are exercised directly
 # rather than through a whole Task.
