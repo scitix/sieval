@@ -156,6 +156,52 @@ def test_a_moved_row_count_raises(tmp_path):
         load_categories(str(tmp_path), {"simple": 400})
 
 
+def test_a_moved_gold_row_count_raises(tmp_path):
+    """Upstream asserts prompt and gold are the same length. Guarding only the
+    prompt side would let a re-upload that adds gold rows through: the loader
+    joins on the index, so the extra rows are simply never looked up and the
+    column is rescored with nothing to show for it.
+    """
+    _write(
+        tmp_path,
+        "simple",
+        [
+            {
+                "id": "simple_0",
+                "question": [[{"role": "user", "content": "hi"}]],
+                "function": [],
+            }
+        ],
+        gold=[{"id": f"simple_{i}", "ground_truth": []} for i in range(3)],
+    )
+    with pytest.raises(ValueError, match="3 possible_answer rows"):
+        load_categories(str(tmp_path), {"simple": 1})
+
+
+def test_a_non_numeric_universal_index_raises(tmp_path):
+    """The id shape moving while the counts hold is exactly what a pin bump can
+    do, and it must not surface as a bare `int()` failure with no category, row
+    or file in it.
+    """
+    _write(
+        tmp_path,
+        "simple",
+        [
+            {
+                "id": "simple_0a",
+                "question": [[{"role": "user", "content": "hi"}]],
+                "function": [],
+            }
+        ],
+        gold=[{"id": "simple_0a", "ground_truth": []}],
+    )
+    with pytest.raises(ValueError, match="where its universal index should be") as e:
+        load_categories(str(tmp_path), {"simple": 1})
+    assert "'simple_0a'" in str(e.value)
+    assert "'simple'" in str(e.value)
+    assert "'0a'" in str(e.value)
+
+
 def test_a_multi_turn_row_is_refused(tmp_path):
     _write(
         tmp_path,
@@ -230,8 +276,13 @@ def test_a_repeated_universal_index_in_the_prompt_file_raises(tmp_path):
             {"id": "live_multiple_1-1-0", "ground_truth": []},
         ],
     )
-    with pytest.raises(ValueError, match="prompt rows sharing a universal index"):
+    with pytest.raises(
+        ValueError, match="shared by more than one prompt row"
+    ) as raised:
         load_categories(str(tmp_path), {"live_multiple": 2})
+    # The colliding index and its ids, not a bare count of excess rows.
+    assert "{0: ['live_multiple_0-1-0', 'live_multiple_0-2-0']}" in str(raised.value)
+    assert "1 universal index " in str(raised.value)
 
 
 def test_a_repeated_universal_index_in_the_gold_file_raises(tmp_path):
@@ -247,9 +298,7 @@ def test_a_repeated_universal_index_in_the_gold_file_raises(tmp_path):
             {"id": "live_multiple_0-2-0", "ground_truth": []},
         ],
     )
-    with pytest.raises(
-        ValueError, match="possible_answer rows sharing a universal index"
-    ):
+    with pytest.raises(ValueError, match="shared by more than one possible_answer row"):
         load_categories(str(tmp_path), {"live_multiple": 2})
 
 

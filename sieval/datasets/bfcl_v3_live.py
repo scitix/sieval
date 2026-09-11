@@ -62,4 +62,5 @@ class BfclV3LiveDatasetSample(TypedDict):
 class BfclV3LiveDataset(Dataset[BfclV3LiveDatasetSample]):
     @override
     def load(self, name_or_path: str, **kwargs) -> HFDatasetDict:
+        _ = kwargs
         return load_categories(name_or_path, LIVE_COUNTS)

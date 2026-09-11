@@ -23,9 +23,11 @@ checks that the two files are the same length. It is deliberately not asserted
 for the goldless three, which are never joined -- `live_relevance` ships the
 same row twice and is 18 rows over 17 distinct ids.
 
-Row counts are asserted per category. The revision pin already prevents a silent
-re-upload; what it cannot prevent is someone bumping the pin, so a count that
-moves fails here rather than quietly rescoring a leaderboard column.
+Row counts are asserted per category, against the gold file as well as the
+prompt file -- the pair of them is what covers upstream's own
+`len(prompt) == len(possible_answer)`. The revision pin already prevents a
+silent re-upload; what it cannot prevent is someone bumping the pin, so a count
+that moves fails here rather than quietly rescoring a leaderboard column.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -49,7 +51,7 @@ def _read_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def _universal_index(row_id: str) -> int:
+def _universal_index(row_id: str, category: str, what: str) -> int:
     """The join key of one row: the index in `<category>_<index>[-<sub>-<sub>]`.
 
     Mirrors the index that upstream's own sort key extracts -- it splits on the
@@ -57,18 +59,39 @@ def _universal_index(row_id: str) -> int:
     sub-indices the live categories carry are discarded here exactly as they
     are there.
     """
-    index = row_id.rsplit("_", 1)[-1]
-    return int(index.split("-")[0])
+    index = row_id.rsplit("_", 1)[-1].split("-")[0]
+    try:
+        return int(index)
+    except ValueError:
+        raise ValueError(
+            f"BFCL v3 {what} row {row_id!r} in category {category!r} has "
+            f"{index!r} where its universal index should be. The index is the "
+            "join key upstream sorts both files on, so an id whose shape moved "
+            "cannot be joined at all; re-verify the category against upstream."
+        ) from None
 
 
 def _index_rows(rows: list[dict], category: str, what: str) -> dict[int, dict]:
-    by_index = {_universal_index(row["id"]): row for row in rows}
-    if len(by_index) != len(rows):
+    by_index: dict[int, dict] = {}
+    collisions: dict[int, list[str]] = {}
+    for row in rows:
+        index = _universal_index(row["id"], category, what)
+        if index in by_index:
+            collisions.setdefault(index, [by_index[index]["id"]]).append(row["id"])
+        else:
+            by_index[index] = row
+
+    if collisions:
+        # The ids, not just a count: on a pin bump this is the difference
+        # between a one-minute diagnosis and a manual scan of 1053 rows.
+        examples = {index: collisions[index] for index in sorted(collisions)[:3]}
+        plural = "index" if len(collisions) == 1 else "indices"
         raise ValueError(
-            f"BFCL v3 category {category!r} has {len(rows) - len(by_index)} "
-            f"{what} rows sharing a universal index. The index is the join key "
-            "and upstream's runner pairs the two files positionally under it, "
-            "so a repeat makes the pairing ambiguous rather than merely odd."
+            f"BFCL v3 category {category!r} has {len(collisions)} universal "
+            f"{plural} shared by more than one {what} row (e.g. {examples}). "
+            "The index is the join key and upstream's runner pairs the two "
+            "files positionally under it, so a repeat makes the pairing "
+            "ambiguous rather than merely odd."
         )
     return by_index
 
@@ -95,11 +118,16 @@ def load_categories(name_or_path: str, counts: Mapping[str, int]) -> HFDatasetDi
             # we -- deduplicating here would publish a denominator upstream
             # never used.
             prompt_by_index = _index_rows(prompts, category, "prompt")
-            answers = _index_rows(
-                _read_jsonl(root / "possible_answer" / f"BFCL_v3_{category}.json"),
-                category,
-                "possible_answer",
-            )
+            gold = _read_jsonl(root / "possible_answer" / f"BFCL_v3_{category}.json")
+            if len(gold) != expected:
+                raise ValueError(
+                    f"BFCL v3 category {category!r} has {len(gold)} "
+                    f"possible_answer rows at the pinned revision, expected "
+                    f"{expected}. Upstream asserts the prompt and gold files are "
+                    "the same length, so a gold file that moved on its own would "
+                    "rescore the column without a single prompt changing."
+                )
+            answers = _index_rows(gold, category, "possible_answer")
             gold_by_index = {
                 index: json.dumps(entry["ground_truth"], ensure_ascii=False)
                 for index, entry in answers.items()
@@ -131,7 +159,9 @@ def load_categories(name_or_path: str, counts: Mapping[str, int]) -> HFDatasetDi
                     "language": LANGUAGE_BY_CATEGORY.get(category, "Python"),
                     "question": turns[0],
                     "function": json.dumps(row["function"], ensure_ascii=False),
-                    "ground_truth": gold_by_index.get(_universal_index(row["id"])),
+                    "ground_truth": gold_by_index.get(
+                        _universal_index(row["id"], category, "prompt")
+                    ),
                 }
             )
 
