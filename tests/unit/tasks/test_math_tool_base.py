@@ -3,7 +3,8 @@ import os
 import httpx
 import pytest
 
-from sieval.core.models import ModelOutput
+from sieval.core.models import ChatModel, ModelOutput, Request, Response
+from sieval.core.tasks import TaskStageOutput
 from sieval.core.utils.serialization import dict_to_obj, obj_to_dict
 from sieval.tasks._math_tool_base import (
     MathToolTrajectory,
@@ -12,6 +13,7 @@ from sieval.tasks._math_tool_base import (
     TextToolAdapter,
     ToolCall,
 )
+from tests.conftest import HandlerTransport
 
 
 def _transport(payload: dict, status: int = 200) -> httpx.AsyncClient:
@@ -347,3 +349,147 @@ def test_the_protocol_prompt_is_pinned():
         "runs in a fresh interpreter, so repeat any definitions you still need."
     )
     assert expected == TOOL_SYSTEM_PROMPT
+
+
+class _ScriptedModel(ChatModel):
+    """Replies from a list, one per request.
+
+    A real `ChatModel` over a stub transport, NOT a duck type: `Task.__init__`
+    runs `_validate_model_requirements`, which reads `dialect_id` and the runtime
+    plan off the model and rejects anything that merely looks like one. This is
+    the shape `tests/unit/tasks/test_math_pass_at_k_family.py` already uses for
+    every member of this family.
+    """
+
+    def __init__(self, replies):
+        self._replies = list(replies)
+        self.n_requests = 0
+        super().__init__(model="mock-chat", api_key="fake")
+
+    def _build_default_transport(self) -> HandlerTransport:
+        return HandlerTransport(self._stub_arun, "openai_chat")
+
+    async def _stub_arun(self, req: Request) -> Response:
+        self.n_requests += 1
+        text = self._replies.pop(0) if self._replies else r"\boxed{0}"
+        return Response(texts=(text,))
+
+
+class _DyingModel(_ScriptedModel):
+    """Answers the first request; every later one fails."""
+
+    async def _stub_arun(self, req: Request) -> Response:
+        if self.n_requests:
+            self.n_requests += 1
+            raise RuntimeError("gateway died")
+        return await super()._stub_arun(req)
+
+
+class _ScriptedSandbox:
+    """Stands in for `SandboxClient`; the loop only ever calls `.run`."""
+
+    service_version = "code-runs/1"
+
+    def __init__(self, stdouts):
+        self._stdouts = list(stdouts)
+        self.codes = []
+
+    async def run(self, code):
+        self.codes.append(code)
+        stdout = self._stdouts.pop(0) if self._stdouts else ""
+        return ToolCall(
+            index=0,
+            code=code,
+            stdout=stdout,
+            stderr="",
+            exit_code=0,
+            timed_out=False,
+            truncated=False,
+            wall_s=0.0,
+        )
+
+
+@pytest.mark.anyio
+async def test_loop_runs_code_then_answers():
+    from sieval.tasks._math_tool_base import run_tool_loop
+
+    model = _ScriptedModel(["```python\nprint(42)\n```", "So \\boxed{42}."])
+    sandbox = _ScriptedSandbox(["42\n"])
+    traj = await run_tool_loop(
+        model=model,
+        sandbox=sandbox,
+        adapter=TextToolAdapter(),
+        messages=[{"role": "user", "content": "q"}],
+        index=0,
+        max_tool_calls=4,
+    )
+    assert traj.stop_reason == "answered"
+    assert len(traj.outputs) == 2
+    assert [c.code for c in traj.tool_calls] == ["print(42)\n"]
+    assert sandbox.codes == ["print(42)\n"]
+
+
+@pytest.mark.anyio
+async def test_loop_stops_at_the_budget():
+    from sieval.tasks._math_tool_base import run_tool_loop
+
+    model = _ScriptedModel(["```python\nprint(1)\n```"] * 10)
+    traj = await run_tool_loop(
+        model=model,
+        sandbox=_ScriptedSandbox([""] * 10),
+        adapter=TextToolAdapter(),
+        messages=[{"role": "user", "content": "q"}],
+        index=0,
+        max_tool_calls=2,
+    )
+    assert traj.stop_reason == "budget_exhausted"
+    assert len(traj.tool_calls) == 2
+    # One model call per tool call, plus the final one that had no budget left.
+    assert len(traj.outputs) == 3
+
+
+@pytest.mark.anyio
+async def test_a_model_that_never_calls_is_not_an_error():
+    from sieval.tasks._math_tool_base import run_tool_loop
+
+    traj = await run_tool_loop(
+        model=_ScriptedModel(["\\boxed{7}"]),
+        sandbox=_ScriptedSandbox([]),
+        adapter=TextToolAdapter(),
+        messages=[{"role": "user", "content": "q"}],
+        index=0,
+        max_tool_calls=4,
+    )
+    assert traj.stop_reason == "no_tool_use"
+    assert traj.tool_calls == []
+    assert len(traj.outputs) == 1
+
+
+@pytest.mark.anyio
+async def test_a_failed_request_mid_loop_keeps_what_was_answered():
+    from sieval.tasks._math_tool_base import run_tool_loop
+
+    traj = await run_tool_loop(
+        model=_DyingModel(["```python\nprint(1)\n```"]),
+        sandbox=_ScriptedSandbox(["1\n"]),
+        adapter=TextToolAdapter(),
+        messages=[{"role": "user", "content": "q"}],
+        index=0,
+        max_tool_calls=4,
+    )
+    assert traj.stop_reason == "request_failed"
+    assert len(traj.outputs) == 1
+
+
+@pytest.mark.anyio
+async def test_infer_reports_every_model_call_in_its_stage_meta(aime_tool_task):
+    # Three model calls across two rollouts must all appear in `model_calls`.
+    # Asserting the COUNT, not that a helper was called: a later refactor that
+    # moves the boxing would keep a call-shape assertion green while the token
+    # spend silently vanished from profile.json.
+    boxed = await aime_tool_task.infer(
+        {"prompt": [{"role": "user", "content": "q"}]},
+        aime_tool_task.make_context(0),
+    )
+    assert isinstance(boxed, TaskStageOutput)
+    assert len(boxed.meta["model_calls"]) == 3
