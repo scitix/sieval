@@ -18,6 +18,19 @@ Deviations:
    parse_java_function_call` and the `js_parser` twin -- same rename as
    `source_parser/`'s own docstrings explain (this package's `parser.py`
    already occupies upstream's directory name).
+3. `resolve_ast_by_type`'s `ast.BinOp` branch calls `safe_eval` where upstream
+   calls `eval(ast.unparse(value))`. That node is model output, so upstream's
+   line executes model-authored code -- `f(x=__import__('os').system('...')
+   + 0)` runs the call and hands back an ordinary-looking number. `safe_eval`
+   computes the same value for every expression that does not execute
+   something, and refuses the rest; the argument for where it lives, and for
+   the two non-executing shapes it also refuses, is in `_safe_eval.py`.
+
+   The `ast.Lambda` branch below keeps upstream's `eval` untouched, because it
+   cannot reach it: `Lambda.body` is a single expression node, so `value.body[0]`
+   raises `TypeError` while the argument is still being built. Hardening a
+   branch that cannot execute would be a deviation bought for nothing, and the
+   raise it produces today is already the decode failure upstream scores.
 
 The Java/JavaScript branches of `ast_parse` dispatch to those two functions:
 a `java`/`javascript`-category sample's model output is Java/JavaScript
@@ -27,6 +40,7 @@ matching tree-sitter grammar rather than `ast.parse`.
 
 import ast
 
+from ._safe_eval import safe_eval
 from .source_parser.java_parser import parse_java_function_call
 from .source_parser.js_parser import parse_javascript_function_call
 
@@ -92,7 +106,7 @@ def resolve_ast_by_type(value):
     elif isinstance(
         value, ast.BinOp
     ):  # Added this condition to handle function calls as arguments
-        output = eval(ast.unparse(value))
+        output = safe_eval(value)  # DEVIATION 3 -- upstream: eval(ast.unparse(value))
     elif isinstance(value, ast.Name):
         output = value.id
     elif isinstance(value, ast.Call):

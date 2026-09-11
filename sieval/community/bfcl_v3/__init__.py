@@ -8,9 +8,11 @@ Upstream's evaluation surface is `bfcl_eval`, an installable package that
 imports its own submodules by absolute path (`bfcl_eval.constants...`,
 `bfcl_eval.model_handler...`). A vendored copy cannot keep those imports, since
 `bfcl_eval` itself is not installed here -- rewriting them to relative imports
-within this package is the only edit made to any vendored file. Each vendored
-module's docstring records upstream's blob SHA at the pin and the exact rewrite
-applied, so a reviewer can re-derive the copy from a fresh checkout.
+within this package is the only edit made to any vendored file, with one
+exception: `parser.py`'s `ast.BinOp` branch resolves a model-authored expression
+with `eval`, and calls `_safe_eval.safe_eval` instead. Each vendored module's
+docstring records upstream's blob SHA at the pin and the exact edits applied, so
+a reviewer can re-derive the copy from a fresh checkout.
 
 Whole-file vendored modules: `ast_checker.py`, `type_mappings.py`,
 `type_convertor/java_type_converter.py`, `type_convertor/js_type_converter.py`,
@@ -27,6 +29,9 @@ registry has no entries for sieval's models. `_tables.py` holds the BFCL v3
 category tables (row counts, which categories have no gold answer file, which
 are non-Python) shared by the dataset loader and the tasks -- neither of which
 may reach into the other's private module, so the tables live here instead.
+`_safe_eval.py` evaluates a literal expression without executing it, and is the
+one deviation `parser.py` carries; it is held outside that file so the boundary
+stays lintable, which vendored code is not.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
