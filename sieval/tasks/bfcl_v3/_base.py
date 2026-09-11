@@ -152,8 +152,8 @@ BFCL_V3_SHARED_NOTES = (
     "rather than by `eval`-ing model output, which computes the same value "
     "for every expression that does not execute something (the FC protocol "
     "parses no source text, so it never reaches that code). "
-    "exec_*/rest/sql/chatable are excluded -- upstream has them commented out of "
-    "its own TEST_FILE_MAPPING and they need live API keys."
+    "exec_*, rest, sql and chatable are excluded -- upstream has them commented "
+    "out of its own TEST_FILE_MAPPING and they need live API keys."
 )
 
 
