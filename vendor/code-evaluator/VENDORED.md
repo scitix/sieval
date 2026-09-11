@@ -381,3 +381,103 @@ Two kinds, and the difference is a decision rather than a status:
   same 224/224 inside it as on the host, which is what promoted the sieval tasks
   to `stable`. `docker build` itself stays unexercised; the reproduction recipe
   is in `tests/acceptance/quotebench/README.md`.
+- `app/exec_agnostics.py` (new), `app/server.py`, `README.md` — **the Agnostics
+  protocol** as `source="agnostics"`, which is what makes a non-Python language
+  reachable at all. Nothing executes in this process: the request is forwarded to
+  a per-language verifier container over one JSON line in, one JSON line out
+  (`{code, timeout_s, test_cases}` -> `{result: "success" | "fail:*", ...}`), and
+  only `"success"` is a pass. Upstream of the *protocol* is
+  nuprl/Ag-LiveCodeBench-X at `b7b273ef`; sieval's client is
+  `ag_livecodebench_x_0shot_gen`.
+
+  Three deliberate choices, each of which a reviewer will want to push back on:
+
+  * **The container command is deployment config, not a request field.** Upstream
+    passes `--container-name` on its own CLI, which is safe when the harness and
+    the caller are the same process. Here they are not, so a client able to name
+    the image could run an arbitrary container on the evaluator host. `lang` is
+    all the client sends, constrained to `[a-z0-9][a-z0-9_.+-]{0,31}` because it
+    lands in an argv slot, and the command comes from
+    `CODE_EVAL_AGNOSTICS_COMMAND`, defaulting to upstream's own podman
+    invocation. That is the one place this deviates from upstream's shape rather
+    than its behaviour.
+  * **The image is pinned by digest, where upstream uses the mutable tag.** The
+    verifier decides scores, so it gets the treatment a dataset revision gets:
+    `_IMAGE_DIGESTS` maps each of upstream's eight published tags to a digest
+    resolved from the registry on 2026-08-23 (each verified against the
+    manifest's own `Docker-Content-Digest`). A language with no pinned digest is
+    **refused** (`infra:unpinned-lang`) rather than floated — an unpinned
+    verifier scores silently, which is the failure the table exists to prevent.
+    The refusal covers the **override path too**, where it originally did not:
+    a template containing `{image}` is asking this table for a digest, so an
+    unpinned language raises there as well instead of substituting an empty
+    string into the argv. That distinction matters because podman is the one
+    runtime that needs no override — every other deployment, upstream's own
+    `apptainer` included, runs the branch the guarantee used to skip. A template
+    *without* `{image}` names its own image and is still left alone.
+    All eight are single-platform **linux/amd64** manifests, so the pin binds the
+    architecture as well; arm64 needs the override. The resolved reference is
+    returned as `data.verifier_image` so the verdict's provenance reaches the run
+    record, and is `None` under an override whose template does not contain
+    `{image}` — reporting a digest that did not run would be worse than
+    reporting nothing. Note the tags are **file extensions**, not language names
+    (`jl`, `ml`, `f90`), which the framework repo's directory names
+    (`executors/julia`) actively mislead about.
+  * **`infra:<reason>` is reported instead of upstream's collapse to `"fail"`.**
+    Upstream turns every harness-side failure (non-zero exit, undecodable stdout)
+    into `result: "fail"` and recovers only the stdin-write case, by matching a
+    stderr suffix. The split is named here, where it is known, rather than left to
+    a client-side classifier over free text. **It does not change what counts as a
+    pass** -- only `"success"` does, either way -- so `pass@1` is unaffected and
+    only the diagnostic count differs (sieval's `n_run_errors` is therefore
+    broader than upstream's `run_error_rate` numerator).
+  * **One number in two roles, kept.** `timeout` is sent as both the container's
+    `timeout_s` and the wall the process is held to, because upstream does that
+    and widening the wall would move scores. Consequence, confirmed by running it:
+    the outer wall is armed first, so the container's own `fail:timeout` is
+    effectively unreachable and a timing-out submission surfaces as
+    `infra:timeout`. Writing the payload keeps upstream's separate 300s budget
+    (`stdin_write_timeout`), since a decoded LiveCodeBench suite is tens of MB.
+
+  Resource stats are the podman *client* process's, not the container's -- the
+  existing `monitor_process_resources` watches the pid it spawned. Reported anyway
+  so `data` is never null, but do not read them as the submission's cost.
+
+  Verified against the **real** `ghcr.io/nuprl/agnostics` lua verifier at its
+  pinned digest, run under `udocker` (2026-09-11; the dev box has no podman, see
+  the runtime note below): `success` / `fail:wrong-output` / `fail:error` come
+  back verbatim from the container, `infra:timeout` / `infra:bad-lang` /
+  `infra:no-test` all fire, and `data.verifier_image` carries the digest that
+  ran. A hand-written correct Lua solution scored `success` on a real decoded
+  LiveCodeBench suite while a deliberately wrong variant scored
+  `fail:wrong-output`, which is what rules out the decode and whitespace paths.
+  On the digest table: `lua` / `jl` / `ml` / `f90` resolve and report, `julia`
+  and `rust` are refused as `infra:unpinned-lang` on the default path *and*
+  under an `{image}` override, and an override templated on `{lang}` reports no
+  image. All eight pinned digests still matched the registry on 2026-09-11.
+  Not yet upstream -- land in `scitix/code-evaluator` and re-vendor; tests belong
+  there rather than under `tests/`, which mirrors `sieval/`.
+
+  **Running the verifier without podman.** `CODE_EVAL_AGNOSTICS_COMMAND` is the
+  supported hook, but two things podman gives for free have to be rebuilt. A
+  udocker container is a *persistent directory* and the Agnostics harness writes
+  the submission to a fixed path in its cwd, so concurrent requests overwrite
+  each other's code -- measured 19 of 40 wrong verdicts against one shared
+  container, 0 of 40 once each invocation got its own bind-mounted workdir. And
+  `udocker run` prints a banner to **stdout**, which this module json-decodes
+  whole (as upstream does), so it needs `--quiet`. Point the env var at a
+  wrapper that asserts the `{image}` it was handed equals the digest its
+  container was built from; otherwise the reported provenance is a label rather
+  than a fact.
+
+  **Re-pinning.** The digests are a snapshot. If upstream rebuilds an image, the
+  table keeps scoring against the old one, which is the intended behaviour --
+  moving it is a deliberate act that changes scores. Resolve a new digest with
+  an anonymous pull token:
+
+  ```bash
+  TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:nuprl/agnostics:pull&service=ghcr.io" | jq -r .token)
+  curl -sI -H "Authorization: Bearer $TOKEN" \
+    -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+    "https://ghcr.io/v2/nuprl/agnostics/manifests/lua" | grep -i docker-content-digest
+  ```
