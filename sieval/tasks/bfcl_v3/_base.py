@@ -21,11 +21,16 @@ tool name cannot carry a dot in the OpenAI dialects, so upstream rewrites
 reverses the rewrite before comparing against gold. That reversal is the
 ``underscore_to_dot`` flag: true for FC, false for Prompt.
 
-**The flag travels as a call argument, never as a module global.** Grading runs
-in a worker process, so a global set in the parent never arrives: an FC run
-would then be graded under the Prompt convention, and the symptom is a
-plausible-looking score rather than an error. That is the whole reason grading
-goes through one module-level function instead of a method.
+**The flag travels as a call argument, never as a module global set by the
+caller.** The vendored checker reads it from a global, and `grade_single_turn`
+writes that global and consumes it with no `await` in between -- which is what
+makes the pair atomic, and is the whole reason grading goes through one
+module-level function instead of a method. Offloading does not supply that
+guarantee on its own: `run_cpu_bound` falls back to running inline on the event
+loop whenever no worker pool is available, so a caller that set the global and
+then awaited would let another sample's grade land between the set and the use.
+Cross-wiring the two protocols is silent -- every one of the 734 gradeable rows
+whose gold name carries a dot grades wrong, with nothing reported.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -89,10 +94,11 @@ def grade_single_turn(
 ) -> bool:
     """Grade one decoded reply. Module-level so `run_cpu_bound` can pickle it.
 
-    `underscore_to_dot` is an ARGUMENT, not a module global set by the caller:
-    this runs in a worker process, so a global set in the parent never arrives.
-    Getting that wrong grades an FC run under the Prompt convention and produces
-    a plausible score rather than an error.
+    `underscore_to_dot` is an ARGUMENT, not a module global set by the caller,
+    so that the write below and the read inside `ast_checker` cannot be
+    separated: this function has no `await` in it, and an async caller setting
+    the global before awaiting would. Getting it wrong grades an FC run under
+    the Prompt convention and produces a plausible score rather than an error.
 
     `decoded` is None when the reply could not be decoded into calls at all.
     """
@@ -218,6 +224,15 @@ class BfclV3Task[TSample](
         language = ctx.preprocess_result["extra"]["language"]
         try:
             decoded = self._decode(inf, language)
+        except ImportError:
+            # NOT a decode failure. `_decode` defers its import of the vendored
+            # parser, which lives behind the optional `bfcl-v3` extra, so an
+            # environment missing tree-sitter raises from inside this `try`.
+            # Scoring that as an undecodable reply is the worst available
+            # outcome: every row of the run grades wrong, `fails` stays 0, and
+            # the run looks like a model that cannot call a function at all.
+            # Propagating costs the sample and names the cause.
+            raise
         except Exception as exc:  # noqa: BLE001 -- a decode failure is a SCORE
             # Upstream's `ast_decoder:decoder_failed`: the model produced
             # something undecodable, which is the model's outcome, not a fault.

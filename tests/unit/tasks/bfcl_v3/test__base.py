@@ -300,6 +300,42 @@ async def test_preprocess_stores_the_unprocessed_schema_for_grading(task_cls, ja
     ] == {"type": "ArrayList", "description": "tags", "items": {"type": "String"}}
 
 
+class _Ctx:
+    preprocess_result = {"extra": {"language": "Python", "category": "simple"}}
+
+
+@pytest.mark.anyio
+async def test_an_undecodable_reply_is_scored_not_raised():
+    """Upstream's `ast_decoder:decoder_failed` -- the model's outcome."""
+    task = BfclV3NonLiveZeroShotGenTask(MockDataset(), MockChatModel())
+    reply = _output("this is not a function call at all")
+    record = await task.postprocess(reply, _Ctx())
+    (rollout,) = record["rollouts"]
+    assert rollout.get("prediction") is None
+    assert rollout["extracted"] is False
+    assert "decode_error" in rollout["extra"]
+
+
+@pytest.mark.anyio
+async def test_a_missing_parser_dependency_propagates_instead_of_scoring(monkeypatch):
+    """An absent optional extra is a broken environment, not a bad answer.
+
+    `_decode` defers its import of the vendored parser (tree-sitter lives
+    behind the `bfcl-v3` extra), so the `ModuleNotFoundError` is raised from
+    inside the same `try` that turns a decode failure into a score. Swallowed,
+    it grades every row of the run wrong with `fails` at 0 -- indistinguishable
+    from a model that cannot call a function, and the logs go with the run.
+    """
+    task = BfclV3NonLiveZeroShotGenTask(MockDataset(), MockChatModel())
+
+    def no_tree_sitter(_self, _output, _language):
+        raise ModuleNotFoundError("No module named 'tree_sitter'")
+
+    monkeypatch.setattr(BfclV3PromptMixin, "_decode", no_tree_sitter)
+    with pytest.raises(ModuleNotFoundError, match="tree_sitter"):
+        await task.postprocess(_output("[f(x=1)]"), _Ctx())
+
+
 def test_the_fc_mixin_sends_tools_and_renames_the_dotted_function(dotted_row):
     """Upstream's own rewrite -- the one `UNDERSCORE_TO_DOT` later reverses."""
     messages, tools = BfclV3FCMixin()._build_messages(dotted_row)
