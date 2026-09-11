@@ -12,6 +12,8 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 import pytest
 
 from sieval.tasks._code_eval_msg import (
+    CODE_EVAL_BUILD_TIMEOUT_PREFIXES,
+    CODE_EVAL_RUN_TIMEOUT_PREFIXES,
     CODE_EVAL_TIMEOUT_PREFIXES,
     exception_class_name,
     is_timeout_message,
@@ -61,9 +63,14 @@ def test_the_word_elsewhere_in_a_message_is_not_a_timeout(msg):
 def test_a_late_case_timeout_is_not_confused_with_a_raised_one():
     """The two class-name shapes differ only by which class, and split opposite ways.
 
-    `CaseTimeout` is service-internal, so submitted code cannot produce the name;
-    `TimeoutError` is the program's. Getting this pair backwards is the whole
-    reason the predicate is not a substring test in either direction.
+    `CaseTimeout` is the service's own wall; `TimeoutError` is the program's.
+    Getting this pair backwards is the whole reason the predicate is not a
+    substring test in either direction.
+
+    The split is by which class the service named, NOT by who could have named
+    it: a submitted program defining `class CaseTimeout(Exception)` reaches the
+    same shape through `_unsafe_execute_fn_call`'s `except Exception`. That
+    forgery is accepted deliberately -- see the note on the prefix group.
     """
     assert is_timeout_message("failed: [CaseTimeout] ") is True
     assert is_timeout_message("failed: [TimeoutError] deadline exceeded") is False
@@ -82,6 +89,35 @@ def test_every_prefix_is_itself_recognized():
     """No prefix is shadowed by another, and each one is reachable."""
     for prefix in CODE_EVAL_TIMEOUT_PREFIXES:
         assert is_timeout_message(prefix) is True
+
+
+def test_the_two_groups_partition_the_union():
+    """A caller that splits the groups must still see every prefix exactly once.
+
+    `multipl_e/_base.py` routes the two groups to different counters, so a
+    prefix in neither is silently bucketed as an execution error, and one in
+    both is decided by which branch is tested first.
+    """
+    build = set(CODE_EVAL_BUILD_TIMEOUT_PREFIXES)
+    run = set(CODE_EVAL_RUN_TIMEOUT_PREFIXES)
+
+    assert build & run == set(), "a prefix in both groups is routed by branch order"
+    assert build | run == set(CODE_EVAL_TIMEOUT_PREFIXES)
+    # The union is the concatenation, so neither group may carry a duplicate.
+    assert len(CODE_EVAL_TIMEOUT_PREFIXES) == len(build) + len(run)
+
+
+def test_every_prefix_is_lowercase():
+    """The documented invariant callers rely on when comparing themselves.
+
+    `is_timeout_message` lowercases first, so it would pass either way; a caller
+    reaching for a tuple directly is what this protects. Only
+    `failed: [casetimeout]` can actually break -- the other five are lowercase
+    by accident of the service's own wording, which is why this is asserted
+    rather than left to reading.
+    """
+    for prefix in CODE_EVAL_TIMEOUT_PREFIXES:
+        assert prefix == prefix.lower(), prefix
 
 
 @pytest.mark.parametrize(

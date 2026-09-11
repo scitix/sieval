@@ -8,10 +8,13 @@ they scored was wrong (`correct` comes from the service's boolean), so no metric
 test would ever have caught the drift — which is why this is a survey and not a
 hand-kept list.
 
-Deliberately narrow: it forbids the BARE literal only. `"[timeouterror]" in msg`
-is a different test with a different meaning — an exception class name in the
-message tail, the way `memoryerror` is read next to it in `scicode` — and stays
-allowed.
+Deliberately narrow: it forbids the BARE literal only. A test that reads the
+exception CLASS is a different test with a different meaning and stays allowed —
+`scicode` counts a raised `TimeoutError` into its `timeouts` on purpose, beside
+`memory_errors` and `import_errors`, which read the class slot the same way.
+That reading now goes through `exception_class_name`, so no in-tree site spells
+a bracketed literal today; the carve-out is kept because the NEXT such counter
+should not have to argue with this test to exist.
 
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """

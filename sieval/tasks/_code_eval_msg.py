@@ -26,26 +26,56 @@ they scored was wrong.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
-#: Message prefixes that mean the SERVICE stopped the program on a clock.
+#: **Every prefix is lowercased**, and a caller comparing against these tuples
+#: must lowercase the message first. Only ``failed: [casetimeout]`` actually
+#: depends on it, so a raw-message comparison still passes against the other
+#: five and silently drops that one. :func:`is_timeout_message` normalizes for
+#: you; reach for a tuple directly only to keep the two apart, as
+#: ``multipl_e/_base.py`` does.
 #:
-#: A union across executors — the spelling depends on which one answered — and
-#: each is emitted only by a timeout path, so carrying one a task cannot
-#: currently produce is harmless:
+#: A wall the service hit BEFORE the program ran:
+#:
+#: * ``failed: build timeout`` — a compile wall (``exec_lang``)
+#: * ``failed: compile timeout:`` — LiveCodeBench's per-case compile budget
+#:   (``exec_py_test``)
+CODE_EVAL_BUILD_TIMEOUT_PREFIXES: tuple[str, ...] = (
+    "failed: build timeout",
+    "failed: compile timeout",
+)
+
+#: A wall the service hit while the program was RUNNING. Lowercased, as above.
 #:
 #: * ``failed: subprocess timeout:`` — the whole-submission wall
 #:   (``exec_py_code``, ``exec_py_test``)
-#: * ``failed: case timeout:`` / ``failed: compile timeout:`` — LiveCodeBench's
-#:   per-case budgets (``exec_py_test``)
+#: * ``failed: case timeout:`` — LiveCodeBench's per-case budget
+#:   (``exec_py_test``)
 #: * ``failed: [CaseTimeout]`` — that same per-case wall, arriving late. A
 #:   delivered signal cannot be un-delivered, so an alarm landing past
 #:   ``_unsafe_execute``'s own handler is formatted by the worker's outer
-#:   ``except`` as a class name. Service-internal ``BaseException``, so the name
-#:   cannot come from submitted code.
+#:   ``except`` as a class name. **The one entry a program can forge**: the
+#:   service's class is a ``BaseException``, which is why that handler names it
+#:   explicitly, but a submitted program defining ``class
+#:   CaseTimeout(Exception)`` is caught by ``_unsafe_execute_fn_call``'s
+#:   ``except Exception`` and formatted into the same shape. Kept regardless —
+#:   dropping it loses a real wall, the substring test this replaced counted the
+#:   forgery too, and what the forgery costs is one diagnostic count.
 #: * ``failed: timeout`` — the run wall for a non-Python ``lang`` (``exec_js``,
 #:   ``exec_ts``, ``exec_lang``)
-#: * ``failed: build timeout`` — a compile wall (``exec_lang``)
+CODE_EVAL_RUN_TIMEOUT_PREFIXES: tuple[str, ...] = (
+    "failed: subprocess timeout",
+    "failed: case timeout",
+    "failed: [casetimeout]",
+    "failed: timeout",
+)
+
+#: Every prefix that means the SERVICE stopped the program on a clock.
 #:
-#: The last two reach MultiPL-E, not this module's readers, which are all Python.
+#: A union across executors — the spelling depends on which one answered — and
+#: each is emitted only by a timeout path, so carrying one a task cannot
+#: currently produce is harmless. This module's readers are all Python and see
+#: neither ``failed: timeout`` nor ``failed: build timeout``; MultiPL-E sees
+#: only those two, since each of its 24 languages routes through ``exec_js`` /
+#: ``exec_ts`` / ``exec_lang`` and none of them is Python.
 #:
 #: Excluded, and each a live false positive under a substring test:
 #: ``failed: [TimeoutError] ...`` (the program raised) and any
@@ -53,17 +83,14 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 #:
 #: **"The service stopped the clock" is not "belongs in ``timeouts``."** This
 #: answers the first question only; the counter is the caller's call. MultiPL-E
-#: routes ``failed: build timeout`` to ``n_build_errors`` rather than here,
-#: deliberately — the run never started, and build-versus-run is the split its
-#: three keys exist to carry (``multipl_e/_base.py``). A task adopting this
-#: module gets the vocabulary, and still owes its own bucketing.
+#: routes ``failed: build timeout`` to ``n_build_errors`` rather than to
+#: ``timeouts``, deliberately — the run never started, and build-versus-run is
+#: the split its three keys exist to carry (``multipl_e/_base.py``). That is
+#: what the two groups above are for: an adopting task takes the vocabulary and
+#: still owes its own bucketing, where a bare :func:`is_timeout_message` would
+#: move its build walls.
 CODE_EVAL_TIMEOUT_PREFIXES: tuple[str, ...] = (
-    "failed: subprocess timeout",
-    "failed: case timeout",
-    "failed: compile timeout",
-    "failed: [casetimeout]",
-    "failed: build timeout",
-    "failed: timeout",
+    CODE_EVAL_BUILD_TIMEOUT_PREFIXES + CODE_EVAL_RUN_TIMEOUT_PREFIXES
 )
 
 
@@ -107,6 +134,8 @@ def exception_class_name(msg: str | None) -> str | None:
 
 
 __all__ = [
+    "CODE_EVAL_BUILD_TIMEOUT_PREFIXES",
+    "CODE_EVAL_RUN_TIMEOUT_PREFIXES",
     "CODE_EVAL_TIMEOUT_PREFIXES",
     "exception_class_name",
     "is_timeout_message",

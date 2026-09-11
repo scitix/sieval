@@ -598,10 +598,12 @@ class SciCodeZeroShotGenTask(
             # ModuleNotFoundError is an ImportError subclass, but the evaluator
             # reports the concrete class name, which does not END in
             # "importerror". It is the signature of a package missing from the
-            # code-eval image, so it must not read as import_errors=0.
+            # code-eval image, so it must not read as import_errors=0. Its own
+            # family is matched the same way the other two are, rather than by
+            # equality: the rule here is "the service named a class in this
+            # family", and a subclass is what the service actually reports.
             import_errors += sum(
-                cls is not None
-                and (cls.endswith("importerror") or cls == "modulenotfounderror")
+                cls is not None and cls.endswith(("importerror", "modulenotfounderror"))
                 for cls in exc_classes
             )
 
