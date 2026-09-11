@@ -89,12 +89,30 @@ solution is still executed and still counted, so the denominator is
 ``2048`` plus ``/nothink`` for Qwen 3. Those are model-layer settings in sieval
 (``models:`` / ``infer_args``), never this task's.
 
-``status="experimental"``: the port is faithful on the axes above, but no run has
-been aligned against a published number yet. The anchor when one is attempted is
-the paper's Ag-LiveCodeBench-X table (Qwen-3 4B/8B, DeepSeek-Coder-6.7B-Instruct,
-Phi-4-Mini over Lua, Julia, R, OCaml and Fortran); promoting this task to
-``stable`` wants one of those cells reproduced within its noise, at the paper's
-own decoding settings and language.
+``status="stable"``: one cell of the paper's Ag-LiveCodeBench-X table is
+reproduced within its noise. **Qwen 3 8B x Lua, Table 1: published 11, measured
+10.42** (52/499) -- a gap of 0.58 pp against a combined binomial
+``sigma_D`` of 1.96 pp, so 0.30 sigma. Run at upstream's README settings for
+Qwen 3 (``temperature 0.2``, ``top_p 0.95``, ``max_tokens 2048``,
+``language="Lua /nothink"``, one completion), against the real
+``ghcr.io/nuprl/agnostics`` lua verifier at its pinned digest.
+
+Three things the number carries, none of which move it out of noise:
+
+* **Serving precision differs from the paper's.** Upstream's own model name is
+  ``qwen3_8b_awq`` -- AWQ 4-bit, served locally. The reproduction used
+  OpenRouter's only Qwen3-8B provider, which reports its quantization as
+  unknown. Same checkpoint, possibly different precision; recorded rather than
+  controlled.
+* **13 of 499 rollouts never got a generation** (12 provider rate-limits, one
+  content filter) and count as failures in the denominator, which is what
+  upstream's ``pass1`` does with a generation that produced no solution. They
+  bias the number *down*: scoring them at the observed rate would give 10.70.
+* **The JSONAdapter divergence above cost exactly one row** (``n_unextracted``
+  was 1), so the lower bound is 0.2 pp below the unbounded number.
+
+The rest of the table is unmeasured: Julia, R, OCaml and Fortran, and every
+other model, are anchors that exist but have not been run here.
 
 AI-Generated Code - Claude Opus 5 (Anthropic)
 """
@@ -351,7 +369,7 @@ def _decode_private_test_cases(text: str) -> list[dict[str, str]]:
     n_shot=0,
     tags=("english", "code-exec", "multi-language"),
     model_type="chat",
-    status="experimental",
+    status="stable",
     reference_kind="procedure",
     reference_impl=ReferenceImpl(
         source="nuprl/Ag-LiveCodeBench-X",
@@ -383,9 +401,19 @@ def _decode_private_test_cases(text: str) -> list[dict[str, str]]:
             "language name would name no image. Upstream defaults: n=1 completion, "
             "temperature 0.6 / top_p 0.95 / max_tokens 5000, container timeout "
             "supplied per run (README uses 15s, and sends that one number as "
-            "BOTH the container's timeout_s and the outer process wall). No "
-            "sieval run has been aligned against a published number yet, which "
-            "is what status='experimental' records."
+            "BOTH the container's timeout_s and the outer process wall). "
+            "ALIGNMENT: Table 1's Qwen 3 8B x Lua cell, published 11, measured "
+            "10.42 (52/499) against the real ghcr.io/nuprl/agnostics lua "
+            "verifier at its pinned digest -- 0.58 pp, or 0.30 combined "
+            "binomial sigma, at upstream's README settings for Qwen 3 "
+            "(temperature 0.2, top_p 0.95, max_tokens 2048, language "
+            "'Lua /nothink'). Caveats that do not move it out of noise: the "
+            "paper served qwen3_8b_awq (AWQ 4-bit) where this used a provider "
+            "reporting unknown quantization; 13 of 499 rollouts never "
+            "generated (provider rate-limits) and count as failures, biasing "
+            "the number down to 10.42 from 10.70; and divergence (1) cost "
+            "exactly one row. The other four languages and every other model "
+            "in the table are unmeasured."
         ),
     ),
 )
