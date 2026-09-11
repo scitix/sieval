@@ -35,6 +35,7 @@ from sieval.community.intercode_alfa import (
     hash_command,
     index_to_img,
     is_correct,
+    output_similarity,
     parse_bash,
     parse_status,
     shared_changes,
@@ -296,3 +297,16 @@ def test_embedding_inputs_are_truncated_at_a_thousand_characters():
 
 def test_threshold_is_upstreams_reproduction_setting():
     assert DEFAULT_EMBED_THRESHOLD == 0.75
+
+
+def test_output_similarity_is_cosine_similarity_not_cosine_distance():
+    # Dropping upstream's `1 -` inverts every FEH verdict while keeping the
+    # range, which no threshold assertion would notice.
+    assert output_similarity([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
+    assert output_similarity([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
+    assert output_similarity([1.0, 0.0], [-1.0, 0.0]) == pytest.approx(-1.0)
+    # Magnitude-invariant, so texts of different lengths compare.
+    assert output_similarity([2.0, 1.0], [4.0, 2.0]) == pytest.approx(1.0)
+    # Above vs below upstream's 0.75, from vectors rather than a literal.
+    assert output_similarity([1.0, 0.1], [1.0, 0.0]) > DEFAULT_EMBED_THRESHOLD
+    assert output_similarity([1.0, 1.0], [0.0, 1.0]) < DEFAULT_EMBED_THRESHOLD

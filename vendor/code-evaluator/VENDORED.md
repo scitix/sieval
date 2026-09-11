@@ -214,7 +214,7 @@
   The verdict is deliberately *not* computed here — it needs an embedding model
   when the outputs differ, and this service holds no model credentials.
 
-  `tests/test_exec_sh.py` (17 tests, all passing) drives the whole protocol
+  `tests/test_exec_sh.py` (26 tests, all passing) drives the whole protocol
   against a throwaway git repo via `NL2SH_FS_ROOT`, so reset/status/hashing/the
   quoting rewrite/the wall/the fs_id refusal are all covered with no container.
   They live in the vendored tree rather than under sieval's `tests/` (which

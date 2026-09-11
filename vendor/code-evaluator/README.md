@@ -96,6 +96,12 @@ for fs in 1 2 3 4 5; do
 done
 ```
 
+The **caller** must address them per filesystem: pointing a whole run at one
+instance grades only that instance's share and has the rest refused. sieval's
+tasks read `SIEVAL_SHELL_EVAL_API` as a template and substitute `{fs_id}` per
+sample, defaulting to the five ports above; a proxy dispatching on the request
+body's `fs_id` works too. The refusal is the backstop, not the routing.
+
 ## API
 
 ### Health check

@@ -9,8 +9,10 @@ answers. What is left for a Docker host is what the five images actually print.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from datasets import Dataset as HFDataset
 from datasets import DatasetDict as HFDatasetDict
@@ -94,7 +96,8 @@ class _CapturingShell:
         self, facts: dict | None = None, *, status: bool = True, msg: str = ""
     ):
         self.bodies: list[dict] = []
-        self.deadlines: list[float] = []
+        self.urls: list[str] = []
+        self.deadlines: list[httpx.Timeout] = []
         self._payload = {
             "status": status,
             "msg": msg,
@@ -102,7 +105,7 @@ class _CapturingShell:
         }
 
     async def post(self, url, *, json, timeout):
-        _ = url
+        self.urls.append(url)
         self.bodies.append(json)
         self.deadlines.append(timeout)
         return _Response(self._payload)
@@ -144,9 +147,12 @@ async def _judge(
     facts: dict | None = None,
     vectors: list[list[float]] | None = None,
     shell: _CapturingShell | None = None,
+    sample_id=0,
+    raw: dict | None = None,
     **kwargs,
 ):
     """Run `feedback` for one rollout and hand back the verdict plus doubles."""
+    raw = raw if raw is not None else _RAW
     task = _task(cls, **kwargs)
     await task._http_client.aclose()  # the real client is never used
     shell = shell if shell is not None else _CapturingShell(facts)
@@ -156,7 +162,7 @@ async def _judge(
     try:
         _, judgement = await task.feedback(
             build_prediction_record([command]),
-            TaskContext(sample_id=0, raw_sample=_RAW),
+            TaskContext(sample_id=sample_id, raw_sample=raw),
         )
     finally:
         await task.shutdown()
@@ -251,8 +257,128 @@ async def test_the_request_carries_the_filesystem_the_sample_belongs_to():
     assert body["gold"] == _GOLD
     assert body["command"] == _GOLD
     assert body["timeout"] == float(TIMEOUT_DURATION) == 10.0
-    # The HTTP deadline must outlast two commands under that wall.
-    assert shell.deadlines[0] > body["timeout"] * 2
+    # The deadline must outlast two commands under that wall...
+    deadline = shell.deadlines[0]
+    assert deadline.read is not None and deadline.read > body["timeout"] * 2
+    # ...and must not be spent queueing: every instance serializes, so charging
+    # queue time to a one-sample deadline fails this sample for a neighbour's
+    # slowness, as a PoolTimeout that `fails` charges as a wrong answer.
+    assert deadline.pool is None
+
+
+@pytest.mark.anyio
+async def test_each_sample_is_routed_to_the_instance_hosting_its_filesystem():
+    # A single fixed URL grades only that instance's share (153 of 300 on fs 1)
+    # and has the other 147 refused into `fails` -- ~0.51, not an error.
+    seen = {}
+    for fs_id in (1, 3, 5):
+        _, shell, _ = await _judge(raw=_RAW | {"fs_id": fs_id})
+        seen[fs_id] = shell.urls[0]
+        assert shell.bodies[0]["fs_id"] == fs_id
+    assert seen == {
+        1: "http://localhost:11451/shell-evaluations",
+        3: "http://localhost:11453/shell-evaluations",
+        5: "http://localhost:11455/shell-evaluations",
+    }
+
+
+@pytest.mark.anyio
+async def test_an_endpoint_without_the_placeholder_is_used_unchanged(monkeypatch):
+    # What a proxy dispatching on the request body's `fs_id` needs; the
+    # service's refusal is the backstop either way.
+    monkeypatch.setenv("SIEVAL_SHELL_EVAL_API", "http://proxy:8080/shell-evaluations")
+    _, shell, _ = await _judge(raw=_RAW | {"fs_id": 4})
+    assert shell.urls == ["http://proxy:8080/shell-evaluations"]
+    assert shell.bodies[0]["fs_id"] == 4
+
+
+@pytest.mark.anyio
+async def test_the_correlation_id_names_the_sample_not_just_the_rollout():
+    # `rollout["index"]` is 0 for every sample at this benchmark's n=1, so an
+    # id built from it alone cannot be traced back to a dataset row.
+    _, shell, _ = await _judge(sample_id=287)
+    assert shell.bodies[0]["uuid"].startswith("287-0-")
+
+
+@pytest.mark.anyio
+async def test_a_refusal_names_the_sample_and_the_endpoint_it_went_to():
+    with pytest.raises(RuntimeError) as excinfo:
+        await _judge(
+            sample_id=287,
+            raw=_RAW | {"fs_id": 2},
+            shell=_CapturingShell(status=False, msg="fs_id mismatch"),
+        )
+    message = str(excinfo.value)
+    assert "sample 287" in message
+    assert "http://localhost:11452/shell-evaluations" in message
+
+
+class _OverlapProbe:
+    """Counts how many requests are in flight, per filesystem and overall."""
+
+    def __init__(self):
+        self._live: dict[int, int] = {}
+        self._live_total = 0
+        self.peak_per_fs: dict[int, int] = {}
+        self.peak_total = 0
+        self._payload = {"status": True, "msg": "", "data": _facts()}
+
+    async def post(self, url, *, json, timeout):
+        fs_id = json["fs_id"]
+        self._live[fs_id] = self._live.get(fs_id, 0) + 1
+        self._live_total += 1
+        self.peak_per_fs[fs_id] = max(self.peak_per_fs.get(fs_id, 0), self._live[fs_id])
+        self.peak_total = max(self.peak_total, self._live_total)
+        # Yield, so a peer interleaves if nothing is stopping it.
+        await asyncio.sleep(0.01)
+        self._live[fs_id] -= 1
+        self._live_total -= 1
+        return _Response(self._payload)
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def _grade_concurrently(task, fs_ids: list[int]) -> _OverlapProbe:
+    probe = _OverlapProbe()
+    await task._http_client.aclose()
+    task._http_client = probe
+    task._embed_client = _CapturingEmbedClient([])
+    await asyncio.gather(
+        *(
+            task.feedback(
+                build_prediction_record([_GOLD]),
+                TaskContext(sample_id=i, raw_sample=_RAW | {"fs_id": fs_id}),
+            )
+            for i, fs_id in enumerate(fs_ids)
+        )
+    )
+    return probe
+
+
+@pytest.mark.anyio
+async def test_one_in_flight_request_per_filesystem():
+    # A second concurrent request to one instance can only queue, against a
+    # deadline sized for one sample.
+    task = _task()
+    try:
+        probe = await _grade_concurrently(task, [3, 3, 3, 3])
+    finally:
+        await task.shutdown()
+    assert probe.peak_per_fs == {3: 1}
+
+
+@pytest.mark.anyio
+async def test_different_filesystems_still_run_in_parallel():
+    # Per filesystem, not global: five instances are five workers, and that is
+    # the only parallelism this benchmark has.
+    task = _task()
+    try:
+        probe = await _grade_concurrently(task, [1, 2, 3, 4, 5])
+    finally:
+        await task.shutdown()
+    assert probe.peak_total == 5
+    assert probe.peak_per_fs == {1: 1, 2: 1, 3: 1, 4: 1, 5: 1}
 
 
 @pytest.mark.anyio

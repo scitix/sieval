@@ -34,6 +34,18 @@ the per-part breakdown all land in the judgement record. ``fs_id`` selects the
 image and travels with the sample; the service rejects a request whose ``fs_id``
 is not the one it hosts, because a misrouted sample would score zero silently.
 
+**There are five services, so the endpoint is per-filesystem.**
+``SIEVAL_SHELL_EVAL_API`` is a template whose ``{fs_id}`` is substituted per
+sample; a value without it is used unchanged, for a proxy that dispatches on the
+request body. A single fixed URL grades only that instance's share -- 153 of 300
+on fs 1 -- and has the rest refused into ``fails``, which
+``DENOMINATOR_REQUESTED`` charges as wrong: a plausible ~0.51 rather than an
+error.
+
+Each instance serializes behind one lock and pins ``--workers 1``, so this task
+holds one in-flight request per filesystem and keeps queue time out of the
+per-request deadline. Spreading over the five is the only parallelism there is.
+
 **Divergences from upstream**, each also in ``reference_impl.notes``:
 
 * One container per image instead of two peers. Upstream runs the gold in a
@@ -63,6 +75,7 @@ command: upstream runs the gold by a path that never touches ``exec_action``.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+import asyncio
 import os
 import time
 from typing import ClassVar, override
@@ -73,6 +86,7 @@ from openai import AsyncOpenAI
 
 from sieval.community.intercode_alfa import (
     DEFAULT_EMBED_THRESHOLD,
+    FS_ENTRYPOINT,
     ICALFA_VERSION,
     PART_CREDIT,
     TIMEOUT_DURATION,
@@ -139,16 +153,23 @@ NL2SH_ALFA_SHARED_NOTES = (
     "command that did not execute, where upstream raises out of exec_action and "
     "scores the sample 0 outright; hashing on the second side is restricted to "
     "the first side's changed paths, which leaves the scored set (diff_same) "
-    "identical; the "
-    "embedding served over an OpenAI-compatible endpoint rather than Ollama, so "
-    "the weights are the Hub's rather than its f16 GGUF conversion. Requires a "
-    "shell-eval service per filesystem image (SIEVAL_SHELL_EVAL_API) and an "
-    "embedding endpoint (SIEVAL_EMBED_API / SIEVAL_EMBED_API_KEY)."
+    "identical; the embedding served over an OpenAI-compatible endpoint rather "
+    "than Ollama, so the weights are the Hub's rather than its f16 GGUF "
+    "conversion. SETUP: all FIVE shell-eval services up at once, one per "
+    "filesystem image, each refusing any other fs_id -- SIEVAL_SHELL_EVAL_API "
+    "is a TEMPLATE whose {fs_id} is substituted per sample (default "
+    "http://localhost:1145{fs_id}/shell-evaluations), and a fixed URL grades "
+    "only that instance's share (153 of 300 on fs 1) and has the rest refused "
+    "into fails, reporting ~0.51 instead of an error. Plus an embedding "
+    "endpoint (SIEVAL_EMBED_API / SIEVAL_EMBED_API_KEY)."
 )
 
-#: Default endpoint of the code-eval service's shell route, overridable so the
-#: five per-image deployments can be addressed one run at a time.
-_DEFAULT_SHELL_EVAL_API = "http://localhost:11451/shell-evaluations"
+#: Substituted per sample in `SIEVAL_SHELL_EVAL_API` -- see the module docstring
+#: for why the endpoint is per filesystem rather than per run.
+_FS_ID_PLACEHOLDER = "{fs_id}"
+#: Default shell-route template. The ports are the five the vendored README's
+#: `docker run` loop publishes (11451..11455).
+_DEFAULT_SHELL_EVAL_API = "http://localhost:1145{fs_id}/shell-evaluations"
 #: The embedding endpoint, sharing `t_eval_before_calling_0shot_gen`'s two
 #: variables so one credential covers every embedding-scored task.
 _DEFAULT_EMBED_API = "https://console.siflow.cn/model-api"
@@ -188,7 +209,6 @@ class NL2SHAlfaSharedZeroShotGenTask(
         embed_model: str = _DEFAULT_EMBED_MODEL,
         embed_threshold: float = DEFAULT_EMBED_THRESHOLD,
         timeout: float = float(TIMEOUT_DURATION),
-        max_concurrency: int = 4,
     ):
         super().__init__(dataset=dataset, model=model, name=name)
         self._embed_model = embed_model
@@ -197,15 +217,12 @@ class NL2SHAlfaSharedZeroShotGenTask(
         self._shell_eval_api = os.getenv(
             "SIEVAL_SHELL_EVAL_API", _DEFAULT_SHELL_EVAL_API
         )
-        self._http_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=max_concurrency)
-        )
-        # Checked here rather than at the first call: the FEH is not an optional
-        # axis for this benchmark -- it is how part 3 is decided whenever the two
-        # outputs differ -- so a missing credential is a misconfigured run, not a
-        # reduced one. An explicit "" would skip the OpenAI client's own
-        # OPENAI_API_KEY fallback and then name that variable in the error, which
-        # would not help: the endpoint is an embedding service, not OpenAI's.
+        # Before any client is built, so this raise cannot leak one -- and at
+        # construction rather than at the first call, because the FEH decides
+        # part 3 whenever the two outputs differ: a missing credential is a
+        # misconfigured run, not a reduced one. An explicit "" would skip the
+        # OpenAI client's own OPENAI_API_KEY fallback and then name that
+        # variable, which does not help -- this endpoint is not OpenAI's.
         api_key = os.getenv("SIEVAL_EMBED_API_KEY")
         if not api_key:
             raise ValueError(
@@ -215,9 +232,24 @@ class NL2SHAlfaSharedZeroShotGenTask(
                 f"endpoint is not {_DEFAULT_EMBED_API}). The model defaults to "
                 f"{_DEFAULT_EMBED_MODEL!r}, which is what upstream scores with."
             )
+        # One in-flight request per filesystem, and no knob for it: a second
+        # concurrent request to one instance can only queue, and `_execute`'s
+        # deadline is sized for one sample.
+        self._fs_gates = {fs_id: asyncio.Semaphore(1) for fs_id in FS_ENTRYPOINT}
+        self._http_client = httpx.AsyncClient(
+            limits=httpx.Limits(max_connections=len(FS_ENTRYPOINT))
+        )
         self._embed_client = AsyncOpenAI(
             base_url=os.getenv("SIEVAL_EMBED_API", _DEFAULT_EMBED_API), api_key=api_key
         )
+
+    def _endpoint_for(self, fs_id: int) -> str:
+        """The service instance hosting *fs_id*.
+
+        ``str.replace`` rather than ``str.format``, so a URL carrying any other
+        brace passes through instead of raising.
+        """
+        return self._shell_eval_api.replace(_FS_ID_PLACEHOLDER, str(fs_id))
 
     @override
     async def preprocess(self, raw, ctx):
@@ -254,43 +286,55 @@ class NL2SHAlfaSharedZeroShotGenTask(
         for rollout in post["rollouts"]:
             index = rollout["index"]
             command = rollout.get("prediction") or ""
-            facts = await self._execute(index, raw["fs_id"], command, gold)
+            facts = await self._execute(
+                ctx.sample_id, index, raw["fs_id"], command, gold
+            )
             verdict, detail = await self._score(command, gold, facts)
             rollouts.append(build_rollout_judgement(index, verdict, extra=detail))
         return True, build_judgement_record(gold, rollouts)
 
-    async def _execute(self, index: int, fs_id: int, command: str, gold: str) -> dict:
+    async def _execute(
+        self, sample_id, index: int, fs_id: int, command: str, gold: str
+    ) -> dict:
         """Run both commands in the image `fs_id` names, returning raw facts.
 
         Every failure propagates. A shell-eval service that is unreachable, or
         that refuses the request, is a broken grader -- not a model that answered
-        wrongly -- and the two must not look alike in a report.
+        wrongly -- and the two must not look alike in a report. Messages name
+        *sample_id*, since `index` is the rollout and is 0 for every sample at
+        this benchmark's n=1.
         """
         try:
-            resp = await self._http_client.post(
-                self._shell_eval_api,
-                json={
-                    "uuid": f"{index}-{time.perf_counter_ns()}",
-                    "fs_id": fs_id,
-                    "command": command,
-                    "gold": gold,
-                    "timeout": self._timeout,
-                },
-                # Two commands, each with its own wall, plus reset and hashing.
-                timeout=self._timeout * 2 + 10,
-            )
+            async with self._fs_gates[fs_id]:
+                resp = await self._http_client.post(
+                    self._endpoint_for(fs_id),
+                    json={
+                        "uuid": f"{sample_id}-{index}-{time.perf_counter_ns()}",
+                        "fs_id": fs_id,
+                        "command": command,
+                        "gold": gold,
+                        "timeout": self._timeout,
+                    },
+                    # Sized for ONE sample: two commands under their own walls,
+                    # three resets, two `git status` calls and the hashing.
+                    # `pool=None` keeps queue time off it -- charging that here
+                    # is what turns a slow neighbour into this sample's failure.
+                    timeout=httpx.Timeout(self._timeout * 2 + 10, pool=None),
+                )
             resp.raise_for_status()
             res = resp.json()
             if not res["status"]:
                 raise RuntimeError(
-                    f"shell-eval service refused sample {index}: {res['msg']}"
+                    f"shell-eval service at {self._endpoint_for(fs_id)} refused "
+                    f"sample {sample_id} (fs {fs_id}): {res['msg']}"
                 )
             return res["data"]
         except Exception as exc:
             logger.warning(
-                "Shell evaluation error for sample {} (fs {}): [{}] {}",
-                index,
+                "Shell evaluation error for sample {} (fs {}, {}): [{}] {}",
+                sample_id,
                 fs_id,
+                self._endpoint_for(fs_id),
                 type(exc).__name__,
                 exc,
             )
