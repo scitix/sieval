@@ -40,6 +40,18 @@ from .arc.arc_easy_kshot_clp import (
 from .arc.arc_easy_kshot_ppl import (
     ARCEasyFewShotPplTask,
 )
+from .bfcl_v3.bfcl_v3_live_0shot_gen import (
+    BfclV3LiveZeroShotGenTask,
+)
+from .bfcl_v3.bfcl_v3_live_0shot_gen_fc import (
+    BfclV3LiveZeroShotGenFCTask,
+)
+from .bfcl_v3.bfcl_v3_non_live_0shot_gen import (
+    BfclV3NonLiveZeroShotGenTask,
+)
+from .bfcl_v3.bfcl_v3_non_live_0shot_gen_fc import (
+    BfclV3NonLiveZeroShotGenFCTask,
+)
 from .browsecomp_0shot_gen import (
     BrowseCompZeroShotGenTask,
 )
@@ -257,6 +269,10 @@ __all__ = [
     "Apex2025ZeroShotGenTask",
     "ApexShortlist2025ZeroShotGenTask",
     "BRUMO2025ZeroShotGenTask",
+    "BfclV3LiveZeroShotGenFCTask",
+    "BfclV3LiveZeroShotGenTask",
+    "BfclV3NonLiveZeroShotGenFCTask",
+    "BfclV3NonLiveZeroShotGenTask",
     "BrowseCompZeroShotGenTask",
     "CEvalFewShotCLPTask",
     "CMIMC2025ZeroShotGenTask",

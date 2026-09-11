@@ -36,6 +36,21 @@ Issues = "https://github.com/scitix/sieval/issues"
 Changelog = "https://github.com/scitix/sieval/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+bfcl-v3 = [
+  # Reached only by the Prompt protocol, and there by every category rather
+  # than just `java` and `javascript`: upstream's `ast_parse` dispatches those
+  # two to tree-sitter parsers rather than Python's `ast`, but it imports both
+  # source parsers at module scope, so touching `ast_parse` at all requires
+  # them. The FC protocol never parses source text and does not need this.
+  #
+  # Pinned to upstream's own versions. tree_sitter 0.21.3 predates the 0.22 API
+  # break -- the vendored parsers call `Language(ptr, name)` and
+  # `Parser.set_language()`, both removed later -- so this is a hard pin, not a
+  # floor. It has no wheel for Python 3.13 and builds from sdist.
+  "tree-sitter==0.21.3",
+  "tree-sitter-java==0.21.0",
+  "tree-sitter-javascript==0.21.4",
+]
 drop = ["numpy<=2.2", "scipy>=1.16.3"]
 # numpy backs the vendored HLE `calib_err` (calibration error). No grader/judge
 # extras: the judge is reached through the base `openai` client like any model.

@@ -26,7 +26,19 @@ inline where it would swamp a diff against upstream. Do not add more original
 code here without the same argument; a helper with one caller belongs in that
 caller's module.
 
+`bfcl_v3/_safe_eval.py` is the second, and with exactly **one** caller it shows
+what "the same argument" means. That caller is a *vendored* file
+(`bfcl_v3/parser.py`, whose `ast.BinOp` branch upstream resolves with `eval` over
+model output), so inlining the guard would both enlarge a diff that exists to be
+compared against upstream and put a security boundary inside a file that cannot
+be linted. "One caller" is the rule for ordinary helpers; a boundary that has to
+stay separately auditable is not one.
+
 The package-wide `ruff` / `mypy` / `pre-commit` exclusions exist to keep vendored
-code byte-identical and cover this file too, which is the wrong default for a
-security boundary. Until they are narrowed, lint it by hand:
-`ruff check --config 'exclude=["vendor"]' sieval/community/_sympy_guards.py`.
+code byte-identical and cover both files too, which is the wrong default for a
+security boundary. Until they are narrowed, lint them by hand:
+
+```
+ruff check --config 'exclude=["vendor"]' sieval/community/_sympy_guards.py
+ruff check --config 'exclude=["vendor"]' sieval/community/bfcl_v3/_safe_eval.py
+```

@@ -24,6 +24,7 @@ from .deployment import BINDING_RESOURCE_KEYS
 from .ir import (
     CompletionInput,
     DialectOptions,
+    FunctionToolCall,
     ModelInput,
     ModelProvenance,
     OpaqueContinuation,
@@ -89,6 +90,10 @@ class ModelOutput:
     texts: list[str]
     finish_reasons: list[str] | None = None
     reasoning_texts: list[str] | None = None
+    #: Structured calls from the native tools API. ``None`` when the reply
+    #: carried none -- which is not the same as an empty tuple, a reply that
+    #: used the tools API and deliberately called nothing.
+    tool_calls: tuple[FunctionToolCall, ...] | None = None
     logprobs_tokens: list[str] | None = None
     logprobs: list[float | None] | None = None
     top_logprobs: list[dict[str, float]] | None = None
@@ -471,6 +476,7 @@ def response_to_model_output(model_meta: ModelMeta, response: Response) -> Model
             else None
         ),
         reasoning_texts=reasoning_texts,
+        tool_calls=response.tool_calls,
         logprobs_tokens=logprobs_tokens,
         logprobs=logprobs,
         top_logprobs=top_logprobs,

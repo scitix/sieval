@@ -27,9 +27,13 @@ env:
   # is tested at all. nltk alone is not enough -- the pre-2020 grader reaches
   # only nltk, so without sqlparse the test-suite metric and the hardened
   # execution under it are silently uncollected here while passing locally.
+  # `bfcl-v3` is installed rather than left out like `hle`/`multi-if`: it gates
+  # the java/javascript decode path, the one thing the vendored source-text
+  # parsers exist to make work, and an untested path silently rots. The cost is
+  # one small C extension (tree-sitter) built from sdist per run.
   INSTALL_GROUPS: >-
-    -G drop -G ifbench -G ifeval -G iheval -G math -G scicode -G spider -G test
-    -G dev
+    -G bfcl-v3 -G drop -G ifbench -G ifeval -G iheval -G math -G scicode -G spider
+    -G test -G dev
 
 jobs:
   changes:

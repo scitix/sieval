@@ -25,6 +25,7 @@ name, so it is the only place the distinction can live.
 | *(none)* | Tracks upstream — its protocol, its grader, its defects |
 | `_fixed` | Ours, diverging to repair a defect in upstream's grader or data |
 | `_parse` | Upstream's *other* published protocol over the same benchmark and grader: same data, same scoring, a different prompt and an output extractor, each with its own published column |
+| `_fc` | Upstream's native-function-calling protocol over the same benchmark and grader: same data, same scoring, the function schemas delivered through the provider's tools API instead of the prompt, and calls read back from `tool_calls` instead of parsed out of the reply |
 
 - **The unqualified name always tracks upstream, bugs included**, and is never
   repurposed by a local change. It stays free even if nothing will occupy it —
@@ -43,6 +44,15 @@ name, so it is the only place the distinction can live.
   32%, so one number for "NL2SH accuracy" would hide whether a model was scored
   on translation or on formatting compliance. Not for a prompt *we* prefer, and
   not for an extractor we added: the second column has to be upstream's.
+- **`_fc` is licensed by a capability, not a prompt.** It exists where upstream
+  publishes a native-function-calling column beside its prompting one, and it is
+  a different axis from `_parse`: that one layers a second extractor over the
+  same model interface, while `_fc` changes *which capability is exercised* — it
+  gates on `function_tools`, so it changes which models can run the task at all.
+  The unqualified name goes to the prompting reading, since every model on such a
+  leaderboard has that row while only some have an FC row, and a default name
+  half the fleet cannot run is the narrow one.
+  `bfcl_v3_non_live_0shot_gen` / `_fc` earned the row.
 - The mode is read positionally, so a variant may not spell one:
   `foo_0shot_clp_gen.py` has two readings and is rejected.
 - The table is the current vocabulary, not the limit — a new variant earns a row

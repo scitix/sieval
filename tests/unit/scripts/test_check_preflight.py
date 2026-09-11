@@ -384,6 +384,68 @@ class TestCheckImports:
         assert "2 import-policy violation(s)" in results[0].message
         assert len(results[0].details) == 2
 
+    def test_warning_noise_is_shown_but_not_counted(self, tmp_path: Path):
+        # `check_layer_imports.py` parses every file it is handed, and several
+        # vendored modules raise SyntaxWarning on parse — on every run, passing
+        # or failing. Counting raw stderr lines reported two real violations as
+        # twenty-six, which reads as an unfixable pile rather than a two-line
+        # regression.
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "check_layer_imports.py").write_text("")
+        sieval_dir = tmp_path / "sieval"
+        sieval_dir.mkdir()
+        (sieval_dir / "example.py").write_text("")
+
+        runner = PreflightRunner(project_root=tmp_path)
+        mock_result = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "sieval/community/deepseek_math.py:192: SyntaxWarning: "
+                "invalid escape sequence '\\%'\n"
+                '  string = string.replace("\\%", "%")\n'
+                "sieval/core/x.py:7: core/ must not import tasks/ (sieval.tasks)\n"
+            ),
+        )
+        side_effect = self._make_layers_side_effect(mock_result)
+        with patch("check_preflight.subprocess.run", side_effect=side_effect):
+            results = runner.check_imports()
+
+        assert results[0].status == "FAIL"
+        assert "1 import-policy violation(s)" in results[0].message
+        assert results[0].details == [
+            "sieval/core/x.py:7: core/ must not import tasks/ (sieval.tasks)"
+        ]
+
+    def test_unrecognised_stderr_still_reported_on_failure(self, tmp_path: Path):
+        # If the checker's output shape ever moves, a "0 violation(s)" FAIL
+        # would read as reassuring noise. Fall back to the raw lines.
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "check_layer_imports.py").write_text("")
+        sieval_dir = tmp_path / "sieval"
+        sieval_dir.mkdir()
+        (sieval_dir / "example.py").write_text("")
+
+        runner = PreflightRunner(project_root=tmp_path)
+        mock_result = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="sieval/community/x.py:1: SyntaxWarning: invalid escape\n",
+        )
+        side_effect = self._make_layers_side_effect(mock_result)
+        with patch("check_preflight.subprocess.run", side_effect=side_effect):
+            results = runner.check_imports()
+
+        assert results[0].status == "FAIL"
+        assert "1 import-policy violation(s)" in results[0].message
+        assert results[0].details == [
+            "sieval/community/x.py:1: SyntaxWarning: invalid escape"
+        ]
+
     def test_fail_when_script_not_found(self, tmp_path: Path):
         # tmp_path has no scripts/ directory at all
         runner = PreflightRunner(project_root=tmp_path)

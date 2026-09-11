@@ -456,6 +456,15 @@ def _check_relative_scope(path: Path, tree: ast.AST) -> list[str]:
     Scoped to the sieval package only: ``scripts/`` files are standalone modules,
     not a package, so a relative import there fails at runtime and needs no
     lint. (The pre-commit hook feeds both trees; this check narrows on purpose.)
+
+    ``sieval/community/`` is **not** exempt, and a vendored drop is not a reason
+    to make it one. A vendored file that reaches across packages has already had
+    that import rewritten — upstream's own was absolute (``from
+    bfcl_eval.constants...``), and a copy cannot keep it — so spelling the
+    replacement absolutely costs exactly what spelling it ``..x`` costs: one
+    line, already being edited. Exempting the tree to permit the relative form
+    would buy nothing and would drop this rule over every future drop, which is
+    a ratchet: lint exemptions are not narrowed back.
     """
     if _get_layer(path) is None:
         return []

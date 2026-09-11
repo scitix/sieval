@@ -32,6 +32,17 @@ _ROOT = Path(__file__).parents[3]
 
 # task module (under `sieval.tasks.`) -> modules its registration must not pull.
 FORBIDDEN: dict[str, tuple[str, ...]] = {
+    # `ast_parse` reaches tree-sitter, which is behind the optional `bfcl-v3`
+    # extra. It is needed only by the Prompt protocol -- but there by every
+    # category, not just java/javascript: `ast_parse` imports both source
+    # parsers at module scope, so touching it at all pulls them. All four
+    # leaves are listed because they share `_base.py`, so a module-scope import
+    # there would pull tree-sitter for the FC leaves too, which never parse
+    # source text at all.
+    "bfcl_v3.bfcl_v3_non_live_0shot_gen": ("tree_sitter",),
+    "bfcl_v3.bfcl_v3_non_live_0shot_gen_fc": ("tree_sitter",),
+    "bfcl_v3.bfcl_v3_live_0shot_gen": ("tree_sitter",),
+    "bfcl_v3.bfcl_v3_live_0shot_gen_fc": ("tree_sitter",),
     # math_verify is behind the `math` group and is slow to import.
     "aime_2024_0shot_gen": ("math_verify",),
     "aime_2025_0shot_gen": ("math_verify",),
