@@ -21,6 +21,17 @@ Records are named by **content**, not by the stage that emits them — a shard l
 | `postprocess` | `PredictionRecord` |
 | `feedback` | `JudgementRecord` |
 
+`TInferred` is a free generic slot, and the table's `ModelOutput` row records
+that the infer stage happened to be uniform — not a requirement that it stay so.
+A task whose infer stage produces something a `ModelOutput` cannot hold (a tool
+trajectory, a multi-turn walk) returns its own value. When it does, it MUST box
+it: `TaskRunner._build_auto_meta` derives `model_calls` only from a `ModelOutput`
+or a `list[ModelOutput]`, so a composite value contributes none — the stage's
+whole token spend missing from `profile.json`, with nothing on disk to say so.
+Return `TaskStageOutput(value=..., meta=build_stage_meta(*outputs))` and the
+accounting is explicit. `mmmlu_kshot_clp` and the math tool base
+(`sieval/tasks/_math_tool_base.py`) both do this.
+
 Vocabulary — these denote **different layers**, keep them distinct:
 
 - **judgement** — the verdict record, mechanism-agnostic: string-compare, math-verify, test-suite *or* LLM verdicts all produce one.

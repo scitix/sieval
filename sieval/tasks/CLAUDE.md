@@ -26,6 +26,7 @@ name, so it is the only place the distinction can live.
 | `_fixed` | Ours, diverging to repair a defect in upstream's grader or data |
 | `_parse` | Upstream's *other* published protocol over the same benchmark and grader: same data, same scoring, a different prompt and an output extractor, each with its own published column |
 | `_fc` | Upstream's native-function-calling protocol over the same benchmark and grader: same data, same scoring, the function schemas delivered through the provider's tools API instead of the prompt, and calls read back from `tool_calls` instead of parsed out of the reply |
+| `_tool` | The same benchmark and grader, with the model given a code-execution tool during the solve. Earns a row because it changes what the model may *do* to reach the answer, not how its answer is read — the reference and the verdict are identical to the unqualified task, which is what makes the pair a measurable delta. Not licensed where the tool would grade the answer rather than help compute it. |
 
 - **The unqualified name always tracks upstream, bugs included**, and is never
   repurposed by a local change. It stays free even if nothing will occupy it —
@@ -53,6 +54,16 @@ name, so it is the only place the distinction can live.
   leaderboard has that row while only some have an FC row, and a default name
   half the fleet cannot run is the narrow one.
   `bfcl_v3_non_live_0shot_gen` / `_fc` earned the row.
+- **`_tool` owes a *measured* difference against its no-tool sibling before it
+  ships `stable`**, which is what the unqualified reference buys: `_fixed` owes
+  its score impact because it diverges from upstream, and `_tool` owes the same
+  measurement against the sibling it was cloned from, because a tool the model
+  does not use — or uses without effect on the score — has added an affordance
+  and no reading. Its protocol prompt must be a pinned constant, stated in one
+  place and asserted by a test, because the prompt *is* part of what the variant
+  measures: an unpinned one makes every stored difference incomparable to the
+  next run's. `aime_2025_0shot_gen_tool` is the first case, pinned in
+  `_math_tool_base.TOOL_SYSTEM_PROMPT`.
 - The mode is read positionally, so a variant may not spell one:
   `foo_0shot_clp_gen.py` has two readings and is rejected.
 - The table is the current vocabulary, not the limit — a new variant earns a row
