@@ -4,6 +4,36 @@
 - Vendored at commit: `e4802268f2b491c7ea3d7ed7704dd8582bc079be`
   (previously a git submodule at `submodules/code-evaluator`)
 
+## Two shell routes, and which one a third should copy
+
+There are now two ways to grade a Bash command here, added independently
+(NL2SH-ALFA first, `quotebench` second). They are **not** redundant, and neither
+should be folded into the other — but a third shell benchmark must not invent a
+shape without reading this first.
+
+| | `POST /shell-evaluations` (NL2SH-ALFA) | `POST /evaluations`, `source="quotebench"` |
+| --- | --- | --- |
+| state | **stateful** — one git-committed baseline tree, reset between commands | **stateless** — a fresh fixture per attempt, built in Python |
+| where the environment comes from | the **image** (five of them, `NL2SH_FS_ID` baked in) | the task's own `setup(tmp)`, any GNU userland |
+| unit of work | a command **pair** (model + gold) against one tree | one task id plus one command |
+| what comes back | **facts** (`ShellFacts`), the caller scores | a **verdict** plus upstream's failure class |
+| why | equivalence needs an embedding model, and this service holds no credentials | the check is an exact final-state comparison, so it is decidable here |
+| concurrency | `--workers 1`; the tree is shared mutable state | safe in parallel (measured: 672 executions at 32-way, no verdict moved) |
+
+The split is forced by the benchmarks, not chosen: a route that returns facts
+cannot return a verdict without credentials it does not have, and a route whose
+environment is a per-attempt temp dir cannot be pinned to a baked image without
+losing the property that makes it parallel. So the rule for a third one is to
+pick the row it matches rather than to add a column:
+
+- graded by **what the filesystem became**, with a prepared tree it cannot build
+  itself → extend the shell route;
+- graded by an **exact, decidable check** over a fixture the task constructs →
+  add a `source` on `/evaluations`.
+
+They are also not co-deployable: `quotebench` needs `/tmp`, which the NL2SH
+images delete (see that entry below), so the two never share an image.
+
 ## Local patches on top of that commit
 
 Two kinds, and the difference is a decision rather than a status:
@@ -217,9 +247,13 @@ Two kinds, and the difference is a decision rather than a status:
   the directory outright and it does not come back (measured against a throwaway
   tree, not assumed). That is upstream's behaviour too and must not be "fixed" —
   adding `tmp` to the ignore file would change what `git status` reports and
-  therefore what the benchmark scores. It does mean the three stateless routes
-  that use `tempfile` (`exec_py_code`, `exec_js`, `exec_ts`) are unreliable on
-  these five images; they are not served there.
+  therefore what the benchmark scores. It does mean the stateless routes that use
+  `tempfile` (`exec_py_code`, `exec_js`, `exec_ts`, and `quotebench`, whose
+  `run_attempt` allocates a fresh `mkdtemp` per attempt) are unreliable on these
+  five images; they are not served there. `quotebench` was added to that list
+  when it landed after this entry — the failure is not subtle there, since a
+  missing `/tmp` makes `mkdtemp` raise before any command runs, but it would
+  read as a broken grader rather than as a route on the wrong image.
 
   The verdict is deliberately *not* computed here — it needs an embedding model
   when the outputs differ, and this service holds no model credentials.
