@@ -87,10 +87,18 @@ def problem_tests_dir(tests_root: str, problem_id: str) -> str:
 
 
 class LiveOIBenchDatasetSample(TypedDict):
+    # Every column the problems parquet carries, because rows are passed through
+    # whole (`row | {...}` below) rather than projected -- including the three
+    # this task never reads. `setup_script` / `evaluation_script` are non-empty
+    # only on the 5 script-judged problems, all of which are `interactive` and so
+    # are already filtered out by the default `task_type`.
+    id: int
     problem_id: str
     competition: str
     contest: str
     task_name: str
+    setup_script: str
+    evaluation_script: str
     problem_statement: str
     time_limit: float
     memory_limit: float
@@ -244,18 +252,28 @@ def _read_subtasks(tests_repo: str) -> dict[str, str]:
     between a 20 KB read and the whole corpus.
     """
     subtasks: dict[str, str] = {}
+    # Tracked separately from `subtasks` being non-empty: those are two different
+    # failures. No file is "the corpus was never downloaded"; a file whose rubrics
+    # are all absent is a join failure the loader below reports per problem.
+    found_a_parquet = False
     for year in TEST_YEARS:
         path = os.path.join(tests_repo, year_parquet_name(year))
         if not os.path.exists(path):
             continue
+        found_a_parquet = True
         table = pq.read_table(path, columns=["problem_id", "subtasks"])
         for problem_id, payload in zip(
             table.column("problem_id").to_pylist(),
             table.column("subtasks").to_pylist(),
             strict=True,
         ):
-            subtasks[problem_id] = payload or "{}"
-    if not subtasks:
+            # NOT `payload or "{}"`: a NULL cell would then read as a present but
+            # empty rubric, pass the loader's `is None` check below, and only
+            # surface per sample at grading time. Keep the absence, so the one
+            # place that decides what a missing rubric means is the loader.
+            if payload is not None:
+                subtasks[problem_id] = payload
+    if not found_a_parquet:
         raise FileNotFoundError(
             f"No LiveOIBench test parquet found under {tests_repo!r}; "
             "run `sieval dataset download liveoibench` first."

@@ -215,6 +215,23 @@ def test_a_problem_absent_from_the_test_parquet_is_a_loud_join_failure(tmp_path)
         LiveOIBenchDataset(name_or_path=path)
 
 
+def test_a_null_subtasks_cell_is_the_same_loud_join_failure(tmp_path):
+    """A NULL rubric must not read as a present-but-empty one.
+
+    Coerced to "{}" it passes the loader's own check and only surfaces later,
+    once per sample, at grading time -- where it looks like a scoring problem
+    rather than two parquets out of step.
+    """
+    path = _stage(tmp_path, [_problem(BATCH_ID)])
+    tests_repo = tmp_path / "LiveOIBench_tests"
+    pq.write_table(
+        pa.Table.from_pylist([{"id": 0, "problem_id": BATCH_ID, "subtasks": None}]),
+        tests_repo / year_parquet_name("2025"),
+    )
+    with pytest.raises(ValueError, match="out of step"):
+        LiveOIBenchDataset(name_or_path=path)
+
+
 def test_a_missing_year_parquet_names_the_download_command(tmp_path):
     path = _stage(tmp_path, [_problem(BATCH_ID)])
     os.remove(tmp_path / "LiveOIBench_tests" / year_parquet_name("2025"))

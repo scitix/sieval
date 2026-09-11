@@ -101,6 +101,10 @@ def _cutoff(value) -> float | None:
     tags=("english", "cpp", "code-exec"),
     model_type="chat",
     reference_kind="procedure",
+    # Faithful port, anchor not yet reached -- the in-tree meaning of
+    # "experimental" (cf. agieval, which is validated on a full 7,272-row run and
+    # stays experimental because its anchor is unservable). See `notes` below.
+    status="experimental",
     reference_impl=ReferenceImpl(
         source="liveoibench",
         url=f"{_UPSTREAM}/src/judges/base_judge.py",
@@ -129,7 +133,14 @@ def _cutoff(value) -> float | None:
             "thresholds the published dataset does not carry. Three IATI problems "
             "(senior-game, senior-ones, junior-twins) link against a grader whose "
             "header the prompt never shows, so they cannot compile and score 0; "
-            "upstream behaves identically. Codeforces Elo is not computed."
+            "upstream behaves identically. Codeforces Elo is not computed. "
+            "No published number has been reproduced, which is what keeps this "
+            "'experimental': the paper's table is over 403 problems where this "
+            "scores 380, so it is not a reachable anchor, and upstream publishes "
+            "no model outputs to grade against instead (no submission_results/, "
+            "no results CSV, no solutions repo) -- so unlike quotebench there is "
+            "no zero-cost grader anchor either. Promote to 'stable' once an n=8 "
+            "run is aligned and the alignment card is filled in."
         ),
     ),
 )
@@ -221,6 +232,16 @@ class LiveOIBenchZeroShotGenTask(
         # once per rollout.
         payload_tests, n_cases = await asyncio.to_thread(self._test_payload, raw)
         timeout = self._request_timeout(raw, n_cases)
+
+        if not post["rollouts"]:
+            # No rollout to pick a best from. Saying so by name is the point:
+            # the `next(...)` below would otherwise raise StopIteration out of a
+            # coroutine, which Python re-raises as a bare "coroutine raised
+            # StopIteration" naming neither the sample nor the cause -- the same
+            # failure shape the evaluator's empty-suite guard exists to avoid.
+            raise NonRetriableSampleError(
+                f"{raw['problem_id']}: inference returned no rollouts to grade"
+            )
 
         rollouts: list[RolloutJudgement] = []
         best_index, best_key = None, None
@@ -434,10 +455,11 @@ class LiveOIBenchZeroShotGenTask(
         by_contest = self._group_by_contest(finals, fails, contestants)
 
         # Upstream's `overall` block (generate_rankings.py): `relative_score` is
-        # meaned inside a contest and then across contests, so a 12-problem round
-        # does not outweigh a 2-problem one. Problem counts here run 1..12, and
-        # the eleven largest rounds are all USACO, so the two weightings are not
-        # interchangeable.
+        # meaned inside a contest and then across contests, so a 10-problem round
+        # does not outweigh a 1-problem one. Measured over the 380 scored
+        # problems: 72 contests sized 1..10, the largest being
+        # JOI-2023-JOI_spring at 10, then eleven USACO rounds at 9 each. So the
+        # two weightings are not interchangeable.
         contest_relative = [
             sum(r["relative_score"] for r in rows) / len(rows)
             for rows in by_contest.values()
@@ -520,6 +542,10 @@ class LiveOIBenchZeroShotGenTask(
                         result["metrics"]["tests_passed_pct"] if result else 0.0
                     ),
                     "solved": bool(result["metrics"]["ace"]) if result else False,
+                    # Whether this problem produced a judgement at all. The
+                    # score-based means above take it at zero; the human
+                    # comparison must not, see `_human_metrics`.
+                    "scored": result is not None,
                 }
             )
 
@@ -546,6 +572,15 @@ class LiveOIBenchZeroShotGenTask(
         compares like with like. Contests are averaged unweighted, as upstream
         averages its per-contest percentiles.
 
+        "Scored on" is why a **failed** sample is dropped here while it still
+        counts at zero in `relative_score` and `pass_rate`. Feeding it in would
+        penalise twice over: the model's total loses those points *and* the human
+        totals gain the column for a problem the model was never graded on. A
+        contest whose problems all failed therefore reports no percentile rather
+        than a percentile of zero, which is the honest reading -- nothing was
+        measured. Upstream reaches the same place by never writing a problem
+        result for it.
+
         The two counts are always reported once a contestant table was read, so
         ``n_contests_ranked`` of 0 reads as measured rather than as missing —
         every USACO contest in the release publishes cutoffs but no contestant
@@ -562,9 +597,28 @@ class LiveOIBenchZeroShotGenTask(
             if contest is None:
                 unmatched.append(contest_id)
                 continue
+            scored_rows = [row for row in rows if row["scored"]]
+            if not scored_rows:
+                continue
+            model_scores = {row["task_name"]: row["score"] for row in scored_rows}
+            if len(model_scores) != len(scored_rows):
+                # Upstream keys this by problem id and only maps to a task column
+                # late; keying by task name here is what lets one human column be
+                # matched once. Two problems sharing a name inside one contest
+                # would collapse into a single entry, dropping the other from both
+                # the model total and the matched columns. No contest in the
+                # published data does this (checked: 0 of 72), so this says so
+                # rather than scoring a quietly smaller contest.
+                logger.warning(
+                    "{}: {} scored problems share only {} distinct task name(s); "
+                    "the human comparison for this contest is incomplete.",
+                    contest_id,
+                    len(scored_rows),
+                    len(model_scores),
+                )
             result = score_contest(
                 contest["rankings"],
-                {row["task_name"]: row["score"] for row in rows},
+                model_scores,
                 contest_id=contest_id,
                 gold_cutoff=contest["gold_cutoff"],
                 silver_cutoff=contest["silver_cutoff"],

@@ -624,6 +624,124 @@ async def test_a_missing_contestant_table_leaves_the_scores_reportable(tmp_path)
 
 
 @pytest.mark.anyio
+async def test_a_failed_sample_is_not_compared_against_the_human_field(tmp_path):
+    """A failed sample counts at zero in the score means, never in the ranking.
+
+    Upstream re-totals the humans over exactly the tasks the model was *scored*
+    on, and never writes a problem result for one that produced no judgement.
+    Feeding it in penalises twice: the model total loses the points and the human
+    total gains that problem's column. Here that is the whole gap between the
+    100th percentile and the 0th.
+    """
+    solved = _raw()
+    failed = _raw(problem_id="IOI-2025-contest-sphinx", task_name="sphinx")
+    contestants = _contestant_table(
+        tmp_path / "contest_results.parquet",
+        [
+            _contest_row(
+                "IOI-2025-contest",
+                [solved["problem_id"], failed["problem_id"]],
+                # Both humans are weak on `beechtree` and strong on `sphinx`.
+                [
+                    {"beechtree": 50, "sphinx": 100},
+                    {"beechtree": 30, "sphinx": 90},
+                ],
+            )
+        ],
+    )
+
+    judgement, _ = await _grade(solved, ["int main(){}"], [[True, True, True]])
+    task = _task(solved)
+    task.dataset._contestants_path = str(contestants)
+    try:
+        report = await task.report([_Final(judgement)], [_Fail(failed)])
+    finally:
+        await task.shutdown()
+
+    # Scored on `beechtree` alone: 100 beats both 50 and 30 -> 100th percentile.
+    # Counting the failed `sphinx` at 0 would compare 100 against totals of
+    # 150/120 and report 0.0 instead.
+    assert report["human_percentile"] == 100.0
+    assert report["n_contests_ranked"] == 1.0
+    # The failure is still in the score means and the denominator.
+    assert report["relative_score"] == 50.0
+    assert report["n_problems"] == 2.0
+
+
+@pytest.mark.anyio
+async def test_a_contest_whose_problems_all_failed_reports_no_percentile(tmp_path):
+    contestants = _contestant_table(
+        tmp_path / "contest_results.parquet",
+        [_contest_row("IOI-2025-contest", [PROBLEM_ID], [{"beechtree": 50}])],
+    )
+    task = _task(_raw())
+    task.dataset._contestants_path = str(contestants)
+    try:
+        report = await task.report([], [_Fail()])
+    finally:
+        await task.shutdown()
+    # Nothing was measured, so there is no percentile -- not a percentile of 0,
+    # which would read as "the model was beaten by the whole field".
+    assert "human_percentile" not in report
+    assert report["n_contests_ranked"] == 0.0
+
+
+@pytest.mark.anyio
+async def test_two_problems_sharing_a_task_name_in_one_contest_are_announced(
+    tmp_path,
+):
+    """Keying the model's scores by task name is what matches a human column.
+
+    No published contest has two problems under one name (0 of 72), so this
+    cannot silently halve a contest without saying so.
+    """
+    from loguru import logger
+
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(m.record["message"]), level="WARNING")
+
+    twin_a = _raw(problem_id="IOI-2025-contest-dup1", task_name="samename")
+    twin_b = _raw(problem_id="IOI-2025-contest-dup2", task_name="samename")
+    contestants = _contestant_table(
+        tmp_path / "contest_results.parquet",
+        [
+            _contest_row(
+                "IOI-2025-contest",
+                [twin_a["problem_id"], twin_b["problem_id"]],
+                [{"samename": 10}],
+            )
+        ],
+    )
+    judgement, _ = await _grade(twin_a, ["int main(){}"], [[True, True, True]])
+    task = _task(twin_a)
+    task.dataset._contestants_path = str(contestants)
+    try:
+        await task.report(
+            [_Final(judgement, raw=twin_a), _Final(judgement, raw=twin_b)], []
+        )
+    finally:
+        await task.shutdown()
+        logger.remove(sink)
+
+    assert any("distinct task name" in m for m in messages), messages
+
+
+@pytest.mark.anyio
+async def test_inference_with_no_rollouts_names_the_sample():
+    """`next(...)` over no rollouts would raise StopIteration out of a coroutine,
+    which Python re-raises naming neither the sample nor the cause."""
+    task = _task(_raw())
+    try:
+        with pytest.raises(NonRetriableSampleError, match="no rollouts to grade"):
+            await task.feedback(
+                build_prediction_record([]),
+                TaskContext(sample_id=0, raw_sample=_raw()),
+            )
+    finally:
+        await task.shutdown()
+
+
+@pytest.mark.anyio
 async def test_the_task_is_registered_under_its_file_name():
     from sieval.core.tasks.meta import get_task_class
 
