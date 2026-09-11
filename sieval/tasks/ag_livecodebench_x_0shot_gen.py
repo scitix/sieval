@@ -31,9 +31,12 @@ renders from that declaration, pinned by upstream's ``exclude-newer`` of
 2025-08-05. Reproducing it by reading the signature is not possible — two of its
 properties are only observable by running it:
 
-* the instructions are re-inserted into the system message **still carrying the
-  source docstring's 8-space indentation**, while ``Signature.instructions``
-  itself is dedented;
+* the instructions are re-indented by **8 spaces** on their way into the system
+  message: ``ChatAdapter`` joins their lines with a newline plus a hard-coded
+  eight spaces. That indent is the adapter's own constant, *not* the 4-space
+  indent the docstring carries in upstream's class body --
+  ``Signature.instructions`` dedents that away to zero first, so reading either
+  the source or the dedented property tells you the wrong number;
 * the field list is assembled with a trailing ``": "`` per line and then
   stripped as a block, so the *first* field line keeps its trailing space and the
   *last* one loses it.

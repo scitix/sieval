@@ -160,11 +160,13 @@ def test_prompt_bytes_match_the_captured_dspy_rendering():
     assert digest == _PROMPT_DIGEST
 
 
-def test_instructions_keep_the_source_docstrings_indentation():
-    # DSPy re-inserts the signature docstring into the system message with the
-    # Python source indentation intact, while `Signature.instructions` itself is
-    # dedented. Only observable by running it, so it is asserted rather than
-    # trusted.
+def test_instructions_are_reindented_by_the_adapters_own_eight_spaces():
+    # DSPy dedents the signature docstring (`Signature.instructions` is flush
+    # left, whatever the class body used) and `ChatAdapter` then joins its lines
+    # with a newline plus a hard-coded eight spaces. So the 8 below is the
+    # adapter's constant, NOT upstream's 4-space source indent -- neither the
+    # source nor the dedented property predicts it, which is why it is asserted
+    # against the rendering rather than trusted.
     system, _ = _render_prompt("Lua", "p")
     assert (
         "objective is: \n        Solve the following programming problem"
