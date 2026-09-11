@@ -13,7 +13,8 @@ module's docstring records upstream's blob SHA at the pin and the exact rewrite
 applied, so a reviewer can re-derive the copy from a fresh checkout.
 
 Whole-file vendored modules: `ast_checker.py`, `type_mappings.py`,
-`type_convertor/java_type_converter.py`, `type_convertor/js_type_converter.py`.
+`type_convertor/java_type_converter.py`, `type_convertor/js_type_converter.py`,
+`source_parser/java_parser.py`, `source_parser/js_parser.py`.
 
 Partial vendored modules (named subsets of a larger upstream file -- see each
 module's own docstring for exactly which symbols were taken and why):

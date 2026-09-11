@@ -9,24 +9,26 @@ Symbols taken (bodies unchanged): `ast_parse`, `resolve_ast_call`,
 the rest of `model_handler/utils.py` (prompt construction, decoders for other
 model styles, retry helpers) is out of scope for this port.
 
-Only deviation: the module needs no `bfcl_eval.*` imports at all for these
-three functions (`import ast` is stdlib), so there was nothing to rewrite.
+Deviations:
+1. The module needs no `bfcl_eval.*` imports at all for these three
+   functions (`import ast` is stdlib), so their bodies needed no rewrite.
+2. Upstream's `utils.py:13-14` imports `parse_java_function_call` and
+   `parse_javascript_function_call` from `bfcl_eval.model_handler.parser.*`.
+   Rewritten to `from .source_parser.java_parser import
+   parse_java_function_call` and the `js_parser` twin -- same rename as
+   `source_parser/`'s own docstrings explain (this package's `parser.py`
+   already occupies upstream's directory name).
 
-Note on the Java/JavaScript branches of `ast_parse`: upstream dispatches to
-`bfcl_eval.model_handler.parser.java_parser.parse_java_function_call` and the
-`js_parser` twin, neither of which is vendored here. Their bodies are kept
-verbatim (unreachable rather than deleted, per the "removing a helper is a
-deviation too" rule), because sieval never calls `ast_parse` with
-`language="Java"` or `"JavaScript"` -- the category's language only ever
-selects the type converter inside `ast_checker`, not the parser's language
-(see `_tables.py`'s `LANGUAGE_BY_CATEGORY` docstring). Calling `ast_parse`
-with either of those two language values would raise `NameError` on the
-undefined parser call, exactly as it would if the names were simply typos;
-that failure mode is intentional rather than silent, since it is unreachable
-from the intended call path.
+The Java/JavaScript branches of `ast_parse` dispatch to those two functions:
+a `java`/`javascript`-category sample's model output is Java/JavaScript
+source text, not Python call syntax, so `ast_parse` parses it with the
+matching tree-sitter grammar rather than `ast.parse`.
 """
 
 import ast
+
+from .source_parser.java_parser import parse_java_function_call
+from .source_parser.js_parser import parse_javascript_function_call
 
 
 def ast_parse(input_str: str, language: str="Python") -> list[dict]:

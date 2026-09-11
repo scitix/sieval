@@ -38,7 +38,7 @@ GOLDLESS_CATEGORIES = frozenset(
 #: Of the goldless three, the one where producing a call is CORRECT.
 CALL_EXPECTED = frozenset({"live_relevance"})
 
-#: Only these two are not Python. This feeds `ast_checker`'s type-conversion
-#: argument, not the AST parser's language -- `ast_parse` always parses Python
-#: syntax, since these categories' model outputs are still Python call syntax.
+#: Only these two are not Python. The same string selects both the
+#: type converter inside `ast_checker` and the source-text parser inside
+#: `ast_parse` -- these categories' model outputs are Java/JavaScript source.
 LANGUAGE_BY_CATEGORY = {"java": "Java", "javascript": "JavaScript"}
