@@ -48,6 +48,7 @@ TOOL_COUNTERS = frozenset(
         "n_tool_timeouts",
         "n_budget_exhausted",
         "n_discarded_tails",
+        "n_sandbox_unreachable",
     }
 )
 
@@ -196,6 +197,97 @@ def test_the_protocol_prompt_reaches_the_model_through_preprocess():
     assert pre["prompt"][0] == {"role": "system", "content": TOOL_SYSTEM_PROMPT}
     assert PROBLEM in pre["prompt"][1]["content"]
     assert pre["reference"] == ANSWER
+
+
+def test_an_uncounted_final_reports_null_counters_not_zeroes():
+    """A resumed run keeps the status without the payload; `0.0` would be a lie.
+
+    `postprocess_result is None` is a real, reachable state: `record_each_stage=
+    False` plus a resume leaves the final with its judgement and its status but
+    no per-rollout extras. Summing nothing over it yields 0.0, which is byte-for-
+    byte what a run that genuinely never called the tool yields -- so the counts
+    must go null instead, the way every other "could not measure" in this tree
+    does. The headline is deliberately NOT withheld: it comes from the
+    judgements, which do survive the resume.
+    """
+    task = _build_tool_task(max_tool_calls=2)
+    report = asyncio.run(
+        task.report([TaskContext(sample_id=0, raw_sample=_raw_sample())], [])
+    )
+
+    assert all(report[key] is None for key in TOOL_COUNTERS)
+    # Still a real report: the declarations and the headline survive.
+    assert report[SCORE_KEY_FIELD] == "pass@1"
+    assert report[DENOMINATOR_FIELD] == DENOMINATOR_REQUESTED
+    assert report["score"] is not None
+    assert interval_declaration_problems(report) == []
+
+
+def test_an_empty_run_still_reports_measured_zeroes():
+    # The other side of the same distinction: no finals at all means nothing was
+    # left uncounted, so the tallies are a genuine 0.0 rather than null.
+    report = asyncio.run(_build_tool_task(max_tool_calls=2).report([], []))
+    assert all(report[key] == 0.0 for key in TOOL_COUNTERS)
+
+
+def test_report_counts_sandbox_failures_separately_from_code_errors():
+    task = _build_tool_task(max_tool_calls=2)
+    # Built through the stage transitions rather than assigned: `TaskContext` is
+    # frozen, and `Final` is a status the runner only reaches by passing through
+    # the earlier ones -- a context that claimed FINAL without them would not be
+    # a shape any run produces.
+    ctx = (
+        TaskContext(sample_id=0, raw_sample=_raw_sample())
+        .to_preprocessed({"prompt": []})
+        .to_inferred(None)
+        .to_postprocessed(
+            {
+                "rollouts": [
+                    {
+                        "index": 0,
+                        "prediction": "42",
+                        "extra": {
+                            "n_tool_calls": 2,
+                            "stop_reason": "sandbox_unreachable",
+                            # One program that ran and failed, one call that
+                            # never ran at all.
+                            "n_execution_errors": 1,
+                            "n_tool_timeouts": 0,
+                            "n_discarded_tails": 0,
+                            "n_sandbox_unreachable": 1,
+                        },
+                    }
+                ]
+            }
+        )
+        .to_feedback({"rollouts": [{"index": 0, "correct": True}]})
+        .to_final()
+    )
+    report = asyncio.run(task.report([ctx], []))
+
+    assert report["n_execution_errors"] == 1.0
+    assert report["n_sandbox_unreachable"] == 1.0
+    assert report["n_tool_calls"] == 2.0
+    # Reported, not folded into the score: a rollout that never reached the
+    # service is still scored here, and the stop reason is what lets an operator
+    # drop it rather than read the pass rate as a measurement of the affordance.
+    assert report["score"] is not None
+
+
+def test_the_sandbox_record_carries_both_the_version_and_full_service():
+    # Rediscovered by a reader rather than re-derived: the trajectory has to say
+    # the version AND whether it describes every call, because one string cannot
+    # say both. Asserted on the serialized dict, since that is what reaches disk.
+    task = _build_tool_task(
+        max_tool_calls=2, replies=["```python\nprint(6 * 7)\n```", r"\boxed{42}"], n=1
+    )
+    boxed = asyncio.run(
+        task.infer({"prompt": [{"role": "user", "content": "q"}]}, task.make_context(0))
+    )
+    assert boxed.value.sandbox == {
+        "service_version": _ScriptedSandbox.service_version,
+        "fully_served": True,
+    }
 
 
 def test_the_queries_match_the_sibling_s_byte_for_byte():

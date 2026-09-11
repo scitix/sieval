@@ -24,8 +24,9 @@ from ._math_tool_base import MathToolTask
 @sieval_task(
     name="aime_2025_0shot_gen_tool",
     display_name="AIME 2025 (0-shot, generative, code tool)",
-    # 82 chars: the registry caps a description at 100 and a longer one is a
-    # decode-time ValueError, not a warning.
+    # 82 chars: the registry caps a description at 100, and the decorator
+    # validates it while the class is being DECORATED -- i.e. at import time,
+    # long before any record is read. Not a warning at any point.
     description=(
         "AIME 2025 with a Python tool during the solve, graded exactly as the "
         "no-tool task."

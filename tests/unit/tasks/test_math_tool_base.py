@@ -198,15 +198,124 @@ async def test_live_service_honours_the_contract():
     service. Only this one pins the description against the service, which is
     where a contract drifts: a field renamed on the server is invisible to every
     mocked test in the file.
+
+    The variable is the FLEET's, not this task's: `SIEVAL_CODE_EVAL_API` names
+    the `/evaluations` route every code-executing task already reads, and the
+    `/code-runs` route this task needs is derived from it. Setting a
+    task-specific variable instead would leave a deployment that only exports
+    the established name pointed at `localhost`.
     """
-    api = os.getenv("SIEVAL_CODE_RUN_API")
+    api = os.getenv("SIEVAL_CODE_EVAL_API")
     if not api:
-        pytest.skip("SIEVAL_CODE_RUN_API is not set")
+        pytest.skip("SIEVAL_CODE_EVAL_API is not set")
     client = SandboxClient(api=api, timeout=10.0)
     call = await client.run("print(6 * 7)")
     assert call.stdout.strip() == "42"
     assert call.exit_code == 0
     assert client.service_version, "service_version is required by the contract"
+    # The route was derived, not copied: a live service answering `/code-runs`
+    # proves the join, since `api` itself points at `/evaluations`.
+    assert call.object == "code"
+    assert client.fully_served is True
+
+
+@pytest.mark.anyio
+async def test_the_code_runs_url_is_derived_from_the_fleet_variable(monkeypatch):
+    # The one assertion a mocked transport can still make about the URL: what it
+    # was actually POSTed to. Asserting on a private attribute would pass even if
+    # `run()` posted somewhere else entirely.
+    monkeypatch.setenv("SIEVAL_CODE_EVAL_API", "http://host:9/api/evaluations")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"status": True, "data": {"exit_code": 0}})
+
+    client = SandboxClient(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        timeout=5.0,
+    )
+    await client.run("print(1)")
+    # The prefix survives, and only the last segment was swapped.
+    assert seen == ["http://host:9/api/code-runs"]
+
+
+@pytest.mark.anyio
+async def test_an_explicit_api_argument_beats_the_environment(monkeypatch):
+    monkeypatch.setenv("SIEVAL_CODE_EVAL_API", "http://ignored/evaluations")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"status": True, "data": {"exit_code": 0}})
+
+    client = SandboxClient(
+        api="http://explicit/code-runs",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        timeout=5.0,
+    )
+    await client.run("print(1)")
+    assert seen == ["http://explicit/code-runs"]
+
+
+@pytest.mark.anyio
+async def test_an_injected_client_is_not_closed_by_the_sandbox():
+    # The task calls `aclose()` on shutdown. A test's client outlives that call
+    # and is reused by the next assertion, so closing one the sandbox did not
+    # create would turn a passing test into an unrelated `RuntimeError`.
+    injected = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _r: httpx.Response(
+                200, json={"status": True, "data": {"exit_code": 0}}
+            )
+        )
+    )
+    client = SandboxClient(http_client=injected, timeout=5.0)
+    await client.aclose()
+    assert not injected.is_closed
+
+
+@pytest.mark.anyio
+async def test_a_sandbox_marks_itself_unserved_after_any_failure():
+    def boom(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    client = SandboxClient(
+        api="http://x/code-runs",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(boom)),
+        timeout=5.0,
+    )
+    assert client.fully_served is True
+    call = await client.run("print(1)")
+    assert call.object == "sandbox"
+    assert call.reason == "unreachable"
+    # A version alone cannot say this: the flag is what makes a partly-served
+    # run distinguishable from a fully-served one after the fact.
+    assert client.fully_served is False
+
+
+@pytest.mark.anyio
+async def test_a_client_side_timeout_is_recorded_as_its_own_reason():
+    # `TimeoutException` and `ConnectError` are siblings under `TransportError`,
+    # so the ordering of the two handlers is what decides which reason lands --
+    # a service that is up but wedged is a different operational fact from one
+    # that refused the connection, and the record keeps them apart.
+    def slow(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("no reply")
+
+    client = SandboxClient(
+        api="http://x/code-runs",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(slow)),
+        timeout=5.0,
+    )
+    call = await client.run("print(1)")
+    assert call.object == "sandbox"
+    assert call.reason == "timeout"
+    assert call.timed_out is False, (
+        "timed_out describes the SERVICE stopping the program; a client-side "
+        "abort is a different fact and must not be conflated with it"
+    )
+    assert client.fully_served is False
 
 
 def _out(text: str) -> ModelOutput:
@@ -388,10 +497,32 @@ class _DyingModel(_ScriptedModel):
         return await super()._stub_arun(req)
 
 
+class _DyingAfterModel(_ScriptedModel):
+    """Answers *n* requests, then fails every later one.
+
+    Needed to put a DEAD SANDBOX and a DEAD MODEL in the same rollout, in that
+    order: a dead sandbox alone ends in an answer, so the only way to make the
+    two reasons compete is to let the tool call fail first and the request fail
+    second -- which is also the only order in which the loser is decided by the
+    override rule rather than by which branch ran.
+    """
+
+    def __init__(self, replies, survive: int):
+        self._survive = survive
+        super().__init__(replies)
+
+    async def _stub_arun(self, req: Request) -> Response:
+        if self.n_requests >= self._survive:
+            self.n_requests += 1
+            raise RuntimeError("gateway died")
+        return await super()._stub_arun(req)
+
+
 class _ScriptedSandbox:
     """Stands in for `SandboxClient`; the loop only ever calls `.run`."""
 
     service_version = "code-runs/1"
+    fully_served = True
 
     def __init__(self, stdouts):
         self._stdouts = list(stdouts)
@@ -409,6 +540,56 @@ class _ScriptedSandbox:
             timed_out=False,
             truncated=False,
             wall_s=0.0,
+        )
+
+
+class _DeadSandbox:
+    """Every call comes back as one that never reached the service.
+
+    `object="sandbox"` is the whole distinction under test: `exit_code` is None
+    here exactly as it is for a program that ran and crashed, so anything reading
+    only the exit code cannot tell an outage from the model's own bug.
+    """
+
+    service_version: str | None = None
+    fully_served = False
+
+    def __init__(self, serve_first: bool = False, stdout: str = "42\n"):
+        # `serve_first` models the mixed case: one healthy call, then the service
+        # dies. That is the shape whose damage a version string cannot express --
+        # `service_version` is stamped by the successful call and then describes a
+        # run that was only partly served.
+        self._serve_first = serve_first
+        self._stdout = stdout
+        self.service_version = "code-runs/1" if serve_first else None
+        self.codes: list[str] = []
+        self.calls = 0
+
+    async def run(self, code):
+        self.calls += 1
+        self.codes.append(code)
+        if self._serve_first and self.calls == 1:
+            return ToolCall(
+                index=0,
+                code=code,
+                stdout=self._stdout,
+                stderr="",
+                exit_code=0,
+                timed_out=False,
+                truncated=False,
+                wall_s=0.0,
+            )
+        return ToolCall(
+            index=0,
+            code=code,
+            stdout="",
+            stderr="sandbox unreachable: [ConnectError] refused",
+            exit_code=None,
+            timed_out=False,
+            truncated=False,
+            wall_s=0.0,
+            object="sandbox",
+            reason="unreachable",
         )
 
 
@@ -496,6 +677,131 @@ async def test_a_failed_request_mid_loop_keeps_what_was_answered():
     assert len(traj.outputs) == 1
 
 
+@pytest.mark.anyio
+async def test_a_total_sandbox_outage_is_recorded_and_stops_the_rollout():
+    """The failure this whole finding is about: the service is simply not there.
+
+    Before this, all of it was invisible: `exit_code is None` meant the counters
+    read as healthy, `stop_reason` said "answered", and `render()` told the model
+    its own code had failed. A rollout whose every execution attempt bounced is
+    not evidence about the model, so the reason has to be readable off the
+    rollout -- and it must OVERRIDE "answered", because the model did go on to
+    answer, from its own prior knowledge, without the affordance it was being
+    scored on.
+    """
+    from sieval.tasks._math_tool_base import run_tool_loop
+
+    sandbox = _DeadSandbox()
+    traj = await run_tool_loop(
+        model=_ScriptedModel(["```python\nprint(6 * 7)\n```", r"\boxed{42}"]),
+        sandbox=sandbox,
+        adapter=TextToolAdapter(),
+        messages=[{"role": "user", "content": "q"}],
+        index=0,
+        max_tool_calls=4,
+    )
+    assert traj.stop_reason == "sandbox_unreachable"
+    assert len(traj.tool_calls) == 1, "the loop still feeds the failure back once"
+    assert traj.tool_calls[0].object == "sandbox"
+    assert traj.tool_calls[0].reason == "unreachable"
+    # It answered anyway -- which is exactly why the stop reason has to be the
+    # sandbox's and not the model's outcome.
+    assert len(traj.outputs) == 2
+    assert sandbox.fully_served is False
+
+
+@pytest.mark.anyio
+async def test_the_model_is_not_blamed_for_an_outage():
+    # The rendered turn is what the model reasons from. "The code failed with no
+    # output" would send it off rewriting a program that was never executed --
+    # and would make an infrastructure fault look like a model behaviour in the
+    # transcript a human later reads.
+    adapter = TextToolAdapter()
+    dead = _DeadSandbox()
+    call = await dead.run("print(1)")
+    assert call.exit_code is None, "the exit code alone cannot carry this"
+    result = adapter.render(call)[1]["content"]
+    assert "NOT run" in result
+    assert "infrastructure" in result
+    assert "failed with no output" not in result
+
+
+@pytest.mark.anyio
+async def test_a_partly_served_run_still_reports_the_outage():
+    """One healthy call then an outage -- the case a version string lies about.
+
+    `service_version` is stamped by the call that succeeded, so the sample reads
+    as though the service was there for it. `fully_served` is what keeps the two
+    apart, and `stop_reason` stays the sandbox's even though a real execution did
+    happen earlier in the rollout.
+    """
+    from sieval.tasks._math_tool_base import run_tool_loop
+
+    sandbox = _DeadSandbox(serve_first=True)
+    traj = await run_tool_loop(
+        model=_ScriptedModel(
+            [
+                "```python\nprint(6 * 7)\n```",
+                "```python\nprint(7 * 7)\n```",
+                r"\boxed{42}",
+            ]
+        ),
+        sandbox=sandbox,
+        adapter=TextToolAdapter(),
+        messages=[{"role": "user", "content": "q"}],
+        index=0,
+        max_tool_calls=4,
+    )
+    assert sandbox.service_version == "code-runs/1", "the first call stamped this"
+    assert sandbox.fully_served is False
+    assert traj.stop_reason == "sandbox_unreachable"
+    # The first call really ran, and is kept as such: dropping it would erase the
+    # one execution the run did get.
+    assert [call.object for call in traj.tool_calls] == ["code", "sandbox"]
+
+
+@pytest.mark.anyio
+async def test_a_dying_model_endpoint_still_reports_the_sandbox_when_it_failed():
+    # Both reasons are true here, and the sandbox's wins: the one tool call
+    # reached the service, the call after it did not, and then the model endpoint
+    # died. The rollout is not a model result either way, so filing it as
+    # `request_failed` would put a run the outage invalidated into the shard as a
+    # model-side outcome. The override is unconditional rather than
+    # order-dependent.
+    from sieval.tasks._math_tool_base import run_tool_loop
+
+    traj = await run_tool_loop(
+        model=_DyingAfterModel(["```python\nprint(1)\n```"], survive=2),
+        sandbox=_DeadSandbox(),
+        adapter=TextToolAdapter(),
+        messages=[{"role": "user", "content": "q"}],
+        index=0,
+        max_tool_calls=4,
+    )
+    assert traj.tool_calls[0].object == "sandbox"
+    assert traj.stop_reason == "sandbox_unreachable"
+
+
+@pytest.mark.anyio
+async def test_a_model_request_failure_with_a_healthy_sandbox_is_kept():
+    # The converse, which is what keeps the override from swallowing everything:
+    # the one tool call the rollout made reached the service and really ran, so
+    # there is no outage to report and the model's own failure stands.
+    from sieval.tasks._math_tool_base import run_tool_loop
+
+    traj = await run_tool_loop(
+        model=_DyingAfterModel(["```python\nprint(1)\n```"], survive=1),
+        sandbox=_DeadSandbox(serve_first=True),
+        adapter=TextToolAdapter(),
+        messages=[{"role": "user", "content": "q"}],
+        index=0,
+        max_tool_calls=4,
+    )
+    assert len(traj.tool_calls) == 1
+    assert traj.tool_calls[0].object == "code"
+    assert traj.stop_reason == "request_failed"
+
+
 @pytest.fixture
 def aime_tool_task():
     """A 2-rollout AIME tool task over a scripted model and sandbox.
@@ -521,9 +827,16 @@ def aime_tool_task():
     rows = HFDataset.from_list([{"question": "What is 6 times 7?", "answer": "42"}])
     task = AIME2025ZeroShotGenToolTask(
         AIME2025Dataset(_hf_dict=HFDatasetDict({"train": rows, "test": rows})),
-        # Two rollouts. Rollout 0 runs code then answers (2 requests); rollout 1
-        # answers straight away (1 request). Three requests total -- which is the
-        # number the accounting test asserts.
+        # Two rollouts. Exactly ONE reply runs code and only ONE fenced block
+        # exists in the script, so the TOTAL is fixed at three requests -- the
+        # code reply plus two answers -- even though WHICH rollout draws the
+        # fenced block is not: `asyncio.gather` interleaves the two loops, so the
+        # first loop to call `agenerate` pops the code reply and the other starts
+        # with an answer. Every reply leads to the same boxed value, so the
+        # outcome is identical either way. Asserting a per-rollout split here
+        # would be a flake; the per-rollout count is pinned deterministically by
+        # `test_loop_runs_code_then_answers`, which drives a single loop and reads
+        # the transport's own request list.
         _ScriptedModel(["```python\nprint(42)\n```", r"\boxed{42}", r"\boxed{42}"]),
         n=2,
         max_tool_calls=4,
