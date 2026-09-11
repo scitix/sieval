@@ -9,6 +9,7 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import os
+import re
 from dataclasses import dataclass, field
 
 import httpx
@@ -140,3 +141,75 @@ class SandboxClient:
             wall_s=float(data.get("wall_s", 0.0)),
             session_id=data.get("session_id"),
         )
+
+
+#: The protocol, stated to the model. PINNED: this string is part of what the
+#: task measures, so rewording it moves every score and makes a stored delta
+#: incomparable to a fresh one. A test asserts its exact bytes.
+TOOL_SYSTEM_PROMPT = (
+    "You may run Python to help you compute. To do so, write a single fenced "
+    "block:\n"
+    "```python\n"
+    "# your code; print() what you need to see\n"
+    "```\n"
+    "Stop immediately after the closing fence. The program's output will be "
+    "given to you in the next message, and you may then run more code or give "
+    "your final answer. Code you do not print produces no output. Each block "
+    "runs in a fresh interpreter, so repeat any definitions you still need."
+)
+
+#: Stop sequence. Ending generation at the closing fence is what keeps the model
+#: from inventing its own tool output; the adapter still truncates, because not
+#: every backend honours `stop`.
+FENCE_STOP = "```\n"
+
+_FENCE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
+
+
+class TextToolAdapter:
+    """The fenced-code-block protocol: any chat model can speak it."""
+
+    protocol = "text"
+
+    def system_prompt(self) -> str:
+        return TOOL_SYSTEM_PROMPT
+
+    def extract_call(self, output: ModelOutput) -> tuple[str, str] | None:
+        """``(code, discarded_tail)``, or None when the model did not call.
+
+        None covers both "answered" and "produced nothing usable" -- an
+        unterminated fence included, because executing a program the model was
+        cut off mid-way through would grade a syntax error it never wrote.
+        """
+        if not output.texts:
+            return None
+        text = output.texts[0]
+        match = _FENCE.search(text)
+        if match is None:
+            return None
+        code = match.group(1)
+        if not code.strip():
+            return None
+        return code, text[match.end() :]
+
+    def render(self, call: ToolCall) -> list[dict]:
+        """The assistant turn that made the call, and the result turn.
+
+        The assistant turn is rebuilt from the CODE rather than replayed from the
+        reply, so the invented tail is not smuggled back into context by the very
+        message that reports the real output.
+        """
+        if call.timed_out:
+            result = f"The code timed out and was stopped.\n{call.stderr}".strip()
+        elif call.exit_code != 0:
+            result = (call.stderr or "The code failed with no output.").strip()
+        elif not call.stdout.strip():
+            result = "The code ran and printed nothing."
+        else:
+            result = call.stdout.rstrip()
+        if call.truncated:
+            result += "\n[output truncated]"
+        return [
+            {"role": "assistant", "content": f"```python\n{call.code}```"},
+            {"role": "user", "content": f"Output:\n```\n{result}\n```"},
+        ]

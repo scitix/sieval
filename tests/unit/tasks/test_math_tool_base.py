@@ -3,11 +3,13 @@ import os
 import httpx
 import pytest
 
+from sieval.core.models import ModelOutput
 from sieval.core.utils.serialization import dict_to_obj, obj_to_dict
 from sieval.tasks._math_tool_base import (
     MathToolTrajectory,
     RolloutTrajectory,
     SandboxClient,
+    TextToolAdapter,
     ToolCall,
 )
 
@@ -121,3 +123,99 @@ async def test_live_service_honours_the_contract():
     assert call.stdout.strip() == "42"
     assert call.exit_code == 0
     assert client.service_version, "service_version is required by the contract"
+
+
+def _out(text: str) -> ModelOutput:
+    return ModelOutput(
+        model={"model": "m", "api_base": None, "default_params": {}}, texts=[text]
+    )
+
+
+def test_extracts_a_fenced_block():
+    result = TextToolAdapter().extract_call(
+        _out("Let me compute.\n```python\nprint(6*7)\n```")
+    )
+    assert result is not None
+    code, tail = result
+    assert code == "print(6*7)\n"
+    assert tail == ""
+
+
+def test_no_fence_means_the_model_answered():
+    assert TextToolAdapter().extract_call(_out("The answer is 42.")) is None
+
+
+def test_text_after_the_closing_fence_is_discarded_and_recorded():
+    # The model invented its own tool output. Everything after the closing fence
+    # is dropped, and the tail is returned so the rate can be reported.
+    result = TextToolAdapter().extract_call(
+        _out("```python\nprint(6*7)\n```\nOutput: 42\nSo \\boxed{42}.")
+    )
+    assert result is not None
+    code, tail = result
+    assert code == "print(6*7)\n"
+    assert "Output: 42" in tail
+
+
+def test_an_unterminated_fence_is_not_a_call():
+    # Ran out of tokens mid-code. Executing a truncated program would grade a
+    # syntax error the model did not commit.
+    assert TextToolAdapter().extract_call(_out("```python\nprint(6*7)")) is None
+
+
+def test_empty_output_is_not_a_call():
+    assert (
+        TextToolAdapter().extract_call(
+            ModelOutput(
+                model={"model": "m", "api_base": None, "default_params": {}}, texts=[]
+            )
+        )
+        is None
+    )
+
+
+def test_render_feeds_stdout_back_as_a_user_turn():
+    messages = TextToolAdapter().render(
+        ToolCall(
+            index=0,
+            code="print(1)",
+            stdout="1\n",
+            stderr="",
+            exit_code=0,
+            timed_out=False,
+            truncated=False,
+            wall_s=0.0,
+        )
+    )
+    assert messages[0]["role"] == "assistant"
+    assert "print(1)" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    assert "1" in messages[1]["content"]
+
+
+def test_render_reports_an_error_to_the_model():
+    messages = TextToolAdapter().render(
+        ToolCall(
+            index=0,
+            code="1/0",
+            stdout="",
+            stderr="ZeroDivisionError: x",
+            exit_code=1,
+            timed_out=False,
+            truncated=False,
+            wall_s=0.0,
+        )
+    )
+    assert "ZeroDivisionError" in messages[1]["content"]
+
+
+def test_the_protocol_prompt_is_pinned():
+    # Not a tautology check: this is the one string that silently changes every
+    # score. Editing it must be a deliberate act that fails this test first, and
+    # any change invalidates stored deltas.
+    from sieval.tasks._math_tool_base import TOOL_SYSTEM_PROMPT
+
+    assert TOOL_SYSTEM_PROMPT.startswith("You may run Python to help you compute.")
+    assert "Stop immediately after the closing fence." in TOOL_SYSTEM_PROMPT
+    assert "fresh interpreter" in TOOL_SYSTEM_PROMPT
+    assert len(TOOL_SYSTEM_PROMPT) == len(TOOL_SYSTEM_PROMPT.strip())
