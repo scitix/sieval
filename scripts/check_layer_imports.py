@@ -456,10 +456,22 @@ def _check_relative_scope(path: Path, tree: ast.AST) -> list[str]:
     Scoped to the sieval package only: ``scripts/`` files are standalone modules,
     not a package, so a relative import there fails at runtime and needs no
     lint. (The pre-commit hook feeds both trees; this check narrows on purpose.)
+
+    ``sieval/community/`` is exempt from **this rule only**. Vendored files
+    mirror upstream byte-for-byte and a hash test pins them, so the only fix
+    this rule can offer there — rewrite the import — is the one edit that tree
+    forbids. The exemption is deliberately narrower than pre-commit's global
+    ``exclude: ^(sieval/community/|vendor/)``, which skips every hook and so
+    every rule: we drop the style half and keep the layer, sub-package and
+    private-module rules over ``community/``, which pre-commit does not check
+    at all. Do not "finish the job" by widening this to ``_check_file``.
     """
-    if _get_layer(path) is None:
+    layer = _get_layer(path)
+    if layer is None:
         return []
     if "tests" in path.parts:
+        return []
+    if layer == "community":
         return []
 
     file_pkg = _file_package(path)

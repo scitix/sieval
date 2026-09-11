@@ -1164,6 +1164,35 @@ def lock_drift(
     return report
 
 
+# Python's own warning output, which lands on the same stderr the import
+# checker writes violations to: `<file>:<lineno>: <Category>: <text>`.
+_PY_WARNING_LINE = re.compile(r":\d+: \w*Warning: ")
+
+
+def _import_violation_lines(stderr: str) -> list[str]:
+    """Return only the lines of *stderr* that are import-policy violations.
+
+    ``check_layer_imports.py`` parses every file it is handed, and several
+    vendored modules raise ``SyntaxWarning`` on parse. Those warnings land on
+    stderr on **every** run, passing or failing, so counting raw stderr lines
+    made two real violations read as twenty-six and turned a two-line
+    regression into an apparently unfixable pile.
+
+    A warning occupies two lines — the ``<file>:<lineno>: <Category>:`` header
+    and an indented echo of the offending source. Violations are always printed
+    flush-left, so dropping indented lines is safe and also handles a
+    multi-line warning body.
+    """
+    violations: list[str] = []
+    for line in stderr.strip().splitlines():
+        if not line.strip():
+            continue
+        if line[:1].isspace() or _PY_WARNING_LINE.search(line):
+            continue
+        violations.append(line)
+    return violations
+
+
 class PreflightRunner:
     """Orchestrates preflight checks."""
 
@@ -3047,13 +3076,15 @@ class PreflightRunner:
         #
         # KNOWN divergence, not parity: pre-commit additionally applies the
         # global `exclude: ^(sieval/community/|vendor/)`, so it skips
-        # `sieval/community/` while this wrapper checks it. Inert today (every
-        # relative import under `community/` is a bare level-1 `from . import
-        # x`), but a future vendored drop using `from ..x import y` would pass
-        # pre-commit and fail preflight, and the only offered fix would be to
-        # edit code kept byte-identical to upstream. Fixing it is a design call
-        # — hoisting the exemption into `_check_file` would also drop the
-        # private-access check's coverage of `community/`.
+        # `sieval/community/` for every hook while this wrapper checks it. The
+        # vendored drop this comment used to predict has arrived — a file using
+        # `from ..x import y`, whose only offered fix was to edit code kept
+        # byte-identical to upstream. The call was made in
+        # `_check_relative_scope`: `community/` is exempt from the
+        # relative-import rule and from nothing else, so the layer, sub-package
+        # and private-module rules still cover a tree pre-commit does not check
+        # at all. Keep the exemption there. Hoisting it here — or into
+        # `_check_file` — would silently drop those other three.
         enforced_py = [
             f
             for f in self._git_tracked_files(".py")
@@ -3072,7 +3103,12 @@ class PreflightRunner:
         if result.returncode == 0:
             return [CheckResult("PASS", "check_imports", "no import-policy violations")]
 
-        errors = [line for line in result.stderr.strip().splitlines() if line.strip()]
+        errors = _import_violation_lines(result.stderr)
+        if not errors:
+            # Non-zero exit with nothing recognisable as a violation means the
+            # checker's output shape moved. Show the raw stderr rather than
+            # reporting a reassuring "0 violation(s)" on a failing run.
+            errors = [ln for ln in result.stderr.strip().splitlines() if ln.strip()]
         return [
             CheckResult(
                 "FAIL",
