@@ -291,13 +291,59 @@ def test_render_reports_an_error_to_the_model():
     assert "ZeroDivisionError" in messages[1]["content"]
 
 
+def test_render_reports_a_timeout_to_the_model():
+    messages = TextToolAdapter().render(
+        ToolCall(
+            index=0,
+            code="while True: pass",
+            stdout="",
+            stderr="killed after 10s",
+            exit_code=None,
+            timed_out=True,
+            truncated=False,
+            wall_s=10.0,
+        )
+    )
+    assert "timed out" in messages[1]["content"]
+    assert "killed after 10s" in messages[1]["content"]
+
+
+def test_render_tells_the_model_nothing_was_printed():
+    # A run that exits cleanly but prints nothing must read differently from a
+    # genuine success -- otherwise the model reasons from an output that was
+    # never produced, which is the same silent-failure shape this adapter
+    # exists to prevent on the other side of the call.
+    messages = TextToolAdapter().render(
+        ToolCall(
+            index=0,
+            code="x = 1",
+            stdout="",
+            stderr="",
+            exit_code=0,
+            timed_out=False,
+            truncated=False,
+            wall_s=0.01,
+        )
+    )
+    assert "printed nothing" in messages[1]["content"]
+
+
 def test_the_protocol_prompt_is_pinned():
     # Not a tautology check: this is the one string that silently changes every
-    # score. Editing it must be a deliberate act that fails this test first, and
-    # any change invalidates stored deltas.
+    # score. A full-literal equality check -- not a hash, not substrings -- is
+    # what makes a reword show up as an actual two-sided diff, forcing whoever
+    # edits it to confront that stored tool-vs-no-tool deltas are now invalid.
     from sieval.tasks._math_tool_base import TOOL_SYSTEM_PROMPT
 
-    assert TOOL_SYSTEM_PROMPT.startswith("You may run Python to help you compute.")
-    assert "Stop immediately after the closing fence." in TOOL_SYSTEM_PROMPT
-    assert "fresh interpreter" in TOOL_SYSTEM_PROMPT
-    assert len(TOOL_SYSTEM_PROMPT) == len(TOOL_SYSTEM_PROMPT.strip())
+    expected = (
+        "You may run Python to help you compute. To do so, write a single fenced "
+        "block:\n"
+        "```python\n"
+        "# your code; print() what you need to see\n"
+        "```\n"
+        "Stop immediately after the closing fence. The program's output will be "
+        "given to you in the next message, and you may then run more code or give "
+        "your final answer. Code you do not print produces no output. Each block "
+        "runs in a fresh interpreter, so repeat any definitions you still need."
+    )
+    assert expected == TOOL_SYSTEM_PROMPT
