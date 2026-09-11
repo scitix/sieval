@@ -146,8 +146,12 @@ BFCL_V3_HARNESS_URL = (
 #: group and protocol it is. The specific half is prepended by each leaf.
 BFCL_V3_SHARED_NOTES = (
     "AST checker, source parsers, type converters, prompt and aggregation "
-    "vendored verbatim from gorilla v1.3 (Apache-2.0); only `bfcl_eval.*` "
-    "imports were rewritten. "
+    "vendored from gorilla v1.3 (Apache-2.0); bodies unchanged except for "
+    "`bfcl_eval.*` import rewrites and one execution-safety deviation -- the "
+    "Prompt decoder resolves an argument's arithmetic by walking the AST "
+    "rather than by `eval`-ing model output, which computes the same value "
+    "for every expression that does not execute something (the FC protocol "
+    "parses no source text, so it never reaches that code). "
     "exec_*/rest/sql/chatable are excluded -- upstream has them commented out of "
     "its own TEST_FILE_MAPPING and they need live API keys."
 )
