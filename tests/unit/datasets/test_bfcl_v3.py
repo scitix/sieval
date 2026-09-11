@@ -1,3 +1,16 @@
+"""The shared BFCL v3 single-turn loader: the index join and its guards.
+
+What is covered here is the join key (the universal index, not the whole id),
+the per-category row counts, the guards that refuse an ambiguous or incomplete
+join, and the one thing neither can check -- that a goldless category stays
+goldless when it is loaded next to a category that has gold. Also pinned: the
+package holding the loader's category tables must import without the optional
+`bfcl-v3` extra, since every dataset in the repo is registered through the same
+loop.
+
+AI-Generated Code - Claude Opus 5 (Anthropic)
+"""
+
 import json
 import os
 import subprocess
@@ -59,6 +72,53 @@ def test_a_goldless_category_needs_no_answer_file(tmp_path):
     )
     row = load_categories(str(tmp_path), {"irrelevance": 1})["test"][0]
     assert row["ground_truth"] is None
+
+
+def test_a_goldless_category_stays_goldless_beside_one_that_has_gold(tmp_path):
+    """The gold table is per-category, and the universal indices of two
+    categories overlap -- `irrelevance_0` and `simple_0` both key on 0. A gold
+    table built once for the whole call would hand every goldless row its
+    neighbour's answer, which reads downstream as a real gold rather than as an
+    error: the sample TypedDict documents `None` as "this row has no gold".
+    """
+    _write(
+        tmp_path,
+        "simple",
+        [
+            {
+                "id": "simple_0",
+                "question": [[{"role": "user", "content": "set it to 50"}]],
+                "function": [{"name": "set_volume", "parameters": {}}],
+            }
+        ],
+        gold=[{"id": "simple_0", "ground_truth": [{"set_volume": {"volume": [50]}}]}],
+    )
+    _write(
+        tmp_path,
+        "irrelevance",
+        [
+            {
+                "id": "irrelevance_0",
+                "question": [[{"role": "user", "content": "how are you"}]],
+                "function": [{"name": "set_volume", "parameters": {}}],
+            }
+        ],
+    )
+
+    rows = list(load_categories(str(tmp_path), {"simple": 1, "irrelevance": 1})["test"])
+
+    # Every category's rows, not just the last one's.
+    assert [row["id"] for row in rows] == ["simple_0", "irrelevance_0"]
+    by_id = {row["id"]: row for row in rows}
+    assert json.loads(by_id["simple_0"]["ground_truth"]) == [
+        {"set_volume": {"volume": [50]}}
+    ]
+    assert by_id["irrelevance_0"]["ground_truth"] is None
+    # `function` is the tool schema the whole grading path reads, and is declared
+    # `str` because pyarrow cannot type its nesting.
+    for row in rows:
+        assert isinstance(row["function"], str)
+        assert json.loads(row["function"]) == [{"name": "set_volume", "parameters": {}}]
 
 
 def test_java_and_javascript_carry_their_language(tmp_path):
@@ -144,31 +204,52 @@ def test_gold_joins_on_the_universal_index_not_the_whole_id(tmp_path):
     assert json.loads(row["ground_truth"]) == [{"set_volume": {"volume": [50]}}]
 
 
-def test_a_repeated_universal_index_raises(tmp_path):
+def _two_rows(ids):
+    return [
+        {
+            "id": row_id,
+            "question": [[{"role": "user", "content": row_id}]],
+            "function": [],
+        }
+        for row_id in ids
+    ]
+
+
+def test_a_repeated_universal_index_in_the_prompt_file_raises(tmp_path):
     """Two rows sharing the join key make the pairing ambiguous. Upstream cannot
     see this -- it only checks that the two files are the same length.
+
+    The gold file here is well-formed, so only the prompt-side guard can fire.
     """
     _write(
         tmp_path,
         "live_multiple",
-        [
-            {
-                "id": "live_multiple_0-1-0",
-                "question": [[{"role": "user", "content": "a"}]],
-                "function": [],
-            },
-            {
-                "id": "live_multiple_0-2-0",
-                "question": [[{"role": "user", "content": "b"}]],
-                "function": [],
-            },
+        _two_rows(["live_multiple_0-1-0", "live_multiple_0-2-0"]),
+        gold=[
+            {"id": "live_multiple_0-1-0", "ground_truth": []},
+            {"id": "live_multiple_1-1-0", "ground_truth": []},
         ],
+    )
+    with pytest.raises(ValueError, match="prompt rows sharing a universal index"):
+        load_categories(str(tmp_path), {"live_multiple": 2})
+
+
+def test_a_repeated_universal_index_in_the_gold_file_raises(tmp_path):
+    """The mirror of the test above: the prompt file is well-formed and the
+    repeat is on the gold side, so only the possible_answer guard can fire.
+    """
+    _write(
+        tmp_path,
+        "live_multiple",
+        _two_rows(["live_multiple_0-1-0", "live_multiple_1-1-0"]),
         gold=[
             {"id": "live_multiple_0-1-0", "ground_truth": []},
             {"id": "live_multiple_0-2-0", "ground_truth": []},
         ],
     )
-    with pytest.raises(ValueError, match="sharing a universal index"):
+    with pytest.raises(
+        ValueError, match="possible_answer rows sharing a universal index"
+    ):
         load_categories(str(tmp_path), {"live_multiple": 2})
 
 
