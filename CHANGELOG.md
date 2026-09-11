@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-09-11
+
+A minor bump for four breaking changes, none of which raise on an old input: a
+`report.json` key unification, a config-format change where a dialect must now
+be named rather than inferred, a request-audit contract that only an out-of-tree
+dialect can notice, and two new `ci95_units` rules. The largest theme is
+**execution-graded evaluation** — text-to-SQL, shell, C++ and multi-language
+code now run and are judged by what they produce, which is what most of the new
+infrastructure exists to support.
+
+### Added
+
+- New benchmark tasks & datasets:
+    - BFCL v3 (single-turn) — `bfcl_v3_{non_live,live}_0shot_gen` and their `_fc` twins over 3,641 rows, sieval's first native-function-calling protocol. `_fc` is a new variant word: it changes which model capability is exercised, so Prompt and FC are separate tasks the way BFCL's own leaderboard reports them side by side. Multi-turn is not implemented (#143).
+    - LiveOIBench — 380 of 403 informatics-olympiad problems graded in C++ with IOI-style subtask partial credit and ranked against the contests' real human contestants. The 23 interactive problems are excluded rather than scored zero, so numbers are **not** comparable to the paper's 403-problem table (#121).
+    - Ag-LiveCodeBench-X — LiveCodeBench v5's stdin/stdout subset made language-agnostic, with `language` a required task argument because the benchmark measures a different thing per language (#123).
+    - QuoteBench — 56 Bash tasks graded by exact final program state, shipped as **two tasks** because `raw` and `nested_shell` are two command-path contracts, and the paper's finding is that they reverse the order of 5 of 26 model pairs (#140).
+    - NL2SH-ALFA — natural language to Bash, execution-graded, as an unqualified task and a `_parse` twin; the gap between the two readings reaches 32% on small models (#139).
+    - MultiPL-E — HumanEval in 24 languages and MBPP in 23, with the chat task grading the model's own copy of the prefix, as upstream does deliberately (#138).
+    - Spider 1.0 — sieval's first in-process SQL execution substrate, with the hardened reading carried by the unqualified task and the delta measured at 99.903% verdict parity against upstream (#124).
+    - Spider 2.0-lite — all 547 questions over three engines; a credential-less run caps near 24.7%, so a per-backend breakdown always ships beside the headline (#125).
+    - WikiSQL — upstream's own logical-form protocol, so no model-authored SQL is executed; the grader is anchored on upstream's shipped example predictions (#122).
+    - MATH-Perturb — 279 Level-5 problems each under simple and hard perturbation, promoted to `stable` on a measured deepseek-math-7b-rl alignment run (#130).
+    - SysBench — 500 Chinese 5-turn sessions, LLM-judged (#103).
+    - SciTaRC — composite QA over raw LaTeX tables (#119).
+- **Every metric that can carry an interval now carries its own** — `<metric>_ci95`, with a new nested `ci95_units` object saying which population each is clustered on. A headline interval now reaches 52 of 58 reports, and five new population keys ship (`n_versions`, `n_problems_wo_critical_thinking`, `n_subjects`, `n_subsets`, and `n_problems` on SimpleQA-Verified). Purely additive: `score_ci95` and `n_problems` keep their spelling and their values, verified over 3,216 paired emitter comparisons (#126).
+- `ifeval` / `multi_if` / `ifbench` `_fixed` variants — seven repaired constraint checkers across the family, each with a quantified score delta (#104, #105).
+- `report.json` gains `n_truncated` + `n_scored_rollouts` on every `gen` task, injected by the **runner** so a task cannot report zero by having forgotten to look. Reported as a pair, because the count alone is unreadable (#113).
+- `filter` gains composite keys, derived (`callable`) keys, a `values_file`, and a `require_all` flag — each pinned into `effective_config.yaml` by a provenance digest that participates in the strict `--resume` comparison (#106).
+- OpenAI Responses API dialect (#141).
+- `TaskRequirements.function_tools`, so a task can demand the tools API and be rejected at construction; `ModelOutput.tool_calls` now forwards through the legacy bridge, which is what makes the declaration satisfiable (#143).
+- `DEFAULT_REQUEST_TIMEOUT` is declared instead of inherited — openai's SDK and `httpx` disagree by 120x on the default, so a dialect's connection family used to decide how long a generation could take. No behavioural change today; a trap defused ahead of the first native transport (#112).
+- Repeated rows record which copy they are, both in the dataset and per sample (#114).
+- `iheval` records carry a per-row `key`; `extra` previously named only a cell, so two rows of one cell produced byte-identical records (#111).
+- `sysbench` reports every breakdown rate's denominator, and counts what it used to drop (#110).
+- `sieval infer start` exposes the readiness budget on `run` (#135).
+
+### Fixed
+
+- **IFBench stopped scoring a biased subset when its NLTK corpora are missing.** `nltk.download` defaults to `raise_on_error=False`, so offline the import completed as if the data were there and the absence surfaced one `LookupError` at a time — landing those samples in `fails` while `denominator_policy: judged` scored the remainder. The published number was computed over the subset whose constraints never touched NLTK (#109).
+- A broken grader no longer reads as a wrong answer (#131).
+- One task's crash no longer cancels the rest of the batch — a single task raising used to take every sibling runner down with it, losing even tasks that had already finished computing their reports (#117).
+- `t_eval_before_calling_0shot_gen` omits an axis with no samples behind it instead of writing `null`, and reports `n_graded` / `n_parsed` so an absent axis can be read (#116).
+- A missing split is reported from every dataset transform, not just `filter` (#108).
+- A `--resume` no longer aborts on a field explicitly declared non-matching (#137).
+- A deploy that never becomes ready says why (#134); a hardware key matches when the GPU reports no memory size (#133).
+- Deterministic request seeds are dialect-aware (#118); legacy model provenance is stable (#132).
+- A timeout is read off the message prefix rather than by substring match (#142).
+
+### Changed
+
+- **BREAKING — the LLM-judged family's grader-parse metric is unified to `n_grader_unparsed`**, replacing four spellings across five tasks. A consumer reading an old name gets a **missing key**, which reads as "not reported" rather than erroring. `judge` is now confined to upstream contract names and prose, never a record field or metric key (#103).
+- **BREAKING — SysBench `ssr` changes meaning under an unchanged key.** It is now the paper's mean normalised count of *consecutive* fully-satisfied turns from a session's start; the old reading reported only the final term and ran ~20 points low. **Same key, different number** — a consumer diffing an old `report.json` against a new one sees a silent 20-point jump, not a missing key. SysBench never shipped a run, so no published sieval number is invalidated (#103).
+- **BREAKING (config format) — engine identity no longer selects the request dialect.** `infer.backend: sglang` no longer activates the native `/generate` bypass. A `type: gen` config that relied on the implicit native path must declare `dialect: sglang_legacy` explicitly. Migration is guarded, not silent: the omitted-dialect case raises pre-I/O and names both options (#120).
+- **BREAKING — the dialect request-audit contract is source-bound.** `consumed(path, *wire_evidence)` now **requires** evidence, `PreparedRequest.consumed_paths` / `.passthrough` are gone, and `body` is recursively frozen. Both shipped dialects were migrated; a third-party dialect implementing `prepare()` will not load unmigrated (#129).
+- **BREAKING for a strict consumer of `ci95_units`** — two rules are now enforced at report-write time: every entry's value must be a population count (`n_…`), and two metrics sharing one interval must publish the same number within 0.005 points. `metric_interval` also raises on a non-count `unit` before it estimates anything, because the corrupted rate would otherwise reach disk presented as a percentage (#126).
+- `vendor/code-evaluator` gains four execution sources — C++ (`liveoibench`), `agnostics`, `quotebench`, and a declarative language table backing `cpp` / `bash` / `perl` for MultiPL-E — plus its first stateful route (`POST /shell-evaluations`) and a new `GET /languages` probe, called at `setup()` before any inference so an unsupported language cannot burn a full generation budget and report `pass@1 = 0`. The three existing executors are untouched, so no existing task's grading moves.
+- CI's test step cut from 4m41 to 2m07 (#107).
+
+### Docs
+
+- Recipe comments trimmed to what they have to carry (#136).
+
 ## [0.8.0] - 2026-08-14
 
 A minor bump, and a wide one: the on-disk record shape, several `report.json`
@@ -212,6 +275,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.9.0]: https://github.com/scitix/sieval/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/scitix/sieval/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/scitix/sieval/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/scitix/sieval/compare/v0.5.0...v0.6.0

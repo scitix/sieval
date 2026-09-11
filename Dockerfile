@@ -15,7 +15,7 @@ RUN python3 -m nltk.downloader \
 
 WORKDIR /app
 
-COPY ./dist/sieval-0.8.0-py3-none-any.whl /tmp/
-RUN pip install /tmp/sieval-0.8.0-py3-none-any.whl && rm /tmp/sieval-0.8.0-py3-none-any.whl
+COPY ./dist/sieval-0.9.0-py3-none-any.whl /tmp/
+RUN pip install /tmp/sieval-0.9.0-py3-none-any.whl && rm /tmp/sieval-0.9.0-py3-none-any.whl
 
 COPY vendor /app/vendor
