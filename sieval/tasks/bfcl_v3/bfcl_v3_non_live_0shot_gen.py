@@ -45,6 +45,13 @@ from ._base import (
     eval_mode=EvalMode.GEN,
     n_shot=0,
     tags=("english", "function-calling"),
+    # Declared here and NOT on the `_fc` sibling: `_decode` calls `ast_parse`,
+    # whose module imports both tree-sitter source parsers at module scope, so
+    # the Prompt protocol needs the extra for every category rather than just
+    # `java` and `javascript`. FC never parses source text. Without this the
+    # import is deferred far enough that readiness reports `yes`, the run bills
+    # for inference, and then every sample dies at postprocess.
+    deps_group="bfcl-v3",
     model_type="chat",
     status="experimental",
     reference_kind="value",

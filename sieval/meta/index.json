@@ -1789,7 +1789,7 @@
         "english",
         "function-calling"
       ],
-      "deps_group": null,
+      "deps_group": "bfcl-v3",
       "model_type": "chat",
       "reference_impl": {
         "source": "gorilla/berkeley-function-call-leaderboard",
@@ -1831,7 +1831,7 @@
         "english",
         "function-calling"
       ],
-      "deps_group": null,
+      "deps_group": "bfcl-v3",
       "model_type": "chat",
       "reference_impl": {
         "source": "gorilla/berkeley-function-call-leaderboard",

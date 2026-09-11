@@ -54,6 +54,28 @@ def test_only_the_fc_leaves_demand_the_tools_capability(name, expected):
     assert cls.requires.function_tools is expected
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [(n, None if n.endswith("_fc") else "bfcl-v3") for n in NAMES],
+)
+def test_only_the_prompt_leaves_declare_the_tree_sitter_extra(name, expected):
+    """The extra follows the protocol, and the split is not the obvious one.
+
+    Both Prompt leaves need it -- including the live one, whose every category
+    is Python -- because `ast_parse`'s module imports both tree-sitter source
+    parsers at module scope, so the cost is paid before the language dispatch
+    runs. Neither FC leaf does: it reads structured calls and parses no source.
+
+    Asserted in both directions, because both are silent in production. Dropping
+    it from a Prompt leaf makes readiness report `yes` on a base install, and
+    since the import is deferred into `_decode`, the run bills for inference
+    before every sample dies at postprocess. Adding it to an FC leaf is the
+    quieter fault: that leaf then reports NOT ready, and stays unrunnable, over
+    a dependency it never loads.
+    """
+    assert get_task_meta(get_task_class(name)).deps_group == expected
+
+
 class _ToollessChatModel(MockChatModel):
     """A chat model whose runtime plan offers no `function_tools`.
 

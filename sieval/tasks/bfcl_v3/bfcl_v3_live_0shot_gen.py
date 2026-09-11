@@ -45,6 +45,13 @@ from ._base import (
     eval_mode=EvalMode.GEN,
     n_shot=0,
     tags=("english", "function-calling"),
+    # Needed even though every live category is Python, which is the part that
+    # reads wrong: `_decode` calls `ast_parse`, and its module imports both
+    # tree-sitter source parsers at module scope, so the import is paid before
+    # the language dispatch ever runs. Not on the `_fc` sibling -- FC parses no
+    # source text. Without this, readiness reports `yes`, the run bills for
+    # inference, and then every sample dies at postprocess.
+    deps_group="bfcl-v3",
     model_type="chat",
     status="experimental",
     reference_kind="value",
