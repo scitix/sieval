@@ -2,6 +2,7 @@ import asyncio
 import atexit
 import os
 import sys
+import time
 from functools import partial
 from typing import Any, Generic, TypeVar
 
@@ -16,6 +17,7 @@ from .exec_js import execute_code as exec_js
 from .exec_lang import LANGUAGES, toolchain_entry, toolchain_present
 from .exec_lang import execute_code as exec_lang
 from .exec_py_code import execute_code as exec_py_code
+from .exec_py_run import execute_run, truncate_stream
 from .exec_py_test import execute_test as exec_py_test
 from .exec_quotebench import execute_quotebench, scenarios_digest
 from .exec_sh import DEFAULT_TIMEOUT as SHELL_DEFAULT_TIMEOUT
@@ -41,6 +43,12 @@ def exit_handler():
 
 
 app = FastAPI()
+
+#: Bumped whenever execution semantics change. sieval records it per tool call:
+#: the resume gate compares YAMLs before any runner exists, so it cannot see this
+#: service at all, and a version on the record is the only way a run that used a
+#: different sandbox is identifiable after the fact.
+SERVICE_VERSION = "code-runs/1"
 
 
 # Generic type for response data
@@ -117,6 +125,34 @@ class ResourceMetrics(BaseModel):
     # put it, since the response model is flat by necessity (see above). `None`
     # everywhere else, and under a command override, where it is unknowable.
     verifier_image: str | None = None
+
+
+class CodeRun(BaseModel):
+    uuid: str
+    lang: str = "python"
+    code: str
+    timeout: float = 10.0
+    memory_limit: int = 1024
+
+
+class CodeRunResult(BaseModel):
+    """What one snippet printed, and what it cost.
+
+    Distinct from `ResourceMetrics` on purpose: that payload answers "did the
+    suite pass", this one answers "what did this print". Folding them would give
+    every caller a field set where half is always null.
+    """
+
+    stdout: str
+    stderr: str
+    exit_code: int | None
+    timed_out: bool
+    truncated: bool
+    wall_s: float
+    #: Reserved. Always null while execution is stateless; a future session
+    #: route fills it without changing this shape.
+    session_id: str | None = None
+    service_version: str
 
 
 # Direct-run executors, by `lang`. The three hand-rolled modules keep their own
@@ -667,3 +703,44 @@ async def evaluate(sample: Sample) -> BasicResponse[ResourceMetrics]:
         return BasicResponse(
             status=False, msg=f"not supported data source: {sample.source}", data=None
         )
+
+
+@app.post("/code-runs")
+async def code_run(sample: CodeRun) -> BasicResponse[CodeRunResult]:
+    """Run a Python snippet and return what it printed.
+
+    Separate from ``/evaluations`` on purpose: every ``source`` there answers
+    "did this submission pass", and a caller scores the result. This route
+    grades nothing -- it returns stdout to a caller mid-generation, and the
+    model consumes it, not a scorer. `n_cases` / `n_passed` would be meaningless
+    on a response like that, so it gets its own response model instead of a
+    widened ``ResourceMetrics``.
+    """
+    if sample.lang != "python":
+        return BasicResponse(
+            status=False, msg=f"/code-runs supports python only, got {sample.lang!r}"
+        )
+    started = time.perf_counter()
+    exit_code, out, err, timed_out, _stats = await execute_run(
+        code=sample.code, timeout=sample.timeout, memory_limit=sample.memory_limit
+    )
+    out, out_cut = truncate_stream(out)
+    err, err_cut = truncate_stream(err)
+    ok = exit_code == 0 and not timed_out
+    logger.info(
+        f"code-run '{sample.uuid}': ok={ok} exit={exit_code} "
+        f"timed_out={timed_out} stdout={len(out)}c stderr={len(err)}c"
+    )
+    return BasicResponse(
+        status=ok,
+        msg="" if ok else (err[:200] or "run failed"),
+        data=CodeRunResult(
+            stdout=out,
+            stderr=err,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            truncated=out_cut or err_cut,
+            wall_s=time.perf_counter() - started,
+            service_version=SERVICE_VERSION,
+        ),
+    )

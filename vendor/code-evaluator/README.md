@@ -33,6 +33,11 @@ language toolchain, which is what makes Lua / R / Julia / OCaml / Fortran
 reachable without installing five toolchains here. See "Agnostics protocol"
 below.
 
+`POST /code-runs` is not a grading route at all: it runs a Python snippet and
+hands back what it printed, for a caller (a model mid-generation, typically)
+that needs the output itself rather than a pass/fail verdict. See "Code-run
+endpoint" below.
+
 ## Setup
 
 ### Python environment
@@ -203,6 +208,76 @@ Response:
 ```
 
 On failure, `msg` carries the reason.
+
+### Code-run endpoint
+
+POST /code-runs
+
+For a caller that needs the **output** of a Python snippet rather than a
+pass/fail verdict — a model writing and running Python mid-generation, for
+example. `/evaluations` deliberately discards stdout (its callers only need to
+know whether the program raised); this route's whole point is to return the
+text.
+
+Fields:
+
+- `uuid`
+- `lang`: `"python"` only — any other value is refused with `status: false`
+  and no execution
+- `code`: the snippet to run
+- `timeout`: float (optional, seconds; default 10.0) — a wall for the whole run
+- `memory_limit`: int (optional, MB; default 1024)
+
+```json
+{
+  "uuid": "cr1",
+  "lang": "python",
+  "code": "print(6 * 7)",
+  "timeout": 5.0,
+  "memory_limit": 512
+}
+```
+
+Response `data`:
+
+- `stdout`, `stderr`: captured text, each capped at 8192 characters
+- `exit_code`: `0` on a clean run, non-zero if the snippet raised, `null` if the
+  process was killed on timeout (neither stream can be trusted complete then)
+- `timed_out`: whether the wall was hit
+- `truncated`: `true` if either stream was cut at the cap
+- `wall_s`: wall-clock seconds for the run
+- `session_id`: reserved, always `null` in this version — see below
+- `service_version`: `"code-runs/1"`; bump tracking for execution-semantics
+  changes, since sieval's resume gate compares run YAMLs before any runner
+  exists and cannot otherwise tell two sandbox versions apart after the fact
+
+```json
+{
+  "status": true,
+  "msg": "",
+  "data": {
+    "stdout": "42\n",
+    "stderr": "",
+    "exit_code": 0,
+    "timed_out": false,
+    "truncated": false,
+    "wall_s": 0.031,
+    "session_id": null,
+    "service_version": "code-runs/1"
+  }
+}
+```
+
+A snippet that raises is a **result**, not a server error: `status` is `false`,
+`exit_code` is non-zero, and the traceback comes back in `stderr` so the model
+can correct itself — the HTTP call itself still succeeds. Output printed before
+the exception is preserved in `stdout`, so a snippet that printed a partial
+answer and then tripped over a typo still hands back something usable.
+
+**Stateless by contract, in this version.** No variables, imports or other
+state carry between calls — each request gets a fresh interpreter. `session_id`
+is reserved for a future route that keeps a session alive across calls without
+changing this response shape; until then it is always `null`.
 
 ### QuoteBench
 

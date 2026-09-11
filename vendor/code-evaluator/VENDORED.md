@@ -551,3 +551,72 @@ Two kinds, and the difference is a decision rather than a status:
   `RLIMIT_CPU` / `RLIMIT_AS`, and returns the whole verdict vector — which is the
   only shape IOI subtask scoring can be computed from. They are reached by
   different `source` values and share no code.
+- `app/exec_py_run.py` (new), `app/server.py`, `README.md`,
+  `tests/test_code_runs.py` (new), `tests/test_exec_py_run.py` (new) —
+  **`POST /code-runs`**: a stateless route that runs a Python snippet and
+  returns what it printed, for a caller that needs the *output* — a model
+  writing and running Python mid-generation — rather than a pass/fail
+  verdict.
+
+  Not a fourth row on either grading table above. The "two shell routes"
+  rule earlier in this file governs **grading** shapes: both its rows
+  terminate in a verdict or in facts a caller scores, and every `source` on
+  `/evaluations` answers "did this submission pass". `/code-runs` grades
+  nothing — the model consumes the stdout, not a scorer — so forcing it
+  under `/evaluations` would give it a response where `n_cases` / `n_passed`
+  are meaningless, and forcing it onto the shell route would give it
+  `ShellFacts` fields (`gold_*`, `*_hashes`) that make no sense for a single
+  snippet with no gold command and no filesystem to diff. A new route, with
+  its own request (`CodeRun`) and response (`CodeRunResult`) models, is what
+  keeps every existing response shape untouched.
+
+  Reuses `exec_py_code`'s isolation primitives (`create_tempdir`,
+  `reliability_guard`) by import rather than modifying that module:
+  `exec_py_code` swallows stdout/stderr/stdin through `swallow_io()` because
+  human-eval, mbpp and scicode all key their verdict on whether the program
+  raised, and adding a "but keep the output" mode would put two contracts in
+  one function whose whole job is isolation. `app/exec_py_run.py` owns its
+  own capture (`contextlib.redirect_stdout` / `redirect_stderr` into
+  `io.StringIO`) around the same `create_tempdir` / `reliability_guard` pair,
+  in its own spawned subprocess — so `exec_py_code.py` itself is untouched.
+
+  Per-stream output is capped at 8192 characters (`truncate_stream`,
+  `MAX_STREAM_CHARS`) and the response says so (`truncated`): an unbounded
+  stdout is fed straight back into the model's context, so it is both a
+  prompt-injection surface and an unbounded context-budget cost, and it would
+  land verbatim in a shard record. A raising snippet is a **result**, not an
+  HTTP error — `status: false`, non-zero `exit_code`, traceback in `stderr`,
+  and any stdout printed before the raise still comes back, so a model that
+  printed a partial answer before tripping over a typo gets something usable
+  back rather than nothing. **Stateless in this version**: each call is a
+  fresh interpreter in a fresh subprocess, and `session_id` is reserved
+  (always `null`) for a future route that keeps one alive without changing
+  this shape.
+
+  `GET /languages` is deliberately **not** touched: its return type is
+  `BasicResponse[list[str]]`, a flat list of runnable `lang` values, and a
+  `routes` key cannot be added without changing the response shape for every
+  existing caller. Python is already advertised there, and the guarantee that
+  endpoint exists to give — refuse before inference is spent, naming the
+  cause — is already provided by this route's own `lang != "python"` branch.
+
+  `service_version` (`"code-runs/1"`) exists for the same reason
+  `scenarios_digest` does on QuoteBench: sieval's resume gate compares run
+  YAMLs before any `TaskRunner` exists, so it cannot see this service at all,
+  and a version stamped on the record is the only way a run that used a
+  different sandbox build is identifiable after the fact.
+
+  `tests/test_code_runs.py` drives the route through `TestClient`
+  (`fastapi` / `httpx` are already this service's own dependencies, so
+  nothing new is installed) and covers the response shape, the truncation
+  flag and the non-python refusal. `tests/test_exec_py_run.py` calls
+  `execute_run` directly and covers execution semantics — stdout capture,
+  traceback capture, partial stdout surviving a later raise, timeout
+  reporting, statelessness — one layer below the transport, matching the
+  split `test_exec_sh.py` already uses between what a route decides and what
+  execution itself does. They live in the vendored tree rather than under
+  sieval's `tests/` (which mirrors `sieval/`), so they travel upstream with
+  the code. Not yet upstream — land in `scitix/code-evaluator` and
+  re-vendor: this is generic execution capability with no benchmark-specific
+  content, unlike `quotebench`, which sieval owns in-tree because it encodes
+  one benchmark's fixtures.
