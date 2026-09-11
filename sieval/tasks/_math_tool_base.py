@@ -24,6 +24,21 @@ MAX_STREAM_CHARS = 8192
 DEFAULT_CODE_RUN_API = "http://localhost:11451/code-runs"
 
 
+def _get[T](data: dict, key: str, default: T) -> T:
+    """Read *key* from *data*, filling in for both "absent" and "explicit null".
+
+    ``dict.get(key, default)`` substitutes *default* only when the key is
+    missing; a service that sends the key with an explicit ``null`` -- valid
+    JSON regardless of what this route's schema currently promises -- passes
+    ``None`` through unchanged, and a caller that expected *default*'s type
+    breaks on it instead. Every optional-but-typed field pulled out of a
+    response goes through this one function, so a field added later inherits
+    the guard rather than needing its own copy of this reasoning.
+    """
+    value = data.get(key, default)
+    return default if value is None else value
+
+
 @sieval_record
 @dataclass
 class ToolCall:
@@ -94,11 +109,18 @@ class SandboxClient:
     async def run(self, code: str) -> ToolCall:
         """Execute *code*; never raise.
 
-        A sandbox that is down, slow or malformed produces a ToolCall carrying
-        the reason, which the loop feeds back to the model and the record keeps.
+        A sandbox that is down, slow, malformed, or has drifted from this
+        client's expected response shape produces a ToolCall carrying the
+        reason, which the loop feeds back to the model and the record keeps.
         Raising instead would fail the sample -- and under DENOMINATOR_REQUESTED
-        a failed sample is charged as wrong, so one flaky request would read as
-        a model that could not do arithmetic.
+        a failed sample is charged as wrong, so one flaky request or one
+        unexpected null would read as a model that could not do arithmetic.
+        Mapping the response into a ToolCall is inside the same guarded region
+        as sending the request, rather than a narrower guard that trusts the
+        body once it parses as JSON: a response shaped unexpectedly -- not a
+        dict at all, or a field null where today's contract has it required --
+        is exactly as unpredictable as a response that never arrives, and both
+        need the same one fallback.
         """
         try:
             resp = await self._client.post(
@@ -117,6 +139,21 @@ class SandboxClient:
             )
             resp.raise_for_status()
             body = resp.json()
+            data = body.get("data") or {}
+            self.service_version = _get(data, "service_version", self.service_version)
+            return ToolCall(
+                index=0,
+                code=code,
+                stdout=_get(data, "stdout", "")[:MAX_STREAM_CHARS],
+                stderr=(_get(data, "stderr", "") or _get(body, "msg", ""))[
+                    :MAX_STREAM_CHARS
+                ],
+                exit_code=data.get("exit_code"),
+                timed_out=bool(_get(data, "timed_out", False)),
+                truncated=bool(_get(data, "truncated", False)),
+                wall_s=float(_get(data, "wall_s", 0.0)),
+                session_id=data.get("session_id"),
+            )
         except Exception as exc:
             return ToolCall(
                 index=0,
@@ -128,19 +165,6 @@ class SandboxClient:
                 truncated=False,
                 wall_s=0.0,
             )
-        data = body.get("data") or {}
-        self.service_version = data.get("service_version") or self.service_version
-        return ToolCall(
-            index=0,
-            code=code,
-            stdout=data.get("stdout", "")[:MAX_STREAM_CHARS],
-            stderr=(data.get("stderr") or body.get("msg", ""))[:MAX_STREAM_CHARS],
-            exit_code=data.get("exit_code"),
-            timed_out=bool(data.get("timed_out", False)),
-            truncated=bool(data.get("truncated", False)),
-            wall_s=float(data.get("wall_s", 0.0)),
-            session_id=data.get("session_id"),
-        )
 
 
 #: The protocol, stated to the model. PINNED: this string is part of what the

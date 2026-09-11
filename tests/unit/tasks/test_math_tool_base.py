@@ -71,6 +71,88 @@ async def test_a_transport_failure_becomes_a_recorded_call_not_a_raise():
     assert call.stdout == ""
 
 
+@pytest.mark.anyio
+async def test_a_non_dict_response_body_becomes_a_recorded_call_not_a_raise():
+    # A body that parses as JSON but is not a dict at all -- a list, a bare
+    # string, top-level null -- offers no `.get`, so mapping the response has
+    # to sit inside the same guarded region as the request itself, rather than
+    # a narrower guard that trusts anything which came back as valid JSON.
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    client = SandboxClient(
+        api="http://x/code-runs",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        timeout=5.0,
+    )
+    call = await client.run("print(1)")
+    assert call.exit_code is None
+    assert "AttributeError" in call.stderr
+    assert call.stdout == ""
+
+
+@pytest.mark.anyio
+async def test_stdout_explicit_null_is_mapped_to_empty_not_a_raise():
+    # `.get(key, default)` only substitutes the default when the key is
+    # ABSENT; a service that sends `"stdout": null` passes None through
+    # unchanged, and slicing None used to raise. The rest of the payload is
+    # still legitimate, so it must still come through rather than being
+    # discarded along with the one unexpected field.
+    client = SandboxClient(
+        api="http://x/code-runs",
+        http_client=_transport(
+            {
+                "status": True,
+                "msg": "",
+                "data": {
+                    "stdout": None,
+                    "stderr": "",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "truncated": False,
+                    "wall_s": 0.02,
+                    "session_id": None,
+                    "service_version": "code-runs/1",
+                },
+            }
+        ),
+        timeout=5.0,
+    )
+    call = await client.run("print(1)")
+    assert call.stdout == ""
+    assert call.exit_code == 0
+    assert call.wall_s == 0.02
+
+
+@pytest.mark.anyio
+async def test_wall_s_explicit_null_is_mapped_to_zero_not_a_raise():
+    # Same defect, different field: `float(None)` raises before this fix.
+    client = SandboxClient(
+        api="http://x/code-runs",
+        http_client=_transport(
+            {
+                "status": True,
+                "msg": "",
+                "data": {
+                    "stdout": "1\n",
+                    "stderr": "",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "truncated": False,
+                    "wall_s": None,
+                    "session_id": None,
+                    "service_version": "code-runs/1",
+                },
+            }
+        ),
+        timeout=5.0,
+    )
+    call = await client.run("print(1)")
+    assert call.wall_s == 0.0
+    assert call.stdout == "1\n"
+    assert call.exit_code == 0
+
+
 def test_trajectory_round_trips_and_omits_a_null_session_id():
     trajectory = MathToolTrajectory(
         rollouts=[
