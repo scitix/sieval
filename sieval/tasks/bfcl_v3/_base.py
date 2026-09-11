@@ -31,14 +31,19 @@ AI-Generated Code - Claude Opus 5 (Anthropic)
 """
 
 import json
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Mapping
 from typing import ClassVar
 
 from sieval.community.bfcl_v3 import (
     CALL_EXPECTED,
     DEFAULT_SYSTEM_PROMPT,
     GOLDLESS_CATEGORIES,
+    LIVE_COUNTS,
+    NON_LIVE_COUNTS,
     ast_checker,
+    calculate_unweighted_accuracy,
+    calculate_weighted_accuracy,
     convert_to_tool,
     is_empty_output,
     is_function_calling_format_output,
@@ -58,6 +63,14 @@ from sieval.core.tasks import (
     build_prediction_record,
     build_prompt_record,
     build_rollout_judgement,
+)
+from sieval.core.tasks.metrics import (
+    DENOMINATOR_FIELD,
+    DENOMINATOR_REQUESTED,
+    SCORE_KEY_FIELD,
+    interval_metrics,
+    merge_metrics,
+    metric_interval,
 )
 from sieval.core.utils.offload import GRADE_TIMEOUT, run_cpu_bound
 
@@ -250,6 +263,186 @@ class BfclV3Task[TSample](
             [build_rollout_judgement(0, correct)],
             extra={"category": category, "id": pre_extra["id"]},
         )
+
+    async def report(self, finals: list, fails: list) -> dict:
+        # One 0/1 per sample that came back, NOT one percentage point: this list
+        # is both what the cells average and what the interval estimators are
+        # handed, and those read `sum(values) / denominator` as a probability.
+        # Hand them percent and any rate above a single point reads as a
+        # saturated set, which still publishes a whole triple -- an interval
+        # bracketing 100 beside a rate that is nothing of the kind. The rate is
+        # scaled to percentage points once, in `cell`, so the two agree.
+        correct_by_category: dict[str, list[float]] = defaultdict(list)
+        for ctx in finals:
+            fb = ctx.feedback_result
+            correct_by_category[fb["extra"]["category"]].append(
+                1.0 if fb["rollouts"][0]["correct"] else 0.0
+            )
+
+        def cell(category: str) -> dict:
+            """Upstream's accuracy-dict shape, over the DECLARED denominator.
+
+            `total_count` is the category's row count, not the number that came
+            back: `DENOMINATOR_REQUESTED` charges a missing sample as wrong, and
+            a sample that failed before `preprocess` has no category to be
+            attributed to anyway.
+
+            All three of upstream's keys, because both aggregation helpers read
+            `display_accuracy` unconditionally and a two-key cell raises
+            `KeyError`. It is never "N/A" here: that marks a category upstream
+            did not evaluate, and this task always scores the full declared set.
+            Their return value carries the same three keys, which is what lets
+            `simple_ast` nest straight back in as a cell.
+            """
+            values = correct_by_category.get(category, [])
+            denominator = self.CATEGORY_COUNTS[category]
+            # Percentage points -- the units every rate here is published in,
+            # and the units the estimators return their bounds in.
+            accuracy = 100.0 * sum(values) / denominator
+            return {
+                "accuracy": accuracy,
+                "total_count": denominator,
+                "display_accuracy": accuracy,
+            }
+
+        rollup = self._aggregate(cell)
+
+        result: dict = {
+            "score": rollup[f"{self.GROUP_KEY}_overall_acc"],
+            "fails": len(fails),
+            SCORE_KEY_FIELD: f"{self.GROUP_KEY}_overall_acc",
+            DENOMINATOR_FIELD: DENOMINATOR_REQUESTED,
+        }
+        result |= rollup
+        for category in self.CATEGORY_COUNTS:
+            result[f"n_{category}"] = self.CATEGORY_COUNTS[category]
+
+        # Per-category intervals: each IS `sum(values) / denominator`, so each
+        # is a candidate. No `group_keys`: one row is one problem is one
+        # rollout, so there are no repeated copies to collapse.
+        fragments = [
+            metric_interval(
+                category,
+                correct_by_category.get(category, []),
+                denominator=self.CATEGORY_COUNTS[category],
+                unit=f"n_{category}",
+            )
+            for category in self.CATEGORY_COUNTS
+        ]
+        fragments.extend(self._group_intervals(correct_by_category))
+        return result | merge_metrics(*fragments)
+
+    def _group_intervals(
+        self, correct_by_category: Mapping[str, list[float]]
+    ) -> list[dict]:
+        """Intervals for the group-level rollups, where any are defensible."""
+        del correct_by_category
+        return []
+
+
+class BfclV3NonLiveTask[TSample](BfclV3Task[TSample]):
+    """Non-live: seven categories, rolled up by UNWEIGHTED means.
+
+    `simple_ast` nests three categories inside the five-way overall, so the
+    headline is a mean of means -- not the pooled rate over 1390 rows, and not
+    convergent to it: `javascript` (50 rows) enters with the same weight as
+    `simple` (400). That is why it publishes no interval.
+    """
+
+    GROUP_KEY: ClassVar[str] = "non_live"
+    CATEGORY_COUNTS: ClassVar[dict[str, int]] = dict(NON_LIVE_COUNTS)
+
+    def _aggregate(self, cell: Callable[[str], dict]) -> dict:
+        simple_ast = calculate_unweighted_accuracy(
+            [cell("simple"), cell("java"), cell("javascript")]
+        )
+        ast_cells = [
+            simple_ast,
+            cell("multiple"),
+            cell("parallel"),
+            cell("parallel_multiple"),
+        ]
+        ast_summary = calculate_unweighted_accuracy(ast_cells)
+        overall = calculate_unweighted_accuracy([*ast_cells, cell("irrelevance")])
+        return {
+            "non_live_overall_acc": overall["accuracy"],
+            "ast_summary": ast_summary["accuracy"],
+            "simple_ast": simple_ast["accuracy"],
+            **{
+                category: cell(category)["accuracy"]
+                for category in self.CATEGORY_COUNTS
+            },
+        }
+
+
+class BfclV3LiveTask[TSample](BfclV3Task[TSample]):
+    """Live: six categories, rolled up by SAMPLE-COUNT-WEIGHTED means.
+
+    A weighted mean over these cells is algebraically the pooled rate over the
+    union of their rows, so both rollups are genuine per-sample rates and both
+    carry intervals.
+    """
+
+    GROUP_KEY: ClassVar[str] = "live"
+    CATEGORY_COUNTS: ClassVar[dict[str, int]] = dict(LIVE_COUNTS)
+
+    #: The four AST categories, in upstream's column order. `ast_summary` is
+    #: over these only -- irrelevance and relevance join at the overall.
+    AST_CATEGORIES: ClassVar[tuple[str, ...]] = (
+        "live_simple",
+        "live_multiple",
+        "live_parallel",
+        "live_parallel_multiple",
+    )
+
+    def _aggregate(self, cell: Callable[[str], dict]) -> dict:
+        ast_summary = calculate_weighted_accuracy(
+            [cell(category) for category in self.AST_CATEGORIES]
+        )
+        overall = calculate_weighted_accuracy(
+            [cell(category) for category in self.CATEGORY_COUNTS]
+        )
+        return {
+            "live_overall_acc": overall["accuracy"],
+            "ast_summary": ast_summary["accuracy"],
+            **{
+                category: cell(category)["accuracy"]
+                for category in self.CATEGORY_COUNTS
+            },
+        }
+
+    def _group_intervals(
+        self, correct_by_category: Mapping[str, list[float]]
+    ) -> list[dict]:
+        ast_values = [
+            value
+            for category in self.AST_CATEGORIES
+            for value in correct_by_category.get(category, [])
+        ]
+        all_values = [
+            value
+            for category in self.CATEGORY_COUNTS
+            for value in correct_by_category.get(category, [])
+        ]
+        return [
+            # The headline and `live_overall_acc` are ONE number under two key
+            # names, so the alias rides along on the same call -- never a second
+            # call with the same arguments. This emits `n_problems` itself.
+            interval_metrics(
+                all_values,
+                denominator=sum(self.CATEGORY_COUNTS.values()),
+                aliases=("live_overall_acc",),
+            ),
+            # Emits `n_ast` itself, alongside the interval it is the unit for.
+            metric_interval(
+                "ast_summary",
+                ast_values,
+                denominator=sum(
+                    self.CATEGORY_COUNTS[category] for category in self.AST_CATEGORIES
+                ),
+                unit="n_ast",
+            ),
+        ]
 
 
 def _call_arguments(call) -> dict:
