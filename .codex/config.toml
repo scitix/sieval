@@ -1,0 +1,15 @@
+# Project-scoped Codex configuration.
+#
+# Loads only for projects marked trusted: an untrusted project skips every
+# project-scoped .codex/ layer, hooks included. Hooks also require
+# features.hooks to be enabled.
+#
+# The checks live in scripts/post_edit_checks.py, shared with Claude Code and
+# opencode. Codex has no post-edit-specific event, so this filters PostToolUse.
+
+[features]
+hooks = true
+
+[[hooks.PostToolUse]]
+matcher = "shell"
+command = "python scripts/post_edit_checks.py"

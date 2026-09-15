@@ -190,6 +190,12 @@ tmp/
 # a dangling symlink to a public clone.
 .opencode/commands/sieval-pr-review.md
 
+# opencode plugin dependencies (npm install artifacts, not source). The
+# `.opencode/.gitignore` that would normally cover this excludes itself (its
+# last line is `.gitignore`), so it is never committed and gives a fresh
+# clone no protection — this root-level entry is the one that actually ships.
+.opencode/node_modules/
+
 # Local analysis artifacts
 POSTPROCESS_*.md
 usage_log.jsonl
