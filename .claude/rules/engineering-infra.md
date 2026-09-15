@@ -1,6 +1,7 @@
 ---
 paths:
   - "CLAUDE.md"
+  - "AGENTS.md"
   - "sieval/**/CLAUDE.md"
   - "CONTRIBUTING.md"
   - ".claude/rules/*.md"

@@ -39,6 +39,7 @@ ALLOWLIST=(
   "docs/"                           # local design/planning docs
   "tests/"                          # test fixtures use example IPs/paths
   "CLAUDE.md"                       # project guidelines
+  "AGENTS.md"                       # project guidelines (source of truth)
   "\.git/"                          # git internals
   "127\.0\.0\.1"                    # localhost is fine
   "0\.0\.0\.0"                      # bind-all is fine

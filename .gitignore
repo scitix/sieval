@@ -171,9 +171,6 @@ tmp/
 .claude/commands/
 .claude/skills/
 .claude/worktrees/
-
-# Codex
-AGENTS.md
 .claude/settings.local.json
 
 # Local analysis artifacts
