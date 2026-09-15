@@ -1,10 +1,14 @@
 ---
-description: Release a new version of sieval (update changelog, tag, push)
+name: sieval-release
+description: Release a new version of sieval — run deep preflight, update CHANGELOG and Dockerfile, tag, and push. Use when asked to cut, ship, or tag a release. Takes a semantic version number.
 ---
 
 # SiEval Release
 
 ## Input
+
+The invocation argument (substituted below as `$ARGUMENTS`; if it appears
+literally, read the user's request for it instead):
 
 $ARGUMENTS
 

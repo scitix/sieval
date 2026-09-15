@@ -169,9 +169,26 @@ tmp/
 # Claude Code
 #   Exclude non-team-level configs
 .claude/commands/
-.claude/skills/
+.claude/skills/*
+!.claude/skills/sieval-preflight
+!.claude/skills/sieval-release
 .claude/worktrees/
 .claude/settings.local.json
+
+# Agent skills (shared by Claude Code, opencode, Codex)
+#   Team skills are tracked; personal ones are not. The trailing `*` is load
+#   bearing: git will not descend into an excluded directory, so a negation
+#   under a plain `.agents/skills/` entry is never evaluated and the
+#   re-included paths stay invisible. Excluding the contents instead keeps
+#   the directory itself walkable.
+.agents/skills/*
+!.agents/skills/sieval-preflight/
+!.agents/skills/sieval-release/
+
+# opencode's command symlink for the personal skill above — its target is
+# gitignored, so an untracked-but-unignored copy of this file would ship as
+# a dangling symlink to a public clone.
+.opencode/commands/sieval-pr-review.md
 
 # Local analysis artifacts
 POSTPROCESS_*.md

@@ -1,10 +1,14 @@
 ---
-description: Run preflight checks on the sieval codebase (link validation, dependency consistency, task/dataset registration, version alignment)
+name: sieval-preflight
+description: Run sieval's preflight checks — link validation, dependency consistency, task/dataset registration, version alignment. Use before a release, before opening a PR, or when asked to verify repository health.
 ---
 
 # SiEval Preflight Checks
 
 ## Input
+
+The invocation argument (substituted below as `$ARGUMENTS`; if it appears
+literally, read the user's request for it instead):
 
 $ARGUMENTS
 
