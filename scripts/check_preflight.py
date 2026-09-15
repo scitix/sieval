@@ -1209,6 +1209,7 @@ class PreflightRunner:
         "check_imports",
         "check_examples",
         "check_meta_index_sync",
+        "check_agent_rule_map",
         "check_mutmut_config",
         "check_version",
     ]
@@ -3059,6 +3060,49 @@ class PreflightRunner:
                 "check_meta_index_sync",
                 "sieval/meta/index.json is out of date; "
                 "run `python scripts/sync_meta_index.py` to regenerate",
+                message,
+            )
+        ]
+
+    def check_agent_rule_map(self) -> list[CheckResult]:
+        """The rule map in ``AGENTS.md`` must match the live rule inventory.
+
+        opencode and Codex reach the layer and scoped rules only through this
+        map. A stale map does not fail loudly for them — it silently points at
+        rules that moved, or omits ones that were added.
+        """
+        script = self.project_root / "scripts" / "sync_agent_rules.py"
+        if not script.exists():
+            return [
+                CheckResult(
+                    "FAIL",
+                    "check_agent_rule_map",
+                    f"script not found: {script}",
+                )
+            ]
+
+        result = subprocess.run(
+            [sys.executable, str(script), "--check"],
+            capture_output=True,
+            text=True,
+            cwd=self.project_root,
+        )
+        if result.returncode == 0:
+            return [
+                CheckResult(
+                    "PASS",
+                    "check_agent_rule_map",
+                    "AGENTS.md rule map matches the live rule inventory",
+                )
+            ]
+
+        message = (result.stderr or result.stdout).strip().splitlines()
+        return [
+            CheckResult(
+                "FAIL",
+                "check_agent_rule_map",
+                "AGENTS.md rule map is out of date; "
+                "run `python scripts/sync_agent_rules.py` to regenerate",
                 message,
             )
         ]

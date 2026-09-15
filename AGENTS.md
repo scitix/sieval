@@ -127,6 +127,33 @@ byte count silently, so content near the end simply stops applying.
 - **Layer and scoped rules** — `sieval/*/CLAUDE.md` and `.claude/rules/*.md`.
   Claude Code loads these automatically; opencode and Codex do not, so the
   generated map below tells them what to read and when.
+
+<!-- BEGIN generated: rule-map -->
+
+Read the matching file before editing a path it covers. Claude Code
+loads these automatically; opencode and Codex need this map.
+
+| When editing | Read first |
+| --- | --- |
+| `sieval/cli/**` | `sieval/cli/CLAUDE.md` |
+| `sieval/community/**` | `sieval/community/CLAUDE.md` |
+| `sieval/core/**` | `sieval/core/CLAUDE.md` |
+| `sieval/datasets/**` | `sieval/datasets/CLAUDE.md` |
+| `sieval/infer/**` | `sieval/infer/CLAUDE.md` |
+| `sieval/tasks/**` | `sieval/tasks/CLAUDE.md` |
+| `sieval/**/*.py`, `tests/**/*.py` | `.claude/rules/code-review.md` |
+| `sieval/**/*.py` | `.claude/rules/core-utils.md` |
+| `sieval/datasets/**/*.py` | `.claude/rules/datasets.md` |
+| `pyproject.toml`, `pdm.lock` | `.claude/rules/deps.md` |
+| `CLAUDE.md`, `AGENTS.md`, `sieval/**/CLAUDE.md`, `CONTRIBUTING.md`, `.claude/rules/*.md`, `scripts/check_*.py`, `.pre-commit-config.yaml` | `.claude/rules/engineering-infra.md` |
+| `sieval/infer/**/*.py` | `.claude/rules/infer.md` |
+| `sieval/tasks/**/*.py`, `sieval/core/tasks/**/*.py` | `.claude/rules/records.md` |
+| `scripts/*.py` | `.claude/rules/scripts.md` |
+| `sieval/tasks/**/*.py` | `.claude/rules/tasks.md` |
+| `tests/**/*.py` | `.claude/rules/tests.md` |
+
+<!-- END generated: rule-map -->
+
 - **Skills** — `.agents/skills/<name>/SKILL.md` is the source of truth, with
   symlinks at `.claude/skills/<name>` and `.opencode/commands/<name>.md`.
   Never edit through a symlink.

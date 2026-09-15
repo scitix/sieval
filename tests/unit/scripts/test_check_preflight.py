@@ -135,10 +135,11 @@ class TestPreflightRunner:
     """Runner orchestration."""
 
     def test_all_checks_listed(self):
-        assert len(PreflightRunner.ALL_CHECKS) == 14
+        assert len(PreflightRunner.ALL_CHECKS) == 15
         assert "check_links" in PreflightRunner.ALL_CHECKS
         assert "check_examples" in PreflightRunner.ALL_CHECKS
         assert "check_meta_index_sync" in PreflightRunner.ALL_CHECKS
+        assert "check_agent_rule_map" in PreflightRunner.ALL_CHECKS
         assert "check_version" in PreflightRunner.ALL_CHECKS
         assert "check_task_shot_knobs" in PreflightRunner.ALL_CHECKS
         assert "check_report_declarations" in PreflightRunner.ALL_CHECKS
