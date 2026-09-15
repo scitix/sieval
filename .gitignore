@@ -169,6 +169,10 @@ tmp/
 # Claude Code
 #   Exclude non-team-level configs
 .claude/commands/
+#   These two negations must NOT carry a trailing slash, unlike the
+#   `.agents/skills/` ones below. These paths are symlinks; a trailing-slash
+#   negation matches only real directories, so adding one here silently stops
+#   tracking both symlinks with no error. Do not normalize the two blocks.
 .claude/skills/*
 !.claude/skills/sieval-preflight
 !.claude/skills/sieval-release
