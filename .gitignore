@@ -189,10 +189,14 @@ tmp/
 !.agents/skills/sieval-preflight/
 !.agents/skills/sieval-release/
 
-# opencode's command symlink for the personal skill above — its target is
-# gitignored, so an untracked-but-unignored copy of this file would ship as
-# a dangling symlink to a public clone.
-.opencode/commands/sieval-pr-review.md
+# opencode's command symlinks. Pattern-based like the two blocks above, not a
+# per-skill literal: a personal skill's symlink points at a gitignored target,
+# so any entry not re-included here would ship to a public clone as a dangling
+# symlink. Same trailing-slash trap as `.claude/skills/` — these are symlinks,
+# so the negations must stay slash-free.
+.opencode/commands/*
+!.opencode/commands/sieval-preflight.md
+!.opencode/commands/sieval-release.md
 
 # opencode plugin dependencies (npm install artifacts, not source). The
 # `.opencode/.gitignore` that would normally cover this excludes itself (its

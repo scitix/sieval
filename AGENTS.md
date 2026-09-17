@@ -120,18 +120,25 @@ Precise reproducibility is a product contract, not a nicety.
 ## Agent Tooling
 
 This file is the single source of truth for shared conventions, and the only
-instruction file all three supported agents read. `CLAUDE.md` is a one-line
-import of it. Keep it under 32 KiB: Codex truncates project docs past that
-byte count silently, so content near the end simply stops applying.
+instruction file every supported agent reads. `CLAUDE.md` is a one-line import
+of it. Keep it under 32 KiB: Codex truncates project docs past that byte count
+silently, so content near the end simply stops applying.
 
 - **Layer and scoped rules** — `sieval/*/CLAUDE.md` and `.claude/rules/*.md`.
-  Claude Code loads these automatically; opencode and Codex do not, so the
-  generated map below tells them what to read and when.
+  Only Claude Code loads these automatically, and the difference is not
+  cosmetic: Codex reads `AGENTS.md` files on the root-to-cwd path and never
+  picks up a `CLAUDE.md` below the root — not even when the working directory
+  is the very folder holding it. opencode walks *upward* from the working
+  directory, so it sees a layer file only while working inside that layer.
+  For those two, the 16 layer and scoped rules are reachable solely through
+  the generated map below, which asks the agent to read a file rather than
+  putting the rule in front of it. Treat a rule as enforced only under Claude
+  Code; elsewhere it is a pointer the agent has to follow.
 
 <!-- BEGIN generated: rule-map -->
 
 Read the matching file before editing a path it covers. Claude Code
-loads these automatically; opencode and Codex need this map.
+loads these automatically; every other harness needs this map.
 
 | When editing | Read first |
 | --- | --- |
@@ -158,7 +165,8 @@ loads these automatically; opencode and Codex need this map.
   symlinks at `.claude/skills/<name>` and `.opencode/commands/<name>.md`.
   Never edit through a symlink.
 - **Post-edit checks** — `scripts/post_edit_checks.py` holds the behavior;
-  `.claude/settings.json`, `.opencode/plugins/post-edit.ts`, and
-  `.codex/config.toml` each dispatch to it.
-- **Codex users:** project-scoped `.codex/` layers (including hooks) load only
-  for projects you have marked trusted, and hooks require `features.hooks`.
+  `.claude/settings.json` and `.opencode/plugins/post-edit.ts` each dispatch to
+  it with the edited path as `argv[1]`. There is deliberately no Codex wiring:
+  Codex delivers the hook payload as JSON on stdin rather than as an argument,
+  so it needs an adapter, and none can be verified here. Run the checks by hand
+  under Codex — `python scripts/post_edit_checks.py <path>`.

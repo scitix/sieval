@@ -79,7 +79,7 @@ def render_block(root: Path) -> str:
         BEGIN,
         "",
         "Read the matching file before editing a path it covers. Claude Code",
-        "loads these automatically; opencode and Codex need this map.",
+        "loads these automatically; every other harness needs this map.",
         "",
         "| When editing | Read first |",
         "| --- | --- |",
