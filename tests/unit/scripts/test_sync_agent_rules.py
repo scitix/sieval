@@ -66,6 +66,38 @@ def test_reads_paths_frontmatter_verbatim(tree: Path):
     assert "`pdm.lock`" in text
 
 
+def test_rule_without_paths_is_scoped_to_everything(tree: Path):
+    """No `paths:` key is a real choice, not a parse failure."""
+    mod = _load()
+    (tree / ".claude" / "rules" / "always.md").write_text(
+        "---\ndescription: applies everywhere\n---\n\n# Always\n"
+    )
+    assert mod.main(["--root", str(tree)]) == 0
+    assert "_(always)_" in (tree / "AGENTS.md").read_text()
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "expected"),
+    [
+        ('---\npaths: ["a/**", "b/**"]\n---\n\n# Flow\n', "block list"),
+        ("---\npaths:\n---\n\n# Empty\n", "lists no globs"),
+        ('---\npaths: "a/**"\n---\n\n# Scalar\n', "block list"),
+    ],
+)
+def test_unreadable_paths_key_is_an_error(tree: Path, frontmatter: str, expected: str):
+    """A `paths:` key the parser cannot read must not silently drop the rule.
+
+    Returning [] would render it as `_(always)_` and still satisfy --check,
+    since the check re-parses the same frontmatter the same wrong way.
+    """
+    mod = _load()
+    (tree / ".claude" / "rules" / "broken.md").write_text(frontmatter)
+    with pytest.raises(SystemExit) as exc:
+        mod.main(["--root", str(tree)])
+    assert expected in str(exc.value)
+    assert "broken.md" in str(exc.value)
+
+
 def test_paths_are_backticked_not_markdown_links(tree: Path):
     """check_links validates Markdown links in tracked files; backticks keep
     the generated block off that check's surface."""

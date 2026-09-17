@@ -26,12 +26,17 @@ END = "<!-- END generated: rule-map -->"
 MAX_BYTES = 32768
 
 
-def _parse_paths_frontmatter(text: str) -> list[str]:
+def _parse_paths_frontmatter(text: str, source: str = "<frontmatter>") -> list[str]:
     """Return the `paths:` globs from a rule file's YAML frontmatter.
 
     Hand-rolled rather than via PyYAML: this runs from pre-commit and preflight,
     where an import-light footprint matters, and the shape is fixed (a `paths:`
     key over a list of strings).
+
+    A file with no `paths:` key is scoped to everything, which is a real choice.
+    A `paths:` key this parser cannot read is not: returning ``[]`` there would
+    drop the rule from the map with nothing to notice it, since the check
+    compares the generated map against the same empty parse. So it raises.
     """
     if not text.startswith("---"):
         return []
@@ -42,21 +47,32 @@ def _parse_paths_frontmatter(text: str) -> list[str]:
 
     globs: list[str] = []
     in_paths = False
+    seen_paths = False
     for raw in block.splitlines():
         line = raw.rstrip()
         if not line:
             continue
-        if line.strip() == "paths:":
+        stripped = line.strip()
+        if stripped.startswith("paths:"):
+            # Only a block list is supported; `paths: [...]` on one line is not.
+            if stripped != "paths:":
+                raise SystemExit(
+                    f'{source}: `paths:` must be a block list, one `- "glob"` '
+                    f"per line, not {stripped[len('paths:') :].strip()!r}."
+                )
             in_paths = True
+            seen_paths = True
             continue
         if in_paths:
-            stripped = line.strip()
             if stripped.startswith("- "):
                 globs.append(stripped[2:].strip().strip('"').strip("'"))
                 continue
             # A non-list line at the same or lower indent ends the paths block.
             if not line.startswith(" "):
                 in_paths = False
+
+    if seen_paths and not globs:
+        raise SystemExit(f"{source}: `paths:` is present but lists no globs.")
     return globs
 
 
@@ -70,8 +86,8 @@ def render_block(root: Path) -> str:
 
     rules_dir = root / ".claude" / "rules"
     for rule_file in sorted(rules_dir.glob("*.md")) if rules_dir.is_dir() else []:
-        globs = _parse_paths_frontmatter(rule_file.read_text(encoding="utf-8"))
         rel = rule_file.relative_to(root).as_posix()
+        globs = _parse_paths_frontmatter(rule_file.read_text(encoding="utf-8"), rel)
         scope = ", ".join(f"`{g}`" for g in globs) if globs else "_(always)_"
         rows.append((scope, f"`{rel}`"))
 
