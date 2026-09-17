@@ -169,39 +169,34 @@ tmp/
 # Claude Code
 #   Exclude non-team-level configs
 .claude/commands/
-#   These two negations must NOT carry a trailing slash, unlike the
-#   `.agents/skills/` ones below. These paths are symlinks; a trailing-slash
-#   negation matches only real directories, so adding one here silently stops
-#   tracking both symlinks with no error. Do not normalize the two blocks.
+#   These paths are symlinks, so the negations must stay slash-free: a
+#   trailing slash matches only real directories and would silently untrack
+#   both, with no error. Do not normalize against the `.agents/` block below.
 .claude/skills/*
 !.claude/skills/sieval-preflight
 !.claude/skills/sieval-release
 .claude/worktrees/
 .claude/settings.local.json
 
-# Agent skills (shared by Claude Code, opencode, Codex)
+# Agent skills (shared by every harness)
 #   Team skills are tracked; personal ones are not. The trailing `*` is load
-#   bearing: git will not descend into an excluded directory, so a negation
-#   under a plain `.agents/skills/` entry is never evaluated and the
-#   re-included paths stay invisible. Excluding the contents instead keeps
-#   the directory itself walkable.
+#   bearing: git never descends into an excluded directory, so a negation under
+#   a plain `.agents/skills/` entry would never be evaluated.
 .agents/skills/*
 !.agents/skills/sieval-preflight/
 !.agents/skills/sieval-release/
 
-# opencode's command symlinks. Pattern-based like the two blocks above, not a
-# per-skill literal: a personal skill's symlink points at a gitignored target,
-# so any entry not re-included here would ship to a public clone as a dangling
-# symlink. Same trailing-slash trap as `.claude/skills/` — these are symlinks,
-# so the negations must stay slash-free.
+# opencode's command symlinks. Pattern-based, not a per-skill literal: a
+# personal skill's symlink points at a gitignored target, so anything not
+# re-included here ships to a public clone as a dangling link. Symlinks again,
+# so the negations stay slash-free.
 .opencode/commands/*
 !.opencode/commands/sieval-preflight.md
 !.opencode/commands/sieval-release.md
 
-# opencode plugin dependencies (npm install artifacts, not source). The
-# `.opencode/.gitignore` that would normally cover this excludes itself (its
-# last line is `.gitignore`), so it is never committed and gives a fresh
-# clone no protection — this root-level entry is the one that actually ships.
+# opencode plugin dependencies (npm artifacts, not source). The
+# `.opencode/.gitignore` that would cover this excludes itself, so it never
+# ships — this root-level entry is the one a fresh clone gets.
 .opencode/node_modules/
 
 # Local analysis artifacts

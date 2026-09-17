@@ -1,12 +1,12 @@
 /**
  * Runs sieval's post-edit checks after opencode edits a file.
  *
- * The checks themselves live in scripts/post_edit_checks.py, shared with
- * Claude Code and Codex. This file only dispatches.
+ * The checks live in scripts/post_edit_checks.py, shared with Claude Code.
+ * This file only dispatches.
  *
- * Uses the `file.edited` event rather than `tool.execute.after`: its payload
- * is `{ file: string }`, a clean path, where the tool hook would require
- * per-tool argument parsing to find one.
+ * Uses `file.edited` rather than `tool.execute.after`: its payload is a clean
+ * `{ file: string }`, and opencode emits it from inside the write/edit/patch
+ * tools, so it tracks agent edits rather than any file change on disk.
  *
  * AI-Generated Code - Claude Sonnet 5 (Anthropic)
  */

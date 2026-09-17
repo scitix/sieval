@@ -1,13 +1,13 @@
 """Regenerate the agent rule map inside AGENTS.md.
 
 Claude Code auto-loads `sieval/*/CLAUDE.md` (on demand) and `.claude/rules/*.md`
-(by `paths:` glob). opencode and Codex do neither: opencode only walks upward
-from the working directory, and Codex reads only AGENTS.md files on the
-root-to-cwd path. Both therefore need an explicit index.
+(by `paths:` glob). No other harness does: opencode only walks upward from the
+working directory, and Codex reads AGENTS.md files on the root-to-cwd path.
+They need an explicit index.
 
-Hand-writing that index would duplicate the `paths:` frontmatter that already
-declares each rule's scope, and would go stale with no signal. Generating it
-keeps the copy honest, the same way sync_meta_index.py does for the registry.
+Hand-writing it would duplicate the `paths:` frontmatter that already declares
+each rule's scope, and would go stale with no signal — so it is generated, the
+way sync_meta_index.py handles the registry.
 
 AI-Generated Code - Claude Sonnet 5 (Anthropic)
 """
@@ -29,9 +29,9 @@ MAX_BYTES = 32768
 def _parse_paths_frontmatter(text: str) -> list[str]:
     """Return the `paths:` globs from a rule file's YAML frontmatter.
 
-    Hand-rolled rather than via PyYAML: this script runs from pre-commit and
-    preflight, where an import-light dependency footprint matters, and the
-    frontmatter shape here is fixed (a `paths:` key over a list of strings).
+    Hand-rolled rather than via PyYAML: this runs from pre-commit and preflight,
+    where an import-light footprint matters, and the shape is fixed (a `paths:`
+    key over a list of strings).
     """
     if not text.startswith("---"):
         return []

@@ -1,12 +1,12 @@
-"""Run post-edit checks for a single edited file.
+"""Run post-edit checks for a single edited file, passed as ``argv[1]``.
 
-Claude Code, opencode, and Codex each fire a hook after a file edit. Keeping
-the logic here rather than inlining it three times means a pattern change
-cannot drift between them — and drift here is silent, since the failure mode
-is a file class quietly no longer being checked.
+Claude Code and opencode each fire a hook after a file edit. Keeping the logic
+here rather than inlining it per harness means a pattern change cannot drift
+between them — and drift is silent, since the failure mode is a file class
+quietly no longer being checked.
 
-Always exits 0: a post-edit check informs the agent, it does not block the
-edit that already happened.
+Always exits 0: a post-edit check informs the agent, it does not block the edit
+that already happened.
 
 AI-Generated Code - Claude Sonnet 5 (Anthropic)
 """

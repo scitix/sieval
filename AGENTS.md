@@ -125,15 +125,11 @@ of it. Keep it under 32 KiB: Codex truncates project docs past that byte count
 silently, so content near the end simply stops applying.
 
 - **Layer and scoped rules** — `sieval/*/CLAUDE.md` and `.claude/rules/*.md`.
-  Only Claude Code loads these automatically, and the difference is not
-  cosmetic: Codex reads `AGENTS.md` files on the root-to-cwd path and never
-  picks up a `CLAUDE.md` below the root — not even when the working directory
-  is the very folder holding it. opencode walks *upward* from the working
-  directory, so it sees a layer file only while working inside that layer.
-  For those two, the 16 layer and scoped rules are reachable solely through
-  the generated map below, which asks the agent to read a file rather than
-  putting the rule in front of it. Treat a rule as enforced only under Claude
-  Code; elsewhere it is a pointer the agent has to follow.
+  Only Claude Code loads these automatically. Codex never reads a `CLAUDE.md`
+  below the repo root, even with the working directory in that folder, and
+  opencode only walks upward from it. Elsewhere these rules are reachable just
+  through the map below, which points at a file rather than putting the rule in
+  front of the agent — so treat a rule as enforced only under Claude Code.
 
 <!-- BEGIN generated: rule-map -->
 
@@ -165,8 +161,7 @@ loads these automatically; every other harness needs this map.
   symlinks at `.claude/skills/<name>` and `.opencode/commands/<name>.md`.
   Never edit through a symlink.
 - **Post-edit checks** — `scripts/post_edit_checks.py` holds the behavior;
-  `.claude/settings.json` and `.opencode/plugins/post-edit.ts` each dispatch to
-  it with the edited path as `argv[1]`. There is deliberately no Codex wiring:
-  Codex delivers the hook payload as JSON on stdin rather than as an argument,
-  so it needs an adapter, and none can be verified here. Run the checks by hand
-  under Codex — `python scripts/post_edit_checks.py <path>`.
+  `.claude/settings.json` and `.opencode/plugins/post-edit.ts` dispatch to it
+  with the edited path as `argv[1]`. Codex wiring is deliberately absent: it
+  delivers the payload as JSON on stdin, so it needs an adapter no one can
+  verify here. Under Codex, run `python scripts/post_edit_checks.py <path>`.
