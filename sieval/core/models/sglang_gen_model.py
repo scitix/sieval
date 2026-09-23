@@ -232,14 +232,14 @@ class SglangGenModel(Model):
     def with_dialect(self, dialect_id: str, runtime_plan: RuntimeBindingPlan) -> Model:
         del dialect_id, runtime_plan
         raise RuntimeError(
-            "sglang_legacy cannot rebind before the sglang_native PR-5 binder"
+            "sglang_legacy cannot rebind because sglang_native has no executable binder"
         )
 
     def with_provenance_plan(self, provenance_plan: RuntimeBindingPlan) -> Self:
         del provenance_plan
         raise RuntimeError(
-            "sglang_legacy has no runtime plan for provenance before the "
-            "sglang_native PR-5 binder"
+            "sglang_legacy has no runtime plan for provenance because "
+            "sglang_native has no executable binder"
         )
 
     def _legacy_lifecycle_owner(self) -> "SglangGenModel":

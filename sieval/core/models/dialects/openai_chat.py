@@ -130,7 +130,7 @@ CAPABILITY_DECISIONS: Mapping[str, DialectCapabilityDecision] = MappingProxyType
             )
         ),
         "hosted_tools": Unsupported(
-            "PR 1 does not bind hosted tools on Chat Completions"
+            "openai_chat does not support hosted tools on Chat Completions"
         ),
         "structured_output": Supported(
             DialectCapabilityBinding(
@@ -766,7 +766,7 @@ class OpenAIChatDialect:
                     "openai_chat supports only summary='none' as a documented no-op",
                 )
             elif path == "tools.hosted":
-                audit.rejected(path, "hosted tools are not active in PR 1")
+                audit.rejected(path, "hosted tools are not supported by openai_chat")
             elif (
                 path == "input.modality.image.media_type"
                 and isinstance(req.input, ChatInput)

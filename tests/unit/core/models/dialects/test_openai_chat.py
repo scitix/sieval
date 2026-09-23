@@ -13,7 +13,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import sieval.core.models.dialects.openai_chat as openai_chat_module
-from sieval.core.models.capabilities import Capability, ReasoningOptions, Supported
+from sieval.core.models.capabilities import (
+    Capability,
+    ReasoningOptions,
+    Supported,
+    Unsupported,
+)
 from sieval.core.models.dialect import (
     DialectError,
     OutputContractError,
@@ -488,6 +493,14 @@ class TestPreflightRejections:
 
         assert Capability.Reasoning in dialect.capabilities
         assert Capability.ReasoningEffort in dialect.capabilities
+
+    def test_hosted_tool_rejection_uses_stable_dialect_wording(self) -> None:
+        decision = CAPABILITY_DECISIONS["hosted_tools"]
+
+        assert isinstance(decision, Unsupported)
+        assert decision.reason == (
+            "openai_chat does not support hosted tools on Chat Completions"
+        )
 
     def test_reasoning_config_rejects_non_noop_summary(self) -> None:
         decision = CAPABILITY_DECISIONS["reasoning"]

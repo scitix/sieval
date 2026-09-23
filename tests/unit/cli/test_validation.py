@@ -531,8 +531,8 @@ class TestValidateModelCapabilities:
     @pytest.mark.parametrize(
         ("dialect", "message"),
         [
-            ("sglang_native", "legacy bypass"),
-            ("vllm_native", "explicitly deferred"),
+            ("sglang_native", "no executable binder"),
+            ("vllm_native", "no executable binder"),
         ],
     )
     def test_registered_but_inactive_dialect_is_rejected(self, dialect, message):

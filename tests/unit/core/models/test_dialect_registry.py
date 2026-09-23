@@ -264,7 +264,7 @@ class TestDialectDescriptors:
         assert set(capability_decisions_for("anthropic_messages")) == set(
             CAPABILITY_KEYS
         )
-        with pytest.raises(DialectNotImplemented, match="later #25 adapter"):
+        with pytest.raises(DialectNotImplemented, match="no executable binder"):
             capability_decisions_for("google_genai")
 
 
@@ -272,8 +272,8 @@ class TestDialectBinders:
     @pytest.mark.parametrize(
         ("dialect_id", "message"),
         [
-            ("vllm_native", "explicitly deferred"),
-            ("sglang_native", "legacy bypass"),
+            ("vllm_native", "no executable binder"),
+            ("sglang_native", "sglang_legacy.*bypass"),
         ],
     )
     def test_reserved_dialects_fail_with_named_error(

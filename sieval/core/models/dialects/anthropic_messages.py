@@ -205,7 +205,7 @@ CAPABILITY_DECISIONS: Mapping[CapabilityKey, DialectCapabilityDecision] = (
                 )
             ),
             "hosted_tools": Unsupported(
-                "PR 3 does not bind Anthropic server-hosted tools"
+                "anthropic_messages does not support Anthropic server-hosted tools"
             ),
             "structured_output": Supported(
                 DialectCapabilityBinding(
@@ -2167,7 +2167,10 @@ class AnthropicMessagesDialect:
                     "or 'none'",
                 )
             elif path == "tools.hosted":
-                audit.rejected(path, "Anthropic hosted tools are not active in PR 3")
+                audit.rejected(
+                    path,
+                    "Anthropic hosted tools are not supported by anthropic_messages",
+                )
             elif (
                 path == "structured_output.format"
                 and req.structured_output.format != "json_schema"
@@ -2203,7 +2206,8 @@ class AnthropicMessagesDialect:
                 else:
                     audit.rejected(
                         path,
-                        "PR 3 exposes no raw Anthropic request passthrough",
+                        "anthropic_messages does not support raw Anthropic request "
+                        "passthrough",
                     )
 
     def prepare(self, req: Request, audit: RequestAudit) -> PreparedRequest:

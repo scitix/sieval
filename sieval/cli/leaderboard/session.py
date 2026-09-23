@@ -832,7 +832,7 @@ class _PR1CompatibilityServingReconciler:
                 CheckStage.REQUEST,
                 verifier,
                 requirement.reason
-                or "PR-1 compatibility requires response-time verification",
+                or "legacy compatibility requires response-time verification",
             )
         return outcomes
 
@@ -3301,7 +3301,7 @@ class EvalSession:
                     raise ValueError(
                         f"Model binding '{binding_id}' uses the temporary "
                         "sglang_legacy bypass and cannot declare canonical "
-                        "capabilities before the sglang_native PR-5 binder"
+                        "capabilities while sglang_native has no executable binder"
                     )
                 legacy_bypass.add(binding_id)
                 continue

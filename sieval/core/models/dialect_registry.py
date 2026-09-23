@@ -546,12 +546,12 @@ def bind_dialect(
 def _not_implemented_message(dialect_id: str) -> str:
     if dialect_id == "sglang_native":
         return (
-            "dialect 'sglang_native' has no PR-1 binder; the one-cycle SGLang "
-            "compatibility path remains an explicit legacy bypass"
+            "dialect 'sglang_native' has no executable binder; use the explicit "
+            "'sglang_legacy' compatibility bypass"
         )
     if dialect_id == "vllm_native":
-        return "dialect 'vllm_native' is reserved and explicitly deferred after #25"
-    return f"dialect {dialect_id!r} is reserved for a later #25 adapter PR"
+        return "dialect 'vllm_native' is reserved and has no executable binder"
+    return f"dialect {dialect_id!r} is reserved and has no executable binder"
 
 
 def dialect_registry_to_json() -> dict[str, JSONValue]:

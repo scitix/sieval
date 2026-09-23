@@ -194,6 +194,11 @@ class TestCapabilities:
         assert isinstance(CAPABILITY_DECISIONS["sampled_logprobs"], Unsupported)
         assert isinstance(CAPABILITY_DECISIONS["top_logprobs"], Unsupported)
         assert "does not return" in CAPABILITY_DECISIONS["sampled_logprobs"].reason
+        hosted = CAPABILITY_DECISIONS["hosted_tools"]
+        assert isinstance(hosted, Unsupported)
+        assert hosted.reason == (
+            "anthropic_messages does not support Anthropic server-hosted tools"
+        )
 
     def test_supported_capabilities_are_first_class_registry_outcomes(self) -> None:
         spec = DIALECT_SPECS["anthropic_messages"]
@@ -1379,7 +1384,7 @@ class TestPreIOGuards:
             ),
             (
                 _request(tools=ToolParams(hosted=(HostedToolSpec("web_search"),))),
-                "unavailable capability|not active",
+                "unavailable capability|not supported by anthropic_messages",
             ),
             (
                 _request(
@@ -1430,7 +1435,7 @@ class TestPreIOGuards:
                         "anthropic_messages", {"service_tier": "auto"}
                     )
                 ),
-                "no raw Anthropic request passthrough",
+                "does not support raw Anthropic request passthrough",
             ),
             (
                 _request(

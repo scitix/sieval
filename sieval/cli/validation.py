@@ -308,7 +308,7 @@ def _validate_capabilities(cfg: dict, result: ValidationResult) -> None:
                 result.errors.append(
                     f"Model '{name}': the temporary sglang_legacy bypass "
                     "cannot declare canonical capabilities before the "
-                    "sglang_native PR-5 binder"
+                    "sglang_native executable binder is available"
                 )
             continue
 
