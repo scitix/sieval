@@ -116,23 +116,12 @@ _RFC3339_TIMESTAMP_PATTERN = re.compile(
     r"(?:\.(?P<fraction>\d{1,9}))?"
     r"(?P<offset>Z|[+\-]\d{2}:\d{2})"
 )
-# Keep these family rows aligned with Google's public thinking table and
-# current-model migration guide; request validation must not infer support from
-# the presence of a protocol field alone.
+# The one name-keyed check left. Google validates thinking levels/budgets,
+# candidate counts and tool combinations server-side (a 400), but ACCEPTS
+# Gemini 3 sampling controls it advises omitting, so a recorded temperature
+# could have had no effect. Response-side signature/call-id contracts also
+# key on it. A gateway alias skips this; see docs/guide/infer.md.
 _GEMINI_3_MODEL_PATTERN = re.compile(r"gemini-3(?:[.\-]|$)")
-_GEMINI_PRE_3_MODEL_PATTERN = re.compile(r"gemini-[12](?:[.\-]|$)")
-_GEMINI_25_PRO_PATTERN = re.compile(r"gemini-2\.5-pro(?:[.\-]|$)")
-_GEMINI_25_FLASH_LITE_PATTERN = re.compile(r"gemini-2\.5-flash-lite(?:[.\-]|$)")
-_GEMINI_25_FLASH_PATTERN = re.compile(r"gemini-2\.5-flash(?:[.\-]|$)")
-_GEMINI_31_FLASH_LITE_IMAGE_PATTERN = re.compile(
-    r"gemini-3\.1-flash-lite-image(?:[.\-]|$)"
-)
-_GEMINI_31_PRO_PATTERN = re.compile(r"gemini-3\.1-pro(?:[.\-]|$)")
-_GEMINI_31_FLASH_LITE_PATTERN = re.compile(r"gemini-3\.1-flash-lite(?:[.\-]|$)")
-_GEMINI_35_36_FLASH_PATTERN = re.compile(r"gemini-3\.(?:5|6)-flash(?:[.\-]|$)")
-_GEMINI_37_38_FLASH_PATTERN = re.compile(r"gemini-3\.(?:7|8)-flash(?:[.\-]|$)")
-_GEMINI_3_FLASH_PATTERN = re.compile(r"gemini-3-flash(?:[.\-]|$)")
-_GEMINI_3_PRO_PREVIEW_PATTERN = re.compile(r"gemini-3-pro-preview(?:[.\-]|$)")
 _GEMINI_3_SAMPLING_PATHS = frozenset(
     {"sampling.temperature", "sampling.top_p", "sampling.top_k"}
 )
@@ -164,77 +153,6 @@ _CHANNEL_OPTIONAL_FINISH_REASONS = frozenset(
         "ESCALATION",
     }
 )
-
-
-@dataclass(frozen=True)
-class _GoogleModelRequestConstraints:
-    """Documented request domains for one Google model family.
-
-    ``thinking_levels=None`` means the current Google documentation does not
-    publish a narrower level table for the model id.  An empty set means the
-    family does not support ``thinkingLevel`` at all.
-    """
-
-    thinking_levels: frozenset[str] | None = None
-    positive_thinking_budget_range: tuple[int, int] | None = None
-    omit_sampling_controls: bool = False
-    maximum_candidates: int | None = None
-    mixed_tools_supported: bool | None = None
-
-
-def _model_request_constraints(model_name: str) -> _GoogleModelRequestConstraints:
-    """Resolve Google-documented constraints without scattering model checks."""
-
-    if _GEMINI_25_PRO_PATTERN.match(model_name):
-        return _GoogleModelRequestConstraints(
-            thinking_levels=frozenset(),
-            positive_thinking_budget_range=(128, 32768),
-            mixed_tools_supported=False,
-        )
-    if _GEMINI_25_FLASH_LITE_PATTERN.match(model_name):
-        return _GoogleModelRequestConstraints(
-            thinking_levels=frozenset(),
-            positive_thinking_budget_range=(512, 24576),
-            mixed_tools_supported=False,
-        )
-    if _GEMINI_25_FLASH_PATTERN.match(model_name):
-        # Google also accepts 0 to disable thinking, but the shared IR keeps
-        # disablement separate from its positive token-budget field.
-        return _GoogleModelRequestConstraints(
-            thinking_levels=frozenset(),
-            positive_thinking_budget_range=(1, 24576),
-            mixed_tools_supported=False,
-        )
-
-    if not _GEMINI_3_MODEL_PATTERN.match(model_name):
-        return _GoogleModelRequestConstraints(
-            mixed_tools_supported=(
-                False if _GEMINI_PRE_3_MODEL_PATTERN.match(model_name) else None
-            )
-        )
-
-    levels: frozenset[str] | None = None
-    if _GEMINI_31_FLASH_LITE_IMAGE_PATTERN.match(model_name):
-        levels = frozenset({"minimal", "high"})
-    elif _GEMINI_31_PRO_PATTERN.match(model_name):
-        levels = frozenset({"low", "medium", "high"})
-    elif _GEMINI_3_PRO_PREVIEW_PATTERN.match(model_name):
-        levels = frozenset({"low", "high"})
-    elif (
-        _GEMINI_31_FLASH_LITE_PATTERN.match(model_name)
-        or _GEMINI_35_36_FLASH_PATTERN.match(model_name)
-        or _GEMINI_3_FLASH_PATTERN.match(model_name)
-    ):
-        levels = _THINKING_LEVELS
-    elif _GEMINI_37_38_FLASH_PATTERN.match(model_name):
-        levels = frozenset({"low", "medium", "high"})
-
-    return _GoogleModelRequestConstraints(
-        thinking_levels=levels,
-        omit_sampling_controls=True,
-        maximum_candidates=1,
-        mixed_tools_supported=True,
-    )
 
 
 def _requires_exact_function_call_ids(model_name: str) -> bool:
@@ -696,62 +614,6 @@ def _tool_choice(
     }
 
 
-def _thinking_level_error(
-    model_name: str,
-    constraints: _GoogleModelRequestConstraints,
-    effort: str,
-) -> str | None:
-    levels = constraints.thinking_levels
-    if levels is None:
-        return None
-    if not levels:
-        return (
-            f"{model_name} does not support thinkingLevel; use reasoning.budget_tokens"
-        )
-    normalized = effort.lower()
-    if normalized in levels:
-        return None
-    return (
-        f"{model_name} supports reasoning.effort values "
-        f"{', '.join(sorted(levels))}; got {effort!r}"
-    )
-
-
-def _thinking_budget_error(
-    model_name: str,
-    constraints: _GoogleModelRequestConstraints,
-    budget_tokens: int,
-) -> str | None:
-    budget_range = constraints.positive_thinking_budget_range
-    if budget_range is None:
-        return None
-    minimum, maximum = budget_range
-    if minimum <= budget_tokens <= maximum:
-        return None
-    return (
-        f"{model_name} reasoning.budget_tokens must be between {minimum} and {maximum}"
-    )
-
-
-def _tool_combination_error(
-    model_name: str,
-    constraints: _GoogleModelRequestConstraints,
-    *,
-    has_functions: bool,
-    has_hosted: bool,
-) -> str | None:
-    # Google documents mixed built-in/custom tools for Gemini 3 only. Do not
-    # infer a model family from an unknown provider alias, or conflate this
-    # combination restriction with standalone hosted-tool support.
-    # https://ai.google.dev/gemini-api/docs/generate-content/tool-combination
-    if has_functions and has_hosted and constraints.mixed_tools_supported is False:
-        return (
-            f"{model_name} does not support combining hosted tools with custom "
-            "functions; Google tool combinations require Gemini 3"
-        )
-    return None
-
-
 def _rfc3339_timestamp_ns(value: str) -> int | None:
     """Return a comparable UTC nanosecond value for a Google timestamp."""
 
@@ -1008,65 +870,21 @@ def _validate_server_tool_history_signatures(
 def _validate_final_request_constraints(
     body: Mapping[str, JSONValue], model_name: str
 ) -> None:
-    constraints = _model_request_constraints(model_name)
     _validate_final_function_call_ids(body, model_name)
     _validate_final_function_call_signatures(body, model_name)
     _validate_server_tool_history_signatures(body, model_name)
     generation = body.get("generationConfig")
     if isinstance(generation, Mapping):
         generation_mapping = cast(Mapping[str, object], generation)
-        if constraints.omit_sampling_controls:
+        if _GEMINI_3_MODEL_PATTERN.match(model_name):
             present = sorted(_GEMINI_3_SAMPLING_WIRE_KEYS & generation_mapping.keys())
             if present:
                 raise DialectError(
                     f"{model_name} final request contains sampling controls Google "
                     f"says to omit: {', '.join(present)}"
                 )
-        candidate_count = generation_mapping.get("candidateCount")
-        if (
-            constraints.maximum_candidates is not None
-            and isinstance(candidate_count, int)
-            and not isinstance(candidate_count, bool)
-            and candidate_count > constraints.maximum_candidates
-        ):
-            raise DialectError(
-                "Gemini 3 models do not support candidateCount greater than 1"
-            )
-        thinking = generation_mapping.get("thinkingConfig")
-        if isinstance(thinking, Mapping):
-            thinking_mapping = cast(Mapping[str, object], thinking)
-            level = thinking_mapping.get("thinkingLevel")
-            if isinstance(level, str) and (
-                error := _thinking_level_error(model_name, constraints, level.lower())
-            ):
-                raise DialectError(error)
-            budget = thinking_mapping.get("thinkingBudget")
-            if (
-                isinstance(budget, int)
-                and not isinstance(budget, bool)
-                and (error := _thinking_budget_error(model_name, constraints, budget))
-            ):
-                raise DialectError(error)
 
     _validate_final_hosted_tools(body)
-    tools = body.get("tools")
-    if isinstance(tools, Sequence) and not isinstance(tools, str | bytes):
-        error = _tool_combination_error(
-            model_name,
-            constraints,
-            has_functions=any(
-                isinstance(tool, Mapping) and bool(_get(tool, "functionDeclarations"))
-                for tool in tools
-            ),
-            has_hosted=any(
-                isinstance(tool, Mapping)
-                and ("googleSearch" in tool or "urlContext" in tool)
-                for tool in tools
-            ),
-        )
-        if error is not None:
-            raise DialectError(error)
-
     tool_config = body.get("toolConfig")
     if not isinstance(tool_config, Mapping):
         return
@@ -2455,13 +2273,7 @@ class GoogleGenAIDialect:
     ) -> None:
         audit.require_matches_request(req)
         del plan
-        constraints = _model_request_constraints(self._model_name)
-        tool_combination_error = _tool_combination_error(
-            self._model_name,
-            constraints,
-            has_functions=bool(req.tools.functions),
-            has_hosted=bool(req.tools.hosted),
-        )
+        gemini_3 = _GEMINI_3_MODEL_PATTERN.match(self._model_name) is not None
         chat_shape_error = (
             _chat_shape_error(req.input) if isinstance(req.input, ChatInput) else None
         )
@@ -2486,9 +2298,7 @@ class GoogleGenAIDialect:
                 audit.rejected(path, "Google images have no per-image detail field")
             elif path == "scoring.input_scoring":
                 audit.rejected(path, "Gemini cannot score input tokens")
-            elif (
-                path in _GEMINI_3_SAMPLING_PATHS and constraints.omit_sampling_controls
-            ):
+            elif path in _GEMINI_3_SAMPLING_PATHS and gemini_3:
                 audit.rejected(
                     path,
                     "Google's Gemini 3 guidance says to omit temperature, top_p, "
@@ -2527,14 +2337,6 @@ class GoogleGenAIDialect:
             elif path == "sampling.n" and req.sampling.n > _INT32_MAX:
                 audit.rejected(path, "Google n must fit a signed 32-bit integer")
             elif (
-                path == "sampling.n"
-                and req.sampling.n > 1
-                and constraints.maximum_candidates == 1
-            ):
-                audit.rejected(
-                    path, "Gemini 3 models do not support candidateCount greater than 1"
-                )
-            elif (
                 path == "sampling.stop"
                 and len(cast(tuple[str, ...], req.sampling.stop)) > 5
             ):
@@ -2546,14 +2348,6 @@ class GoogleGenAIDialect:
                 or req.reasoning.effort.lower() not in _THINKING_LEVELS
             ):
                 audit.rejected(path, "unsupported Google thinking level")
-            elif path == "reasoning.effort" and (
-                error := _thinking_level_error(
-                    self._model_name,
-                    constraints,
-                    cast(str, req.reasoning.effort),
-                )
-            ):
-                audit.rejected(path, error)
             elif path == "reasoning.summary" and req.reasoning.summary not in {
                 "none",
                 "auto",
@@ -2567,21 +2361,8 @@ class GoogleGenAIDialect:
                     path,
                     "Google reasoning budget_tokens must fit a signed 32-bit integer",
                 )
-            elif path == "reasoning.budget_tokens" and (
-                error := _thinking_budget_error(
-                    self._model_name,
-                    constraints,
-                    cast(int, req.reasoning.budget_tokens),
-                )
-            ):
-                audit.rejected(path, error)
             elif path == "tools.parallel":
                 audit.rejected(path, "Google has no per-request parallel tool switch")
-            elif (
-                path in {"tools.functions", "tools.hosted"}
-                and tool_combination_error is not None
-            ):
-                audit.rejected(path, tool_combination_error)
             elif path == "tools.functions":
                 try:
                     for function in req.tools.functions:
@@ -2637,13 +2418,6 @@ class GoogleGenAIDialect:
         audit.raise_rejections()
         if not isinstance(req.input, ChatInput):
             raise DialectError("google_genai requires ChatInput")
-        if error := _tool_combination_error(
-            self._model_name,
-            _model_request_constraints(self._model_name),
-            has_functions=bool(req.tools.functions),
-            has_hosted=bool(req.tools.hosted),
-        ):
-            raise DialectError(error)
         active = frozenset(audit.active_paths)
 
         def consume(path: str, *evidence: WireEvidence) -> None:

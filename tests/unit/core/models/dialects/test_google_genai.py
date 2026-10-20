@@ -1585,16 +1585,8 @@ class TestPreIORejections:
             await _run(_no_io, _request(sampling=sampling))
 
     @pytest.mark.anyio
-    async def test_gemini_3_rejects_multiple_candidates_before_io(self) -> None:
-        with pytest.raises(RequestAuditError, match="candidateCount greater than 1"):
-            await _run(
-                _no_io,
-                _request(sampling=SamplingParams(n=2)),
-                model="gemini-3-pro-preview",
-            )
-
-    @pytest.mark.anyio
-    async def test_gemini_25_allows_multiple_candidates(self) -> None:
+    @pytest.mark.parametrize("model", ["gemini-2.5-flash", "gemini-3.8-flash"])
+    async def test_multiple_candidates_reach_the_wire(self, model: str) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             assert json.loads(request.content)["generationConfig"] == {
                 "candidateCount": 2
@@ -1716,37 +1708,20 @@ class TestToolContextCirculation:
             "models/gemini-2.5-flash-lite",
         ],
     )
-    @pytest.mark.parametrize("kind", ["google_search", "url_context"])
-    async def test_older_gemini_rejects_mixed_tools_before_io(
-        self, model: str, kind: str
+    async def test_older_gemini_mixed_tools_are_left_to_the_provider(
+        self, model: str
     ) -> None:
-        with pytest.raises(RequestAuditError, match="does not support combining"):
-            await _run(_no_io, _request(tools=self._tools(kind)), model=model)
-
-    @pytest.mark.anyio
-    async def test_mixed_tool_rejection_accounts_for_both_active_leaves(self) -> None:
+        # Google rejects the combination itself; no local model-family table.
         connection = _connection(_no_io)
         try:
-            dialect = GoogleGenAIDialect(connection, "gemini-2.5-flash")
+            dialect = GoogleGenAIDialect(connection, model)
             req = _request(tools=self._tools())
             audit = RequestAudit(active_request_leaves(req))
             dialect.validate_request(req, audit, google_genai._LegacyPlan())
-
-            for path in ("tools.functions", "tools.hosted"):
-                decision = audit.decisions.get(path)
-                assert isinstance(decision, Rejected)
-                assert "does not support combining" in decision.reason
-        finally:
-            await connection.aclose()
-
-    @pytest.mark.anyio
-    async def test_direct_prepare_rejects_unsupported_mixed_tools(self) -> None:
-        connection = _connection(_no_io)
-        try:
-            dialect = GoogleGenAIDialect(connection, "gemini-2.5-flash")
-            req = _request(tools=self._tools())
-            with pytest.raises(DialectError, match="does not support combining"):
-                dialect.prepare(req, RequestAudit(active_request_leaves(req)))
+            prepared = dialect.prepare(req, audit)
+            tools = cast(list[dict[str, Any]], prepared.thaw_body()["tools"])
+            assert "functionDeclarations" in tools[0]
+            assert tools[1] == {"googleSearch": {}}
         finally:
             await connection.aclose()
 
@@ -2021,55 +1996,23 @@ class TestToolContextCirculation:
         finally:
             await connection.aclose()
 
-    @pytest.mark.anyio
-    @pytest.mark.parametrize("version", ["v1", "v1beta"])
-    async def test_final_http_unsupported_tool_combination_is_rejected(
-        self, version: str, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        connection = _connection(_no_io, base_url=f"https://example.test/{version}")
-        build_request = connection.client.build_request
-
-        def drifted_request(*args: Any, **kwargs: Any) -> httpx.Request:
-            request = build_request(*args, **kwargs)
-            body = json.loads(request.content)
-            body["tools"].append({"googleSearch": {}})
-            body["toolConfig"] = {"includeServerSideToolInvocations": True}
-            return httpx.Request(request.method, request.url, json=body)
-
-        monkeypatch.setattr(connection.client, "build_request", drifted_request)
-        try:
-            with pytest.raises(DialectError, match="does not support combining"):
-                await GoogleGenAIDialect(connection, "gemini-2.5-flash").arun(
-                    _request(tools=ToolParams(functions=self._tools().functions))
-                )
-        finally:
-            await connection.aclose()
-
 
 class TestModelSpecificRequestConstraints:
     @pytest.mark.anyio
     @pytest.mark.parametrize(
-        ("model", "effort", "message"),
+        ("model", "effort"),
         [
-            ("gemini-2.5-pro", "high", "does not support thinkingLevel"),
-            ("gemini-2.5-flash", "low", "does not support thinkingLevel"),
-            ("gemini-3-pro-preview", "minimal", "supports.*high, low"),
-            ("gemini-3-pro-preview", "medium", "supports.*high, low"),
-            ("gemini-3.1-pro-preview", "minimal", "supports.*low, medium"),
-            ("gemini-3.1-flash-lite-image", "low", "supports.*high, minimal"),
-            ("gemini-3.1-flash-lite-image", "medium", "supports.*high, minimal"),
-            ("gemini-3.8-flash", "minimal", "supports.*low, medium"),
+            ("gemini-2.5-pro", "high"),
+            ("gemini-3.1-pro-preview", "minimal"),
+            ("gemini-3.8-flash", "minimal"),
+            ("gateway-alias", "minimal"),
         ],
     )
-    async def test_unsupported_thinking_levels_fail_before_io(
-        self, model: str, effort: str, message: str
+    async def test_thinking_levels_are_not_checked_per_model(
+        self, model: str, effort: str
     ) -> None:
-        with pytest.raises(RequestAuditError, match=message):
-            await _run(
-                _no_io,
-                _request(reasoning=ReasoningParams(effort=effort)),
-                model=model,
-            )
+        # Google 400s an unsupported level itself; send it unchanged.
+        await self.test_documented_thinking_levels_reach_the_wire(model, effort)
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
@@ -2117,15 +2060,13 @@ class TestModelSpecificRequestConstraints:
             ("gemini-2.5-flash-lite", 24577),
         ],
     )
-    async def test_out_of_range_thinking_budgets_fail_before_io(
+    async def test_thinking_budgets_are_not_range_checked_per_model(
         self, model: str, budget: int
     ) -> None:
-        with pytest.raises(RequestAuditError, match="budget_tokens must be between"):
-            await _run(
-                _no_io,
-                _request(reasoning=ReasoningParams(budget_tokens=budget)),
-                model=model,
-            )
+        # Google 400s an out-of-range budget itself; send it unchanged.
+        await self.test_documented_thinking_budget_boundaries_reach_the_wire(
+            model, budget
+        )
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
@@ -6024,22 +5965,6 @@ class TestPreparedRequestAndVerifierContracts:
     @pytest.mark.parametrize(
         ("model", "req", "mutate", "message"),
         [
-            (
-                "gemini-3.1-pro-preview",
-                _request(reasoning=ReasoningParams(effort="low")),
-                lambda body: cast(dict[str, Any], body["generationConfig"])[
-                    "thinkingConfig"
-                ].update(thinkingLevel="MINIMAL"),
-                "supports reasoning.effort values",
-            ),
-            (
-                "gemini-2.5-pro",
-                _request(reasoning=ReasoningParams(budget_tokens=128)),
-                lambda body: cast(dict[str, Any], body["generationConfig"])[
-                    "thinkingConfig"
-                ].update(thinkingBudget=1),
-                "budget_tokens must be between 128 and 32768",
-            ),
             (
                 "gemini-3.5-flash",
                 _request(),
