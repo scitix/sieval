@@ -33,6 +33,7 @@ from tests.conftest import (
     LatencyMockChatModel,
     MemoryTracker,
     MockChatModel,
+    MockCountingChatModel,
     MultiIterBenchmarkTask,
     PerfTimer,
     make_large_dataset,
@@ -234,11 +235,11 @@ async def _run_resume_scenario(tmp_path: Path) -> BenchmarkResult:
     result_dir = tmp_path / "resume_bench"
 
     # Phase 1: write completed samples
-    await write_completed_samples(result_dir, n_completed)
+    await write_completed_samples(result_dir, n_completed, name="resume_90pct")
 
     # Phase 2: resume and complete remaining
     dataset = make_large_dataset(n_total, payload_size=50)
-    model = MockChatModel(default_answer="A0")
+    model = MockCountingChatModel(default_answer="A0")
     task = BenchmarkTask(dataset=dataset, model=model, name="resume_90pct")
     config = make_perf_config(
         tmp_path / "resume_cfg",
@@ -253,6 +254,8 @@ async def _run_resume_scenario(tmp_path: Path) -> BenchmarkResult:
         report = await runner.arun()
 
     assert report is not None
+    # The resume keeps the seeded samples: only the rest reach the model
+    assert model.call_count == n_total - n_completed
 
     scenario = BenchmarkScenario(
         name="resume_90pct",

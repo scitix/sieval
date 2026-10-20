@@ -274,7 +274,7 @@ Mock models stub at the **Transport seam** (RFC #25): each overrides `_build_def
 | `suite_heap_excluded()` | `gc.freeze()` around a timed window: a pass may still fire, but no longer rescans the rest of the suite's heap (~286 ms worth after `tests/unit`). Wrap any gate whose margin is under one pause. Not reentrant |
 | `make_large_dataset(n, payload_size)` | Generate large in-memory dataset |
 | `make_perf_config(tmp_path, **overrides)` | `TaskRunnerConfig` for performance tests |
-| `write_completed_samples(root, n_completed)` | Write FINAL contexts to disk for resume tests |
+| `write_completed_samples(root, n_completed, *, name)` | Run a real `BenchmarkTask` over the first `n_completed` rows, so a resume with the same `name` keeps them |
 
 ### Registry isolation
 

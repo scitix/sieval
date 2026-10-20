@@ -9,8 +9,6 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 
 from pathlib import Path
 
-import anyio
-import orjson
 import pytest
 
 from sieval.core.runners.runner import TaskRunner
@@ -18,7 +16,7 @@ from sieval.core.runners.runner import TaskRunner
 # Integration mock for zero-latency completion of remaining samples
 from tests.conftest import (
     BenchmarkTask,
-    MockChatModel,
+    MockCountingChatModel,
     PerfTimer,
     make_large_dataset,
     make_perf_config,
@@ -44,11 +42,13 @@ class TestResumeByCompletion:
         result_dir = tmp_path / f"resume_{completion_pct}"
 
         # Phase 1: Write completed samples
-        await write_completed_samples(result_dir, n_completed)
+        await write_completed_samples(
+            result_dir, n_completed, name=f"resume_{completion_pct}"
+        )
 
         # Phase 2: Resume and complete remaining
         dataset = make_large_dataset(n_total, payload_size=50)
-        model = MockChatModel(default_answer="A0")  # Zero latency for speed
+        model = MockCountingChatModel(default_answer="A0")  # Zero latency for speed
         task = BenchmarkTask(
             dataset=dataset, model=model, name=f"resume_{completion_pct}"
         )
@@ -70,6 +70,8 @@ class TestResumeByCompletion:
             f"(remaining={n_remaining}) => {timer.elapsed:.3f}s"
         )
         assert report is not None
+        # The resume keeps the seeded samples: only the rest reach the model
+        assert model.call_count == n_remaining
         # Resume should complete in reasonable time; higher completion % = faster
         max_time = max(1.0, n_remaining / 100)  # ~10ms per remaining sample
         assert timer.elapsed < max_time, (
@@ -87,18 +89,12 @@ class TestCachedReportFastResume:
         n_total = 2000
         result_dir = tmp_path / "fast_resume"
 
-        # Write all samples as completed
-        await write_completed_samples(result_dir, n_total)
-
-        # Write a cached report.json
-        report_data = {"accuracy": 0.95, "total": n_total}
-        report_path = result_dir / "report.json"
-        async with await anyio.open_file(report_path, "wb") as f:
-            await f.write(orjson.dumps(report_data))
+        # A finished run: its report.json is what the fast path returns
+        await write_completed_samples(result_dir, n_total, name="fast_resume")
 
         # Resume — should hit the fast path
         dataset = make_large_dataset(n_total, payload_size=50)
-        model = MockChatModel(default_answer="A0")
+        model = MockCountingChatModel(default_answer="A0")
         task = BenchmarkTask(dataset=dataset, model=model, name="fast_resume")
         config = make_perf_config(
             tmp_path / "cfg_fast",
@@ -113,6 +109,7 @@ class TestCachedReportFastResume:
 
         print(f"PERF: cached_report resume n={n_total} => {timer.elapsed:.4f}s")
         assert report is not None
+        assert model.call_count == 0
         assert timer.elapsed < 3.0, f"Fast resume too slow: {timer.elapsed:.3f}s"
 
 
@@ -128,16 +125,10 @@ class TestResumeStress:
         n_completed = 50000
         result_dir = tmp_path / "stress_resume"
 
-        await write_completed_samples(result_dir, n_completed)
-
-        # Write report.json
-        report_data = {"accuracy": 0.9, "total": n_completed}
-        report_path = result_dir / "report.json"
-        async with await anyio.open_file(report_path, "wb") as f:
-            await f.write(orjson.dumps(report_data))
+        await write_completed_samples(result_dir, n_completed, name="stress_resume")
 
         dataset = make_large_dataset(n_completed, payload_size=50)
-        model = MockChatModel(default_answer="A0")
+        model = MockCountingChatModel(default_answer="A0")
         task = BenchmarkTask(dataset=dataset, model=model, name="stress_resume")
         config = make_perf_config(
             tmp_path / "cfg_stress",

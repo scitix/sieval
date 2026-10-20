@@ -60,9 +60,8 @@ from sieval.core.models.ir import (
     TextPart,
     response_field_contract,
 )
-from sieval.core.runners.runner import TaskRunnerConfig
+from sieval.core.runners.runner import TaskRunner, TaskRunnerConfig
 from sieval.core.tasks.context import TaskContext, TaskStage
-from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 
@@ -1055,22 +1054,28 @@ def require_available_memory_gb(min_gb: float) -> None:
 
 
 async def write_completed_samples(
-    root: Path, n_completed: int, shard_samples: int = 256
+    root: Path,
+    n_completed: int,
+    *,
+    name: str,
+    payload_size: int = 50,
 ) -> None:
-    """Write n_completed FINAL contexts to disk via TaskSaver.
+    """Finish the first n_completed rows of a resume test's task in *root*.
 
-    Stamps ``meta.json`` first, as a real run does at start, so the partial
-    run this fabricates is resumable under the resume version gate.
+    A real ``BenchmarkTask`` run over ``make_large_dataset(n_completed,
+    payload_size)``, so ``meta.json`` carries the stage identities a resume
+    compares. A resume with the same *name* and *payload_size* over more rows
+    keeps these samples and infers only the rest; fabricated records would
+    be refused on ``inference`` or restarted on ``data``.
     """
-    saver = TaskSaver(
-        root_dir=root,
-        shard_samples=shard_samples,
-        shard_write_concurrency=8,
-        write_buffer_size=max(n_completed + 1, 64),
-        write_buffer_flush_interval=9999.0,
+    task = BenchmarkTask(
+        dataset=make_large_dataset(n_completed, payload_size=payload_size),
+        model=MockChatModel(default_answer="A0"),
+        name=name,
     )
-    await saver.begin_run(resumed=False)
-    for i in range(n_completed):
-        ctx = _make_bench_ctx(i, TaskStage.FINAL)
-        saver._stage_queue.append(ctx)
-    await saver.flush()
+    config = make_perf_config(
+        root.parent / f"{root.name}_seed",
+        result_dir=str(root),
+        concurrency_limit=64,
+    )
+    await TaskRunner(task, config).arun()
