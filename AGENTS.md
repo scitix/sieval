@@ -15,7 +15,7 @@ SiEval is a **model delivery quality verification system**: eval-side knowledge 
 Precise reproducibility is a product contract, not a nicety.
 
 - Safety guards (e.g. the resume stage comparison) ship strict-only. No `--force-*` flags, no bypass env vars, no "(future)" escape-hatch hints in errors.
-- A resume (`--resume`, `--resume-from`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): data or prompt differ for a sample → it reruns from the start; inference differs → refused, naming the stage; grader differs → `postprocess`, `feedback` and `report` rerun on the recorded inference. A stage that cannot be identified is unknown, and a resume that would reuse it is refused. The version-series gate stays. `effective_config.yaml` and `infer_plans.yaml` are audit records; a resume's config changes go to `meta.json` `runs[].config`.
+- A resume (`--resume`, `--resume-from`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): changed data or prompt → those samples rerun; changed grader → regrade on the recorded inference; changed inference, or an unknown stage it would reuse → refused. The version-series gate stays. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
 - Recovery: "start fresh" or "match the stage the refusal names". Escape-hatch proposals must re-justify the contract, not just add a flag.
 
 ## Project Structure & Module Organization

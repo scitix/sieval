@@ -114,9 +114,9 @@ async def _run(tmp_path, name, task, **cfg):
     return runner, await runner.arun()
 
 
-async def _first(tmp_path, name="first", **kwargs):
+async def _first(tmp_path, name="first", record_meta=True, **kwargs):
     task, _ = _task(**kwargs)
-    runner, _ = await _run(tmp_path, name, task)
+    runner, _ = await _run(tmp_path, name, task, record_meta=record_meta)
     return runner.root_dir
 
 
@@ -319,17 +319,44 @@ class TestResumeFrom:
         src = tmp_path / "src"
         (src / "0" / "final").mkdir(parents=True)
         (src / "0" / "final" / "0.jsonl").write_text("{}\n")
-        (src / "0" / "final" / "0.idx").write_text("0\t0\tfinal\t0\t3\t\t\t0\t4\n")
+        (src / "0" / "final" / "0.idx").write_text(
+            "0\t0\tfinal\t0\t3\t\t\t0\t4\n1\t0\tfinal\t0\t3\t\t\t0\t2\n"
+            "2\t0\tfinal\t0\t3\t\t\t0\n"
+        )
         (src / "meta.json").write_text("{}")
         (src / "report.json").write_text("{}")
         (src / "logs").mkdir()
         dst = tmp_path / "dst"
         copy_recorded_dir(src, dst)
         assert sorted(p.name for p in dst.iterdir()) == ["0"]
-        # The run ordinal is reset, so the new run's records supersede these.
+        # Shifted under the new run's ordinals, keeping their order; a line
+        # without the column is run 0.
         assert (dst / "0" / "final" / "0.idx").read_text() == (
-            "0\t0\tfinal\t0\t3\t\t\t0\t0\n"
+            "0\t0\tfinal\t0\t3\t\t\t0\t0\n1\t0\tfinal\t0\t3\t\t\t0\t-2\n"
+            "2\t0\tfinal\t0\t3\t\t\t0\t-4\n"
         )
+
+    @pytest.mark.anyio
+    async def test_an_interrupted_regrade_copies_as_the_source_reads(self, tmp_path):
+        """A sample the source rewound and failed to regrade stays rewound in
+        the copy: its old `final` must not outrank the later records. With
+        `record_meta` off, no per-sample grader stamp masks a wrong pick."""
+        src = await _first(tmp_path, record_meta=False)
+        strict, _ = _task(cls=StrictQATask)
+        original = strict.feedback
+
+        async def _feedback(post, ctx):
+            if ctx.sample_id != 0:
+                raise RuntimeError("judge down")
+            return await original(post, ctx)
+
+        setattr(strict, "feedback", _feedback)  # noqa: B010
+        await _run(tmp_path, "first", strict, auto_resume=True, record_meta=False)
+
+        task, model = _task(cls=StrictQATask)
+        await _run(tmp_path, "second", task, resume_from=str(src), record_meta=False)
+        assert model.call_count == 0
+        assert task.calls["feedback"] == 2
 
 
 # ===================================================================
@@ -374,6 +401,25 @@ class TestPreIdentityDirectory:
         await _run(tmp_path, "first", task, auto_resume=True)
         assert model.call_count == 0
         assert task.calls["feedback"] == 0
+
+    @pytest.mark.anyio
+    async def test_a_same_directory_resume_with_another_inference_is_refused(
+        self, tmp_path
+    ):
+        """With a persisted config to compare, the recorded run is no longer
+        trusted: a changed `n` would otherwise reuse `n=1` inference."""
+        root = await _first(tmp_path)
+        _strip_identities(root)
+        (root / "report.json").unlink()
+        task, model = _task(n=3)
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path, result_dir=str(root), auto_resume=True),
+            legacy_match={"data": True, "inference": False},
+        )
+        with pytest.raises(StageResumeError, match="stage `inference`"):
+            await runner.arun()
+        assert model.call_count == 0
 
     @pytest.mark.anyio
     async def test_resume_from_needs_the_persisted_config(self, tmp_path):

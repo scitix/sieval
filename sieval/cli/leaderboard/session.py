@@ -1580,9 +1580,12 @@ class EvalSession:
         self._request_seed_decisions_by_candidate: dict[str, _RequestSeedDecision] = {}
         self._request_seed_decisions_frozen = False
 
-        # The resume-mutable config change this resume made, one line per leaf,
-        # for each task's `meta.json` `runs[].config`.
+        # What a resume changed in the config, one line per leaf, for each
+        # task's `meta.json` `runs[].config`.
         self._resume_config_diff: list[str] = []
+        # The `effective_config.yaml` a resume found, read before this run
+        # rewrites it: what a run recorded without identities is compared with.
+        self._recorded_config: dict | None = None
 
         # Resolved lazily in `_init_runner` at the start of `_prepare_execution`.
         self.result_dir: str | None = None
@@ -4566,25 +4569,21 @@ class EvalSession:
     ) -> LegacyStageMatch | None:
         """Compare this run's config with the one a recorded run persisted.
 
-        Read only by a runner whose recorded directory carries no stage
-        identities (written before they existed). The recorded run's
-        ``effective_config.yaml`` sits in its session ``result_dir``, the task
-        directory's parent. Data matches when the task's ``dataset`` block
-        does; inference when the candidate model's config chain, the task's
-        ``infer_args``, its inference ``args`` (``n``, ``stop``, ``logprobs``),
-        the result-changing runner keys and ``deterministic`` all do. ``None``
-        when no persisted config is found: both stages stay unknown.
+        Read only for a recorded directory without stage identities (see
+        :func:`_stage_config`). The recorded config is the
+        ``effective_config.yaml`` of the session ``result_dir`` the task
+        directory sits in: ``resume_from``'s parent, or for a same-directory
+        resume the one this run found before rewriting it. ``None`` when there
+        is none: both stages stay unknown.
         """
-        task_dir = (
-            Path(runner_config.resume_from)
-            if runner_config.resume_from
-            else Path(runner_config.result_dir)
-            if runner_config.result_dir
-            else None
-        )
-        if task_dir is None:
+        if runner_config.resume_from:
+            persisted = _read_persisted_config(
+                Path(runner_config.resume_from).parent / "effective_config.yaml"
+            )
+        elif self.resume_override:
+            persisted = self._recorded_config
+        else:
             return None
-        persisted = _read_persisted_config(task_dir.parent / "effective_config.yaml")
         if persisted is None:
             return None
         recorded_tasks = persisted.get("tasks") or {}
@@ -4832,6 +4831,11 @@ class EvalSession:
             allow_unicode=True,
             sort_keys=False,
         )
+        result_dir = self._resolve_result_dir()
+        if self.resume_override and result_dir:
+            self._recorded_config = await run_sync(
+                _read_persisted_config, Path(result_dir) / "effective_config.yaml"
+            )
         extra_lines = [
             "Reproduce:",
             "  sieval run <this file>",

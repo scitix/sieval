@@ -1,23 +1,17 @@
-"""Per-stage resume: what a recorded task directory says, compared with a new run.
-
-A resume compares the stage identities this run computes with the ones a
-recorded directory holds, and decides per sample and per stage:
+"""Per-stage resume: a recorded task directory compared with a new run.
 
 ==========================  ====================================================
-Data or prompt differ       The sample reruns from the start; the rest are kept.
+Data or prompt differ       That sample reruns from the start.
 Inference differs           Refused: :class:`StageResumeError` names the stage.
-Grader differs              Every kept sample reruns ``postprocess`` and
-                            ``feedback`` on its recorded inference; ``report``
-                            reruns.
+Grader differs              ``postprocess``, ``feedback`` and ``report`` rerun
+                            on the recorded inference.
 ==========================  ====================================================
 
-A recorded sample's data and prompt digests come from its ``preprocess``
-record. A directory recorded before those existed still holds each sample's
-``preprocess`` output, so its prompt is digested from that. Its data and
-inference are read from the persisted config by the caller, as
-:class:`LegacyStageMatch`. A stage that neither source can tell is unknown, and
-a resume that would reuse it is refused. Nothing here writes to the recorded
-directory.
+A sample's data and prompt digests come from its ``preprocess`` record. For a
+directory recorded before them, the prompt is digested from the ``preprocess``
+output, and data and inference come from the caller's
+:class:`LegacyStageMatch`. A stage neither can tell is unknown, and a resume
+that would reuse it is refused. Nothing here writes to the recorded directory.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -119,24 +113,25 @@ def iteration_dirs(root: Path) -> list[Path]:
 def copy_recorded_dir(src: Path, dst: Path) -> list[Path]:
     """Copy *src*'s shards into *dst* for a resume across tasks.
 
-    Only the ``<iteration>/`` shard directories are copied: they are the
-    record, and each ``.idx`` line's run ordinal is reset to ``0`` (see
-    :func:`_copy_idx`). ``manifest.json`` is rebuilt from their indexes;
-    ``meta.json``, ``report.json`` and the views are written by the new run.
-    Files are copied without their mode, so a read-only source yields writable
-    copies. Returns the directories created, for :func:`remove_copied` to undo.
+    Only the ``<iteration>/`` shard directories are copied, with their run
+    ordinals shifted (see :func:`_copy_idx`); the new run writes ``meta.json``,
+    ``manifest.json``, ``report.json`` and the views. Files are copied without
+    their mode, so a read-only source yields writable copies. Returns the
+    directories created, for :func:`remove_copied` to undo.
 
     The caller has established that no run started in *dst*, so shard
-    directories already there are an earlier copy that was interrupted before
-    its run began; they are replaced.
+    directories already there are an earlier copy interrupted before its run
+    began; they are replaced.
     """
     remove_copied(iteration_dirs(dst))
     dst.mkdir(parents=True, exist_ok=True)
+    tops = iteration_dirs(src)
+    idx_files = [p for top in tops for p in top.rglob("*.idx")]
+    shift = max((_last_run(p) for p in idx_files), default=0)
     created: list[Path] = []
     try:
-        for top in iteration_dirs(src):
-            target = dst / top.name
-            created.append(target)
+        for top in tops:
+            created.append(dst / top.name)
             for dirpath, _dirnames, filenames in os.walk(top):
                 rel = Path(dirpath).relative_to(src)
                 (dst / rel).mkdir(parents=True, exist_ok=True)
@@ -144,7 +139,7 @@ def copy_recorded_dir(src: Path, dst: Path) -> list[Path]:
                     if name.endswith(".jsonl"):
                         shutil.copyfile(Path(dirpath) / name, dst / rel / name)
                     elif name.endswith(".idx"):
-                        _copy_idx(Path(dirpath) / name, dst / rel / name)
+                        _copy_idx(Path(dirpath) / name, dst / rel / name, shift)
     except BaseException:
         remove_copied(created)
         raise
@@ -155,20 +150,34 @@ def copy_recorded_dir(src: Path, dst: Path) -> list[Path]:
 _IDX_COLUMNS_BEFORE_RUN = 8
 
 
-def _copy_idx(src: Path, dst: Path) -> None:
-    """Copy an ``.idx`` file with every line's run ordinal set to ``0``.
+def _run_of(parts: list[str]) -> int:
+    """An ``.idx`` line's run ordinal; ``0`` for a line written before it."""
+    if len(parts) > _IDX_COLUMNS_BEFORE_RUN and parts[_IDX_COLUMNS_BEFORE_RUN]:
+        return int(parts[_IDX_COLUMNS_BEFORE_RUN])
+    return 0
 
-    The copied records come before this directory's history, so any record
-    the new run writes supersedes them, whatever run wrote them at the source.
+
+def _last_run(idx: Path) -> int:
+    lines = idx.read_text(encoding="utf-8").splitlines()
+    return max((_run_of(line.split("\t")) for line in lines if line), default=0)
+
+
+def _copy_idx(src: Path, dst: Path, shift: int) -> None:
+    """Copy an ``.idx`` file with each run ordinal lowered by *shift*.
+
+    *shift* is the source's latest ordinal, so its records keep their order
+    (a rewound sample's later record still wins) and all sit at or below
+    ``0``, under every run of the new directory.
     """
     lines = []
     for line in src.read_text(encoding="utf-8").splitlines():
         if not line:
             continue
         parts = line.split("\t")
+        run = _run_of(parts) - shift
         parts = parts[:_IDX_COLUMNS_BEFORE_RUN]
         parts += [""] * (_IDX_COLUMNS_BEFORE_RUN - len(parts))
-        lines.append("\t".join([*parts, "0"]) + "\n")
+        lines.append("\t".join([*parts, str(run)]) + "\n")
     dst.write_text("".join(lines), encoding="utf-8")
 
 

@@ -135,13 +135,11 @@ class TaskRunnerConfig:
         result_dir: Output directory for shards, manifest, and report.
             If ``None``, auto-generated under ``outputs/<task_name>/<timestamp>``.
         auto_resume: When ``True``, detect and resume from existing result_dir.
-        resume_from: A recorded task directory to resume from, possibly another
-            task's and read-only. Its shards are copied into ``result_dir``,
-            which must hold no run yet, and the run resumes from the copy by
-            per-stage comparison (see :mod:`sieval.core.runners.stage_resume`).
-            Implies ``auto_resume``. When ``result_dir`` already holds a run,
-            that run is resumed and ``resume_from`` is ignored, so a
-            ``resume_from`` run is itself resumable with the same config.
+        resume_from: A recorded task directory, possibly another task's and
+            read-only, whose shards are copied into an empty ``result_dir`` and
+            resumed (see :mod:`sieval.core.runners.stage_resume`). Implies
+            ``auto_resume``; ignored once ``result_dir`` holds a run, so the
+            same config resumes an interrupted copy.
     """
 
     result_dir: str | None = None
@@ -322,10 +320,8 @@ class TaskRunner:
         """*inference_recipe* is the serving plan of the model under test,
         without its checkpoint, for the inference identity; ``None`` when the
         model is not served by SiEval. *resume_config_diff* is the config
-        change a resume made, for ``runs[].config``. *legacy_match* says, from
-        the recorded run's persisted config, whether its data and inference
-        match this run's; it is read only when the recorded directory carries
-        no identities of its own.
+        change a resume made, for ``runs[].config``. *legacy_match* compares a
+        recorded run without identities through its persisted config.
         """
         # A malformed judge reference would leave every grader identity
         # unknown; refuse it before any work.
@@ -334,7 +330,7 @@ class TaskRunner:
         self._config = config or TaskRunnerConfig()
         self._inference_recipe = inference_recipe
         self._resume_config_diff = list(resume_config_diff or [])
-        self._legacy_match: LegacyStageMatch = dict(legacy_match or {})  # type: ignore[assignment]
+        self._legacy_match = LegacyStageMatch(**(legacy_match or {}))
         # Per-stage resume: what was copied in, and what the comparison chose.
         self._run_from: RunFrom | None = None
         self._copied: list[Path] = []
@@ -1356,11 +1352,10 @@ class TaskRunner:
         logger.info("Resuming {} from {}", self._task.name, src)
 
     def _trusts_unrecorded(self) -> bool:
-        """Whether a recorded run's missing identities count as matching.
+        """Whether a recorded run without identities counts as matching.
 
-        Only a same-directory resume of a run that recorded none, with nothing
-        from the caller to compare: the contract before stage identities, where
-        the caller vouched for the config. A resume across tasks never trusts.
+        Only for a same-directory resume with no persisted config to compare
+        (no :class:`LegacyStageMatch`): the contract before stage identities.
         """
         return (
             self._run_from is None
@@ -1489,12 +1484,10 @@ class TaskRunner:
     async def _plan_stage_resume(self) -> list[str | int]:
         """Decide, per recorded sample, what this resume keeps.
 
-        Data or prompt differ: the sample restarts. Grader differs: a sample
-        graded at its first iteration goes back to its recorded inference; a
-        later iteration's inference depended on the old grader's feedback, so
-        that sample restarts. A sample this run's dataset no longer holds is
-        dropped. Returns the samples whose state or stamps changed, for
-        rewriting as this run's records.
+        Changed data or prompt restarts a sample. A changed grader rolls it back
+        to its recorded inference, or restarts it if it is past iteration 0,
+        since that inference saw the old grader's feedback. Samples outside the
+        dataset are dropped. Returns the samples to rewrite as this run's.
         """
         test_set = self._task.dataset.test_set
         size = len(test_set) if test_set else 0

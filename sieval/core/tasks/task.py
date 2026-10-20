@@ -394,15 +394,12 @@ class Task[
     def grader_args(self) -> Mapping[str, JSONValue]:
         """Task arguments that change how answers are graded, for ``meta.json``.
 
-        Part of the grader identity, beside the grading modules and the judge
-        models. The default reads every constructor parameter of the task's
-        classes back from the instance, as ``self._<name>`` or ``self.<name>``,
-        leaving out :attr:`GRADER_ARGS_EXCLUDED`, :meth:`inference_args` and
-        anything holding a :class:`Model` (a judge, identified by
-        :meth:`judge_models`). So a judge held as a string, such as a
-        ``judge_model`` name, or an ``embed_threshold`` counts. A value that
-        will not encode as JSON is left out. Override it when a task keeps an
-        argument under another name.
+        Part of the grader identity. The default reads each constructor
+        parameter of the task's classes back as ``self._<name>`` or
+        ``self.<name>``, leaving out :attr:`GRADER_ARGS_EXCLUDED`,
+        :meth:`inference_args`, :class:`Model` values (judges are identified by
+        :meth:`judge_models`) and anything not JSON. Override it when a task
+        keeps an argument under another name.
         """
         excluded = set(self.GRADER_ARGS_EXCLUDED) | set(self.inference_args())
         names: list[str] = []

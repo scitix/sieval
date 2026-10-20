@@ -980,3 +980,28 @@ class TestResumeFromSurface:
         session = self._session(tmp_path, resume_from=tmp_path / "old")
         rc = session._build_runner_config({}, {}, "qa")
         assert session._legacy_match_for("qa", rc) is None
+
+    @pytest.mark.anyio
+    async def test_a_same_dir_resume_compares_the_config_before_its_rewrite(
+        self, tmp_path: Path
+    ):
+        """`--resume` rewrites effective_config.yaml before tasks are built, so
+        the recorded config is the one read before that rewrite."""
+        await self._session(tmp_path)._persist_effective_config()
+        cfg = _write_yaml(tmp_path, "cfg.yaml", self.CONFIG.replace("n: 1", "n: 4"))
+        session = EvalSession(
+            config_path=str(cfg),
+            result_dir_override=str(tmp_path / "out"),
+            resume=True,
+        )
+        await session._persist_effective_config()
+        rc = session._build_runner_config({}, {}, "qa")
+        assert session._legacy_match_for("qa", rc) == {
+            "data": True,
+            "inference": False,
+        }
+
+    def test_a_fresh_run_has_nothing_to_compare(self, tmp_path: Path):
+        session = self._session(tmp_path)
+        rc = session._build_runner_config({}, {}, "qa")
+        assert session._legacy_match_for("qa", rc) is None

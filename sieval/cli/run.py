@@ -412,12 +412,7 @@ def register_run_command(app: typer.Typer) -> None:
             Path | None,
             typer.Option(
                 "--resume-from",
-                help=(
-                    "Resume from a recorded result_dir (may be read-only, and "
-                    "another task's): each task's shards are copied from "
-                    "<DIR>/<task> into this run's result_dir, then resumed "
-                    "stage by stage. A task with no directory there runs fresh."
-                ),
+                help="Start each task from <DIR>/<task> of another run (read-only ok)",
             ),
         ] = None,
         deterministic: Annotated[
