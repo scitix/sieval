@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **BREAKING — `manifest.json` is removed.** A sample's state is its latest shard record, found through `.idx`, which is checked against the shard's length on load: a record appended without its `.idx` line reruns, and a line past the shard's end is dropped. A directory is "started" when `meta.json` has a non-empty `runs[]`, or, for a directory from before `runs[]`, when it has a `meta.json` at all. Readers of `manifest.json` read the `.idx` columns or the shard record's `error_*` fields instead (#148).
+- **BREAKING — one finalize for every exit path.** The full run, the all-terminal early exit and the fast resume all write `report.json`'s new `sieval` counts (`total`, `final`, `failed`, `anomalies`), `anomalies.json` over every iteration, `profile.json` from every sample's `stage_meta` when `record_meta` is on, and `progress.json` with `finished: true`. A fast resume is decided by those counts. `anomalies.json` loses `summary` and its timestamped backups; `runs[].rules_hash` records the rules a run applied (#148).
+- `meta.json` records `config`, the session's `effective_config.yaml` relative to the task directory, and `runs[].id`, a run ID sortable by start time. The leaderboard scanner reads the run ID, model and config from there instead of walking up the filesystem (#148).
+- Every file SiEval rewrites in a result directory goes through one atomic write, `sieval.core.utils.atomic` (#148).
 - **BREAKING — a resume compares stage identities, not config text.** Changed data or prompt reruns those samples, a changed grader regrades on the recorded inference, a changed inference is refused. `effective_config.yaml` and `infer_plans.yaml` no longer refuse a resume; `gate_resume_identity` is removed (#148).
 
 ### Added

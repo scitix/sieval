@@ -1072,6 +1072,5 @@ async def write_completed_samples(
     await saver.begin_run(resumed=False)
     for i in range(n_completed):
         ctx = _make_bench_ctx(i, TaskStage.FINAL)
-        saver._update_manifest_entry(ctx)
         saver._stage_queue.append(ctx)
     await saver.flush()

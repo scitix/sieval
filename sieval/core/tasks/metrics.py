@@ -436,7 +436,7 @@ def wilson_interval(
 
     No randomness, so two readers of the same values compute the same interval
     (RFC #74 D refused a seed in this layer). Order-independent, which matters
-    because a resumed run rebuilds its finals in manifest order.
+    because a resumed run rebuilds its finals in shard-index order.
     """
     m = len(values)
     if m < 2 or denominator <= 0:

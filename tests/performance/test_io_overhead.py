@@ -1,7 +1,7 @@
 """
 I/O overhead benchmarks for TaskSaver and TaskLoader.
 
-Measures flush performance, manifest write scaling, hydration speed,
+Measures flush performance, hydration speed,
 compensation scan, and cross-stage dependency loading overhead.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from sieval.core.tasks.context import TaskContext, TaskManifest, TaskStage
+from sieval.core.tasks.context import TaskContext, TaskStage
 from sieval.core.tasks.loader import TaskLoader
 from sieval.core.tasks.saver import TaskSaver
 from tests.conftest import (
@@ -45,7 +45,6 @@ async def _write_contexts_batch(
         write_buffer_flush_interval=9999.0,
     )
     for ctx in contexts:
-        saver._update_manifest_entry(ctx)
         saver._stage_queue.append(ctx)
     await saver.flush()
 
@@ -79,7 +78,6 @@ class TestSaverFlushPerformance:
 
         for i in range(n_contexts):
             ctx = _make_bench_ctx(i, TaskStage.FINAL)
-            saver._update_manifest_entry(ctx)
             saver._stage_queue.append(ctx)
 
         timer = PerfTimer()
@@ -110,7 +108,6 @@ class TestSaverFlushPerformance:
 
         for i in range(n):
             ctx = _make_bench_ctx(i, TaskStage.FINAL, payload_size=payload_size)
-            saver._update_manifest_entry(ctx)
             saver._stage_queue.append(ctx)
 
         timer = PerfTimer()
@@ -123,51 +120,6 @@ class TestSaverFlushPerformance:
         )
 
 
-class TestManifestWriteScaling:
-    """Measure manifest write time vs manifest size."""
-
-    @pytest.mark.anyio
-    @pytest.mark.parametrize("n_entries", [1000, 5000, 10000])
-    async def test_manifest_write_scaling(self, tmp_path: Path, n_entries: int) -> None:
-        """Manifest rewrite time with N existing entries."""
-        saver = TaskSaver(
-            root_dir=tmp_path / f"manifest_{n_entries}",
-            shard_samples=1024,
-        )
-
-        # Pre-populate manifest
-        manifest: dict[int, TaskManifest] = {}
-        for i in range(n_entries):
-            manifest[i] = TaskManifest(
-                sample_id=i,
-                stage=TaskStage.FINAL.value,
-                iteration=0,
-                final=True,
-                failed=False,
-            )
-
-        saver.sync_manifest(manifest)  # type: ignore[arg-type]
-
-        # Add one more item to trigger write
-        ctx = _make_bench_ctx(n_entries, TaskStage.FINAL)
-        saver._update_manifest_entry(ctx)
-        saver._stage_queue.append(ctx)
-
-        timer = PerfTimer()
-        with timer:
-            await saver.flush()
-
-        print(f"PERF: manifest_write n={n_entries} => {timer.elapsed:.4f}s")
-        # Allow up to ~0.1s per 1k manifest entries with a small fixed floor.
-        max_time = max(0.3, n_entries / 1000 * 0.1)
-        assert timer.elapsed < max_time, (
-            f"Manifest write too slow: {timer.elapsed:.3f}s (limit {max_time:.1f}s)"
-        )
-
-
-# ===================================================================
-# Loader hydration benchmarks
-# ===================================================================
 class TestLoaderHydrationPerformance:
     """Measure TaskLoader hydration speed."""
 
@@ -203,16 +155,11 @@ class TestLoaderHydrationPerformance:
 
     @pytest.mark.anyio
     async def test_compensation_scan_speed(self, tmp_path: Path) -> None:
-        """Time for compensation scan (rebuild manifest from idx files)."""
+        """Time for the idx scan that rebuilds each sample's state."""
         root = tmp_path / "compensate_bench"
         n_samples = 2000
         contexts = [_make_bench_ctx(i, TaskStage.FINAL) for i in range(n_samples)]
         await _write_contexts_batch(root, contexts, shard_samples=256)
-
-        # Delete manifest to force compensation scan
-        manifest_path = root / "manifest.json"
-        if manifest_path.exists():
-            manifest_path.unlink()
 
         task = _make_mock_task(n_samples)
         loader = TaskLoader(
@@ -265,7 +212,6 @@ class TestLoaderHydrationPerformance:
                 # Make snapshot for non-terminal stages
                 if stage != TaskStage.FINAL:
                     ctx = ctx.make_snapshot()
-                saver._update_manifest_entry(ctx)
                 saver._stage_queue.append(ctx)
             await saver.flush()
 
@@ -330,7 +276,6 @@ class TestIOStress:
 
         for i in range(n):
             ctx = _make_bench_ctx(i, TaskStage.FINAL)
-            saver._update_manifest_entry(ctx)
             saver._stage_queue.append(ctx)
 
         timer = PerfTimer()

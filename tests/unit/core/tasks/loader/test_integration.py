@@ -1,6 +1,6 @@
 """
 Tests for TaskSaver → TaskLoader integration: write-then-read roundtrips,
-idx offset correctness, and compensation (manifest rebuild from shards).
+idx offset correctness, and state rebuilt from the shard indices.
 
 AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 """
@@ -82,7 +82,7 @@ def _write_manual_preprocessed_record(
 
 class TestSaverLoaderIntegration:
     @pytest.mark.anyio
-    async def test_write_then_load_manifest(self, tmp_path):
+    async def test_write_then_load_state(self, tmp_path):
         root = tmp_path / "integration"
         contexts = [
             make_ctx(0, TaskStage.FINAL),
@@ -277,7 +277,7 @@ class TestSaverLoaderIntegration:
     @pytest.mark.anyio
     async def test_load_offsets_prefers_latest_offset_same_stage(self, tmp_path):
         """
-        Trusted-manifest path should pick the latest append offset when
+        The idx scan should pick the latest append offset when
         sample/stage/iteration are identical.
         """
         root = tmp_path / "latest_offset_idx"
@@ -299,7 +299,7 @@ class TestSaverLoaderIntegration:
         ).make_snapshot()
         await write_snapshot(root, ctx_new)
 
-        # Force trusted-manifest path (_load_offsets_from_idx).
+        # A report on disk does not change how state is read.
         (root / "report.json").write_text("{}", encoding="utf-8")
 
         task = make_mock_task()
@@ -315,23 +315,13 @@ class TestSaverLoaderIntegration:
     @pytest.mark.anyio
     async def test_load_offsets_cross_shard_tiebreak_is_deterministic(self, tmp_path):
         """
-        Trusted-manifest path should deterministically pick one offset when
+        The idx scan should deterministically pick one offset when
         sample/stage/iteration/offset are identical across different shards.
         """
         root = tmp_path / "cross_shard_idx_tiebreak"
         _write_manual_preprocessed_record(root, shard_id=10, preprocess_value="old")
         _write_manual_preprocessed_record(root, shard_id=20, preprocess_value="new")
 
-        manifest = [
-            {
-                "sample_id": 0,
-                "iteration": 0,
-                "stage": TaskStage.PREPROCESSED.value,
-                "final": False,
-                "failed": False,
-            }
-        ]
-        (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (root / "report.json").write_text("{}", encoding="utf-8")
 
         task = make_mock_task()
@@ -347,12 +337,11 @@ class TestSaverLoaderIntegration:
 
 class TestCompensationMechanism:
     @pytest.mark.anyio
-    async def test_rebuild_manifest_when_manifest_missing(self, tmp_path):
-        """When manifest.json is deleted, _compensate_scan rebuilds from idx files."""
+    async def test_state_is_rebuilt_from_idx_files(self, tmp_path):
+        """State is rebuilt from the idx files alone."""
         root = tmp_path / "compensate"
         contexts = [make_ctx(i, TaskStage.FINAL) for i in range(3)]
         await write_contexts(root, contexts)
-        (root / "manifest.json").unlink()
 
         task = make_mock_task()
         loader = TaskLoader(task=task, root_dir=root)
@@ -363,7 +352,7 @@ class TestCompensationMechanism:
             assert loaded[sid].stage == TaskStage.FINAL
 
     @pytest.mark.anyio
-    async def test_rebuild_manifest_preserves_failed_samples(self, tmp_path):
+    async def test_rebuilt_state_preserves_failed_samples(self, tmp_path):
         """Compensation scan correctly restores FAILED samples with error info."""
         root = tmp_path / "compensate_fail"
         contexts = [
@@ -377,7 +366,6 @@ class TestCompensationMechanism:
             ),
         ]
         await write_contexts(root, contexts)
-        (root / "manifest.json").unlink()
 
         task = make_mock_task()
         loader = TaskLoader(task=task, root_dir=root)
@@ -405,7 +393,6 @@ class TestCompensationMechanism:
 
         ctx_final = make_ctx(0, TaskStage.FINAL)
         await write_snapshot(root, ctx_final)
-        (root / "manifest.json").unlink()
 
         task = make_mock_task()
         loader = TaskLoader(task=task, root_dir=root)
@@ -435,7 +422,6 @@ class TestCompensationMechanism:
             feedback_result={"correct": True},
         )
         await write_snapshot(root, ctx_iter1)
-        (root / "manifest.json").unlink()
 
         task = make_mock_task()
         loader = TaskLoader(task=task, root_dir=root)
@@ -481,7 +467,6 @@ class TestCompensationMechanism:
         await write_snapshot(root, ctx_new)
 
         # Force compensation path (_compensate_scan).
-        (root / "manifest.json").unlink()
 
         task = make_mock_task()
         loader = TaskLoader(task=task, root_dir=root)
@@ -526,7 +511,6 @@ class TestCompensationMechanism:
             feedback_result={"correct": True},
         )
         await write_contexts(root, [ctx])
-        (root / "manifest.json").unlink()
 
         task = make_mock_task()
         loader = TaskLoader(task=task, root_dir=root)

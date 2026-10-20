@@ -1196,6 +1196,21 @@ tasks:
         assert binding["seed"] == DETERMINISTIC_DEFAULT_SEED
         assert binding["seed_provenance"] == "automatic"
 
+        # Each task's meta.json names the session config, the model and the run,
+        # and the scanner reads them from there.
+        from sieval.cli.leaderboard.scanner import scan_runs
+
+        task_dir = tmp_path / "arun_results" / "chain_eval"
+        meta = json.loads((task_dir / "meta.json").read_text())
+        assert meta["config"] == "../effective_config.yaml"
+        [run] = scan_runs([tmp_path / "arun_results"])
+        assert run.model_name == meta["model"]
+        assert run.run_id == meta["runs"][-1]["id"]
+        assert (
+            run.config
+            == (tmp_path / "arun_results" / "effective_config.yaml").resolve()
+        )
+
 
 class TestEvalSessionConfigLoading:
     def test_init_rejects_non_dict_top_level_yaml(self, tmp_path):
@@ -1237,6 +1252,7 @@ class TestEvalSessionConfigLoading:
             concurrency_limit=7,
             concurrency_limits={"infer": 3},
             deterministic=False,
+            effective_config=str(tmp_path / "from_override" / "effective_config.yaml"),
         )
 
     def test_init_runner_forwards_deterministic(self, tmp_path):

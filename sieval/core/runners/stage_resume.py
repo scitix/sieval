@@ -115,8 +115,8 @@ def copy_recorded_dir(src: Path, dst: Path) -> list[Path]:
 
     Only the ``<iteration>/`` shard directories are copied, with their run
     ordinals shifted (see :func:`_copy_idx`); the new run writes ``meta.json``,
-    ``manifest.json``, ``report.json`` and the views. Files are copied without
-    their mode, so a read-only source yields writable copies. Returns the
+    ``report.json`` and the views. Files are copied without their mode, so a
+    read-only source yields writable copies. Returns the
     directories created, for :func:`remove_copied` to undo.
 
     The caller has established that no run started in *dst*, so shard

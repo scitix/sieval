@@ -1,7 +1,6 @@
 """Task profiling: I/O timings, stage execution, and token usage statistics."""
 
 import bisect
-import contextlib
 import time
 from collections import defaultdict
 from collections.abc import Mapping
@@ -9,11 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar, NotRequired, Self, TypedDict
 
-import anyio
 import orjson
 from loguru import logger
 
 from sieval.core.models import ModelUsage
+from sieval.core.utils.atomic import aatomic_write
 
 from .context import TaskContext
 
@@ -221,6 +220,16 @@ class TaskProfiler:
         self._stage_breakdown: dict[str, dict[str, UsageBreakdownStats]] = {}
         self._stage_usage_calls: dict[str, int] = {}
         self._stage_total_mismatches: dict[str, int] = {}
+
+    def include_stage_meta(self) -> None:
+        """Build stage timings and token usage from recorded ``stage_meta``.
+
+        For a run with ``record_meta`` on: every sample's record carries both,
+        resumed samples included, so ``profile.json`` covers all of them
+        whatever ``profile_stages`` and ``profile_usage`` were set to.
+        """
+        self._profile_stages = True
+        self._profile_usage = True
 
     def should_profile_io(self) -> bool:
         return self._profile_io
@@ -577,15 +586,10 @@ class TaskProfiler:
             return
 
         profile_path = root_dir / "profile.json"
-        tmp_path = profile_path.with_suffix(".tmp")
         try:
-            async with await anyio.open_file(tmp_path, "wb") as f:
-                await f.write(orjson.dumps(report))
-            await anyio.Path(tmp_path).replace(profile_path)
+            await aatomic_write(profile_path, orjson.dumps(report))
             logger.info("Saved profile to: {}", profile_path)
-        except Exception as e:
-            with contextlib.suppress(OSError):
-                await anyio.Path(tmp_path).unlink(missing_ok=True)
+        except OSError as e:
             logger.error("Failed to save profile.json: {}", e)
 
     def get_io_aggregates(self) -> dict[str, list[float]]:

@@ -37,8 +37,12 @@ class MultiTaskRunner:
             | None
         ) = None,
         deterministic: bool = False,
+        effective_config: str | None = None,
     ):
         """Initialize the multi-task runner.
+
+        *effective_config* is the session's config file, recorded in each
+        task's ``meta.json`` unless the task's config names its own.
 
         When *result_dir* is set, tasks without their own ``result_dir`` will
         write to ``<result_dir>/<task.name>``.
@@ -51,6 +55,7 @@ class MultiTaskRunner:
         self._global_limit = concurrency_limit
         self._stage_limits_cfg = concurrency_limits
         self._deterministic = deterministic
+        self._effective_config = effective_config
         self._runners: list[TaskRunner] = []
         # Track registered names and directories to prevent collisions
         self._task_names: set[str] = set()
@@ -85,6 +90,8 @@ class MultiTaskRunner:
         cfg = config or TaskRunnerConfig()
         if self._base_result_dir and cfg.result_dir is None:
             cfg = replace(cfg, result_dir=str(Path(self._base_result_dir) / task.name))
+        if self._effective_config and cfg.effective_config is None:
+            cfg = replace(cfg, effective_config=self._effective_config)
         # Monotone force-on: session True overrides per-task; session
         # False leaves per-task untouched (per-task True still wins).
         if self._deterministic:

@@ -41,7 +41,6 @@ async def write_contexts(root_dir, contexts, shard_samples=1024):
         record_meta=True,
     )
     for ctx in contexts:
-        saver._update_manifest_entry(ctx)
         saver._stage_queue.append(ctx)
     await saver.flush()
     return saver
@@ -54,6 +53,5 @@ async def write_snapshot(root_dir, ctx):
         record_type_metadata=True,
         record_meta=True,
     )
-    saver._update_manifest_entry(ctx)
     saver._stage_queue.append(ctx)
     await saver.flush()

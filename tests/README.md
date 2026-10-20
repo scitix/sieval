@@ -55,7 +55,7 @@ tests/
 │   │   │   ├── loader/           # TaskLoader sub-package
 │   │   │   │   ├── conftest.py
 │   │   │   │   ├── test_parsing.py
-│   │   │   │   ├── test_manifest.py
+│   │   │   │   ├── test_idx_state.py
 │   │   │   │   ├── test_retries.py
 │   │   │   │   ├── test_corruption.py
 │   │   │   │   ├── test_integration.py

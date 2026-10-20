@@ -6,8 +6,6 @@ AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
-from unittest.mock import AsyncMock
 
 import orjson
 import pytest
@@ -15,7 +13,6 @@ import pytest
 from sieval.core.models import ModelOutput
 from sieval.core.tasks.anomaly import (
     _DETECTION_RULES,
-    AnomalyReport,
     TaskAnomalyDetector,
     _model_outputs,
     _rule_applies,
@@ -437,68 +434,6 @@ class TestTaskAnomalyDetector:
         result = detector.detect(ctx, task_tags={"gen", "zero_shot"})
         assert result["truncated_output"] == {1, 2}
 
-    def test_generate_report_single_iteration(self, tmp_path, sample_model_meta):
-        """Flat {sid: ctx} input — report uses iteration=0 key."""
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        output = ModelOutput(model=sample_model_meta, texts=[])
-        ctx_anomaly = _make_final_ctx(infer_result=output, postprocess_result="ok")
-        ctx_clean = _make_final_ctx(sample_id=1, postprocess_result="answer")
-        report = detector.generate_report(
-            {0: ctx_anomaly, 1: ctx_clean}, "test_task", task_tags={"gen", "zero_shot"}
-        )
-
-        assert report["summary"]["total_samples"] == 2
-        assert report["summary"]["final_samples"] == 2
-        assert report["summary"]["anomaly_samples"] == 1
-        # anomaly_sample_details counts affected samples per rule
-        assert report["summary"]["anomaly_sample_details"]["empty_infer_gen"] == 1
-        # empty_infer_gen fires once (sentinel index 0), so rollout count is 1
-        assert report["summary"]["anomaly_rollout_details"]["empty_infer_gen"] == 1
-        # Structure: {sid: {iter: {rule: [indices]}}}
-        assert report["samples"] == {"0": {"0": {"empty_infer_gen": [0]}}}
-
-    @pytest.mark.anyio
-    async def test_generate_report_multi_iteration(self, tmp_path, sample_model_meta):
-        """Multi-iteration anomalies are keyed by iteration in the report."""
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        output_trunc = ModelOutput(
-            model=sample_model_meta,
-            texts=["a", "b"],
-            finish_reasons=["stop", "length"],
-        )
-        ctx_iter0 = _make_final_ctx(iteration=0, postprocess_result="answer")
-        ctx_iter1 = _make_final_ctx(
-            iteration=1, infer_result=output_trunc, postprocess_result="ok"
-        )
-
-        # Simulate what the runner collects: detect per-iteration, store results
-        tags = {"gen", "zero_shot"}
-        results_iter0 = detector.detect(ctx_iter0, task_tags=tags)
-        results_iter1 = detector.detect(ctx_iter1, task_tags=tags)
-        anomaly_results: dict[str | int, dict[int, dict[str, list[int]]]] = {}
-        if results_iter0:
-            anomaly_results.setdefault(0, {})[0] = {
-                r: sorted(i) for r, i in results_iter0.items()
-            }
-        if results_iter1:
-            anomaly_results.setdefault(0, {})[1] = {
-                r: sorted(i) for r, i in results_iter1.items()
-            }
-
-        report = await detector.generate_and_save_from_results(
-            anomaly_results,
-            task_name="test_task",
-            total_samples=2,
-            final_count=2,
-            failed_count=0,
-            backup_if_changed=False,
-        )
-
-        assert report["summary"]["total_samples"] == 2
-        assert report["summary"]["anomaly_samples"] == 1
-        # Only iteration 1 of sample 0 has an anomaly, at index 1
-        assert report["samples"] == {"0": {"1": {"truncated_output": [1]}}}
-
 
 class TestCustomDetectionRule:
     """Custom detection rule registration via @sieval_detection_rule."""
@@ -542,166 +477,6 @@ class TestCustomDetectionRule:
         result = detector.detect(ctx, task_tags={"gen"})
         assert "custom_test_bad_answer" in result
         assert result["custom_test_bad_answer"] == {0}
-
-
-# ===================================================================
-# Async save / load / generate_and_save / needs_regeneration
-# ===================================================================
-class TestTaskAnomalyDetectorAsync:
-    @pytest.mark.anyio
-    async def test_load_and_save_load_flow(self, tmp_path, sample_model_meta):
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        assert await detector.load() is None
-
-        output = ModelOutput(model=sample_model_meta, texts=[])
-        ctx = _make_final_ctx(infer_result=output, postprocess_result="ok")
-        report = detector.generate_report({0: ctx}, "test_task", task_tags={"gen"})
-
-        await detector.save(report, backup_if_changed=False)
-        loaded = await detector.load()
-        assert loaded is not None
-        assert loaded["summary"]["total_samples"] == 1
-
-    @pytest.mark.anyio
-    async def test_generate_and_save(self, tmp_path, sample_model_meta):
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        output = ModelOutput(model=sample_model_meta, texts=[])
-        ctx = _make_final_ctx(infer_result=output, postprocess_result="ok")
-        report = await detector.generate_and_save(
-            {0: ctx}, "my_task", task_tags={"gen"}
-        )
-        assert "meta" in report
-        assert "summary" in report
-        assert (tmp_path / "anomalies.json").exists()
-
-    @pytest.mark.anyio
-    async def test_needs_regeneration_transitions(self, tmp_path):
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        assert detector.needs_regeneration() is True
-
-        ctx = _make_final_ctx(postprocess_result="answer")
-        report = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        await detector.save(report, backup_if_changed=False)
-        await detector.load()
-        assert detector.needs_regeneration() is False
-
-    @pytest.mark.anyio
-    async def test_previous_filter_rule_hash_is_backed_up_and_regenerated(
-        self, tmp_path
-    ):
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        ctx = _make_final_ctx(postprocess_result="answer")
-        previous = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        previous["meta"]["rules_hash"] = "1d61bae98de6f417"
-        previous["meta"]["generated_at"] = "2026-08-07T01:02:03+00:00"
-        await detector.save(previous, backup_if_changed=False)
-
-        await detector.load()
-        assert detector.needs_regeneration() is True
-        current = await detector.generate_and_save(
-            {0: ctx}, "t", task_tags={"gen"}, backup_if_changed=True
-        )
-
-        assert current["meta"]["rules_hash"] == "2c440347324b1edb"
-        backup = orjson.loads((tmp_path / "anomalies.20260807010203.json").read_bytes())
-        assert backup["meta"]["rules_hash"] == "1d61bae98de6f417"
-        assert detector.needs_regeneration() is False
-
-    @pytest.mark.anyio
-    async def test_save_backup_when_rules_changed(self, tmp_path, sample_model_meta):
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        ctx = _make_final_ctx(postprocess_result="answer")
-
-        report_v1 = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        report_v1["meta"]["rules_hash"] = "oldhash"
-        await detector.save(report_v1, backup_if_changed=False)
-
-        report_v2 = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        report_v2["meta"]["rules_hash"] = "newhash"
-        await detector.save(report_v2, backup_if_changed=True)
-
-        backups = list(tmp_path.glob("anomalies.*.json"))
-        assert len(backups) == 1
-
-    async def _save_two(
-        self, tmp_path, *, old_hash, new_hash="newhash", generated_at=...
-    ) -> TaskAnomalyDetector:
-        """Persist a report under *old_hash*, then save another under *new_hash*."""
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        ctx = _make_final_ctx(postprocess_result="answer")
-
-        first = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        # Reached through a plain-dict view: these keys are required on the
-        # TypedDict, and the point of the test is a report that lacks them.
-        meta = cast(dict, first["meta"])
-        if old_hash is None:
-            meta.pop("rules_hash", None)
-        else:
-            meta["rules_hash"] = old_hash
-        if generated_at is not ...:
-            if generated_at is None:
-                meta.pop("generated_at", None)
-            else:
-                meta["generated_at"] = generated_at
-        await detector.save(first, backup_if_changed=False)
-
-        second = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        second["meta"]["rules_hash"] = new_hash
-        await detector.save(second, backup_if_changed=True)
-        return detector
-
-    @pytest.mark.anyio
-    async def test_no_backup_when_the_rules_are_unchanged(self, tmp_path):
-        # A backup per save would fill the run directory with copies of an
-        # identical report, and bury the one that marks a real rule rotation.
-        await self._save_two(tmp_path, old_hash="samehash", new_hash="samehash")
-        assert list(tmp_path.glob("anomalies.*.json")) == []
-
-    @pytest.mark.anyio
-    async def test_no_backup_when_the_old_report_has_no_hash(self, tmp_path):
-        # Nothing to compare against, so "changed" is unknowable; overwriting is
-        # the documented behaviour rather than guessing a rotation happened.
-        await self._save_two(tmp_path, old_hash=None)
-        assert list(tmp_path.glob("anomalies.*.json")) == []
-
-    @pytest.mark.anyio
-    async def test_no_backup_without_a_timestamp_to_name_it(self, tmp_path):
-        # The backup name is derived from the old report's generated_at; with no
-        # timestamp there is no non-colliding name to write.
-        await self._save_two(tmp_path, old_hash="oldhash", generated_at=None)
-        assert list(tmp_path.glob("anomalies.*.json")) == []
-
-    @pytest.mark.anyio
-    async def test_the_backup_is_named_from_the_old_reports_timestamp(self, tmp_path):
-        # Not "now": the name has to identify *which* report was displaced, so a
-        # later reader can line it up with the run that produced it.
-        await self._save_two(
-            tmp_path, old_hash="oldhash", generated_at="2026-08-07T01:02:03"
-        )
-        assert (tmp_path / "anomalies.20260807010203.json").exists()
-
-    @pytest.mark.anyio
-    async def test_the_current_report_survives_the_backup(self, tmp_path):
-        # The old file is moved aside, not deleted, and the new one takes its
-        # place under the canonical name.
-        await self._save_two(
-            tmp_path, old_hash="oldhash", generated_at="2026-08-07T01:02:03"
-        )
-        current = orjson.loads((tmp_path / "anomalies.json").read_bytes())
-        assert current["meta"]["rules_hash"] == "newhash"
-        backup = orjson.loads((tmp_path / "anomalies.20260807010203.json").read_bytes())
-        assert backup["meta"]["rules_hash"] == "oldhash"
-
-    @pytest.mark.anyio
-    async def test_an_unreadable_old_report_does_not_fail_the_run(self, tmp_path):
-        # Backup is best-effort housekeeping; a corrupt predecessor must not
-        # take down the run that is trying to record its own results.
-        (tmp_path / "anomalies.json").write_bytes(b"not json{")
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        ctx = _make_final_ctx(postprocess_result="answer")
-        report = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        await detector.save(report, backup_if_changed=True)  # no raise
-        assert (tmp_path / "anomalies.json").exists()
 
 
 class TestDetectionRuleRegistration:
@@ -828,158 +603,43 @@ class TestDetectGating:
         assert detector.has_anomalies(ctx, set()) is False
 
 
-class TestSaveIsAtomic:
-    """`save` writes a temp file and renames, so a crash never truncates.
+class TestAnomalyReport:
+    """`anomalies.json` holds per-sample detail; counts are `report.json`'s."""
 
-    `anomalies.json` is read back by `load`/`needs_regeneration` on the next
-    run. A half-written file there is worse than none: it looks present, so the
-    report is not regenerated, and the run silently compares against garbage.
-    """
+    RESULTS: dict = {
+        # two iterations, one rule each, different numbers of rollouts
+        "s1": {1: {"rule_a": [2, 0]}, 0: {"rule_a": [0]}},
+        # a second sample tripping a different rule
+        "s2": {0: {"rule_b": [5]}},
+        # present but clean: not persisted
+        "s3": {},
+    }
 
-    def _report(self, detector: TaskAnomalyDetector) -> AnomalyReport:
-        ctx = _make_final_ctx(postprocess_result="answer")
-        return detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-
-    @pytest.mark.anyio
-    async def test_no_temp_file_is_left_behind(self, tmp_path):
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        await detector.save(self._report(detector), backup_if_changed=False)
-        assert list(tmp_path.glob("*.tmp")) == []
-        assert (tmp_path / "anomalies.json").exists()
-
-    @pytest.mark.anyio
-    async def test_the_landing_file_is_not_the_temp_name(self, tmp_path):
-        # `with_suffix(None)` would drop the extension and write to `anomalies`,
-        # leaving `anomalies.json` stale forever while every save "succeeds".
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        await detector.save(self._report(detector), backup_if_changed=False)
-        assert not (tmp_path / "anomalies").exists()
-        assert orjson.loads((tmp_path / "anomalies.json").read_bytes())["meta"]
+    def test_every_iteration_is_kept_and_keys_are_strings(self, tmp_path):
+        report = TaskAnomalyDetector(root_dir=tmp_path).build_report(self.RESULTS, "t")
+        assert report["samples"] == {
+            "s1": {"0": {"rule_a": [0]}, "1": {"rule_a": [0, 2]}},
+            "s2": {"0": {"rule_b": [5]}},
+        }
+        assert "summary" not in report
+        assert report["meta"]["rules_hash"] == get_rules_hash()
 
     @pytest.mark.anyio
-    async def test_a_previous_report_is_replaced_not_appended(self, tmp_path):
+    async def test_write_replaces_atomically_and_returns_the_hash(self, tmp_path):
         detector = TaskAnomalyDetector(root_dir=tmp_path)
-        await detector.save(self._report(detector), backup_if_changed=False)
-        second = self._report(detector)
-        second["meta"]["task_name"] = "second"
-        await detector.save(second, backup_if_changed=False)
+        assert await detector.write(self.RESULTS, "first") == get_rules_hash()
+        await detector.write({}, "second")
         on_disk = orjson.loads((tmp_path / "anomalies.json").read_bytes())
         assert on_disk["meta"]["task_name"] == "second"
-
-    @pytest.mark.anyio
-    async def test_save_caches_the_report_for_needs_regeneration(self, tmp_path):
-        # `needs_regeneration` answers from `_current_report`; leaving it unset
-        # makes every run regenerate, and leaving it stale makes none.
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        assert detector.needs_regeneration() is True
-        await detector.save(self._report(detector), backup_if_changed=False)
-        assert detector.needs_regeneration() is False
-
-    @pytest.mark.anyio
-    async def test_a_write_failure_leaves_no_temp_file(self, tmp_path):
-        # The directory does not exist, so the temp write raises; the failure is
-        # logged rather than raised, and nothing is left half-written.
-        source = TaskAnomalyDetector(root_dir=tmp_path)
-        report = self._report(source)
-        detector = TaskAnomalyDetector(root_dir=tmp_path / "missing")
-        await detector.save(report, backup_if_changed=False)  # no raise
-        assert not (tmp_path / "missing").exists()
-
-    @pytest.mark.anyio
-    async def test_backup_is_skipped_when_there_is_nothing_to_back_up(self, tmp_path):
-        # First save of a run: no prior file, so the backup path must not run.
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        await detector.save(self._report(detector), backup_if_changed=True)
+        assert on_disk["samples"] == {}
+        assert list(tmp_path.glob("*.tmp")) == []
         assert list(tmp_path.glob("anomalies.*.json")) == []
 
-
-class TestAggregationFromPrecomputedResults:
-    """`generate_and_save_from_results` keeps two counters over the same data.
-
-    `anomaly_sample_details` counts *occurrences* (one per sample-iteration that
-    tripped a rule); `anomaly_rollout_details` counts *rollouts* (how many
-    indices tripped). They are easy to swap and a swap misreports how widespread
-    an anomaly is — which is the whole question the report answers.
-    """
-
-    def _results(self) -> dict:
-        return {
-            # two iterations, one rule each, different numbers of rollouts
-            "s1": {0: {"rule_a": [0, 1, 2]}, 1: {"rule_a": [0]}},
-            # a second sample tripping a different rule
-            "s2": {0: {"rule_b": [5]}},
-            # present but clean — must not be counted or persisted
-            "s3": {},
-        }
-
-    async def _report(self, tmp_path):
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        return await detector.generate_and_save_from_results(
-            self._results(),
-            task_name="t",
-            total_samples=10,
-            final_count=9,
-            failed_count=1,
-        )
-
     @pytest.mark.anyio
-    async def test_only_samples_with_anomalies_are_counted(self, tmp_path):
-        report = await self._report(tmp_path)
-        assert report["summary"]["anomaly_samples"] == 2
-
-    @pytest.mark.anyio
-    async def test_a_clean_sample_is_not_persisted(self, tmp_path):
-        # Writing an empty entry per clean sample would make the report scale
-        # with the run rather than with its anomalies.
-        report = await self._report(tmp_path)
-        assert set(report["samples"]) == {"s1", "s2"}
-
-    @pytest.mark.anyio
-    async def test_sample_details_count_occurrences_not_rollouts(self, tmp_path):
-        # rule_a trips in two iterations of one sample -> 2, regardless of the
-        # 4 rollouts involved.
-        report = await self._report(tmp_path)
-        assert report["summary"]["anomaly_sample_details"] == {
-            "rule_a": 2,
-            "rule_b": 1,
-        }
-
-    @pytest.mark.anyio
-    async def test_rollout_details_count_rollouts_not_occurrences(self, tmp_path):
-        # rule_a: 3 indices + 1 index = 4 rollouts.
-        report = await self._report(tmp_path)
-        assert report["summary"]["anomaly_rollout_details"] == {
-            "rule_a": 4,
-            "rule_b": 1,
-        }
-
-    @pytest.mark.anyio
-    async def test_run_totals_pass_through_untouched(self, tmp_path):
-        report = await self._report(tmp_path)
-        summary = report["summary"]
-        assert summary["total_samples"] == 10
-        assert summary["final_samples"] == 9
-        assert summary["failed_samples"] == 1
-
-    @pytest.mark.anyio
-    async def test_iteration_keys_are_stringified_for_json(self, tmp_path):
-        # The report round-trips through JSON, where integer keys would come
-        # back as strings anyway — doing it here keeps in-memory and on-disk
-        # shapes identical.
-        report = await self._report(tmp_path)
-        assert set(report["samples"]["s1"]) == {"0", "1"}
-
-    @pytest.mark.anyio
-    async def test_the_report_is_written_not_just_returned(self, tmp_path):
-        await self._report(tmp_path)
-        assert (tmp_path / "anomalies.json").exists()
-
-    @pytest.mark.anyio
-    async def test_the_report_carries_the_current_rules_hash(self, tmp_path):
-        # This is what `needs_regeneration` compares against later.
-        report = await self._report(tmp_path)
-        assert report["meta"]["rules_hash"] == get_rules_hash()
-        assert report["meta"]["task_name"] == "t"
+    async def test_a_failed_write_is_logged_not_raised(self, tmp_path):
+        detector = TaskAnomalyDetector(root_dir=tmp_path / "missing")
+        assert await detector.write(self.RESULTS, "t") is None
+        assert not (tmp_path / "missing").exists()
 
 
 class TestRulesHashStability:
@@ -989,23 +649,13 @@ class TestRulesHashStability:
         assert get_rules_hash() == get_rules_hash()
 
     def test_the_hash_is_pinned_to_the_current_rule_set(self):
-        """Changing any rule's prose rotates `anomalies.json` fleet-wide.
+        """Changing any rule's prose changes every new `runs[].rules_hash`.
 
         The hash is computed over the whole rules schema — names, descriptions,
-        rationales. So editing a description, not just adding a rule, invalidates
-        every stored report's comparison and triggers a backup-and-regenerate on
-        every run that resumes. That is a deliberate, visible event, not a
-        drive-by wording fix.
-
-        If this test fails you changed the rule set. That is allowed — update the
-        value here in the same commit, so the rotation is in the diff rather than
-        discovered in production.
-
-        Rotated first for `empty_infer_ppl` reading every candidate and
-        `truncated_output` counting filtered candidates without misclassifying
-        blocked prompts; rotated again to include unsupported languages and
-        Anthropic refusals. Each change must reach stored anomaly reports;
-        without a new hash, `needs_regeneration()` returns False.
+        rationales — so editing a description, not just adding a rule, is a
+        visible event in every task directory written after it. If this test
+        fails you changed the rule set: update the value here in the same
+        commit, so the rotation is in the diff.
         """
         assert get_rules_hash() == "2c440347324b1edb"
 
@@ -1020,95 +670,6 @@ class TestRulesHashStability:
         h = get_rules_hash()
         assert len(h) == 16
         assert all(c in "0123456789abcdef" for c in h)
-
-    @pytest.mark.anyio
-    async def test_generate_report_includes_failed(self, tmp_path):
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        ctx_final = _make_final_ctx(postprocess_result="good")
-        ctx_fail = TaskContext(sample_id=1, raw_sample={})
-        ctx_fail = ctx_fail.to_preprocessed("pre")
-        ctx_fail = ctx_fail.to_failed(None, "error_reason", "error message")
-        report = detector.generate_report(
-            {0: ctx_final, 1: ctx_fail}, "t", task_tags={"gen"}
-        )
-        assert report["summary"]["final_samples"] == 1
-        assert report["summary"]["failed_samples"] == 1
-
-
-class TestTaskAnomalyDetectorIOErrors:
-    @pytest.mark.anyio
-    async def test_load_invalid_json_returns_none(self, tmp_path):
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        (tmp_path / "anomalies.json").write_bytes(b"not valid json at all !!!")
-        assert await detector.load() is None
-
-    @pytest.mark.anyio
-    async def test_save_io_error_does_not_raise(self, tmp_path):
-        from unittest.mock import patch
-
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        ctx = _make_final_ctx(postprocess_result="ok")
-        report = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-
-        with patch(
-            "sieval.core.tasks.anomaly.anyio.open_file",
-            side_effect=OSError("disk full"),
-        ):
-            await detector.save(report, backup_if_changed=False)
-
-    @pytest.mark.anyio
-    async def test_backup_io_error_does_not_raise(self, tmp_path):
-        """_backup_if_rules_changed swallows exceptions."""
-        from unittest.mock import patch
-
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        ctx = _make_final_ctx(postprocess_result="ok")
-        report = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        # Write an initial report so backup logic is triggered
-        await detector.save(report, backup_if_changed=False)
-
-        report2 = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        report2["meta"]["rules_hash"] = "differenthash"
-        with patch(
-            "sieval.core.tasks.anomaly.anyio.open_file",
-            side_effect=OSError("read error"),
-        ):
-            # Must not raise even when backup read fails
-            await detector.save(report2, backup_if_changed=True)
-
-    @pytest.mark.anyio
-    async def test_backup_skipped_when_hashes_match(self, tmp_path):
-        """No backup file created when rules hash is unchanged."""
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        ctx = _make_final_ctx(postprocess_result="ok")
-        report = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        await detector.save(report, backup_if_changed=False)
-
-        # Save again with the same hash — no backup should be created
-        report2 = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        await detector.save(report2, backup_if_changed=True)
-
-        backups = list(tmp_path.glob("anomalies.*.json"))
-        assert len(backups) == 0
-
-    @pytest.mark.anyio
-    async def test_backup_skipped_when_generated_at_missing(self, tmp_path):
-        """No backup file created when old report has no generated_at."""
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        ctx = _make_final_ctx(postprocess_result="ok")
-
-        report_v1 = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        report_v1["meta"]["rules_hash"] = "oldhash"
-        del report_v1["meta"]["generated_at"]  # type: ignore[invalid-argument-type]  # intentionally malformed
-        await detector.save(report_v1, backup_if_changed=False)
-
-        report_v2 = detector.generate_report({0: ctx}, "t", task_tags={"gen"})
-        report_v2["meta"]["rules_hash"] = "newhash"
-        await detector.save(report_v2, backup_if_changed=True)
-
-        # No backup because generated_at was missing
-        backups = list(tmp_path.glob("anomalies.*.json"))
-        assert len(backups) == 0
 
 
 class TestDetectionRuleDecorator:
@@ -1143,89 +704,6 @@ class TestDetectionRuleDecorator:
         # Should not raise; buggy rule is silently skipped
         result = detector.detect(ctx, task_tags={"gen"})
         assert "buggy_rule" not in result
-
-
-class TestGenerateAndSaveFromResults:
-    @pytest.mark.anyio
-    async def test_basic_roundtrip(self, tmp_path):
-        """generate_and_save_from_results writes a valid report."""
-        from sieval.core.tasks.anomaly import TaskAnomalyDetector
-
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        anomaly_results = {
-            0: {0: {"truncated_output": [1, 2]}},
-            1: {},  # no anomalies
-        }
-        report = await detector.generate_and_save_from_results(
-            anomaly_results,
-            task_name="test_task",
-            total_samples=2,
-            final_count=2,
-            failed_count=0,
-            backup_if_changed=False,
-        )
-
-        assert report["summary"]["total_samples"] == 2
-        assert report["summary"]["final_samples"] == 2
-        assert report["summary"]["failed_samples"] == 0
-        assert report["summary"]["anomaly_samples"] == 1
-        # anomaly_sample_details: 1 sample with truncated_output
-        assert report["summary"]["anomaly_sample_details"]["truncated_output"] == 1
-        # anomaly_rollout_details: 2 affected rollout indices
-        assert report["summary"]["anomaly_rollout_details"]["truncated_output"] == 2
-        assert report["samples"] == {"0": {"0": {"truncated_output": [1, 2]}}}
-        assert (tmp_path / "anomalies.json").exists()
-
-    @pytest.mark.anyio
-    async def test_empty_results(self, tmp_path):
-        """Empty anomaly_results produces a clean report."""
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        report = await detector.generate_and_save_from_results(
-            {},
-            task_name="t",
-            total_samples=5,
-            final_count=5,
-            failed_count=0,
-            backup_if_changed=False,
-        )
-        assert report["summary"]["anomaly_samples"] == 0
-        assert report["samples"] == {}
-
-    @pytest.mark.anyio
-    async def test_counts_accumulate_and_default_backup_flag_is_forwarded(
-        self, tmp_path, monkeypatch
-    ):
-        """Count aggregation and default save options should be preserved."""
-        detector = TaskAnomalyDetector(root_dir=tmp_path)
-        save_mock = AsyncMock(return_value=None)
-        monkeypatch.setattr(detector, "save", save_mock)
-
-        anomaly_results = {
-            0: {0: {"truncated_output": [1], "empty_postprocess": [0]}},
-            1: {2: {"truncated_output": [0, 2]}},
-        }
-
-        report = await detector.generate_and_save_from_results(
-            anomaly_results,
-            task_name="t",
-            total_samples=2,
-            final_count=2,
-            failed_count=0,
-        )
-
-        assert report["summary"]["anomaly_samples"] == 2
-        assert report["summary"]["anomaly_sample_details"] == {
-            "truncated_output": 2,
-            "empty_postprocess": 1,
-        }
-        assert report["summary"]["anomaly_rollout_details"] == {
-            "truncated_output": 3,
-            "empty_postprocess": 1,
-        }
-        save_mock.assert_awaited_once()
-        assert save_mock.await_args is not None
-        assert save_mock.await_args.args[0] == report
-        assert save_mock.await_args.kwargs["backup_if_changed"] is True
 
 
 class TestDetectTruncatedOutputNoneInfer:

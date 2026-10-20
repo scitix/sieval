@@ -1,6 +1,5 @@
 """Task progress reporting: tqdm TTY bar, non-TTY loguru log, and JSON dump."""
 
-import contextlib
 import sys
 import time
 from collections import defaultdict
@@ -10,6 +9,8 @@ from typing import Any
 import orjson
 from loguru import logger
 from tqdm import tqdm
+
+from sieval.core.utils.atomic import atomic_write
 
 
 class TaskProgress:
@@ -73,6 +74,7 @@ class TaskProgress:
         self._anomaly_ids: set[str | int] = set()
         self._anomaly_details: dict[str, int] = defaultdict(int)
         self._active_counts: dict[str, int] = {}
+        self._finished = False
 
     def init_state(
         self,
@@ -246,18 +248,18 @@ class TaskProgress:
             "percent": round(pct, 2),
             "active_details": self._active_counts,
             "timestamp": time.time(),
-            "finished": completed == self._total,
+            "finished": self._finished or completed == self._total,
         }
 
-        temp_file = self._progress_file.with_suffix(".tmp")
         try:
-            with open(temp_file, "wb") as f:
-                f.write(orjson.dumps(state))
-            temp_file.replace(self._progress_file)
-        except Exception as e:
-            with contextlib.suppress(OSError):
-                temp_file.unlink(missing_ok=True)
+            atomic_write(self._progress_file, orjson.dumps(state))
+        except OSError as e:
             logger.warning("Failed to write progress file: {}", e)
+
+    def finish(self) -> None:
+        """Mark the task finished: the run reported, whatever the counts say."""
+        self._finished = True
+        self._active_counts = {}
 
     def close(self) -> None:
         """Close the tqdm bar (if any) and force a final progress state dump."""

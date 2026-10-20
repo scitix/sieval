@@ -29,7 +29,9 @@ from sieval.core.runners.runner import (
     UnreadableIntervalError,
     gate_resume_version,
     read_run_version,
+    run_started,
 )
+from sieval.core.tasks.anomaly import get_rules_hash
 from sieval.core.tasks.concurrency import compute_stream_buffer_capacity
 from sieval.core.tasks.consts import (
     ERROR_REASONS_NON_RETRIABLE,
@@ -50,6 +52,7 @@ from sieval.core.tasks.task import Task
 from tests.conftest import (
     MockAlwaysFailModel,
     MockChatModel,
+    MockCountingChatModel,
     MockDataset,
     make_config,
     prompt_of,
@@ -227,12 +230,9 @@ class TestE2EHappyPath:
         saved = orjson.loads(report_path.read_bytes())
         assert saved["accuracy"] == 1.0
 
-        manifest_path = runner.root_dir / "manifest.json"
-        assert manifest_path.exists()
-        manifest = orjson.loads(manifest_path.read_bytes())
-        assert len(manifest) == 3
-        assert all(e["final"] for e in manifest)
-        assert all(e["stage"] == "final" for e in manifest)
+        assert not (runner.root_dir / "manifest.json").exists()
+        stages = await _stages_on_disk(task, runner.root_dir)
+        assert stages == dict.fromkeys(range(3), TaskStage.FINAL)
 
         root = runner.root_dir
         jsonl_files = list(root.rglob("*.jsonl"))
@@ -338,6 +338,20 @@ class TestE2ERunMetaTaskIdentity:
         assert "task" not in meta
 
 
+def _samples_flagged(anomalies: dict, rule: str) -> int:
+    """How many samples ``anomalies.json`` flags under *rule*, any iteration."""
+    return sum(
+        any(rule in rules for rules in iterations.values())
+        for iterations in anomalies["samples"].values()
+    )
+
+
+async def _stages_on_disk(task, root: Path) -> dict:
+    """Each sample's stage as a fresh loader reads it from the shards."""
+    contexts = await TaskLoader(task=task, root_dir=root).load_initial_state()
+    return {sid: ctx.stage for sid, ctx in contexts.items()}
+
+
 def _write_meta(root: Path, task_block: object) -> Path:
     """Persist a `meta.json` whose `task` block is *whatever was passed* —
     malformed shapes included, since the gate has to survive them."""
@@ -440,8 +454,8 @@ class TestE2EFailureRecovery:
         assert report["accuracy"] == 0.0
         assert report["total"] == 3
 
-        manifest = orjson.loads((runner.root_dir / "manifest.json").read_bytes())
-        assert all(e["failed"] for e in manifest)
+        stages = await _stages_on_disk(task, runner.root_dir)
+        assert set(stages.values()) == {TaskStage.FAILED}
 
 
 class TestE2EIterations:
@@ -474,8 +488,8 @@ class TestE2EIterations:
         assert report["completed"] == 0
         assert report["failed"] == 3
 
-        manifest = orjson.loads((runner.root_dir / "manifest.json").read_bytes())
-        assert all(e["failed"] for e in manifest)
+        stages = await _stages_on_disk(task, runner.root_dir)
+        assert set(stages.values()) == {TaskStage.FAILED}
 
 
 class TestE2EConcurrency:
@@ -697,10 +711,9 @@ class TestE2EEdgeCases:
         assert report2["accuracy"] == 0.0
         assert report2["total"] == 3
 
-        # Verify manifest confirms all samples are still FAILED
-        manifest = orjson.loads((runner2.root_dir / "manifest.json").read_bytes())
-        assert len(manifest) == 3
-        assert all(e["failed"] for e in manifest)
+        # The shards confirm all samples are still FAILED
+        stages = await _stages_on_disk(task2, runner2.root_dir)
+        assert stages == dict.fromkeys(range(3), TaskStage.FAILED)
 
     @pytest.mark.anyio
     async def test_retry_succeeds_on_resume(self, tmp_path):
@@ -728,10 +741,8 @@ class TestE2EEdgeCases:
         assert report2["accuracy"] == 1.0
         assert report2["total"] == 3
 
-        manifest = orjson.loads((runner2.root_dir / "manifest.json").read_bytes())
-        assert len(manifest) == 3
-        assert all(e["final"] for e in manifest)
-        assert all(not e["failed"] for e in manifest)
+        stages = await _stages_on_disk(task2, runner2.root_dir)
+        assert stages == dict.fromkeys(range(3), TaskStage.FINAL)
 
     @pytest.mark.anyio
     async def test_all_samples_fail_report(self, tmp_path):
@@ -767,10 +778,9 @@ class TestE2EEdgeCases:
         assert report["accuracy"] == 1.0
         assert report["total"] == 20
 
-        # Verify all samples are in manifest
-        manifest = orjson.loads((runner.root_dir / "manifest.json").read_bytes())
-        assert len(manifest) == 20
-        assert all(e["final"] for e in manifest)
+        # Every sample is final on disk
+        stages = await _stages_on_disk(task, runner.root_dir)
+        assert stages == dict.fromkeys(range(20), TaskStage.FINAL)
 
 
 # ===================================================================
@@ -791,7 +801,9 @@ class TestE2ERunnerGuardRails:
 
         result_dir = tmp_path / "existing_run"
         result_dir.mkdir()
-        (result_dir / "manifest.json").write_text("[]")
+        (result_dir / "meta.json").write_bytes(
+            orjson.dumps({"version": __version__, "runs": [{"start": "fresh"}]})
+        )
         task_existing = MockTask(dataset=dataset, model=model, name="e2e_existing")
         existing_cfg = make_config(
             tmp_path, result_dir=str(result_dir), auto_resume=False
@@ -974,8 +986,8 @@ class TestResolveResultDir:
         assert report1 is not None
         first_dir = runner1.root_dir
 
-        # Sanity: directory has manifest
-        assert (first_dir / "manifest.json").exists()
+        # Sanity: a run started there
+        assert run_started(first_dir)
 
         # Second run with auto_resume: should pick up the same directory
         task2 = MockTask(dataset=dataset, model=model, name=task_name)
@@ -999,8 +1011,6 @@ class TestResolveResultDir:
         latest = root_abs / "20240102020202"
         older.mkdir(parents=True, exist_ok=True)
         latest.mkdir(parents=True, exist_ok=True)
-        (older / "manifest.json").write_text("[]", encoding="utf-8")
-        (latest / "manifest.json").write_text("[]", encoding="utf-8")
         # Real resumable dirs always carry a meta.json handshake (Task 4);
         # give the fabricated fixture one so the version gate (Task 5) sees
         # an EXACT match and this test stays focused on dir-selection logic.
@@ -1061,168 +1071,65 @@ class TestNormalizeLimits:
 
 
 class TestRunnerFastResumeAnomaly:
-    @pytest.mark.anyio
-    async def test_cached_report_regeneration_paths(self, tmp_path, monkeypatch):
-        """Fast-resume anomaly handling should branch on rules-hash regeneration."""
-        # (case_name, should_regenerate_anomaly_report)
-        cases = [
-            ("regen", True),
-            ("no_regen", False),
-        ]
-
-        for name, should_regenerate in cases:
-            dataset = MockDataset()
-            model = MockChatModel(answers=DEFAULT_ANSWERS)
-            task = MockTask(dataset=dataset, model=model, name=f"fast_resume_{name}")
-            config = make_config(
-                tmp_path,
-                result_dir=str(tmp_path / f"fast_resume_{name}"),
-                auto_resume=True,
-                detect_anomalies=True,
-                detect_anomalies_on_resume=True,
-            )
-            runner = TaskRunner(task, config)
-
-            cached = {"accuracy": 1.0, "total": 3}
-            loaded_ctx = (
-                {0: task.make_context(0, {"question": "Q0", "answer": "A0"}).to_final()}
-                if should_regenerate
-                else {}
-            )
-
-            load_cached_report = AsyncMock(return_value=cached)
-            get_manifest_status = AsyncMock(return_value=(False, True))
-            load_initial_state = AsyncMock(return_value=loaded_ctx)
-            hydrate = AsyncMock(return_value=None)
-            anomaly_load = AsyncMock(return_value={"meta": {}})
-            needs_regeneration = MagicMock(return_value=should_regenerate)
-            generate_and_save = AsyncMock(return_value={})
-
-            monkeypatch.setattr(
-                runner._loader, "load_cached_report", load_cached_report
-            )
-            monkeypatch.setattr(
-                runner._loader, "get_manifest_status", get_manifest_status
-            )
-            monkeypatch.setattr(
-                runner._loader, "load_initial_state", load_initial_state
-            )
-            monkeypatch.setattr(runner._loader, "hydrate", hydrate)
-
-            monkeypatch.setattr(runner._anomaly_detector, "load", anomaly_load)
-            monkeypatch.setattr(
-                runner._anomaly_detector, "needs_regeneration", needs_regeneration
-            )
-            monkeypatch.setattr(
-                runner._anomaly_detector, "generate_and_save", generate_and_save
-            )
-
-            report = await runner.arun()
-            assert report == cached
-
-            if should_regenerate:
-                load_initial_state.assert_awaited_once()
-                hydrate.assert_awaited_once()
-                hydrate_call = hydrate.await_args
-                assert hydrate_call is not None
-                assert hydrate_call.args[0] is loaded_ctx
-                assert hydrate_call.args[1] is runner._hydrated_ids
-                assert hydrate_call.kwargs["include_stages"] == {
-                    TaskStage.FINAL,
-                    TaskStage.FAILED,
-                }
-                assert hydrate_call.kwargs["prepare_retries"] is False
-                assert (
-                    hydrate_call.kwargs["record_each_stage"]
-                    == runner._record_each_stage
-                )
-                generate_and_save.assert_awaited_once()
-                regen_call = generate_and_save.await_args
-                assert regen_call is not None
-                assert regen_call.args[0] is loaded_ctx
-                assert regen_call.args[1] == task.name
-                assert regen_call.kwargs["backup_if_changed"] is True
-            else:
-                load_initial_state.assert_not_awaited()
-                hydrate.assert_not_awaited()
-                generate_and_save.assert_not_awaited()
+    @staticmethod
+    async def _finished(tmp_path, name, **cfg):
+        task = MockTask(
+            dataset=MockDataset(),
+            model=MockChatModel(answers=DEFAULT_ANSWERS),
+            name=name,
+        )
+        result_dir = str(tmp_path / name)
+        await TaskRunner(task, make_config(tmp_path, result_dir=result_dir)).arun()
+        model = MockCountingChatModel(answers=DEFAULT_ANSWERS)
+        task = MockTask(dataset=MockDataset(), model=model, name=name)
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path, result_dir=result_dir, auto_resume=True, **cfg),
+        )
+        return runner, model
 
     @pytest.mark.anyio
-    async def test_cached_report_regeneration_requires_both_anomaly_flags(
-        self, tmp_path, monkeypatch
-    ):
-        dataset = MockDataset()
-        model = MockChatModel(answers=DEFAULT_ANSWERS)
-        task = MockTask(dataset=dataset, model=model, name="fast_resume_flag_gate")
-        config = make_config(
-            tmp_path,
-            result_dir=str(tmp_path / "fast_resume_flag_gate"),
-            auto_resume=True,
-            detect_anomalies=False,
-            detect_anomalies_on_resume=True,
+    async def test_fast_resume_rewrites_anomalies_from_the_shards(self, tmp_path):
+        """A fast resume finalizes like any exit: `anomalies.json` is rebuilt
+        from every recorded sample, with this run's rules."""
+        runner, model = await self._finished(
+            tmp_path, "regen", detect_anomalies=True, detect_anomalies_on_resume=True
         )
-        runner = TaskRunner(task, config)
-
-        monkeypatch.setattr(
-            runner._loader, "load_cached_report", AsyncMock(return_value={"ok": True})
-        )
-        monkeypatch.setattr(
-            runner._loader, "get_manifest_status", AsyncMock(return_value=(False, True))
-        )
-        anomaly_load = AsyncMock(return_value={"meta": {}})
-        monkeypatch.setattr(runner._anomaly_detector, "load", anomaly_load)
-        load_initial_state = AsyncMock(return_value={})
-        hydrate = AsyncMock(return_value=None)
-        monkeypatch.setattr(runner._loader, "load_initial_state", load_initial_state)
-        monkeypatch.setattr(runner._loader, "hydrate", hydrate)
-
+        cached = orjson.loads((runner.root_dir / "report.json").read_bytes())
         report = await runner.arun()
-
-        assert report == {"ok": True}
-        anomaly_load.assert_not_awaited()
-        load_initial_state.assert_not_awaited()
-        hydrate.assert_not_awaited()
+        assert report == cached
+        assert model.call_count == 0
+        anomalies = orjson.loads((runner.root_dir / "anomalies.json").read_bytes())
+        assert anomalies["meta"]["rules_hash"] == get_rules_hash()
 
     @pytest.mark.anyio
-    async def test_cached_report_not_used_when_manifest_not_all_final(
-        self, tmp_path, monkeypatch
+    async def test_fast_resume_anomalies_need_both_flags(self, tmp_path):
+        runner, _ = await self._finished(
+            tmp_path, "gate", detect_anomalies=False, detect_anomalies_on_resume=True
+        )
+        await runner.arun()
+        assert not (runner.root_dir / "anomalies.json").exists()
+        runner, _ = await self._finished(
+            tmp_path, "gate2", detect_anomalies=True, detect_anomalies_on_resume=False
+        )
+        await runner.arun()
+        assert not (runner.root_dir / "anomalies.json").exists()
+
+    @pytest.mark.anyio
+    async def test_cached_report_not_used_when_its_counts_are_not_all_final(
+        self, tmp_path
     ):
-        """
-        Cached report is only valid when manifest is fully terminal.
-        """
-        dataset = MockDataset()
-        model = MockChatModel(answers=DEFAULT_ANSWERS)
-        task = MockTask(dataset=dataset, model=model, name="fast_resume_incomplete")
-        config = make_config(
-            tmp_path,
-            result_dir=str(tmp_path / "fast_resume_incomplete"),
-            auto_resume=True,
-            detect_anomalies=False,
-            detect_anomalies_on_resume=False,
-        )
-        runner = TaskRunner(task, config)
-
-        cached = {"accuracy": 0.0, "total": 999}
-        task_setup = AsyncMock(side_effect=KeyboardInterrupt)
-        task_shutdown = AsyncMock(return_value=None)
-        saver_flush = AsyncMock(return_value=None)
-
-        monkeypatch.setattr(
-            runner._loader, "load_cached_report", AsyncMock(return_value=cached)
-        )
-        monkeypatch.setattr(
-            runner._loader,
-            "get_manifest_status",
-            AsyncMock(return_value=(False, False)),
-        )
-        monkeypatch.setattr(task, "setup", task_setup)
-        monkeypatch.setattr(task, "shutdown", task_shutdown)
-        monkeypatch.setattr(runner._saver, "flush", saver_flush)
-
+        """A cached report is reused only when its `sieval` counts say every
+        sample ended final; otherwise the full path runs."""
+        runner, _ = await self._finished(tmp_path, "incomplete")
+        path = runner.root_dir / "report.json"
+        cached = orjson.loads(path.read_bytes())
+        cached["sieval"]["final"] = 2
+        cached["accuracy"] = -1.0
+        path.write_bytes(orjson.dumps(cached))
         report = await runner.arun()
-
-        assert report is None
-        task_setup.assert_awaited_once()
+        assert report["accuracy"] == 1.0
+        assert report["sieval"]["final"] == 3
 
     @pytest.mark.anyio
     async def test_resume_seeds_progress_from_terminal_contexts_and_anomalies(
@@ -1299,6 +1206,9 @@ class TestRunnerFastResumeAnomaly:
             def close(self):
                 return
 
+            def finish(self):
+                return
+
         def _detect(ctx: TaskContext, *, task_tags: set[str]) -> dict[str, list[int]]:  # noqa: ARG001
             assert ctx.stage == TaskStage.FINAL
             if ctx.sample_id in {0, 2, 3}:
@@ -1331,7 +1241,7 @@ class TestRunnerFastResumeAnomaly:
         monkeypatch.setattr(runner._anomaly_detector, "detect", _detect)
         monkeypatch.setattr(
             runner._anomaly_detector,
-            "generate_and_save_from_results",
+            "write",
             anomaly_save,
         )
 
@@ -1418,23 +1328,15 @@ class TestRunnerFastResumeAnomaly:
         )
         monkeypatch.setattr(runner._loader, "hydrate", AsyncMock(return_value=None))
 
-        progress_init_count = 0
-
-        class _ProgressShouldNotInit:
-            def __init__(self, **_kwargs):
-                nonlocal progress_init_count
-                progress_init_count += 1
-
-        monkeypatch.setattr(
-            "sieval.core.runners.runner.TaskProgress",
-            _ProgressShouldNotInit,
-        )
+        run_streams = AsyncMock()
+        monkeypatch.setattr(runner, "_run_streams", run_streams)
 
         with anyio.fail_after(1):
             report = await runner.arun()
 
         assert report["total"] == 2
-        assert progress_init_count == 0
+        # The progress loop never ran; the view is still refreshed to finished.
+        run_streams.assert_not_awaited()
 
 
 class TestRunnerResumeState:
@@ -1507,46 +1409,30 @@ class TestRunnerResumeState:
         assert observed == {0: 0, 1: 1}
 
     @pytest.mark.anyio
-    async def test_initial_manifest_includes_error_action_for_failed_context(
-        self, tmp_path, monkeypatch
-    ):
-        dataset = MockDataset([])
-        model = MockChatModel()
-        task = MockTask(
-            dataset=dataset, model=model, name="resume_manifest_error_action"
-        )
-        runner = TaskRunner(task, make_config(tmp_path, auto_resume=True))
+    async def test_a_failed_samples_state_round_trips_through_its_idx(self, tmp_path):
+        """The `.idx` line carries what the manifest used to: stage, iteration,
+        error action and reason, retry count."""
+        from sieval.core.tasks.saver import TaskSaver
 
+        dataset = MockDataset([{"question": "What is 1+1?", "answer": "2"}])
+        task = MockTask(dataset=dataset, model=MockChatModel(), name="idx_state")
         failed_ctx = replace(
             task.make_context(0, {"question": "What is 1+1?", "answer": "2"}).to_failed(
                 TaskAction.INFER, "exception::RuntimeError", "boom"
             ),
             retry_count=2,
         )
+        saver = TaskSaver(root_dir=tmp_path)
+        await saver.write_records([failed_ctx])
 
-        sync_manifest = MagicMock()
-        monkeypatch.setattr(
-            runner._loader, "load_cached_report", AsyncMock(return_value=None)
-        )
-        monkeypatch.setattr(
-            runner._loader,
-            "load_initial_state",
-            AsyncMock(return_value={0: failed_ctx}),
-        )
-        monkeypatch.setattr(runner._loader, "hydrate", AsyncMock(return_value=None))
-        monkeypatch.setattr(runner._saver, "sync_manifest", sync_manifest)
-
-        await runner.arun()
-        assert sync_manifest.call_count == 1
-        manifest = sync_manifest.call_args.args[0]
-        assert manifest[0]["sample_id"] == 0
-        assert manifest[0]["iteration"] == 0
-        assert manifest[0]["error_action"] == "infer"
-        assert manifest[0]["error_reason"] == "exception::RuntimeError"
-        assert manifest[0]["retry_count"] == 2
-        assert manifest[0]["final"] is False
-        assert manifest[0]["failed"] is True
-        assert manifest[0]["stage"] == TaskStage.FAILED.value
+        [loaded] = (
+            await TaskLoader(task=task, root_dir=tmp_path).load_initial_state()
+        ).values()
+        assert loaded.stage is TaskStage.FAILED
+        assert loaded.iteration == 0
+        assert loaded.error_action is TaskAction.INFER
+        assert loaded.error_reason == "exception::RuntimeError"
+        assert loaded.retry_count == 2
 
     @pytest.mark.anyio
     async def test_retry_limit_failure_reason_and_message_are_user_visible(
@@ -1684,6 +1570,9 @@ class TestRunnerInternalBranches:
             def close(self) -> None:
                 return
 
+            def finish(self) -> None:
+                return
+
         monkeypatch.setattr(
             "sieval.core.runners.runner.TaskProgress",
             _FakeProgress,
@@ -1757,6 +1646,9 @@ class TestRunnerInternalBranches:
                 return
 
             def close(self) -> None:
+                return
+
+            def finish(self) -> None:
                 return
 
         def _detect(ctx: TaskContext, *, task_tags: set[str]) -> dict[str, list[int]]:  # noqa: ARG001
@@ -2250,7 +2142,7 @@ class TestRunnerInterruptHandling:
         self, tmp_path, monkeypatch
     ):
         """
-        Interrupt with detect_anomalies=True should call generate_and_save_from_results.
+        Interrupt with detect_anomalies=True writes anomalies.json.
         """
         dataset = MockDataset()
         model = MockChatModel(answers=DEFAULT_ANSWERS)
@@ -2268,7 +2160,7 @@ class TestRunnerInterruptHandling:
         monkeypatch.setattr(runner._saver, "flush", saver_flush)
         monkeypatch.setattr(
             runner._anomaly_detector,
-            "generate_and_save_from_results",
+            "write",
             anomaly_save,
         )
 
@@ -2281,10 +2173,6 @@ class TestRunnerInterruptHandling:
         assert anomaly_call is not None
         assert anomaly_call.args[0] == {}
         assert anomaly_call.args[1] == task.name
-        assert anomaly_call.kwargs["total_samples"] == 0
-        assert anomaly_call.kwargs["final_count"] == 0
-        assert anomaly_call.kwargs["failed_count"] == 0
-        assert anomaly_call.kwargs["backup_if_changed"] is False
 
     @pytest.mark.anyio
     async def test_keyboard_interrupt_flush_failure_is_non_fatal(
@@ -2331,7 +2219,7 @@ class TestRunnerAnomalyReporting:
         aggregate_token_usage = MagicMock()
         monkeypatch.setattr(
             runner._anomaly_detector,
-            "generate_and_save_from_results",
+            "write",
             anomaly_save,
         )
         monkeypatch.setattr(
@@ -2356,10 +2244,12 @@ class TestRunnerAnomalyReporting:
         assert anomaly_call is not None
         assert anomaly_call.args[0] == runner._anomaly_results
         assert anomaly_call.args[1] == task.name
-        assert anomaly_call.kwargs["total_samples"] == 3
-        assert anomaly_call.kwargs["final_count"] == 3
-        assert anomaly_call.kwargs["failed_count"] == 0
-        assert anomaly_call.kwargs["backup_if_changed"] is False
+        assert report["sieval"] == {
+            "total": 3,
+            "final": 3,
+            "failed": 0,
+            "anomalies": 0,
+        }
 
 
 class TestLazyContextCreation:
@@ -2847,7 +2737,7 @@ class TestReportTruncation:
         saved = orjson.loads((runner.root_dir / "report.json").read_bytes())
         assert saved["n_truncated"] == 1
         anomalies = orjson.loads((runner.root_dir / "anomalies.json").read_bytes())
-        assert anomalies["summary"]["anomaly_sample_details"]["truncated_output"] == 1
+        assert _samples_flagged(anomalies, "truncated_output") == 1
 
     @pytest.mark.anyio
     async def test_google_prompt_block_is_not_candidate_truncation_after_resume(
@@ -2880,7 +2770,7 @@ class TestReportTruncation:
         assert report["n_truncated"] == 1
         assert report["n_scored_rollouts"] == 3
         anomalies = orjson.loads((runner.root_dir / "anomalies.json").read_bytes())
-        assert anomalies["summary"]["anomaly_sample_details"]["truncated_output"] == 1
+        assert _samples_flagged(anomalies, "truncated_output") == 1
 
         (runner.root_dir / "report.json").unlink()
         resumed_task = GenTask(

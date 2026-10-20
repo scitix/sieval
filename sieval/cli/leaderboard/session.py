@@ -1599,6 +1599,13 @@ class EvalSession:
             concurrency_limit=self.config.get("concurrency_limit"),
             concurrency_limits=self.config.get("concurrency_limits"),
             deterministic=self.deterministic,
+            # Written by `_persist_effective_config`; each task's meta.json
+            # names it.
+            effective_config=(
+                str(Path(self.result_dir) / "effective_config.yaml")
+                if self.result_dir
+                else None
+            ),
         )
 
     def _get_named_config_map(self, section_name: str) -> dict[str, dict[str, Any]]:

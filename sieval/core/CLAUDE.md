@@ -7,7 +7,7 @@ SiEval is a **stateful, persistent, async, staged execution engine**.
 * Samples move **stage-by-stage** (no global stage barriers); stages may run concurrently across samples
 * Iterations bounded by `max_iterations` and persistable
 * Record unit = sample × iteration × stage; disk state is source of truth
-* Storage: **append-only, sharded, async-flushed** — shard data is authoritative, metadata (idx/manifest) must be rebuildable
+* Storage: **append-only, sharded, async-flushed** — shard records are authoritative; `.idx` is their index, checked against shard length on load. No other per-sample state file
 * Failed samples are per-sample and retryable (not infinite)
 
 ## Hard Prohibitions

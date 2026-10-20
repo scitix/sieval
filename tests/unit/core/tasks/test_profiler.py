@@ -776,7 +776,7 @@ class TestTaskProfilerSave:
         )
 
         with patch(
-            "sieval.core.tasks.profiler.anyio.open_file",
+            "sieval.core.utils.atomic.os.replace",
             side_effect=OSError("disk full"),
         ):
             await profiler.save(tmp_path)

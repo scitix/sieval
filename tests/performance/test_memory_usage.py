@@ -381,7 +381,6 @@ class TestSaverBufferMemory:
         )
         for i in range(buffer_size):
             ctx = _make_bench_ctx(i, TaskStage.FINAL, payload_size=_MEM_PAYLOAD_SIZE)
-            saver._update_manifest_entry(ctx)
             saver._stage_queue.append(ctx)
         tracker.stop()
 

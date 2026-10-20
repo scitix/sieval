@@ -1,4 +1,11 @@
-"""Persistence recovery: manifest loading, shard hydration, and compensation scan."""
+"""Persistence recovery: the ``.idx`` scan and shard hydration.
+
+A sample's state is its latest shard record, found through the ``.idx`` beside
+each shard. The saver appends a record before its ``.idx`` line, so a run
+killed between the two leaves a record no line points at: the sample reads as
+its previous record and that stage reruns. A line pointing past its shard's end
+(a shard truncated after the line was written) is dropped.
+"""
 
 import sys
 from dataclasses import replace
@@ -26,7 +33,7 @@ from .consts import (
     TaskAction,
     TaskStage,
 )
-from .context import TaskContext, TaskManifest
+from .context import TaskContext
 from .profiler import TaskProfiler, TaskProfilerContext
 from .task import Task
 
@@ -227,12 +234,31 @@ def _parse_idx_file(path: Path) -> list[IdxRecord]:
     return out
 
 
+def _within_shard(
+    records: list[IdxRecord], idx_path: Path, shard: Path
+) -> list[IdxRecord]:
+    """The records of *idx_path* that lie inside *shard*; the rest are dropped."""
+    try:
+        size = shard.stat().st_size
+    except OSError:
+        size = 0
+    kept = [r for r in records if r["offset"] + r["length"] <= size]
+    if len(kept) < len(records):
+        logger.warning(
+            "Dropped {} line(s) of {} pointing past the end of {} ({} bytes)",
+            len(records) - len(kept),
+            idx_path,
+            shard,
+            size,
+        )
+    return kept
+
+
 class TaskLoader:
     """Persistence recovery engine.
 
-    Loads ``manifest.json`` and shard offset indices (``.idx`` files),
-    hydrates in-memory :class:`TaskContext` objects from on-disk shard data,
-    and handles compensation scan when the manifest is missing or stale.
+    Scans the shard offset indices (``.idx`` files) into skeleton contexts and
+    hydrates :class:`TaskContext` objects from the shard records they point at.
     """
 
     def __init__(
@@ -244,14 +270,13 @@ class TaskLoader:
     ):
         """Set up type registry by merging global registry with task-module types."""
         self._task = task
-        self._manifest: dict[str | int, TaskManifest] = {}
+        self._latest: dict[str | int, IdxRecord] = {}
         self._sample_offsets: dict[str | int, ShardOffset] = {}
         self._all_stage_offsets: dict[
             str | int, dict[TaskStage, ShardOffsetWithIteration]
         ] = {}
 
         self._root_dir = root_dir
-        self._manifest_path = self._root_dir / "manifest.json"
         self._report_path = self._root_dir / "report.json"
 
         self._shard_read_concurrency = max(1, shard_read_concurrency)
@@ -269,33 +294,21 @@ class TaskLoader:
             )
 
     async def load_initial_state(self) -> dict[str | int, TaskContext]:
-        """Load manifest and idx files to produce skeleton contexts.
-
-        When a completed report already exists alongside a trusted manifest the
-        offsets are loaded directly from idx files; otherwise a full
-        compensation scan is performed to rebuild both manifest and offsets
-        from scratch.
-        """
+        """Scan the ``.idx`` files into a skeleton context per sample."""
         async with TaskProfilerContext(self._profiler, "load_or_compensate"):
             await anyio.Path(self._root_dir).mkdir(parents=True, exist_ok=True)
-            await self._load_manifest()
-
-            if await anyio.Path(self._report_path).exists() and self._manifest:
-                await self._load_offsets_from_idx()
-                logger.info("Trusted completed manifest; offsets loaded.")
-            else:
-                await self._compensate_scan()
+            await self._scan_idx()
 
             contexts = {}
-            for sid, m in self._manifest.items():
+            for sid, r in self._latest.items():
                 base = self._task.make_context(sid, None)
                 ctx = replace(
                     base,
-                    iteration=m["iteration"],
-                    stage=TaskStage(m["stage"]),
-                    error_action=_try_task_action(m.get("error_action")),
-                    error_reason=m.get("error_reason"),
-                    retry_count=m.get("retry_count", 0),
+                    iteration=r["iteration"],
+                    stage=r["stage"],
+                    error_action=_try_task_action(r.get("error_action")),
+                    error_reason=r.get("error_reason"),
+                    retry_count=r.get("retry_count", 0),
                 )
                 contexts[sid] = ctx
             return contexts
@@ -319,24 +332,6 @@ class TaskLoader:
                 e,
             )
             return None
-
-    async def get_manifest_status(self) -> tuple[bool, bool]:
-        """Return ``(has_failures, all_final)`` from the current manifest.
-
-        Loads the manifest from disk if it has not been loaded yet.
-        """
-        await self._load_manifest()
-        if not self._manifest:
-            return False, False
-
-        has_failures = False
-        all_final = True
-        for m in self._manifest.values():
-            if m.get("failed"):
-                has_failures = True
-            if not m.get("final"):
-                all_final = False
-        return has_failures, all_final
 
     async def hydrate(
         self,
@@ -620,29 +615,6 @@ class TaskLoader:
         contexts[ctx.sample_id] = new_ctx
         hydrated_ids.add(ctx.sample_id)
 
-    async def _load_manifest(self) -> None:
-        """Read ``manifest.json`` from disk into ``self._manifest``.
-
-        No-op if the manifest is already loaded. Tolerates a missing or
-        corrupt file by falling back to an empty manifest.
-        """
-        if self._manifest:
-            return
-        if not await anyio.Path(self._manifest_path).exists():
-            self._manifest = {}
-            return
-        async with await anyio.open_file(self._manifest_path, "r") as f:
-            raw = await f.read()
-        try:
-            arr = orjson.loads(raw)
-        except orjson.JSONDecodeError:
-            arr = []
-        self._manifest = {
-            item["sample_id"]: item
-            for item in arr
-            if isinstance(item, dict) and "sample_id" in item
-        }
-
     # idx functions (sync I/O) are dispatched to a worker thread by the async methods
     def _collect_idx_files(self) -> list[tuple[Path, Path]]:
         idx_files: list[tuple[Path, Path]] = []
@@ -656,97 +628,18 @@ class TaskLoader:
                             idx_files.append((idx_file, idx_file.with_suffix(".jsonl")))
         return idx_files
 
-    async def _load_offsets_from_idx(self) -> None:
-        """Scan all ``.idx`` files in parallel to build shard-offset maps.
+    async def _scan_idx(self) -> None:
+        """Parallel scan of every ``.idx`` file into the latest record per sample.
 
-        Used when the manifest is trusted (completed run): each idx record
-        is evaluated via :func:`_should_replace_offset` so that only the
-        latest offset per sample (and per sample+stage) is retained.
+        Each line is checked against its shard's length first: one pointing
+        past the end is dropped. The latest record per sample is chosen by
+        :func:`_should_replace_offset`, and ``self._latest`` /
+        ``self._sample_offsets`` / ``self._all_stage_offsets`` are rebuilt.
         """
+
+        self._latest = {}
         self._sample_offsets = {}
-        idx_files = await run_sync(self._collect_idx_files)
-
-        limiter = anyio.CapacityLimiter(self._shard_read_concurrency)
-        best_meta: dict[str | int, OffsetMeta] = {}
-        all_stage_offsets: dict[
-            str | int, dict[TaskStage, ShardOffsetWithIteration]
-        ] = {}
-
-        async def _one(idx_path: Path, shard: Path):
-            async with limiter:
-                records = await run_sync(_parse_idx_file, idx_path)
-                for r in records:
-                    sid = r["sample_id"]
-                    it_val = r["iteration"]
-                    stg_val = r["stage"]
-                    rank = STAGE_RANK[stg_val]
-                    run_val = r.get("run", 0)
-
-                    off_with_it: ShardOffsetWithIteration = {
-                        "shard": shard,
-                        "offset": r["offset"],
-                        "length": r["length"],
-                        "iteration": it_val,
-                        "run": run_val,
-                    }
-
-                    # Keep the latest offset per (sample, stage).
-                    stage_map = all_stage_offsets.setdefault(sid, {})
-                    existing = stage_map.get(stg_val)
-                    stage_current_meta: OffsetMeta | None = None
-                    if existing is not None:
-                        stage_current_meta = (
-                            existing["run"],
-                            existing["iteration"],
-                            -1,
-                            existing["shard"],
-                            existing["offset"],
-                            existing["length"],
-                        )
-                    stage_candidate_meta: OffsetMeta = (
-                        run_val,
-                        it_val,
-                        -1,
-                        shard,
-                        r["offset"],
-                        r["length"],
-                    )
-                    if _should_replace_offset(stage_current_meta, stage_candidate_meta):
-                        stage_map[stg_val] = off_with_it
-
-                    candidate_meta: OffsetMeta = (
-                        run_val,
-                        it_val,
-                        rank,
-                        shard,
-                        r["offset"],
-                        r["length"],
-                    )
-                    if not _should_replace_offset(best_meta.get(sid), candidate_meta):
-                        continue
-
-                    best_meta[sid] = candidate_meta
-                    self._sample_offsets[sid] = ShardOffset(
-                        shard=shard, offset=r["offset"], length=r["length"]
-                    )
-
-        async with anyio.create_task_group() as tg:
-            for idx, shard in idx_files:
-                tg.start_soon(_one, idx, shard)
-
-        self._all_stage_offsets = all_stage_offsets
-
-    async def _compensate_scan(self) -> None:
-        """Full parallel scan of all idx files — rebuilds manifest and offsets
-        from scratch.
-
-        Invoked when ``manifest.json`` is missing or stale. Every idx record
-        is parsed, the latest offset per sample is selected deterministically,
-        and ``self._manifest`` / ``self._sample_offsets`` /
-        ``self._all_stage_offsets`` are rebuilt.
-        """
-        logger.info("Compensation scan (parallel).")
-
+        self._all_stage_offsets = {}
         idx_files = await run_sync(self._collect_idx_files)
 
         if not idx_files:
@@ -761,6 +654,7 @@ class TaskLoader:
         async def _scan_one(idx_path: Path, shard: Path) -> None:
             async with limiter:
                 records = await run_sync(_parse_idx_file, idx_path)
+                records = await run_sync(_within_shard, records, idx_path, shard)
                 for r in records:
                     sid = r["sample_id"]
                     it_val = r["iteration"]
@@ -817,34 +711,17 @@ class TaskLoader:
             for idx, shard in idx_files:
                 tg.start_soon(_scan_one, idx, shard)
 
-        self._manifest = {}
+        self._latest = {}
         self._sample_offsets = {}
-
         for sid, (meta, r) in best_records.items():
-            _run, it_val, _rank, shard, offset, length = meta
-            # Reconstruct manifest entry
-            entry: TaskManifest = {
-                "sample_id": sid,
-                "stage": r["stage"].value,
-                "iteration": it_val,
-                "final": r["stage"] == TaskStage.FINAL,
-                "failed": r["stage"] == TaskStage.FAILED,
-            }
-            if r.get("error_action"):
-                entry["error_action"] = r["error_action"]
-            if r.get("error_reason"):
-                entry["error_reason"] = r["error_reason"]
-            if r.get("retry_count"):
-                entry["retry_count"] = r["retry_count"]
-
-            self._manifest[sid] = entry
-
+            _run, _it, _rank, shard, offset, length = meta
+            self._latest[sid] = r
             self._sample_offsets[sid] = ShardOffset(
                 shard=shard, offset=offset, length=length
             )
 
         self._all_stage_offsets = all_stage_offsets
-        logger.info("Compensated manifest with {} entries.", len(self._manifest))
+        logger.info("Loaded {} samples from the shard indices.", len(self._latest))
 
     def prepare_failed_retries(
         self, contexts: dict[str | int, TaskContext], record_each_stage: bool

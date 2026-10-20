@@ -26,12 +26,12 @@ from sieval.core.tasks import (
     build_prompt_record,
     build_rollout_judgement,
 )
-from sieval.core.tasks import saver as saver_module
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.loader import TaskLoader
 from sieval.core.tasks.run_meta import aggregate_digest, digest
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
+from sieval.core.utils import atomic as saver_module
 from sieval.core.utils.meta import build_stage_meta
 from tests.conftest import (
     MockChatModel,
@@ -144,8 +144,6 @@ def _meta(root: Path) -> dict:
 def _forget_last_sample(root: Path) -> None:
     """Drop the third sample and the report, as an interrupted run leaves them."""
     (root / "report.json").unlink()
-    manifest = orjson.loads((root / "manifest.json").read_bytes())
-    (root / "manifest.json").write_bytes(orjson.dumps(manifest[:2]))
     for path in root.rglob("*.idx"):
         lines = path.read_text().splitlines(keepends=True)
         path.write_text("".join(ln for ln in lines if not ln.startswith("2\t")))
@@ -693,13 +691,13 @@ class TestInterrupt:
 
 class TestRunStartedHere:
     @pytest.mark.anyio
-    async def test_killed_before_first_manifest_flush_is_not_fresh(self, tmp_path):
-        """A run killed after writing `meta.json` but before any manifest flush
+    async def test_killed_before_first_shard_flush_is_not_fresh(self, tmp_path):
+        """A run killed after writing `meta.json` but before any shard flush
         has started: the next run must refuse or resume it, not overwrite it."""
         root = tmp_path / "results"
         saver = TaskSaver(root_dir=root)
         await saver.begin_run(resumed=False, model="mock-chat")
-        assert not (root / "manifest.json").exists()
+        assert not list(root.rglob("*.idx"))
         assert run_started(root)
 
         with pytest.raises(ResultDirExistsError):
@@ -714,16 +712,20 @@ class TestRunStartedHere:
         assert "ended" not in meta["runs"][0]
         assert meta["runs"][1]["reran"] == ["data", "prompt", "inference", "grader"]
 
-    def test_legacy_directory_is_read_from_its_manifest(self, tmp_path):
-        """A directory from before `runs[]` falls back to `manifest.json`."""
+    def test_a_pre_runs_directory_is_started_by_its_meta(self, tmp_path):
+        """Before `runs[]`, `meta.json` was written once, when a run started:
+        its presence is the signal. An empty `runs[]` is not one."""
         root = tmp_path / "legacy"
         root.mkdir()
+        assert not run_started(root)
         (root / "meta.json").write_bytes(
             orjson.dumps({"version": __version__, "deterministic": False})
         )
-        assert not run_started(root)
-        (root / "manifest.json").write_text("[]")
         assert run_started(root)
+        (root / "meta.json").write_bytes(
+            orjson.dumps({"version": __version__, "runs": []})
+        )
+        assert not run_started(root)
 
     def test_empty_directory_has_not_started(self, tmp_path):
         assert not run_started(tmp_path)
@@ -850,7 +852,6 @@ class TestFailedWrites:
         async def _slow(self, stream):
             async with stream:
                 async for ctx in stream:
-                    self._update_manifest_entry(ctx)
                     self._stage_queue.append(ctx)
                     await anyio.sleep(0.01)
 
@@ -939,25 +940,34 @@ class TestEndRunFailure:
 
     @pytest.mark.anyio
     async def test_refinalizing_writes_the_anomaly_report(self, tmp_path):
-        """The failed run stopped before `anomalies.json`; the rerun that
-        finalizes it takes the all-terminal exit and writes it there."""
+        """The rerun that finalizes a failed `end_run` takes the all-terminal
+        exit, which writes `anomalies.json` and records its rules hash."""
         await self._end_run_fails(_runner(tmp_path, detect_anomalies=True))
         root = tmp_path / "results"
-        assert not (root / "anomalies.json").exists()
+        (root / "anomalies.json").unlink()
         await _runner(tmp_path, auto_resume=True, detect_anomalies=True).arun()
         anomalies = orjson.loads((root / "anomalies.json").read_bytes())
-        assert anomalies["summary"]["final_samples"] == 3
+        assert "summary" not in anomalies
+        last = _meta(root)["runs"][-1]
+        assert last["rules_hash"] == anomalies["meta"]["rules_hash"]
 
     @pytest.mark.anyio
     async def test_an_ended_run_is_still_fast_resumed(self, tmp_path):
         await _runner(tmp_path).arun()
         model = MockCountingChatModel(answers=ANSWERS)
         task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
-        loaded = AsyncMock()
+        reports: list[int] = []
+        original = task.report
+
+        async def _spy(finals, fails):
+            reports.append(len(finals))
+            return await original(finals, fails)
+
+        setattr(task, "report", _spy)  # noqa: B010
         runner = _runner(tmp_path, task=task, auto_resume=True)
-        runner._loader.load_initial_state = loaded
         await runner.arun()
-        loaded.assert_not_called()
+        assert reports == []
+        assert model.call_count == 0
         assert _meta(runner.root_dir)["runs"][-1]["reran"] == []
 
 

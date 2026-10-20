@@ -11,3 +11,10 @@ config = TaskRunnerConfig(
     dump_progress=True,    # save progress.json
 )
 ```
+
+With `record_meta` on (the default), `profile.json` is built when the task
+finishes from every sample's recorded `stage_meta`: stage timings and token
+usage, resumed samples included, whatever `profile_stages` and `profile_usage`
+say. `profile_io` adds flush and load timings for this run only.
+`progress.json` reads `finished: true` once the task has finished, on every
+exit path, a reused `report.json` included.

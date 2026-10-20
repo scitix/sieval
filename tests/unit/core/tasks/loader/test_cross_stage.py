@@ -43,8 +43,6 @@ class TestCrossStageDependencyLoading:
             ).make_snapshot()
             await write_snapshot(root, snap)
 
-        (root / "manifest.json").unlink()
-
         task = make_mock_task()
         loader = TaskLoader(task=task, root_dir=root)
         loaded = await loader.load_initial_state()
@@ -83,8 +81,6 @@ class TestCrossStageDependencyLoading:
             ).make_snapshot()
             await write_snapshot(root, snap)
 
-        (root / "manifest.json").unlink()
-
         task = make_mock_task()
         loader = TaskLoader(task=task, root_dir=root)
         loaded = await loader.load_initial_state()
@@ -107,7 +103,7 @@ class TestCrossStageDependencyLoading:
     async def test_dependency_loading_prefers_latest_iteration_from_idx(
         self, tmp_path, monkeypatch
     ):
-        """Trusted-manifest path must pick latest-iteration dependency offsets."""
+        """The idx scan must pick latest-iteration dependency offsets."""
         root = tmp_path / "dep_idx_latest_iter"
 
         # iteration 0 snapshots
@@ -140,7 +136,7 @@ class TestCrossStageDependencyLoading:
             ).make_snapshot()
             await write_snapshot(root, snap)
 
-        # report.json present + manifest exists -> _load_offsets_from_idx path
+        # report.json present: the same idx scan
         (root / "report.json").write_bytes(orjson.dumps({"ok": True}))
 
         # Force idx scan order where iteration 0 appears later.
@@ -208,9 +204,6 @@ class TestCrossStageDependencyLoading:
             ).make_snapshot()
             await write_snapshot(root, snap)
 
-        # manifest missing -> _compensate_scan path
-        (root / "manifest.json").unlink()
-
         idx_files = [
             root / "1" / "preprocessed" / "0.idx",
             root / "1" / "inferred" / "0.idx",
@@ -261,8 +254,6 @@ class TestCrossStageDependencyLoading:
                 **{field: value},  # type: ignore
             ).make_snapshot()
             await write_snapshot(root, snap)
-
-        (root / "manifest.json").unlink()
 
         task = make_mock_task()
         loader = TaskLoader(task=task, root_dir=root)

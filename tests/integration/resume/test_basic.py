@@ -146,8 +146,8 @@ class TestResumePartialCompletionOnly:
 
 class TestResumeFailedRetry:
     @pytest.mark.anyio
-    async def test_failed_samples_in_manifest(self, tmp_path):
-        """All-fail run records failures in manifest correctly."""
+    async def test_failed_samples_are_recorded(self, tmp_path):
+        """An all-fail run records its failures."""
         dataset = MockDataset(RESUME_SAMPLES)
         model = MockAlwaysFailModel()
         task = ResumeTask(dataset=dataset, model=model, name="fail_manifest")

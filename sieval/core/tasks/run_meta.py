@@ -42,6 +42,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import secrets
 import sys
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
@@ -166,6 +167,7 @@ class RunFrom(TypedDict):
 RunRecord = TypedDict(
     "RunRecord",
     {
+        "id": NotRequired[str],
         "sieval": str,
         "at": str,
         "start": Literal["fresh", "resume", "from"],
@@ -173,6 +175,7 @@ RunRecord = TypedDict(
         "reran": NotRequired[list[str]],
         "reported": NotRequired[bool],
         "interrupted": NotRequired[bool],
+        "rules_hash": NotRequired[str],
         "config": NotRequired[list[str]],
         "model": NotRequired[str],
         "from": NotRequired[RunFrom],
@@ -180,6 +183,9 @@ RunRecord = TypedDict(
 )
 """One ``runs[]`` entry, appended when a run starts.
 
+``id`` identifies the run: :func:`new_run_id`, sortable by start time, so a
+reader picks the latest run of a task by it. ``rules_hash`` is the anomaly
+rules' hash when the run wrote ``anomalies.json``.
 While the run is in flight the entry has neither ``ended`` nor ``reran``.
 A run that saves its ``report.json`` writes both: ``ended`` (ISO 8601 UTC, like
 ``at``) and ``reran``, the stages it executed, ``[]`` for a fast resume.
@@ -847,15 +853,23 @@ def carried_runs(existing: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     return [r for r in runs if isinstance(r, dict)] if isinstance(runs, list) else []
 
 
+def new_run_id(now: datetime | None = None) -> str:
+    """A run's ID: its UTC start time, then random hex, so IDs sort by start."""
+    moment = now if now is not None else datetime.now(UTC)
+    return f"{moment.astimezone(UTC):%Y%m%dT%H%M%S.%fZ}-{secrets.token_hex(4)}"
+
+
 def new_run_record(
     version: str,
     start: Literal["fresh", "resume", "from"],
     config: Sequence[str] = (),
     now: datetime | None = None,
 ) -> RunRecord:
+    moment = now if now is not None else datetime.now(UTC)
     record: RunRecord = {
+        "id": new_run_id(moment),
         "sieval": version,
-        "at": now.isoformat() if now is not None else utc_now(),
+        "at": moment.isoformat(),
         "start": start,
     }
     if config:

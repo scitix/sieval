@@ -1,5 +1,5 @@
 """
-Tests for TaskSaver: sharding, manifest updates, flush, and report saving.
+Tests for TaskSaver: sharding, the `.idx` index, flush, and report saving.
 
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
@@ -10,10 +10,10 @@ import anyio
 import orjson
 import pytest
 
-from sieval.core.tasks import saver as saver_module
-from sieval.core.tasks.consts import TaskAction, TaskStage
+from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.context import TaskContext, TaskRunIdentity
 from sieval.core.tasks.saver import TaskSaver
+from sieval.core.utils import atomic as saver_module
 
 # What `get_task_run_identity` hands the saver for a decorated task; the saver
 # itself only passes it through, so a literal keeps these tests off the registry.
@@ -27,6 +27,16 @@ _IDENTITY: TaskRunIdentity = {
     "status": "stable",
     "reference_kind": "value",
 }
+
+
+def _idx_ids(root: Path) -> list:
+    """Sample IDs the `.idx` files index, in order: what the loader reads."""
+    ids = []
+    for idx in sorted(root.rglob("*.idx")):
+        for line in idx.read_text().splitlines():
+            sid = line.split("\t")[0]
+            ids.append(int(sid) if sid.isdigit() else sid)
+    return ids
 
 
 def _temp_files(root):
@@ -103,70 +113,6 @@ class TestShardIdFor:
 
 
 # ===================================================================
-# _update_manifest_entry
-# ===================================================================
-class TestUpdateManifestEntry:
-    def test_final_and_failed_entries(self, saver):
-        ctx = _make_ctx(0, TaskStage.FINAL)
-        saver._update_manifest_entry(ctx)
-        entry = saver._manifest[0]
-        assert entry["sample_id"] == 0
-        assert entry["stage"] == "final"
-        assert entry["final"] is True
-        assert entry["failed"] is False
-
-        ctx = _make_ctx(
-            1,
-            TaskStage.FAILED,
-            error_action=TaskAction.INFER,
-            error_reason="exception::TimeoutError",
-        )
-        saver._update_manifest_entry(ctx)
-        entry = saver._manifest[1]
-        assert entry["failed"] is True
-        assert entry["error_action"] == "infer"
-        assert entry["error_reason"] == "exception::TimeoutError"
-
-    def test_retry_count_and_overwrite(self, saver):
-        ctx = _make_ctx(2, TaskStage.FAILED, retry_count=3)
-        saver._update_manifest_entry(ctx)
-        entry = saver._manifest[2]
-        assert entry["retry_count"] == 3
-
-        ctx = _make_ctx(3, TaskStage.FINAL)
-        saver._update_manifest_entry(ctx)
-        entry = saver._manifest[3]
-        assert "retry_count" not in entry
-
-        ctx1 = _make_ctx(0, TaskStage.INFERRED)
-        ctx2 = _make_ctx(0, TaskStage.FINAL)
-        saver._update_manifest_entry(ctx1)
-        saver._update_manifest_entry(ctx2)
-        assert saver._manifest[0]["stage"] == "final"
-
-
-# ===================================================================
-# sync_manifest
-# ===================================================================
-class TestSyncManifest:
-    def test_copies_manifest(self, saver):
-        initial = {
-            0: {
-                "sample_id": 0,
-                "stage": "initial",
-                "iteration": 0,
-                "final": False,
-                "failed": False,
-            }
-        }
-        saver.sync_manifest(initial)
-        assert saver._manifest == initial
-        # Should be a copy
-        initial[1] = {"sample_id": 1}
-        assert 1 not in saver._manifest
-
-
-# ===================================================================
 # flush – async write to disk
 # ===================================================================
 class TestFlush:
@@ -177,19 +123,15 @@ class TestFlush:
         assert not saver._root_dir.exists() or not any(saver._root_dir.iterdir())
 
     @pytest.mark.anyio
-    async def test_flush_writes_shard_and_manifest(self, saver, tmp_root):
+    async def test_flush_writes_shard_and_index(self, saver, tmp_root):
         ctx = _make_ctx(0, TaskStage.FINAL)
-        saver._update_manifest_entry(ctx)
         saver._stage_queue.append(ctx)
 
         await saver.flush()
 
-        # Manifest should exist
-        manifest_path = tmp_root / "manifest.json"
-        assert manifest_path.exists()
-        manifest_data = orjson.loads(manifest_path.read_bytes())
-        assert len(manifest_data) == 1
-        assert manifest_data[0]["sample_id"] == 0
+        # No manifest: the shard and its index are the record
+        assert not (tmp_root / "manifest.json").exists()
+        assert _idx_ids(tmp_root) == [0]
 
         # Shard file should exist
         shard_path = tmp_root / "0" / "final" / "0.jsonl"
@@ -210,12 +152,10 @@ class TestFlush:
     async def test_flush_appends_to_existing_shard(self, saver, tmp_root):
         """Second flush should append, not overwrite."""
         ctx1 = _make_ctx(0, TaskStage.FINAL)
-        saver._update_manifest_entry(ctx1)
         saver._stage_queue.append(ctx1)
         await saver.flush()
 
         ctx2 = _make_ctx(1, TaskStage.FINAL)
-        saver._update_manifest_entry(ctx2)
         saver._stage_queue.append(ctx2)
         await saver.flush()
 
@@ -243,7 +183,6 @@ class TestFlush:
         """Samples route to correct shards based on shard_samples=4."""
         for sid in sample_ids:
             ctx = _make_ctx(sid, TaskStage.FINAL)
-            saver._update_manifest_entry(ctx)
             saver._stage_queue.append(ctx)
 
         await saver.flush()
@@ -278,7 +217,6 @@ class TestFlush:
             infer_result="inferred",
         )
         for ctx in [ctx_pre, ctx_inf]:
-            saver._update_manifest_entry(ctx)
             saver._stage_queue.append(ctx)
 
         await saver.flush()
@@ -291,7 +229,6 @@ class TestFlush:
         ctx_it0 = _make_ctx(0, TaskStage.FINAL, iteration=0)
         ctx_it1 = _make_ctx(0, TaskStage.FINAL, iteration=1)
         for ctx in [ctx_it0, ctx_it1]:
-            saver._update_manifest_entry(ctx)
             saver._stage_queue.append(ctx)
 
         await saver.flush()
@@ -317,7 +254,6 @@ class TestFlush:
         monkeypatch.setattr(TaskSaver, "_write_shard", _write_shard)
         for sid in (0, 1):
             ctx = _make_ctx(sid, TaskStage.FINAL)
-            saver._update_manifest_entry(ctx)
             saver._stage_queue.append(ctx)
 
         with pytest.raises(ExceptionGroup):
@@ -340,8 +276,7 @@ class TestFlush:
 
         await saver.drain(leftover)
 
-        manifest = orjson.loads((tmp_root / "manifest.json").read_bytes())
-        assert [e["sample_id"] for e in manifest] == [0, 1, 2]
+        assert _idx_ids(tmp_root) == [0, 1, 2]
         lines = (tmp_root / "0" / "final" / "0.jsonl").read_bytes().splitlines()
         assert len(lines) == 3
         with pytest.raises(anyio.ClosedResourceError):
@@ -588,7 +523,7 @@ class TestRunMeta:
         async with anyio.create_task_group() as tg:
             for i in range(4):
                 tg.start_soon(
-                    saver_module._atomic_write, tmp_root / "meta.json", b"%d" % i
+                    saver_module.aatomic_write, tmp_root / "meta.json", b"%d" % i
                 )
         assert len(set(temps)) == 4
         assert all(Path(t).parent == tmp_root for t in temps)
@@ -722,10 +657,7 @@ class TestConsumeStream:
 
         await saver.consume_stream(recv)
 
-        manifest_path = tmp_root / "manifest.json"
-        assert manifest_path.exists()
-        data = orjson.loads(manifest_path.read_bytes())
-        assert len(data) == 3
+        assert sorted(_idx_ids(tmp_root)) == [0, 1, 2]
 
         send, recv = anyio.create_memory_object_stream(10)
 
@@ -734,8 +666,7 @@ class TestConsumeStream:
 
         await saver.consume_stream(recv)
 
-        manifest_path = tmp_root / "manifest.json"
-        assert manifest_path.exists()
+        assert _idx_ids(tmp_root) == [0, 1, 2, 0]
 
     @pytest.mark.anyio
     async def test_consume_stream_buffer_size_triggers_mid_stream_flush(self, tmp_path):
@@ -775,10 +706,7 @@ class TestConsumeStream:
         # At least 2 flushes: one mid-stream (buffer full at 2) + one final
         assert flush_count >= 2
         # All 3 samples persisted
-        manifest_data = orjson.loads((root / "manifest.json").read_bytes())
-        assert len(manifest_data) == 3
-        persisted_ids = {e["sample_id"] for e in manifest_data}
-        assert persisted_ids == {0, 1, 2}
+        assert sorted(_idx_ids(root)) == [0, 1, 2]
 
 
 # ===================================================================
@@ -816,12 +744,7 @@ class TestFlushInterval:
             await saver.consume_stream(recv)
 
         # Both samples must be persisted
-        manifest_path = root / "manifest.json"
-        assert manifest_path.exists()
-        manifest_data = orjson.loads(manifest_path.read_bytes())
-        assert len(manifest_data) == 2
-        persisted_ids = {entry["sample_id"] for entry in manifest_data}
-        assert persisted_ids == {0, 1}
+        assert sorted(_idx_ids(root)) == [0, 1]
 
         # Shard file must contain exactly 2 entries (both flushed)
         shard_path = root / "0" / "final" / "0.jsonl"
@@ -844,7 +767,6 @@ class TestSerializationContent:
             infer_result="4",
             postprocess_result="4",
         )
-        saver._update_manifest_entry(ctx)
         saver._stage_queue.append(ctx)
         await saver.flush()
 
@@ -864,7 +786,6 @@ class TestSerializationContent:
         """Verify idx offsets can be used to seek and read the correct line."""
         for i in range(3):
             ctx = _make_ctx(i, TaskStage.FINAL)
-            saver._update_manifest_entry(ctx)
             saver._stage_queue.append(ctx)
 
         await saver.flush()

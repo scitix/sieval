@@ -426,3 +426,60 @@ reference_scores:
         assert ann_b0["status"] == "pass"
         # model-c is not in the card → no annotation, but cell still present.
         assert by_cell[("model-c", "task_0")]["annotation"] is None
+
+
+# ---------------------------------------------------------------------------
+# meta.json supplies the run ID, the model and the config
+# ---------------------------------------------------------------------------
+
+
+class TestScanReadsMeta:
+    @staticmethod
+    def _task_dir(root: Path, meta: dict | None) -> Path:
+        task_dir = root / "session" / "gsm8k"
+        task_dir.mkdir(parents=True)
+        (task_dir / "report.json").write_text(json.dumps({"score": 1.0}))
+        if meta is not None:
+            (task_dir / "meta.json").write_text(json.dumps(meta))
+        return task_dir
+
+    def test_run_id_model_and_config_come_from_meta(self, tmp_path: Path) -> None:
+        task_dir = self._task_dir(
+            tmp_path,
+            {
+                "model": "candidate-7b",
+                "config": "../effective_config.yaml",
+                "runs": [
+                    {"id": "20261020T000000.000000Z-aaaa", "start": "fresh"},
+                    {"id": "20261021T000000.000000Z-bbbb", "start": "resume"},
+                ],
+            },
+        )
+        (task_dir.parent / "effective_config.yaml").write_text("tasks: {}\n")
+        [run] = scan_runs([tmp_path])
+        assert run.run_id == "20261021T000000.000000Z-bbbb"
+        assert run.model_name == "candidate-7b"
+        assert run.config == (task_dir.parent / "effective_config.yaml").resolve()
+
+    def test_without_meta_the_directory_patterns_apply(self, tmp_path: Path) -> None:
+        self._task_dir(tmp_path, None)
+        [run] = scan_runs([tmp_path])
+        assert run.run_id == "gsm8k"
+        assert run.model_name == ""
+        assert run.config is None
+
+    def test_the_config_lookup_does_not_walk_past_the_session(
+        self, tmp_path: Path
+    ) -> None:
+        """A run without `config` in meta.json looks one or two levels up,
+        never further: a stray config higher up is another session's."""
+        (tmp_path / "effective_config.yaml").write_text(
+            "alignment: {card: missing.yaml}\n"
+        )
+        deep = tmp_path / "a" / "b" / "c" / "gsm8k"
+        deep.mkdir(parents=True)
+        (deep / "report.json").write_text(json.dumps({"score": 1.0}))
+        from sieval.cli.leaderboard.scanner import _find_effective_config
+
+        [run] = scan_runs([tmp_path / "a"])
+        assert _find_effective_config(run) is None

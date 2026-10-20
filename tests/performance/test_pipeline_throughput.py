@@ -171,7 +171,7 @@ class TestTimeToFirstSample:
 
     With eager init, the runner must enumerate the entire dataset before
     any sample begins execution.  With lazy init, the first sample starts
-    almost immediately after hydrate + manifest sync.
+    almost immediately after hydrate.
     """
 
     @pytest.mark.anyio

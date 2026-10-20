@@ -105,11 +105,26 @@ legacy shape adapter for an already-bound model and never changes its dialect.
 
 ## Anomaly Detection
 
-Built-in anomaly detection runs automatically after each task and saves to `anomalies.json`. Rules are filtered by task tags — custom rules can be added via `@sieval_detection_rule` (see `sieval/core/tasks/anomaly.py`).
+Built-in anomaly detection runs automatically after each task and saves to `anomalies.json`: per-sample detail over every iteration, on every exit path. The counts are in `report.json`'s `sieval` block, and the rules hash a run applied is in its `meta.json` `runs[].rules_hash`. Rules are filtered by task tags — custom rules can be added via `@sieval_detection_rule` (see `sieval/core/tasks/anomaly.py`).
 
 ## Sharded Persistence
 
 Append-only sharded storage provides crash recovery via `auto_resume`, stream processing (low memory), and parallel shard writes. Custom dataclass types in `TaskContext` fields must use `@sieval_record` for proper deserialization.
+
+A task directory holds:
+
+| File | Answers |
+| --- | --- |
+| `meta.json` | Where the directory came from: version, `model`, `config` (the session's `effective_config.yaml`, relative to the task directory), stage identities, and `runs[]`, each with an `id` |
+| `report.json` | The result, with the run's counts in `sieval` |
+| `<iteration>/<stage>/<shard>.jsonl` and `.idx` | Each sample's records; `.idx` indexes them, and a line pointing past its shard's end is dropped on load |
+| `effective_config.yaml`, `infer_plans.yaml` | Audit records, in the session directory |
+| `progress.json`, `profile.json`, `anomalies.json` | Views for people, refreshed on every exit path |
+
+There is no `manifest.json`: a sample's state is its latest record. A run killed
+between appending a record and indexing it reruns that stage. A directory
+started before `runs[]` existed is recognised by its `meta.json`, which those
+versions wrote once when a run started.
 
 ## Resume
 

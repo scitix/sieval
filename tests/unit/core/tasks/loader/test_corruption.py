@@ -223,7 +223,7 @@ class TestShardCorruptionRoundtrip:
         loader = TaskLoader(task=task, root_dir=root)
         loaded = await loader.load_initial_state()
 
-        # Only N-1 samples in manifest (idx-driven)
+        # Only N-1 samples are indexed
         assert len(loaded) == 2
 
     @pytest.mark.anyio
@@ -260,13 +260,12 @@ class TestShardCorruptionRoundtrip:
         assert len(hydrated_ids) < 4
 
     @pytest.mark.anyio
-    async def test_corrupt_manifest_valid_shards_rebuilds(self, tmp_path):
-        """Corrupt manifest.json → compensate_scan rebuilds from idx files."""
+    async def test_a_corrupt_leftover_manifest_is_ignored(self, tmp_path):
+        """A corrupt `manifest.json` left by an older run is never read."""
         root = tmp_path / "manifest_corrupt"
         contexts = [make_ctx(i, TaskStage.FINAL) for i in range(3)]
         await write_contexts(root, contexts)
 
-        # Corrupt the manifest
         (root / "manifest.json").write_text("{{not json", encoding="utf-8")
 
         task = make_mock_task()

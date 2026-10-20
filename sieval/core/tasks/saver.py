@@ -1,9 +1,9 @@
-"""Buffered async shard writer with atomic manifest, report and meta persistence."""
+"""Buffered async shard writer, with atomic ``report.json`` and ``meta.json``.
 
-import contextlib
-import os
-import stat
-import tempfile
+Each sample's state lives in its shard records; the ``.idx`` beside a shard is
+their index, written after the records it points at (see the loader).
+"""
+
 import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -17,9 +17,10 @@ from anyio.streams.memory import MemoryObjectReceiveStream
 from loguru import logger
 
 from sieval.core.types import JSONValue
+from sieval.core.utils.atomic import aatomic_write
 
 from .consts import TaskStage
-from .context import TaskContext, TaskManifest, TaskRunIdentity, TaskRunMeta
+from .context import TaskContext, TaskRunIdentity, TaskRunMeta
 from .profiler import TaskProfiler, TaskProfilerContext
 from .run_meta import (
     DigestedStage,
@@ -41,58 +42,12 @@ class _Unset:
 _UNSET = _Unset()
 
 
-def _process_umask() -> int:
-    """The process umask, read once: ``os.umask`` can only be read by setting it."""
-    mask = os.umask(0o022)
-    os.umask(mask)
-    return mask
-
-
-_UMASK = _process_umask()
-
-
-def _replacement_mode(path: Path) -> int:
-    """*path*'s mode, else ``0o666 & ~umask`` as ``open()`` gives.
-
-    ``mkstemp`` alone creates ``0o600``, unreadable to another uid.
-    """
-    try:
-        return stat.S_IMODE(path.stat().st_mode)
-    except OSError:
-        return 0o666 & ~_UMASK
-
-
-def _atomic_write_sync(path: Path, data: bytes) -> None:
-    mode = _replacement_mode(path)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        os.fchmod(fd, mode)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
-
-
-async def _atomic_write(path: Path, data: bytes) -> None:
-    """Write *data* to a unique temporary file beside *path*, fsync, then replace.
-
-    The temporary name is unique per call, so two writers never share one, and
-    the data is on disk before the rename makes it visible.
-    """
-    await anyio.to_thread.run_sync(_atomic_write_sync, path, data)
-
-
 class TaskSaver:
     """Buffered async shard writer.
 
     Receives :class:`TaskContext` objects via a memory stream, buffers them,
     and flushes periodically to append-only ``.jsonl`` shards with companion
-    ``.idx`` index files.  Manifest updates are atomic (write-tmp + replace).
+    ``.idx`` index files.
     """
 
     def __init__(
@@ -118,11 +73,9 @@ class TaskSaver:
         ``meta.json`` is rewritten through :meth:`begin_run`,
         :meth:`set_identity` and :meth:`end_run`.
         """
-        self._manifest: dict[str | int, TaskManifest] = {}
         self._stage_queue: list[TaskContext] = []
 
         self._root_dir = root_dir
-        self._manifest_path = self._root_dir / "manifest.json"
         self._report_path = self._root_dir / "report.json"
         self._meta_path = self._root_dir / "meta.json"
         self._meta: TaskRunMeta | None = None
@@ -152,7 +105,6 @@ class TaskSaver:
         """
         async with stream:
             async for ctx in stream:
-                self._update_manifest_entry(ctx)
                 self._stage_queue.append(ctx)
 
                 now = time.perf_counter()
@@ -183,10 +135,8 @@ class TaskSaver:
                     ctx = stream.receive_nowait()
                 except (anyio.WouldBlock, anyio.EndOfStream):
                     break
-                self._update_manifest_entry(ctx)
                 self._stage_queue.append(ctx)
         for ctx in also:
-            self._update_manifest_entry(ctx)
             self._stage_queue.append(ctx)
         await self.flush()
 
@@ -194,8 +144,7 @@ class TaskSaver:
         """Flush the current buffer to disk.
 
         Buffered contexts are grouped by ``(iteration, stage, shard_id)`` and
-        each group is written in parallel.  After all shard writes complete
-        the manifest is atomically updated. A flush that fails or is cancelled
+        each group is written in parallel. A flush that fails or is cancelled
         puts its batch back in the queue for the next one; a shard group it had
         already written is appended again, and the loader keeps the later line.
         """
@@ -213,7 +162,7 @@ class TaskSaver:
             self._last_flush_time = time.perf_counter()
 
     async def _write_batch(self, batch: list[TaskContext]) -> None:
-        """Write *batch* to its shards, then the manifest."""
+        """Write *batch* to its shards."""
         groups = {}
         for c in batch:
             shard_id = self._shard_id_for(c.sample_id)
@@ -229,8 +178,6 @@ class TaskSaver:
             for (iteration, stage, shard_id), ctxs in groups.items():
                 tg.start_soon(_write_group, iteration, stage, shard_id, ctxs)
 
-        await self._write_manifest()
-
     async def save_report(self, report: JSONValue) -> None:
         """Atomically write ``report.json`` via a temporary file and replace.
 
@@ -239,7 +186,7 @@ class TaskSaver:
         and what decides a fast resume, so a task whose report did not land
         has not finished.
         """
-        await _atomic_write(
+        await aatomic_write(
             self._report_path,
             orjson.dumps(
                 report,
@@ -256,6 +203,7 @@ class TaskSaver:
         model: str | None = None,
         keep_recorded_model: bool = False,
         config_diff: Sequence[str] = (),
+        config_path: str | None = None,
         data: DigestedStage | None | _Unset = _UNSET,
         prompt: DigestedStage | None | _Unset = _UNSET,
         inference: InferenceIdentity | None | _Unset = _UNSET,
@@ -275,8 +223,8 @@ class TaskSaver:
         *run_from* starts a resume across tasks: the directory's history begins
         with this run (``start: "from"``) and its origin fields are this run's,
         since this run created the directory; the copied directory and its
-        identity are recorded in ``runs[].from``. Self-creates ``_root_dir``. A
-        failed write raises.
+        identity are recorded in ``runs[].from``. *config_path* is recorded as
+        ``config``. Self-creates ``_root_dir``. A failed write raises.
 
         *keep_recorded_model* keeps a resumed directory's ``model`` when
         *model* differs, since the inference on disk is the recorded model's;
@@ -302,6 +250,8 @@ class TaskSaver:
             meta["model"] = recorded_model
         elif model is not None:
             meta["model"] = model
+        if config_path is not None:
+            meta["config"] = config_path
         meta["identity"] = carried_identity(existing)
         if run_from is not None:
             run = new_run_record(__version__, "from", config=config_diff)
@@ -356,10 +306,17 @@ class TaskSaver:
         """This run's ``inference`` identity; ``None`` before :meth:`begin_run`."""
         return None if self._meta is None else self._meta["identity"]["inference"]
 
-    async def end_run(self, reran: Iterable[str], *, reported: bool = False) -> None:
+    async def end_run(
+        self,
+        reran: Iterable[str],
+        *,
+        reported: bool = False,
+        rules_hash: str | None = None,
+    ) -> None:
         """Mark the current ``runs[]`` entry ended, with the stages it reran.
 
-        *reported* is set by a run that wrote ``report.json``.
+        *reported* is set by a run that wrote ``report.json``; *rules_hash* by
+        one that wrote ``anomalies.json``, naming the rules it applied.
         """
         meta = self._require_meta()
         run = meta["runs"][-1]
@@ -367,9 +324,11 @@ class TaskSaver:
         run["reran"] = ordered_stages(reran)
         if reported:
             run["reported"] = True
+        if rules_hash is not None:
+            run["rules_hash"] = rules_hash
         await self._write_meta()
 
-    async def interrupt_run(self) -> None:
+    async def interrupt_run(self, *, rules_hash: str | None = None) -> None:
         """Mark the current ``runs[]`` entry ended by an interrupt, without ``reran``.
 
         A no-op before :meth:`begin_run`: an interrupt that early left nothing
@@ -380,7 +339,14 @@ class TaskSaver:
         run = self._meta["runs"][-1]
         run["ended"] = utc_now()
         run["interrupted"] = True
+        if rules_hash is not None:
+            run["rules_hash"] = rules_hash
         await self._write_meta()
+
+    @property
+    def run_id(self) -> str | None:
+        """This run's ``runs[].id``; ``None`` before :meth:`begin_run`."""
+        return None if self._meta is None else self._meta["runs"][-1].get("id")
 
     @property
     def run_meta(self) -> TaskRunMeta | None:
@@ -402,7 +368,7 @@ class TaskSaver:
     async def _write_meta(self) -> None:
         async with self._meta_lock:
             await anyio.Path(self._root_dir).mkdir(parents=True, exist_ok=True)
-            await _atomic_write(
+            await aatomic_write(
                 self._meta_path,
                 orjson.dumps(self._meta, option=orjson.OPT_SERIALIZE_NUMPY),
             )
@@ -464,69 +430,12 @@ class TaskSaver:
             await idx_f.write("".join(idx_lines))
 
     async def write_records(self, contexts: Iterable[TaskContext]) -> None:
-        """Write *contexts* as full records and flush, with the manifest.
+        """Write *contexts* as full records and flush.
 
         For records a run writes outside the compute stream: the samples a
         per-stage resume keeps, rewritten so no superseded record can outrank
         them on load.
         """
         for ctx in contexts:
-            self._update_manifest_entry(ctx)
             self._stage_queue.append(ctx)
         await self.flush()
-        await self._write_manifest()
-
-    def sync_manifest(self, initial_manifest: dict[str | int, TaskManifest]):
-        """Import pre-existing manifest entries from the loader.
-
-        Called once during startup so that the saver's in-memory manifest
-        reflects the on-disk state before any new writes occur.
-        """
-        self._manifest = initial_manifest.copy()
-
-    def _update_manifest_entry(self, ctx: TaskContext):
-        """Update the in-memory manifest entry for a single context."""
-        entry: TaskManifest = {
-            "sample_id": ctx.sample_id,
-            "stage": ctx.stage.value,
-            "iteration": ctx.iteration,
-            "final": ctx.stage == TaskStage.FINAL,
-            "failed": ctx.stage == TaskStage.FAILED,
-        }
-        if ctx.error_action:
-            entry["error_action"] = ctx.error_action.value
-        if ctx.error_reason:
-            entry["error_reason"] = ctx.error_reason
-        if ctx.retry_count > 0:
-            entry["retry_count"] = ctx.retry_count
-        self._manifest[ctx.sample_id] = entry
-
-    async def _write_manifest(self):
-        """Atomically write ``manifest.json`` (sorted entries, via tmp + replace).
-
-        Entries are sorted by ``sample_id`` (integers first, then strings) to
-        ensure deterministic output.
-        """
-        async with TaskProfilerContext(self._profiler, "write_manifest"):
-            entries = list(self._manifest.values())
-            entries_sorted = sorted(
-                entries,
-                key=lambda e: (
-                    (0, e["sample_id"])
-                    if isinstance(e["sample_id"], int)
-                    else (1, str(e["sample_id"]))
-                ),
-            )
-
-            tmp = self._manifest_path.with_suffix(".tmp")
-            data = orjson.dumps(entries_sorted)
-
-            await anyio.Path(self._root_dir).mkdir(parents=True, exist_ok=True)
-            try:
-                async with await anyio.open_file(tmp, "wb") as f:
-                    await f.write(data)
-                await anyio.Path(tmp).replace(self._manifest_path)
-            except Exception:
-                with contextlib.suppress(OSError):
-                    await anyio.Path(tmp).unlink(missing_ok=True)
-                raise

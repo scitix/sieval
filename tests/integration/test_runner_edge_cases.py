@@ -306,10 +306,16 @@ class TestRunnerAnomalyOnResume:
         with open(anomaly_file) as f:
             anomalies1 = json.load(f)
 
-        # Should have 2 samples with truncated_output anomaly
-        assert anomalies1["summary"]["anomaly_samples"] == 2
-        assert "truncated_output" in anomalies1["summary"]["anomaly_sample_details"]
-        assert anomalies1["summary"]["anomaly_sample_details"]["truncated_output"] == 2
+        # Should have 2 samples with truncated_output anomaly; the count is
+        # report.json's, the detail anomalies.json's
+        assert report1["sieval"]["anomalies"] == 2
+        assert "summary" not in anomalies1
+        assert all(
+            "truncated_output" in rules
+            for iterations in anomalies1["samples"].values()
+            for rules in iterations.values()
+        )
+        assert len(anomalies1["samples"]) == 2
 
         # --- Second run: resume and complete the failed sample ---
         model2 = MockTruncatedModel(answers=EDGE_ANSWERS)
@@ -333,12 +339,11 @@ class TestRunnerAnomalyOnResume:
 
         # FIXED: Should have 3 samples with truncated_output anomaly
         # (2 from first run + 1 from resume), not just 1
-        assert anomalies2["summary"]["anomaly_samples"] == 3, (
+        assert report2["sieval"]["anomalies"] == 3, (
             f"Expected 3 anomaly samples after resume, got "
-            f"{anomalies2['summary']['anomaly_samples']}. "
+            f"{report2['sieval']['anomalies']}. "
             "Pre-resume anomalies were lost from the final report."
         )
-        assert anomalies2["summary"]["anomaly_sample_details"]["truncated_output"] == 3
 
         # Verify all 3 sample IDs are in the report
         assert len(anomalies2["samples"]) == 3
@@ -484,11 +489,13 @@ class TestProfilePersistence:
 
     @pytest.mark.anyio
     async def test_profile_json_not_written_when_all_disabled(self, tmp_path):
+        """With `record_meta` off there is nothing to build the profile from."""
         cfg = make_config(
             tmp_path,
             profile_io=False,
             profile_stages=False,
             profile_usage=False,
+            record_meta=False,
         )
         task = EdgeTask(
             name="no_profile_test",

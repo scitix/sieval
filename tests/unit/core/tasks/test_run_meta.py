@@ -751,11 +751,15 @@ class TestDocument:
 
     def test_new_run_record(self):
         when = datetime(2026, 10, 20, tzinfo=UTC)
-        assert new_run_record("0.9.0", "fresh", now=when) == {
+        record = new_run_record("0.9.0", "fresh", now=when)
+        run_id = record.pop("id")
+        assert record == {
             "sieval": "0.9.0",
             "at": "2026-10-20T00:00:00+00:00",
             "start": "fresh",
         }
+        assert run_id.startswith("20261020T000000.000000Z-")
+        assert run_id != new_run_record("0.9.0", "fresh", now=when)["id"]
         assert new_run_record("0.9.0", "resume", ["a: 1 → 2"], when)["config"] == [
             "a: 1 → 2"
         ]
