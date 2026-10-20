@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import anyio
+import anyio.to_thread
 import orjson
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
@@ -497,7 +498,7 @@ class TaskRunner:
         # If report.json exists and is valid, we consider the task completed.
         if self._auto_resume:
             cached_report = await self._loader.load_cached_report()
-            if cached_report is not None and not self._last_run_ended():
+            if cached_report is not None and not await self._last_run_ended():
                 # The run that wrote this report never ended (`end_run`
                 # failed, or a later run stopped short): finalize again
                 # through the full path, which reruns `report()` on the
@@ -561,7 +562,9 @@ class TaskRunner:
             await self._task.setup()
 
             if self._resumed_from_existing:
-                self._seed_judge_versions(_read_run_meta(self._root_dir))
+                self._seed_judge_versions(
+                    await anyio.to_thread.run_sync(_read_run_meta, self._root_dir)
+                )
             # Record the run before any work, so an interrupted run is resumed
             # and the resume gates have a meta.json to read. Inference and
             # grader identities are known now; data and prompt once every
@@ -745,6 +748,9 @@ class TaskRunner:
             storage_send, storage_recv = anyio.create_memory_object_stream(
                 self._stream_buffer_capacity
             )
+            # Outlives the storage worker's own receiver, so what was sent to
+            # storage but never received can still be written.
+            storage_leftover = storage_recv.clone()
 
             try:
                 await self._run_streams(
@@ -752,11 +758,12 @@ class TaskRunner:
                 )
             finally:
                 # A stage that raised (a failed `meta.json` write) cancels the
-                # storage worker before its final flush; samples already done
-                # still reach disk. A no-op after a clean exit.
+                # storage worker before its final flush; samples already done,
+                # whether buffered by it or still in the stream, reach disk. A
+                # no-op after a clean exit.
                 with anyio.CancelScope(shield=True):
                     try:
-                        await self._saver.flush()
+                        await self._saver.drain(storage_leftover)
                     except Exception as exc:
                         logger.error("Flush after the run stopped failed: {}", exc)
 
@@ -1271,13 +1278,13 @@ class TaskRunner:
     # meta.json: stage identities and run history
     # ------------------------------------------------------------------
 
-    def _last_run_ended(self) -> bool:
+    async def _last_run_ended(self) -> bool:
         """Whether the latest ``runs[]`` entry ended with a ``reran`` list.
 
         A directory from before ``runs[]`` has no entry, and its ``report.json``
         is trusted as before.
         """
-        meta = _read_run_meta(self._root_dir)
+        meta = await anyio.to_thread.run_sync(_read_run_meta, self._root_dir)
         runs = (meta or {}).get("runs")
         if not isinstance(runs, list) or not runs:
             return True

@@ -137,12 +137,31 @@ class TaskSaver:
         # Final flush on stream close
         await self.flush()
 
+    async def drain(self, stream: MemoryObjectReceiveStream[TaskContext]) -> None:
+        """Take every context *stream* still holds, flush, and close it.
+
+        For a run that stopped before :meth:`consume_stream` reached the end of
+        its stream: *stream* is a clone of that receiver, so the contexts sent
+        but never received are still in it.
+        """
+        with stream:
+            while True:
+                try:
+                    ctx = stream.receive_nowait()
+                except (anyio.WouldBlock, anyio.EndOfStream):
+                    break
+                self._update_manifest_entry(ctx)
+                self._stage_queue.append(ctx)
+        await self.flush()
+
     async def flush(self) -> None:
         """Flush the current buffer to disk.
 
         Buffered contexts are grouped by ``(iteration, stage, shard_id)`` and
         each group is written in parallel.  After all shard writes complete
-        the manifest is atomically updated.
+        the manifest is atomically updated. A flush that fails or is cancelled
+        puts its batch back in the queue for the next one; a shard group it had
+        already written is appended again, and the loader keeps the later line.
         """
         if not self._stage_queue:
             return
@@ -150,24 +169,31 @@ class TaskSaver:
         async with TaskProfilerContext(self._profiler, "flush"):
             batch = self._stage_queue
             self._stage_queue = []
-
-            groups = {}
-            for c in batch:
-                shard_id = self._shard_id_for(c.sample_id)
-                groups.setdefault((c.iteration, c.stage, shard_id), []).append(c)
-
-            limiter = anyio.CapacityLimiter(self._shard_write_concurrency)
-
-            async def _write_group(iteration, stage, shard_id, ctxs):
-                async with limiter:
-                    await self._write_shard(iteration, stage, shard_id, ctxs)
-
-            async with anyio.create_task_group() as tg:
-                for (iteration, stage, shard_id), ctxs in groups.items():
-                    tg.start_soon(_write_group, iteration, stage, shard_id, ctxs)
-
-            await self._write_manifest()
+            try:
+                await self._write_batch(batch)
+            except BaseException:
+                self._stage_queue = batch + self._stage_queue
+                raise
             self._last_flush_time = time.perf_counter()
+
+    async def _write_batch(self, batch: list[TaskContext]) -> None:
+        """Write *batch* to its shards, then the manifest."""
+        groups = {}
+        for c in batch:
+            shard_id = self._shard_id_for(c.sample_id)
+            groups.setdefault((c.iteration, c.stage, shard_id), []).append(c)
+
+        limiter = anyio.CapacityLimiter(self._shard_write_concurrency)
+
+        async def _write_group(iteration, stage, shard_id, ctxs):
+            async with limiter:
+                await self._write_shard(iteration, stage, shard_id, ctxs)
+
+        async with anyio.create_task_group() as tg:
+            for (iteration, stage, shard_id), ctxs in groups.items():
+                tg.start_soon(_write_group, iteration, stage, shard_id, ctxs)
+
+        await self._write_manifest()
 
     async def save_report(self, report: JSONValue) -> None:
         """Atomically write ``report.json`` via a temporary file and replace.

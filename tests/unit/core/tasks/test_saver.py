@@ -299,6 +299,67 @@ class TestFlush:
         assert (tmp_root / "0" / "final" / "0.jsonl").exists()
         assert (tmp_root / "1" / "final" / "0.jsonl").exists()
 
+    @pytest.mark.anyio
+    async def test_a_failed_flush_keeps_its_batch_for_the_next(
+        self, saver, tmp_root, monkeypatch
+    ):
+        """A flush that dies mid-write (an error, or the storage worker being
+        cancelled) leaves its contexts queued, so a later flush still writes them."""
+        real_write_shard = TaskSaver._write_shard
+        calls = {"n": 0}
+
+        async def _write_shard(self, *args):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("EIO")
+            return await real_write_shard(self, *args)
+
+        monkeypatch.setattr(TaskSaver, "_write_shard", _write_shard)
+        for sid in (0, 1):
+            ctx = _make_ctx(sid, TaskStage.FINAL)
+            saver._update_manifest_entry(ctx)
+            saver._stage_queue.append(ctx)
+
+        with pytest.raises(ExceptionGroup):
+            await saver.flush()
+        assert [c.sample_id for c in saver._stage_queue] == [0, 1]
+
+        await saver.flush()
+        assert saver._stage_queue == []
+        lines = (tmp_root / "0" / "final" / "0.jsonl").read_bytes().splitlines()
+        assert {orjson.loads(line)["sample_id"] for line in lines} == {0, 1}
+
+    @pytest.mark.anyio
+    async def test_drain_writes_what_the_stream_still_holds(self, saver, tmp_root):
+        send, recv = anyio.create_memory_object_stream[TaskContext](8)
+        leftover = recv.clone()
+        for sid in (0, 1, 2):
+            send.send_nowait(_make_ctx(sid, TaskStage.FINAL))
+        # The consumer stopped early, with three contexts still buffered.
+        recv.close()
+
+        await saver.drain(leftover)
+
+        manifest = orjson.loads((tmp_root / "manifest.json").read_bytes())
+        assert [e["sample_id"] for e in manifest] == [0, 1, 2]
+        lines = (tmp_root / "0" / "final" / "0.jsonl").read_bytes().splitlines()
+        assert len(lines) == 3
+        with pytest.raises(anyio.ClosedResourceError):
+            leftover.receive_nowait()
+        send.close()
+
+    @pytest.mark.anyio
+    async def test_drain_stops_at_the_end_of_a_closed_stream(self, saver, tmp_root):
+        send, recv = anyio.create_memory_object_stream[TaskContext](8)
+        send.send_nowait(_make_ctx(0, TaskStage.FINAL))
+        send.close()
+
+        await saver.drain(recv)
+
+        assert (
+            len((tmp_root / "0" / "final" / "0.jsonl").read_bytes().splitlines()) == 1
+        )
+
 
 # ===================================================================
 # save_report

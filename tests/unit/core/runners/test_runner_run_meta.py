@@ -7,6 +7,7 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import anyio
 import orjson
 import pytest
 
@@ -731,30 +732,30 @@ class TestFailedWrites:
         self, tmp_path, monkeypatch
     ):
         """The data and prompt identity write runs inside a stage worker. When it
-        fails the task still fails, but the shard records already buffered reach
-        disk instead of dying with the storage worker."""
-        samples = [{"question": f"q{i}", "answer": str(i)} for i in range(40)]
+        fails the task still fails, but every sample that finished reaches disk,
+        whether the storage worker had buffered it or it was still in the
+        stream, instead of dying with the storage worker."""
+        samples = [{"question": f"q{i}", "answer": str(i)} for i in range(20)]
         # The first write is `begin_run`; the second is the input identity.
         self._fail_replace_of(monkeypatch, "meta.json", OSError("EIO"), after=1)
+
+        async def _stalled(*_args):
+            # A storage worker that has not reached the stream yet: everything
+            # sent to storage is still in it when the run stops.
+            await anyio.sleep_forever()
+
+        monkeypatch.setattr(TaskSaver, "consume_stream", _stalled)
         task = RecordTask(dataset=MockDataset(samples), model=MockChatModel(), name="t")
-        runner = TaskRunner(
-            task,
-            make_config(
-                tmp_path,
-                write_buffer_size=1000,
-                write_buffer_flush_interval=3600,
-            ),
-        )
+        runner = TaskRunner(task, make_config(tmp_path))
         with pytest.raises(ExceptionGroup) as raised:
             await runner.arun()
         assert raised.group_contains(OSError, match="EIO")
 
-        records = sum(
-            len(path.read_text().splitlines())
-            for path in runner.root_dir.rglob("*.jsonl")
-        )
-        assert records > 0
-        assert (runner.root_dir / "manifest.json").exists()
+        finished = {s for s, c in runner._contexts.items() if c.is_terminal()}
+        assert finished
+        loader = TaskLoader(task=task, root_dir=runner.root_dir)
+        on_disk = await loader.load_initial_state()
+        assert {s for s, c in on_disk.items() if c.is_terminal()} == finished
         assert run_started(runner.root_dir)
 
 

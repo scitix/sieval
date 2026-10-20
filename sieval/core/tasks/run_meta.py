@@ -283,22 +283,11 @@ def call_key(model_meta: Mapping) -> str:
     )
 
 
-#: Request-parameter keys that say where or how a request was sent, or name the
-#: model, rather than what was asked. ``stream_options`` only asks for usage.
+#: Request-parameter keys that say how a request was sent, or name the model,
+#: rather than what was asked: the keys a dialect's ``request_params`` actually
+#: carries. ``stream_options`` only asks for usage.
 _TRANSPORT_KEYS = frozenset(
-    {
-        "model",
-        "method",
-        "path",
-        "query",
-        "url",
-        "api_base",
-        "base_url",
-        "headers",
-        "extra_headers",
-        "stream",
-        "stream_options",
-    }
+    {"model", "method", "path", "query", "stream", "stream_options"}
 )
 
 
