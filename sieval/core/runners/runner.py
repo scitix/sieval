@@ -41,6 +41,15 @@ from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
 from sieval.core.tasks.records import iter_grader_outputs
+from sieval.core.tasks.run_meta import (
+    aggregate_digest,
+    digest,
+    grader_identity,
+    grader_modules,
+    inference_identity,
+    judge_identities,
+    prompt_of,
+)
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
@@ -167,6 +176,20 @@ def _read_run_meta(root_dir: Path) -> dict | None:
     except (OSError, orjson.JSONDecodeError):
         return None
     return meta if isinstance(meta, dict) else None
+
+
+def run_started(root_dir: Path) -> bool:
+    """Whether a run has started in *root_dir*, so a new one would resume it.
+
+    Read from ``meta.json``'s ``runs[]``, which a run appends before it does any
+    work: a run killed before its first ``manifest.json`` flush still counts. A
+    directory written before ``runs[]`` existed falls back to ``manifest.json``,
+    the signal those versions used.
+    """
+    meta = _read_run_meta(root_dir)
+    if meta is not None and isinstance(meta.get("runs"), list) and meta["runs"]:
+        return True
+    return (root_dir / "manifest.json").exists()
 
 
 def read_run_version(root_dir: Path) -> str | None:
@@ -297,9 +320,28 @@ class TaskRunner:
         self,
         task: Task,
         config: TaskRunnerConfig | None = None,
+        *,
+        inference_recipe: dict[str, JSONValue] | None = None,
+        resume_config_diff: list[str] | None = None,
     ):
+        """*inference_recipe* is the serving plan of the model under test,
+        without its checkpoint, for the inference identity; ``None`` when the
+        model is not served by SiEval. *resume_config_diff* is the
+        resume-mutable config change a resume made, for ``runs[].config``.
+        """
         self._task = task
         self._config = config or TaskRunnerConfig()
+        self._inference_recipe = inference_recipe
+        self._resume_config_diff = list(resume_config_diff or [])
+        # Run history: actions executed this run, each sample's data and prompt
+        # digests as of its first preprocess, and judge versions the API reported.
+        self._ran_actions: set[TaskAction] = set()
+        self._sample_digests: dict[
+            str | int, tuple[int | None, str | None, str | None]
+        ] = {}
+        self._input_identity_written = False
+        self._judge_versions: dict[str, str] = {}
+        self._judge_names: set[object] | None = None
 
         # States
         self._contexts: dict[str | int, TaskContext] = {}
@@ -482,15 +524,39 @@ class TaskRunner:
                                 "Anomaly detection rules unchanged, "
                                 "using cached anomaly report"
                             )
+                    # Nothing reran, so the identity stays the one that
+                    # produced this report; only the run is recorded.
+                    await self._saver.begin_run(
+                        resumed=True,
+                        model=self._model_name(),
+                        config_diff=self._resume_config_diff,
+                    )
+                    await self._saver.end_run(())
                     return cached_report
 
         try:
             # 0.5. Lifecycle Setup
             await self._task.setup()
 
-            # Write the version handshake up front so interrupted-then-resumed
-            # runs always have a meta.json for the resume gate to read.
-            await self._saver.write_run_meta()
+            if self._resumed_from_existing:
+                self._seed_judge_versions(_read_run_meta(self._root_dir))
+            # Record the run before any work, so an interrupted run is resumed
+            # and the resume gates have a meta.json to read. Inference and
+            # grader identities are known now; data and prompt once every
+            # sample is past preprocess.
+            await self._saver.begin_run(
+                resumed=self._resumed_from_existing,
+                model=self._model_name(),
+                config_diff=(
+                    self._resume_config_diff if self._resumed_from_existing else ()
+                ),
+                identity={
+                    "data": None,
+                    "prompt": None,
+                    "inference": self._inference_identity(),
+                    "grader": self._grader_identity(),
+                },
+            )
 
             # 1. Load Initial State
             self._contexts = await self._loader.load_initial_state()
@@ -607,6 +673,11 @@ class TaskRunner:
             # Sync Saver Manifest
             self._saver.sync_manifest(initial_manifest)
 
+            for ctx in self._contexts.values():
+                if ctx.preprocess_result is not None or ctx.is_terminal():
+                    self._note_sample_digests(ctx)
+            await self._maybe_write_input_identity()
+
             # 5. Check for Early Exit
             total_count = self._total_samples
             if total_count == 0 or (finals_count + fails_count == total_count):
@@ -623,6 +694,7 @@ class TaskRunner:
                 report = await self._task.report(finals, fails)
                 # Always save report on completion
                 await self._save_report_with_diagnostics(report, finals, fails)
+                await self._end_run()
                 return report
 
             # 6. Setup Progress Tracker
@@ -705,8 +777,8 @@ class TaskRunner:
                 # of the failure needs. Re-raised unchanged below; only this one
                 # type is deferred, so every other failure still aborts here.
                 refusal = exc
-            # Backstop: create-if-absent, normally a no-op (written at run start).
-            await self._saver.write_run_meta()
+            if refusal is None:
+                await self._end_run()
             # Generate anomaly report
             if self._config.detect_anomalies:
                 await self._anomaly_detector.generate_and_save_from_results(
@@ -731,7 +803,7 @@ class TaskRunner:
                 try:
                     with anyio.CancelScope(shield=True):
                         await self._saver.flush()
-                        await self._saver.write_run_meta()
+                        await self._saver.interrupt_run()
                         # Generate anomaly report on interrupt
                         if self._config.detect_anomalies:
                             finals_i, fails_i = self._final_and_failed()
@@ -948,6 +1020,11 @@ class TaskRunner:
 
             # 2. Auto meta always recorded; user meta merges on top
             meta = _build_auto_meta(timing_s, inner)
+            if stage == TaskStage.PREPROCESSED:
+                meta["identity"] = {
+                    "data": self._safe_digest(ctx.raw_sample),
+                    "prompt": self._safe_digest(prompt_of(inner)),
+                }
 
             # 3. Merge user-provided meta then hook
             if out_meta:
@@ -960,6 +1037,8 @@ class TaskRunner:
 
             # 4. Record usage from model_calls
             model_calls = meta.get("model_calls", [])
+            # Any stage: agieval's extractor is a judge called from `infer`.
+            self._observe_judge_versions(model_calls)
             for call in model_calls:
                 if call.get("usage"):
                     self._profiler.record_model_usage(
@@ -990,6 +1069,7 @@ class TaskRunner:
                 return next_ctx.iterate()
             return ctx
 
+        self._ran_actions.add(action)
         try:
             match action:
                 case TaskAction.PREPROCESS:
@@ -1010,8 +1090,6 @@ class TaskRunner:
                     )
                     new_ctx = _run_stage(TaskStage.FEEDBACK, fb, finalize=finalize)
 
-            await compute_send.send(new_ctx)
-
         except Exception as e:
             logger.opt(exception=True).error(
                 "Stage {} failed for {}", action, ctx.sample_id
@@ -1025,7 +1103,13 @@ class TaskRunner:
                 else f"exception::{e.__class__.__name__}"
             )
             new_ctx = ctx.to_failed(action, reason, str(e))
-            await compute_send.send(new_ctx)
+
+        # Outside the handler above: a failed `meta.json` write fails the task,
+        # not this sample.
+        if action is TaskAction.PREPROCESS:
+            self._note_sample_digests(new_ctx)
+            await self._maybe_write_input_identity()
+        await compute_send.send(new_ctx)
 
     def _ensure_raw_sample(self, ctx: TaskContext) -> TaskContext:
         if ctx.raw_sample is not None:
@@ -1132,6 +1216,161 @@ class TaskRunner:
                     "plain merge replaces the whole declaration."
                 )
 
+    # ------------------------------------------------------------------
+    # meta.json: stage identities and run history
+    # ------------------------------------------------------------------
+
+    def _model_name(self) -> str | None:
+        meta = getattr(self._task.model, "meta", None)
+        if not callable(meta):
+            return None
+        name = meta().get("model")
+        return name if isinstance(name, str) else None
+
+    @staticmethod
+    def _safe_digest(value: Any) -> str | None:
+        """Digest *value*, or ``None`` when it holds something undigestable."""
+        try:
+            return digest(value)
+        except (TypeError, ValueError) as exc:
+            logger.warning("Identity digest unavailable: {}", exc)
+            return None
+
+    def _inference_identity(self) -> dict[str, JSONValue] | None:
+        try:
+            return cast(
+                dict[str, JSONValue],
+                inference_identity(
+                    model=self._task.model,
+                    task_args=self._task.inference_args(),
+                    runner_keys={
+                        "deterministic": self._config.deterministic,
+                        "max_iterations": self._config.max_iterations,
+                        "max_retries": self._config.max_retries,
+                    },
+                    recipe=self._inference_recipe,
+                ),
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.warning("Inference identity unavailable: {}", exc)
+            return None
+
+    def _grader_identity(self) -> dict[str, JSONValue] | None:
+        try:
+            judges = judge_identities(
+                self._task.judge_models(),
+                self._task.judge_prompts(),
+                versions=self._judge_versions_by_role(),
+            )
+            modules = grader_modules(type(self._task))
+            return cast(dict[str, JSONValue], grader_identity(modules, judges))
+        except (TypeError, ValueError, AttributeError, SyntaxError, OSError) as exc:
+            logger.warning("Grader identity unavailable: {}", exc)
+            return None
+
+    def _judge_versions_by_role(self) -> dict[str, str | None]:
+        out: dict[str, str | None] = {}
+        for role, model in self._task.judge_models().items():
+            name = model.meta().get("model")
+            if isinstance(name, str) and name in self._judge_versions:
+                out[role] = self._judge_versions[name]
+        return out
+
+    def _seed_judge_versions(self, meta: dict | None) -> None:
+        """Carry judge versions a resumed run's ``meta.json`` recorded.
+
+        A resume that grades nothing new never hears from the judge API, and
+        the version it reported earlier still describes the verdicts on disk.
+        """
+        grader = ((meta or {}).get("identity") or {}).get("grader") or {}
+        for judge in grader.get("judges") or ():
+            if isinstance(judge, dict):
+                name, version = judge.get("model"), judge.get("version")
+                if isinstance(name, str) and isinstance(version, str):
+                    self._judge_versions.setdefault(name, version)
+
+    def _observe_judge_versions(self, model_calls: list) -> None:
+        """Keep the first model version a judge API reported, by model name."""
+        if self._judge_names is None:
+            self._judge_names = {
+                model.meta().get("model")
+                for model in self._task.judge_models().values()
+            }
+        for call in model_calls:
+            name = (call.get("model") or {}).get("model")
+            reported = call.get("response_model")
+            if (
+                isinstance(name, str)
+                and name in self._judge_names
+                and isinstance(reported, str)
+                and reported
+            ):
+                self._judge_versions.setdefault(name, reported)
+
+    def _note_sample_digests(self, ctx: TaskContext) -> None:
+        """Record *ctx*'s data and prompt digests once, as of its first preprocess.
+
+        Prefers the digests its ``preprocess`` record carries -- what that run
+        saw -- and falls back to digesting the sample and the recorded prompt.
+        """
+        if ctx.sample_id in self._sample_digests:
+            return
+        # Shards do not hold the raw sample; a resumed context gets it back here.
+        ctx = self._ensure_raw_sample(ctx)
+        recorded: dict = {}
+        for entry in ctx.stage_meta.get(TaskStage.PREPROCESSED.value, ()):
+            if isinstance(entry, dict) and isinstance(entry.get("identity"), dict):
+                recorded = entry["identity"]
+                break
+        data = recorded.get("data") if recorded else None
+        if data is None:
+            data = self._safe_digest(ctx.raw_sample)
+        prompt = recorded.get("prompt") if recorded else None
+        if prompt is None and ctx.preprocess_result is not None:
+            prompt = self._safe_digest(prompt_of(ctx.preprocess_result))
+        self._sample_digests[ctx.sample_id] = (ctx.repeat_index, data, prompt)
+
+    async def _maybe_write_input_identity(self, force: bool = False) -> None:
+        """Write the data and prompt identities once every sample is past preprocess.
+
+        Not a barrier: samples already past preprocess keep going while the rest
+        catch up. *force* writes whatever is known at the end of a run, so a
+        sample that never reached preprocess is digested from its raw content.
+        """
+        if self._input_identity_written:
+            return
+        # `_total_samples` is 0 until `arun` has sized the sample universe.
+        if not force and not 0 < self._total_samples <= len(self._sample_digests):
+            return
+        if force:
+            for ctx in self._contexts.values():
+                self._note_sample_digests(ctx)
+        self._input_identity_written = True
+        entries = self._sample_digests.items()
+        await self._saver.set_identity(
+            data=aggregate_digest((sid, rep, d) for sid, (rep, d, _) in entries),
+            prompt=aggregate_digest((sid, rep, p) for sid, (rep, _, p) in entries),
+        )
+
+    async def _end_run(self) -> None:
+        """Finish this run's ``runs[]`` entry once its ``report.json`` is saved.
+
+        Writes the data and prompt identities if a sample never reached
+        preprocess, and the grader's again when a judge reported its version.
+        """
+        await self._maybe_write_input_identity(force=True)
+        if self._judge_versions:
+            await self._saver.set_identity(grader=self._grader_identity())
+        ran = self._ran_actions
+        reran = set()
+        if TaskAction.PREPROCESS in ran:
+            reran |= {"data", "prompt"}
+        if TaskAction.INFER in ran:
+            reran.add("inference")
+        # `report()` belongs to the grader and runs on every path but a fast resume.
+        reran.add("grader")
+        await self._saver.end_run(reran)
+
     def _resolve_result_dir(
         self, result_dir: str | None, task: Task, auto_resume: bool
     ) -> tuple[bool, Path]:
@@ -1139,7 +1378,7 @@ class TaskRunner:
             p = Path(result_dir).expanduser()
             if p.exists() and p.is_file():
                 raise ValueError("result_dir is a file")
-            if p.exists() and (p / "manifest.json").exists():
+            if p.exists() and run_started(p):
                 if not auto_resume:
                     raise ResultDirExistsError(p)
                 return True, p
@@ -1153,7 +1392,7 @@ class TaskRunner:
             ]
             if candidates:
                 latest = max(candidates, key=lambda x: x.name)
-                if (latest / "manifest.json").exists():
+                if run_started(latest):
                     return True, latest
         ts = datetime.now().strftime("%Y%m%d%H%M%S")
         return False, root / ts

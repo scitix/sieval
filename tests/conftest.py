@@ -1069,7 +1069,7 @@ async def write_completed_samples(
         write_buffer_size=max(n_completed + 1, 64),
         write_buffer_flush_interval=9999.0,
     )
-    await saver.write_run_meta()
+    await saver.begin_run(resumed=False)
     for i in range(n_completed):
         ctx = _make_bench_ctx(i, TaskStage.FINAL)
         saver._update_manifest_entry(ctx)

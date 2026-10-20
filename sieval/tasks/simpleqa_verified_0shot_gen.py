@@ -56,6 +56,7 @@ from sieval.core.tasks.metrics import (
     metric_interval,
     problem_population,
 )
+from sieval.core.types import JSONValue
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import SimpleQAVerifiedDatasetSample
 
@@ -164,6 +165,10 @@ class SimpleQAVerifiedZeroShotGenTask(
             "task args — a model-config dict such as "
             "{model: gpt-4.1, api_base: ..., api_key: ..., temperature: 0}."
         )
+
+    @override
+    def judge_prompts(self) -> Mapping[str, JSONValue]:
+        return {"grader": GRADER_TEMPLATE}
 
     @override
     async def preprocess(self, raw, ctx):

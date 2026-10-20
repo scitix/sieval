@@ -1,0 +1,411 @@
+"""
+Tests for the stage identities and run history recorded in ``meta.json``.
+
+AI-Generated Code - Claude Opus 5.5 (Anthropic)
+"""
+
+import hashlib
+import json
+import sys
+import textwrap
+from datetime import UTC, datetime
+from typing import Any
+
+import numpy as np
+import pytest
+
+from sieval.core.tasks.run_meta import (
+    GRADER_PACKAGES,
+    JUDGE_MODEL_REF_ENV,
+    aggregate_digest,
+    canonical_json,
+    carried_identity,
+    carried_runs,
+    digest,
+    empty_identity,
+    grader_identity,
+    grader_modules,
+    inference_identity,
+    judge_identities,
+    judge_model_refs,
+    new_run_record,
+    ordered_stages,
+    prompt_of,
+)
+from tests.conftest import MockChatModel, MockJudgeModel
+
+
+# ===================================================================
+# Canonical digests
+# ===================================================================
+class TestDigest:
+    def test_is_sha256_over_sorted_compact_json(self):
+        value = {"b": [1, 2], "a": "x"}
+        expected = hashlib.sha256(b'{"a":"x","b":[1,2]}').hexdigest()
+        assert digest(value) == f"sha256:{expected}"
+
+    def test_key_order_does_not_matter(self):
+        assert digest({"a": 1, "b": 2}) == digest({"b": 2, "a": 1})
+
+    def test_different_content_differs(self):
+        assert digest({"a": 1}) != digest({"a": 2})
+
+    def test_encodes_values_a_raw_sample_may_hold(self):
+        raw = {
+            "ids": (1, 2),
+            "tags": {"y", "x"},
+            "blob": b"\x00\x01",
+            "score": np.float32(0.5),
+            "vec": np.array([1, 2]),
+            "when": datetime(2026, 1, 1, tzinfo=UTC),
+        }
+        decoded = json.loads(canonical_json(raw))
+        assert decoded["ids"] == [1, 2]
+        assert decoded["tags"] == ['"x"', '"y"']
+        assert decoded["blob"] == {"__bytes__": hashlib.sha256(b"\x00\x01").hexdigest()}
+        assert decoded["score"] == 0.5
+        assert decoded["vec"] == [1, 2]
+        assert decoded["when"].startswith("2026-01-01")
+
+    def test_an_image_is_digested_by_its_bytes(self):
+        class _Image:
+            def __init__(self, data):
+                self._data = data
+
+            def tobytes(self):
+                return self._data
+
+        assert digest({"img": _Image(b"a")}) != digest({"img": _Image(b"b")})
+
+    def test_undigestable_value_raises(self):
+        with pytest.raises(TypeError, match="cannot digest"):
+            digest({"f": object()})
+
+    def test_nan_is_refused(self):
+        with pytest.raises(ValueError):
+            digest({"x": float("nan")})
+
+
+class TestPromptOf:
+    def test_prompt_record_contributes_only_its_prompt(self):
+        a = {"prompt": [{"role": "user", "content": "q"}], "reference": "1"}
+        b = {"prompt": [{"role": "user", "content": "q"}], "reference": "2"}
+        assert prompt_of(a) == prompt_of(b) == [{"role": "user", "content": "q"}]
+
+    def test_bare_prompt_is_used_whole(self):
+        assert prompt_of("What is 1+1?") == "What is 1+1?"
+
+
+class TestAggregateDigest:
+    def test_counts_samples_and_ignores_arrival_order(self):
+        rows = [(2, None, "sha256:c"), (0, None, "sha256:a"), ("x", None, "sha256:b")]
+        forward = aggregate_digest(rows)
+        backward = aggregate_digest(reversed(rows))
+        assert forward == backward
+        assert forward["samples"] == 3
+
+    def test_repeat_index_is_part_of_the_key(self):
+        """A split repeated four times is other data than the same split once."""
+        once = aggregate_digest([(0, None, "sha256:a")])
+        repeated = aggregate_digest([(0, 0, "sha256:a")])
+        assert once["digest"] != repeated["digest"]
+
+    def test_unknown_sample_digest_still_counts(self):
+        stage = aggregate_digest([(0, None, None)])
+        assert stage["samples"] == 1
+
+
+# ===================================================================
+# Inference
+# ===================================================================
+class TestInferenceIdentity:
+    @staticmethod
+    def _identity(model, **overrides):
+        args: dict[str, Any] = {
+            "model": model,
+            "task_args": {"n": 1},
+            "runner_keys": {
+                "deterministic": False,
+                "max_iterations": None,
+                "max_retries": None,
+            },
+            "recipe": None,
+        }
+        args.update(overrides)
+        return inference_identity(**args)["digest"]
+
+    def test_model_under_test_is_left_out(self):
+        """The model is the result's row, so swapping it keeps the identity."""
+        a = MockChatModel(temperature=0.0)
+        b = MockChatModel(temperature=0.0)
+        b._model = "another-model"
+        assert self._identity(a) == self._identity(b)
+
+    def test_endpoint_is_left_out(self):
+        a = MockChatModel(temperature=0.0)
+        b = MockChatModel(temperature=0.0)
+        b._api_base = "http://elsewhere:9000/v1"
+        assert self._identity(a) == self._identity(b)
+
+    def test_request_arguments_count(self):
+        assert self._identity(MockChatModel(temperature=0.0)) != self._identity(
+            MockChatModel(temperature=0.7)
+        )
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [("deterministic", True), ("max_iterations", 3), ("max_retries", 2)],
+    )
+    def test_result_changing_runner_keys_count(self, key, value):
+        model = MockChatModel()
+        base = {"deterministic": False, "max_iterations": None, "max_retries": None}
+        changed = base | {key: value}
+        assert self._identity(model, runner_keys=base) != self._identity(
+            model, runner_keys=changed
+        )
+
+    def test_n_counts(self):
+        model = MockChatModel()
+        assert self._identity(model, task_args={"n": 1}) != self._identity(
+            model, task_args={"n": 4}
+        )
+
+    def test_recipe_counts(self):
+        model = MockChatModel()
+        assert self._identity(model, recipe={"backend": "vllm"}) != self._identity(
+            model, recipe={"backend": "sglang"}
+        )
+
+
+# ===================================================================
+# Grader
+# ===================================================================
+@pytest.fixture
+def plugin_tree(tmp_path, monkeypatch):
+    """A throwaway ``sieval_plugins`` package on ``sys.path``."""
+    root = tmp_path / "plugins"
+    pkg = root / "sieval_plugins"
+    (pkg / "graders").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "graders" / "__init__.py").write_text("from .exact import grade\n")
+    (pkg / "graders" / "exact.py").write_text(
+        "from sieval.tasks import _math_verify\n\ndef grade(a, b):\n    return a == b\n"
+    )
+    (pkg / "unused.py").write_text("X = 1\n")
+    (pkg / "task.py").write_text(
+        textwrap.dedent(
+            """
+            import json
+
+            from sieval.core.tasks import Task
+            from sieval_plugins.graders import grade
+            from . import helpers
+
+
+            class PluginTask(Task):
+                async def preprocess(self, raw, ctx):
+                    return raw
+
+                async def infer(self, pre, ctx):
+                    return pre
+
+                async def postprocess(self, inf, ctx):
+                    return inf
+
+                async def feedback(self, post, ctx):
+                    return True, grade(post, post)
+
+                async def report(self, finals, fails):
+                    return {}
+            """
+        )
+    )
+    (pkg / "helpers.py").write_text("def helper():\n    return 1\n")
+    monkeypatch.syspath_prepend(str(root))
+    for name in list(sys.modules):
+        if name == "sieval_plugins" or name.startswith("sieval_plugins."):
+            monkeypatch.delitem(sys.modules, name)
+    import importlib
+
+    module = importlib.import_module("sieval_plugins.task")
+    yield pkg, module.PluginTask
+    for name in list(sys.modules):
+        if name == "sieval_plugins" or name.startswith("sieval_plugins."):
+            sys.modules.pop(name, None)
+
+
+class TestGraderModules:
+    def test_gsm8k_closure_leaves_out_core_and_datasets(self):
+        from sieval.tasks import GSM8KZeroShotGenTask
+
+        modules = grader_modules(GSM8KZeroShotGenTask)
+        assert set(modules) == {
+            "sieval.tasks.gsm8k_0shot_gen",
+            "sieval.tasks._math_verify",
+            "sieval.community.math",
+            "sieval.community.deepseek_math",
+            "sieval.community._sympy_guards",
+        }
+        assert all(v.startswith("sha256:") for v in modules.values())
+
+    def test_follows_plugins_relative_imports_and_reexports(self, plugin_tree):
+        pkg, task_cls = plugin_tree
+        modules = grader_modules(task_cls)
+        assert set(modules) == {
+            "sieval_plugins.task",
+            "sieval_plugins.helpers",
+            "sieval_plugins.graders",
+            "sieval_plugins.graders.exact",
+            "sieval.tasks._math_verify",
+            "sieval.community.math",
+        }
+        assert "sieval_plugins.unused" not in modules
+        source = (pkg / "helpers.py").read_bytes()
+        assert modules["sieval_plugins.helpers"] == (
+            "sha256:" + hashlib.sha256(source).hexdigest()
+        )
+
+    def test_a_changed_helper_changes_the_digest(self, plugin_tree):
+        pkg, task_cls = plugin_tree
+        before = grader_modules(task_cls)
+        (pkg / "helpers.py").write_text("def helper():\n    return 2\n")
+        after = grader_modules(task_cls)
+        assert before["sieval_plugins.helpers"] != after["sieval_plugins.helpers"]
+        assert before["sieval_plugins.task"] == after["sieval_plugins.task"]
+
+    def test_walks_the_mro(self, plugin_tree):
+        _, task_cls = plugin_tree
+
+        class Sub(task_cls):
+            pass
+
+        Sub.__module__ = "tests.not_followed"
+        assert "sieval_plugins.task" in grader_modules(Sub)
+
+    def test_a_task_outside_the_packages_has_no_modules(self):
+        from tests.conftest import MockDataset  # noqa: F401 -- only for its module
+
+        class Local:
+            pass
+
+        assert grader_modules(Local) == {}
+
+    def test_shared_package_is_followed(self, tmp_path, monkeypatch):
+        """A plugin importing the shared package counts it, top-level
+        ``__init__`` included; parent-relative imports resolve."""
+        assert "sieval_shared" in GRADER_PACKAGES
+        root = tmp_path / "shared"
+        (root / "sieval_shared" / "judging").mkdir(parents=True)
+        (root / "sieval_shared" / "__init__.py").write_text("VERSION = 1\n")
+        (root / "sieval_shared" / "judging" / "__init__.py").write_text("")
+        (root / "sieval_shared" / "judging" / "prompts.py").write_text(
+            "from .. import VERSION\nfrom ..missing import nothing\n"
+        )
+        monkeypatch.syspath_prepend(str(root))
+
+        class Local:
+            pass
+
+        Local.__module__ = "sieval_shared.judging.prompts"
+        assert set(grader_modules(Local)) == {
+            "sieval_shared",
+            "sieval_shared.judging.prompts",
+        }
+
+    def test_an_uninstalled_package_is_skipped(self):
+        class Local:
+            pass
+
+        Local.__module__ = "sieval_plugins_never_installed_here.task"
+        assert grader_modules(Local) == {}
+
+
+class TestJudges:
+    def test_judge_is_recorded_without_its_endpoint(self):
+        judge = MockJudgeModel(temperature=0.0)
+        judge._api_base = "http://judge.internal:8000/v1"
+        [entry] = judge_identities({"grader": judge}, {"grader": "Grade: {x}"}, {})
+        assert entry == {
+            "role": "grader",
+            "model": "mock-judge",
+            "version": None,
+            "sampling": {"temperature": 0.0},
+            "prompt": digest("Grade: {x}"),
+        }
+        assert "judge.internal" not in canonical_json(entry)
+
+    def test_reported_version_and_missing_prompt(self):
+        judges = {"grader": MockJudgeModel()}
+        [entry] = judge_identities(judges, {}, {"grader": "mock-judge-2026-01"})
+        assert entry["version"] == "mock-judge-2026-01"
+        assert entry["prompt"] is None
+
+    def test_env_ref_plain_applies_to_every_role(self):
+        refs = judge_model_refs(
+            ["grader", "extractor"], {JUDGE_MODEL_REF_ENV: "harmony://m/judge@3"}
+        )
+        assert refs == {
+            "grader": "harmony://m/judge@3",
+            "extractor": "harmony://m/judge@3",
+        }
+
+    def test_env_ref_json_maps_roles(self):
+        env = {JUDGE_MODEL_REF_ENV: '{"grader": "harmony://m/a@1", "other": "x"}'}
+        assert judge_model_refs(["grader", "extractor"], env) == {
+            "grader": "harmony://m/a@1"
+        }
+
+    def test_env_ref_absent_or_blank(self):
+        assert judge_model_refs(["grader"], {}) == {}
+        assert judge_model_refs(["grader"], {JUDGE_MODEL_REF_ENV: "  "}) == {}
+
+    def test_env_ref_bad_json_raises(self):
+        with pytest.raises(ValueError, match=JUDGE_MODEL_REF_ENV):
+            judge_model_refs(["grader"], {JUDGE_MODEL_REF_ENV: '{"grader": 1}'})
+
+    def test_env_ref_lands_in_the_judge_entry(self):
+        env = {JUDGE_MODEL_REF_ENV: "harmony://m/judge@3"}
+        [entry] = judge_identities({"grader": MockJudgeModel()}, {}, {}, environ=env)
+        assert entry["ref"] == "harmony://m/judge@3"
+
+    def test_grader_digest_covers_modules_and_judges(self):
+        judges = judge_identities({"grader": MockJudgeModel()}, {}, {})
+        base = grader_identity({"m": "sha256:1"}, judges)
+        other_module = grader_identity({"m": "sha256:2"}, judges)
+        no_judge = grader_identity({"m": "sha256:1"}, [])
+        assert len({base["digest"], other_module["digest"], no_judge["digest"]}) == 3
+        assert base["modules"] == {"m": "sha256:1"}
+
+
+# ===================================================================
+# Document helpers
+# ===================================================================
+class TestDocument:
+    def test_carried_identity_tolerates_old_files(self):
+        assert carried_identity(None) == empty_identity()
+        assert carried_identity({"version": "0.6.0"}) == empty_identity()
+
+    def test_carried_identity_keeps_known_stages(self):
+        data = {"digest": "sha256:d", "samples": 1}
+        carried = carried_identity({"identity": {"schema": 1, "data": data}})
+        assert carried["data"] == data
+        assert carried["grader"] is None
+
+    def test_carried_runs_tolerates_old_and_malformed(self):
+        assert carried_runs(None) == []
+        assert carried_runs({"runs": "nope"}) == []
+        assert carried_runs({"runs": [1, {"start": "fresh"}]}) == [{"start": "fresh"}]
+
+    def test_new_run_record(self):
+        when = datetime(2026, 10, 20, tzinfo=UTC)
+        assert new_run_record("0.9.0", "fresh", now=when) == {
+            "sieval": "0.9.0",
+            "at": "2026-10-20T00:00:00+00:00",
+            "start": "fresh",
+        }
+        assert new_run_record("0.9.0", "resume", ["a: 1 → 2"], when)["config"] == [
+            "a: 1 → 2"
+        ]
+
+    def test_ordered_stages(self):
+        assert ordered_stages({"grader", "data", "bogus"}) == ["data", "grader"]

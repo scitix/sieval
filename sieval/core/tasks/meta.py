@@ -6,8 +6,9 @@ a consumer contract: renames, removals, or type changes require a
 `meta/index.json` schema_version bump.
 
 Run `meta.json` is a second consumer of that freeze: `get_task_run_identity`
-projects a subset of these fields into run directories, which are written once
-and never rewritten. A schema_version bump does nothing for runs already on
+projects a subset of these fields into run directories, where the `task` block
+is set by the run that created the directory and kept by every later run. A
+schema_version bump does nothing for runs already on
 disk — their only compatibility marker is the sieval `version` alongside.
 
 Frozen fields on TaskMeta:
@@ -306,7 +307,7 @@ def get_task_run_identity(task: Task) -> TaskRunIdentity | None:
     """Project the run-identity subset of *task*'s TaskMeta, for ``meta.json``.
 
     Returns ``None`` when ``type(task)`` itself is undecorated — the fail-soft
-    path `write_run_meta` needs, since `Task` subclasses need no decorator.
+    path the saver needs, since `Task` subclasses need no decorator.
 
     Read off ``cls.__dict__``, not the MRO like :func:`get_task_meta`: an
     undecorated subclass of a decorated task is a *different* task, and
@@ -325,7 +326,7 @@ def get_task_run_identity(task: Task) -> TaskRunIdentity | None:
     above: both tell a reader *how to read the shards*. Without it, a stored run
     whose judgements carry no `reference` cannot say whether the ground truth was
     a procedure or the gold went missing — the registry could answer, but only
-    the installed one, and a `meta.json` is written once and never rewritten
+    the installed one, and a `meta.json`'s `task` block keeps the run's view
     while the registry moves on.
 
     `tags` is the descriptive `TaskMeta.tags`, *not* the `cls.tags` protocol

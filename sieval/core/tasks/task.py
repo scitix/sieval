@@ -357,6 +357,42 @@ class Task[
     make the shadowing assignment a type error.
     """
 
+    def inference_args(self) -> Mapping[str, JSONValue]:
+        """Task arguments that change what the model is asked, for ``meta.json``.
+
+        Part of the inference identity, beside the model's own resolved request
+        arguments. The default reports ``n``, the rollout count every sampling
+        task keeps as ``self._n``. Override it in a task with another argument
+        that reaches the request.
+        """
+        n = getattr(self, "_n", None)
+        return {"n": n} if isinstance(n, int) and not isinstance(n, bool) else {}
+
+    def judge_models(self) -> Mapping[str, Model]:
+        """The models this task calls while grading, by role, for ``meta.json``.
+
+        The default finds every :class:`Model` the instance holds other than the
+        model under test, named by its attribute without leading underscores --
+        ``self._grader`` is role ``grader``. That covers a judge resolved through
+        :meth:`_resolve_role_model` with no code in the task. Override it when a
+        task keeps a judge somewhere else.
+        """
+        return {
+            name.lstrip("_"): value
+            for name, value in sorted(vars(self).items())
+            if isinstance(value, Model) and value is not self._model
+        }
+
+    def judge_prompts(self) -> Mapping[str, JSONValue]:
+        """Each judge's prompt template by role, for ``meta.json``.
+
+        Empty by default: a template written in the task's code is already in the
+        grader identity's module digests. A task whose template is a constant
+        returns it here so the judge entry carries its digest; a template that
+        comes from the sample is covered by the data identity instead.
+        """
+        return {}
+
     def make_context(
         self, sample_id: str | int, raw: TRawSample | None = None
     ) -> TaskContext[TRawSample, TPreprocessed, TInferred, TPostprocessed, TFeedback]:

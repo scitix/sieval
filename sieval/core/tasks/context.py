@@ -8,6 +8,7 @@ from sieval.core.types import JSONValue
 from sieval.core.utils.serialization import obj_to_dict, sieval_record
 
 from .consts import STAGE_TO_RESULT_FIELD, TaskAction, TaskStage
+from .run_meta import RunIdentity, RunRecord
 
 
 class TaskRunIdentity(TypedDict):
@@ -42,20 +43,25 @@ class TaskRunIdentity(TypedDict):
 
 
 class TaskRunMeta(TypedDict):
-    """Metadata written alongside task results for reproducibility.
+    """The ``meta.json`` document: where a task directory came from.
 
-    ``version`` and ``deterministic`` are required at write time; readers
-    should tolerate older ``meta.json`` files missing fields.
-    ``deterministic`` absent = pre-feature run.
+    ``version``, ``deterministic`` and ``task`` describe the run that created
+    the directory and are kept across resumes; the resume gates read them.
+    ``model``, ``identity`` and ``runs`` are rewritten by every run — see
+    :mod:`sieval.core.tasks.run_meta` for their shape.
 
-    ``task`` is absent when the run predates the field or the ``Task``
-    subclass carries no ``@sieval_task`` metadata; it is never backfilled
-    into an existing ``meta.json``.
+    Readers tolerate older files: ``deterministic`` absent is a pre-feature
+    run, ``task`` absent is a pre-feature run or an undecorated ``Task``, and
+    ``model`` / ``identity`` / ``runs`` absent is a run before stage
+    identities. Nothing backfills them.
     """
 
     version: str
     deterministic: bool
     task: NotRequired[TaskRunIdentity]
+    model: NotRequired[str]
+    identity: NotRequired[RunIdentity]
+    runs: NotRequired[list[RunRecord]]
 
 
 class TaskStageMeta(TypedDict, total=False):
@@ -67,6 +73,9 @@ class TaskStageMeta(TypedDict, total=False):
     model_calls: list[ModelCallMeta]
     env: dict[str, JSONValue]
     extra: dict[str, JSONValue]  # for user-defined metadata
+    # Set on the `preprocessed` entry: the sample's own data and prompt
+    # digests (`run_meta.digest`), which a resume compares per sample.
+    identity: dict[str, str | None]
 
 
 @sieval_record

@@ -10,6 +10,7 @@ from loguru import logger
 from sieval.core.tasks.concurrency import prepare_limiters
 from sieval.core.tasks.context import TaskAction
 from sieval.core.tasks.task import Task
+from sieval.core.types import JSONValue
 
 from .runner import TaskRunner, TaskRunnerConfig
 
@@ -53,8 +54,18 @@ class MultiTaskRunner:
         self._task_names: set[str] = set()
         self._output_dirs: set[Path] = set()
 
-    def add_task(self, task: Task, config: TaskRunnerConfig | None = None) -> Self:
+    def add_task(
+        self,
+        task: Task,
+        config: TaskRunnerConfig | None = None,
+        *,
+        inference_recipe: dict[str, JSONValue] | None = None,
+        resume_config_diff: list[str] | None = None,
+    ) -> Self:
         """Register a task for parallel execution.
+
+        *inference_recipe* and *resume_config_diff* pass through to
+        :class:`TaskRunner` for ``meta.json``.
 
         Auto-sets ``result_dir`` to ``<base_result_dir>/<task.name>`` when
         a base was provided and the task's config lacks its own.
@@ -76,7 +87,12 @@ class MultiTaskRunner:
         if self._deterministic:
             cfg = replace(cfg, deterministic=True)
 
-        runner = TaskRunner(task, config=cfg)
+        runner = TaskRunner(
+            task,
+            config=cfg,
+            inference_recipe=inference_recipe,
+            resume_config_diff=resume_config_diff,
+        )
 
         if runner.root_dir in self._output_dirs:
             raise ValueError(

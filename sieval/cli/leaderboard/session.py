@@ -122,6 +122,7 @@ from sieval.core.runners import (
     TaskRunnerConfig,
     read_run_version,
     resume_version_verdict,
+    run_started,
 )
 from sieval.core.tasks.context import TaskAction
 from sieval.core.types import JSONValue
@@ -1192,8 +1193,8 @@ async def _cross_version_resume_hint(result_path: anyio.Path) -> str:
     ``meta.json`` and is fail-closed on a missing one — a not-yet-started task
     legitimately has none, so hoisting it changes resume semantics.
 
-    Scoped to the dirs the gate would read: ``meta.json`` lands at run start, but
-    a dir only counts as resumable once ``manifest.json`` exists.
+    Scoped to the dirs the gate would read: those where a run has started, by
+    :func:`~sieval.core.runners.run_started`.
 
     States the incompatibility and stops — it does **not** claim to explain the
     diff above it. Both can be true at once, and on a dev/local install every
@@ -1210,7 +1211,7 @@ async def _cross_version_resume_hint(result_path: anyio.Path) -> str:
         if not root.is_dir():
             return found
         for task_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-            if not (task_dir / "manifest.json").exists():
+            if not run_started(task_dir):
                 continue
             version = read_run_version(task_dir)
             if version is None:
@@ -1514,30 +1515,6 @@ def _format_comment_header(
     return "\n".join(lines) + "\n"
 
 
-def _append_resume_note(header: str, diff_lines: list[str]) -> str:
-    """Insert a ``Resumed by …`` audit block into ``header``, before its border.
-
-    Called when ``--resume`` rewrites a file because only resume-mutable fields
-    changed. The original provenance survives and ``diff_lines`` is recorded with
-    a timestamp, so the header accumulates the full lineage across resumes. The
-    note sits inside the ``# ---`` border pair so :func:`_split_header` keeps
-    treating the whole block as the header next time.
-
-    Assumes a well-formed ``header`` (two borders) — the only kind the caller
-    passes (from :func:`_format_comment_header` or :func:`_split_header`).
-    """
-    from sieval import __version__
-
-    now = datetime.now(UTC).isoformat()
-    note = [f"# Resumed by sieval {__version__} at {now}:\n"]
-    note.extend(f"#   {line}\n" for line in diff_lines)
-
-    lines = header.splitlines(keepends=True)
-    borders = [i for i, line in enumerate(lines) if line.startswith("# -")]
-    close = borders[-1]
-    return "".join(lines[:close] + note + lines[close:])
-
-
 def _warn_best_effort_deterministic(
     config: Mapping[str, Any],
     effective_deterministic: bool,
@@ -1803,6 +1780,10 @@ class EvalSession:
         ] = {}
         self._request_seed_decisions_by_candidate: dict[str, _RequestSeedDecision] = {}
         self._request_seed_decisions_frozen = False
+
+        # The resume-mutable config change this resume made, one line per leaf,
+        # for each task's `meta.json` `runs[].config`.
+        self._resume_config_diff: list[str] = []
 
         # Resolved lazily in `_init_runner` at the start of `_prepare_execution`.
         self.result_dir: str | None = None
@@ -4711,8 +4692,40 @@ class EvalSession:
             runner_config = self._build_runner_config(task_cfg, runner_defaults)
 
             assert self.runner is not None, "Runner not initialized"
-            self.runner.add_task(task, config=runner_config)
+            self.runner.add_task(
+                task,
+                config=runner_config,
+                inference_recipe=self._inference_recipe_for(candidate.config_name),
+                resume_config_diff=list(getattr(self, "_resume_config_diff", [])),
+            )
             logger.info("Added task '{}' with class '{}'", task_name, task_spec)
+
+    def _inference_recipe_for(self, model_name: str) -> dict[str, JSONValue] | None:
+        """The serving plan of *model_name*'s root, for the inference identity.
+
+        ``None`` for a model SiEval does not serve. The checkpoint is the model
+        under test and each device's host is where it ran, so both are left out.
+        """
+        infer_plans = getattr(self, "_infer_plans", None)
+        if not infer_plans:
+            return None
+        models_cfg = self._get_named_config_map("models")
+        root = (
+            self._model_config_chain(model_name, models_cfg)[0][0]
+            if model_name in models_cfg
+            else model_name
+        )
+        plan = infer_plans.get(root)
+        if plan is None:
+            return None
+        recipe = cast(dict[str, Any], copy.deepcopy(unwrap_proxies(plan)))
+        recipe.pop("checkpoint", None)
+        for assignment in recipe.get("assignments") or ():
+            if isinstance(assignment, dict) and isinstance(
+                assignment.get("devices"), dict
+            ):
+                assignment["devices"].pop("host", None)
+        return cast(dict[str, JSONValue], recipe)
 
     def _resolve_task_dataset(
         self, task_cfg: TaskConfigDict, task_name: str
@@ -4831,10 +4844,10 @@ class EvalSession:
         plans) any other diff raises. Otherwise both bodies are parsed and
         compared with ``mutable_strip`` applied; a diff that vanishes
         (resume-mutable or formatting) is tolerated — the file is rewritten
-        with the new body, and the original header gains an appended
-        ``Resumed by …`` record of what changed — and any residual diff
-        raises. ``RuntimeError`` is the only failure the caller observes; all
-        else is best-effort and logged.
+        with the new body under its original header, and what changed is kept
+        for ``meta.json`` ``runs[].config`` — and any residual diff raises.
+        ``RuntimeError`` is the only failure the caller observes; all else is
+        best-effort and logged.
         """
         effective_result_dir = self._resolve_result_dir()
         if effective_result_dir is None:
@@ -4917,25 +4930,21 @@ class EvalSession:
                 )
 
             # Only resume-mutable (or formatting) fields differ — rewrite with
-            # the new body. When real fields changed (not just formatting) and
-            # the file had a header, append a timestamped record of the change
-            # so the header keeps the full resume lineage. Otherwise no note is
-            # added: a formatting-only diff keeps the original header, and a
-            # header-less file gets a fresh one (it had no lineage to extend).
+            # the new body under the original header, which keeps the first
+            # run's provenance; a header-less file gets a fresh one. What
+            # changed goes to each task's `meta.json` `runs[].config`.
             logger.info(
                 "Resume: {} resume-mutable fields changed — updating file",
                 target_name,
             )
-            # The note records genuine resume-mutable changes only; result_dir is
-            # a never-compared location field (reification injects it), so drop it
-            # to keep it out of the audit trail.
+            # Genuine resume-mutable changes only; result_dir is a never-compared
+            # location field (reification injects it), so it stays out.
             note_before = {k: v for k, v in existing_cfg.items() if k != "result_dir"}
             note_after = {k: v for k, v in current_cfg.items() if k != "result_dir"}
-            change_lines = _diff_lines(note_before, note_after)
-            if existing_header and change_lines:
-                write_header = _append_resume_note(existing_header, change_lines)
-            else:
-                write_header = existing_header or header
+            self._resume_config_diff.extend(
+                line.removeprefix("- ") for line in _diff_lines(note_before, note_after)
+            )
+            write_header = existing_header or header
 
         tmp_path = target.with_name(target.name + ".tmp")
         content = write_header + body

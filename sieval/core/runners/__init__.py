@@ -6,6 +6,7 @@ from sieval.core.runners.runner import (
     TaskRunnerConfig,
     UnreadableIntervalError,
     read_run_version,
+    run_started,
 )
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "UnreadableIntervalError",
     "read_run_version",
     "resume_version_verdict",
+    "run_started",
 ]

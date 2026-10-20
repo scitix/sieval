@@ -90,6 +90,7 @@ from sieval.core.tasks.metrics import (
     interval_metrics,
     problem_population,
 )
+from sieval.core.types import JSONValue
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import HLEDataset, HLEDatasetSample
 
@@ -223,6 +224,10 @@ class HLEZeroShotGenTask(
             "model-config dict such as "
             "{model: gpt-5.2, api_base: ..., api_key: ..., reasoning_effort: medium}."
         )
+
+    @override
+    def judge_prompts(self) -> Mapping[str, JSONValue]:
+        return {"grader": JUDGE_PROMPT}
 
     @override
     async def preprocess(self, raw, ctx):

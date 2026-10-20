@@ -828,10 +828,10 @@ class TestStrictResumeMatch:
         loaded = yaml.safe_load(after)
         assert loaded["concurrency_limit"] == 2  # body updated to new value
         after_header = _split_header(after)[0]
-        # Origin provenance preserved, and the change is appended as a record.
-        assert "Persisted by sieval" in after_header
-        assert "Resumed by sieval" in after_header
-        assert "concurrency_limit: 8 → 2" in after_header
+        # The header keeps only the first run's provenance; the change goes to
+        # each task's meta.json `runs[].config` instead.
+        assert after_header == original_header
+        assert s2._resume_config_diff == ["concurrency_limit: 8 → 2"]
 
     @pytest.mark.anyio
     async def test_resume_tolerates_per_model_args_concurrency_change(
@@ -1034,18 +1034,26 @@ class TestStrictResumeMatch:
         after = (result_dir / "effective_config.yaml").read_text()
         loaded = yaml.safe_load(after)
         assert loaded["runner_config"]["concurrency_limits"]["infer"] == 16
-        header = _split_header(after)[0]
-        assert "runner_config.concurrency_limits.infer: 4 → 16" in header
+        assert "Resumed by sieval" not in _split_header(after)[0]
+        assert s2._resume_config_diff == [
+            "runner_config.concurrency_limits.infer: 4 → 16"
+        ]
 
     @pytest.mark.anyio
-    async def test_resume_appends_accumulating_notes(self, tmp_path: Path):
+    async def test_resume_keeps_the_first_header_and_records_each_diff(
+        self, tmp_path: Path
+    ):
         base = "concurrency_limit: {}\nmodels:\n  base:\n    name: m\n"
         cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format(8))
         result_dir = tmp_path / "out"
         s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
         await s1._persist_effective_config()
+        first_header = _split_header(
+            (result_dir / "effective_config.yaml").read_text()
+        )[0]
 
         # Two successive resumes, each changing only throughput.
+        diffs = []
         for value in (4, 2):
             cfg_path.write_text(base.format(value))
             s = EvalSession(
@@ -1054,15 +1062,14 @@ class TestStrictResumeMatch:
                 result_dir_override=str(result_dir),
             )
             await s._persist_effective_config()
+            diffs.append(s._resume_config_diff)
 
         after = (result_dir / "effective_config.yaml").read_text()
         header, body = _split_header(after)
-        # Origin recorded once; every tolerated change appended in order.
-        assert header.count("Persisted by sieval") == 1
-        assert header.count("Resumed by sieval") == 2
-        assert "concurrency_limit: 8 → 4" in header
-        assert "concurrency_limit: 4 → 2" in header
-        # Body reflects the latest run; header/body partition stays intact.
+        # Origin recorded once and never amended; each resume reports only its own
+        # change, which the runner appends to meta.json `runs[]`.
+        assert header == first_header
+        assert diffs == [["concurrency_limit: 8 → 4"], ["concurrency_limit: 4 → 2"]]
         assert yaml.safe_load(body)["concurrency_limit"] == 2
         assert _split_header(after) == (header, body)
 

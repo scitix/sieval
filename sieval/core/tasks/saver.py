@@ -1,8 +1,10 @@
-"""Buffered async shard writer with atomic manifest and report persistence."""
+"""Buffered async shard writer with atomic manifest, report and meta persistence."""
 
 import contextlib
 import time
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import anyio
 import orjson
@@ -15,6 +17,27 @@ from sieval.core.types import JSONValue
 from .consts import TaskStage
 from .context import TaskContext, TaskManifest, TaskRunIdentity, TaskRunMeta
 from .profiler import TaskProfiler, TaskProfilerContext
+from .run_meta import (
+    STAGES,
+    carried_identity,
+    carried_runs,
+    new_run_record,
+    ordered_stages,
+    utc_now,
+)
+
+
+async def _atomic_write(path: Path, data: bytes) -> None:
+    """Write *data* to a sibling temporary file, then replace *path* with it."""
+    tmp_path = path.with_suffix(".tmp")
+    try:
+        async with await anyio.open_file(tmp_path, "wb") as f:
+            await f.write(data)
+        await anyio.Path(tmp_path).replace(path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            await anyio.Path(tmp_path).unlink(missing_ok=True)
+        raise
 
 
 class TaskSaver:
@@ -44,6 +67,9 @@ class TaskSaver:
         deserialization. *task_identity* is the registry identity of the task
         being run, persisted into ``meta.json``; ``None`` for a ``Task``
         subclass that carries no ``@sieval_task`` metadata.
+
+        ``meta.json`` is rewritten through :meth:`begin_run`,
+        :meth:`set_identity` and :meth:`end_run`.
         """
         self._manifest: dict[str | int, TaskManifest] = {}
         self._stage_queue: list[TaskContext] = []
@@ -51,6 +77,9 @@ class TaskSaver:
         self._root_dir = root_dir
         self._manifest_path = self._root_dir / "manifest.json"
         self._report_path = self._root_dir / "report.json"
+        self._meta_path = self._root_dir / "meta.json"
+        self._meta: TaskRunMeta | None = None
+        self._meta_lock = anyio.Lock()
 
         self._shard_samples = shard_samples
         self._shard_write_concurrency = max(1, shard_write_concurrency)
@@ -122,66 +151,122 @@ class TaskSaver:
         """Atomically write ``report.json`` via a temporary file and replace.
 
         The report is serialised with ``orjson`` (supporting non-string keys
-        and numpy types).  A ``meta.json`` file is written alongside
-        for reproducibility tracking.
+        and numpy types). A failed write raises: ``report.json`` is the result
+        and what decides a fast resume, so a task whose report did not land
+        has not finished.
         """
-        tmp_path = self._report_path.with_suffix(".tmp")
-        try:
-            async with await anyio.open_file(tmp_path, "wb") as f:
-                await f.write(
-                    orjson.dumps(
-                        report,
-                        option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY,
-                    )
-                )
-            await anyio.Path(tmp_path).replace(self._report_path)
-            logger.info("Saved report to: {}", self._report_path)
-        except Exception as e:
-            with contextlib.suppress(OSError):
-                await anyio.Path(tmp_path).unlink(missing_ok=True)
-            logger.error("Failed to save report.json: {}", e)
+        await _atomic_write(
+            self._report_path,
+            orjson.dumps(
+                report,
+                option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY,
+            ),
+        )
+        logger.info("Saved report to: {}", self._report_path)
 
-    async def write_run_meta(self) -> None:
-        """Write ``meta.json`` create-if-absent to the result directory.
+    async def begin_run(
+        self,
+        *,
+        resumed: bool,
+        model: str | None = None,
+        config_diff: Sequence[str] = (),
+        identity: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Rewrite ``meta.json`` for a run that is starting, appending its ``runs[]``.
 
-        Written at run start so the format-stable version handshake exists
-        for interrupted-then-resumed runs (resume is detected via
-        ``manifest.json``, which may exist without a completed run). Never
-        overwrites an existing ``meta.json`` — the file records the run's
-        originating version and stays stable across compatible resumes.
-        Self-creates ``_root_dir`` since at run start no shard exists yet.
-        All failures are non-fatal: logged, never raised.
-
-        The ``task`` identity block is omitted when the class carries no
-        ``@sieval_task`` metadata, and is never backfilled into an existing
-        ``meta.json``: on a resume it would describe the *resuming* process
-        rather than the run that produced the samples. A resume by a
-        genuinely different task never reaches here — ``gate_resume_identity``
-        refuses it at construction, before any stage runs.
+        ``version``, ``deterministic`` and ``task`` describe the run that
+        created the directory: a resume keeps the persisted values and never
+        backfills a missing ``task`` block, since it would describe the
+        resuming process rather than the run that produced the samples. A
+        fresh run writes its own. ``identity`` stages given here replace the
+        carried ones; the rest are carried from a resumed ``meta.json`` of the
+        same identity schema. Self-creates ``_root_dir``. A failed write
+        raises.
         """
-        meta_path = self._root_dir / "meta.json"
-        tmp_path = meta_path.with_suffix(".tmp")
-        try:
-            if await anyio.Path(meta_path).exists():
-                return
-            # Lazy: keeps the version lookup inside this try/except so an
-            # unresolvable __version__ degrades gracefully, not a hard import fail.
-            from sieval import __version__
+        from sieval import __version__
 
-            meta: TaskRunMeta = {
-                "version": __version__,
-                "deterministic": self._deterministic,
+        existing = await self._read_meta() if resumed else None
+        meta: TaskRunMeta
+        if existing is not None and isinstance(existing.get("version"), str):
+            meta = {
+                "version": existing["version"],
+                "deterministic": existing.get("deterministic", self._deterministic),
             }
+            if isinstance(existing.get("task"), dict):
+                meta["task"] = existing["task"]
+        else:
+            meta = {"version": __version__, "deterministic": self._deterministic}
             if self._task_identity is not None:
                 meta["task"] = self._task_identity
+        if model is not None:
+            meta["model"] = model
+        run_identity = carried_identity(existing)
+        for stage, value in (identity or {}).items():
+            run_identity[stage] = value
+        meta["identity"] = run_identity
+        meta["runs"] = [
+            *carried_runs(existing),
+            new_run_record(
+                __version__, "resume" if resumed else "fresh", config=config_diff
+            ),
+        ]
+        self._meta = meta
+        await self._write_meta()
+
+    async def set_identity(self, **stages: Any) -> None:
+        """Replace the named stage identities and rewrite ``meta.json``."""
+        meta = self._require_meta()
+        for stage, value in stages.items():
+            if stage not in STAGES:
+                raise ValueError(f"unknown identity stage {stage!r}")
+            meta["identity"][stage] = value  # type: ignore[literal-required]
+        await self._write_meta()
+
+    async def end_run(self, reran: Iterable[str]) -> None:
+        """Mark the current ``runs[]`` entry ended, with the stages it reran."""
+        meta = self._require_meta()
+        run = meta["runs"][-1]
+        run["ended"] = utc_now()
+        run["reran"] = ordered_stages(reran)
+        await self._write_meta()
+
+    async def interrupt_run(self) -> None:
+        """Mark the current ``runs[]`` entry ended by an interrupt, without ``reran``.
+
+        A no-op before :meth:`begin_run`: an interrupt that early left nothing
+        to record.
+        """
+        if self._meta is None:
+            return
+        run = self._meta["runs"][-1]
+        run["ended"] = utc_now()
+        run["interrupted"] = True
+        await self._write_meta()
+
+    @property
+    def run_meta(self) -> TaskRunMeta | None:
+        """The ``meta.json`` document this run is writing, once begun."""
+        return self._meta
+
+    def _require_meta(self) -> TaskRunMeta:
+        if self._meta is None:
+            raise RuntimeError("begin_run() must be called before meta.json updates")
+        return self._meta
+
+    async def _read_meta(self) -> dict[str, Any] | None:
+        try:
+            data = orjson.loads(await anyio.Path(self._meta_path).read_bytes())
+        except (OSError, orjson.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    async def _write_meta(self) -> None:
+        async with self._meta_lock:
             await anyio.Path(self._root_dir).mkdir(parents=True, exist_ok=True)
-            async with await anyio.open_file(tmp_path, "wb") as f:
-                await f.write(orjson.dumps(meta))
-            await anyio.Path(tmp_path).replace(meta_path)
-        except Exception as e:
-            with contextlib.suppress(OSError):
-                await anyio.Path(tmp_path).unlink(missing_ok=True)
-            logger.error("Failed to write meta.json: {}", e)
+            await _atomic_write(
+                self._meta_path,
+                orjson.dumps(self._meta, option=orjson.OPT_SERIALIZE_NUMPY),
+            )
 
     def _shard_id_for(self, sample_id: int | str) -> int:
         """Map a sample ID to a shard bucket index."""

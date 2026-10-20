@@ -327,146 +327,113 @@ class TestSaveReport:
         assert not (tmp_root / "meta.json").exists()
 
     @pytest.mark.anyio
-    async def test_write_run_meta(self, saver, tmp_root):
-        """write_run_meta should create meta.json with version info."""
-        await anyio.Path(tmp_root).mkdir(parents=True, exist_ok=True)
-        await saver.write_run_meta()
-
-        meta = orjson.loads((tmp_root / "meta.json").read_bytes())
-        assert "version" in meta
-        assert isinstance(meta["version"], str)
-        assert len(meta["version"]) > 0
-
-    @pytest.mark.anyio
-    async def test_write_run_meta_failure_is_non_fatal(
+    async def test_save_report_failure_fails_the_task(
         self, saver, tmp_root, monkeypatch
     ):
-        """write_run_meta failure does not propagate."""
+        """`report.json` is the result: a failed write raises, and the temporary
+        file does not linger."""
         await anyio.Path(tmp_root).mkdir(parents=True, exist_ok=True)
 
-        import sieval as _sieval_mod
-
-        monkeypatch.delattr(_sieval_mod, "__version__")
-
-        await saver.write_run_meta()
-
-        assert not (tmp_root / "meta.json").exists()
-
-    @pytest.mark.anyio
-    async def test_write_run_meta_with_deterministic(self, tmp_root):
-        """write_run_meta includes `deterministic: true` when set at construction."""
-        await anyio.Path(tmp_root).mkdir(parents=True, exist_ok=True)
-        det_saver = TaskSaver(root_dir=tmp_root, deterministic=True)
-        await det_saver.write_run_meta()
-
-        meta = orjson.loads((tmp_root / "meta.json").read_bytes())
-        assert meta["deterministic"] is True
-
-    @pytest.mark.anyio
-    async def test_write_run_meta_deterministic_false_by_default(self, saver, tmp_root):
-        """Default saver writes `deterministic: false` so the field is always
-        present — missing key means pre-feature run, false means post-feature
-        non-deterministic run."""
-        await anyio.Path(tmp_root).mkdir(parents=True, exist_ok=True)
-        await saver.write_run_meta()
-
-        meta = orjson.loads((tmp_root / "meta.json").read_bytes())
-        assert meta["deterministic"] is False
-
-    @pytest.mark.anyio
-    async def test_save_report_failure_is_non_fatal(self, saver, tmp_root, monkeypatch):
-        """
-        If writing the report fails, the error is logged but no exception is
-        raised.
-        """
-        await anyio.Path(tmp_root).mkdir(parents=True, exist_ok=True)
-
-        async def _fail(*_args, **_kwargs):
+        async def _fail_replace(*_args):
             raise OSError("disk full")
 
-        monkeypatch.setattr(anyio, "open_file", _fail)
-        # Should not raise
-        await saver.save_report({"accuracy": 0.5})
+        monkeypatch.setattr(anyio.Path, "replace", _fail_replace)
+        with pytest.raises(OSError, match="disk full"):
+            await saver.save_report({"accuracy": 0.5})
+        assert not (tmp_root / "report.json").exists()
+        assert not (tmp_root / "report.tmp").exists()
 
 
 # ===================================================================
-# write_run_meta — create-if-absent + self-mkdir (run-start handshake)
+# meta.json — rewritten each run, runs[] appended
 # ===================================================================
-class TestWriteRunMeta:
+def _read_meta(root):
+    return orjson.loads((root / "meta.json").read_bytes())
+
+
+class TestRunMeta:
     @pytest.mark.anyio
-    async def test_creates_dir_and_file(self, tmp_path):
+    async def test_fresh_run_creates_dir_and_file(self, tmp_path):
         from sieval import __version__
 
         root = tmp_path / "fresh"
-        saver = TaskSaver(root_dir=root, deterministic=True)
+        saver = TaskSaver(root_dir=root, deterministic=True, task_identity=_IDENTITY)
         assert not root.exists()
 
-        await saver.write_run_meta()
+        await saver.begin_run(resumed=False, model="candidate")
 
-        meta_path = root / "meta.json"
-        assert meta_path.exists()
-        meta = orjson.loads(meta_path.read_bytes())
+        meta = _read_meta(root)
         assert meta["version"] == __version__
         assert meta["deterministic"] is True
-
-    @pytest.mark.anyio
-    async def test_create_if_absent_does_not_clobber(self, tmp_path):
-        root = tmp_path / "existing"
-        saver = TaskSaver(root_dir=root, deterministic=False)
-        await saver.write_run_meta()
-        # Simulate an originating version already recorded under this dir.
-        (root / "meta.json").write_bytes(
-            orjson.dumps({"version": "0.1.0", "deterministic": False})
-        )
-
-        await saver.write_run_meta()  # must NOT overwrite
-
-        meta = orjson.loads((root / "meta.json").read_bytes())
-        assert meta["version"] == "0.1.0"
-
-    @pytest.mark.anyio
-    async def test_exists_check_failure_is_non_fatal(self, tmp_path, monkeypatch):
-        async def _boom(_self):
-            raise OSError("simulated stat failure")
-
-        monkeypatch.setattr(anyio.Path, "exists", _boom)
-        saver = TaskSaver(root_dir=tmp_path / "x", deterministic=False)
-        await saver.write_run_meta()  # must NOT raise
-
-    @pytest.mark.anyio
-    async def test_persists_task_identity_block(self, tmp_path):
-        root = tmp_path / "identified"
-        saver = TaskSaver(root_dir=root, task_identity=_IDENTITY)
-
-        await saver.write_run_meta()
-
-        meta = orjson.loads((root / "meta.json").read_bytes())
         assert meta["task"] == _IDENTITY
-        # The identity block is additive — the version handshake is untouched.
-        assert "version" in meta
-        assert meta["deterministic"] is False
+        assert meta["model"] == "candidate"
+        assert meta["identity"] == {
+            "schema": 1,
+            "data": None,
+            "prompt": None,
+            "inference": None,
+            "grader": None,
+        }
+        [run] = meta["runs"]
+        assert run["sieval"] == __version__
+        assert run["start"] == "fresh"
+        assert "reran" not in run  # both written only when the run ends
+        assert "ended" not in run
+        assert "config" not in run  # absent when there is no diff
+        assert not (root / "meta.tmp").exists()
+
+    @pytest.mark.anyio
+    async def test_deterministic_false_is_written(self, saver, tmp_root):
+        """Missing means a pre-feature run, so false is spelled out."""
+        await saver.begin_run(resumed=False)
+        assert _read_meta(tmp_root)["deterministic"] is False
 
     @pytest.mark.anyio
     async def test_task_key_absent_for_undecorated_class(self, tmp_path):
-        """`task_identity=None` (a Task subclass with no `@sieval_task`) writes no
-        `task` key at all, rather than a null placeholder."""
         root = tmp_path / "anonymous"
-        saver = TaskSaver(root_dir=root)
-
-        await saver.write_run_meta()
-
-        meta = orjson.loads((root / "meta.json").read_bytes())
-        assert "task" not in meta
+        await TaskSaver(root_dir=root).begin_run(resumed=False)
+        assert "task" not in _read_meta(root)
 
     @pytest.mark.anyio
-    async def test_does_not_backfill_identity_into_existing_meta(self, tmp_path):
-        """A pre-feature `meta.json` never gains a `task` block on resume.
+    async def test_resume_keeps_origin_and_appends_a_run(self, tmp_path):
+        root = tmp_path / "resumed"
+        first = TaskSaver(root_dir=root, deterministic=False, task_identity=_IDENTITY)
+        await first.begin_run(resumed=False, model="m")
+        await first.set_identity(data={"digest": "sha256:d", "samples": 3})
+        await first.end_run(["grader", "data", "prompt", "inference"])
+        # The directory was created by an older version of the same series.
+        meta = _read_meta(root)
+        meta["version"] = "0.9.0"
+        (root / "meta.json").write_bytes(orjson.dumps(meta))
 
-        Create-if-absent stays absolute: on a resume the block would describe
-        the *resuming* process, and the resume gate matches on version alone —
-        never on task identity — so a mismatched resume would stamp a wrong
-        identity onto samples another task produced.
-        """
+        second = TaskSaver(root_dir=root, deterministic=True, task_identity=_IDENTITY)
+        await second.begin_run(
+            resumed=True,
+            model="m",
+            config_diff=["concurrency_limit: 8 → 2"],
+            identity={"inference": {"digest": "sha256:i"}},
+        )
+
+        meta = _read_meta(root)
+        # Origin fields describe the run that created the directory.
+        assert meta["version"] == "0.9.0"
+        assert meta["deterministic"] is False
+        # A stage not given is carried; a given one replaces it.
+        assert meta["identity"]["data"] == {"digest": "sha256:d", "samples": 3}
+        assert meta["identity"]["inference"] == {"digest": "sha256:i"}
+        first_run, second_run = meta["runs"]
+        assert first_run["reran"] == ["data", "prompt", "inference", "grader"]
+        assert second_run["start"] == "resume"
+        assert second_run["config"] == ["concurrency_limit: 8 → 2"]
+        assert "reran" not in second_run
+        assert "ended" not in second_run
+        assert first_run["ended"] >= first_run["at"]
+
+    @pytest.mark.anyio
+    async def test_resume_does_not_backfill_task_into_legacy_meta(self, tmp_path):
+        """A pre-feature `meta.json` reads back without `task`, `identity` or
+        `runs`; a resume adds the run history but never a `task` block, which
+        would describe the resuming process instead of the samples' producer."""
         root = tmp_path / "legacy"
         root.mkdir()
         (root / "meta.json").write_bytes(
@@ -474,11 +441,94 @@ class TestWriteRunMeta:
         )
         saver = TaskSaver(root_dir=root, task_identity=_IDENTITY)
 
-        await saver.write_run_meta()
+        await saver.begin_run(resumed=True)
 
-        meta = orjson.loads((root / "meta.json").read_bytes())
+        meta = _read_meta(root)
         assert "task" not in meta
         assert meta["version"] == "0.6.0"
+        assert meta["identity"]["data"] is None
+        assert [r["start"] for r in meta["runs"]] == ["resume"]
+
+    @pytest.mark.anyio
+    async def test_resume_without_readable_meta_writes_a_fresh_origin(self, tmp_path):
+        from sieval import __version__
+
+        root = tmp_path / "garbled"
+        root.mkdir()
+        (root / "meta.json").write_bytes(b"{ truncated")
+        await TaskSaver(root_dir=root).begin_run(resumed=True)
+        meta = _read_meta(root)
+        assert meta["version"] == __version__
+        assert meta["runs"][0]["start"] == "resume"
+
+    @pytest.mark.anyio
+    async def test_identity_of_another_schema_is_not_carried(self, tmp_path):
+        root = tmp_path / "schema"
+        root.mkdir()
+        (root / "meta.json").write_bytes(
+            orjson.dumps(
+                {
+                    "version": "0.9.0",
+                    "deterministic": False,
+                    "identity": {"schema": 99, "data": {"digest": "x"}},
+                    "runs": ["not a run", {"sieval": "0.9.0", "start": "fresh"}],
+                }
+            )
+        )
+        await TaskSaver(root_dir=root).begin_run(resumed=True)
+        meta = _read_meta(root)
+        assert meta["identity"]["schema"] == 1
+        assert meta["identity"]["data"] is None
+        # Malformed entries are dropped, well-formed ones kept.
+        assert [r["start"] for r in meta["runs"]] == ["fresh", "resume"]
+
+    @pytest.mark.anyio
+    async def test_set_identity_rejects_unknown_stage(self, saver):
+        await saver.begin_run(resumed=False)
+        with pytest.raises(ValueError, match="unknown identity stage"):
+            await saver.set_identity(report={"digest": "x"})
+
+    @pytest.mark.anyio
+    async def test_updates_before_begin_run_raise(self, saver):
+        with pytest.raises(RuntimeError, match="begin_run"):
+            await saver.set_identity(data=None)
+        with pytest.raises(RuntimeError, match="begin_run"):
+            await saver.end_run(())
+        assert saver.run_meta is None
+
+    @pytest.mark.anyio
+    async def test_interrupt_ends_the_run_without_reran(self, saver, tmp_root):
+        await saver.interrupt_run()  # before begin_run: nothing to record
+        assert not (tmp_root / "meta.json").exists()
+        await saver.begin_run(resumed=False)
+        await saver.interrupt_run()
+        run = _read_meta(tmp_root)["runs"][-1]
+        assert run["interrupted"] is True
+        assert run["ended"] >= run["at"]
+        assert "reran" not in run
+
+    @pytest.mark.anyio
+    async def test_end_run_orders_stages(self, saver, tmp_root):
+        await saver.begin_run(resumed=False)
+        await saver.end_run(["grader", "prompt"])
+        assert _read_meta(tmp_root)["runs"][-1]["reran"] == ["prompt", "grader"]
+        assert saver.run_meta is not None
+
+    @pytest.mark.anyio
+    async def test_failed_write_raises_and_cleans_up(
+        self, saver, tmp_root, monkeypatch
+    ):
+        """`meta.json` says whether a run started here: a write that did not land
+        fails the task rather than leaving the directory to be read as fresh."""
+
+        async def _fail_replace(*_args):
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(anyio.Path, "replace", _fail_replace)
+        with pytest.raises(OSError, match="read-only"):
+            await saver.begin_run(resumed=False)
+        assert not (tmp_root / "meta.json").exists()
+        assert not (tmp_root / "meta.tmp").exists()
 
 
 # ===================================================================

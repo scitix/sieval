@@ -411,7 +411,7 @@ class TestGetTaskRunIdentity:
 
     def test_returns_none_for_undecorated_class(self):
         """Fail-soft: `Task` subclasses are not required to be decorated, and
-        `write_run_meta` is documented as never raising."""
+        the saver writes `meta.json` without a `task` block for them."""
 
         class Undecorated(_StubTask):
             pass
@@ -847,7 +847,7 @@ class TestReferenceKind:
     def test_run_identity_carries_it(self):
         """A run directory has to answer this on its own.
 
-        `meta.json` is written once and never rewritten while the installed
+        `meta.json`'s `task` block keeps the run's view while the installed
         registry moves on, so an archived run that consults only the registry
         cannot say why its judgements carry no reference.
         """

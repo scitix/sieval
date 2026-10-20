@@ -134,6 +134,7 @@ from sieval.core.tasks.metrics import (
     metric_interval,
     problem_population,
 )
+from sieval.core.types import JSONValue
 from sieval.core.utils.serialization import obj_to_dict
 from sieval.datasets import SciTaRCDataset, SciTaRCDatasetSample
 
@@ -303,6 +304,10 @@ class SciTaRCZeroShotGenTask(
             "Llama-3.3-70B-Instruct; pin the grader to compare against its "
             "published column."
         )
+
+    @override
+    def judge_prompts(self) -> Mapping[str, JSONValue]:
+        return {"grader": EVAL_PROMPT}
 
     @override
     async def preprocess(self, raw, ctx):
