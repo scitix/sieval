@@ -16,7 +16,7 @@ Verify your setup:
 ```bash
 ruff check sieval/ tests/
 ruff format --check sieval/ tests/
-ty check sieval/
+ty check
 python -m pytest tests/unit/ -v
 ```
 
@@ -84,7 +84,7 @@ python -m pytest -v                                                           # 
 python -m pytest tests/unit/ tests/integration/ --cov --cov-fail-under=95 -v  # with coverage
 python -m pytest tests/acceptance/ -v -s                                      # release gate
 ruff check sieval/ tests/ && ruff format sieval/ tests/                       # lint
-ty check sieval/                                                              # type check
+ty check                                                                      # type check (incl. tests/)
 ```
 
 `tests/unit/` must mirror `sieval/` — e.g. `sieval/core/runners/foo.py` → `tests/unit/core/runners/test_foo.py`.

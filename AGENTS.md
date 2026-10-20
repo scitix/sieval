@@ -58,7 +58,7 @@ Precise reproducibility is a product contract, not a nicety.
 - Quality checks:
     - `pdm run ruff check`
     - `pdm run ruff format`
-    - `pdm run ty check sieval/`
+    - `pdm run ty check` (no path: CI checks `tests/` too)
     - `pdm run python scripts/sync_package_stubs.py --check`
     - `pre-commit run -a`
 
@@ -72,7 +72,7 @@ Precise reproducibility is a product contract, not a nicety.
 ## Coding Style & Naming Conventions
 
 - Python 3.12+, 4-space indentation, PEP 8 naming (`snake_case` functions, `PascalCase` classes).
-- Keep modules focused and typed; daily type checking uses `ty` (`ty check sieval/`); `mypy` (`[tool.mypy] strict = true`) is available but secondary.
+- Keep modules focused and typed; daily type checking uses `ty` (`ty check`); `mypy` (`[tool.mypy] strict = true`) is available but secondary.
 - Use Ruff for linting/formatting; avoid manual style drift.
 - Prefer explicit, readable test case names and concise comments for complex parameterized cases.
 - Package stubs in `sieval/tasks/__init__.pyi` and `sieval/datasets/__init__.pyi` are generated; do not hand-edit. Run `scripts/sync_package_stubs.py` after adding/removing exported tasks or datasets.
