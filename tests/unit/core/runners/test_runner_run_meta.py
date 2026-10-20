@@ -741,14 +741,13 @@ class TestRunStartedHere:
 
 
 class TestShardsMeanStarted:
-    """Shards count as a started run whatever ``meta.json`` says: up to v0.6 it
-    was written only when a run ended or was interrupted, so a killed run left
-    shards and no ``meta.json``. A fresh run must never adopt them."""
+    """Shards count as a started run whatever ``meta.json`` says; a fresh run
+    must never adopt them."""
 
     @staticmethod
     async def _shards_under(tmp_path, meta: str) -> tuple[Path, dict]:
-        """A finished run's shards, with ``meta.json`` emptied of runs, removed,
-        or rewritten as a pre-``runs[]`` one, and no report."""
+        """A finished run's shards, no report, and ``meta.json`` with empty
+        ``runs``, removed, or from before ``runs[]``."""
         first = _runner(tmp_path)
         await first.arun()
         root = first.root_dir
@@ -798,8 +797,6 @@ class TestShardsMeanStarted:
     async def test_runs_empty_with_shards_keeps_them_the_recorded_models(
         self, tmp_path
     ):
-        """Resumed, the model check runs: the samples stay the recorded
-        model's, where a fresh run reported them under the new model."""
         root, recorded = await self._shards_under(tmp_path, "runs-empty")
         runner, model = self._other_model_runner(tmp_path, auto_resume=True)
         await runner.arun()
@@ -823,8 +820,7 @@ class TestShardsMeanStarted:
             self._other_model_runner(tmp_path, auto_resume=True)
         message = str(exc.value)
         assert str(root) in message
-        assert f"Remove {root}" in message
-        assert "its own result_dir" in message
+        assert "another result_dir" in message
         assert not (root / "meta.json").exists()
 
     @pytest.mark.anyio

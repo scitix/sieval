@@ -262,13 +262,10 @@ def _read_run_meta(root_dir: Path) -> dict | None:
 def run_started(root_dir: Path) -> bool:
     """Whether a run has started in *root_dir*, so a new one would resume it.
 
-    Read from ``meta.json``'s ``runs[]``, which a run appends before any work,
-    and from the shards themselves: any ``<iteration>/<stage>/*.idx`` counts.
-    Shards are the signal a ``meta.json`` cannot give. Up to v0.6 it was
-    written only when a run ended or was interrupted, so a killed run left
-    shards and no ``meta.json``; a ``runs[]`` left empty says nothing either.
-    A ``meta.json`` without ``runs``, written before ``runs[]`` existed,
-    counts on its own.
+    Any ``<iteration>/<stage>/*.idx`` counts, as does a non-empty ``runs[]``
+    or a ``meta.json`` from before ``runs[]``. Shards are needed because up
+    to v0.6 ``meta.json`` was written only when a run ended or was
+    interrupted, so a killed run left shards and no ``meta.json``.
     """
     meta = _read_run_meta(root_dir)
     if meta is not None:
@@ -306,19 +303,17 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
     Reads the format-stable ``version`` from ``root_dir/meta.json`` via
     :func:`read_run_version` and applies :func:`resume_version_verdict`.
     Missing, unreadable, or version-less ``meta.json`` is fail-closed
-    (reject), with a message naming *root_dir* and how to start fresh. Raises
-    :class:`ResumeVersionError` on reject; logs a warning on a compatible
-    non-exact resume; silent on an exact match.
+    (reject). Raises :class:`ResumeVersionError` on reject; logs a warning on
+    a compatible non-exact resume; silent on an exact match.
     """
     v_run = read_run_version(root_dir)
     if v_run is None:
+        # *root_dir* may be a `resume_from` source, so never advise removing it.
         raise ResumeVersionError(
             f"Resume aborted: {root_dir} holds a run, but its meta.json is "
             "missing, unreadable, or has no version, so the sieval version "
             "that wrote it is unknown.\n"
-            "Either:\n"
-            f"  1. Remove {root_dir} and start fresh\n"
-            "  2. Give the task its own result_dir"
+            "Start fresh in another result_dir, without resuming it."
         )
 
     verdict = resume_version_verdict(v_run, current_version)
@@ -571,47 +566,18 @@ class TaskRunner:
 
             if self._recorded is not None:
                 self._seed_judge_versions(self._recorded)
-            # Record the run before any work, so an interrupted run is resumed
-            # and the resume gates have a meta.json to read. Inference and
-            # grader identities are known now; data and prompt once every
-            # sample is past preprocess.
-            inference = self._inference_identity()
-            grader = self._grader_identity()
-            self._grader_stamp = grader_key(grader)
+            # Copied here, not in `__init__`: copied shards without a run
+            # would read as started and lock result_dir.
+            if self._run_from is not None:
+                self._copied = copy_recorded_dir(
+                    Path(self._run_from["dir"]), self._root_dir
+                )
             resumed = self._resumed_from_existing or self._run_from is not None
-            changed: list[str | int] = []
-            keeps_recorded_model = False
-            if resumed:
-                # Plan before `begin_run`: a refusal leaves meta.json as it was.
-                self._contexts = await self._loader.load_initial_state()
-                if any(_reuses_inference(c) for c in self._contexts.values()):
-                    self._check_inference(inference)
-                self._regrade = self._recorded_grader_stamp() != self._grader_stamp
-                await self._hydrate_initial(resumed=True)
-                # Decide per sample what a resume keeps before failures roll
-                # back, so a sample that failed in grading regrades rather than
-                # reinfers.
-                changed = await self._plan_stage_resume()
-                self._loader.prepare_failed_retries(
-                    self._contexts, self._record_each_stage
-                )
-                keeps_recorded_model = (
-                    self._model_differs() and self._check_model_switch()
-                )
-            # A regrade leaves the grader unknown until the run ends: samples it
-            # has not reached yet were graded by the recorded grader.
-            await self._saver.begin_run(
-                resumed=resumed,
-                run_from=self._run_from,
-                model=self._model_name(),
-                keep_recorded_model=keeps_recorded_model,
-                config_diff=self._resume_config_diff if resumed else (),
-                config_path=self._config_path(),
-                data=None,
-                prompt=None,
-                inference=inference,
-                grader=None if self._regrade else grader,
-            )
+            try:
+                changed = await self._begin_run(resumed)
+            except BaseException:
+                self._abandon_copy()
+                raise
 
             # 1. Load Initial State
             if not resumed:
@@ -780,6 +746,47 @@ class TaskRunner:
         finally:
             # X. Lifecycle Shutdown
             await self._task.shutdown()
+
+    async def _begin_run(self, resumed: bool) -> list[str | int]:
+        """Plan a resume, then record the run in ``meta.json``.
+
+        Recorded before any work, so an interrupted run is resumed and the
+        resume gates have a ``meta.json`` to read. Inference and grader
+        identities are known now; data and prompt once every sample is past
+        preprocess. Returns the samples a resume rewinds.
+        """
+        inference = self._inference_identity()
+        grader = self._grader_identity()
+        self._grader_stamp = grader_key(grader)
+        changed: list[str | int] = []
+        keeps_recorded_model = False
+        if resumed:
+            # Plan before `begin_run`: a refusal leaves meta.json as it was.
+            self._contexts = await self._loader.load_initial_state()
+            if any(_reuses_inference(c) for c in self._contexts.values()):
+                self._check_inference(inference)
+            self._regrade = self._recorded_grader_stamp() != self._grader_stamp
+            await self._hydrate_initial(resumed=True)
+            # Decide per sample what a resume keeps before failures roll back,
+            # so a sample that failed in grading regrades rather than reinfers.
+            changed = await self._plan_stage_resume()
+            self._loader.prepare_failed_retries(self._contexts, self._record_each_stage)
+            keeps_recorded_model = self._model_differs() and self._check_model_switch()
+        # A regrade leaves the grader unknown until the run ends: samples it
+        # has not reached yet were graded by the recorded grader.
+        await self._saver.begin_run(
+            resumed=resumed,
+            run_from=self._run_from,
+            model=self._model_name(),
+            keep_recorded_model=keeps_recorded_model,
+            config_diff=self._resume_config_diff if resumed else (),
+            config_path=self._config_path(),
+            data=None,
+            prompt=None,
+            inference=inference,
+            grader=None if self._regrade else grader,
+        )
+        return changed
 
     async def _hydrate_initial(self, *, resumed: bool) -> None:
         """Hydrate the recorded contexts a run continues from."""
@@ -1483,10 +1490,9 @@ class TaskRunner:
     # ------------------------------------------------------------------
 
     def _prepare_resume_from(self, src: Path) -> None:
-        """Copy *src*'s shards into this run's empty ``result_dir``.
+        """Gate *src* and read its ``meta.json``; ``arun`` copies its shards.
 
-        The version-series gate applies to *src*. Its ``meta.json`` is read,
-        never written; this run records it in ``runs[].from``.
+        *src* is read, never written; this run records it in ``runs[].from``.
         """
         if not src.is_dir():
             raise FileNotFoundError(f"resume_from directory not found: {src}")
@@ -1498,7 +1504,6 @@ class TaskRunner:
         gate_resume_version(src, __version__)
         recorded = _read_run_meta(src)
         identity = recorded_identity(recorded)
-        self._copied = copy_recorded_dir(src, self._root_dir)
         self._recorded = recorded
         self._run_from = {
             "dir": str(src),
@@ -1551,7 +1556,6 @@ class TaskRunner:
             reason = "the recorded run's persisted config differs"
         else:
             reason = "the recorded run has no inference identity"
-        self._abandon_copy()
         raise StageResumeError(
             "inference",
             f"Resume refused: stage `inference` differs ({reason}).\n"
@@ -1565,7 +1569,7 @@ class TaskRunner:
         return self._run_from["dir"] if self._run_from else str(self._root_dir)
 
     def _abandon_copy(self) -> None:
-        """Undo a ``resume_from`` copy that a refusal leaves unused."""
+        """Undo a ``resume_from`` copy no run began on."""
         if self._copied:
             remove_copied(self._copied)
             (self._root_dir / "meta.json").unlink(missing_ok=True)
@@ -1706,7 +1710,6 @@ class TaskRunner:
                     self._unverified_inference += 1
                 return "restarted", restart
             if match is None:
-                self._abandon_copy()
                 raise StageResumeError(
                     "data",
                     "Resume refused: stage `data` is unknown: the recorded run "
@@ -1813,7 +1816,6 @@ class TaskRunner:
         )
         if not to_infer:
             return True
-        self._abandon_copy()
         raise StageResumeError(
             "inference",
             f"Resume refused: {to_infer} sample(s) would be inferred by "

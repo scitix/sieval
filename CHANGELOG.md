@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Atomic writes create `report.json`, `meta.json` and `manifest.json` as `0o666 & ~umask`, not `0600`.
 - A run interrupted before every sample passed `preprocess` resumes instead of refusing on `data`; a refused resume appends no `runs[]` entry.
-- A directory holding shards counts as started whatever `meta.json` says, so a fresh run refuses it instead of adopting its samples; with no usable `meta.json` (a killed v0.6 run) a resume is refused by the version gate (#148).
+- A directory holding shards counts as started whatever `meta.json` says: a fresh run refuses it instead of adopting its samples, and a resume without a usable `meta.json` (a killed v0.6 run, including the latest `outputs/<task>/<timestamp>`, no longer skipped) is refused by the version gate (#148).
 - An interrupt or failed write mid-run keeps every finished sample.
 - Refinalizing a run whose `end_run` failed writes `anomalies.json`.
 - The grader identity covers patch packages and whole plugin packages, including modules loaded with `importlib`.

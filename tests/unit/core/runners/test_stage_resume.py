@@ -14,6 +14,7 @@ import orjson
 import pytest
 from loguru import logger
 
+from sieval.core.runners.resume_gate import ResumeVersionError
 from sieval.core.runners.runner import TaskRunner
 from sieval.core.runners.stage_resume import (
     StageResumeError,
@@ -339,6 +340,51 @@ class TestResumeFrom:
         assert model.call_count == 0
         dst = tmp_path / "second"
         assert not dst.exists() or not any(dst.iterdir())
+
+    @pytest.mark.anyio
+    async def test_a_failed_setup_leaves_nothing_and_retries(self, tmp_path):
+        src = await _first(tmp_path)
+        task, _ = _task(cls=StrictQATask)
+
+        async def _setup():
+            raise RuntimeError("sandbox down")
+
+        setattr(task, "setup", _setup)  # noqa: B010
+        with pytest.raises(RuntimeError, match="sandbox down"):
+            await _run(tmp_path, "second", task, resume_from=str(src))
+        dst = tmp_path / "second"
+        assert not list(dst.rglob("*.idx"))
+        again, model = _task(cls=StrictQATask)
+        runner, _ = await _run(tmp_path, "second", again, resume_from=str(src))
+        assert model.call_count == 0
+        assert _meta(runner.root_dir)["runs"][0]["start"] == "from"
+
+    @pytest.mark.anyio
+    async def test_a_runner_never_run_copies_nothing(self, tmp_path):
+        """A session builds every runner before running any, so a later task
+        that fails to build leaves earlier runners unrun."""
+        src = await _first(tmp_path)
+        dst = tmp_path / "second"
+        task, _ = _task(cls=StrictQATask)
+        TaskRunner(
+            task, make_config(tmp_path, result_dir=str(dst), resume_from=str(src))
+        )
+        assert not list(dst.rglob("*.idx"))
+        again, model = _task(cls=StrictQATask)
+        await _run(tmp_path, "second", again, resume_from=str(src))
+        assert model.call_count == 0
+
+    @pytest.mark.anyio
+    async def test_a_source_without_meta_is_refused_without_removing_it(self, tmp_path):
+        src = await _first(tmp_path)
+        (src / "meta.json").unlink()
+        task, _ = _task(cls=StrictQATask)
+        with pytest.raises(ResumeVersionError) as exc:
+            await _run(tmp_path, "second", task, resume_from=str(src))
+        message = str(exc.value)
+        assert str(src) in message
+        assert "Remove" not in message
+        assert list(src.rglob("*.idx"))
 
     @pytest.mark.anyio
     async def test_a_from_run_is_resumed_in_place(self, tmp_path):
