@@ -106,6 +106,32 @@ class VersionedJudge(MockJudgeModel):
         return replace(response, response_model="mock-judge-2026-10-01")
 
 
+class EchoingModel(MockChatModel):
+    """Echoes the request's sampling into `request_params`, as a dialect does."""
+
+    async def _stub_arun(self, req):
+        from dataclasses import replace
+
+        response = await super()._stub_arun(req)
+        params: dict = {"n": req.sampling.n}
+        if req.sampling.stop is not None:
+            params["stop"] = list(req.sampling.stop)
+        return replace(response, request_params=params)
+
+
+class StopTask(RecordTask):
+    """Passes `stop` at call time, like the k-shot base tasks."""
+
+    def __init__(self, dataset, model, name=None, stop=None):
+        super().__init__(dataset=dataset, model=model, name=name)
+        self._stop = stop
+
+    async def infer(self, pre, ctx):
+        if self._stop:
+            return await self.model.agenerate(pre["prompt"], stop=self._stop)
+        return await self.model.agenerate(pre["prompt"])
+
+
 def _meta(root: Path) -> dict:
     return orjson.loads((root / "meta.json").read_bytes())
 
@@ -273,6 +299,51 @@ class TestInferenceIdentityFromRunner:
         await runner.arun()
         return runner.root_dir
 
+    @pytest.mark.anyio
+    async def test_a_call_time_stop_counts(self, tmp_path):
+        """A `stop` the task passes to `agenerate` is in no config the run sees
+        up front; the inference identity still moves, through what was sent."""
+
+        async def identity(name, stop):
+            task = StopTask(
+                dataset=MockDataset(SAMPLES), model=EchoingModel(), name="t", stop=stop
+            )
+            runner = _runner(tmp_path / name, task=task)
+            await runner.arun()
+            return _meta(runner.root_dir)["identity"]["inference"]
+
+        plain = await identity("a", stop=None)
+        stopped = await identity("b", stop=["Q:"])
+        assert plain["digest"] == stopped["digest"]
+        assert plain["requests"]["samples"] == 3
+        assert plain["requests"]["digest"] is not None
+        assert plain["requests"]["digest"] != stopped["requests"]["digest"]
+
+    @pytest.mark.anyio
+    async def test_requests_are_unknown_without_model_calls_on_record(self, tmp_path):
+        """A resume of a `record_meta=False` run cannot say what was sent."""
+        root = tmp_path / "results"
+        await _runner(tmp_path, record_meta=False).arun()
+        (root / "report.json").unlink()
+        await _runner(tmp_path, record_meta=False, auto_resume=True).arun()
+        requests = _meta(root)["identity"]["inference"]["requests"]
+        assert requests == {"digest": None, "samples": 3, "unknown": 3}
+
+    @pytest.mark.anyio
+    async def test_a_sample_never_inferred_has_absent_requests(self, tmp_path):
+        class FailingPreprocess(RecordTask):
+            async def preprocess(self, raw, ctx):
+                raise ValueError("no prompt")
+
+        task = FailingPreprocess(
+            dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t"
+        )
+        runner = _runner(tmp_path, task=task)
+        await runner.arun()
+        identity = _meta(runner.root_dir)["identity"]
+        assert identity["inference"]["requests"]["digest"] is not None
+        assert identity["prompt"]["digest"] is not None
+
 
 class TestJudgeIdentity:
     @pytest.mark.anyio
@@ -320,6 +391,79 @@ class TestJudgeIdentity:
         assert judge["version"] is None
         assert "ref" not in judge
 
+    @pytest.mark.anyio
+    async def test_a_judge_sharing_the_candidates_name_is_told_apart(self, tmp_path):
+        """Self-judging: both models are `mock-chat`, configured differently.
+        Only the judge's calls set the judge's version."""
+
+        class Reporting(MockChatModel):
+            def __init__(self, reported, **kwargs):
+                super().__init__(answers=ANSWERS, **kwargs)
+                self._reported = reported
+
+            async def _stub_arun(self, req):
+                from dataclasses import replace
+
+                response = await super()._stub_arun(req)
+                return replace(response, response_model=self._reported)
+
+        task = JudgedTask(
+            dataset=MockDataset(SAMPLES),
+            model=Reporting("cand-v2", temperature=0.7),
+            grader=Reporting("judge-v1", temperature=0.0),
+            name="judged",
+        )
+        runner = _runner(tmp_path, task=task)
+        await runner.arun()
+        [judge] = _meta(runner.root_dir)["identity"]["grader"]["judges"]
+        assert judge["model"] == "mock-chat"
+        assert judge["version"] == "judge-v1"
+
+    @pytest.mark.anyio
+    async def test_a_judge_configured_like_the_candidate_has_no_version(self, tmp_path):
+        """Identical configuration: the calls cannot be told apart, so the
+        version stays unknown rather than borrowing the candidate's."""
+
+        class Reporting(MockChatModel):
+            async def _stub_arun(self, req):
+                from dataclasses import replace
+
+                return replace(await super()._stub_arun(req), response_model="v")
+
+        task = JudgedTask(
+            dataset=MockDataset(SAMPLES),
+            model=Reporting(answers=ANSWERS),
+            grader=Reporting(answers=ANSWERS),
+            name="judged",
+        )
+        runner = _runner(tmp_path, task=task)
+        await runner.arun()
+        [judge] = _meta(runner.root_dir)["identity"]["grader"]["judges"]
+        assert judge["version"] is None
+
+    @pytest.mark.anyio
+    async def test_a_resume_with_another_judge_drops_the_old_version(self, tmp_path):
+        def judged(grader):
+            return JudgedTask(
+                dataset=MockDataset(SAMPLES),
+                model=MockChatModel(answers=ANSWERS),
+                grader=grader,
+                name="judged",
+            )
+
+        first = _runner(tmp_path, task=judged(VersionedJudge(temperature=0.0)))
+        await first.arun()
+        (first.root_dir / "report.json").unlink()
+
+        # Same name, other sampling: the recorded version describes another judge.
+        second = _runner(
+            tmp_path, task=judged(MockJudgeModel(temperature=1.0)), auto_resume=True
+        )
+        await second.arun()
+        [judge] = _meta(second.root_dir)["identity"]["grader"]["judges"]
+        assert judge["sampling"] == {"temperature": 1.0}
+        assert judge["version"] is None
+
 
 class TestIdentityUnavailable:
     @pytest.mark.anyio
@@ -363,6 +507,9 @@ class TestIdentityUnavailable:
         assert identity["grader"] is None
         assert identity["inference"] is None
         assert identity["data"]["samples"] == 3
+        # Identity is bookkeeping: no sample fails over it.
+        finals, fails = runner._final_and_failed()
+        assert (len(finals), len(fails)) == (3, 0)
 
 
 # ===================================================================
@@ -429,7 +576,9 @@ class TestResume:
         second = _runner(tmp_path, task=judged(), auto_resume=True)
         await second.arun()
         meta = _meta(second.root_dir)
-        assert meta["runs"][-1]["reran"] == ["grader"]
+        # Only `report()` ran, which has no identity.
+        assert meta["runs"][-1]["reran"] == []
+        assert meta["runs"][-1]["reported"] is True
         [judge] = meta["identity"]["grader"]["judges"]
         assert judge["version"] == "mock-judge-2026-10-01"
 
@@ -533,9 +682,10 @@ class TestBackwardCompatibleRead:
         meta = _meta(root)
         assert "task" not in meta
         assert [r["start"] for r in meta["runs"]] == ["resume"]
-        # Every sample was already final: nothing reran but the grader's report,
-        # and data and prompt are digested from what the shards hold.
-        assert meta["runs"][0]["reran"] == ["grader"]
+        # Every sample was already final: only `report()` ran, and data and
+        # prompt are digested from what the shards hold.
+        assert meta["runs"][0]["reran"] == []
+        assert meta["runs"][0]["reported"] is True
         assert meta["identity"]["data"]["samples"] == 3
         assert meta["identity"]["prompt"]["samples"] == 3
 

@@ -6443,6 +6443,8 @@ class TestInferArgs:
         runner.models = models or {}
         runner.datasets = datasets or {}
         runner.runner = MultiTaskRunner()
+        runner._infer_plans = None
+        runner._resume_config_diff = []
         runner._task_requirement_contexts = {
             task_name: _task_requirement_context_for_setup_test(
                 task_cfg,
@@ -6530,6 +6532,13 @@ class TestInferArgs:
                 "assignments": [
                     {"role": "full", "devices": {"count": 1, "host": "node-7"}}
                 ],
+                "attachments": [
+                    {
+                        "kind": "kv_cache",
+                        "provider": "redis",
+                        "address": "10.0.1.100:30001",
+                    }
+                ],
             }
         }
         runner._resume_config_diff = ["concurrency_limit: 8 → 2"]
@@ -6543,9 +6552,11 @@ class TestInferArgs:
             runner._setup_tasks()
 
         kwargs = add_task.call_args.kwargs
+        # Where it ran (host, attachment address) is left out; how is kept.
         assert kwargs["inference_recipe"] == {
             "backend": "vllm",
             "assignments": [{"role": "full", "devices": {"count": 1}}],
+            "attachments": [{"kind": "kv_cache", "provider": "redis"}],
         }
         assert kwargs["resume_config_diff"] == ["concurrency_limit: 8 → 2"]
         # The session's plan is untouched by the projection.
@@ -7803,6 +7814,8 @@ class TestDeterministicMode:
         runner.models = {"m": mock_model}
         runner.datasets = {"ds": mock_ds}
         runner.runner = MultiTaskRunner()
+        runner._infer_plans = None
+        runner._resume_config_diff = []
         runner.deterministic = True
         runner._task_requirement_contexts = {
             "eval_task": RequirementContext(

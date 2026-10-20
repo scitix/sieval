@@ -4696,7 +4696,7 @@ class EvalSession:
                 task,
                 config=runner_config,
                 inference_recipe=self._inference_recipe_for(candidate.config_name),
-                resume_config_diff=list(getattr(self, "_resume_config_diff", [])),
+                resume_config_diff=list(self._resume_config_diff),
             )
             logger.info("Added task '{}' with class '{}'", task_name, task_spec)
 
@@ -4704,9 +4704,13 @@ class EvalSession:
         """The serving plan of *model_name*'s root, for the inference identity.
 
         ``None`` for a model SiEval does not serve. The checkpoint is the model
-        under test and each device's host is where it ran, so both are left out.
+        under test, so it is left out, and so is every field that says where
+        the plan ran rather than how: each device group's ``host`` and each
+        attachment's ``address``. The rest of a ``DeploymentPlan`` is
+        launch-invariant -- the serving port is the translator's, not the
+        plan's.
         """
-        infer_plans = getattr(self, "_infer_plans", None)
+        infer_plans = self._infer_plans
         if not infer_plans:
             return None
         models_cfg = self._get_named_config_map("models")
@@ -4725,6 +4729,9 @@ class EvalSession:
                 assignment.get("devices"), dict
             ):
                 assignment["devices"].pop("host", None)
+        for attachment in recipe.get("attachments") or ():
+            if isinstance(attachment, dict):
+                attachment.pop("address", None)
         return cast(dict[str, JSONValue], recipe)
 
     def _resolve_task_dataset(

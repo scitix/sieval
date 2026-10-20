@@ -14,15 +14,20 @@ The four stage identities describe the run that produced the current
                template.
 ``inference``  The candidate's resolved request arguments, dialect and engine,
                the task's own inference arguments (``n``), the result-changing
-               runner keys and the serving recipe. The model under test, the
-               engine build and the SiEval version are left out.
+               runner keys and the serving recipe, plus ``requests``: every
+               sample's request parameters as the dialect sent them, so a
+               ``stop`` or ``max_tokens`` a task passes at call time counts.
+               The model under test, the engine build and the SiEval version
+               are left out.
 ``grader``     The source of every module the task class reaches by a static
                import walk under :data:`GRADER_PACKAGES`, and each judge's
                model, version, sampling arguments and prompt.
 =============  ==============================================================
 
 Every digest is ``sha256:`` over canonical JSON (sorted keys, no whitespace).
-A stage whose input could not be read is ``None``: unknown, never a guess.
+A stage whose input could not be read is ``None``: unknown, never a guess. A
+per-sample stage with one sample it could not digest is unknown as a whole,
+and says how many in ``unknown``.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -38,10 +43,16 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, NotRequired, TypedDict, cast
 
+from sieval.core.models import Model
 from sieval.core.types import JSONValue
 
 #: Version of the ``identity`` block's layout.
 IDENTITY_SCHEMA = 1
+
+#: A per-sample digest of a value that was legitimately absent: the prompt of a
+#: sample whose ``preprocess`` failed, the requests of one never inferred. Kept
+#: apart from ``None``, which is a digest that could not be taken.
+ABSENT = "absent"
 
 #: Stage names in pipeline order; ``runs[].reran`` lists them in this order.
 STAGES: tuple[str, ...] = ("data", "prompt", "inference", "grader")
@@ -71,14 +82,23 @@ INFERENCE_RUNNER_KEYS: tuple[str, ...] = (
 
 
 class DigestedStage(TypedDict):
-    """A per-sample stage: an aggregate digest and how many samples it covers."""
+    """A per-sample stage: an aggregate digest and how many samples it covers.
 
-    digest: str
+    ``digest`` is ``None`` when ``unknown`` samples (one or more) could not be
+    digested: a fold that left them out, or spelled them alike, would claim
+    two different sample sets are the same.
+    """
+
+    digest: str | None
     samples: int
+    unknown: NotRequired[int]
 
 
 class InferenceIdentity(TypedDict):
+    """``digest`` covers the configuration; ``requests`` what was sent."""
+
     digest: str
+    requests: NotRequired[DigestedStage]
 
 
 class JudgeIdentity(TypedDict):
@@ -106,7 +126,12 @@ class GraderIdentity(TypedDict):
 
 
 class RunIdentity(TypedDict):
-    """The ``identity`` block. A stage is ``None`` while unknown."""
+    """The ``identity`` block. A stage is ``None`` while unknown.
+
+    Two runs share a stage only when every digest in it matches: for
+    ``inference`` that is ``digest`` *and* ``requests.digest``, and a ``None``
+    digest on either side matches nothing.
+    """
 
     schema: int
     data: DigestedStage | None
@@ -129,6 +154,7 @@ RunRecord = TypedDict(
         "start": Literal["fresh", "resume", "from"],
         "ended": NotRequired[str],
         "reran": NotRequired[list[str]],
+        "reported": NotRequired[bool],
         "interrupted": NotRequired[bool],
         "config": NotRequired[list[str]],
         "from": NotRequired[RunFrom],
@@ -138,7 +164,10 @@ RunRecord = TypedDict(
 
 While the run is in flight the entry has neither ``ended`` nor ``reran``.
 A run that saves its ``report.json`` writes both: ``ended`` (ISO 8601 UTC, like
-``at``) and ``reran``, the stages it executed, ``[]`` for a fast resume. A run
+``at``) and ``reran``, the stages it executed, ``[]`` for a fast resume.
+``reported: true`` says the run wrote ``report.json``, which a fast resume does
+not. ``report()`` has no identity, so a run that only re-aggregated finished
+samples is ``reran: []`` with ``reported: true``. A run
 stopped by an interrupt writes ``ended`` and ``interrupted: true``, and no
 ``reran``. An entry with no ``ended`` is a run that is still going, or was
 killed or failed before it could say so. ``config`` is the resume-mutable config
@@ -176,13 +205,20 @@ def _default(value: object) -> Any:
 
 
 def canonical_json(value: object) -> str:
-    """Canonical JSON: sorted keys, no whitespace, no NaN, ASCII only."""
+    """Canonical JSON: sorted keys, no whitespace, ASCII only.
+
+    NaN and the infinities are written as the bare tokens ``NaN``,
+    ``Infinity`` and ``-Infinity``. That is not strict JSON, but this text is
+    only ever hashed: refusing them would leave a sample holding a missing
+    float with no digest, and spelling them as strings would make them equal
+    to the string ``"NaN"``.
+    """
     return json.dumps(
         value,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
-        allow_nan=False,
+        allow_nan=True,
         default=_default,
     )
 
@@ -214,14 +250,61 @@ def aggregate_digest(
 ) -> DigestedStage:
     """Fold per-sample ``(sample_id, repeat_index, digest)`` into one stage.
 
-    A ``None`` per-sample digest stays in the fold as ``null``: a sample whose
-    ``preprocess`` failed has no prompt, which is still a fact about the run.
+    :data:`ABSENT` stays in the fold: a sample whose ``preprocess`` failed has
+    no prompt, which is still a fact about the run. ``None`` is a digest that
+    could not be taken, and makes the whole stage unknown.
     """
     rows = sorted(entries, key=lambda e: _sample_key(e[0], e[1]))
+    unknown = sum(d is None for _, _, d in rows)
+    if unknown:
+        return {"digest": None, "samples": len(rows), "unknown": unknown}
     return {
         "digest": digest([[sid, rep, d] for sid, rep, d in rows]),
         "samples": len(rows),
     }
+
+
+#: ``ModelMeta`` keys that say where a model was reached, not which model it is.
+_CALL_KEY_EXCLUDED = frozenset({"api_base", "provenance"})
+
+
+def call_key(model_meta: Mapping) -> str:
+    """Which model made a call: its ``ModelMeta`` without endpoint or provenance.
+
+    Both are left out because a resume may reach the same model at another
+    address or deployment. Two models alike in name, sampling and ``extra`` are
+    the same model as far as a run's results go.
+    """
+    return canonical_json(
+        {k: v for k, v in model_meta.items() if k not in _CALL_KEY_EXCLUDED}
+    )
+
+
+def request_digest(
+    model_calls: Iterable[Mapping[str, object]], candidate: str
+) -> str | None:
+    """Digest the request parameters of the calls *candidate* made.
+
+    *candidate* is the model under test's :func:`call_key`; a judge called
+    from the same stage is left out. ``None`` when no candidate call was
+    recorded, or one has no ``request_params``: what was sent is then unknown,
+    not "nothing".
+    """
+    sent = []
+    for call in model_calls:
+        model = call.get("model")
+        if not isinstance(model, Mapping) or call_key(model) != candidate:
+            continue
+        params = call.get("request_params")
+        if not isinstance(params, Mapping):
+            return None
+        sent.append(params)
+    if not sent:
+        return None
+    try:
+        return digest(sent)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -229,39 +312,39 @@ def aggregate_digest(
 # ---------------------------------------------------------------------------
 
 
-def model_request_args(model: object) -> dict[str, JSONValue]:
+def model_request_args(model: Model) -> dict[str, JSONValue]:
     """A model's resolved request arguments without its name or endpoint.
 
     Reads the builder defaults and ``extra`` from ``Model.meta()``, plus the
     runtime plan's capability defaults and the dialect.
     """
-    meta = model.meta()  # type: ignore[attr-defined]
-    args: dict[str, JSONValue] = {"params": dict(meta.get("default_params") or {})}
-    if meta.get("extra"):
+    meta = model.meta()
+    args: dict[str, JSONValue] = {"params": dict(meta["default_params"])}
+    if "extra" in meta:
         args["extra"] = dict(meta["extra"])
-    plan = getattr(model, "runtime_plan", None)
-    defaults = getattr(plan, "request_defaults", None)
-    if defaults is not None and defaults.values:
-        args["request_defaults"] = defaults.to_json_value()
-    dialect = getattr(model, "dialect_id", None)
-    if isinstance(dialect, str):
-        args["dialect"] = dialect
+    plan = model.runtime_plan
+    if plan is not None:
+        if plan.request_defaults.values:
+            args["request_defaults"] = plan.request_defaults.to_json_value()
+        args["dialect"] = plan.dialect_id
     return args
 
 
 def inference_identity(
     *,
-    model: object,
+    model: Model,
     task_args: Mapping[str, JSONValue],
     runner_keys: Mapping[str, JSONValue],
     recipe: Mapping[str, JSONValue] | None,
 ) -> InferenceIdentity:
-    """Digest the inference stage's inputs, leaving out the model under test."""
-    deployment = getattr(model, "deployment", None)
-    engine = getattr(getattr(deployment, "engine", None), "engine_id", None)
+    """Digest the inference stage's configuration, leaving out the model under test.
+
+    What the candidate was actually sent is folded per sample into
+    ``requests`` once the run ends; this digest is the part known up front.
+    """
     payload = {
         "model_args": model_request_args(model),
-        "engine": engine if isinstance(engine, str) else None,
+        "engine": model.deployment.engine.engine_id,
         "task_args": dict(task_args),
         "runner": {key: runner_keys.get(key) for key in INFERENCE_RUNNER_KEYS},
         "recipe": dict(recipe) if recipe is not None else None,
@@ -419,7 +502,7 @@ def judge_model_refs(
 
 
 def judge_identities(
-    judges: Mapping[str, object],
+    judges: Mapping[str, Model],
     prompts: Mapping[str, JSONValue],
     versions: Mapping[str, str | None] | None = None,
     environ: Mapping[str, str] | None = None,
@@ -428,10 +511,9 @@ def judge_identities(
     refs = judge_model_refs(judges, environ)
     out: list[JudgeIdentity] = []
     for role in sorted(judges):
-        model = judges[role]
-        meta = model.meta()  # type: ignore[attr-defined]
-        sampling: dict[str, JSONValue] = dict(meta.get("default_params") or {})
-        if meta.get("extra"):
+        meta = judges[role].meta()
+        sampling: dict[str, JSONValue] = dict(meta["default_params"])
+        if "extra" in meta:
             sampling["extra"] = dict(meta["extra"])
         entry: JudgeIdentity = {
             "role": role,

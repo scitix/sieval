@@ -15,9 +15,11 @@ import numpy as np
 import pytest
 
 from sieval.core.tasks.run_meta import (
+    ABSENT,
     GRADER_PACKAGES,
     JUDGE_MODEL_REF_ENV,
     aggregate_digest,
+    call_key,
     canonical_json,
     carried_identity,
     carried_runs,
@@ -31,6 +33,7 @@ from sieval.core.tasks.run_meta import (
     new_run_record,
     ordered_stages,
     prompt_of,
+    request_digest,
 )
 from tests.conftest import MockChatModel, MockJudgeModel
 
@@ -81,9 +84,17 @@ class TestDigest:
         with pytest.raises(TypeError, match="cannot digest"):
             digest({"f": object()})
 
-    def test_nan_is_refused(self):
-        with pytest.raises(ValueError):
-            digest({"x": float("nan")})
+    def test_a_missing_float_is_digested_and_tells_samples_apart(self):
+        """NaN is encoded, not refused: a refused sample could not tell two
+        datasets apart."""
+        a = digest({"q": "What is 2+2?", "score": float("nan")})
+        b = digest({"q": "Totally different", "score": float("nan")})
+        assert a != b
+        assert digest({"x": np.float64("nan")}) == digest({"x": float("nan")})
+
+    def test_nan_is_not_the_string_nan(self):
+        assert digest({"x": float("nan")}) != digest({"x": "NaN"})
+        assert digest({"x": float("inf")}) != digest({"x": float("-inf")})
 
 
 class TestPromptOf:
@@ -110,9 +121,68 @@ class TestAggregateDigest:
         repeated = aggregate_digest([(0, 0, "sha256:a")])
         assert once["digest"] != repeated["digest"]
 
-    def test_unknown_sample_digest_still_counts(self):
-        stage = aggregate_digest([(0, None, None)])
-        assert stage["samples"] == 1
+    def test_an_unknown_sample_makes_the_stage_unknown(self):
+        """Two runs whose only difference is an undigestable sample must not
+        share a digest, so the stage claims none."""
+        stage = aggregate_digest([(0, None, "sha256:a"), (1, None, None)])
+        assert stage == {"digest": None, "samples": 2, "unknown": 1}
+
+    def test_absent_is_a_fact_and_keeps_a_digest(self):
+        """A failed preprocess has no prompt; that is known, so it digests."""
+        absent = aggregate_digest([(0, None, ABSENT)])
+        present = aggregate_digest([(0, None, "sha256:a")])
+        assert absent["digest"] is not None
+        assert absent["digest"] != present["digest"]
+        assert "unknown" not in absent
+
+
+class TestCallKey:
+    def test_endpoint_and_provenance_are_left_out(self):
+        base = {"model": "m", "api_base": "http://a/v1", "default_params": {}}
+        moved = base | {"api_base": "http://b/v1", "provenance": {"engine_id": "x"}}
+        assert call_key(base) == call_key(moved)
+
+    def test_sampling_tells_two_configurations_of_one_name_apart(self):
+        a = {"model": "m", "api_base": None, "default_params": {"temperature": 0}}
+        b = {"model": "m", "api_base": None, "default_params": {"temperature": 1}}
+        assert call_key(a) != call_key(b)
+
+
+class TestRequestDigest:
+    CANDIDATE = {"model": "m", "api_base": None, "default_params": {}}
+    JUDGE = {"model": "j", "api_base": None, "default_params": {}}
+
+    def _call(self, model, **params):
+        return {"model": model, "request_params": params}
+
+    def test_a_call_time_argument_counts(self):
+        """`stop` passed by a task at call time is not in the model's config,
+        and is still what was sent."""
+        key = call_key(self.CANDIDATE)
+        plain = request_digest([self._call(self.CANDIDATE, n=1)], key)
+        stopped = request_digest([self._call(self.CANDIDATE, n=1, stop=["Q:"])], key)
+        assert plain is not None
+        assert plain != stopped
+
+    def test_a_judge_call_in_the_same_stage_is_left_out(self):
+        key = call_key(self.CANDIDATE)
+        alone = request_digest([self._call(self.CANDIDATE, n=1)], key)
+        judged = request_digest(
+            [self._call(self.CANDIDATE, n=1), self._call(self.JUDGE, temperature=0)],
+            key,
+        )
+        assert alone == judged
+
+    def test_unknown_when_what_was_sent_is_not_on_record(self):
+        key = call_key(self.CANDIDATE)
+        assert request_digest([{"model": self.CANDIDATE}], key) is None
+        assert request_digest([self._call(self.JUDGE, n=1)], key) is None
+        # A call that names no model is no one's, so it is not the candidate's.
+        assert request_digest([{"request_params": {"n": 1}}], key) is None
+
+    def test_unknown_when_what_was_sent_will_not_digest(self):
+        key = call_key(self.CANDIDATE)
+        assert request_digest([self._call(self.CANDIDATE, x=object())], key) is None
 
 
 # ===================================================================

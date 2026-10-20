@@ -42,13 +42,20 @@ from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
 from sieval.core.tasks.records import iter_grader_outputs
 from sieval.core.tasks.run_meta import (
+    ABSENT,
+    DigestedStage,
+    GraderIdentity,
+    InferenceIdentity,
+    JudgeIdentity,
     aggregate_digest,
+    call_key,
     digest,
     grader_identity,
     grader_modules,
     inference_identity,
     judge_identities,
     prompt_of,
+    request_digest,
 )
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
@@ -334,14 +341,15 @@ class TaskRunner:
         self._inference_recipe = inference_recipe
         self._resume_config_diff = list(resume_config_diff or [])
         # Run history: actions executed this run, each sample's data and prompt
-        # digests as of its first preprocess, and judge versions the API reported.
+        # digests as of its first preprocess, and judge versions the API
+        # reported, by role.
         self._ran_actions: set[TaskAction] = set()
         self._sample_digests: dict[
             str | int, tuple[int | None, str | None, str | None]
         ] = {}
         self._input_identity_written = False
         self._judge_versions: dict[str, str] = {}
-        self._judge_names: set[object] | None = None
+        self._judge_roles: dict[str, list[str]] | None = None
 
         # States
         self._contexts: dict[str | int, TaskContext] = {}
@@ -550,12 +558,10 @@ class TaskRunner:
                 config_diff=(
                     self._resume_config_diff if self._resumed_from_existing else ()
                 ),
-                identity={
-                    "data": None,
-                    "prompt": None,
-                    "inference": self._inference_identity(),
-                    "grader": self._grader_identity(),
-                },
+                data=None,
+                prompt=None,
+                inference=self._inference_identity(),
+                grader=self._grader_identity(),
             )
 
             # 1. Load Initial State
@@ -1220,12 +1226,8 @@ class TaskRunner:
     # meta.json: stage identities and run history
     # ------------------------------------------------------------------
 
-    def _model_name(self) -> str | None:
-        meta = getattr(self._task.model, "meta", None)
-        if not callable(meta):
-            return None
-        name = meta().get("model")
-        return name if isinstance(name, str) else None
+    def _model_name(self) -> str:
+        return self._task.model.meta()["model"]
 
     @staticmethod
     def _safe_digest(value: Any) -> str | None:
@@ -1236,76 +1238,94 @@ class TaskRunner:
             logger.warning("Identity digest unavailable: {}", exc)
             return None
 
-    def _inference_identity(self) -> dict[str, JSONValue] | None:
+    def _inference_identity(self) -> InferenceIdentity | None:
         try:
-            return cast(
-                dict[str, JSONValue],
-                inference_identity(
-                    model=self._task.model,
-                    task_args=self._task.inference_args(),
-                    runner_keys={
-                        "deterministic": self._config.deterministic,
-                        "max_iterations": self._config.max_iterations,
-                        "max_retries": self._config.max_retries,
-                    },
-                    recipe=self._inference_recipe,
-                ),
+            return inference_identity(
+                model=self._task.model,
+                task_args=self._task.inference_args(),
+                runner_keys={
+                    "deterministic": self._config.deterministic,
+                    "max_iterations": self._config.max_iterations,
+                    "max_retries": self._config.max_retries,
+                },
+                recipe=self._inference_recipe,
             )
         except (TypeError, ValueError, AttributeError) as exc:
             logger.warning("Inference identity unavailable: {}", exc)
             return None
 
-    def _grader_identity(self) -> dict[str, JSONValue] | None:
+    def _grader_identity(self) -> GraderIdentity | None:
         try:
             judges = judge_identities(
                 self._task.judge_models(),
                 self._task.judge_prompts(),
-                versions=self._judge_versions_by_role(),
+                versions=self._judge_versions,
             )
-            modules = grader_modules(type(self._task))
-            return cast(dict[str, JSONValue], grader_identity(modules, judges))
+            return grader_identity(grader_modules(type(self._task)), judges)
         except (TypeError, ValueError, AttributeError, SyntaxError, OSError) as exc:
             logger.warning("Grader identity unavailable: {}", exc)
             return None
-
-    def _judge_versions_by_role(self) -> dict[str, str | None]:
-        out: dict[str, str | None] = {}
-        for role, model in self._task.judge_models().items():
-            name = model.meta().get("model")
-            if isinstance(name, str) and name in self._judge_versions:
-                out[role] = self._judge_versions[name]
-        return out
 
     def _seed_judge_versions(self, meta: dict | None) -> None:
         """Carry judge versions a resumed run's ``meta.json`` recorded.
 
         A resume that grades nothing new never hears from the judge API, and
         the version it reported earlier still describes the verdicts on disk.
+        Carried only into a role still held by the same model and sampling.
         """
         grader = ((meta or {}).get("identity") or {}).get("grader") or {}
+        current = {j["role"]: j for j in self._current_judges()}
         for judge in grader.get("judges") or ():
-            if isinstance(judge, dict):
-                name, version = judge.get("model"), judge.get("version")
-                if isinstance(name, str) and isinstance(version, str):
-                    self._judge_versions.setdefault(name, version)
+            if not isinstance(judge, dict):
+                continue
+            role, version = judge.get("role"), judge.get("version")
+            now = current.get(role) if isinstance(role, str) else None
+            if (
+                now is not None
+                and isinstance(version, str)
+                and judge.get("model") == now["model"]
+                and judge.get("sampling") == now["sampling"]
+            ):
+                self._judge_versions.setdefault(now["role"], version)
+
+    def _current_judges(self) -> list[JudgeIdentity]:
+        try:
+            return judge_identities(self._task.judge_models(), {})
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.warning("Judge models unavailable: {}", exc)
+            return []
 
     def _observe_judge_versions(self, model_calls: list) -> None:
-        """Keep the first model version a judge API reported, by model name."""
-        if self._judge_names is None:
-            self._judge_names = {
-                model.meta().get("model")
-                for model in self._task.judge_models().values()
-            }
+        """Keep the first model version a judge API reported, by role.
+
+        A call is matched to its judge by :func:`call_key` (model, sampling and
+        ``extra``), not by name: a task judged by the model it evaluates calls
+        both under one name, and only the configuration tells them apart.
+        """
+        if self._judge_roles is None:
+            # Identity is bookkeeping: a task whose judge lookup raises still
+            # runs, with no judge versions, rather than failing every sample.
+            self._judge_roles = {}
+            try:
+                judges = self._task.judge_models()
+            except (TypeError, ValueError, AttributeError) as exc:
+                logger.warning("Judge models unavailable: {}", exc)
+                judges = {}
+            candidate = call_key(self._task.model.meta())
+            for role, model in judges.items():
+                key = call_key(model.meta())
+                # A judge configured exactly like the candidate is the same
+                # model; its calls cannot be told apart, so none is a judge's.
+                if key != candidate:
+                    self._judge_roles.setdefault(key, []).append(role)
         for call in model_calls:
-            name = (call.get("model") or {}).get("model")
+            model = call.get("model")
             reported = call.get("response_model")
-            if (
-                isinstance(name, str)
-                and name in self._judge_names
-                and isinstance(reported, str)
-                and reported
-            ):
-                self._judge_versions.setdefault(name, reported)
+            if not isinstance(model, dict) or not isinstance(reported, str):
+                continue
+            for role in self._judge_roles.get(call_key(model), ()):
+                if reported:
+                    self._judge_versions.setdefault(role, reported)
 
     def _note_sample_digests(self, ctx: TaskContext) -> None:
         """Record *ctx*'s data and prompt digests once, as of its first preprocess.
@@ -1326,8 +1346,14 @@ class TaskRunner:
         if data is None:
             data = self._safe_digest(ctx.raw_sample)
         prompt = recorded.get("prompt") if recorded else None
-        if prompt is None and ctx.preprocess_result is not None:
-            prompt = self._safe_digest(prompt_of(ctx.preprocess_result))
+        if prompt is None:
+            # No prompt at all is a fact (preprocess failed or never ran); a
+            # prompt that would not digest is unknown.
+            prompt = (
+                ABSENT
+                if ctx.preprocess_result is None
+                else self._safe_digest(prompt_of(ctx.preprocess_result))
+            )
         self._sample_digests[ctx.sample_id] = (ctx.repeat_index, data, prompt)
 
     async def _maybe_write_input_identity(self, force: bool = False) -> None:
@@ -1352,13 +1378,53 @@ class TaskRunner:
             prompt=aggregate_digest((sid, rep, p) for sid, (rep, _, p) in entries),
         )
 
+    def _requests_identity(self) -> DigestedStage:
+        """Fold what the candidate was sent, per sample, from its ``infer`` records.
+
+        A sample never inferred has :data:`ABSENT` requests. One inferred but
+        without its ``model_calls`` on record (a resume of a ``record_meta=False``
+        run, or a call the dialect did not echo) is unknown, and so is the stage.
+        """
+        candidate = call_key(self._task.model.meta())
+        entries = []
+        for ctx in self._contexts.values():
+            calls = [
+                call
+                for entry in ctx.stage_meta.get(TaskStage.INFERRED.value, ())
+                if isinstance(entry, dict)
+                for call in entry.get("model_calls") or ()
+                if isinstance(call, dict)
+            ]
+            if calls:
+                sent = request_digest(calls, candidate)
+            else:
+                sent = None if self._was_inferred(ctx) else ABSENT
+            entries.append((ctx.sample_id, ctx.repeat_index, sent))
+        return aggregate_digest(entries)
+
+    @staticmethod
+    def _was_inferred(ctx: TaskContext) -> bool:
+        """Whether *ctx* got past ``infer``, read from where it stopped."""
+        if ctx.stage == TaskStage.FAILED:
+            return ctx.error_action not in (TaskAction.PREPROCESS, TaskAction.INFER)
+        return ctx.stage not in (TaskStage.INITIAL, TaskStage.PREPROCESSED)
+
     async def _end_run(self) -> None:
         """Finish this run's ``runs[]`` entry once its ``report.json`` is saved.
 
         Writes the data and prompt identities if a sample never reached
-        preprocess, and the grader's again when a judge reported its version.
+        preprocess, folds what the candidate was sent into the inference
+        identity, and rewrites the grader's when a judge reported its version.
         """
         await self._maybe_write_input_identity(force=True)
+        inference = self._saver.inference_identity
+        if inference is not None:
+            await self._saver.set_identity(
+                inference={
+                    "digest": inference["digest"],
+                    "requests": self._requests_identity(),
+                }
+            )
         if self._judge_versions:
             await self._saver.set_identity(grader=self._grader_identity())
         ran = self._ran_actions
@@ -1367,9 +1433,10 @@ class TaskRunner:
             reran |= {"data", "prompt"}
         if TaskAction.INFER in ran:
             reran.add("inference")
-        # `report()` belongs to the grader and runs on every path but a fast resume.
-        reran.add("grader")
-        await self._saver.end_run(reran)
+        # `report()` has no identity: only the stages that grade count.
+        if ran & {TaskAction.POSTPROCESS, TaskAction.FEEDBACK}:
+            reran.add("grader")
+        await self._saver.end_run(reran, reported=True)
 
     def _resolve_result_dir(
         self, result_dir: str | None, task: Task, auto_resume: bool

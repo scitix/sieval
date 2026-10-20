@@ -411,7 +411,7 @@ class TestRunMeta:
             resumed=True,
             model="m",
             config_diff=["concurrency_limit: 8 → 2"],
-            identity={"inference": {"digest": "sha256:i"}},
+            inference={"digest": "sha256:i"},
         )
 
         meta = _read_meta(root)
@@ -483,10 +483,36 @@ class TestRunMeta:
         assert [r["start"] for r in meta["runs"]] == ["fresh", "resume"]
 
     @pytest.mark.anyio
-    async def test_set_identity_rejects_unknown_stage(self, saver):
+    async def test_set_identity_keeps_what_it_is_not_given(self, saver, tmp_root):
+        """Leaving a stage out keeps it; `None` is a value, and sets it unknown."""
+        await saver.begin_run(
+            resumed=False,
+            inference={"digest": "sha256:i"},
+            grader={"digest": "sha256:g", "modules": {}, "judges": []},
+        )
+        await saver.set_identity(data={"digest": "sha256:d", "samples": 1})
+        await saver.set_identity(grader=None)
+        identity = _read_meta(tmp_root)["identity"]
+        assert identity["data"] == {"digest": "sha256:d", "samples": 1}
+        assert identity["inference"] == {"digest": "sha256:i"}
+        assert identity["prompt"] is None
+        assert identity["grader"] is None
+        assert saver.inference_identity == {"digest": "sha256:i"}
+
+    @pytest.mark.anyio
+    async def test_reported_marks_a_run_that_wrote_its_report(self, saver, tmp_root):
         await saver.begin_run(resumed=False)
-        with pytest.raises(ValueError, match="unknown identity stage"):
-            await saver.set_identity(report={"digest": "x"})
+        await saver.end_run([], reported=True)
+        [run] = _read_meta(tmp_root)["runs"]
+        assert run["reran"] == []
+        assert run["reported"] is True
+
+    @pytest.mark.anyio
+    async def test_a_fast_resume_reports_nothing(self, saver, tmp_root):
+        await saver.begin_run(resumed=False)
+        await saver.end_run([])
+        [run] = _read_meta(tmp_root)["runs"]
+        assert "reported" not in run
 
     @pytest.mark.anyio
     async def test_updates_before_begin_run_raise(self, saver):
@@ -495,6 +521,7 @@ class TestRunMeta:
         with pytest.raises(RuntimeError, match="begin_run"):
             await saver.end_run(())
         assert saver.run_meta is None
+        assert saver.inference_identity is None
 
     @pytest.mark.anyio
     async def test_interrupt_ends_the_run_without_reran(self, saver, tmp_root):

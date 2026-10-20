@@ -2,7 +2,7 @@
 
 import contextlib
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,13 +18,22 @@ from .consts import TaskStage
 from .context import TaskContext, TaskManifest, TaskRunIdentity, TaskRunMeta
 from .profiler import TaskProfiler, TaskProfilerContext
 from .run_meta import (
-    STAGES,
+    DigestedStage,
+    GraderIdentity,
+    InferenceIdentity,
     carried_identity,
     carried_runs,
     new_run_record,
     ordered_stages,
     utc_now,
 )
+
+
+class _Unset:
+    """A ``set_identity`` stage not given, apart from ``None`` (unknown)."""
+
+
+_UNSET = _Unset()
 
 
 async def _atomic_write(path: Path, data: bytes) -> None:
@@ -170,7 +179,10 @@ class TaskSaver:
         resumed: bool,
         model: str | None = None,
         config_diff: Sequence[str] = (),
-        identity: Mapping[str, Any] | None = None,
+        data: DigestedStage | None | _Unset = _UNSET,
+        prompt: DigestedStage | None | _Unset = _UNSET,
+        inference: InferenceIdentity | None | _Unset = _UNSET,
+        grader: GraderIdentity | None | _Unset = _UNSET,
     ) -> None:
         """Rewrite ``meta.json`` for a run that is starting, appending its ``runs[]``.
 
@@ -178,10 +190,10 @@ class TaskSaver:
         created the directory: a resume keeps the persisted values and never
         backfills a missing ``task`` block, since it would describe the
         resuming process rather than the run that produced the samples. A
-        fresh run writes its own. ``identity`` stages given here replace the
-        carried ones; the rest are carried from a resumed ``meta.json`` of the
-        same identity schema. Self-creates ``_root_dir``. A failed write
-        raises.
+        fresh run writes its own. A stage identity given here replaces the
+        carried one (``None`` sets it unknown); a stage not given is carried
+        from a resumed ``meta.json`` of the same identity schema.
+        Self-creates ``_root_dir``. A failed write raises.
         """
         from sieval import __version__
 
@@ -200,10 +212,7 @@ class TaskSaver:
                 meta["task"] = self._task_identity
         if model is not None:
             meta["model"] = model
-        run_identity = carried_identity(existing)
-        for stage, value in (identity or {}).items():
-            run_identity[stage] = value
-        meta["identity"] = run_identity
+        meta["identity"] = carried_identity(existing)
         meta["runs"] = [
             *carried_runs(existing),
             new_run_record(
@@ -211,23 +220,58 @@ class TaskSaver:
             ),
         ]
         self._meta = meta
+        self._apply_identity(data, prompt, inference, grader)
         await self._write_meta()
 
-    async def set_identity(self, **stages: Any) -> None:
-        """Replace the named stage identities and rewrite ``meta.json``."""
-        meta = self._require_meta()
-        for stage, value in stages.items():
-            if stage not in STAGES:
-                raise ValueError(f"unknown identity stage {stage!r}")
-            meta["identity"][stage] = value  # type: ignore[literal-required]
+    async def set_identity(
+        self,
+        *,
+        data: DigestedStage | None | _Unset = _UNSET,
+        prompt: DigestedStage | None | _Unset = _UNSET,
+        inference: InferenceIdentity | None | _Unset = _UNSET,
+        grader: GraderIdentity | None | _Unset = _UNSET,
+    ) -> None:
+        """Replace the given stage identities and rewrite ``meta.json``.
+
+        A stage left out keeps its value; ``None`` sets it unknown.
+        """
+        self._require_meta()
+        self._apply_identity(data, prompt, inference, grader)
         await self._write_meta()
 
-    async def end_run(self, reran: Iterable[str]) -> None:
-        """Mark the current ``runs[]`` entry ended, with the stages it reran."""
+    def _apply_identity(
+        self,
+        data: DigestedStage | None | _Unset,
+        prompt: DigestedStage | None | _Unset,
+        inference: InferenceIdentity | None | _Unset,
+        grader: GraderIdentity | None | _Unset,
+    ) -> None:
+        identity = self._require_meta()["identity"]
+        if not isinstance(data, _Unset):
+            identity["data"] = data
+        if not isinstance(prompt, _Unset):
+            identity["prompt"] = prompt
+        if not isinstance(inference, _Unset):
+            identity["inference"] = inference
+        if not isinstance(grader, _Unset):
+            identity["grader"] = grader
+
+    @property
+    def inference_identity(self) -> InferenceIdentity | None:
+        """This run's ``inference`` identity; ``None`` before :meth:`begin_run`."""
+        return None if self._meta is None else self._meta["identity"]["inference"]
+
+    async def end_run(self, reran: Iterable[str], *, reported: bool = False) -> None:
+        """Mark the current ``runs[]`` entry ended, with the stages it reran.
+
+        *reported* is set by a run that wrote ``report.json``.
+        """
         meta = self._require_meta()
         run = meta["runs"][-1]
         run["ended"] = utc_now()
         run["reran"] = ordered_stages(reran)
+        if reported:
+            run["reported"] = True
         await self._write_meta()
 
     async def interrupt_run(self) -> None:
