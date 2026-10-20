@@ -18,6 +18,7 @@ import yaml
 from loguru import logger
 
 from sieval.cli.infer import (
+    HandleHeldError,
     cleanup_model,
     launch_model,
     remove_run_handle_dir,
@@ -195,7 +196,7 @@ async def _run_all(
 
     Handles go under ``run-<pid>/``, removed when the run ends. Engine logs go
     to ``<result_dir>/logs/<model>/<role>.log`` when a result_dir is set,
-    otherwise to ``~/.sieval/logs`` pruned to *keep_logs* per role.
+    otherwise to ``~/.sieval/logs/<model>/`` pruned to *keep_logs* per role.
 
     Returns:
         Report dict from arun_session (task_name → report string).
@@ -214,8 +215,10 @@ async def _run_all(
 
     launched: dict[str, list[InferHandle]] = {}
     handle_dir = run_handle_dir()
-    keep = resolve_keep_logs(keep_logs)
     effective_result_dir = result_dir or config.get("result_dir")
+    # Retention applies only to the shared log dir, so a result_dir run never
+    # reads --keep-logs or $SIEVAL_KEEP_LOGS.
+    keep = None if effective_result_dir else resolve_keep_logs(keep_logs)
     plan_dicts: dict[str, dict[str, Any]] = {}
     prepared_launches: dict[str, tuple[DeploymentPlan, list[BackendCommand]]] = {}
     realized_deployments: dict[str, Deployment] = {}
@@ -302,23 +305,32 @@ async def _run_all(
             # Claim → deploy → save handle (shared with infer start). The
             # handle lives under this process's own run-<pid>/ directory, so
             # an `infer start` of the same model name does not collide.
-            new_handles, env = await launch_model(
-                model_name,
-                commands,
-                backend=plan.backend,
-                deployer=deployer,
-                handle_path=handle_dir / f"{model_name}.json",
-                log_dir=(
-                    Path(effective_result_dir) / "logs" / model_name
-                    if effective_result_dir
-                    else None
-                ),
-                keep_logs=keep,
-                on_progress=_progress,
-                timeout=ready_timeout,
-                # A leftover run-<pid>/ from an earlier process with this PID.
-                replace_stale=True,
-            )
+            try:
+                new_handles, env = await launch_model(
+                    model_name,
+                    commands,
+                    backend=plan.backend,
+                    deployer=deployer,
+                    handle_path=handle_dir / f"{model_name}.json",
+                    log_dir=(
+                        Path(effective_result_dir) / "logs" / model_name
+                        if effective_result_dir
+                        else None
+                    ),
+                    keep_logs=keep,
+                    on_progress=_progress,
+                    timeout=ready_timeout,
+                    # A leftover run-<pid>/ from an earlier process with this PID.
+                    replace_stale=True,
+                )
+            except HandleHeldError as held:
+                msg = (
+                    f"Model {model_name!r}: an engine (PID {held.pid}) left by an "
+                    f"earlier process with this run's PID still holds {held.path}. "
+                    f"Stop it with `sieval infer stop {handle_dir.name}/"
+                    f"{model_name}`, then retry."
+                )
+                raise HandleHeldError(held.path, held.data, held.pid, msg) from None
 
             if sys.stderr.isatty():
                 logger.opt(raw=True).log("USER", "\n")
@@ -424,8 +436,9 @@ def register_run_command(app: typer.Typer) -> None:
             typer.Option(
                 "--keep-logs",
                 help=(
-                    "Engine logs to keep per role in ~/.sieval/logs, counting "
-                    "this launch; used only without a result_dir. 0 deletes "
+                    "Engine logs to keep per model and role in "
+                    "~/.sieval/logs/<model>, counting this launch; used only "
+                    "without a result_dir. 0 deletes "
                     "the log at the end; negative keeps every log. "
                     "Default: $SIEVAL_KEEP_LOGS, else 3."
                 ),

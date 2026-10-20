@@ -8,14 +8,16 @@ on a model name. Every change to a handle file goes through ``transition()``,
 which holds one file lock over the whole directory tree.
 
 Engine logs from ``sieval infer start`` live under ``~/.sieval/logs`` as
-``<role>-<deployment_id>.log``; the last ``keep_logs`` per role survive each
-launch. ``sieval run`` writes them beside its results when it has a
-``result_dir``.
+``<model>/<role>-<deployment_id>.log``; each launch keeps the last
+``keep_logs`` per model and role. ``sieval run`` writes them beside its
+results when it has a ``result_dir``.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import contextlib
+import enum
+import errno
 import fcntl
 import json
 import os
@@ -25,7 +27,7 @@ import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import typer
 from anyio.to_thread import run_sync
@@ -58,9 +60,11 @@ _LOCK_NAME = ".lock"
 DEFAULT_KEEP_LOGS = 3
 KEEP_LOGS_ENV = "SIEVAL_KEEP_LOGS"
 
-# Engine log names under ENGINE_LOG_DIR: `<role>-<deployment_id>.log`, plus the
-# `<role>-<UTC second>.log` form earlier versions wrote, so pruning reaches both.
-_LOG_SUFFIX_RE = r"(?:\d{8}T\d{6}Z-[0-9a-f]{8}|\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})"
+# Engine log names: `ENGINE_LOG_DIR/<model>/<role>-<deployment_id>.log`, and the
+# flat `ENGINE_LOG_DIR/<role>-<UTC second>.log` earlier versions wrote. The
+# flat ones name no model, so pruning treats them as one extra group.
+_DEPLOYMENT_ID_RE = r"\d{8}T\d{6}Z-[0-9a-f]{8}"
+_LEGACY_LOG_SUFFIX_RE = r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
 
 # Fields an older handle file used, mapped to their current names.
 _LEGACY_FIELDS = {"pid": "owner_pid", "handle_id": "engine_pid"}
@@ -69,8 +73,14 @@ _LEGACY_FIELDS = {"pid": "owner_pid", "handle_id": "engine_pid"}
 class HandleHeldError(FileExistsError):
     """A live process holds the handle that a claim asked for."""
 
-    def __init__(self, path: Path, data: dict[str, object], pid: int) -> None:
-        super().__init__(f"{path} is held by PID {pid}")
+    def __init__(
+        self,
+        path: Path,
+        data: dict[str, object],
+        pid: int,
+        message: str | None = None,
+    ) -> None:
+        super().__init__(message or f"{path} is held by PID {pid}")
         self.path = path
         self.data = data
         self.pid = pid
@@ -147,21 +157,33 @@ def handle_from_data(data: Mapping[str, object]) -> InferHandle:
     )
 
 
-def log_file_of(data: Mapping[str, object] | None) -> Path | None:
-    """The engine log a handle names, if any."""
+def log_files_of(data: Mapping[str, object] | None) -> set[Path]:
+    """Every engine log a handle names.
+
+    ``log_files`` lists one log per role from the claim on, before any engine
+    exists; ``metadata.log_file`` is the first engine's, and the only one an
+    older handle records.
+    """
     if not data:
-        return None
+        return set()
+    found: set[Path] = set()
+    listed = data.get("log_files")
+    if isinstance(listed, list):
+        found.update(Path(str(p)) for p in cast(list[object], listed) if p)
     metadata = data.get("metadata")
-    if not isinstance(metadata, dict):
-        return None
-    log_file = cast(dict[str, object], metadata).get("log_file")
-    return Path(str(log_file)) if log_file else None
+    if isinstance(metadata, dict):
+        log_file = cast(dict[str, object], metadata).get("log_file")
+        if log_file:
+            found.add(Path(str(log_file)))
+    return found
 
 
 def _as_pid(raw: object) -> int | None:
+    if not isinstance(raw, int | str):
+        return None
     try:
-        return int(raw) if raw is not None else None  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        return int(raw)
+    except ValueError:
         # Not a numeric PID (e.g. a container ID): liveness is unknowable.
         return None
 
@@ -226,14 +248,19 @@ def _read_handle_file(path: Path) -> dict[str, object] | None:
     return normalize_handle_data(raw)
 
 
+class _Unchanged(enum.Enum):
+    UNCHANGED = enum.auto()
+
+
 # Returned by an update function to leave the file untouched.
-UNCHANGED: dict[str, object] = {}
+UNCHANGED = _Unchanged.UNCHANGED
+
+type HandleUpdate = Callable[
+    [dict[str, object] | None], dict[str, object] | None | _Unchanged
+]
 
 
-def transition(
-    path: Path,
-    update: Callable[[dict[str, object] | None], dict[str, object] | None],
-) -> dict[str, object] | None:
+def transition(path: Path, update: HandleUpdate) -> dict[str, object] | None:
     """Apply one phase change to the handle at *path* under the handle lock.
 
     *update* receives the current normalized data (``None`` when the file does
@@ -302,11 +329,26 @@ def _run_dirs() -> list[Path]:
 
 
 def remove_run_handle_dir(run_dir: Path) -> None:
-    """Remove a ``run-<pid>`` directory and everything left in it."""
+    """Remove a ``run-<pid>`` directory once it holds no handle.
+
+    The run removes its own handles first. Anything still here belongs to an
+    earlier process with the same PID, such as an engine that outlived it, and
+    stays for ``sieval infer list`` and ``sieval infer stop`` to reach.
+    """
     if not run_dir.exists():
         return
     with _handles_lock():
-        shutil.rmtree(run_dir, ignore_errors=True)
+        for tmp in run_dir.glob(".*.tmp"):
+            tmp.unlink(missing_ok=True)
+        try:
+            run_dir.rmdir()
+        except OSError as e:
+            if e.errno not in (errno.ENOTEMPTY, errno.EEXIST, errno.ENOENT):
+                raise
+            if e.errno != errno.ENOENT:
+                logger.warning(
+                    "Keeping {}: it holds handles from an earlier process", run_dir
+                )
 
 
 def sweep_stale_run_dirs() -> list[Path]:
@@ -411,6 +453,8 @@ def save_handle(
             "engine_pid": engine_pid,
             "metadata": handle.metadata,
         }
+        if "log_files" in base:
+            data["log_files"] = base["log_files"]
         if deployment_id is not None:
             data["deployment_id"] = deployment_id
         if keep_logs is not None:
@@ -423,10 +467,25 @@ def save_handle(
     return handle_path
 
 
+def record_log_files(handle_path: Path, log_files: list[Path]) -> None:
+    """Name a pending launch's engine logs in its handle.
+
+    Runs before the engines start, so ``prune_engine_logs`` in a concurrent
+    launch of the same model sees these logs as live from the outset.
+    """
+
+    def _record(current: dict[str, object] | None) -> dict[str, object] | _Unchanged:
+        if current is None or current.get("corrupt"):
+            return UNCHANGED
+        return {**current, "log_files": [str(p) for p in log_files]}
+
+    transition(handle_path, _record)
+
+
 def mark_stopping(handle_path: Path) -> None:
     """Move a handle to STOPPING, if it still exists."""
 
-    def _stop(current: dict[str, object] | None) -> dict[str, object] | None:
+    def _stop(current: dict[str, object] | None) -> dict[str, object] | _Unchanged:
         if current is None or current.get("corrupt"):
             return UNCHANGED
         return {**current, "phase": InferPhase.STOPPING.value}
@@ -456,7 +515,7 @@ def remove_if_dead(handle_path: Path) -> dict[str, object] | None:
     """
     removed: dict[str, object] | None = None
 
-    def _check(current: dict[str, object] | None) -> dict[str, object] | None:
+    def _check(current: dict[str, object] | None) -> None | _Unchanged:
         nonlocal removed
         if current is None or _holder_alive(current):
             return UNCHANGED
@@ -481,7 +540,7 @@ async def probe_and_sync(
         k: {"status": c.status, "reason": c.reason} for k, c in conditions.items()
     }
 
-    def _sync(current: dict[str, object] | None) -> dict[str, object] | None:
+    def _sync(current: dict[str, object] | None) -> dict[str, object] | _Unchanged:
         if current is None or current.get("corrupt"):
             return UNCHANGED
         # Don't let a probe overwrite STOPPING with a non-terminal phase: the
@@ -513,7 +572,7 @@ async def probe_and_sync(
 
 
 def resolve_keep_logs(flag: int | None) -> int:
-    """Number of engine logs to keep per role: flag, then env, then default."""
+    """Engine logs to keep per model and role: flag, then env, then default."""
     if flag is not None:
         return flag
     raw = os.environ.get(KEEP_LOGS_ENV)
@@ -532,13 +591,25 @@ def _live_log_files() -> set[Path]:
     """Log files named by any existing handle; pruning never removes these."""
     live: set[Path] = set()
     for _, path in iter_handle_files():
-        log_file = log_file_of(_read_handle_file(path))
-        if log_file is not None:
-            live.add(log_file)
+        live.update(log_files_of(_read_handle_file(path)))
     return live
 
 
+def _prune_group(logs: list[Path], keep: int, live: set[Path]) -> list[Path]:
+    """Delete all but the newest *keep* of *logs*, sparing live ones."""
+    logs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    deleted: list[Path] = []
+    for path in logs[keep:]:
+        if path.resolve() in live:
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+            deleted.append(path)
+    return deleted
+
+
 def prune_engine_logs(
+    model_name: str,
     roles: list[str],
     keep: int,
     *,
@@ -546,9 +617,13 @@ def prune_engine_logs(
 ) -> list[Path]:
     """Delete old engine logs so a launch leaves at most *keep* per role.
 
-    Runs before the launch, so it keeps ``keep - 1`` existing logs per role. A
-    log a handle still names is never deleted, though it counts toward
-    *keep*. A negative *keep* keeps every log. Returns the deleted paths.
+    Counts only *model_name*'s logs, under ``<log_dir>/<model_name>/``, so
+    launching one model never evicts another's history. Runs before the
+    launch, so it keeps ``keep - 1`` existing logs per role. Flat
+    ``<role>-<UTC second>.log`` files an earlier version wrote name no model;
+    they are pruned to *keep* per role as a group of their own. A log a handle
+    still names is never deleted, though it counts toward *keep*. A negative
+    *keep* keeps every log. Returns the deleted paths.
     """
     if keep < 0:
         return []
@@ -556,26 +631,25 @@ def prune_engine_logs(
     if not root.is_dir():
         return []
     live = {p.resolve() for p in _live_log_files()}
+    model_dir = root / model_name
     deleted: list[Path] = []
     for role in sorted(set(roles)):
-        pattern = re.compile(rf"{re.escape(role)}-{_LOG_SUFFIX_RE}\.log")
-        logs = [p for p in root.iterdir() if pattern.fullmatch(p.name)]
-        logs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        for path in logs[max(keep - 1, 0) :]:
-            if path.resolve() in live:
-                continue
-            with contextlib.suppress(FileNotFoundError):
-                path.unlink()
-                deleted.append(path)
+        escaped = re.escape(role)
+        if model_dir.is_dir():
+            current = re.compile(rf"{escaped}-{_DEPLOYMENT_ID_RE}\.log")
+            logs = [p for p in model_dir.iterdir() if current.fullmatch(p.name)]
+            deleted += _prune_group(logs, max(keep - 1, 0), live)
+        legacy = re.compile(rf"{escaped}-{_LEGACY_LOG_SUFFIX_RE}\.log")
+        flat = [p for p in root.iterdir() if legacy.fullmatch(p.name)]
+        deleted += _prune_group(flat, keep, live)
     return deleted
 
 
 def delete_logs_if_unkept(data: Mapping[str, object] | None) -> None:
-    """Delete the engine log of a stopped handle that asked to keep none."""
+    """Delete the engine logs of a stopped handle that asked to keep none."""
     if not data or data.get("keep_logs") != 0:
         return
-    log_file = log_file_of(data)
-    if log_file is not None:
+    for log_file in log_files_of(data):
         log_file.unlink(missing_ok=True)
 
 
@@ -592,7 +666,7 @@ async def launch_model(
     *,
     handle_path: Path | None = None,
     log_dir: Path | None = None,
-    keep_logs: int = DEFAULT_KEEP_LOGS,
+    keep_logs: int | None = None,
     on_progress: Callable[[float, str], None] | None = None,
     detach: bool = False,
     timeout: float = DEFAULT_READY_TIMEOUT,
@@ -604,9 +678,11 @@ async def launch_model(
     Shared lifecycle used by both ``sieval infer start`` and ``sieval run``.
 
     *handle_path* defaults to ``HANDLE_DIR/<model_name>.json``. With *log_dir*,
-    each role logs to ``<log_dir>/<role>.log``; without it, to
-    ``ENGINE_LOG_DIR/<role>-<deployment_id>.log``, pruned to *keep_logs* per
-    role first.
+    each role logs to ``<log_dir>/<role>.log`` and *keep_logs* is ignored;
+    without it, to ``ENGINE_LOG_DIR/<model_name>/<role>-<deployment_id>.log``,
+    pruned first to *keep_logs* (``DEFAULT_KEEP_LOGS`` when ``None``) per role
+    of this model. The handle names its logs before pruning starts, so a
+    concurrent launch of the same model cannot prune them.
 
     When *already_claimed* is True, skips the ``claim_handle`` call (the
     caller already owns the handle file). Otherwise raises
@@ -620,10 +696,12 @@ async def launch_model(
     deployment_id = new_deployment_id()
 
     roles = [cmd.role for cmd in commands]
+    keep: int | None = None
     if log_dir is None:
-        prune_engine_logs(roles, keep_logs)
+        keep = DEFAULT_KEEP_LOGS if keep_logs is None else keep_logs
+        model_log_dir = ENGINE_LOG_DIR / model_name
         log_files = {
-            role: ENGINE_LOG_DIR / f"{role}-{deployment_id}.log" for role in roles
+            role: model_log_dir / f"{role}-{deployment_id}.log" for role in roles
         }
     else:
         log_files = {role: log_dir / f"{role}.log" for role in roles}
@@ -631,6 +709,9 @@ async def launch_model(
     if not already_claimed:
         claim_handle(path, backend=backend, replace_stale=replace_stale)
     try:
+        record_log_files(path, list(log_files.values()))
+        if keep is not None:
+            prune_engine_logs(model_name, roles, keep)
         handles = await _dep.deploy(
             commands,
             detach=detach,
@@ -651,7 +732,7 @@ async def launch_model(
                 handles[0],
                 env=env,
                 deployment_id=deployment_id,
-                keep_logs=keep_logs if log_dir is None else None,
+                keep_logs=keep,
             )
     except BaseException:
         with contextlib.suppress(OSError):
@@ -717,4 +798,4 @@ def load_env(name: str) -> InferEnv | None:
     env_data = data.get("env")
     if not isinstance(env_data, dict):
         return None
-    return InferEnv(**cast(dict[str, Any], env_data))
+    return InferEnv(**cast(dict, env_data))

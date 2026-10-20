@@ -33,6 +33,7 @@ from sieval.cli.infer.lifecycle import (
     mark_stopping,
     probe_and_sync,
     prune_engine_logs,
+    record_log_files,
     remove_run_handle_dir,
     resolve_keep_logs,
     run_handle_dir,
@@ -480,6 +481,29 @@ class TestRunHandleDirs:
             )
         assert json.loads(run_path.read_text())["engine_pid"] == 99999
 
+    def test_run_dir_removal_keeps_an_earlier_processes_live_engine(
+        self, tmp_path: Path
+    ) -> None:
+        """A leftover handle whose engine is alive outlives this run's cleanup."""
+        run_dir = run_handle_dir()
+        run_dir.mkdir()
+        orphan = run_dir / "m.json"
+        orphan.write_text(json.dumps({"phase": "running", "engine_pid": os.getpid()}))
+        with pytest.raises(HandleHeldError):
+            claim_handle(orphan, replace_stale=True)
+
+        remove_run_handle_dir(run_dir)
+        assert orphan.exists()
+
+    def test_run_dir_removal_clears_temp_files_and_the_empty_dir(
+        self, tmp_path: Path
+    ) -> None:
+        run_dir = run_handle_dir()
+        run_dir.mkdir()
+        (run_dir / ".m.json.abc.tmp").write_text("{}")
+        remove_run_handle_dir(run_dir)
+        assert not run_dir.exists()
+
     def test_sweep_removes_dead_owner_dirs_only(self, tmp_path: Path) -> None:
         dead = tmp_path / f"run-{_dead_pid()}"
         dead.mkdir()
@@ -546,12 +570,13 @@ class TestKeepLogs:
             resolve_keep_logs(None)
 
 
-def _seed_logs(log_dir: Path, role: str, count: int) -> list[Path]:
-    """Create *count* logs for *role*, oldest first."""
-    log_dir.mkdir(parents=True, exist_ok=True)
+def _seed_logs(log_dir: Path, role: str, count: int, model: str = "m") -> list[Path]:
+    """Create *count* logs for *model*'s *role*, oldest first."""
+    model_dir = log_dir / model
+    model_dir.mkdir(parents=True, exist_ok=True)
     paths = []
     for i in range(count):
-        path = log_dir / f"{role}-20261020T0000{i:02d}Z-{i:08x}.log"
+        path = model_dir / f"{role}-20261020T0000{i:02d}Z-{i:08x}.log"
         path.write_text(str(i))
         os.utime(path, (1_000_000 + i, 1_000_000 + i))
         paths.append(path)
@@ -565,7 +590,7 @@ class TestEngineLogRetention:
         monkeypatch.setattr("sieval.cli.infer.lifecycle.ENGINE_LOG_DIR", log_dir)
         return log_dir
 
-    async def _launch(self, keep: int, tmp_path: Path) -> Path:
+    async def _launch(self, keep: int, tmp_path: Path, model: str = "m") -> Path:
         mock_deployer = AsyncMock()
 
         async def _deploy(_cmds, *, log_files, **_kwargs):  # noqa: ANN001, ANN003
@@ -582,13 +607,13 @@ class TestEngineLogRetention:
             return_value=None,
         ):
             handles, _ = await launch_model(
-                "m",
+                model,
                 [BackendCommand(cli_args=["x"], role="full")],
                 backend="sglang",
                 deployer=mock_deployer,
                 keep_logs=keep,
             )
-        data = json.loads((tmp_path / "m.json").read_text())
+        data = json.loads((tmp_path / f"{model}.json").read_text())
         assert data["keep_logs"] == keep
         return Path(str(handles[0].metadata["log_file"]))
 
@@ -600,11 +625,24 @@ class TestEngineLogRetention:
         other_role = _seed_logs(log_dir, "decode", 4)
         new = await self._launch(3, tmp_path)
 
-        assert new.parent == log_dir
+        assert new.parent == log_dir / "m"
         assert re.fullmatch(r"full-\d{8}T\d{6}Z-[0-9a-f]{8}\.log", new.name)
-        remaining = sorted(p for p in log_dir.glob("full-*.log"))
+        remaining = sorted(p for p in (log_dir / "m").glob("full-*.log"))
         assert remaining == sorted([old[3], old[4], new])
         assert all(p.exists() for p in other_role)
+
+    @pytest.mark.anyio
+    async def test_retention_counts_each_model_separately(
+        self, tmp_path: Path, log_dir: Path
+    ) -> None:
+        """Launching model b never evicts model a's logs, whatever keep is."""
+        a_logs = _seed_logs(log_dir, "full", 3, model="a")
+        b_logs = _seed_logs(log_dir, "full", 3, model="b")
+        new = await self._launch(1, tmp_path, model="b")
+
+        assert new.parent == log_dir / "b"
+        assert all(p.exists() for p in a_logs)
+        assert not any(p.exists() for p in b_logs)
 
     @pytest.mark.anyio
     async def test_keep_zero_deletes_the_log_on_stop(
@@ -635,17 +673,81 @@ class TestEngineLogRetention:
         (tmp_path / "live.json").write_text(
             json.dumps({"phase": "running", "metadata": {"log_file": str(old[0])}})
         )
-        deleted = prune_engine_logs(["full"], 1)
+        deleted = prune_engine_logs("m", ["full"], 1)
         assert sorted(deleted) == sorted(old[1:])
         assert old[0].exists()
 
-    def test_prune_reaches_old_timestamp_names(self, log_dir: Path) -> None:
+    def test_prune_skips_the_log_of_a_launch_still_starting(
+        self, tmp_path: Path, log_dir: Path
+    ) -> None:
+        """A pending handle names its logs before its engine writes metadata."""
+        [starting] = _seed_logs(log_dir, "full", 1)
+        claim_handle(tmp_path / "m.json")
+        record_log_files(tmp_path / "m.json", [starting])
+
+        assert prune_engine_logs("m", ["full"], 1) == []
+        assert starting.exists()
+
+    @pytest.mark.anyio
+    async def test_concurrent_launch_of_the_same_model_keeps_a_starting_log(
+        self, tmp_path: Path, log_dir: Path
+    ) -> None:
+        """Launch 1 is mid-deploy when launch 2 prunes with keep=1."""
+        first_log: list[Path] = []
+        second_started = anyio.Event()
+        first_may_finish = anyio.Event()
+
+        def _deployer(wait: bool) -> AsyncMock:
+            async def _deploy(_cmds, *, log_files, **_kwargs):  # noqa: ANN001, ANN003
+                log_file = log_files["full"]
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                log_file.write_text("engine output")
+                if wait:
+                    first_log.append(log_file)
+                    second_started.set()
+                    await first_may_finish.wait()
+                handle = _make_handle()
+                handle.metadata["log_file"] = str(log_file)
+                return [handle]
+
+            dep = AsyncMock()
+            dep.deploy.side_effect = _deploy
+            return dep
+
+        async def _launch(name: str, wait: bool) -> None:
+            await launch_model(
+                "m",
+                [BackendCommand(cli_args=["x"], role="full")],
+                backend="sglang",
+                deployer=_deployer(wait),
+                handle_path=tmp_path / f"{name}.json",
+                keep_logs=1,
+            )
+
+        with patch(
+            "sieval.cli.infer.lifecycle.collect_basic_env",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_launch, "first", True)
+                await second_started.wait()
+                await _launch("second", False)
+                assert first_log[0].exists()
+                first_may_finish.set()
+
+    def test_prune_reaches_old_flat_timestamp_names(self, log_dir: Path) -> None:
         log_dir.mkdir()
-        legacy = log_dir / "full-2026-01-01_00-00-00.log"
-        legacy.write_text("x")
+        legacy = []
+        for i in range(3):
+            path = log_dir / f"full-2026-01-01_00-00-0{i}.log"
+            path.write_text("x")
+            os.utime(path, (1_000_000 + i, 1_000_000 + i))
+            legacy.append(path)
         unrelated = log_dir / "full-notes.log"
         unrelated.write_text("x")
-        assert prune_engine_logs(["full"], 1) == [legacy]
+        assert sorted(prune_engine_logs("m", ["full"], 1)) == legacy[:2]
+        assert legacy[2].exists()
         assert unrelated.exists()
 
     @pytest.mark.anyio

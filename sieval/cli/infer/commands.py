@@ -234,8 +234,9 @@ def infer_start(
         typer.Option(
             "--keep-logs",
             help=(
-                "Engine logs to keep per role in ~/.sieval/logs, counting this "
-                "launch. 0 deletes the log on stop; negative keeps every log. "
+                "Engine logs to keep per role of this model in "
+                "~/.sieval/logs/<model>, counting this launch. 0 deletes the "
+                "log on stop; negative keeps every log. "
                 f"Default: ${KEEP_LOGS_ENV}, else 3."
             ),
         ),

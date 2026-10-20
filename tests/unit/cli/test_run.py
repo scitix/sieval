@@ -892,14 +892,26 @@ class TestRunHandlesAndLogs:
     async def _run(
         self, tmp_path: Path, config_path: Path, **kwargs: object
     ) -> tuple[AsyncMock, AsyncMock]:
+        launch = AsyncMock(return_value=([_fake_handle()], None))
+        cleanup = AsyncMock()
+        with patch("sieval.cli.run.launch_model", new=launch):
+            await self._run_patched(tmp_path, config_path, cleanup=cleanup, **kwargs)
+        return launch, cleanup
+
+    async def _run_patched(
+        self,
+        tmp_path: Path,
+        config_path: Path,
+        cleanup: AsyncMock | None = None,
+        **kwargs: object,
+    ) -> None:
+        """Run `_run_all` with `launch_model` left to the caller to patch."""
         from sieval.cli.run import _run_all
 
         translator = MagicMock()
         translator.translate.return_value = [
             BackendCommand(cli_args=["vllm", "serve"], backend="vllm", role="full")
         ]
-        launch = AsyncMock(return_value=([_fake_handle()], None))
-        cleanup = AsyncMock()
         with (
             patch("sieval.cli.infer.lifecycle.HANDLE_DIR", tmp_path / "handles"),
             patch(
@@ -907,15 +919,13 @@ class TestRunHandlesAndLogs:
                 new=AsyncMock(return_value=("model_a", _fake_plan(), {})),
             ),
             patch("sieval.cli.run.get_translator", return_value=translator),
-            patch("sieval.cli.run.launch_model", new=launch),
-            patch("sieval.cli.run.cleanup_model", new=cleanup),
+            patch("sieval.cli.run.cleanup_model", new=cleanup or AsyncMock()),
             patch(
                 "sieval.cli.leaderboard.session.arun_session",
                 new=AsyncMock(return_value={}),
             ),
         ):
             await _run_all(config_path, **kwargs)  # type: ignore[arg-type]
-        return launch, cleanup
 
     @pytest.mark.anyio
     async def test_handle_under_run_pid_and_logs_under_result_dir(
@@ -945,6 +955,37 @@ class TestRunHandlesAndLogs:
 
         launch, _ = await self._run(tmp_path, config_path, keep_logs=1)
         assert launch.await_args.kwargs["keep_logs"] == 1
+
+    @pytest.mark.anyio
+    async def test_result_dir_run_ignores_keep_logs_settings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Retention never applies under result_dir, so a bad env var is moot."""
+        monkeypatch.setenv("SIEVAL_KEEP_LOGS", "not-a-number")
+        config_path = self._config(tmp_path, tmp_path / "out")
+        launch, _ = await self._run(tmp_path, config_path, keep_logs=5)
+        assert launch.await_args.kwargs["keep_logs"] is None
+
+    @pytest.mark.anyio
+    async def test_held_handle_names_the_handle_to_stop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from sieval.cli.infer import HandleHeldError
+
+        run_dir = f"run-{os.getpid()}"
+        held = HandleHeldError(
+            tmp_path / "handles" / run_dir / "model_a.json",
+            {"phase": "running"},
+            4242,
+        )
+        with (
+            patch("sieval.cli.run.launch_model", new=AsyncMock(side_effect=held)),
+            pytest.raises(HandleHeldError) as excinfo,
+        ):
+            await self._run_patched(tmp_path, self._config(tmp_path, None))
+        message = str(excinfo.value)
+        assert "PID 4242" in message
+        assert f"sieval infer stop {run_dir}/model_a" in message
 
     @pytest.mark.anyio
     async def test_result_dir_flag_wins_over_config(

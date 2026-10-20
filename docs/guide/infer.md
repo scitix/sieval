@@ -64,7 +64,9 @@ SiEval tracks each service it launches with a handle file under
 | `sieval run` | `handles/run-<pid>/<model>.json` | `run-<pid>/<model>` |
 
 A `sieval run` therefore never collides with an `infer start` of the same model
-name. It removes its `run-<pid>` directory when it ends. If it was killed first,
+name. It removes its own handles and then its `run-<pid>` directory when it
+ends; a handle left there by an earlier process with the same PID whose engine
+is still alive is kept, and the run asks you to stop it. If it was killed first,
 the next `sieval infer list` removes the directory once the run's PID is gone;
 a handle whose engine is still alive stays listed so `infer stop` can reach it.
 
@@ -76,16 +78,18 @@ Engine logs go to:
 
 | Launched by | Log |
 | --- | --- |
-| `sieval infer start` | `~/.sieval/logs/<role>-<deployment_id>.log` |
+| `sieval infer start` | `~/.sieval/logs/<model>/<role>-<deployment_id>.log` |
 | `sieval run` with a `result_dir` | `<result_dir>/logs/<model>/<role>.log` |
-| `sieval run` without a `result_dir` | `~/.sieval/logs/<role>-<deployment_id>.log` |
+| `sieval run` without a `result_dir` | `~/.sieval/logs/<model>/<role>-<deployment_id>.log` |
 
 `<deployment_id>` is the launch's UTC time plus a random suffix, so two launches
 in the same second write separate files.
 
-Logs in `~/.sieval/logs` are pruned at each launch to the last N per role,
-counting the new one. Logs under `result_dir` are kept with the results and
-never pruned.
+Logs in `~/.sieval/logs` are pruned at each launch to the last N per role of
+the model being launched, counting the new one, so launching one model never
+removes another model's logs. Logs under `result_dir` are kept with the results
+and never pruned. Flat `~/.sieval/logs/<role>-<timestamp>.log` files from
+earlier versions name no model; they are pruned to N per role on their own.
 
 ```bash
 sieval infer start /path/to/Qwen3-8B --keep-logs 5   # keep 5 per role
@@ -99,8 +103,9 @@ SIEVAL_KEEP_LOGS=0 sieval infer start /path/to/Qwen3-8B
 | negative | Keep every log |
 
 `--keep-logs` wins over `SIEVAL_KEEP_LOGS`, which wins over the default. Both
-`sieval infer start` and `sieval run` accept the flag. A log a live handle
-still names is never pruned.
+`sieval infer start` and `sieval run` accept the flag; a `sieval run` with a
+`result_dir` reads neither. A log a live handle still names is never pruned,
+including one whose launch is still starting.
 
 ## YAML Infer Configuration
 
