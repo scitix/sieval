@@ -117,14 +117,11 @@ _RFC3339_TIMESTAMP_PATTERN = re.compile(
     r"(?P<offset>Z|[+\-]\d{2}:\d{2})"
 )
 # Per-model limits Google rejects itself (thinking levels/budgets, candidate
-# counts, tool combinations) are not mirrored here. This pattern keys only the
-# Gemini 3 sampling rejection (accepted but advised against, so a recorded value
-# may have had no effect) and the call-id/signature contracts. Aliases skip it.
+# counts, tool combinations, sampling advice) are not mirrored here: the
+# dialect sends what Google accepts and surfaces Google's 400 otherwise. This
+# pattern keys only the Gemini 3 call-id/signature response contracts. Aliases
+# skip it.
 _GEMINI_3_MODEL_PATTERN = re.compile(r"gemini-3(?:[.\-]|$)")
-_GEMINI_3_SAMPLING_PATHS = frozenset(
-    {"sampling.temperature", "sampling.top_p", "sampling.top_k"}
-)
-_GEMINI_3_SAMPLING_WIRE_KEYS = frozenset({"temperature", "topP", "topK"})
 _STANDARD_USER_PART_FIELDS = frozenset({"text", "inlineData", "fileData"})
 #: Finish reasons that may leave requested channels empty. ``CONTINUATION``
 #: carries a ``continuationToken`` this dialect does not replay; like
@@ -866,23 +863,44 @@ def _validate_server_tool_history_signatures(
                 raise DialectError(error)
 
 
+_PROVIDER_ERROR_MESSAGE_LIMIT = 500
+
+
+def _raise_for_google_status(response: httpx.Response) -> None:
+    """Raise httpx's status error with Google's own ``error.message`` attached.
+
+    Per-model limits are left to Google, so its reason is the diagnostic; the
+    default httpx text names only the status and URL.
+    """
+
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        try:
+            payload = json.loads(response.text)
+        except ValueError:
+            payload = None
+        error = payload.get("error") if isinstance(payload, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        if not isinstance(message, str) or not message:
+            message = response.text.strip()
+        if not message:
+            raise
+        if len(message) > _PROVIDER_ERROR_MESSAGE_LIMIT:
+            message = message[:_PROVIDER_ERROR_MESSAGE_LIMIT] + "..."
+        raise httpx.HTTPStatusError(
+            f"{exc}\nGoogle: {message}",
+            request=exc.request,
+            response=exc.response,
+        ) from None
+
+
 def _validate_final_request_constraints(
     body: Mapping[str, JSONValue], model_name: str
 ) -> None:
     _validate_final_function_call_ids(body, model_name)
     _validate_final_function_call_signatures(body, model_name)
     _validate_server_tool_history_signatures(body, model_name)
-    generation = body.get("generationConfig")
-    if isinstance(generation, Mapping):
-        generation_mapping = cast(Mapping[str, object], generation)
-        if _GEMINI_3_MODEL_PATTERN.match(model_name):
-            present = sorted(_GEMINI_3_SAMPLING_WIRE_KEYS & generation_mapping.keys())
-            if present:
-                raise DialectError(
-                    f"{model_name} final request contains sampling controls Google "
-                    f"says to omit: {', '.join(present)}"
-                )
-
     _validate_final_hosted_tools(body)
     tool_config = body.get("toolConfig")
     if not isinstance(tool_config, Mapping):
@@ -2272,7 +2290,6 @@ class GoogleGenAIDialect:
     ) -> None:
         audit.require_matches_request(req)
         del plan
-        gemini_3 = _GEMINI_3_MODEL_PATTERN.match(self._model_name) is not None
         chat_shape_error = (
             _chat_shape_error(req.input) if isinstance(req.input, ChatInput) else None
         )
@@ -2297,12 +2314,6 @@ class GoogleGenAIDialect:
                 audit.rejected(path, "Google images have no per-image detail field")
             elif path == "scoring.input_scoring":
                 audit.rejected(path, "Gemini cannot score input tokens")
-            elif path in _GEMINI_3_SAMPLING_PATHS and gemini_3:
-                audit.rejected(
-                    path,
-                    "Google's Gemini 3 guidance says to omit temperature, top_p, "
-                    f"and top_k for {self._model_name}",
-                )
             elif path == "sampling.temperature" and not (
                 0 <= cast(float, req.sampling.temperature) <= 2
             ):
@@ -3346,12 +3357,12 @@ class GoogleGenAIDialect:
             try:
                 if not response.is_success:
                     await response.aread()
-                response.raise_for_status()
+                _raise_for_google_status(response)
                 return await self._lift_stream(response, execution_context)
             finally:
                 await response.aclose()
         response = await self._connection.client.send(request)
-        response.raise_for_status()
+        _raise_for_google_status(response)
         payload = _strict_json_loads(response.text, "Google response body")
         return self._lift(payload, execution_context)
 

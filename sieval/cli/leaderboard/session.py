@@ -64,6 +64,7 @@ from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     CapabilityIntent,
     CapabilityKey,
+    DialectCapabilityStatus,
     ModelCapabilityEntry,
     ModelCapabilityProfile,
     ModelCapabilityStatus,
@@ -143,6 +144,10 @@ _PR1_REQUEST_VERIFIERS = {
     "sampled_logprobs": "validate_response_channel",
     "top_logprobs": "validate_response_channel",
 }
+
+#: Verifier naming a dialect whose provider rejects, with an error, what a
+#: model cannot do (``DialectSpec.provider_enforces_model_limits``).
+_PROVIDER_ENFORCED_VERIFIER = "provider_enforced"
 
 _DETERMINISTIC_SEED_CONTRACT_KEY = "_sieval_deterministic_seed_contract"
 
@@ -826,6 +831,25 @@ class _PR1CompatibilityServingReconciler:
                 outcomes[requirement.capability] = Configured(
                     evidence=evidence,
                     request_checks=request_checks,
+                )
+                continue
+            if requirement.verifier == _PROVIDER_ENFORCED_VERIFIER:
+                verifier = _PR1_REQUEST_VERIFIERS.get(requirement.capability)
+                outcomes[requirement.capability] = Configured(
+                    evidence={"source": _PROVIDER_ENFORCED_VERIFIER},
+                    request_checks=(
+                        ()
+                        if verifier is None
+                        else (
+                            DeferredCheck(
+                                requirement.capability,
+                                CheckStage.REQUEST,
+                                verifier,
+                                "provider-enforced support remains guarded by "
+                                "the existing response contract",
+                            ),
+                        )
+                    ),
                 )
                 continue
             verifier = _PR1_REQUEST_VERIFIERS.get(requirement.capability)
@@ -2639,6 +2663,31 @@ class EvalSession:
                 for key in CAPABILITY_KEYS
             }
             return ModelCapabilityProfile(entries, authoritative=True)
+
+        if binding.dialect_id is not None:
+            spec = get_dialect_spec(binding.dialect_id)
+            if spec.provider_enforces_model_limits:
+                # The provider answers per model: what it cannot do comes back
+                # as its own error, never as a silently ignored field. So take
+                # every capability the dialect maps as supported, by dialect
+                # and never by model name.
+                return ModelCapabilityProfile(
+                    {
+                        key: ModelCapabilityEntry(
+                            ModelCapabilityStatus.SUPPORTED,
+                            source="dialect-provider-enforced",
+                            reason=(
+                                f"{binding.dialect_id} leaves per-model limits "
+                                "to the provider's own error"
+                            ),
+                            verifier=_PROVIDER_ENFORCED_VERIFIER,
+                        )
+                        for key in CAPABILITY_KEYS
+                        if spec.capability_outcomes[key]
+                        is DialectCapabilityStatus.SUPPORTED
+                    },
+                    authoritative=False,
+                )
 
         entries = {
             cast(CapabilityKey, capability): ModelCapabilityEntry(

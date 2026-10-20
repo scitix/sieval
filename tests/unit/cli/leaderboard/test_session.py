@@ -66,7 +66,11 @@ from sieval.cli.leaderboard.session import (
 )
 from sieval.cli.resolution import derive_model_type
 from sieval.cli.validation import _VALID_OPERATIONS
-from sieval.core.models.capabilities import CapabilityIntent, RequestDefaults
+from sieval.core.models.capabilities import (
+    CapabilityIntent,
+    ModelCapabilityStatus,
+    RequestDefaults,
+)
 from sieval.core.models.connection_factory import DEFAULT_REQUEST_TIMEOUT
 from sieval.core.models.deployment import RouteIntent
 from sieval.core.models.dialect import RequestAuditError
@@ -3987,6 +3991,113 @@ tasks:
             result.deployment_plans[binding_plan.root_deployment_key].engine_id
             == "unknown"
         )
+
+    @pytest.mark.parametrize(
+        ("dialect", "outcome"),
+        [("google_genai", "configured"), ("anthropic_messages", None)],
+    )
+    def test_inline_reasoning_is_admitted_only_where_the_provider_enforces(
+        self, tmp_path: Path, dialect: str, outcome: str | None
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  candidate:
+    name: org/candidate
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: gemini-3.5-flash
+        dialect: {dialect}
+        api_base: https://gateway.example
+        api_key: secret
+        reasoning_effort: low
+""",
+        )
+        session = EvalSession(config_path)
+
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=self.JudgeTask,
+        ):
+            if outcome is None:
+                with pytest.raises(ValueError, match="model_outcome_missing"):
+                    session.prepare_prelaunch()
+                return
+            result = session.prepare_prelaunch()
+
+        grader = session._task_requirement_contexts["judged"].model_bindings["grader"]
+        profile = session._model_profile_for(grader)
+        assert profile.authoritative is False
+        assert set(profile.entries) == {
+            "sampled_logprobs",
+            "top_logprobs",
+            "reasoning",
+            "function_tools",
+            "hosted_tools",
+            "structured_output",
+            "opaque_continuation",
+            "multimodal_input",
+        }
+        assert all(
+            entry.status is ModelCapabilityStatus.SUPPORTED
+            and entry.verifier == "provider_enforced"
+            for entry in profile.entries.values()
+        )
+        binding_plan = result.binding_plans[grader.binding_id]
+        assert "reasoning" in binding_plan.pending_capabilities
+        deployment_plan = result.deployment_plans[binding_plan.root_deployment_key]
+        assert deployment_plan.outcome_kinds["reasoning"] == outcome
+        assert deployment_plan.outcome_evidence["reasoning"] == {
+            "source": "provider_enforced"
+        }
+
+    def test_provider_enforced_logprobs_keep_the_response_channel_guard(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: gemini-3.5-flash
+        dialect: google_genai
+        api_base: https://gateway.example
+        api_key: secret
+        logprobs: true
+""",
+        )
+        session = EvalSession(config_path)
+
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=self.JudgeTask,
+        ):
+            result = session.prepare_prelaunch()
+
+        grader = session._task_requirement_contexts["judged"].model_bindings["grader"]
+        binding_plan = result.binding_plans[grader.binding_id]
+        deployment_plan = result.deployment_plans[binding_plan.root_deployment_key]
+        assert deployment_plan.outcome_kinds["sampled_logprobs"] == "configured"
+        assert [
+            (check.capability, check.verifier)
+            for check in deployment_plan.request_checks
+        ] == [("sampled_logprobs", "validate_response_channel")]
 
     def test_nested_inline_secret_is_redacted_from_stable_binding_identity(
         self, tmp_path: Path

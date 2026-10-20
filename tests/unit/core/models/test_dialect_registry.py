@@ -139,6 +139,16 @@ class TestDialectDescriptors:
             "vllm_native": RequestSeedSupport.RESERVED,
         }
 
+    def test_only_google_leaves_model_limits_to_the_provider(self) -> None:
+        assert {
+            dialect_id
+            for dialect_id, spec in DIALECT_SPECS.items()
+            if spec.provider_enforces_model_limits
+        } == {"google_genai"}
+        google = dialect_registry_to_json()["google_genai"]
+        assert isinstance(google, dict)
+        assert google["provider_enforces_model_limits"] is True
+
     def test_implemented_dialects_are_active_and_bindable(self) -> None:
         active = {
             dialect_id
@@ -166,6 +176,10 @@ class TestDialectDescriptors:
             ({"connection_family": ""}, "connection_family"),
             ({"implementation_status": "active"}, "implementation_status"),
             ({"request_seed_support": "supported"}, "request_seed_support"),
+            (
+                {"provider_enforces_model_limits": "yes"},
+                "provider_enforces_model_limits",
+            ),
             (
                 {"request_seed_support": RequestSeedSupport.RESERVED},
                 "cannot reserve request-seed support",

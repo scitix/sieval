@@ -2090,22 +2090,36 @@ class TestModelSpecificRequestConstraints:
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
-        "sampling",
+        ("sampling", "expected"),
         [
-            SamplingParams(temperature=0.2),
-            SamplingParams(top_p=0.8),
-            SamplingParams(top_k=8),
+            (SamplingParams(temperature=0.0), {"temperature": 0.0}),
+            (SamplingParams(top_p=0.8), {"topP": 0.8}),
+            (SamplingParams(top_k=1), {"topK": 1}),
+            (
+                SamplingParams(temperature=0.0, top_p=0.5, top_k=4),
+                {"temperature": 0.0, "topP": 0.5, "topK": 4},
+            ),
         ],
     )
-    async def test_gemini_3_rejects_deprecated_sampling_controls(
-        self, sampling: SamplingParams
+    async def test_gemini_3_forwards_sampling_controls(
+        self, sampling: SamplingParams, expected: dict[str, object]
     ) -> None:
-        with pytest.raises(RequestAuditError, match="guidance says to omit"):
-            await _run(
-                _no_io,
-                _request(sampling=sampling),
-                model="gemini-3.5-flash",
-            )
+        # Google advises omitting these on Gemini 3 but accepts them, and #153
+        # measured temperature and top_p changing the output. Send what is set.
+        def handler(request: httpx.Request) -> httpx.Response:
+            generation = json.loads(request.content)["generationConfig"]
+            assert {key: generation[key] for key in expected} == expected
+            return httpx.Response(200, json=_response())
+
+        response = await _run(
+            handler,
+            _request(sampling=sampling, reasoning=ReasoningParams(effort="low")),
+            model="gemini-3.5-flash",
+        )
+        body = cast(dict[str, Any], response.request_params)["body"]
+        generation = cast(dict[str, Any], body)["generationConfig"]
+        assert {key: generation[key] for key in expected} == expected
+        assert generation["thinkingConfig"] == {"thinkingLevel": "LOW"}
 
 
 class TestReasoningAndStructuredOutput:
@@ -4047,6 +4061,61 @@ class TestStreamingAndAuditEvidence:
         assert "candidates" in exc_info.value.response.text
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_google_error_message_is_kept_on_the_status_error(
+        self, stream: bool
+    ) -> None:
+        # Per-model limits are Google's to enforce, so its reason is the
+        # diagnostic a failed sample records.
+        reason = "Thinking level is unsupported: THINKING_LEVEL_MINIMAL"
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"error": {"code": 400, "message": reason}},
+            )
+
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await _run(
+                handler,
+                _request(
+                    reasoning=ReasoningParams(effort="minimal"),
+                    scheduling=SchedulingParams(stream=stream),
+                ),
+                model="gemini-3.8-flash",
+            )
+
+        message = str(exc_info.value)
+        assert "400 Bad Request" in message
+        assert f"Google: {reason}" in message
+        assert exc_info.value.response.status_code == 400
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (b"upstream unavailable", "Google: upstream unavailable"),
+            (b'{"error": "plain"}', 'Google: {"error": "plain"}'),
+            (("x" * 600).encode(), "Google: " + "x" * 500 + "..."),
+        ],
+    )
+    async def test_non_standard_error_bodies_are_kept_verbatim(
+        self, content: bytes, expected: str
+    ) -> None:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await _run(lambda _: httpx.Response(502, content=content), _request())
+
+        assert str(exc_info.value).endswith(expected)
+
+    @pytest.mark.anyio
+    async def test_empty_error_body_keeps_the_httpx_message(self) -> None:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await _run(lambda _: httpx.Response(503), _request())
+
+        assert "Google:" not in str(exc_info.value)
+        assert "503" in str(exc_info.value)
+
+    @pytest.mark.anyio
     async def test_execute_rejects_absolute_operation_before_credential_leak(
         self,
     ) -> None:
@@ -5938,43 +6007,6 @@ class TestPreparedRequestAndVerifierContracts:
             with pytest.raises(
                 DialectError, match="current-turn functionCall.*thoughtSignature"
             ):
-                await dialect.execute(
-                    PreparedRequest(
-                        prepared.operation, cast(Any, body), prepared.context
-                    )
-                )
-        finally:
-            await connection.aclose()
-
-    @pytest.mark.anyio
-    @pytest.mark.parametrize(
-        ("model", "req", "mutate", "message"),
-        [
-            (
-                "gemini-3.5-flash",
-                _request(),
-                lambda body: body.update(generationConfig={"temperature": 0.2}),
-                "sampling controls Google says to omit",
-            ),
-        ],
-    )
-    async def test_execute_revalidates_model_specific_final_body_constraints(
-        self,
-        model: str,
-        req: Request,
-        mutate: Callable[[dict[str, Any]], None],
-        message: str,
-    ) -> None:
-        connection = _connection(_no_io)
-        try:
-            dialect = GoogleGenAIDialect(connection, model)
-            audit = RequestAudit(active_request_leaves(req))
-            dialect.validate_request(req, audit, cast(Any, SimpleNamespace()))
-            prepared = dialect.prepare(req, audit)
-            body = cast(dict[str, Any], prepared.thaw_body())
-            mutate(body)
-
-            with pytest.raises(DialectError, match=message):
                 await dialect.execute(
                     PreparedRequest(
                         prepared.operation, cast(Any, body), prepared.context

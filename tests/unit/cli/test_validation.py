@@ -1774,10 +1774,18 @@ class TestRunDryRun:
         assert len(binding_plans) == 1
         assert next(iter(binding_plans.values()))["dialect_id"] == "google_genai"
 
-    def test_google_capability_is_static_valid_but_requires_profile_evidence(
-        self, tmp_path
+    @pytest.mark.parametrize(
+        ("capability_yaml", "args_yaml"),
+        [
+            ("    capabilities:\n      reasoning:\n        summary: auto\n", ""),
+            ("    capabilities:\n      reasoning:\n        budget_tokens: 512\n", ""),
+            ("", "    args:\n      reasoning_effort: low\n"),
+        ],
+    )
+    def test_google_yaml_binding_admits_reasoning(
+        self, tmp_path, capability_yaml, args_yaml
     ):
-        """Deep dry-run owns model-specific Google capability admission."""
+        """Google 400s what a model cannot do, so YAML reasoning reconciles."""
         from sieval.cli.validation import run_dry_run
 
         config = tmp_path / "google-genai-capability.yaml"
@@ -1788,9 +1796,44 @@ class TestRunDryRun:
             "    type: chat\n"
             "    dialect: google_genai\n"
             "    api_base: https://generativelanguage.googleapis.com\n"
-            "    capabilities:\n"
-            "      reasoning:\n"
-            "        summary: auto\n"
+            + capability_yaml
+            + args_yaml
+            + "datasets:\n"
+            "  d:\n"
+            "    class: sieval.datasets.aime_2024.AIME2024Dataset\n"
+            "tasks:\n"
+            "  t:\n"
+            "    class: sieval.tasks.aime_2024_0shot_gen.AIME2024ZeroShotGenTask\n"
+            "    dataset: d\n"
+            "    model: m\n",
+            encoding="utf-8",
+        )
+
+        dry_run = run_dry_run(config)
+        checks = {check["name"]: check for check in dry_run["checks"]}
+
+        assert checks["capability_reconcile"]["ok"] is True, checks[
+            "capability_reconcile"
+        ]["detail"]
+        assert dry_run["n_errors"] == 0
+        [plan] = checks["capability_reconcile"]["plan"]["binding_plans"].values()
+        assert "reasoning" in plan["required_capabilities"]
+        assert "reasoning" in plan["pending_capabilities"]
+
+    def test_openai_yaml_binding_still_requires_profile_evidence(self, tmp_path):
+        """An OpenAI-compatible server may ignore reasoning, so no default."""
+        from sieval.cli.validation import run_dry_run
+
+        config = tmp_path / "openai-capability.yaml"
+        config.write_text(
+            "models:\n"
+            "  m:\n"
+            "    name: some-model\n"
+            "    type: chat\n"
+            "    dialect: openai_chat\n"
+            "    api_base: http://127.0.0.1:9/v1\n"
+            "    args:\n"
+            "      reasoning_effort: low\n"
             "datasets:\n"
             "  d:\n"
             "    class: sieval.datasets.aime_2024.AIME2024Dataset\n"
@@ -1802,21 +1845,11 @@ class TestRunDryRun:
             encoding="utf-8",
         )
 
-        direct = validate_eval_config(
-            yaml.safe_load(config.read_text(encoding="utf-8"))
-        )
         dry_run = run_dry_run(config)
         checks = {check["name"]: check for check in dry_run["checks"]}
 
-        assert direct.ok, direct.errors
-        assert checks["schema"]["ok"] is True
         assert checks["capability_reconcile"]["ok"] is False
         assert "model_outcome_missing" in checks["capability_reconcile"]["detail"]
-        assert (
-            "model profile provides no support outcome"
-            in checks["capability_reconcile"]["detail"]
-        )
-        assert dry_run["n_errors"] == 1
 
     def test_schema_validation_failure(self, tmp_path):
         """Config with bad schema returns schema check failure."""

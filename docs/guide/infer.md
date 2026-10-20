@@ -177,11 +177,15 @@ gateway path prefixes are preserved. The key is sent only in the
 
 Supported: text and image input, function tools, the `google_search` and
 `url_context` hosted tools, JSON output, thinking controls, logprobs,
-streaming, request seeds, and opaque continuation. Ordinary YAML bindings do
-not yet supply Google model-profile outcomes, so model-dependent capabilities
-(images, reasoning, tools, structured output, logprobs, opaque continuation)
-currently fail reconciliation with `model_outcome_missing`; plain text
-generation, streaming, seeds, and `dialect_options` work today.
+streaming, request seeds, and opaque continuation. A YAML binding takes all of
+these as supported for any model: Google answers a request a model cannot
+serve with a 400 instead of ignoring a field, so SiEval sends what the config
+sets and leaves per-model limits to that 400. `reasoning_effort: low` sends
+`thinkingConfig.thinkingLevel: LOW`; `capabilities.reasoning.budget_tokens`
+sends `thinkingBudget`. A failed sample's `error_msg` carries Google's own
+message, for example `Thinking level is unsupported: THINKING_LEVEL_MINIMAL`
+on `gemini-3.8-flash`. Logprobs keep their response check, so a reply without
+them still fails rather than scoring as empty.
 
 Rejected before any network I/O:
 
@@ -190,15 +194,20 @@ Rejected before any network I/O:
 - on `v1`, function schemas using constructs outside Google's OpenAPI subset
   (`additionalProperties`, `$ref`, type arrays, numeric enums) — use `/v1beta`;
   on both versions, a function needs a non-empty description and an explicit
-  `type: object` parameter root;
-- explicit `temperature`/`top_p`/`top_k` on `gemini-3…` models: Google
-  [advises omitting them](https://ai.google.dev/gemini-api/docs/latest-model)
-  but accepts them, so the record could claim a control with no effect.
+  `type: object` parameter root.
 
 Per-model limits Google enforces itself (thinking levels, thinking budgets,
-candidate counts, tool combinations) are left to its 400. The sampling check
-above and the Gemini 3 call-id/`thoughtSignature` contracts match the model
-name, so a gateway alias not starting with `gemini-3` skips them.
+candidate counts, tool combinations) are left to its 400. The Gemini 3
+call-id/`thoughtSignature` response contracts match the model name, so a
+gateway alias not starting with `gemini-3` skips them.
+
+Sampling on Gemini 3: Google
+[advises leaving `temperature`, `top_p` and `top_k` unset](https://ai.google.dev/gemini-api/docs/latest-model)
+but accepts them. SiEval forwards whatever the config sets and records it as
+the run's sampling. Whether a setting suits an evaluation is for the task or
+config to decide. Measured in #153 on `gemini-3-flash-preview` with minimal
+thinking, 8 draws each: `temperature: 0` and `top_p: 0.01` reduced distinct
+replies (7 to 4 and 2), while `top_k: 1` had no visible effect (8 of 8).
 
 Provider-only root controls such as `safetySettings`, `serviceTier`, or `store`
 go through `dialect_options` (`cachedContent` and `labels` are `v1beta`-only).

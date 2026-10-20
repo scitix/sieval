@@ -9,11 +9,14 @@ import json
 import sys
 import textwrap
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import PropertyMock, patch
 
 import numpy as np
 import pytest
 
+from sieval.core.models.capabilities import RequestDefaults
 from sieval.core.tasks.run_meta import (
     ABSENT,
     GRADER_PACKAGES,
@@ -507,6 +510,30 @@ class TestJudges:
             "prompt": digest("Grade: {x}"),
         }
         assert "judge.internal" not in canonical_json(entry)
+
+    @pytest.mark.parametrize(
+        ("defaults", "expected"),
+        [
+            (
+                {"reasoning.budget_tokens": 512},
+                {
+                    "temperature": 0.0,
+                    "request_defaults": {"reasoning.budget_tokens": 512},
+                },
+            ),
+            ({}, {"temperature": 0.0}),
+        ],
+    )
+    def test_capability_request_defaults_land_in_judge_sampling(
+        self, defaults, expected
+    ):
+        judge = MockJudgeModel(temperature=0.0)
+        plan = SimpleNamespace(request_defaults=RequestDefaults(defaults))
+        with patch.object(
+            type(judge), "runtime_plan", new_callable=PropertyMock, return_value=plan
+        ):
+            [entry] = judge_identities({"grader": judge}, {}, {})
+        assert entry["sampling"] == expected
 
     def test_reported_version_and_missing_prompt(self):
         judges = {"grader": MockJudgeModel()}
