@@ -12,10 +12,11 @@ import importlib
 import json
 import os
 import platform
+import secrets
 import shutil
 import signal
 import subprocess
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -49,7 +50,9 @@ DEFAULT_READY_TIMEOUT = 900.0
 
 _HEALTH_CHECK_TIMEOUT = 2.0
 _GRACEFUL_SHUTDOWN_TIMEOUT = 10.0
-_LOG_DIR = Path.home() / ".sieval" / "logs"
+# Engine logs of launches with no log location of their own, named
+# `<role>-<deployment_id>.log`.
+ENGINE_LOG_DIR = Path.home() / ".sieval" / "logs"
 _FAILURE_LOG_TAIL = 30
 # Bytes read back from the end of a log before taking its trailing lines. In
 # bytes, not lines × bytes-per-line: collapsing carriage-return redraws (see
@@ -71,6 +74,16 @@ def _tail_lines(text: str) -> list[str]:
     ``"line1\\r"`` is ``""`` and every line of a CRLF log drops.
     """
     return [line.rstrip("\r").rsplit("\r", 1)[-1] for line in text.split("\n")]
+
+
+def new_deployment_id() -> str:
+    """Identify one launch before it starts: UTC second plus random suffix.
+
+    Sorts by launch time, and two launches in the same second still differ.
+    Distinct from ``Deployment.deployment_id``, which is derived from the
+    realized handles once the launch is ready.
+    """
+    return f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}"
 
 
 class DeployError(Exception):
@@ -97,6 +110,7 @@ class LocalDeployer:
         timeout: float = DEFAULT_READY_TIMEOUT,
         poll_interval: float = 5.0,
         on_progress: ProgressCallback | None = None,
+        log_files: Mapping[str, Path] | None = None,
     ) -> list[InferHandle]:
         """Deploy all commands and wait for readiness.
 
@@ -106,6 +120,8 @@ class LocalDeployer:
             timeout: Max seconds to wait for all processes to be ready.
             poll_interval: Seconds between health checks.
             on_progress: Optional callback(elapsed_seconds, status_string).
+            log_files: Log path per role. A role absent here logs to
+                ``ENGINE_LOG_DIR/<role>-<new deployment id>.log``.
 
         Returns:
             List of InferHandles (one per command).
@@ -114,7 +130,8 @@ class LocalDeployer:
 
         try:
             for cmd in commands:
-                handle = await self._launch_one(cmd)
+                log_file = (log_files or {}).get(cmd.role)
+                handle = await self._launch_one(cmd, log_file=log_file)
                 handles.append(handle)
 
             if detach:
@@ -148,7 +165,12 @@ class LocalDeployer:
                     pass
             raise
 
-    async def _launch_one(self, cmd: BackendCommand) -> InferHandle:
+    async def _launch_one(
+        self,
+        cmd: BackendCommand,
+        *,
+        log_file: Path | None = None,
+    ) -> InferHandle:
         """Launch a single subprocess from a BackendCommand."""
         env = None
         if cmd.env:
@@ -186,9 +208,9 @@ class LocalDeployer:
                 f"exists to inspect. Command: {' '.join(cmd.cli_args)}"
             )
 
-        _LOG_DIR.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
-        log_file = _LOG_DIR / f"{cmd.role}-{ts}.log"
+        if log_file is None:
+            log_file = ENGINE_LOG_DIR / f"{cmd.role}-{new_deployment_id()}.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
 
         logger.info("Launching [{}]: {}", cmd.role, " ".join(cmd.cli_args))
         logger.info("Logging to {}", log_file)

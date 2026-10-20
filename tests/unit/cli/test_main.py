@@ -460,7 +460,6 @@ class TestInfer:
                 "sieval.cli.infer.lifecycle.default_deployer",
             ) as mock_deployer,
             patch("sieval.cli.infer.lifecycle.collect_basic_env", mock_collect_env),
-            patch("sieval.cli.infer.commands.HANDLE_DIR", handle_dir),
             patch("sieval.cli.infer.lifecycle.HANDLE_DIR", handle_dir),
             patch("sieval.cli.infer.commands.log_user") as mock_log_user,
             patch("sieval.cli.output.log_user") as mock_output_log_user,
@@ -527,7 +526,6 @@ class TestInferShow:
         )
 
         with (
-            patch("sieval.cli.infer.commands.HANDLE_DIR", handle_dir),
             patch("sieval.cli.infer.lifecycle.HANDLE_DIR", handle_dir),
             patch("sieval.cli.infer.lifecycle.default_deployer") as mock_deployer,
             patch("sieval.cli.infer.commands.log_user") as mock_log_user,
@@ -556,7 +554,6 @@ class TestInferShow:
         handle_dir.mkdir()
 
         with (
-            patch("sieval.cli.infer.commands.HANDLE_DIR", handle_dir),
             patch("sieval.cli.infer.lifecycle.HANDLE_DIR", handle_dir),
         ):
             result = runner.invoke(app, ["infer", "show", "nonexistent"])

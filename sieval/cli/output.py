@@ -253,7 +253,7 @@ def _render_text_infer_show(result: CommandResult) -> None:
     log_user("Status:   {}", d["status"])
     log_user("Backend:  {}", d["backend"])
     log_user("Endpoint: {}", d["endpoint"])
-    log_user("PID:      {}", d["handle_id"])
+    log_user("PID:      {}", d["engine_pid"])
     metadata = d.get("metadata")
     if metadata:
         for key, value in metadata.items():
@@ -297,7 +297,7 @@ def _render_text_infer_stop(result: CommandResult) -> None:
     else:
         logger.error(
             "Process {} may still be running (status: {}). Handle preserved.",
-            d.get("handle_id"),
+            d.get("engine_pid"),
             d.get("phase"),
         )
 
@@ -313,7 +313,7 @@ def _render_text_infer_start(result: CommandResult) -> None:
     log_user("Model:    {}", d["model"])
     log_user("Backend:  {}", d["backend"])
     log_user("Endpoint: {}", d["endpoint"])
-    log_user("PID:      {}", d["handle_id"])
+    log_user("PID:      {}", d["engine_pid"])
     metadata = d.get("metadata")
     if metadata:
         for key, value in metadata.items():

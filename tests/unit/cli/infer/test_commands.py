@@ -9,6 +9,9 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +20,8 @@ import yaml
 from typer.testing import CliRunner
 
 from sieval.cli.infer import infer_app
+from sieval.infer.backends.translator import BackendCommand
+from sieval.infer.config import InferHandle
 from sieval.infer.topology.models import (
     DeploymentPlan,
     DeviceGroup,
@@ -160,3 +165,208 @@ class TestInferStartModelType:
         # Typer renders the message inside a wrapped Rich panel, so match a
         # fragment short enough to survive line breaking.
         assert "applies to checkpoint mode" in _failure_text(result)
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+class TestPerOwnerHandles:
+    """`infer list/stop/start` over the per-owner handle layout."""
+
+    @pytest.fixture
+    def handle_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        handle_dir = tmp_path / "handles"
+        handle_dir.mkdir()
+        monkeypatch.setattr("sieval.cli.infer.lifecycle.HANDLE_DIR", handle_dir)
+        return handle_dir
+
+    def test_list_shows_run_handles_and_sweeps_dead_runs(self, handle_dir: Path):
+        (handle_dir / "m.json").write_text(
+            json.dumps({"phase": "pending", "owner_pid": os.getpid()})
+        )
+        live = handle_dir / f"run-{os.getpid()}"
+        live.mkdir()
+        (live / "m.json").write_text(
+            json.dumps({"phase": "pending", "pid": os.getpid()})
+        )
+        dead = handle_dir / f"run-{_dead_pid()}"
+        dead.mkdir()
+        (dead / "m.json").write_text(
+            json.dumps({"phase": "pending", "owner_pid": _dead_pid()})
+        )
+
+        result = runner.invoke(infer_app, ["list", "-o", "json"])
+
+        assert result.exit_code == 0, result.output
+        rows = json.loads(result.stdout)["data"]
+        assert [r["model"] for r in rows] == ["m", f"run-{os.getpid()}/m"]
+        assert all(r["status"] == "Pending" for r in rows)
+        assert not dead.exists()
+
+    def test_list_probes_a_running_old_format_handle(self, handle_dir: Path):
+        from sieval.infer.config import InferCondition, InferPhase
+
+        (handle_dir / "m.json").write_text(
+            json.dumps(
+                {
+                    "phase": "running",
+                    "backend": "vllm",
+                    "endpoint": "http://localhost:8000/v1",
+                    "handle_id": "4242",
+                    "pid": 1,
+                }
+            )
+        )
+        status = AsyncMock(
+            return_value=(InferPhase.RUNNING, {"ready": InferCondition(True)})
+        )
+        with patch("sieval.cli.infer.lifecycle.default_deployer.status", status):
+            result = runner.invoke(infer_app, ["list", "-o", "json"])
+
+        assert result.exit_code == 0, result.output
+        [row] = json.loads(result.stdout)["data"]
+        assert row["status"] == "Ready"
+        assert row["engine_pid"] == "4242"
+        assert status.await_args.args[0].handle_id == "4242"
+        saved = json.loads((handle_dir / "m.json").read_text())
+        assert saved["engine_pid"] == "4242"
+        assert "handle_id" not in saved
+
+    def test_list_removes_a_stopping_handle_whose_engine_exited(
+        self, handle_dir: Path, tmp_path: Path
+    ):
+        log = tmp_path / "full-x.log"
+        log.write_text("x")
+        (handle_dir / "m.json").write_text(
+            json.dumps(
+                {
+                    "phase": "stopping",
+                    "handle_id": str(_dead_pid()),
+                    "keep_logs": 0,
+                    "metadata": {"log_file": str(log)},
+                }
+            )
+        )
+        result = runner.invoke(infer_app, ["list", "-o", "json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["data"] == []
+        assert not (handle_dir / "m.json").exists()
+        assert not log.exists()
+
+    def test_stop_with_keep_zero_deletes_the_log(
+        self, handle_dir: Path, tmp_path: Path
+    ):
+        from sieval.infer.config import InferCondition, InferPhase
+
+        log = tmp_path / "full-x.log"
+        log.write_text("x")
+        (handle_dir / "m.json").write_text(
+            json.dumps(
+                {
+                    "phase": "running",
+                    "backend": "sglang",
+                    "engine_pid": 4242,
+                    "keep_logs": 0,
+                    "metadata": {"log_file": str(log)},
+                }
+            )
+        )
+        status = AsyncMock(
+            return_value=(InferPhase.STOPPED, {"ready": InferCondition(False)})
+        )
+        with patch("sieval.cli.infer.lifecycle.default_deployer") as deployer:
+            deployer.delete = AsyncMock()
+            deployer.status = status
+            with patch("sieval.cli.infer.commands.default_deployer", deployer):
+                result = runner.invoke(infer_app, ["stop", "m", "-o", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["data"]["stopped"] is True
+        assert deployer.delete.await_args.args[0].handle_id == "4242"
+        assert not (handle_dir / "m.json").exists()
+        assert not log.exists()
+
+    def test_stop_reaches_a_run_handle(self, handle_dir: Path):
+        from sieval.infer.config import InferPhase
+
+        run_dir = handle_dir / "run-1"
+        run_dir.mkdir()
+        (run_dir / "m.json").write_text(
+            json.dumps({"phase": "running", "engine_pid": 4242})
+        )
+        with patch("sieval.cli.infer.lifecycle.default_deployer") as deployer:
+            deployer.delete = AsyncMock()
+            deployer.status = AsyncMock(return_value=(InferPhase.STOPPED, {}))
+            with patch("sieval.cli.infer.commands.default_deployer", deployer):
+                result = runner.invoke(infer_app, ["stop", "run-1/m", "-o", "json"])
+        assert result.exit_code == 0, result.output
+        assert not (run_dir / "m.json").exists()
+
+    @pytest.mark.parametrize(
+        ("args", "env", "expected"),
+        [
+            ([], None, 3),
+            ([], "5", 5),
+            (["--keep-logs", "0"], "5", 0),
+            (["--keep-logs", "-1"], None, -1),
+        ],
+    )
+    def test_start_passes_keep_logs(
+        self,
+        handle_dir: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        args: list[str],
+        env: str | None,
+        expected: int,
+    ):
+        if env is None:
+            monkeypatch.delenv("SIEVAL_KEEP_LOGS", raising=False)
+        else:
+            monkeypatch.setenv("SIEVAL_KEEP_LOGS", env)
+        ckpt = _write_checkpoint(tmp_path / "Qwen3-4B")
+        resolve = AsyncMock(return_value=ResolveResult(plan=_fake_plan(), steps=()))
+        translator = MagicMock()
+        translator.translate.return_value = [
+            BackendCommand(cli_args=["sglang"], backend="sglang", role="full")
+        ]
+        handle = InferHandle(backend="sglang", endpoint=None, handle_id="1")
+        launch = AsyncMock(return_value=([handle], None))
+        with (
+            patch("sieval.cli.infer.commands.auto_resolve_plan", new=resolve),
+            patch("sieval.cli.infer.commands.get_translator", return_value=translator),
+            patch("sieval.cli.infer.commands.validate_plan", return_value=[]),
+            patch("sieval.cli.infer.commands.launch_model", new=launch),
+        ):
+            result = runner.invoke(infer_app, ["start", str(ckpt), "-o", "json", *args])
+
+        assert result.exit_code == 0, result.output
+        kwargs = launch.await_args.kwargs
+        assert kwargs["keep_logs"] == expected
+        assert kwargs["handle_path"] == handle_dir / "qwen3-4b.json"
+        assert json.loads(result.stdout)["data"]["engine_pid"] == "1"
+
+    def test_start_refuses_a_live_handle(self, handle_dir: Path, tmp_path: Path):
+        (handle_dir / "qwen3-4b.json").write_text(
+            json.dumps({"phase": "running", "handle_id": str(os.getpid())})
+        )
+        ckpt = _write_checkpoint(tmp_path / "Qwen3-4B")
+        resolve = AsyncMock(return_value=ResolveResult(plan=_fake_plan(), steps=()))
+        translator = MagicMock()
+        translator.translate.return_value = [
+            BackendCommand(cli_args=["sglang"], backend="sglang", role="full")
+        ]
+        launch = AsyncMock()
+        with (
+            patch("sieval.cli.infer.commands.auto_resolve_plan", new=resolve),
+            patch("sieval.cli.infer.commands.get_translator", return_value=translator),
+            patch("sieval.cli.infer.commands.validate_plan", return_value=[]),
+            patch("sieval.cli.infer.commands.launch_model", new=launch),
+        ):
+            result = runner.invoke(infer_app, ["start", str(ckpt), "-o", "json"])
+        assert result.exit_code == 1
+        assert "already running" in json.loads(result.stdout)["error"]
+        launch.assert_not_awaited()

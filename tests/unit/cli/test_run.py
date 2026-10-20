@@ -4,6 +4,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
 import json
+import os
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -869,6 +870,104 @@ class TestDeterministicPassedToSession:
         assert await_args.kwargs["timeout"] == 1234.0
 
 
+class TestRunHandlesAndLogs:
+    """`sieval run` owns run-<pid>/ handles and keeps engine logs with results."""
+
+    def _config(self, tmp_path: Path, result_dir: Path | None) -> Path:
+        config: dict[str, object] = {
+            "models": {
+                "model_a": {
+                    "path": "/tmp/ckpt",
+                    "infer": {"backend": "vllm", "recipe": "test"},
+                }
+            },
+            "tasks": {},
+        }
+        if result_dir is not None:
+            config["result_dir"] = str(result_dir)
+        config_path = tmp_path / "cfg.yaml"
+        config_path.write_text(yaml.safe_dump(config))
+        return config_path
+
+    async def _run(
+        self, tmp_path: Path, config_path: Path, **kwargs: object
+    ) -> tuple[AsyncMock, AsyncMock]:
+        from sieval.cli.run import _run_all
+
+        translator = MagicMock()
+        translator.translate.return_value = [
+            BackendCommand(cli_args=["vllm", "serve"], backend="vllm", role="full")
+        ]
+        launch = AsyncMock(return_value=([_fake_handle()], None))
+        cleanup = AsyncMock()
+        with (
+            patch("sieval.cli.infer.lifecycle.HANDLE_DIR", tmp_path / "handles"),
+            patch(
+                "sieval.cli.run.resolve_infer_config",
+                new=AsyncMock(return_value=("model_a", _fake_plan(), {})),
+            ),
+            patch("sieval.cli.run.get_translator", return_value=translator),
+            patch("sieval.cli.run.launch_model", new=launch),
+            patch("sieval.cli.run.cleanup_model", new=cleanup),
+            patch(
+                "sieval.cli.leaderboard.session.arun_session",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            await _run_all(config_path, **kwargs)  # type: ignore[arg-type]
+        return launch, cleanup
+
+    @pytest.mark.anyio
+    async def test_handle_under_run_pid_and_logs_under_result_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("SIEVAL_KEEP_LOGS", raising=False)
+        out = tmp_path / "out"
+        run_dir = tmp_path / "handles" / f"run-{os.getpid()}"
+        run_dir.mkdir(parents=True)
+        launch, cleanup = await self._run(tmp_path, self._config(tmp_path, out))
+
+        kwargs = launch.await_args.kwargs
+        assert kwargs["handle_path"] == run_dir / "model_a.json"
+        assert kwargs["log_dir"] == out / "logs" / "model_a"
+        assert cleanup.await_args.kwargs["handle_path"] == run_dir / "model_a.json"
+        assert not run_dir.exists()
+
+    @pytest.mark.anyio
+    async def test_without_result_dir_logs_go_to_the_shared_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("SIEVAL_KEEP_LOGS", "7")
+        config_path = self._config(tmp_path, None)
+        launch, _ = await self._run(tmp_path, config_path)
+        assert launch.await_args.kwargs["log_dir"] is None
+        assert launch.await_args.kwargs["keep_logs"] == 7
+
+        launch, _ = await self._run(tmp_path, config_path, keep_logs=1)
+        assert launch.await_args.kwargs["keep_logs"] == 1
+
+    @pytest.mark.anyio
+    async def test_result_dir_flag_wins_over_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        config_path = self._config(tmp_path, tmp_path / "from-config")
+        launch, _ = await self._run(
+            tmp_path, config_path, result_dir=str(tmp_path / "from-flag")
+        )
+        assert launch.await_args.kwargs["log_dir"] == (
+            tmp_path / "from-flag" / "logs" / "model_a"
+        )
+
+    def test_keep_logs_flag_reaches_run_all(self, tmp_path: Path):
+        config_path = self._config(tmp_path, None)
+        with patch(
+            "sieval.cli.run._run_all", new=AsyncMock(return_value={})
+        ) as run_all:
+            result = runner.invoke(app, ["run", str(config_path), "--keep-logs", "0"])
+        assert result.exit_code == 0, result.output
+        assert run_all.await_args.kwargs["keep_logs"] == 0
+
+
 class TestDeploymentPropagation:
     """Auto-serve hands off complete typed state without endpoint projection."""
 
@@ -1052,7 +1151,9 @@ class TestDeploymentPropagation:
         ):
             await _run_all(config_path)
 
-        cleanup.assert_awaited_once_with("model_a", [handle], deployer=ANY)
+        cleanup.assert_awaited_once_with(
+            "model_a", [handle], deployer=ANY, handle_path=ANY
+        )
 
     def test_run_module_does_not_import_tempfile(self):
         """Regression guard: the tempfile-YAML-patch path is gone — `tempfile`

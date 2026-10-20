@@ -201,7 +201,7 @@ class TestRenderTextInferShow:
                 "status": "Ready",
                 "backend": "vllm",
                 "endpoint": "http://localhost:8000/v1",
-                "handle_id": "12345",
+                "engine_pid": "12345",
                 "metadata": {"role": "full"},
                 "conditions": {"ready": {"status": True, "reason": ""}},
                 "env": {
@@ -236,7 +236,7 @@ class TestRenderTextInferShow:
                 "status": "Ready",
                 "backend": "vllm",
                 "endpoint": "http://localhost:8000/v1",
-                "handle_id": "12345",
+                "engine_pid": "12345",
                 "metadata": {},
                 "conditions": {"ready": {"status": True, "reason": ""}},
                 "env": None,
@@ -270,7 +270,7 @@ class TestRenderTextInferStop:
                 "model": "qwen3-4b",
                 "stopped": False,
                 "phase": "running",
-                "handle_id": "999",
+                "engine_pid": "999",
             },
         )
         with (
@@ -290,7 +290,7 @@ class TestRenderTextInferStart:
                 "model": "qwen3-4b",
                 "backend": "vllm",
                 "endpoint": "http://localhost:8000/v1",
-                "handle_id": "12345",
+                "engine_pid": "12345",
                 "handle_path": "/root/.sieval/handles/qwen3-4b.json",
                 "metadata": {"role": "full"},
             },
@@ -482,7 +482,7 @@ class TestRenderEnvBlock:
                 "status": "Ready",
                 "backend": "vllm",
                 "endpoint": "http://localhost:8000/v1",
-                "handle_id": "12345",
+                "engine_pid": "12345",
                 "metadata": {},
                 "conditions": {},
                 "env": {
@@ -516,7 +516,7 @@ class TestRenderTextInferStartMetadata:
                 "model": "qwen3-4b",
                 "backend": "vllm",
                 "endpoint": "http://localhost:8000/v1",
-                "handle_id": "12345",
+                "engine_pid": "12345",
                 "handle_path": "/root/.sieval/handles/qwen3-4b.json",
                 "metadata": {},
             },

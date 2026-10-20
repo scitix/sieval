@@ -4,13 +4,12 @@ Typer app and subcommands for inference service management.
 Provides the ``infer_app`` Typer instance with five subcommands:
 start, list, show, stop, logs.
 
-AI-Generated Code - Claude Opus 4.6 (Anthropic)
+AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import contextlib
 import dataclasses
 import json
-import os
 import shlex
 import sys
 import time
@@ -25,7 +24,6 @@ from loguru import logger
 from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
-from sieval.infer.backends.process import pid_alive
 from sieval.infer.backends.translator import inject_user_env
 from sieval.infer.config import (
     InferEnv,
@@ -48,16 +46,26 @@ from sieval.infer.topology.resolver import auto_resolve_plan
 from sieval.infer.topology.validator import validate_plan
 
 from .lifecycle import (
-    HANDLE_DIR,
-    HANDLE_EXTRA_KEYS,
+    KEEP_LOGS_ENV,
+    HandleHeldError,
     claim_handle,
     default_deployer,
+    delete_logs_if_unkept,
     display_status,
+    handle_from_data,
+    handle_path_for,
+    iter_handle_files,
     launch_model,
     load_env,
     load_handle,
+    mark_stopping,
+    normalize_handle_data,
     parse_phase,
     probe_and_sync,
+    remove_handle,
+    remove_if_dead,
+    resolve_keep_logs,
+    sweep_stale_run_dirs,
 )
 from .recipe import ResolvedInferConfig, resolve_infer_config
 
@@ -221,6 +229,17 @@ def infer_start(
             ),
         ),
     ] = None,
+    keep_logs: Annotated[
+        int | None,
+        typer.Option(
+            "--keep-logs",
+            help=(
+                "Engine logs to keep per role in ~/.sieval/logs, counting this "
+                "launch. 0 deletes the log on stop; negative keeps every log. "
+                f"Default: ${KEEP_LOGS_ENV}, else 3."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Launch an inference service.\n
     1. Auto-resolve (recommended):\n
@@ -357,92 +376,29 @@ def infer_start(
         render(dr_result, output)
         return
 
-    # Guard: atomically claim the handle file so concurrent starts on
-    # the same model_name are mutually exclusive.
-    handle_path = HANDLE_DIR / f"{model_name}.json"
+    keep = resolve_keep_logs(keep_logs)
 
-    def _reclaim(reason: str) -> None:
-        """Remove existing handle and reclaim; raise on lost race.
-
-        Note: there is a small TOCTOU window between ``unlink`` and
-        ``claim_handle`` where another process could claim the name.
-        The ``FileExistsError`` branch handles this gracefully.
-        """
-        handle_path.unlink(missing_ok=True)
-        try:
-            claim_handle(model_name, backend=plan.backend)
-        except FileExistsError:
-            result = CommandResult(
-                command="infer.start",
-                ok=False,
-                error=(
-                    f"Another process claimed {model_name!r} while we "
-                    f"were cleaning up ({reason}). Retry or remove "
-                    f"{handle_path} manually."
-                ),
+    # Claim the handle under the handle lock: a live holder refuses, and a
+    # stale or corrupt handle is replaced within the same transition.
+    handle_path = handle_path_for(model_name)
+    try:
+        claim_handle(handle_path, backend=plan.backend, replace_stale=True)
+    except HandleHeldError as held:
+        if held.phase == InferPhase.PENDING:
+            msg = (
+                f"Model {model_name!r} is already starting "
+                f"(PID {held.pid}). Wait for it to finish or "
+                f"remove {handle_path}."
             )
-            render(result, output)
-            raise typer.Exit(1) from None
-
-    def _try_claim() -> None:
-        """Attempt to claim the handle; clean stale entries and retry once."""
-        try:
-            claim_handle(model_name, backend=plan.backend)
-        except FileExistsError:
-            # Handle file already exists — inspect it
-            try:
-                data = json.loads(handle_path.read_text())
-            except (json.JSONDecodeError, OSError):
-                logger.warning("Removing corrupted handle file for {}", model_name)
-                _reclaim("corrupted handle")
-                return
-
-            phase = parse_phase(data)
-            if phase == InferPhase.PENDING and "pid" in data:
-                raw_pid = data["pid"]
-            elif "handle_id" in data:
-                raw_pid = data["handle_id"]
-            else:
-                raw_pid = None
-            try:
-                old_pid: int | None = int(raw_pid) if raw_pid is not None else None
-            except (ValueError, TypeError):
-                # handle_id is not a numeric PID (e.g. container ID) —
-                # cannot check liveness, treat as stale
-                old_pid = None
-
-            if old_pid is not None and pid_alive(old_pid):
-                if phase == InferPhase.PENDING:
-                    msg = (
-                        f"Model {model_name!r} is already starting "
-                        f"(PID {old_pid}). Wait for it to finish or "
-                        f"remove {handle_path}."
-                    )
-                else:
-                    msg = (
-                        f"Model {model_name!r} is already running "
-                        f"(PID {old_pid}). "
-                        f"Run 'sieval infer stop {model_name}' first."
-                    )
-                result = CommandResult(command="infer.start", ok=False, error=msg)
-                render(result, output)
-                raise typer.Exit(1) from None
-
-            # Stale handle — process is dead, clean up and reclaim
-            if old_pid is not None:
-                logger.info(
-                    "Cleaning stale handle for {} (PID {} no longer alive)",
-                    model_name,
-                    old_pid,
-                )
-            else:
-                logger.info(
-                    "Cleaning stale handle for {} (no PID recorded)",
-                    model_name,
-                )
-            _reclaim("stale handle")
-
-    _try_claim()
+        else:
+            msg = (
+                f"Model {model_name!r} is already running "
+                f"(PID {held.pid}). "
+                f"Run 'sieval infer stop {model_name}' first."
+            )
+        result = CommandResult(command="infer.start", ok=False, error=msg)
+        render(result, output)
+        raise typer.Exit(1) from None
 
     last_status = None
     last_log_time = 0.0
@@ -475,25 +431,23 @@ def infer_start(
             model_name,
             commands,
             backend=plan.backend,
+            handle_path=handle_path,
+            keep_logs=keep,
             detach=detach,
             timeout=timeout,
             on_progress=None if detach else _progress,
             already_claimed=True,
         )
 
+    # launch_model removes the handle on any failure.
     try:
         handles, env = anyio.run(_launch)
     except KeyboardInterrupt:
-        handle_path.unlink(missing_ok=True)
         sys.exit(130)
     except (DeployError, DeployTimeoutError) as exc:
-        handle_path.unlink(missing_ok=True)
         result = CommandResult(command="infer.start", ok=False, error=str(exc))
         render(result, output)
         raise typer.Exit(1) from exc
-    except BaseException:
-        handle_path.unlink(missing_ok=True)
-        raise
 
     if not detach and sys.stderr.isatty():
         logger.opt(raw=True).log("USER", "\n")
@@ -503,7 +457,7 @@ def infer_start(
         "model": model_name,
         "backend": handle.backend,
         "endpoint": handle.endpoint,
-        "handle_id": handle.handle_id,
+        "engine_pid": handle.handle_id,
         "handle_path": str(handle_path),
         "metadata": dict(handle.metadata) if handle.metadata else {},
     }
@@ -519,99 +473,68 @@ def infer_list(
         typer.Option("-o", "--output", help="Output format"),
     ] = OutputFormat.TEXT,
 ) -> None:
-    """List all tracked inference services and their status."""
-    if not HANDLE_DIR.exists():
-        result = CommandResult(command="infer.list", ok=True, data=[])
-        render(result, output)
-        return
+    """List all tracked inference services and their status.
 
-    handle_files = sorted(HANDLE_DIR.glob("*.json"))
-    if not handle_files:
-        result = CommandResult(command="infer.list", ok=True, data=[])
-        render(result, output)
-        return
+    Handles of ``sieval run`` processes appear as ``run-<pid>/<model>``.
+    Handles whose holder has exited are removed here.
+    """
+    sweep_stale_run_dirs()
+    handle_files = list(iter_handle_files())
+
+    def _row(
+        mname: str, phase: str, status: str, data: dict[str, object]
+    ) -> dict[str, object]:
+        return {
+            "model": mname,
+            "phase": phase,
+            "status": status,
+            "endpoint": data.get("endpoint") or None,
+            "backend": data.get("backend", ""),
+            "engine_pid": data.get("engine_pid", ""),
+            "conditions": data.get("conditions", {}),
+        }
 
     async def _collect_statuses() -> list[dict]:
         rows: list[dict] = []
-        for handle_file in handle_files:
-            mname = handle_file.stem
+        for mname, handle_file in handle_files:
             try:
-                data = json.loads(handle_file.read_text())
-
+                data = normalize_handle_data(json.loads(handle_file.read_text()))
                 phase_from_file = parse_phase(data)
 
-                # Pending handle — process is still starting up
-                if phase_from_file == InferPhase.PENDING:
-                    starter_pid = data.get("pid")
-                    try:
-                        alive = starter_pid is not None and pid_alive(int(starter_pid))
-                    except (ValueError, TypeError):
-                        alive = False
-                    if not alive:
-                        handle_file.unlink(missing_ok=True)
+                # Pending: the owner is still launching. Stopping: the engine
+                # is shutting down. Either is gone once its holder has exited.
+                if phase_from_file in (InferPhase.PENDING, InferPhase.STOPPING):
+                    removed = remove_if_dead(handle_file)
+                    if removed is not None:
+                        delete_logs_if_unkept(removed)
                         continue
-                    rows.append(
-                        {
-                            "model": mname,
-                            "phase": "pending",
-                            "status": "Pending",
-                            "endpoint": None,
-                            "backend": data.get("backend", ""),
-                            "handle_id": data.get("handle_id", ""),
-                            "conditions": data.get("conditions", {}),
-                        }
-                    )
+                    label = phase_from_file.value
+                    rows.append(_row(mname, label, label.capitalize(), data))
                     continue
 
-                # Stopping handle — process is being shut down.
-                # Uses "handle_id" (deployed process PID), not "pid"
-                # (starter PID used in the PENDING block above).
-                if phase_from_file == InferPhase.STOPPING:
-                    raw_pid = data.get("handle_id")
-                    try:
-                        alive = raw_pid is not None and pid_alive(int(raw_pid))
-                    except (ValueError, TypeError):
-                        alive = False
-                    if not alive:
-                        handle_file.unlink(missing_ok=True)
-                        continue
-                    endpoint = data.get("endpoint") or None
-                    rows.append(
-                        {
-                            "model": mname,
-                            "phase": "stopping",
-                            "status": "Stopping",
-                            "endpoint": endpoint,
-                            "backend": data.get("backend", ""),
-                            "handle_id": data.get("handle_id", ""),
-                            "conditions": data.get("conditions", {}),
-                        }
-                    )
-                    continue
-
-                # Build InferHandle for deployer probe
-                handle_data = {
-                    k: v for k, v in data.items() if k not in HANDLE_EXTRA_KEYS
-                }
-                handle = InferHandle(**handle_data)
+                handle = handle_from_data(data)
                 phase, conditions = await probe_and_sync(handle, handle_file)
-
-                status_display = display_status(phase, conditions)
                 cond_dict = {
                     k: {"status": v.status, "reason": v.reason or ""}
                     for k, v in conditions.items()
                 }
                 rows.append(
                     {
-                        "model": mname,
-                        "phase": phase.value,
-                        "status": status_display,
+                        **_row(
+                            mname,
+                            phase.value,
+                            display_status(phase, conditions),
+                            data,
+                        ),
                         "endpoint": handle.endpoint,
                         "backend": handle.backend,
-                        "handle_id": handle.handle_id,
+                        "engine_pid": handle.handle_id,
                         "conditions": cond_dict,
                     }
                 )
+            except FileNotFoundError:
+                # Removed by its owner between the listing and this read.
+                continue
             except Exception as exc:
                 rows.append(
                     {
@@ -620,7 +543,7 @@ def infer_list(
                         "status": "error",
                         "endpoint": None,
                         "backend": "",
-                        "handle_id": "",
+                        "engine_pid": "",
                         "conditions": {},
                         "error": str(exc),
                     }
@@ -652,7 +575,7 @@ def infer_show(
         render(result, output)
         raise typer.Exit(1) from e
 
-    handle_path = HANDLE_DIR / f"{name}.json"
+    handle_path = handle_path_for(name)
     phase, conditions = anyio.run(probe_and_sync, handle, handle_path)
 
     cond_dict = {
@@ -670,7 +593,7 @@ def infer_show(
         "phase": phase.value,
         "backend": handle.backend,
         "endpoint": handle.endpoint,
-        "handle_id": handle.handle_id,
+        "engine_pid": handle.handle_id,
         "conditions": cond_dict,
         "metadata": dict(handle.metadata) if handle.metadata else {},
         "env": env_dict,
@@ -684,7 +607,9 @@ def infer_show(
 def infer_stop(
     name: Annotated[
         str,
-        typer.Argument(help="Model name (as defined in YAML config)"),
+        typer.Argument(
+            help="Model name (as defined in YAML config), or run-<pid>/<model>"
+        ),
     ],
     output: Annotated[
         OutputFormat,
@@ -701,25 +626,15 @@ def infer_stop(
 
     # Mark phase as stopping so concurrent `infer list` shows "Stopping"
     # instead of "NotReady" during the SIGTERM→exit window.
-    handle_path = HANDLE_DIR / f"{name}.json"
-    if handle_path.exists():
-        tmp = handle_path.with_suffix(".tmp")
-        try:
-            data = json.loads(handle_path.read_text())
-            data["phase"] = InferPhase.STOPPING.value
-            tmp.write_text(json.dumps(data, indent=2))
-            os.replace(str(tmp), str(handle_path))
-        except (json.JSONDecodeError, OSError):
-            with contextlib.suppress(OSError):
-                tmp.unlink(missing_ok=True)
+    handle_path = handle_path_for(name)
+    mark_stopping(handle_path)
 
     anyio.run(default_deployer.delete, handle)
 
     # Verify the process actually stopped
     phase, conditions = anyio.run(probe_and_sync, handle, handle_path)
     if phase in (InferPhase.STOPPED, InferPhase.FAILED):
-        if handle_path.exists():
-            handle_path.unlink()
+        delete_logs_if_unkept(remove_handle(handle_path))
         result = CommandResult(
             command="infer.stop",
             ok=True,
@@ -736,7 +651,7 @@ def infer_stop(
                 "model": name,
                 "stopped": False,
                 "phase": phase.value,
-                "handle_id": handle.handle_id,
+                "engine_pid": handle.handle_id,
             },
         )
     render(result, output)

@@ -8,6 +8,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
 import os
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -98,6 +99,34 @@ class TestLaunchOne:
         assert "full" in message
 
     @pytest.mark.anyio
+    async def test_log_file_per_role_is_honored(self, tmp_path: Path):
+        """A caller-chosen log path is created and recorded in the handle."""
+        log_file = tmp_path / "results" / "logs" / "m" / "full.log"
+        cmd = BackendCommand(cli_args=["sh", "-c", "exit 0"], role="full")
+        with patch("sieval.infer.deployer.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock(pid=4242)
+            handle = await LocalDeployer()._launch_one(cmd, log_file=log_file)
+        assert log_file.exists()
+        assert handle.metadata["log_file"] == str(log_file)
+
+    @pytest.mark.anyio
+    async def test_default_log_names_differ_within_one_second(self, tmp_path: Path):
+        """Two launches in the same second no longer share one log file."""
+        cmd = BackendCommand(cli_args=["sh", "-c", "exit 0"], role="full")
+        with (
+            patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
+            patch("sieval.infer.deployer.ENGINE_LOG_DIR", tmp_path),
+        ):
+            mock_popen.return_value = MagicMock(pid=4242)
+            first = await LocalDeployer()._launch_one(cmd)
+            second = await LocalDeployer()._launch_one(cmd)
+        assert first.metadata["log_file"] != second.metadata["log_file"]
+        assert re.fullmatch(
+            r"full-\d{8}T\d{6}Z-[0-9a-f]{8}\.log",
+            Path(str(first.metadata["log_file"])).name,
+        )
+
+    @pytest.mark.anyio
     async def test_rejected_launch_creates_no_log_dir_and_names_no_log(
         self, tmp_path: Path
     ):
@@ -112,7 +141,7 @@ class TestLaunchOne:
         )
 
         with (
-            patch("sieval.infer.deployer._LOG_DIR", log_dir),
+            patch("sieval.infer.deployer.ENGINE_LOG_DIR", log_dir),
             patch("sieval.infer.deployer.logger") as mock_logger,
             pytest.raises(DeployError),
         ):
@@ -161,7 +190,7 @@ class TestLaunchOne:
 
         with (
             patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
-            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+            patch("sieval.infer.deployer.ENGINE_LOG_DIR", Path("/tmp")),
         ):
             mock_popen.return_value = MagicMock(pid=4242)
             handle = await deployer._launch_one(cmd)
@@ -214,7 +243,7 @@ class TestLaunchOne:
 
         with (
             patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
-            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+            patch("sieval.infer.deployer.ENGINE_LOG_DIR", Path("/tmp")),
         ):
             mock_popen.return_value = MagicMock(pid=777)
             handle = await deployer._launch_one(cmd)
@@ -234,7 +263,7 @@ class TestLaunchOne:
 
         with (
             patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
-            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+            patch("sieval.infer.deployer.ENGINE_LOG_DIR", Path("/tmp")),
         ):
             mock_process = MagicMock()
             mock_process.pid = 12345
@@ -258,7 +287,7 @@ class TestLaunchOne:
 
         with (
             patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
-            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+            patch("sieval.infer.deployer.ENGINE_LOG_DIR", Path("/tmp")),
         ):
             mock_process = MagicMock()
             mock_process.pid = 99999
@@ -280,7 +309,7 @@ class TestLaunchOne:
 
         with (
             patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
-            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+            patch("sieval.infer.deployer.ENGINE_LOG_DIR", Path("/tmp")),
         ):
             mock_process = MagicMock()
             mock_process.pid = 99999
@@ -693,7 +722,7 @@ class TestDeploy:
 
         call_count = 0
 
-        async def mock_launch(cmd):  # noqa: ARG001
+        async def mock_launch(cmd, *, log_file=None):  # noqa: ARG001
             nonlocal call_count
             call_count += 1
             if call_count == 2:
@@ -1191,7 +1220,7 @@ class TestLaunchWithEnv:
 
         with (
             patch("sieval.infer.deployer.subprocess.Popen") as mock_popen,
-            patch("sieval.infer.deployer._LOG_DIR", Path("/tmp")),
+            patch("sieval.infer.deployer.ENGINE_LOG_DIR", Path("/tmp")),
         ):
             mock_process = MagicMock()
             mock_process.pid = 12345
@@ -1213,7 +1242,7 @@ class TestDeployCleanupWarning:
 
         call_count = 0
 
-        async def mock_launch(cmd):  # noqa: ARG001
+        async def mock_launch(cmd, *, log_file=None):  # noqa: ARG001
             nonlocal call_count
             call_count += 1
             if call_count == 2:
