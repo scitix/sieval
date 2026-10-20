@@ -116,11 +116,8 @@ _RFC3339_TIMESTAMP_PATTERN = re.compile(
     r"(?:\.(?P<fraction>\d{1,9}))?"
     r"(?P<offset>Z|[+\-]\d{2}:\d{2})"
 )
-# Per-model limits Google rejects itself (thinking levels/budgets, candidate
-# counts, tool combinations, sampling advice) are not mirrored here: the
-# dialect sends what Google accepts and surfaces Google's 400 otherwise. This
-# pattern keys only the Gemini 3 call-id/signature response contracts. Aliases
-# skip it.
+# Per-model limits are left to Google's 400, not mirrored here. This pattern
+# keys only the Gemini 3 call-id/signature contracts; aliases skip it.
 _GEMINI_3_MODEL_PATTERN = re.compile(r"gemini-3(?:[.\-]|$)")
 _STANDARD_USER_PART_FIELDS = frozenset({"text", "inlineData", "fileData"})
 #: Finish reasons that may leave requested channels empty. ``CONTINUATION``
@@ -867,10 +864,9 @@ _PROVIDER_ERROR_MESSAGE_LIMIT = 500
 
 
 def _raise_for_google_status(response: httpx.Response) -> None:
-    """Raise httpx's status error with Google's own ``error.message`` attached.
+    """Raise httpx's status error with Google's ``error.message`` appended.
 
-    Per-model limits are left to Google, so its reason is the diagnostic; the
-    default httpx text names only the status and URL.
+    Per-model limits are left to Google, so its reason is the diagnostic.
     """
 
     try:
@@ -883,6 +879,7 @@ def _raise_for_google_status(response: httpx.Response) -> None:
         error = payload.get("error") if isinstance(payload, dict) else None
         message = error.get("message") if isinstance(error, dict) else None
         if not isinstance(message, str) or not message:
+            # A proxy in front of Google can answer with a non-JSON body.
             message = response.text.strip()
         if not message:
             raise

@@ -4036,14 +4036,9 @@ tasks:
         profile = session._model_profile_for(grader)
         assert profile.authoritative is False
         assert set(profile.entries) == {
+            "reasoning",
             "sampled_logprobs",
             "top_logprobs",
-            "reasoning",
-            "function_tools",
-            "hosted_tools",
-            "structured_output",
-            "opaque_continuation",
-            "multimodal_input",
         }
         assert all(
             entry.status is ModelCapabilityStatus.SUPPORTED

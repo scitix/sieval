@@ -1820,21 +1820,38 @@ class TestRunDryRun:
         assert "reasoning" in plan["required_capabilities"]
         assert "reasoning" in plan["pending_capabilities"]
 
-    def test_openai_yaml_binding_still_requires_profile_evidence(self, tmp_path):
-        """An OpenAI-compatible server may ignore reasoning, so no default."""
+    @pytest.mark.parametrize(
+        ("dialect", "declaration_yaml"),
+        [
+            # An OpenAI-compatible server may ignore reasoning_effort.
+            ("openai_chat", "    args:\n      reasoning_effort: low\n"),
+            # Google returned 200 for these on every model probed, so a model
+            # lacking them has no measured refusal.
+            (
+                "google_genai",
+                "    capabilities:\n      hosted_tools:\n"
+                "        kinds: [google_search]\n",
+            ),
+            (
+                "google_genai",
+                "    capabilities:\n      structured_output:\n"
+                "        formats: [json_schema]\n",
+            ),
+        ],
+    )
+    def test_yaml_binding_without_a_measured_refusal_requires_profile_evidence(
+        self, tmp_path, dialect, declaration_yaml
+    ):
         from sieval.cli.validation import run_dry_run
 
-        config = tmp_path / "openai-capability.yaml"
+        config = tmp_path / "unmeasured-capability.yaml"
         config.write_text(
             "models:\n"
             "  m:\n"
             "    name: some-model\n"
             "    type: chat\n"
-            "    dialect: openai_chat\n"
-            "    api_base: http://127.0.0.1:9/v1\n"
-            "    args:\n"
-            "      reasoning_effort: low\n"
-            "datasets:\n"
+            f"    dialect: {dialect}\n"
+            "    api_base: http://127.0.0.1:9/v1\n" + declaration_yaml + "datasets:\n"
             "  d:\n"
             "    class: sieval.datasets.aime_2024.AIME2024Dataset\n"
             "tasks:\n"

@@ -635,8 +635,8 @@ def judge_identities(
         sampling: dict[str, JSONValue] = dict(meta["default_params"])
         if "extra" in meta:
             sampling["extra"] = dict(meta["extra"])
-        # Declared capabilities (such as ``reasoning.budget_tokens``) reach the
-        # request through the runtime plan, not the builder defaults.
+        # Capability settings (``reasoning.budget_tokens``) reach the request
+        # through the runtime plan, not ``default_params``.
         plan = judges[role].runtime_plan
         if plan is not None and plan.request_defaults.values:
             sampling["request_defaults"] = plan.request_defaults.to_json_value()

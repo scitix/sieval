@@ -139,15 +139,21 @@ class TestDialectDescriptors:
             "vllm_native": RequestSeedSupport.RESERVED,
         }
 
-    def test_only_google_leaves_model_limits_to_the_provider(self) -> None:
+    def test_only_google_leaves_measured_limits_to_the_provider(self) -> None:
         assert {
-            dialect_id
+            dialect_id: spec.provider_enforced_capabilities
             for dialect_id, spec in DIALECT_SPECS.items()
-            if spec.provider_enforces_model_limits
-        } == {"google_genai"}
+            if spec.provider_enforced_capabilities
+        } == {
+            "google_genai": frozenset({"reasoning", "sampled_logprobs", "top_logprobs"})
+        }
         google = dialect_registry_to_json()["google_genai"]
         assert isinstance(google, dict)
-        assert google["provider_enforces_model_limits"] is True
+        assert google["provider_enforced_capabilities"] == [
+            "reasoning",
+            "sampled_logprobs",
+            "top_logprobs",
+        ]
 
     def test_implemented_dialects_are_active_and_bindable(self) -> None:
         active = {
@@ -177,8 +183,12 @@ class TestDialectDescriptors:
             ({"implementation_status": "active"}, "implementation_status"),
             ({"request_seed_support": "supported"}, "request_seed_support"),
             (
-                {"provider_enforces_model_limits": "yes"},
-                "provider_enforces_model_limits",
+                {"provider_enforced_capabilities": {"reasoning"}},
+                "provider_enforced_capabilities must be a frozenset",
+            ),
+            (
+                {"provider_enforced_capabilities": frozenset({"fim"})},
+                "must be supported by the dialect: fim",
             ),
             (
                 {"request_seed_support": RequestSeedSupport.RESERVED},
