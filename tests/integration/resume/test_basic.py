@@ -124,9 +124,13 @@ class TestResumePartialCompletionOnly:
         assert report1["completed"] == 2
         assert report1["failed"] == 1
 
-        counting_model = CountingMockChatModel(
-            answers={"Q1": "A1", "Q2": "A2", "Q3": "A3"},
-        )
+        # The same model, recovered: another name would be a model switch, which
+        # a resume that infers refuses.
+        class Recovered(CountingMockChatModel):
+            def meta(self):
+                return {**super().meta(), "model": fail_model.meta()["model"]}
+
+        counting_model = Recovered(answers={"Q1": "A1", "Q2": "A2", "Q3": "A3"})
         task2 = ResumeTask(dataset=dataset, model=counting_model, name="partial_only")
         config2 = make_config(tmp_path, result_dir=result_dir, auto_resume=True)
         runner2 = TaskRunner(task2, config2)
