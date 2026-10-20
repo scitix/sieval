@@ -13,6 +13,7 @@ import pytest
 
 from sieval import __version__
 from sieval.core.models import ModelOutput
+from sieval.core.runners.resume_gate import ResumeVersionError
 from sieval.core.runners.runner import (
     ResultDirExistsError,
     TaskRunner,
@@ -137,13 +138,21 @@ class StopTask(RecordTask):
         return await self.model.agenerate(pre["prompt"])
 
 
+class OtherModel(MockCountingChatModel):
+    """A counting mock under another model name, so its inference differs."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._model = "other-model"
+
+
 def _meta(root: Path) -> dict:
     return orjson.loads((root / "meta.json").read_bytes())
 
 
 def _forget_last_sample(root: Path) -> None:
     """Drop the third sample and the report, as an interrupted run leaves them."""
-    (root / "report.json").unlink()
+    (root / "report.json").unlink(missing_ok=True)
     for path in root.rglob("*.idx"):
         lines = path.read_text().splitlines(keepends=True)
         path.write_text("".join(ln for ln in lines if not ln.startswith("2\t")))
@@ -729,6 +738,110 @@ class TestRunStartedHere:
 
     def test_empty_directory_has_not_started(self, tmp_path):
         assert not run_started(tmp_path)
+
+
+class TestShardsMeanStarted:
+    """Shards count as a started run whatever ``meta.json`` says: up to v0.6 it
+    was written only when a run ended or was interrupted, so a killed run left
+    shards and no ``meta.json``. A fresh run must never adopt them."""
+
+    @staticmethod
+    async def _shards_under(tmp_path, meta: str) -> tuple[Path, dict]:
+        """A finished run's shards, with ``meta.json`` emptied of runs, removed,
+        or rewritten as a pre-``runs[]`` one, and no report."""
+        first = _runner(tmp_path)
+        await first.arun()
+        root = first.root_dir
+        recorded = _meta(root)
+        (root / "report.json").unlink()
+        if meta == "runs-empty":
+            (root / "meta.json").write_bytes(orjson.dumps({**recorded, "runs": []}))
+        elif meta == "missing":
+            (root / "meta.json").unlink()
+        else:
+            (root / "meta.json").write_bytes(
+                orjson.dumps({"version": __version__, "deterministic": False})
+            )
+        assert list(root.rglob("*.idx"))
+        return root, recorded
+
+    @staticmethod
+    def _other_model_runner(tmp_path, **cfg):
+        model = OtherModel(default_answer="zzz")
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
+        return _runner(tmp_path, task=task, **cfg), model
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("meta", ["runs-empty", "missing", "pre-runs"])
+    async def test_a_fresh_run_refuses_shards(self, tmp_path, meta):
+        root, _ = await self._shards_under(tmp_path, meta)
+        before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        assert run_started(root)
+        with pytest.raises(ResultDirExistsError) as exc:
+            self._other_model_runner(tmp_path)
+        assert exc.value.path == root
+        assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+
+    @pytest.mark.anyio
+    async def test_runs_empty_with_shards_resumes(self, tmp_path):
+        root, recorded = await self._shards_under(tmp_path, "runs-empty")
+        model = MockCountingChatModel(answers=ANSWERS)
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
+        await _runner(tmp_path, task=task, auto_resume=True).arun()
+        assert model.call_count == 0
+        meta = _meta(root)
+        assert [r["start"] for r in meta["runs"]] == ["resume"]
+        assert meta["runs"][0]["reran"] == []
+        assert meta["identity"]["inference"] == recorded["identity"]["inference"]
+
+    @pytest.mark.anyio
+    async def test_runs_empty_with_shards_keeps_them_the_recorded_models(
+        self, tmp_path
+    ):
+        """Resumed, the model check runs: the samples stay the recorded
+        model's, where a fresh run reported them under the new model."""
+        root, recorded = await self._shards_under(tmp_path, "runs-empty")
+        runner, model = self._other_model_runner(tmp_path, auto_resume=True)
+        await runner.arun()
+        assert model.call_count == 0
+        assert _meta(root)["model"] == recorded["model"] == "mock-chat"
+
+    @pytest.mark.anyio
+    async def test_runs_empty_with_shards_refuses_to_mix_models(self, tmp_path):
+        root, _ = await self._shards_under(tmp_path, "runs-empty")
+        _forget_last_sample(root)
+        runner, model = self._other_model_runner(tmp_path, auto_resume=True)
+        with pytest.raises(StageResumeError, match="'other-model'"):
+            await runner.arun()
+        assert model.call_count == 0
+        assert _meta(root)["runs"] == []
+
+    @pytest.mark.anyio
+    async def test_missing_meta_with_shards_fails_closed(self, tmp_path):
+        root, _ = await self._shards_under(tmp_path, "missing")
+        with pytest.raises(ResumeVersionError) as exc:
+            self._other_model_runner(tmp_path, auto_resume=True)
+        message = str(exc.value)
+        assert str(root) in message
+        assert f"Remove {root}" in message
+        assert "its own result_dir" in message
+        assert not (root / "meta.json").exists()
+
+    @pytest.mark.anyio
+    async def test_a_pre_runs_meta_with_shards_resumes(self, tmp_path):
+        root, _ = await self._shards_under(tmp_path, "pre-runs")
+        runner = _runner(tmp_path, auto_resume=True)
+        await runner.arun()
+        assert [r["start"] for r in _meta(root)["runs"]] == ["resume"]
+
+    @pytest.mark.anyio
+    async def test_an_empty_directory_runs_fresh(self, tmp_path):
+        root = tmp_path / "results"
+        (root / "0" / "final").mkdir(parents=True)
+        assert not run_started(root)
+        runner = _runner(tmp_path)
+        await runner.arun()
+        assert [r["start"] for r in _meta(root)["runs"]] == ["fresh"]
 
 
 class TestBackwardCompatibleRead:

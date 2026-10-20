@@ -85,6 +85,7 @@ from .stage_resume import (
     StageResumeError,
     copy_recorded_dir,
     has_graded,
+    iteration_dirs,
     recorded_identity,
     recorded_sample_digests,
     remove_copied,
@@ -261,17 +262,25 @@ def _read_run_meta(root_dir: Path) -> dict | None:
 def run_started(root_dir: Path) -> bool:
     """Whether a run has started in *root_dir*, so a new one would resume it.
 
-    Read from ``meta.json``'s ``runs[]``, which a run appends before any work.
-    Versions before ``runs[]`` wrote ``meta.json`` once at run start, so a
-    ``meta.json`` without ``runs`` counts; an empty ``runs[]`` does not.
+    Read from ``meta.json``'s ``runs[]``, which a run appends before any work,
+    and from the shards themselves: any ``<iteration>/<stage>/*.idx`` counts.
+    Shards are the signal a ``meta.json`` cannot give. Up to v0.6 it was
+    written only when a run ended or was interrupted, so a killed run left
+    shards and no ``meta.json``; a ``runs[]`` left empty says nothing either.
+    A ``meta.json`` without ``runs``, written before ``runs[]`` existed,
+    counts on its own.
     """
     meta = _read_run_meta(root_dir)
-    if meta is None:
-        return False
-    runs = meta.get("runs")
-    if isinstance(runs, list):
-        return bool(runs)
-    return True
+    if meta is not None:
+        runs = meta.get("runs")
+        if not isinstance(runs, list) or runs:
+            return True
+    return _holds_shards(root_dir)
+
+
+def _holds_shards(root_dir: Path) -> bool:
+    """Whether *root_dir* holds any shard index, ``<iteration>/<stage>/*.idx``."""
+    return any(next(d.glob("*/*.idx"), None) for d in iteration_dirs(root_dir))
 
 
 def read_run_version(root_dir: Path) -> str | None:
@@ -297,17 +306,19 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
     Reads the format-stable ``version`` from ``root_dir/meta.json`` via
     :func:`read_run_version` and applies :func:`resume_version_verdict`.
     Missing, unreadable, or version-less ``meta.json`` is fail-closed
-    (reject). Raises :class:`ResumeVersionError` on reject; logs a warning on
-    a compatible non-exact resume; silent on an exact match.
+    (reject), with a message naming *root_dir* and how to start fresh. Raises
+    :class:`ResumeVersionError` on reject; logs a warning on a compatible
+    non-exact resume; silent on an exact match.
     """
     v_run = read_run_version(root_dir)
     if v_run is None:
         raise ResumeVersionError(
-            format_reject_message(
-                "<missing>",
-                current_version,
-                "meta.json is missing, unreadable, or has no version",
-            )
+            f"Resume aborted: {root_dir} holds a run, but its meta.json is "
+            "missing, unreadable, or has no version, so the sieval version "
+            "that wrote it is unknown.\n"
+            "Either:\n"
+            f"  1. Remove {root_dir} and start fresh\n"
+            "  2. Give the task its own result_dir"
         )
 
     verdict = resume_version_verdict(v_run, current_version)

@@ -119,9 +119,10 @@ def copy_recorded_dir(src: Path, dst: Path) -> list[Path]:
     read-only source yields writable copies. Returns the
     directories created, for :func:`remove_copied` to undo.
 
-    The caller has established that no run started in *dst*, so shard
-    directories already there are an earlier copy interrupted before its run
-    began; they are replaced.
+    The caller has established that no run started in *dst*, so it holds no
+    ``.idx``: shard directories already there are an earlier copy interrupted
+    before its first index, and are replaced. A copy interrupted later holds
+    shards without a run and is refused, as any such directory is.
     """
     remove_copied(iteration_dirs(dst))
     dst.mkdir(parents=True, exist_ok=True)
