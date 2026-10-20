@@ -7,7 +7,6 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-import anyio
 import orjson
 import pytest
 
@@ -25,6 +24,7 @@ from sieval.core.tasks import (
     build_prompt_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks import saver as saver_module
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.loader import TaskLoader
 from sieval.core.tasks.run_meta import aggregate_digest, digest
@@ -694,29 +694,30 @@ class TestBackwardCompatibleRead:
 # Failed writes fail the task
 # ===================================================================
 class TestFailedWrites:
+    @staticmethod
+    def _fail_replace_of(monkeypatch, name, error, *, after=0):
+        """Make the atomic replace onto *name* raise *error* after *after* calls."""
+        real_replace = saver_module.os.replace
+        calls = {"n": 0}
+
+        def _replace(src, dst):
+            if Path(dst).name == name:
+                calls["n"] += 1
+                if calls["n"] > after:
+                    raise error
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(saver_module.os, "replace", _replace)
+
     @pytest.mark.anyio
     async def test_meta_write_failure_fails_the_task(self, tmp_path, monkeypatch):
-        real_replace = anyio.Path.replace
-
-        async def _replace(self, target):
-            if Path(str(target)).name == "meta.json":
-                raise OSError("read-only file system")
-            return await real_replace(self, target)
-
-        monkeypatch.setattr(anyio.Path, "replace", _replace)
+        self._fail_replace_of(monkeypatch, "meta.json", OSError("read-only fs"))
         with pytest.raises(OSError, match="read-only"):
             await _runner(tmp_path).arun()
 
     @pytest.mark.anyio
     async def test_report_write_failure_fails_the_task(self, tmp_path, monkeypatch):
-        real_replace = anyio.Path.replace
-
-        async def _replace(self, target):
-            if Path(str(target)).name == "report.json":
-                raise OSError("disk full")
-            return await real_replace(self, target)
-
-        monkeypatch.setattr(anyio.Path, "replace", _replace)
+        self._fail_replace_of(monkeypatch, "report.json", OSError("disk full"))
         runner = _runner(tmp_path)
         with pytest.raises(OSError, match="disk full"):
             await runner.arun()
@@ -724,6 +725,133 @@ class TestFailedWrites:
         run = _meta(runner.root_dir)["runs"][-1]
         assert "reran" not in run
         assert "ended" not in run
+
+    @pytest.mark.anyio
+    async def test_a_meta_write_failing_mid_run_keeps_finished_samples(
+        self, tmp_path, monkeypatch
+    ):
+        """The data and prompt identity write runs inside a stage worker. When it
+        fails the task still fails, but the shard records already buffered reach
+        disk instead of dying with the storage worker."""
+        samples = [{"question": f"q{i}", "answer": str(i)} for i in range(40)]
+        # The first write is `begin_run`; the second is the input identity.
+        self._fail_replace_of(monkeypatch, "meta.json", OSError("EIO"), after=1)
+        task = RecordTask(dataset=MockDataset(samples), model=MockChatModel(), name="t")
+        runner = TaskRunner(
+            task,
+            make_config(
+                tmp_path,
+                write_buffer_size=1000,
+                write_buffer_flush_interval=3600,
+            ),
+        )
+        with pytest.raises(ExceptionGroup) as raised:
+            await runner.arun()
+        assert raised.group_contains(OSError, match="EIO")
+
+        records = sum(
+            len(path.read_text().splitlines())
+            for path in runner.root_dir.rglob("*.jsonl")
+        )
+        assert records > 0
+        assert (runner.root_dir / "manifest.json").exists()
+        assert run_started(runner.root_dir)
+
+
+class TestEndRunFailure:
+    """A run whose `report.json` landed but whose `runs[]` entry never ended is
+    not complete; the next resume finalizes it again instead of reusing it."""
+
+    @staticmethod
+    async def _end_run_fails(runner):
+        async def _boom(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        runner._saver.end_run = _boom
+        with pytest.raises(OSError, match="disk full"):
+            await runner.arun()
+        assert (runner.root_dir / "report.json").exists()
+        assert "ended" not in _meta(runner.root_dir)["runs"][-1]
+
+    async def _assert_refinalized(self, tmp_path):
+        reports: list = []
+
+        class Spy(RecordTask):
+            async def report(self, finals, fails):
+                reports.append(len(finals))
+                return await super().report(finals, fails)
+
+        model = MockCountingChatModel(answers=ANSWERS)
+        task = Spy(dataset=MockDataset(SAMPLES), model=model, name="t")
+        resumed = _runner(tmp_path, task=task, auto_resume=True)
+        await resumed.arun()
+        meta = _meta(resumed.root_dir)
+        assert reports == [3]  # `report()` reran on the recorded samples
+        assert model.call_count == 0  # nothing was inferred again
+        last = meta["runs"][-1]
+        assert last["start"] == "resume"
+        assert last["reran"] == []
+        assert last["reported"] is True
+        assert meta["identity"]["inference"]["requests"]["samples"] == 3
+
+    @pytest.mark.anyio
+    async def test_full_run(self, tmp_path):
+        await self._end_run_fails(_runner(tmp_path))
+        await self._assert_refinalized(tmp_path)
+
+    @pytest.mark.anyio
+    async def test_all_terminal_early_exit(self, tmp_path):
+        first = _runner(tmp_path)
+        await first.arun()
+        (first.root_dir / "report.json").unlink()
+        await self._end_run_fails(_runner(tmp_path, auto_resume=True))
+        await self._assert_refinalized(tmp_path)
+
+    @pytest.mark.anyio
+    async def test_fast_resume(self, tmp_path):
+        await _runner(tmp_path).arun()
+        await self._end_run_fails(_runner(tmp_path, auto_resume=True))
+        await self._assert_refinalized(tmp_path)
+
+    @pytest.mark.anyio
+    async def test_an_ended_run_is_still_fast_resumed(self, tmp_path):
+        await _runner(tmp_path).arun()
+        model = MockCountingChatModel(answers=ANSWERS)
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
+        loaded = AsyncMock()
+        runner = _runner(tmp_path, task=task, auto_resume=True)
+        runner._loader.load_initial_state = loaded
+        await runner.arun()
+        loaded.assert_not_called()
+        assert _meta(runner.root_dir)["runs"][-1]["reran"] == []
+
+
+class TestReported:
+    @pytest.mark.anyio
+    async def test_a_report_of_none_is_not_reported(self, tmp_path):
+        class NoReport(RecordTask):
+            async def report(self, finals, fails):
+                return None
+
+        task = NoReport(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t")
+        runner = _runner(tmp_path, task=task)
+        await runner.arun()
+        assert not (runner.root_dir / "report.json").exists()
+        run = _meta(runner.root_dir)["runs"][-1]
+        assert "ended" in run
+        assert "reported" not in run
+
+
+class TestJudgeModelRef:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("bad", ['{"grader": ', '["hm://m/1"]', '{"grader": 1}'])
+    async def test_a_malformed_ref_refuses_the_run(self, tmp_path, monkeypatch, bad):
+        """A bad value used to erase the grader identity silently, and a JSON
+        array passed as one plain reference."""
+        monkeypatch.setenv("SIEVAL_JUDGE_MODEL_REF", bad)
+        with pytest.raises(ValueError, match="SIEVAL_JUDGE_MODEL_REF"):
+            _runner(tmp_path)
+        assert not (tmp_path / "results").exists()
 
 
 def test_model_output_is_imported_for_type_registry():

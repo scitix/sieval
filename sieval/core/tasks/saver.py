@@ -1,12 +1,15 @@
 """Buffered async shard writer with atomic manifest, report and meta persistence."""
 
 import contextlib
+import os
+import tempfile
 import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import anyio
+import anyio.to_thread
 import orjson
 import xxhash
 from anyio.streams.memory import MemoryObjectReceiveStream
@@ -36,17 +39,27 @@ class _Unset:
 _UNSET = _Unset()
 
 
-async def _atomic_write(path: Path, data: bytes) -> None:
-    """Write *data* to a sibling temporary file, then replace *path* with it."""
-    tmp_path = path.with_suffix(".tmp")
+def _atomic_write_sync(path: Path, data: bytes) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        async with await anyio.open_file(tmp_path, "wb") as f:
-            await f.write(data)
-        await anyio.Path(tmp_path).replace(path)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
-            await anyio.Path(tmp_path).unlink(missing_ok=True)
+            os.unlink(tmp)
         raise
+
+
+async def _atomic_write(path: Path, data: bytes) -> None:
+    """Write *data* to a unique temporary file beside *path*, fsync, then replace.
+
+    The temporary name is unique per call, so two writers never share one, and
+    the data is on disk before the rename makes it visible.
+    """
+    await anyio.to_thread.run_sync(_atomic_write_sync, path, data)
 
 
 class TaskSaver:
@@ -188,8 +201,9 @@ class TaskSaver:
 
         ``version``, ``deterministic`` and ``task`` describe the run that
         created the directory: a resume keeps the persisted values and never
-        backfills a missing ``task`` block, since it would describe the
-        resuming process rather than the run that produced the samples. A
+        backfills a missing ``deterministic`` or ``task``, since either would
+        describe the resuming process rather than the run that produced the
+        samples. A
         fresh run writes its own. A stage identity given here replaces the
         carried one (``None`` sets it unknown); a stage not given is carried
         from a resumed ``meta.json`` of the same identity schema.
@@ -200,10 +214,10 @@ class TaskSaver:
         existing = await self._read_meta() if resumed else None
         meta: TaskRunMeta
         if existing is not None and isinstance(existing.get("version"), str):
-            meta = {
-                "version": existing["version"],
-                "deterministic": existing.get("deterministic", self._deterministic),
-            }
+            meta = cast(TaskRunMeta, {"version": existing["version"]})
+            # Carried only when recorded: a pre-feature run never said.
+            if isinstance(existing.get("deterministic"), bool):
+                meta["deterministic"] = existing["deterministic"]
             if isinstance(existing.get("task"), dict):
                 meta["task"] = existing["task"]
         else:

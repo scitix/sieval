@@ -57,7 +57,7 @@ class TaskRunMeta(TypedDict):
     """
 
     version: str
-    deterministic: bool
+    deterministic: NotRequired[bool]
     task: NotRequired[TaskRunIdentity]
     model: NotRequired[str]
     identity: NotRequired[RunIdentity]

@@ -17,11 +17,14 @@ The four stage identities describe the run that produced the current
                runner keys and the serving recipe, plus ``requests``: every
                sample's request parameters as the dialect sent them, so a
                ``stop`` or ``max_tokens`` a task passes at call time counts.
+               Only what defines a request counts there: its body and whether
+               it streamed, never the method, path, query or model name.
                The model under test, the engine build and the SiEval version
                are left out.
 ``grader``     The source of every module the task class reaches by a static
-               import walk under :data:`GRADER_PACKAGES`, and each judge's
-               model, version, sampling arguments and prompt.
+               import walk under :data:`GRADER_PACKAGES` and the ``sieval_*``
+               plugin package of each class in its MRO, and each judge's model,
+               version, sampling arguments and prompt.
 =============  ==============================================================
 
 Every digest is ``sha256:`` over canonical JSON (sorted keys, no whitespace).
@@ -68,9 +71,9 @@ GRADER_PACKAGES: tuple[str, ...] = (
     "sieval_shared",
 )
 
-#: Environment variable naming the served judge, set by an orchestrator (such as
-#: Harmony) that serves it. A plain value applies to every judge role; a JSON
-#: object maps role to reference.
+#: Environment variable naming the served judge, set by the orchestrator that
+#: serves it. A plain value applies to every judge role; a JSON object maps role
+#: to reference. Checked once by :func:`validate_judge_model_ref`.
 JUDGE_MODEL_REF_ENV = "SIEVAL_JUDGE_MODEL_REF"
 
 #: The runner keys whose value changes the samples a run produces.
@@ -280,15 +283,66 @@ def call_key(model_meta: Mapping) -> str:
     )
 
 
+#: Request-parameter keys that say where or how a request was sent, or name the
+#: model, rather than what was asked. ``stream_options`` only asks for usage.
+_TRANSPORT_KEYS = frozenset(
+    {
+        "model",
+        "method",
+        "path",
+        "query",
+        "url",
+        "api_base",
+        "base_url",
+        "headers",
+        "extra_headers",
+        "stream",
+        "stream_options",
+    }
+)
+
+
+def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
+    """What defines a request, out of a dialect's ``request_params``.
+
+    Dialects record two shapes: a flat body (OpenAI, Anthropic, SGLang) and an
+    HTTP envelope with ``body``, ``path`` and ``query`` (Google, whose path
+    names the model and whose method and ``alt`` query say whether it
+    streamed). Both reduce to ``{"body": …, "stream": bool}``, so neither the
+    model under test nor the gateway prefix reaches the digest.
+    """
+    body = params.get("body")
+    if isinstance(body, Mapping) and "path" in params:
+        path = params.get("path")
+        query = params.get("query")
+        streamed_path = isinstance(path, str) and path.endswith(
+            ":streamGenerateContent"
+        )
+        sse = (
+            isinstance(query, Mapping)
+            and cast(Mapping[Any, object], query).get("alt") == "sse"
+        )
+        stream = streamed_path or sse
+        source: Mapping[Any, object] = cast(Mapping[Any, object], body)
+    else:
+        stream = params.get("stream") is True
+        source = params
+    return {
+        "body": {k: v for k, v in source.items() if k not in _TRANSPORT_KEYS},
+        "stream": bool(stream),
+    }
+
+
 def request_digest(
     model_calls: Iterable[Mapping[str, object]], candidate: str
 ) -> str | None:
-    """Digest the request parameters of the calls *candidate* made.
+    """Digest what the calls *candidate* made asked for.
 
     *candidate* is the model under test's :func:`call_key`; a judge called
-    from the same stage is left out. ``None`` when no candidate call was
-    recorded, or one has no ``request_params``: what was sent is then unknown,
-    not "nothing".
+    from the same stage is left out. Each call counts by
+    :func:`request_definition`. ``None`` when no candidate call was recorded,
+    or one has no ``request_params``: what was sent is then unknown, not
+    "nothing".
     """
     sent = []
     for call in model_calls:
@@ -298,7 +352,7 @@ def request_digest(
         params = call.get("request_params")
         if not isinstance(params, Mapping):
             return None
-        sent.append(params)
+        sent.append(request_definition(params))
     if not sent:
         return None
     try:
@@ -357,8 +411,26 @@ def inference_identity(
 # ---------------------------------------------------------------------------
 
 
-def _followed(name: str) -> bool:
-    return any(name == root or name.startswith(root + ".") for root in GRADER_PACKAGES)
+def _followed(name: str, roots: Iterable[str] = GRADER_PACKAGES) -> bool:
+    return any(name == root or name.startswith(root + ".") for root in roots)
+
+
+def _own_root(module: str) -> str | None:
+    """The top-level package of *module* when it is a SiEval plugin.
+
+    A plugin need not be named ``sieval_plugins``: a task class in
+    ``sieval_sysbench_plugin.task`` makes ``sieval_sysbench_plugin`` part of its
+    grader. Only ``sieval_*`` packages with source on disk count, so a test
+    module, a third-party base class or ``sieval`` itself (whose ``core`` and
+    ``datasets`` stay out) never widens the walk.
+    """
+    top = module.partition(".")[0]
+    if not top.startswith("sieval_"):
+        return None
+    located = _locate(top)
+    if located is None or located[0] is None:
+        return None
+    return top
 
 
 def _root_dirs(top: str) -> list[str]:
@@ -422,7 +494,9 @@ def _resolve_relative(current: str, is_package: bool, level: int, target: str) -
     return f"{base}.{target}" if target else base
 
 
-def _imports_of(name: str, source: bytes, is_package: bool) -> set[str]:
+def _imports_of(
+    name: str, source: bytes, is_package: bool, roots: Sequence[str]
+) -> set[str]:
     """Module names *source* imports, read from its AST.
 
     ``from pkg import x`` names the submodule ``pkg.x`` when there is one, else
@@ -443,7 +517,7 @@ def _imports_of(name: str, source: bytes, is_package: bool) -> set[str]:
                 )
             else:
                 module = node.module or ""
-            if not module or not _followed(module):
+            if not module or not _followed(module, roots):
                 continue
             for alias in node.names:
                 submodule = f"{module}.{alias.name}"
@@ -452,20 +526,30 @@ def _imports_of(name: str, source: bytes, is_package: bool) -> set[str]:
 
 
 def grader_modules(task_cls: type) -> dict[str, str]:
-    """Digest the modules reachable from *task_cls* under :data:`GRADER_PACKAGES`.
+    """Digest the modules reachable from *task_cls*'s grading code.
 
-    Starts at the module of every class in the MRO and follows imports by a
-    static AST walk over source files found by path, so nothing is imported or
-    run. Returns ``{module: "sha256:…"}`` over each module's source bytes.
+    The walk follows :data:`GRADER_PACKAGES` and the ``sieval_*`` plugin
+    package of each class in the MRO (see :func:`_own_root`). It starts at the
+    module of every class in the MRO and follows imports by a static AST walk
+    over source files found by path, so nothing is imported or run. Returns
+    ``{module: "sha256:…"}`` over each module's source bytes.
     """
+    own = {
+        root
+        for klass in task_cls.__mro__
+        if (root := _own_root(klass.__module__)) is not None
+    }
+    roots = (*GRADER_PACKAGES, *sorted(own - set(GRADER_PACKAGES)))
     pending = [
-        klass.__module__ for klass in task_cls.__mro__ if _followed(klass.__module__)
+        klass.__module__
+        for klass in task_cls.__mro__
+        if _followed(klass.__module__, roots)
     ]
     seen: set[str] = set()
     modules: dict[str, str] = {}
     while pending:
         name = pending.pop()
-        if name in seen or not _followed(name):
+        if name in seen or not _followed(name, roots):
             continue
         seen.add(name)
         located = _locate(name)
@@ -477,28 +561,69 @@ def grader_modules(task_cls: type) -> dict[str, str]:
         with open(path, "rb") as f:
             source = f.read()
         modules[name] = "sha256:" + hashlib.sha256(source).hexdigest()
-        pending.extend(_imports_of(name, source, is_package))
+        pending.extend(_imports_of(name, source, is_package, roots))
     return dict(sorted(modules.items()))
+
+
+def _parse_judge_model_ref(raw: str) -> str | dict[str, str] | None:
+    """Parse :data:`JUDGE_MODEL_REF_ENV`: ``None`` unset, a plain ref, or by role.
+
+    A value starting with ``{`` or ``[`` is meant as JSON, so it must parse as
+    an object of role to string; anything else is one plain reference.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+    if not raw.startswith(("{", "[")):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{JUDGE_MODEL_REF_ENV} is not valid JSON ({exc}); set a plain "
+            'reference, or a JSON object such as {"grader": "<ref>"}'
+        ) from None
+    if not isinstance(parsed, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+    ):
+        raise ValueError(
+            f"{JUDGE_MODEL_REF_ENV} must be a plain reference or a JSON object "
+            f"mapping each judge role to a string, got {raw!r}"
+        )
+    return parsed
+
+
+def validate_judge_model_ref(environ: Mapping[str, str] | None = None) -> None:
+    """Fail on a malformed :data:`JUDGE_MODEL_REF_ENV` before any work starts.
+
+    Raises ``ValueError`` naming the variable. Called when a run starts, so a
+    bad value stops it rather than leaving every grader identity unknown.
+    """
+    _parse_judge_model_ref(
+        (os.environ if environ is None else environ).get(JUDGE_MODEL_REF_ENV, "")
+    )
 
 
 def judge_model_refs(
     roles: Iterable[str], environ: Mapping[str, str] | None = None
 ) -> dict[str, str]:
     """Read :data:`JUDGE_MODEL_REF_ENV` into ``{role: ref}`` for *roles*."""
-    raw = (os.environ if environ is None else environ).get(JUDGE_MODEL_REF_ENV, "")
-    raw = raw.strip()
-    if not raw:
+    parsed = _parse_judge_model_ref(
+        (os.environ if environ is None else environ).get(JUDGE_MODEL_REF_ENV, "")
+    )
+    if parsed is None:
         return {}
-    if raw.startswith("{"):
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict) or not all(
-            isinstance(v, str) for v in parsed.values()
-        ):
-            raise ValueError(
-                f"{JUDGE_MODEL_REF_ENV} must be a string or a JSON object of strings"
-            )
-        return {role: parsed[role] for role in roles if role in parsed}
-    return dict.fromkeys(roles, raw)
+    if isinstance(parsed, str):
+        return dict.fromkeys(roles, parsed)
+    return {role: parsed[role] for role in roles if role in parsed}
+
+
+def judge_model_id(model: str) -> str:
+    """A judge's model id without Google's ``models/`` resource prefix.
+
+    ``models/gemini-x`` and ``gemini-x`` name one model.
+    """
+    return model.removeprefix("models/")
 
 
 def judge_identities(
@@ -517,7 +642,7 @@ def judge_identities(
             sampling["extra"] = dict(meta["extra"])
         entry: JudgeIdentity = {
             "role": role,
-            "model": meta["model"],
+            "model": judge_model_id(meta["model"]),
             "version": (versions or {}).get(role),
             "sampling": sampling,
             "prompt": digest(prompts[role]) if role in prompts else None,

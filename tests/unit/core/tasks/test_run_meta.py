@@ -29,11 +29,14 @@ from sieval.core.tasks.run_meta import (
     grader_modules,
     inference_identity,
     judge_identities,
+    judge_model_id,
     judge_model_refs,
     new_run_record,
     ordered_stages,
     prompt_of,
+    request_definition,
     request_digest,
+    validate_judge_model_ref,
 )
 from tests.conftest import MockChatModel, MockJudgeModel
 
@@ -183,6 +186,60 @@ class TestRequestDigest:
     def test_unknown_when_what_was_sent_will_not_digest(self):
         key = call_key(self.CANDIDATE)
         assert request_digest([self._call(self.CANDIDATE, x=object())], key) is None
+
+
+class TestRequestDefinition:
+    """Only the body and a stream flag define a request, for every dialect."""
+
+    KEY = call_key({"model": "m", "api_base": None, "default_params": {}})
+
+    def _digest(self, params):
+        return request_digest(
+            [{"model": {"model": "m", "default_params": {}}, "request_params": params}],
+            self.KEY,
+        )
+
+    @staticmethod
+    def _google(model, prefix="/v1beta", stream=False, temperature=0.2):
+        method = "streamGenerateContent" if stream else "generateContent"
+        params = {
+            "method": "POST",
+            "path": f"{prefix}/models/{model}:{method}",
+            "body": {"generationConfig": {"temperature": temperature}},
+        }
+        if stream:
+            params["query"] = {"alt": "sse"}
+        return params
+
+    def test_google_path_model_and_gateway_are_left_out(self):
+        a = self._digest(self._google("gemini-2.5-flash"))
+        assert a == self._digest(self._google("gemini-2.5-pro"))
+        assert a == self._digest(self._google("gemini-2.5-flash", prefix="/gw/v1"))
+        assert a != self._digest(self._google("gemini-2.5-flash", temperature=0.3))
+
+    def test_google_streaming_counts_once_normalized(self):
+        streamed = self._google("gemini-2.5-flash", stream=True)
+        assert request_definition(streamed) == {
+            "body": {"generationConfig": {"temperature": 0.2}},
+            "stream": True,
+        }
+        assert self._digest(streamed) != self._digest(self._google("gemini-2.5-flash"))
+
+    def test_flat_bodies_drop_model_and_stream_options(self):
+        chat = {
+            "model": "a",
+            "temperature": 0,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        assert request_definition(chat) == {"body": {"temperature": 0}, "stream": True}
+        assert self._digest(chat) == self._digest(chat | {"model": "b"})
+        assert self._digest(chat) != self._digest(chat | {"stream": False})
+
+    def test_a_flat_and_an_envelope_spelling_agree(self):
+        flat = {"temperature": 0.2, "stream": False}
+        envelope = {"method": "POST", "path": "/x", "body": {"temperature": 0.2}}
+        assert request_definition(flat) == request_definition(envelope)
 
 
 # ===================================================================
@@ -390,6 +447,53 @@ class TestGraderModules:
         assert grader_modules(Local) == {}
 
 
+class TestGraderPluginPackages:
+    """A plugin package named `sieval_<x>_plugin` is followed like `sieval_plugins`."""
+
+    @pytest.fixture
+    def plugin(self, tmp_path, monkeypatch):
+        root = tmp_path / "plug"
+        pkg = root / "sieval_sysbench_plugin"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        (pkg / "_scoring.py").write_text("X = 1\n")
+        (pkg / "task.py").write_text(
+            "from sieval.core.tasks.task import Task\n"
+            "from sieval.tasks import _math_verify\n"
+            "from ._scoring import X\n"
+            "class PTask(Task):\n    pass\n"
+        )
+        monkeypatch.syspath_prepend(str(root))
+        import importlib
+
+        yield pkg, importlib.import_module("sieval_sysbench_plugin.task").PTask
+        for name in list(sys.modules):
+            if name.startswith("sieval_sysbench_plugin"):
+                sys.modules.pop(name, None)
+
+    def test_its_own_package_is_walked(self, plugin):
+        _, task_cls = plugin
+        modules = grader_modules(task_cls)
+        assert "sieval_sysbench_plugin.task" in modules
+        assert "sieval_sysbench_plugin._scoring" in modules
+        assert "sieval.tasks._math_verify" in modules
+        excluded = ("sieval.core", "sieval.datasets")
+        assert not any(m.startswith(excluded) for m in modules)
+
+    def test_a_changed_plugin_helper_changes_the_digest(self, plugin):
+        pkg, task_cls = plugin
+        before = grader_modules(task_cls)
+        (pkg / "_scoring.py").write_text("X = 2\n")
+        assert grader_modules(task_cls) != before
+
+    def test_a_non_plugin_package_is_not_followed(self):
+        class Local:
+            pass
+
+        Local.__module__ = "tests.conftest"
+        assert grader_modules(Local) == {}
+
+
 class TestJudges:
     def test_judge_is_recorded_without_its_endpoint(self):
         judge = MockJudgeModel(temperature=0.0)
@@ -429,9 +533,34 @@ class TestJudges:
         assert judge_model_refs(["grader"], {}) == {}
         assert judge_model_refs(["grader"], {JUDGE_MODEL_REF_ENV: "  "}) == {}
 
-    def test_env_ref_bad_json_raises(self):
+    @pytest.mark.parametrize(
+        "bad", ['{"grader": 1}', '{"grader": ', '["hm://m/1"]', "[", '{"1": ["x"]}']
+    )
+    def test_env_ref_bad_json_raises(self, bad):
+        """A value that starts like JSON must be a JSON object of strings; a
+        JSON array is no longer taken as one plain reference."""
         with pytest.raises(ValueError, match=JUDGE_MODEL_REF_ENV):
-            judge_model_refs(["grader"], {JUDGE_MODEL_REF_ENV: '{"grader": 1}'})
+            judge_model_refs(["grader"], {JUDGE_MODEL_REF_ENV: bad})
+        with pytest.raises(ValueError, match=JUDGE_MODEL_REF_ENV):
+            validate_judge_model_ref({JUDGE_MODEL_REF_ENV: bad})
+
+    @pytest.mark.parametrize("good", ["", "hm://m/1", '{"grader": "hm://m/1"}'])
+    def test_env_ref_valid_values_pass(self, good):
+        validate_judge_model_ref({JUDGE_MODEL_REF_ENV: good})
+
+    def test_judge_model_id_strips_googles_resource_prefix(self):
+        assert judge_model_id("models/gemini-2.5-pro") == "gemini-2.5-pro"
+        assert judge_model_id("gemini-2.5-pro") == "gemini-2.5-pro"
+        assert judge_model_id("org/models/x") == "org/models/x"
+
+    def test_a_models_prefixed_judge_is_one_model(self):
+        prefixed = MockJudgeModel()
+        prefixed._model = "models/gemini-x"
+        plain = MockJudgeModel()
+        plain._model = "gemini-x"
+        assert judge_identities({"g": prefixed}, {}) == judge_identities(
+            {"g": plain}, {}
+        )
 
     def test_env_ref_lands_in_the_judge_entry(self):
         env = {JUDGE_MODEL_REF_ENV: "harmony://m/judge@3"}
