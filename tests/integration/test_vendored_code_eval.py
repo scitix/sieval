@@ -66,4 +66,6 @@ async def test_sieval_starts_grades_with_and_stops_the_vendored_evaluator(
 
     assert not pid_alive(pid)
     assert _ENDPOINT_ENV not in os.environ
-    assert (tmp_path / "logs" / CODE_EVAL / "server.log").stat().st_size > 0
+    assert (
+        tmp_path / "logs" / "services" / CODE_EVAL / "server.log"
+    ).stat().st_size > 0

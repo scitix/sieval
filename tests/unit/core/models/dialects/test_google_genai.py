@@ -286,6 +286,7 @@ class TestRequestLowering:
         assert result.texts == ("Hi",)
         assert result.finish_reasons == ("STOP",)
         assert result.request_params == {
+            "envelope": "http",
             "method": "POST",
             "path": expected_path,
             "body": {
@@ -2448,6 +2449,65 @@ class TestReasoningAndStructuredOutput:
         )
 
         assert result.reasoning == (None,)
+
+    @pytest.mark.anyio
+    async def test_a_summary_with_no_thoughts_back_is_recorded_as_no_effect(
+        self,
+    ) -> None:
+        """Google accepts `includeThoughts` on a model that then returns none
+        (measured: gemini-3.5-flash with `thinkingBudget: 0`). Sent as written,
+        not refused; the record says the control had no effect."""
+        result = await _run(
+            lambda _: httpx.Response(200, json=_response()),
+            _request(reasoning=ReasoningParams(summary="auto")),
+        )
+        assert result.request_params is not None
+        assert result.request_params["no_effect"] == ["reasoning.summary"]
+        assert result.request_params["body"]["generationConfig"]["thinkingConfig"] == {
+            "includeThoughts": True
+        }
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("budget", "thoughts", "no_effect"),
+        [(128, 0, True), (128, None, True), (128, 40, False)],
+    )
+    async def test_a_budget_the_reply_contradicts_is_recorded_as_no_effect(
+        self, budget: int, thoughts: int | None, no_effect: bool
+    ) -> None:
+        usage: dict[str, object] = {"promptTokenCount": 4, "candidatesTokenCount": 2}
+        if thoughts is not None:
+            usage["thoughtsTokenCount"] = thoughts
+        result = await _run(
+            lambda _: httpx.Response(200, json=_response(usage=usage)),
+            _request(reasoning=ReasoningParams(budget_tokens=budget)),
+        )
+        assert result.request_params is not None
+        recorded = result.request_params.get("no_effect", [])
+        assert ("reasoning.budget_tokens" in recorded) is no_effect
+
+    @pytest.mark.anyio
+    async def test_controls_that_took_effect_record_nothing(self) -> None:
+        result = await _run(
+            lambda _: httpx.Response(
+                200,
+                json=_response([{"text": "hmm", "thought": True}, {"text": "Hi"}]),
+            ),
+            _request(reasoning=ReasoningParams(budget_tokens=128, summary="auto")),
+        )
+        assert result.request_params is not None
+        assert "no_effect" not in result.request_params
+
+    @pytest.mark.anyio
+    async def test_a_truncated_reply_records_no_effect_for_nothing(self) -> None:
+        result = await _run(
+            lambda _: httpx.Response(
+                200, json=_response([{"text": ""}], finish_reason="MAX_TOKENS")
+            ),
+            _request(reasoning=ReasoningParams(summary="auto")),
+        )
+        assert result.request_params is not None
+        assert "no_effect" not in result.request_params
 
     @pytest.mark.anyio
     async def test_requested_summary_rejects_whitespace_only_thoughts(self) -> None:

@@ -2,6 +2,7 @@
 
 import contextlib
 import os
+import stat
 import tempfile
 import time
 from collections.abc import Iterable, Sequence
@@ -40,9 +41,32 @@ class _Unset:
 _UNSET = _Unset()
 
 
+def _process_umask() -> int:
+    """The process umask, read once: ``os.umask`` can only be read by setting it."""
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return mask
+
+
+_UMASK = _process_umask()
+
+
+def _replacement_mode(path: Path) -> int:
+    """*path*'s mode, else ``0o666 & ~umask`` as ``open()`` gives.
+
+    ``mkstemp`` alone creates ``0o600``, unreadable to another uid.
+    """
+    try:
+        return stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        return 0o666 & ~_UMASK
+
+
 def _atomic_write_sync(path: Path, data: bytes) -> None:
+    mode = _replacement_mode(path)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
@@ -141,12 +165,17 @@ class TaskSaver:
         # Final flush on stream close
         await self.flush()
 
-    async def drain(self, stream: MemoryObjectReceiveStream[TaskContext]) -> None:
-        """Take every context *stream* still holds, flush, and close it.
+    async def drain(
+        self,
+        stream: MemoryObjectReceiveStream[TaskContext],
+        also: Iterable[TaskContext] = (),
+    ) -> None:
+        """Take every context *stream* still holds, then *also*, flush, and close.
 
         For a run that stopped before :meth:`consume_stream` reached the end of
         its stream: *stream* is a clone of that receiver, so the contexts sent
-        but never received are still in it.
+        but never received are still in it. *also* are finished contexts that
+        never reached the stream.
         """
         with stream:
             while True:
@@ -156,6 +185,9 @@ class TaskSaver:
                     break
                 self._update_manifest_entry(ctx)
                 self._stage_queue.append(ctx)
+        for ctx in also:
+            self._update_manifest_entry(ctx)
+            self._stage_queue.append(ctx)
         await self.flush()
 
     async def flush(self) -> None:
@@ -222,6 +254,7 @@ class TaskSaver:
         resumed: bool,
         run_from: RunFrom | None = None,
         model: str | None = None,
+        keep_recorded_model: bool = False,
         config_diff: Sequence[str] = (),
         data: DigestedStage | None | _Unset = _UNSET,
         prompt: DigestedStage | None | _Unset = _UNSET,
@@ -244,6 +277,10 @@ class TaskSaver:
         since this run created the directory; the copied directory and its
         identity are recorded in ``runs[].from``. Self-creates ``_root_dir``. A
         failed write raises.
+
+        *keep_recorded_model* keeps a resumed directory's ``model`` when
+        *model* differs, since the inference on disk is the recorded model's;
+        *model* then goes in this run's ``runs[]`` entry.
         """
         from sieval import __version__
 
@@ -260,7 +297,10 @@ class TaskSaver:
             meta = {"version": __version__, "deterministic": self._deterministic}
             if self._task_identity is not None:
                 meta["task"] = self._task_identity
-        if model is not None:
+        recorded_model = (existing or {}).get("model")
+        if keep_recorded_model and isinstance(recorded_model, str):
+            meta["model"] = recorded_model
+        elif model is not None:
             meta["model"] = model
         meta["identity"] = carried_identity(existing)
         if run_from is not None:
@@ -270,6 +310,8 @@ class TaskSaver:
             run = new_run_record(
                 __version__, "resume" if resumed else "fresh", config=config_diff
             )
+        if model is not None and meta.get("model") != model:
+            run["model"] = model
         meta["runs"] = [*carried_runs(existing), run]
         self._run_index = len(meta["runs"])
         self._meta = meta

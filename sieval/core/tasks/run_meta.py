@@ -48,7 +48,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, NotRequired, TypedDict, cast
 
-from sieval.core.models import Model
+from loguru import logger
+
+from sieval.core.models import REQUEST_ENVELOPE_HTTP, REQUEST_ENVELOPE_KEY, Model
 from sieval.core.types import JSONValue
 
 from .services import ServiceIdentity
@@ -172,6 +174,7 @@ RunRecord = TypedDict(
         "reported": NotRequired[bool],
         "interrupted": NotRequired[bool],
         "config": NotRequired[list[str]],
+        "model": NotRequired[str],
         "from": NotRequired[RunFrom],
     },
 )
@@ -186,9 +189,11 @@ samples is ``reran: []`` with ``reported: true``. A run
 stopped by an interrupt writes ``ended`` and ``interrupted: true``, and no
 ``reran``. An entry with no ``ended`` is a run that is still going, or was
 killed or failed before it could say so. ``config`` is the config diff a resume
-made, present when non-empty. ``from`` names the directory a resume across tasks
-copied, with that directory's identity when it was copied (``None`` stages for a
-directory that recorded none).
+made, present when non-empty. ``model`` is this run's model under test, present
+only when it differs from the directory's ``model``, which stays the one whose
+samples are on disk. ``from`` names
+the directory a resume across tasks copied, with that directory's identity when
+it was copied (``None`` stages for a directory that recorded none).
 """
 
 
@@ -296,12 +301,10 @@ def call_key(model_meta: Mapping) -> str:
     )
 
 
-#: Request-parameter keys that say how a request was sent, or name the model,
-#: rather than what was asked: the keys a dialect's ``request_params`` actually
-#: carries. ``stream_options`` only asks for usage.
-_TRANSPORT_KEYS = frozenset(
-    {"model", "method", "path", "query", "stream", "stream_options"}
-)
+#: Keys of a flat request body that say how it was sent, or name the model,
+#: rather than what was asked. ``stream_options`` only asks for usage. An HTTP
+#: envelope's ``method``, ``path`` and ``query`` never reach the body.
+_TRANSPORT_KEYS = frozenset({"model", "stream", "stream_options"})
 
 
 def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
@@ -310,11 +313,14 @@ def request_definition(params: Mapping[Any, object]) -> dict[str, object]:
     Dialects record two shapes: a flat body (OpenAI, Anthropic, SGLang) and an
     HTTP envelope with ``body``, ``path`` and ``query`` (Google, whose path
     names the model and whose method and ``alt`` query say whether it
-    streamed). Both reduce to ``{"body": …, "stream": bool}``, so neither the
-    model under test nor the gateway prefix reaches the digest.
+    streamed), marked by :data:`REQUEST_ENVELOPE_KEY`. Both reduce to
+    ``{"body": …, "stream": bool}``, so neither the model under test nor the
+    gateway prefix reaches the digest.
     """
     body = params.get("body")
-    if isinstance(body, Mapping) and "path" in params:
+    if params.get(REQUEST_ENVELOPE_KEY) == REQUEST_ENVELOPE_HTTP and isinstance(
+        body, Mapping
+    ):
         path = params.get("path")
         query = params.get("query")
         streamed_path = isinstance(path, str) and path.endswith(
@@ -527,26 +533,85 @@ def _imports_of(
     return found
 
 
+def _patch_root(module: str) -> str | None:
+    """The top-level package of *module* when it may patch a task class.
+
+    A patch (``setattr(Task, "report", report)``) can live in a package of any
+    name. Any package with source on disk counts, except ``sieval`` itself, the
+    standard library and ``site-packages``.
+    """
+    top = module.partition(".")[0]
+    if top in ("sieval", "builtins") or top in sys.stdlib_module_names:
+        return None
+    if _followed(module):
+        return None
+    located = _locate(top)
+    if located is None or located[0] is None:
+        return None
+    parts = os.path.normpath(located[0]).split(os.sep)
+    if "site-packages" in parts or "dist-packages" in parts:
+        return None
+    return top
+
+
+def _function_modules(task_cls: type) -> set[str]:
+    """Modules defining the functions each MRO class holds, its own or patched in."""
+    found: set[str] = set()
+    for klass in task_cls.__mro__:
+        for value in vars(klass).values():
+            func = getattr(value, "__func__", None) or getattr(value, "fget", None)
+            func = func or value
+            module = getattr(func, "__module__", None)
+            if callable(func) and isinstance(module, str) and module:
+                found.add(module)
+    return found
+
+
+def _package_files(name: str, init: str) -> list[str]:
+    """Every module under package *name*, whose ``__init__`` is *init*.
+
+    A package may load modules with ``importlib``, which no import statement
+    shows, so the walk digests it whole.
+    """
+    root = os.path.dirname(init)
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d for d in dirnames if not d.startswith((".", "__pycache__"))
+        )
+        rel = os.path.relpath(dirpath, root)
+        prefix = name if rel == "." else f"{name}.{rel.replace(os.sep, '.')}"
+        for filename in sorted(filenames):
+            if not filename.endswith(".py"):
+                continue
+            stem = filename[:-3]
+            found.append(prefix if stem == "__init__" else f"{prefix}.{stem}")
+    return found
+
+
 def grader_modules(task_cls: type) -> dict[str, str]:
     """Digest the modules reachable from *task_cls*'s grading code.
 
-    The walk follows :data:`GRADER_PACKAGES` and the ``sieval_*`` plugin
-    package of each class in the MRO (see :func:`_own_root`). It starts at the
-    module of every class in the MRO and follows imports by a static AST walk
-    over source files found by path, so nothing is imported or run. Returns
+    The walk starts at the module of every class in the MRO and of every
+    function they hold, so a patched-in method counts. It follows
+    :data:`GRADER_PACKAGES`, each class's plugin package (:func:`_own_root`)
+    and each patch's package (:func:`_patch_root`) by a static AST walk, so
+    nothing is imported or run. Every package reached is digested whole
+    (:func:`_package_files`), except the :data:`GRADER_PACKAGES` roots. Returns
     ``{module: "sha256:…"}`` over each module's source bytes.
     """
-    own = {
+    starts = {klass.__module__ for klass in task_cls.__mro__}
+    own = {root for module in starts if (root := _own_root(module)) is not None}
+    patched = {
         root
-        for klass in task_cls.__mro__
-        if (root := _own_root(klass.__module__)) is not None
+        for module in _function_modules(task_cls) - starts
+        if (root := _patch_root(module)) is not None
     }
-    roots = (*GRADER_PACKAGES, *sorted(own - set(GRADER_PACKAGES)))
-    pending = [
-        klass.__module__
-        for klass in task_cls.__mro__
-        if _followed(klass.__module__, roots)
-    ]
+    extra = sorted((own | patched) - set(GRADER_PACKAGES))
+    roots = (*GRADER_PACKAGES, *extra)
+    pending = [m for m in starts | _function_modules(task_cls) if _followed(m, roots)]
+    # A plugin or patch package is digested whole, from its root.
+    pending.extend(extra)
     seen: set[str] = set()
     modules: dict[str, str] = {}
     while pending:
@@ -564,6 +629,8 @@ def grader_modules(task_cls: type) -> dict[str, str]:
             source = f.read()
         modules[name] = "sha256:" + hashlib.sha256(source).hexdigest()
         pending.extend(_imports_of(name, source, is_package, roots))
+        if is_package and name not in GRADER_PACKAGES:
+            pending.extend(_package_files(name, path))
     return dict(sorted(modules.items()))
 
 
@@ -620,12 +687,45 @@ def judge_model_refs(
     return {role: parsed[role] for role in roles if role in parsed}
 
 
-def judge_model_id(model: str) -> str:
-    """A judge's model id without Google's ``models/`` resource prefix.
+def warn_unmatched_judge_refs(
+    roles: Iterable[str], environ: Mapping[str, str] | None = None
+) -> list[str]:
+    """Warn about :data:`JUDGE_MODEL_REF_ENV` roles none of *roles* match.
 
-    ``models/gemini-x`` and ``gemini-x`` name one model.
+    Such a reference is never recorded, most likely a typo. Returns them.
     """
-    return model.removeprefix("models/")
+    parsed = _parse_judge_model_ref(
+        (os.environ if environ is None else environ).get(JUDGE_MODEL_REF_ENV, "")
+    )
+    if not isinstance(parsed, dict):
+        return []
+    known = set(roles)
+    unmatched = sorted(set(parsed) - known)
+    if unmatched:
+        logger.warning(
+            "{} names judge role(s) {} that no task in this run has (roles: {}); "
+            "those references are not recorded",
+            JUDGE_MODEL_REF_ENV,
+            ", ".join(unmatched),
+            ", ".join(sorted(known)) or "none",
+        )
+    return unmatched
+
+
+#: Google's resource prefixes for a model id: a base model and a tuned one.
+_GOOGLE_MODEL_PREFIXES = ("models/", "tunedModels/")
+
+
+def judge_model_id(model: str) -> str:
+    """A judge's model id without Google's resource prefix.
+
+    ``models/gemini-x`` and ``gemini-x`` name one model, as do
+    ``tunedModels/my-judge`` and ``my-judge``.
+    """
+    for prefix in _GOOGLE_MODEL_PREFIXES:
+        if model.startswith(prefix):
+            return model.removeprefix(prefix)
+    return model
 
 
 def judge_identities(

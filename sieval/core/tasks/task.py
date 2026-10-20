@@ -386,7 +386,9 @@ class Task[
 
     #: Constructor parameters :meth:`grader_args` never reports: the inputs every
     #: task takes, the pooled role models (each judge is identified on its own),
-    #: and pure scheduling.
+    #: and pure scheduling. A task adds its own arguments that cannot change a
+    #: verdict: ``Task.GRADER_ARGS_EXCLUDED | {"workers"}``. Every other
+    #: constructor argument counts, and a change to it regrades.
     GRADER_ARGS_EXCLUDED: ClassVar[frozenset[str]] = frozenset(
         {"self", "dataset", "model", "name", "models_by_role", "max_concurrency"}
     )
@@ -394,12 +396,12 @@ class Task[
     def grader_args(self) -> Mapping[str, JSONValue]:
         """Task arguments that change how answers are graded, for ``meta.json``.
 
-        Part of the grader identity. The default reads each constructor
-        parameter of the task's classes back as ``self._<name>`` or
-        ``self.<name>``, leaving out :attr:`GRADER_ARGS_EXCLUDED`,
-        :meth:`inference_args`, :class:`Model` values (judges are identified by
-        :meth:`judge_models`) and anything not JSON. Override it when a task
-        keeps an argument under another name.
+        Part of the grader identity, read after :meth:`setup`. The default reads
+        each constructor parameter of the task's classes back as
+        ``self._<name>`` or ``self.<name>``, leaving out
+        :attr:`GRADER_ARGS_EXCLUDED`, :meth:`inference_args`, :class:`Model`
+        values (judges are identified by :meth:`judge_models`) and anything not
+        JSON. Override it when a task keeps an argument under another name.
         """
         excluded = set(self.GRADER_ARGS_EXCLUDED) | set(self.inference_args())
         names: list[str] = []

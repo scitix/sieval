@@ -920,3 +920,12 @@ def test_db_path_is_built_from_the_staged_dir(tmp_path):
 
     task = _task(db_dir=str(db_dir), tables_json_path=str(tables))
     assert task._db_path("concert_singer") == str(target)
+
+
+def test_overridden_databases_are_part_of_the_grader() -> None:
+    """An override may point at other databases, which changes the score. The
+    default (`None`, resolved from the dataset) is the same on every mount."""
+    default = _task().grader_args()
+    assert default["test_suite_db_dir"] is None
+    overridden = _task(test_suite_db_dir="/a/ts").grader_args()
+    assert overridden["test_suite_db_dir"] == "/a/ts"

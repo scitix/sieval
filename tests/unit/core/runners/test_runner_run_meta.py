@@ -18,6 +18,7 @@ from sieval.core.runners.runner import (
     TaskRunner,
     run_started,
 )
+from sieval.core.runners.stage_resume import StageResumeError
 from sieval.core.tasks import (
     TaskStageOutput,
     build_judgement_record,
@@ -138,6 +139,16 @@ class StopTask(RecordTask):
 
 def _meta(root: Path) -> dict:
     return orjson.loads((root / "meta.json").read_bytes())
+
+
+def _forget_last_sample(root: Path) -> None:
+    """Drop the third sample and the report, as an interrupted run leaves them."""
+    (root / "report.json").unlink()
+    manifest = orjson.loads((root / "manifest.json").read_bytes())
+    (root / "manifest.json").write_bytes(orjson.dumps(manifest[:2]))
+    for path in root.rglob("*.idx"):
+        lines = path.read_text().splitlines(keepends=True)
+        path.write_text("".join(ln for ln in lines if not ln.startswith("2\t")))
 
 
 def _runner(tmp_path, task=None, **cfg):
@@ -535,6 +546,63 @@ class TestResume:
         assert meta["identity"] == identity
 
     @pytest.mark.anyio
+    async def test_a_resume_with_another_model_keeps_the_recorded_one(self, tmp_path):
+        """Not refused, but not a fast resume either: `model` stays the one
+        whose samples are on disk, the invoking model goes in `runs[]`, and what
+        was sent is unknown rather than the old model's requests."""
+        await _runner(tmp_path).arun()
+        root = tmp_path / "results"
+
+        class Other(MockCountingChatModel):
+            def __init__(self):
+                super().__init__(answers=ANSWERS)
+                self._model = "other-model"
+
+            def meta(self):
+                return {**super().meta(), "model": "other-model"}
+
+        model = Other()
+        reports: list[int] = []
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
+        original = task.report
+
+        async def _spy(finals, fails):
+            reports.append(len(finals))
+            return await original(finals, fails)
+
+        setattr(task, "report", _spy)  # noqa: B010
+        await _runner(tmp_path, task=task, auto_resume=True).arun()
+        meta = _meta(root)
+        assert model.call_count == 0
+        assert reports == [3]  # not fast-resumed
+        assert meta["model"] == "mock-chat"
+        assert meta["runs"][-1]["model"] == "other-model"
+        assert "model" not in meta["runs"][0]
+        assert meta["identity"]["inference"]["requests"]["digest"] is None
+
+    @pytest.mark.anyio
+    async def test_a_resume_with_another_model_that_would_infer_is_refused(
+        self, tmp_path
+    ):
+        """Inferring the one sample left would score two models under one name."""
+        root = tmp_path / "results"
+        await _runner(tmp_path).arun()
+        _forget_last_sample(root)
+        before = (root / "meta.json").read_bytes()
+
+        class Other(MockCountingChatModel):
+            def meta(self):
+                return {**super().meta(), "model": "other-model"}
+
+        model = Other(answers=ANSWERS)
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
+        runner = _runner(tmp_path, task=task, auto_resume=True)
+        with pytest.raises(StageResumeError, match="1 sample"):
+            await runner.arun()
+        assert model.call_count == 0
+        assert (root / "meta.json").read_bytes() == before
+
+    @pytest.mark.anyio
     async def test_resume_reruns_only_what_was_left(self, tmp_path):
         """Two samples finished before the interruption; the resume reruns one
         from the start, and the identity covers all three."""
@@ -543,14 +611,7 @@ class TestResume:
         await fresh.arun()
         full = _meta(root)["identity"]
 
-        # Forget the third sample and the report, as an interrupted run leaves it.
-        (root / "report.json").unlink()
-        manifest = orjson.loads((root / "manifest.json").read_bytes())
-        (root / "manifest.json").write_bytes(orjson.dumps(manifest[:2]))
-        for path in root.rglob("*.idx"):
-            lines = path.read_text().splitlines(keepends=True)
-            path.write_text("".join(ln for ln in lines if not ln.startswith("2\t")))
-
+        _forget_last_sample(root)
         model = MockCountingChatModel(answers=ANSWERS)
         task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
         resumed = _runner(tmp_path, task=task, auto_resume=True)
@@ -777,6 +838,47 @@ class TestFailedWrites:
         assert {s for s, c in on_disk.items() if c.is_terminal()} == finished
         assert run_started(runner.root_dir)
 
+    @pytest.mark.anyio
+    async def test_an_interrupt_under_backpressure_keeps_finished_samples(
+        self, tmp_path, monkeypatch
+    ):
+        """With a slow storage worker and one-slot streams, finished samples
+        wait in the storage stream, in the compute stream's buffer and in sends
+        blocked on either. An interrupt must still leave every one on disk."""
+        samples = [{"question": f"q{i}", "answer": str(i)} for i in range(12)]
+
+        async def _slow(self, stream):
+            async with stream:
+                async for ctx in stream:
+                    self._update_manifest_entry(ctx)
+                    self._stage_queue.append(ctx)
+                    await anyio.sleep(0.01)
+
+        monkeypatch.setattr(TaskSaver, "consume_stream", _slow)
+        graded: list[int] = []
+
+        class CountingTask(RecordTask):
+            async def feedback(self, post, ctx):
+                # No checkpoint between here and the stage's send: a sample in
+                # `graded` is finished.
+                graded.append(ctx.sample_id)
+                return await super().feedback(post, ctx)
+
+        task = CountingTask(
+            dataset=MockDataset(samples), model=MockChatModel(), name="t"
+        )
+        runner = TaskRunner(task, make_config(tmp_path))
+        runner._stream_buffer_capacity = 1
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(runner.arun)
+            while len(graded) < 6:
+                await anyio.sleep(0.001)
+            tg.cancel_scope.cancel()
+
+        loader = TaskLoader(task=task, root_dir=runner.root_dir)
+        on_disk = await loader.load_initial_state()
+        assert {s for s, c in on_disk.items() if c.is_terminal()} == set(graded)
+
 
 class TestEndRunFailure:
     """A run whose `report.json` landed but whose `runs[]` entry never ended is
@@ -834,6 +936,17 @@ class TestEndRunFailure:
         await _runner(tmp_path).arun()
         await self._end_run_fails(_runner(tmp_path, auto_resume=True))
         await self._assert_refinalized(tmp_path)
+
+    @pytest.mark.anyio
+    async def test_refinalizing_writes_the_anomaly_report(self, tmp_path):
+        """The failed run stopped before `anomalies.json`; the rerun that
+        finalizes it takes the all-terminal exit and writes it there."""
+        await self._end_run_fails(_runner(tmp_path, detect_anomalies=True))
+        root = tmp_path / "results"
+        assert not (root / "anomalies.json").exists()
+        await _runner(tmp_path, auto_resume=True, detect_anomalies=True).arun()
+        anomalies = orjson.loads((root / "anomalies.json").read_bytes())
+        assert anomalies["summary"]["final_samples"] == 3
 
     @pytest.mark.anyio
     async def test_an_ended_run_is_still_fast_resumed(self, tmp_path):

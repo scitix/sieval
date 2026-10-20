@@ -220,6 +220,10 @@ class SciCodeZeroShotGenTask(
 ):
     services = frozenset({CODE_EVAL})
 
+    #: Where the test data is mounted, resolved in `setup()`; the same file
+    #: elsewhere must not regrade.
+    GRADER_ARGS_EXCLUDED = Task.GRADER_ARGS_EXCLUDED | {"h5_path"}
+
     def __init__(
         self,
         dataset,

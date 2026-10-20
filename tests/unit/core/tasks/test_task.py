@@ -719,6 +719,29 @@ class TestIdentityHooks:
             != self._task(judge_model="b").grader_args()
         )
 
+    def test_a_task_extends_the_exclusions(self):
+        class Scheduled(_JudgedArgsTask):
+            GRADER_ARGS_EXCLUDED = _JudgedArgsTask.GRADER_ARGS_EXCLUDED | {"workers"}
+
+            def __init__(self, dataset, model, workers: int = 4, **kwargs):
+                super().__init__(dataset, model, **kwargs)
+                self._workers = workers
+
+        assert (
+            "workers" not in Scheduled(_SimpleDataset(), _MockChatModel()).grader_args()
+        )
+
+    def test_a_file_location_counts_unless_excluded(self):
+        """No name rule: `gold_file` may point at other gold data."""
+
+        class Located(_JudgedArgsTask):
+            def __init__(self, dataset, model, gold_file="/c"):
+                super().__init__(dataset, model)
+                self._gold_file = gold_file
+
+        args = Located(_SimpleDataset(), _MockChatModel()).grader_args()
+        assert args["gold_file"] == "/c"
+
     def test_a_task_without_extra_args_has_none(self):
         task = _ConcreteTask(_SimpleDataset(), _MockChatModel())
         assert task.grader_args() == {}

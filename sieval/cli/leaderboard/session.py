@@ -3201,6 +3201,11 @@ class EvalSession:
         )
         _emit_best_effort_deterministic_warning(labels)
 
+    @property
+    def required_services(self) -> frozenset[str]:
+        """The vendored services the configured tasks declare, once prelaunch ran."""
+        return frozenset(self._required_services)
+
     def prepare_prelaunch(self) -> ReconcileResult:
         """Public pure setup seam for launch-before-I/O capability validation."""
 

@@ -942,3 +942,12 @@ async def test_report_empty_is_zero():
     task = _task(model)
     report = await task.report([], [])
     assert report["score"] == 0.0
+
+
+def test_the_data_file_location_is_not_part_of_the_grader():
+    """`h5_path` is resolved in `setup()` and differs per mount; neither may
+    regrade an unchanged resume."""
+    a = _task(_ScriptedChatModel([]), h5_path="/mnt/a/raw_ground.h5").grader_args()
+    b = _task(_ScriptedChatModel([]), h5_path="/mnt/b/raw_ground.h5").grader_args()
+    assert "h5_path" not in a
+    assert a == b

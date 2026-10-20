@@ -351,6 +351,8 @@ class TestPrelaunchSequencing:
         launch.assert_not_awaited()
         cleanup.assert_not_awaited()
         prepare_prelaunch.assert_called_once()
+        # Vendored services are checked here too, before any engine starts.
+        assert prepare_prelaunch.call_args.kwargs["check_services"] is True
         assert set(prepare_prelaunch.call_args.kwargs["infer_plans"]) == {
             "model_a",
             "model_b",
@@ -399,6 +401,51 @@ class TestPrelaunchSequencing:
         ):
             await _run_all(config_path)
 
+        launch.assert_not_awaited()
+
+
+class TestReservedServiceLogDir:
+    @pytest.mark.anyio
+    async def test_a_model_named_services_is_refused_before_launch(
+        self, tmp_path: Path
+    ):
+        """Vendored services log under `logs/services/`; a served model of that
+        name would share it."""
+        from sieval.cli.run import _run_all
+
+        config_path = tmp_path / "cfg.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "models": {
+                        "services": {
+                            "path": "/tmp/a",
+                            "infer": {"backend": "vllm", "recipe": "test"},
+                        }
+                    },
+                    "tasks": {},
+                }
+            )
+        )
+        translator = MagicMock()
+        translator.translate.return_value = []
+        prelaunch_result = MagicMock()
+        prelaunch_result.deployment_plans = {}
+        launch = AsyncMock()
+        with (
+            patch(
+                "sieval.cli.run.resolve_infer_config",
+                new=AsyncMock(return_value=("services", _fake_plan(), {})),
+            ),
+            patch("sieval.cli.run.get_translator", return_value=translator),
+            patch("sieval.cli.run.launch_model", new=launch),
+            patch(
+                "sieval.cli.validation.prepare_prelaunch_reconciliation",
+                return_value=prelaunch_result,
+            ),
+            pytest.raises(ValueError, match="reserved"),
+        ):
+            await _run_all(config_path)
         launch.assert_not_awaited()
 
 

@@ -9,8 +9,10 @@ import os
 import stat
 from pathlib import Path
 
+import anyio
 import orjson
 import pytest
+from loguru import logger
 
 from sieval.core.runners.runner import TaskRunner
 from sieval.core.runners.stage_resume import (
@@ -132,6 +134,44 @@ class TestSameDirectory:
         assert model.call_count == 0
         assert task.calls["report"] == 0
         assert _meta(runner.root_dir)["runs"][-1]["reran"] == []
+
+    @pytest.mark.anyio
+    async def test_an_argument_resolved_in_setup_still_fast_resumes(self, tmp_path):
+        """The fast resume compares the grader after `setup()`, as SciCode
+        resolves its data file there."""
+
+        class Resolving(QATask):
+            def __init__(self, dataset, model, name=None, mode: str | None = None):
+                super().__init__(dataset, model, name=name)
+                self._mode = mode
+
+            async def setup(self):
+                if self._mode is None:
+                    self._mode = "strict"
+
+        task, _ = _task(cls=Resolving)
+        await _run(tmp_path, "first", task)
+        task, model = _task(cls=Resolving)
+        runner, _ = await _run(tmp_path, "first", task, auto_resume=True)
+        assert model.call_count == 0
+        assert task.calls["report"] == 0
+        assert _meta(runner.root_dir)["runs"][-1]["reran"] == []
+
+    @pytest.mark.anyio
+    async def test_an_excluded_argument_does_not_regrade(self, tmp_path):
+        class Workers(QATask):
+            GRADER_ARGS_EXCLUDED = QATask.GRADER_ARGS_EXCLUDED | {"workers"}
+
+            def __init__(self, dataset, model, name=None, workers: int = 4):
+                super().__init__(dataset, model, name=name)
+                self._workers = workers
+
+        task, _ = _task(cls=Workers)
+        await _run(tmp_path, "first", task)
+        task, _ = _task(cls=Workers, workers=8)
+        await _run(tmp_path, "first", task, auto_resume=True)
+        assert task.calls["postprocess"] == 0
+        assert task.calls["report"] == 0
 
     @pytest.mark.anyio
     async def test_a_grader_difference_regrades_on_recorded_inference(self, tmp_path):
@@ -499,6 +539,109 @@ class TestPreIdentityDirectory:
         )
         with pytest.raises(StageResumeError, match="stage `data`"):
             await runner.arun()
+
+
+class TestInterruptedBeforeEveryPreprocess:
+    """A fresh run stopped before its data identity was written; rerunning the
+    same command resumes it, however often."""
+
+    @staticmethod
+    async def _interrupted(tmp_path, *, record_meta, fail_one):
+        scope = anyio.CancelScope()
+
+        class Slow(QATask):
+            async def preprocess(self, raw, ctx):
+                if fail_one and ctx.sample_id == 1:
+                    raise ValueError("bad sample")
+                if ctx.sample_id == 2:
+                    await anyio.sleep_forever()
+                return await super().preprocess(raw, ctx)
+
+            async def postprocess(self, inf, ctx):
+                if ctx.sample_id == 0:
+                    scope.cancel()
+                    await anyio.sleep_forever()
+                return await super().postprocess(inf, ctx)
+
+        task, _ = _task(cls=Slow)
+        with scope:
+            await _run(tmp_path, "qa", task, record_meta=record_meta)
+        root = tmp_path / "qa"
+        assert _meta(root)["identity"]["data"] is None
+        return root
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("record_meta", "fail_one"), [(False, False), (True, True)]
+    )
+    async def test_rerunning_resumes(self, tmp_path, record_meta, fail_one):
+        root = await self._interrupted(
+            tmp_path, record_meta=record_meta, fail_one=fail_one
+        )
+        for _ in range(2):
+            task, _ = _task()
+            report = await _run(
+                tmp_path, "qa", task, auto_resume=True, record_meta=record_meta
+            )
+            assert report[1]["total"] == 3
+        runs = _meta(root)["runs"]
+        assert [r["start"] for r in runs] == ["fresh", "resume", "resume"]
+        assert all("ended" in r for r in runs)
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(("record_meta", "calls"), [(True, 1), (False, 3)])
+    async def test_finished_samples_rerun_only_without_digests(
+        self, tmp_path, record_meta, calls
+    ):
+        """Samples 0 and 1 finished. With `record_meta` off their data cannot be
+        checked, so they are inferred again, and the log says why."""
+        scope = anyio.CancelScope()
+        interrupting = True
+
+        class Slow(QATask):
+            async def preprocess(self, raw, ctx):
+                if interrupting and ctx.sample_id == 2:
+                    await anyio.sleep_forever()
+                return await super().preprocess(raw, ctx)
+
+            async def feedback(self, post, ctx):
+                result = await super().feedback(post, ctx)
+                if interrupting and ctx.sample_id == 1:
+                    scope.cancel()
+                return result
+
+        task, _ = _task(cls=Slow)
+        with scope:
+            await _run(tmp_path, "qa", task, record_meta=record_meta)
+        interrupting = False
+
+        records: list = []
+        sink = logger.add(records.append, format="{message}", level="WARNING")
+        try:
+            task, model = _task(cls=Slow)
+            await _run(tmp_path, "qa", task, auto_resume=True, record_meta=record_meta)
+        finally:
+            logger.remove(sink)
+        assert model.call_count == calls
+        warned = any("cannot be checked" in str(r) for r in records)
+        assert warned is not record_meta
+
+    @pytest.mark.anyio
+    async def test_a_refused_resume_appends_no_run(self, tmp_path):
+        """Every refusal comes before `begin_run`, not just the inference one."""
+        root = await _first(tmp_path)
+        _strip_identities(root)
+        (root / "report.json").unlink()
+        before = (root / "meta.json").read_bytes()
+        task, _ = _task()
+        runner = TaskRunner(
+            task,
+            make_config(tmp_path, result_dir=str(root), auto_resume=True),
+            legacy_match={"inference": True},
+        )
+        with pytest.raises(StageResumeError, match="stage `data`"):
+            await runner.arun()
+        assert (root / "meta.json").read_bytes() == before
 
 
 def test_recorded_identity_reads_only_this_schema():

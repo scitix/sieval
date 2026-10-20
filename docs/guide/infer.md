@@ -107,9 +107,11 @@ Graded programs run with the evaluator's host and interpreter: LiveOIBench needs
 `g++` on `PATH`, MultiPL-E each language's toolchain, SciCode the `scicode`
 group. LiveOIBench and MultiPL-E refuse to start when their toolchain is missing.
 
+`sieval run` checks the copy and the interpreter before it starts any engine.
 The service's handle is `run-<pid>/service-<name>.json` and its log
-`<result_dir>/logs/<name>/server.log`, else `~/.sieval/logs/<name>/`. Only one
-run per process may start a given service.
+`<result_dir>/logs/services/<name>/server.log`, else `~/.sieval/logs/<name>/`;
+a served model may not be named `services`. Only one run per process may start
+a given service. SIGTERM stops a run as Ctrl+C does, and it exits 143.
 
 Each task's `meta.json` records what graded it under `identity.grader.services`:
 `"source": "vendored"` with the `VENDORED.md` commit, a digest of the
@@ -197,7 +199,12 @@ Rejected before any network I/O:
   `type: object` parameter root.
 
 Other per-model limits (thinking budgets, candidate counts, tool combinations)
-are also left to Google's 400. The Gemini 3 call-id/`thoughtSignature`
+are also left to Google's 400. Google may accept `thinkingBudget` and
+`includeThoughts` and ignore them. They are sent as written; a reply with no
+thought tokens for a budget, or no thought parts for a summary, records
+`"no_effect": ["reasoning.budget_tokens"]` or `["reasoning.summary"]` in
+`request_params`. A reply cut short (`MAX_TOKENS`, `SAFETY`) records nothing.
+The Gemini 3 call-id/`thoughtSignature`
 contracts match the model name, so a gateway alias not starting with
 `gemini-3` skips them.
 

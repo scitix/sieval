@@ -339,6 +339,7 @@ class TaskRunner:
         self._grader_stamp: str | None = None
         self._data_match: bool | None = None
         self._resume_plan: dict[str, int] = {}
+        self._unverified_inference = 0
         # Run history: actions executed this run, each sample's data and prompt
         # digests as of its first preprocess, and judge versions the API
         # reported, by role.
@@ -424,6 +425,7 @@ class TaskRunner:
         self._progress: TaskProgress | None = None
         self._active_counts: dict[str, int] = defaultdict(int)
         self._interrupted: bool = False
+        self._stored_terminal: set[str | int] = set()
 
         # Anomaly Detection
         self._anomaly_detector = TaskAnomalyDetector(root_dir=self._root_dir)
@@ -490,81 +492,14 @@ class TaskRunner:
             The report produced by ``task.report()``, or ``None`` if
             interrupted before completion.
         """
-        # 0. Check for cached report (Fast Resume)
-        # If report.json exists and is valid, we consider the task completed.
-        if self._auto_resume:
-            cached_report = await self._loader.load_cached_report()
-            if cached_report is not None and not await self._last_run_ended():
-                # The run that wrote this report never ended (`end_run`
-                # failed, or a later run stopped short): finalize again
-                # through the full path, which reruns `report()` on the
-                # shards instead of trusting the cached one.
-                logger.info(
-                    "report.json found, but the run that wrote it never ended; "
-                    "finalizing again"
-                )
-                cached_report = None
-            if cached_report is not None and self._run_from is not None:
-                # A copied directory always runs: its report is another task's.
-                cached_report = None
-            if cached_report is not None and not self._recorded_stages_match():
-                logger.info(
-                    "report.json found, but its run's stage identities differ "
-                    "from this run's; resuming stage by stage"
-                )
-                cached_report = None
-            if cached_report is not None:
-                # Check if we need to retry failures
-                has_failures, all_final = await self._loader.get_manifest_status()
-                if not has_failures and all_final:
-                    # Generate anomaly report if needed on resume
-                    if (
-                        self._config.detect_anomalies
-                        and self._config.detect_anomalies_on_resume
-                    ):
-                        # Load existing report to check if regeneration needed
-                        await self._anomaly_detector.load()
-                        if self._anomaly_detector.needs_regeneration():
-                            logger.info(
-                                "Anomaly detection rules changed, "
-                                "regenerating anomaly report"
-                            )
-                            # Load contexts to generate anomaly report
-                            self._contexts = await self._loader.load_initial_state()
-                            # Hydrate only FINAL and FAILED samples
-                            await self._loader.hydrate(
-                                self._contexts,
-                                self._hydrated_ids,
-                                include_stages={TaskStage.FINAL, TaskStage.FAILED},
-                                prepare_retries=False,
-                                record_each_stage=self._record_each_stage,
-                            )
-                            # Only detects anomalies in the latest iteration
-                            # (loader keeps the highest-iteration offset).
-                            await self._anomaly_detector.generate_and_save(
-                                self._contexts,
-                                self._task.name,
-                                task_tags=self._task.tags,
-                                backup_if_changed=True,
-                            )
-                        else:
-                            logger.info(
-                                "Anomaly detection rules unchanged, "
-                                "using cached anomaly report"
-                            )
-                    # Nothing reran, so the identity stays the one that
-                    # produced this report; only the run is recorded.
-                    await self._saver.begin_run(
-                        resumed=True,
-                        model=self._model_name(),
-                        config_diff=self._resume_config_diff,
-                    )
-                    await self._saver.end_run(())
-                    return cached_report
-
         try:
-            # 0.5. Lifecycle Setup
+            # 0. Lifecycle Setup
             await self._task.setup()
+
+            # 0.5. Fast Resume: a finished run's report.json is reused.
+            cached = await self._fast_resume()
+            if cached is not None:
+                return cached
 
             if self._recorded is not None:
                 self._seed_judge_versions(self._recorded)
@@ -576,19 +511,32 @@ class TaskRunner:
             grader = self._grader_identity()
             self._grader_stamp = grader_key(grader)
             resumed = self._resumed_from_existing or self._run_from is not None
+            changed: list[str | int] = []
+            keeps_recorded_model = False
             if resumed:
-                # Read the recorded state first: a refusal must leave the
-                # recorded meta.json as it was.
+                # Plan before `begin_run`: a refusal leaves meta.json as it was.
                 self._contexts = await self._loader.load_initial_state()
                 if any(_reuses_inference(c) for c in self._contexts.values()):
                     self._check_inference(inference)
                 self._regrade = self._recorded_grader_stamp() != self._grader_stamp
+                await self._hydrate_initial(resumed=True)
+                # Decide per sample what a resume keeps before failures roll
+                # back, so a sample that failed in grading regrades rather than
+                # reinfers.
+                changed = await self._plan_stage_resume()
+                self._loader.prepare_failed_retries(
+                    self._contexts, self._record_each_stage
+                )
+                keeps_recorded_model = (
+                    self._model_differs() and self._check_model_switch()
+                )
             # A regrade leaves the grader unknown until the run ends: samples it
             # has not reached yet were graded by the recorded grader.
             await self._saver.begin_run(
                 resumed=resumed,
                 run_from=self._run_from,
                 model=self._model_name(),
+                keep_recorded_model=keeps_recorded_model,
                 config_diff=self._resume_config_diff if resumed else (),
                 data=None,
                 prompt=None,
@@ -599,6 +547,7 @@ class TaskRunner:
             # 1. Load Initial State
             if not resumed:
                 self._contexts = await self._loader.load_initial_state()
+                await self._hydrate_initial(resumed=False)
 
             # 2. Determine sample universe (without materializing all raw_samples)
             dataset_size = (
@@ -607,42 +556,6 @@ class TaskRunner:
             pending_ids: list[int] = [
                 i for i in range(dataset_size) if i not in self._contexts
             ]
-            self._total_samples = max(len(self._contexts), dataset_size)
-
-            # 3. Hydrate Data
-            await self._loader.hydrate(
-                self._contexts,
-                self._hydrated_ids,
-                include_stages=(
-                    {
-                        TaskStage.FINAL,
-                        TaskStage.FAILED,
-                        TaskStage.INITIAL,
-                        TaskStage.PREPROCESSED,
-                        TaskStage.INFERRED,
-                        TaskStage.POSTPROCESSED,
-                        TaskStage.FEEDBACK,
-                    }
-                    if self._auto_resume
-                    else {
-                        TaskStage.INITIAL,
-                        TaskStage.PREPROCESSED,
-                        TaskStage.INFERRED,
-                        TaskStage.POSTPROCESSED,
-                        TaskStage.FEEDBACK,
-                    }
-                ),
-                prepare_retries=self._auto_resume and not resumed,
-                record_each_stage=self._record_each_stage,
-            )
-            # Decide per sample what a resume keeps before failures roll back,
-            # so a sample that failed in grading regrades rather than reinfers.
-            changed: list[str | int] = []
-            if resumed:
-                changed = await self._plan_stage_resume()
-                self._loader.prepare_failed_retries(
-                    self._contexts, self._record_each_stage
-                )
             self._total_samples = max(len(self._contexts), dataset_size)
 
             # 4. Prepare Runtime State
@@ -749,6 +662,8 @@ class TaskRunner:
                     report, finals, fails
                 )
                 await self._end_run(reported=reported)
+                # A rerun after a failed `end_run` lands here, owing anomalies.json.
+                await self._save_anomalies(finals, fails)
                 return report
 
             # 6. Setup Progress Tracker
@@ -777,22 +692,29 @@ class TaskRunner:
             storage_send, storage_recv = anyio.create_memory_object_stream(
                 self._stream_buffer_capacity
             )
-            # Outlives the storage worker's own receiver, so what was sent to
-            # storage but never received can still be written.
+            # Outlive the workers' receivers, so what was sent but never
+            # received can still be written.
             storage_leftover = storage_recv.clone()
+            compute_leftover = compute_recv.clone()
+            # Terminal samples on disk or handed to storage.
+            self._stored_terminal = {
+                sid for sid, ctx in self._contexts.items() if ctx.is_terminal()
+            }
 
             try:
                 await self._run_streams(
                     compute_send, compute_recv, storage_recv, storage_send, pending_ids
                 )
             finally:
-                # A stage that raised (a failed `meta.json` write) cancels the
-                # storage worker before its final flush; samples already done,
-                # whether buffered by it or still in the stream, reach disk. A
-                # no-op after a clean exit.
+                # A raised stage or an interrupt cancels the storage worker
+                # before its final flush; every finished sample still reaches
+                # disk, wherever it was held. A no-op after a clean exit.
                 with anyio.CancelScope(shield=True):
                     try:
-                        await self._saver.drain(storage_leftover)
+                        await self._saver.drain(
+                            storage_leftover,
+                            also=self._unstored_terminal(compute_leftover),
+                        )
                     except Exception as exc:
                         logger.error("Flush after the run stopped failed: {}", exc)
 
@@ -821,16 +743,7 @@ class TaskRunner:
                 refusal = exc
             if refusal is None:
                 await self._end_run(reported=reported)
-            # Generate anomaly report
-            if self._config.detect_anomalies:
-                await self._anomaly_detector.generate_and_save_from_results(
-                    self._anomaly_results,
-                    self._task.name,
-                    total_samples=self._total_samples,
-                    final_count=len(finals),
-                    failed_count=len(fails),
-                    backup_if_changed=False,
-                )
+            await self._save_anomalies(finals, fails)
 
             if self._progress:
                 self._progress.close()
@@ -866,6 +779,112 @@ class TaskRunner:
         finally:
             # X. Lifecycle Shutdown
             await self._task.shutdown()
+
+    async def _hydrate_initial(self, *, resumed: bool) -> None:
+        """Hydrate the recorded contexts a run continues from."""
+        stages = {
+            TaskStage.INITIAL,
+            TaskStage.PREPROCESSED,
+            TaskStage.INFERRED,
+            TaskStage.POSTPROCESSED,
+            TaskStage.FEEDBACK,
+        }
+        if self._auto_resume:
+            stages |= {TaskStage.FINAL, TaskStage.FAILED}
+        await self._loader.hydrate(
+            self._contexts,
+            self._hydrated_ids,
+            include_stages=stages,
+            prepare_retries=self._auto_resume and not resumed,
+            record_each_stage=self._record_each_stage,
+        )
+
+    async def _fast_resume(self) -> JSONValue | None:
+        """A finished run's ``report.json``, or ``None`` when the run must go on.
+
+        Runs after ``setup()``, which a task may use to resolve an argument the
+        grader identity reads, so even a fast resume pays for ``setup()``: a
+        task that contacts a service there needs it up.
+        """
+        if not self._auto_resume:
+            return None
+        cached_report = await self._loader.load_cached_report()
+        if cached_report is not None and not await self._last_run_ended():
+            # The run that wrote this report never ended (`end_run`
+            # failed, or a later run stopped short): finalize again
+            # through the full path, which reruns `report()` on the
+            # shards instead of trusting the cached one.
+            logger.info(
+                "report.json found, but the run that wrote it never ended; "
+                "finalizing again"
+            )
+            cached_report = None
+        if cached_report is not None and self._run_from is not None:
+            # A copied directory always runs: its report is another task's.
+            cached_report = None
+        if cached_report is not None and self._model_differs():
+            # Finalize through the full path, which records this run's model.
+            logger.info(
+                "report.json found, but it was recorded for model {!r}; "
+                "finalizing again",
+                self._recorded_model(),
+            )
+            cached_report = None
+        if cached_report is not None and not self._recorded_stages_match():
+            logger.info(
+                "report.json found, but its run's stage identities differ "
+                "from this run's; resuming stage by stage"
+            )
+            cached_report = None
+        if cached_report is not None:
+            # Check if we need to retry failures
+            has_failures, all_final = await self._loader.get_manifest_status()
+            if not has_failures and all_final:
+                # Generate anomaly report if needed on resume
+                if (
+                    self._config.detect_anomalies
+                    and self._config.detect_anomalies_on_resume
+                ):
+                    # Load existing report to check if regeneration needed
+                    await self._anomaly_detector.load()
+                    if self._anomaly_detector.needs_regeneration():
+                        logger.info(
+                            "Anomaly detection rules changed, "
+                            "regenerating anomaly report"
+                        )
+                        # Load contexts to generate anomaly report
+                        self._contexts = await self._loader.load_initial_state()
+                        # Hydrate only FINAL and FAILED samples
+                        await self._loader.hydrate(
+                            self._contexts,
+                            self._hydrated_ids,
+                            include_stages={TaskStage.FINAL, TaskStage.FAILED},
+                            prepare_retries=False,
+                            record_each_stage=self._record_each_stage,
+                        )
+                        # Only detects anomalies in the latest iteration
+                        # (loader keeps the highest-iteration offset).
+                        await self._anomaly_detector.generate_and_save(
+                            self._contexts,
+                            self._task.name,
+                            task_tags=self._task.tags,
+                            backup_if_changed=True,
+                        )
+                    else:
+                        logger.info(
+                            "Anomaly detection rules unchanged, "
+                            "using cached anomaly report"
+                        )
+                # Nothing reran, so the identity stays the one that
+                # produced this report; only the run is recorded.
+                await self._saver.begin_run(
+                    resumed=True,
+                    model=self._model_name(),
+                    config_diff=self._resume_config_diff,
+                )
+                await self._saver.end_run(())
+                return cached_report
+        return None
 
     async def _run_streams(
         self,
@@ -938,6 +957,7 @@ class TaskRunner:
                 terminal = ctx.is_terminal()
                 if terminal:
                     await storage_send.send(ctx)
+                    self._stored_terminal.add(ctx.sample_id)
                     # Store anomaly results (not context) to avoid retaining
                     # full context objects across iterations.
                     if ctx.stage == TaskStage.FINAL:
@@ -1197,7 +1217,34 @@ class TaskRunner:
         if action is TaskAction.PREPROCESS:
             self._note_sample_digests(new_ctx)
             await self._maybe_write_input_identity()
-        await compute_send.send(new_ctx)
+        try:
+            await compute_send.send(new_ctx)
+        except BaseException:
+            # Stopped while waiting for room: keep a finished sample for the drain.
+            if new_ctx.is_terminal():
+                self._contexts[new_ctx.sample_id] = new_ctx
+            raise
+
+    def _unstored_terminal(
+        self, compute_leftover: MemoryObjectReceiveStream[TaskContext]
+    ) -> list[TaskContext]:
+        """Finished samples never handed to storage, once the streams stopped.
+
+        Includes those still in *compute_leftover*.
+        """
+        with compute_leftover:
+            while True:
+                try:
+                    ctx = compute_leftover.receive_nowait()
+                except (anyio.WouldBlock, anyio.EndOfStream):
+                    break
+                if ctx.is_terminal():
+                    self._contexts[ctx.sample_id] = ctx
+        return [
+            ctx
+            for sid, ctx in self._contexts.items()
+            if ctx.is_terminal() and sid not in self._stored_terminal
+        ]
 
     def _ensure_raw_sample(self, ctx: TaskContext) -> TaskContext:
         if ctx.raw_sample is not None:
@@ -1306,6 +1353,21 @@ class TaskRunner:
                 )
         return True
 
+    async def _save_anomalies(
+        self, finals: list[TaskContext], fails: list[TaskContext]
+    ) -> None:
+        """Write ``anomalies.json`` from the anomalies this run has collected."""
+        if not self._config.detect_anomalies:
+            return
+        await self._anomaly_detector.generate_and_save_from_results(
+            self._anomaly_results,
+            self._task.name,
+            total_samples=self._total_samples,
+            final_count=len(finals),
+            failed_count=len(fails),
+            backup_if_changed=False,
+        )
+
     # ------------------------------------------------------------------
     # meta.json: stage identities and run history
     # ------------------------------------------------------------------
@@ -1362,6 +1424,13 @@ class TaskRunner:
             and recorded_identity(self._recorded) is None
             and not self._legacy_match
         )
+
+    def _resumes_own_identity(self) -> bool:
+        """Whether this resumes its own directory, whose run recorded identities.
+
+        Then a sample with no digests is rerun rather than refused.
+        """
+        return self._run_from is None and recorded_identity(self._recorded) is not None
 
     def _recorded_grader_stamp(self) -> str | None:
         identity = recorded_identity(self._recorded)
@@ -1506,6 +1575,14 @@ class TaskRunner:
                 changed.append(sid)
 
         self._resume_plan = counts
+        if self._unverified_inference:
+            logger.warning(
+                "{}: {} recorded sample(s) with inference rerun from the start: "
+                "the run kept no per-sample data digests (`record_meta` off), so "
+                "their data cannot be checked",
+                self._task.name,
+                self._unverified_inference,
+            )
         logger.info(
             "Per-stage resume of {}: {} kept, {} regraded, {} restarted, {} dropped",
             self._task.name,
@@ -1530,6 +1607,12 @@ class TaskRunner:
             # `record_meta` off): the recorded data identity of the whole set,
             # else the caller's reading of the persisted config, decides.
             match = self._recorded_data_matches()
+            if match is None and self._resumes_own_identity():
+                # Unverifiable, so it reruns: a sample never preprocessed, or,
+                # under `record_meta` off, any sample.
+                if ctx.infer_result is not None:
+                    self._unverified_inference += 1
+                return "restarted", restart
             if match is None:
                 self._abandon_copy()
                 raise StageResumeError(
@@ -1601,6 +1684,44 @@ class TaskRunner:
     def _model_name(self) -> str:
         return self._task.model.meta()["model"]
 
+    def _recorded_model(self) -> str | None:
+        model = (self._recorded or {}).get("model")
+        return model if isinstance(model, str) else None
+
+    def _model_differs(self) -> bool:
+        """Whether the recorded run was for another model under test."""
+        recorded = self._recorded_model()
+        return recorded is not None and recorded != self._model_name()
+
+    def _check_model_switch(self) -> bool:
+        """Refuse a resume with another model that would mix two models' samples.
+
+        Returns whether recorded inference is kept, so the directory stays the
+        recorded model's. Keeping none (every sample failed before inference)
+        makes it this model's run.
+        """
+        if not any(c.infer_result is not None for c in self._contexts.values()):
+            return False
+        test_set = self._task.dataset.test_set
+        size = len(test_set) if test_set else 0
+        to_infer = sum(
+            1
+            for sid in range(size)
+            if (ctx := self._contexts.get(sid)) is None
+            or (not ctx.is_terminal() and ctx.infer_result is None)
+        )
+        if not to_infer:
+            return True
+        self._abandon_copy()
+        raise StageResumeError(
+            "inference",
+            f"Resume refused: {to_infer} sample(s) would be inferred by "
+            f"{self._model_name()!r}, but the recorded samples are "
+            f"{self._recorded_model()!r}'s.\n"
+            f"  recorded: {self._recorded_dir()}\n"
+            "  Start fresh in a new result_dir, or resume with the recorded model.",
+        )
+
     @staticmethod
     def _safe_digest(value: Any) -> str | None:
         """Digest *value*, or ``None`` when it holds something undigestable."""
@@ -1666,6 +1787,10 @@ class TaskRunner:
                 and judge.get("sampling") == now["sampling"]
             ):
                 self._judge_versions.setdefault(now["role"], version)
+
+    def judge_roles(self) -> set[str]:
+        """The judge roles this task grades with; empty when they cannot be read."""
+        return {judge["role"] for judge in self._current_judges()}
 
     def _current_judges(self) -> list[JudgeIdentity]:
         try:

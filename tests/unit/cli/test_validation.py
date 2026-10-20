@@ -1542,6 +1542,23 @@ class TestPreparePrelaunchReconciliation:
         ):
             prepare_prelaunch_reconciliation(tmp_path / "config.yaml")
 
+    def test_checks_services_only_when_asked(self, tmp_path: Path, monkeypatch):
+        """`sieval run` asks, before its engines start; a bad copy is caught then."""
+        from sieval.cli.services import CODE_EVAL_DIR_ENV
+        from sieval.cli.validation import prepare_prelaunch_reconciliation
+        from sieval.core.tasks.services import CODE_EVAL, SERVICE_ENDPOINT_ENV
+
+        monkeypatch.setenv(CODE_EVAL_DIR_ENV, str(tmp_path / "missing"))
+        monkeypatch.delenv(SERVICE_ENDPOINT_ENV[CODE_EVAL], raising=False)
+        session = MagicMock()
+        session.required_services = frozenset({CODE_EVAL})
+        with patch("sieval.cli.leaderboard.session.EvalSession", return_value=session):
+            prepare_prelaunch_reconciliation(tmp_path / "config.yaml")
+            with pytest.raises(FileNotFoundError, match=CODE_EVAL_DIR_ENV):
+                prepare_prelaunch_reconciliation(
+                    tmp_path / "config.yaml", check_services=True
+                )
+
 
 class TestRunDryRun:
     @staticmethod

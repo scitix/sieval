@@ -14,7 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `--resume-from DIR` / `runner_config.resume_from`: start from another, possibly read-only, run of another task (#148).
-- `Task.grader_args()`: task arguments folded into the grader identity (#148).
+- `Task.grader_args()`: task arguments folded into the grader identity (#148), read after `setup()`. A task excludes arguments that cannot change a verdict via `GRADER_ARGS_EXCLUDED`.
+- SIGTERM stops `sieval run` and `sieval eval` as Ctrl+C does; exit 143.
+- Google `request_params` record `no_effect` for a thinking budget or summary the reply shows no sign of.
+
+### Fixed
+
+- Atomic writes create `report.json`, `meta.json` and `manifest.json` as `0o666 & ~umask`, not `0600`.
+- A run interrupted before every sample passed `preprocess` resumes instead of refusing on `data`; a refused resume appends no `runs[]` entry.
+- An interrupt or failed write mid-run keeps every finished sample.
+- Refinalizing a run whose `end_run` failed writes `anomalies.json`.
+- The grader identity covers patch packages and whole plugin packages, including modules loaded with `importlib`.
+- A resume with another model regrades the recorded inference, and is refused if it would infer any sample.
+- Google's request envelope is marked explicitly, not detected by a `path` key.
+- A bad code-eval copy or interpreter fails before any engine starts; service logs move to `logs/services/<name>/`.
+- Unmatched `SIEVAL_JUDGE_MODEL_REF` roles are warned about; `tunedModels/` is stripped like `models/`.
 
 ## [0.9.0] - 2026-09-11
 

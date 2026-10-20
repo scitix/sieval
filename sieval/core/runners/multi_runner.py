@@ -9,6 +9,7 @@ from loguru import logger
 
 from sieval.core.tasks.concurrency import prepare_limiters
 from sieval.core.tasks.context import TaskAction
+from sieval.core.tasks.run_meta import warn_unmatched_judge_refs
 from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 
@@ -122,6 +123,12 @@ class MultiTaskRunner:
                 Nothing is returned in this case, so the successful tasks'
                 results are on disk only.
         """
+        # 0. A judge reference for a role no task has is never recorded.
+        roles: set[str] = set()
+        for runner in self._runners:
+            roles |= runner.judge_roles()
+        warn_unmatched_judge_refs(roles)
+
         # 1. Prepare Shared Limiters
         norm_stage_limits = {}
         if self._stage_limits_cfg:

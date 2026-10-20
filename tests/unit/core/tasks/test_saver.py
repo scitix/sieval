@@ -385,6 +385,25 @@ class TestSaveReport:
         assert _temp_files(tmp_root) == []
 
     @pytest.mark.anyio
+    async def test_new_files_get_the_umask_mode_not_mkstemps(
+        self, saver, tmp_root, monkeypatch
+    ):
+        """Readers under another uid on a shared volume can open the result."""
+        monkeypatch.setattr(saver_module, "_UMASK", 0o022)
+        await saver.begin_run(resumed=False)
+        await saver.save_report({"v": 1})
+        for name in ("report.json", "meta.json"):
+            assert (tmp_root / name).stat().st_mode & 0o777 == 0o644, name
+
+    @pytest.mark.anyio
+    async def test_a_replaced_file_keeps_its_mode(self, saver, tmp_root):
+        tmp_root.mkdir(parents=True)
+        (tmp_root / "report.json").write_bytes(b"{}")
+        (tmp_root / "report.json").chmod(0o640)
+        await saver.save_report({"v": 2})
+        assert (tmp_root / "report.json").stat().st_mode & 0o777 == 0o640
+
+    @pytest.mark.anyio
     async def test_save_report_does_not_write_meta(self, saver, tmp_root):
         """save_report should NOT write meta.json — the runner controls that."""
         await anyio.Path(tmp_root).mkdir(parents=True, exist_ok=True)

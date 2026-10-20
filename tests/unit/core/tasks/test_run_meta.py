@@ -42,6 +42,7 @@ from sieval.core.tasks.run_meta import (
     request_definition,
     request_digest,
     validate_judge_model_ref,
+    warn_unmatched_judge_refs,
 )
 from tests.conftest import MockChatModel, MockJudgeModel
 
@@ -208,6 +209,7 @@ class TestRequestDefinition:
     def _google(model, prefix="/v1beta", stream=False, temperature=0.2):
         method = "streamGenerateContent" if stream else "generateContent"
         params = {
+            "envelope": "http",
             "method": "POST",
             "path": f"{prefix}/models/{model}:{method}",
             "body": {"generationConfig": {"temperature": temperature}},
@@ -243,8 +245,20 @@ class TestRequestDefinition:
 
     def test_a_flat_and_an_envelope_spelling_agree(self):
         flat = {"temperature": 0.2, "stream": False}
-        envelope = {"method": "POST", "path": "/x", "body": {"temperature": 0.2}}
+        envelope = {
+            "envelope": "http",
+            "method": "POST",
+            "path": "/x",
+            "body": {"temperature": 0.2},
+        }
         assert request_definition(flat) == request_definition(envelope)
+
+    def test_a_flat_body_with_path_and_body_fields_stays_whole(self):
+        """Only the dialect's own marker makes an envelope: a flat body whose
+        request happens to carry `path` or `method` keeps them."""
+        flat = {"path": "/srv/a", "method": "beam", "body": {"x": 1}, "query": "q"}
+        assert request_definition(flat) == {"body": flat, "stream": False}
+        assert self._digest(flat) != self._digest(flat | {"path": "/srv/b"})
 
 
 # ===================================================================
@@ -499,6 +513,98 @@ class TestGraderPluginPackages:
         assert grader_modules(Local) == {}
 
 
+class TestGraderPatchesAndDynamicImports:
+    """What no import statement shows: a patch that replaced a task method, and
+    a plugin package that loads its graders by name."""
+
+    @pytest.fixture
+    def patch_pkg(self, tmp_path, monkeypatch):
+        root = tmp_path / "patch"
+        pkg = root / "arck_demo_patch"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("from .patch import apply\n")
+        (pkg / "patch.py").write_text(
+            "from ._helpers import SCALE\n"
+            "async def report(self, finals, fails):\n"
+            "    return {'score': SCALE}\n"
+            "def apply(cls):\n"
+            "    cls.report = report\n"
+        )
+        (pkg / "_helpers.py").write_text("SCALE = 1\n")
+        monkeypatch.syspath_prepend(str(root))
+        import importlib
+
+        yield pkg, importlib.import_module("arck_demo_patch")
+        for name in list(sys.modules):
+            if name.startswith("arck_demo_patch"):
+                sys.modules.pop(name, None)
+
+    def test_a_patched_method_brings_its_package_in(self, patch_pkg):
+        from sieval.core.tasks.task import Task
+
+        pkg, module = patch_pkg
+
+        class Local(Task):
+            pass
+
+        Local.__module__ = "sieval.tasks.gsm8k_0shot_gen"
+        before = grader_modules(Local)
+        module.apply(Local)
+        after = grader_modules(Local)
+        assert not any(m.startswith("arck_demo_patch") for m in before)
+        assert {"arck_demo_patch", "arck_demo_patch.patch"} <= set(after)
+        assert "arck_demo_patch._helpers" in after
+        (pkg / "_helpers.py").write_text("SCALE = 2\n")
+        assert grader_modules(Local) != after
+
+    def test_stdlib_and_installed_functions_are_not_patches(self):
+        import json
+
+        class Local:
+            loads = staticmethod(json.loads)
+            check = staticmethod(pytest.approx)
+
+        Local.__module__ = "tests.not_followed"
+        assert grader_modules(Local) == {}
+
+    def test_a_package_loading_graders_by_name_is_digested_whole(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "dyn"
+        pkg = root / "sieval_dyn_plugin"
+        (pkg / "graders").mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        (pkg / "task.py").write_text(
+            "from sieval.core.tasks.task import Task\n"
+            "from .graders import score\n"
+            "class DTask(Task):\n    pass\n"
+        )
+        (pkg / "graders" / "__init__.py").write_text(
+            "import importlib\n"
+            "def score(slug):\n"
+            "    return importlib.import_module(f'{__name__}.{slug}').grade\n"
+        )
+        (pkg / "graders" / "venus.py").write_text("def grade():\n    return 1\n")
+        (pkg / "graders" / "tape.py").write_text("def grade():\n    return 2\n")
+        monkeypatch.syspath_prepend(str(root))
+        import importlib
+
+        try:
+            task_cls = importlib.import_module("sieval_dyn_plugin.task").DTask
+            modules = grader_modules(task_cls)
+        finally:
+            for name in list(sys.modules):
+                if name.startswith("sieval_dyn_plugin"):
+                    sys.modules.pop(name, None)
+        assert {
+            "sieval_dyn_plugin",
+            "sieval_dyn_plugin.task",
+            "sieval_dyn_plugin.graders",
+            "sieval_dyn_plugin.graders.venus",
+            "sieval_dyn_plugin.graders.tape",
+        } <= set(modules)
+
+
 class TestJudges:
     def test_judge_is_recorded_without_its_endpoint(self):
         judge = MockJudgeModel(temperature=0.0)
@@ -579,8 +685,27 @@ class TestJudges:
 
     def test_judge_model_id_strips_googles_resource_prefix(self):
         assert judge_model_id("models/gemini-2.5-pro") == "gemini-2.5-pro"
+        assert judge_model_id("tunedModels/my-judge") == "my-judge"
         assert judge_model_id("gemini-2.5-pro") == "gemini-2.5-pro"
         assert judge_model_id("org/models/x") == "org/models/x"
+
+    def test_env_ref_roles_no_task_has_are_warned(self):
+        from loguru import logger
+
+        messages: list[str] = []
+        sink = logger.add(
+            lambda m: messages.append(m.record["message"]), level="WARNING"
+        )
+        try:
+            env = {JUDGE_MODEL_REF_ENV: '{"grader": "hm://a", "graderr": "hm://b"}'}
+            unmatched = warn_unmatched_judge_refs({"grader", "extractor"}, env)
+            plain = warn_unmatched_judge_refs({"grader"}, {JUDGE_MODEL_REF_ENV: "hm"})
+        finally:
+            logger.remove(sink)
+        assert unmatched == ["graderr"]
+        assert plain == []
+        assert len(messages) == 1
+        assert "graderr" in messages[0]
 
     def test_a_models_prefixed_judge_is_one_model(self):
         prefixed = MockJudgeModel()

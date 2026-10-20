@@ -510,3 +510,11 @@ async def test_postprocess_does_not_extract() -> None:
     assert post["rollouts"][0]["prediction"] == fenced
     # An empty reply normalizes to None so `extracted` reports it as a miss.
     assert post["rollouts"][1].get("prediction") is None
+
+
+def test_the_grading_deadline_is_not_part_of_the_grader() -> None:
+    """A deadline fails a call, which a resume retries; it never flips a verdict."""
+    args = QuoteBenchRawZeroShotGenTask(
+        _dataset(), _StubChatModel(), grade_timeout=5.0
+    ).grader_args()
+    assert "grade_timeout" not in args

@@ -4,7 +4,8 @@
 ``Task.services`` whose endpoint variable is unset, once, shared by every task,
 and stops it when the block exits. A preset variable is used as given. Services
 run through the engine lifecycle: a handle under ``run-<pid>/``, a log at
-``<result_dir>/logs/<name>/server.log``, their own process group.
+``<result_dir>/logs/services/<name>/server.log`` (apart from a served model's
+``logs/<model>/``), their own process group.
 
 code-eval runs ``<python> -m uvicorn app.server:app`` on this host, with no
 isolation beyond the evaluator's own guards. ``SIEVAL_CODE_EVAL_DIR`` names the
@@ -55,6 +56,8 @@ CODE_EVAL_PYTHON_ENV = "SIEVAL_CODE_EVAL_PYTHON"
 
 #: ``<result_dir>/logs/`` holds what SiEval starts, so no task may be named this.
 RESERVED_LOG_DIR = "logs"
+#: Vendored services log under ``logs/services/``; no served model may be named this.
+SERVICE_LOG_DIR = "services"
 
 HANDLE_PREFIX = "service-"
 SERVICE_ROLE = "server"
@@ -198,31 +201,46 @@ def interpreter_runtime(python: str, packages: Iterable[str]) -> ServiceRuntime:
         ) from exc
 
 
-def code_eval_service(
-    port: int, environ: Mapping[str, str] | None = None
-) -> VendoredService:
-    """Describe the vendored code-evaluator on *port*.
+def _code_eval_python(env: Mapping[str, str]) -> str:
+    """The interpreter to run code-eval with, checked it can.
 
     Under SiEval's own interpreter the ``code-eval`` group must be installed;
     another interpreter is checked only by whether it starts.
     """
+    python = env.get(CODE_EVAL_PYTHON_ENV, "").strip()
+    if python:
+        return python
+    missing = [
+        m
+        for m in (*_CODE_EVAL_SERVER_MODULES, *_CODE_EVAL_PROGRAM_MODULES)
+        if importlib.util.find_spec(m) is None
+    ]
+    if missing:
+        raise ModuleNotFoundError(
+            f"The code-eval service needs {', '.join(missing)} in "
+            f"{sys.executable}. Install the group (`pip install 'sieval[code-eval]'`), "
+            f"set {CODE_EVAL_PYTHON_ENV} to an interpreter that has them, or "
+            f"set {SERVICE_ENDPOINT_ENV[CODE_EVAL]} to a running service."
+        )
+    return sys.executable
+
+
+def check_code_eval(environ: Mapping[str, str] | None = None) -> None:
+    """Raise what starting code-eval would, without starting it."""
+    env = os.environ if environ is None else environ
+    code_eval_dir(env)
+    python = _code_eval_python(env)
+    if python != sys.executable:
+        interpreter_runtime(python, ())
+
+
+def code_eval_service(
+    port: int, environ: Mapping[str, str] | None = None
+) -> VendoredService:
+    """Describe the vendored code-evaluator on *port*."""
     env = os.environ if environ is None else environ
     root = code_eval_dir(env)
-    python = env.get(CODE_EVAL_PYTHON_ENV, "").strip()
-    if not python:
-        python = sys.executable
-        missing = [
-            m
-            for m in (*_CODE_EVAL_SERVER_MODULES, *_CODE_EVAL_PROGRAM_MODULES)
-            if importlib.util.find_spec(m) is None
-        ]
-        if missing:
-            raise ModuleNotFoundError(
-                f"The code-eval service needs {', '.join(missing)} in "
-                f"{python}. Install the group (`pip install 'sieval[code-eval]'`), "
-                f"set {CODE_EVAL_PYTHON_ENV} to an interpreter that has them, or "
-                f"set {SERVICE_ENDPOINT_ENV[CODE_EVAL]} to a running service."
-            )
+    python = _code_eval_python(env)
     return VendoredService(
         name=CODE_EVAL,
         command=[
@@ -245,6 +263,13 @@ def code_eval_service(
 
 
 _BUILDERS = {CODE_EVAL: code_eval_service}
+_CHECKS = {CODE_EVAL: check_code_eval}
+
+
+def check_vendored_services(required: Iterable[str]) -> None:
+    """Check that each service in *required* that would be started can be."""
+    for name in services_to_start(required):
+        _CHECKS[name]()
 
 
 def services_to_start(
@@ -328,9 +353,10 @@ async def vendored_services_for(
 ) -> AsyncIterator[dict[str, str]]:
     """Start each service in *required* whose endpoint is unset; yield endpoints.
 
-    *result_dir* is read only when a service starts; its ``logs/<name>/`` then
-    holds the log. Yields ``{name: endpoint}`` of what was started, with the
-    endpoint variables and :data:`VENDORED_SERVICES_ENV` set for the block.
+    *result_dir* is read only when a service starts; its
+    ``logs/services/<name>/`` then holds the log. Yields ``{name: endpoint}``
+    of what was started, with the endpoint variables and
+    :data:`VENDORED_SERVICES_ENV` set for the block.
     Everything started is stopped on exit, shielded from cancellation.
     """
     names = services_to_start(required)
@@ -364,7 +390,11 @@ async def vendored_services_for(
             service, base, handles = await _start(
                 name,
                 handle_path=handle_dir / f"{HANDLE_PREFIX}{name}.json",
-                log_dir=Path(log_root) / RESERVED_LOG_DIR / name if log_root else None,
+                log_dir=(
+                    Path(log_root) / RESERVED_LOG_DIR / SERVICE_LOG_DIR / name
+                    if log_root
+                    else None
+                ),
                 keep=keep,
             )
             launched.append((name, handles))

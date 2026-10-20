@@ -48,6 +48,8 @@ from .gen_model import GenModel
 from .ir import (
     FINISH_SOURCE_CANDIDATE,
     FINISH_SOURCE_PROMPT_BLOCK,
+    REQUEST_ENVELOPE_HTTP,
+    REQUEST_ENVELOPE_KEY,
     CapabilityEvidence,
     ChatInput,
     ChatMessage,
@@ -133,6 +135,8 @@ __all__ = [
     "DialectSpec",
     "Engine",
     "FINISH_SOURCE_CANDIDATE",
+    "REQUEST_ENVELOPE_HTTP",
+    "REQUEST_ENVELOPE_KEY",
     "FINISH_SOURCE_PROMPT_BLOCK",
     "FunctionToolCall",
     "GenModel",

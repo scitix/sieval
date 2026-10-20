@@ -14,6 +14,7 @@ import anyio
 import typer
 
 from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
+from sieval.cli.signals import terminate_as_interrupt
 
 from .catalog import scan_leaderboards
 from .scanner import RunInfo, build_matrix, resolve_model_name, scan_runs
@@ -241,11 +242,12 @@ def run(
         )
 
     try:
-        reports = anyio.run(_run)
+        with terminate_as_interrupt() as terminated:
+            reports = anyio.run(_run)
     except KeyboardInterrupt:
-        # Ctrl-C is not a command failure: exit 130 without a result payload.
-        # Everything else is left to `@cli_command`.
-        sys.exit(130)
+        # Ctrl-C/SIGTERM is not a command failure: exit 130/143 without a
+        # result payload. Everything else is left to `@cli_command`.
+        sys.exit(terminated.exit_code)
 
     tasks_data = {
         task_name: {"report": report} for task_name, report in reports.items()

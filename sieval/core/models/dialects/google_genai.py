@@ -61,6 +61,8 @@ from sieval.core.models.dialect import (
 from sieval.core.models.ir import (
     FINISH_SOURCE_CANDIDATE,
     FINISH_SOURCE_PROMPT_BLOCK,
+    REQUEST_ENVELOPE_HTTP,
+    REQUEST_ENVELOPE_KEY,
     ChatInput,
     ChatMessage,
     Citation,
@@ -3043,6 +3045,16 @@ class GoogleGenAIDialect:
         all_channels_optional = bool(finish_reasons) and all(
             reason in _CHANNEL_OPTIONAL_FINISH_REASONS for reason in finish_reasons
         )
+        usage = _usage(_get(raw, "usageMetadata"))
+        no_effect = _reasoning_without_effect(
+            req,
+            usage,
+            any(saw_thought_parts),
+            all_channels_optional,
+        )
+        request_params = context.request_params
+        if no_effect:
+            request_params = {**request_params, "no_effect": list(no_effect)}
         return Response(
             texts=tuple(texts),
             reasoning=(
@@ -3067,8 +3079,8 @@ class GoogleGenAIDialect:
             ),
             citations=tuple(citations) or None,
             grounding=groundings[0] if groundings else None,
-            usage=_usage(_get(raw, "usageMetadata")),
-            request_params=context.request_params,
+            usage=usage,
+            request_params=request_params,
             response_model=_optional_string(
                 _get(raw, "modelVersion"), "response.modelVersion"
             ),
@@ -3329,6 +3341,8 @@ class GoogleGenAIDialect:
                 "final Google request body has invalid systemInstruction"
             )
         request_params: dict[str, JSONValue] = {
+            # An HTTP envelope, not a flat body (see `request_definition`).
+            REQUEST_ENVELOPE_KEY: REQUEST_ENVELOPE_HTTP,
             "method": request.method,
             "path": request.url.path,
             "body": {
@@ -3395,6 +3409,31 @@ class _RootOptionVerifier:
             if self.key in body and body[self.key] == self.value
             else f"Google dialect option {self.key!r} changed"
         )
+
+
+def _reasoning_without_effect(
+    req: Request,
+    usage: UsageStats | None,
+    saw_thoughts: bool,
+    all_channels_optional: bool,
+) -> tuple[str, ...]:
+    """The reasoning controls Google accepted but the reply shows no sign of.
+
+    Google may accept ``thinkingBudget`` and ``includeThoughts`` and ignore
+    them: ``reasoning.budget_tokens`` when a budget got no thought tokens,
+    ``reasoning.summary`` when requested thoughts got no thought part. A reply
+    that stopped early says nothing either way.
+    """
+    if all_channels_optional:
+        return ()
+    found: list[str] = []
+    thoughts = usage.reasoning_tokens if usage is not None else None
+    budget = req.reasoning.budget_tokens
+    if budget is not None and not thoughts:
+        found.append("reasoning.budget_tokens")
+    if req.reasoning.summary == "auto" and not saw_thoughts:
+        found.append("reasoning.summary")
+    return tuple(found)
 
 
 @dataclass(frozen=True)

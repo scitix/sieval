@@ -138,6 +138,10 @@ class QuoteBenchTask(
     #: rejects `nested`, so the released spelling is the one that travels.
     CONTRACT: ClassVar[str]
 
+    #: The HTTP deadline of a grading call: a call past it fails the sample,
+    #: which a resume retries, and never changes a verdict.
+    GRADER_ARGS_EXCLUDED = Task.GRADER_ARGS_EXCLUDED | {"grade_timeout"}
+
     def __init__(
         self,
         dataset,

@@ -122,7 +122,19 @@ run's:
 | Inference | Refused, naming the stage |
 | Grader (grading code, `grader_args()`, judges) | `postprocess`, `feedback` and `report` rerun on the recorded inference |
 
-So a grader-only change is a plain `--resume`.
+So a grader-only change is a plain `--resume`. `grader_args()` counts every
+constructor argument, read after `setup()`, except those in
+`GRADER_ARGS_EXCLUDED`; a task extends it with arguments that cannot change a
+verdict: `Task.GRADER_ARGS_EXCLUDED | {"grade_timeout"}`.
+
+A same-directory resume reruns a sample with no recorded identity, such as one
+interrupted before `preprocess`. Under `record_meta: false` no sample has one,
+so every recorded sample reruns, with a warning.
+
+A resume with another model regrades and reports on the recorded inference:
+`model` stays the recorded one, the invoking model goes in `runs[].model`, and
+`identity.inference.requests` is unknown. If any sample would be inferred, the
+resume is refused. A refused resume leaves `meta.json` as it was.
 
 `--resume-from DIR` starts each task from `DIR/<task>` of another run, which
 may be read-only or another task's: its shards are copied into the empty

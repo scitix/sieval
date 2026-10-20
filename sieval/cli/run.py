@@ -35,6 +35,8 @@ from sieval.cli.output import (
     render,
 )
 from sieval.cli.resolution import resolve_config_model_types
+from sieval.cli.services import SERVICE_LOG_DIR
+from sieval.cli.signals import terminate_as_interrupt
 from sieval.core.models import Deployment
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
@@ -251,6 +253,7 @@ async def _run_all(
             infer_plans=plan_dicts or None,
             invocation=invocation,
             self_managed_endpoints=frozenset(prepared_launches),
+            check_services=True,
         )
         launch_patches = {
             root_key: dict(deployment_plan.launch_patch)
@@ -268,6 +271,11 @@ async def _run_all(
                 f"refusing to ignore them: {details}"
             )
 
+        if SERVICE_LOG_DIR in prepared_launches:
+            raise ValueError(
+                f"Model name {SERVICE_LOG_DIR!r} is reserved for "
+                f"<result_dir>/logs/{SERVICE_LOG_DIR}/; rename the model."
+            )
         for model_name, (plan, commands) in prepared_launches.items():
             log_user("Starting inference for model: {}", model_name)
 
@@ -521,11 +529,12 @@ def register_run_command(app: typer.Typer) -> None:
             )
 
         try:
-            reports = anyio.run(_go)
+            with terminate_as_interrupt() as terminated:
+                reports = anyio.run(_go)
         except KeyboardInterrupt:
-            # Ctrl-C is not a command failure: exit 130 without a result
-            # payload. Everything else is left to `@cli_command`.
-            sys.exit(130)
+            # Ctrl-C/SIGTERM is not a command failure: exit 130/143 without a
+            # result payload. Everything else is left to `@cli_command`.
+            sys.exit(terminated.exit_code)
 
         tasks_data = {
             task_name: {"report": report} for task_name, report in reports.items()

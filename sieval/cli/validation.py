@@ -705,8 +705,12 @@ def prepare_prelaunch_reconciliation(
     infer_plans: Mapping[str, object] | None = None,
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] = frozenset(),
+    check_services: bool = False,
 ) -> ReconcileResult:
     """Run the shared pure prelaunch reconciliation and fail loud on errors.
+
+    *check_services* also checks each vendored service the run would start, for
+    a caller about to launch engines.
 
     This root-level CLI seam keeps the ``infer`` subpackage independent of the
     sibling ``leaderboard`` implementation.  It also owns conversion of typed
@@ -733,7 +737,7 @@ def prepare_prelaunch_reconciliation(
                 )
             normalized_plans[model_name] = normalized
 
-    return EvalSession(
+    session = EvalSession(
         config,
         model_override=model_override,
         resume=resume,
@@ -742,7 +746,14 @@ def prepare_prelaunch_reconciliation(
         infer_plans=normalized_plans,
         invocation=invocation,
         self_managed_endpoints=self_managed_endpoints,
-    ).prepare_prelaunch()
+    )
+    result = session.prepare_prelaunch()
+    if check_services:
+        # A vendored service that cannot start fails here, before any engine.
+        from sieval.cli.services import check_vendored_services
+
+        check_vendored_services(session.required_services)
+    return result
 
 
 def _capability_reconcile_check(

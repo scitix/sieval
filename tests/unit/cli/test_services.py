@@ -28,6 +28,8 @@ from sieval.cli.services import (
     CODE_EVAL_DIR_ENV,
     CODE_EVAL_PYTHON_ENV,
     VendoredService,
+    check_code_eval,
+    check_vendored_services,
     code_eval_dir,
     code_eval_service,
     sources_digest,
@@ -146,7 +148,7 @@ class TestVendoredServicesFor:
         assert _ENDPOINT_ENV not in os.environ
         assert VENDORED_SERVICES_ENV not in os.environ
         assert not list((tmp_path / "handles").glob("run-*"))
-        assert (result_dir / "logs" / CODE_EVAL / "server.log").exists()
+        assert (result_dir / "logs" / "services" / CODE_EVAL / "server.log").exists()
 
     @pytest.mark.anyio
     async def test_a_preset_endpoint_starts_nothing(
@@ -334,6 +336,31 @@ class TestCodeEvalService:
         assert sources_digest(tmp_path, ["app"]) != first
 
 
+class TestCheckBeforeLaunch:
+    """`sieval run` checks a service can start before it starts any engine."""
+
+    def test_a_bad_dir_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError, match=CODE_EVAL_DIR_ENV):
+            check_code_eval({CODE_EVAL_DIR_ENV: str(tmp_path)})
+
+    def test_an_interpreter_that_cannot_run_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(RuntimeError, match=CODE_EVAL_PYTHON_ENV):
+            check_code_eval({CODE_EVAL_PYTHON_ENV: str(tmp_path / "no-python")})
+
+    def test_a_working_setup_passes(self) -> None:
+        check_code_eval({})
+
+    def test_a_service_with_its_endpoint_set_is_not_checked(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv(CODE_EVAL_DIR_ENV, str(tmp_path))
+        monkeypatch.setenv(_ENDPOINT_ENV, "http://evaluator/evaluations")
+        check_vendored_services({CODE_EVAL})
+        monkeypatch.delenv(_ENDPOINT_ENV)
+        with pytest.raises(FileNotFoundError):
+            check_vendored_services({CODE_EVAL})
+
+
 # ===================================================================
 # Through a whole session
 # ===================================================================
@@ -413,7 +440,7 @@ class TestSession:
         [pid] = _pids(stub)
         assert not pid_alive(pid)
         assert _ENDPOINT_ENV not in os.environ
-        assert (result_dir / "logs" / CODE_EVAL / "server.log").exists()
+        assert (result_dir / "logs" / "services" / CODE_EVAL / "server.log").exists()
         for task in ("a", "b"):
             assert _grader(result_dir, task)["services"] == [
                 {
