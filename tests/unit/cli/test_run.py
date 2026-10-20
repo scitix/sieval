@@ -937,9 +937,11 @@ class TestRunHandlesAndLogs:
         run_dir.mkdir(parents=True)
         launch, cleanup = await self._run(tmp_path, self._config(tmp_path, out))
 
+        assert launch.await_args is not None
         kwargs = launch.await_args.kwargs
         assert kwargs["handle_path"] == run_dir / "model_a.json"
         assert kwargs["log_dir"] == out / "logs" / "model_a"
+        assert cleanup.await_args is not None
         assert cleanup.await_args.kwargs["handle_path"] == run_dir / "model_a.json"
         assert not run_dir.exists()
 
@@ -950,10 +952,12 @@ class TestRunHandlesAndLogs:
         monkeypatch.setenv("SIEVAL_KEEP_LOGS", "7")
         config_path = self._config(tmp_path, None)
         launch, _ = await self._run(tmp_path, config_path)
+        assert launch.await_args is not None
         assert launch.await_args.kwargs["log_dir"] is None
         assert launch.await_args.kwargs["keep_logs"] == 7
 
         launch, _ = await self._run(tmp_path, config_path, keep_logs=1)
+        assert launch.await_args is not None
         assert launch.await_args.kwargs["keep_logs"] == 1
 
     @pytest.mark.anyio
@@ -964,6 +968,7 @@ class TestRunHandlesAndLogs:
         monkeypatch.setenv("SIEVAL_KEEP_LOGS", "not-a-number")
         config_path = self._config(tmp_path, tmp_path / "out")
         launch, _ = await self._run(tmp_path, config_path, keep_logs=5)
+        assert launch.await_args is not None
         assert launch.await_args.kwargs["keep_logs"] is None
 
     @pytest.mark.anyio
@@ -995,6 +1000,7 @@ class TestRunHandlesAndLogs:
         launch, _ = await self._run(
             tmp_path, config_path, result_dir=str(tmp_path / "from-flag")
         )
+        assert launch.await_args is not None
         assert launch.await_args.kwargs["log_dir"] == (
             tmp_path / "from-flag" / "logs" / "model_a"
         )
@@ -1006,6 +1012,7 @@ class TestRunHandlesAndLogs:
         ) as run_all:
             result = runner.invoke(app, ["run", str(config_path), "--keep-logs", "0"])
         assert result.exit_code == 0, result.output
+        assert run_all.await_args is not None
         assert run_all.await_args.kwargs["keep_logs"] == 0
 
 

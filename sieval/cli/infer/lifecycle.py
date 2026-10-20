@@ -1,16 +1,10 @@
 """
 Inference service lifecycle: handle I/O, deployment, and status.
 
-Handles live under ``~/.sieval/handles``, one directory per owner:
-``sieval infer start`` writes ``<model>.json`` at the top level, and
-``sieval run`` writes ``run-<pid>/<model>.json`` so that the two never collide
-on a model name. Every change to a handle file goes through ``transition()``,
-which holds one file lock over the whole directory tree.
-
-Engine logs from ``sieval infer start`` live under ``~/.sieval/logs`` as
-``<model>/<role>-<deployment_id>.log``; each launch keeps the last
-``keep_logs`` per model and role. ``sieval run`` writes them beside its
-results when it has a ``result_dir``.
+Handles live in ``~/.sieval/handles``: ``<model>.json`` for ``infer start``,
+``run-<pid>/<model>.json`` for ``sieval run``. Every handle write goes through
+``transition()`` under one file lock. Engine logs live in
+``~/.sieval/logs/<model>/``, pruned per role at each launch.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -60,9 +54,8 @@ _LOCK_NAME = ".lock"
 DEFAULT_KEEP_LOGS = 3
 KEEP_LOGS_ENV = "SIEVAL_KEEP_LOGS"
 
-# Engine log names: `ENGINE_LOG_DIR/<model>/<role>-<deployment_id>.log`, and the
-# flat `ENGINE_LOG_DIR/<role>-<UTC second>.log` earlier versions wrote. The
-# flat ones name no model, so pruning treats them as one extra group.
+# `<model>/<role>-<deployment_id>.log`, and the flat `<role>-<UTC second>.log`
+# earlier versions wrote.
 _DEPLOYMENT_ID_RE = r"\d{8}T\d{6}Z-[0-9a-f]{8}"
 _LEGACY_LOG_SUFFIX_RE = r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
 
@@ -158,12 +151,9 @@ def handle_from_data(data: Mapping[str, object]) -> InferHandle:
 
 
 def log_files_of(data: Mapping[str, object] | None) -> set[Path]:
-    """Every engine log a handle names.
-
-    ``log_files`` lists one log per role from the claim on, before any engine
-    exists; ``metadata.log_file`` is the first engine's, and the only one an
-    older handle records.
-    """
+    """Every engine log a handle names: ``log_files`` (set at claim) and
+    ``metadata.log_file`` (set once the engine runs; older handles have only
+    this)."""
     if not data:
         return set()
     found: set[Path] = set()
@@ -329,11 +319,10 @@ def _run_dirs() -> list[Path]:
 
 
 def remove_run_handle_dir(run_dir: Path) -> None:
-    """Remove a ``run-<pid>`` directory once it holds no handle.
+    """Remove a ``run-<pid>`` directory if empty.
 
-    The run removes its own handles first. Anything still here belongs to an
-    earlier process with the same PID, such as an engine that outlived it, and
-    stays for ``sieval infer list`` and ``sieval infer stop`` to reach.
+    A handle still here came from an earlier process with this PID whose engine
+    outlived it; it stays for ``infer list`` / ``infer stop``.
     """
     if not run_dir.exists():
         return
@@ -468,11 +457,7 @@ def save_handle(
 
 
 def record_log_files(handle_path: Path, log_files: list[Path]) -> None:
-    """Name a pending launch's engine logs in its handle.
-
-    Runs before the engines start, so ``prune_engine_logs`` in a concurrent
-    launch of the same model sees these logs as live from the outset.
-    """
+    """Name a pending launch's logs in its handle, so pruning spares them."""
 
     def _record(current: dict[str, object] | None) -> dict[str, object] | _Unchanged:
         if current is None or current.get("corrupt"):
@@ -615,15 +600,11 @@ def prune_engine_logs(
     *,
     log_dir: Path | None = None,
 ) -> list[Path]:
-    """Delete old engine logs so a launch leaves at most *keep* per role.
+    """Prune *model_name*'s logs to ``keep - 1`` per role before a launch.
 
-    Counts only *model_name*'s logs, under ``<log_dir>/<model_name>/``, so
-    launching one model never evicts another's history. Runs before the
-    launch, so it keeps ``keep - 1`` existing logs per role. Flat
-    ``<role>-<UTC second>.log`` files an earlier version wrote name no model;
-    they are pruned to *keep* per role as a group of their own. A log a handle
-    still names is never deleted, though it counts toward *keep*. A negative
-    *keep* keeps every log. Returns the deleted paths.
+    Flat logs from earlier versions are pruned to *keep* per role as their own
+    group. Logs a handle names are never deleted. Negative *keep* keeps all.
+    Returns the deleted paths.
     """
     if keep < 0:
         return []
@@ -679,10 +660,8 @@ async def launch_model(
 
     *handle_path* defaults to ``HANDLE_DIR/<model_name>.json``. With *log_dir*,
     each role logs to ``<log_dir>/<role>.log`` and *keep_logs* is ignored;
-    without it, to ``ENGINE_LOG_DIR/<model_name>/<role>-<deployment_id>.log``,
-    pruned first to *keep_logs* (``DEFAULT_KEEP_LOGS`` when ``None``) per role
-    of this model. The handle names its logs before pruning starts, so a
-    concurrent launch of the same model cannot prune them.
+    otherwise logs go to ``ENGINE_LOG_DIR/<model_name>/``, pruned to
+    *keep_logs* (default ``DEFAULT_KEEP_LOGS``) per role.
 
     When *already_claimed* is True, skips the ``claim_handle`` call (the
     caller already owns the handle file). Otherwise raises

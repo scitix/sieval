@@ -230,6 +230,7 @@ class TestPerOwnerHandles:
         [row] = json.loads(result.stdout)["data"]
         assert row["status"] == "Ready"
         assert row["engine_pid"] == "4242"
+        assert status.await_args is not None
         assert status.await_args.args[0].handle_id == "4242"
         saved = json.loads((handle_dir / "m.json").read_text())
         assert saved["engine_pid"] == "4242"
@@ -285,6 +286,7 @@ class TestPerOwnerHandles:
 
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["data"]["stopped"] is True
+        assert deployer.delete.await_args is not None
         assert deployer.delete.await_args.args[0].handle_id == "4242"
         assert not (handle_dir / "m.json").exists()
         assert not log.exists()
@@ -344,6 +346,7 @@ class TestPerOwnerHandles:
             result = runner.invoke(infer_app, ["start", str(ckpt), "-o", "json", *args])
 
         assert result.exit_code == 0, result.output
+        assert launch.await_args is not None
         kwargs = launch.await_args.kwargs
         assert kwargs["keep_logs"] == expected
         assert kwargs["handle_path"] == handle_dir / "qwen3-4b.json"

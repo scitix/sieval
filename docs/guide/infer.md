@@ -55,57 +55,29 @@ used, not whether the service starts.
 
 ## Handles and engine logs
 
-SiEval tracks each service it launches with a handle file under
-`~/.sieval/handles`:
+Each launched service has a handle file under `~/.sieval/handles`:
 
-| Launched by | Handle | Name in `infer list`, `show`, `stop` |
+| Launched by | Handle | Name in `infer list` / `show` / `stop` |
 | --- | --- | --- |
-| `sieval infer start` | `handles/<model>.json` | `<model>` |
-| `sieval run` | `handles/run-<pid>/<model>.json` | `run-<pid>/<model>` |
+| `sieval infer start` | `<model>.json` | `<model>` |
+| `sieval run` | `run-<pid>/<model>.json` | `run-<pid>/<model>` |
 
-A `sieval run` therefore never collides with an `infer start` of the same model
-name. It removes its own handles and then its `run-<pid>` directory when it
-ends; a handle left there by an earlier process with the same PID whose engine
-is still alive is kept, and the run asks you to stop it. If it was killed first,
-the next `sieval infer list` removes the directory once the run's PID is gone;
-a handle whose engine is still alive stays listed so `infer stop` can reach it.
+So `sieval run` never collides with an `infer start` of the same model. A run
+removes its handles when it ends; if it was killed, the next `infer list`
+cleans them up, except a handle whose engine is still alive, which stays
+listed so `infer stop` can reach it.
 
-A handle records the starting process as `owner_pid` and the engine process as
-`engine_pid`. Handles written by earlier versions, with `pid` and `handle_id`,
-are still read.
-
-Engine logs go to:
+Engine logs:
 
 | Launched by | Log |
 | --- | --- |
-| `sieval infer start` | `~/.sieval/logs/<model>/<role>-<deployment_id>.log` |
 | `sieval run` with a `result_dir` | `<result_dir>/logs/<model>/<role>.log` |
-| `sieval run` without a `result_dir` | `~/.sieval/logs/<model>/<role>-<deployment_id>.log` |
+| otherwise | `~/.sieval/logs/<model>/<role>-<deployment_id>.log` |
 
-`<deployment_id>` is the launch's UTC time plus a random suffix, so two launches
-in the same second write separate files.
-
-Logs in `~/.sieval/logs` are pruned at each launch to the last N per role of
-the model being launched, counting the new one, so launching one model never
-removes another model's logs. Logs under `result_dir` are kept with the results
-and never pruned. Flat `~/.sieval/logs/<role>-<timestamp>.log` files from
-earlier versions name no model; they are pruned to N per role on their own.
-
-```bash
-sieval infer start /path/to/Qwen3-8B --keep-logs 5   # keep 5 per role
-SIEVAL_KEEP_LOGS=0 sieval infer start /path/to/Qwen3-8B
-```
-
-| N | Effect |
-| --- | --- |
-| `3` | Default |
-| `0` | Delete the log when the service stops |
-| negative | Keep every log |
-
-`--keep-logs` wins over `SIEVAL_KEEP_LOGS`, which wins over the default. Both
-`sieval infer start` and `sieval run` accept the flag; a `sieval run` with a
-`result_dir` reads neither. A log a live handle still names is never pruned,
-including one whose launch is still starting.
+Each launch prunes `~/.sieval/logs/<model>/` to the last N logs per role,
+counting the new one; other models' logs and `result_dir` logs are untouched.
+Set N with `--keep-logs` (on `infer start` and `run`), else `SIEVAL_KEEP_LOGS`,
+else 3. `0` deletes the log when the service stops; a negative N keeps all.
 
 ## YAML Infer Configuration
 

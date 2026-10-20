@@ -216,8 +216,7 @@ async def _run_all(
     launched: dict[str, list[InferHandle]] = {}
     handle_dir = run_handle_dir()
     effective_result_dir = result_dir or config.get("result_dir")
-    # Retention applies only to the shared log dir, so a result_dir run never
-    # reads --keep-logs or $SIEVAL_KEEP_LOGS.
+    # Retention applies only to ~/.sieval/logs, not to result_dir logs.
     keep = None if effective_result_dir else resolve_keep_logs(keep_logs)
     plan_dicts: dict[str, dict[str, Any]] = {}
     prepared_launches: dict[str, tuple[DeploymentPlan, list[BackendCommand]]] = {}
@@ -325,10 +324,9 @@ async def _run_all(
                 )
             except HandleHeldError as held:
                 msg = (
-                    f"Model {model_name!r}: an engine (PID {held.pid}) left by an "
-                    f"earlier process with this run's PID still holds {held.path}. "
-                    f"Stop it with `sieval infer stop {handle_dir.name}/"
-                    f"{model_name}`, then retry."
+                    f"Model {model_name!r}: engine PID {held.pid} from an earlier "
+                    f"process still holds {held.path}. Run `sieval infer stop "
+                    f"{handle_dir.name}/{model_name}`, then retry."
                 )
                 raise HandleHeldError(held.path, held.data, held.pid, msg) from None
 
@@ -436,10 +434,9 @@ def register_run_command(app: typer.Typer) -> None:
             typer.Option(
                 "--keep-logs",
                 help=(
-                    "Engine logs to keep per model and role in "
-                    "~/.sieval/logs/<model>, counting this launch; used only "
-                    "without a result_dir. 0 deletes "
-                    "the log at the end; negative keeps every log. "
+                    "Engine logs to keep per role in ~/.sieval/logs/<model>, "
+                    "counting this launch; ignored with a result_dir. 0 deletes "
+                    "at the end; negative keeps all. "
                     "Default: $SIEVAL_KEEP_LOGS, else 3."
                 ),
             ),
