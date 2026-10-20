@@ -182,6 +182,7 @@ async def _run_all(
     config_path: Path,
     verbose: bool = False,
     resume: bool = False,
+    resume_from: Path | None = None,
     model: str | None = None,
     result_dir: str | None = None,
     deterministic: bool | None = None,
@@ -352,6 +353,7 @@ async def _run_all(
             config_path,
             model=model,
             resume=resume,
+            resume_from=resume_from,
             result_dir=result_dir,
             deterministic=deterministic,
             self_managed_endpoints=frozenset(realized_deployments),
@@ -404,6 +406,18 @@ def register_run_command(app: typer.Typer) -> None:
             typer.Option(
                 "--result-dir",
                 help="Override result directory",
+            ),
+        ] = None,
+        resume_from: Annotated[
+            Path | None,
+            typer.Option(
+                "--resume-from",
+                help=(
+                    "Resume from a recorded result_dir (may be read-only, and "
+                    "another task's): each task's shards are copied from "
+                    "<DIR>/<task> into this run's result_dir, then resumed "
+                    "stage by stage. A task with no directory there runs fresh."
+                ),
             ),
         ] = None,
         deterministic: Annotated[
@@ -503,6 +517,7 @@ def register_run_command(app: typer.Typer) -> None:
                 config,
                 verbose=verbose,
                 resume=resume,
+                resume_from=resume_from,
                 model=model,
                 result_dir=result_dir,
                 deterministic=deterministic,

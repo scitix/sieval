@@ -669,3 +669,57 @@ def _all_task_subclasses(cls: type) -> set[type]:
         result.add(sub)
         result.update(_all_task_subclasses(sub))
     return result
+
+
+# ===================================================================
+# Identity hooks: inference_args / grader_args
+# ===================================================================
+class _JudgedArgsTask(_ConcreteTask):
+    """Holds a string judge, a threshold, a Model judge and inference args."""
+
+    def __init__(
+        self,
+        dataset,
+        model,
+        name=None,
+        n: int = 2,
+        stop=("Q:",),
+        judge_model: str = "gemini-x",
+        embed_threshold: float = 0.8,
+        grader=None,
+        max_concurrency: int = 4,
+        opaque=None,
+    ):
+        super().__init__(dataset=dataset, model=model, name=name)
+        self._n = n
+        self._stop = list(stop)
+        self._judge_model = judge_model
+        self.embed_threshold = embed_threshold
+        self._grader = grader
+        self._max_concurrency = max_concurrency
+        self._opaque = opaque
+
+
+class TestIdentityHooks:
+    def _task(self, **kwargs) -> _JudgedArgsTask:
+        return _JudgedArgsTask(_SimpleDataset(), _MockChatModel(), **kwargs)
+
+    def test_inference_args_read_n_stop_and_logprobs(self):
+        assert self._task().inference_args() == {"n": 2, "stop": ["Q:"]}
+
+    def test_grader_args_hold_settings_that_change_grading(self):
+        args = self._task(grader=_MockChatModel(), opaque=object()).grader_args()
+        # A string-held judge and a threshold count; inference args, a Model
+        # judge (identified on its own), scheduling and non-JSON values do not.
+        assert args == {"embed_threshold": 0.8, "judge_model": "gemini-x"}
+
+    def test_switching_a_string_judge_changes_grader_args(self):
+        assert (
+            self._task(judge_model="a").grader_args()
+            != self._task(judge_model="b").grader_args()
+        )
+
+    def test_a_task_without_extra_args_has_none(self):
+        task = _ConcreteTask(_SimpleDataset(), _MockChatModel())
+        assert task.grader_args() == {}
+        assert task.inference_args() == {}

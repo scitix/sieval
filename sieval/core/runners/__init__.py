@@ -8,11 +8,14 @@ from sieval.core.runners.runner import (
     read_run_version,
     run_started,
 )
+from sieval.core.runners.stage_resume import LegacyStageMatch, StageResumeError
 
 __all__ = [
+    "LegacyStageMatch",
     "MultiTaskRunner",
     "ResultDirExistsError",
     "ResumeAction",
+    "StageResumeError",
     "TaskRunner",
     "TaskRunnerConfig",
     "UnreadableIntervalError",

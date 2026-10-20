@@ -24,6 +24,7 @@ from .run_meta import (
     DigestedStage,
     GraderIdentity,
     InferenceIdentity,
+    RunFrom,
     carried_identity,
     carried_runs,
     new_run_record,
@@ -102,6 +103,9 @@ class TaskSaver:
         self._meta_path = self._root_dir / "meta.json"
         self._meta: TaskRunMeta | None = None
         self._meta_lock = anyio.Lock()
+        # Ordinal of this run in `runs[]`, written into each `.idx` line so a
+        # later run's record supersedes an earlier one's (see the loader).
+        self._run_index = 0
 
         self._shard_samples = shard_samples
         self._shard_write_concurrency = max(1, shard_write_concurrency)
@@ -216,6 +220,7 @@ class TaskSaver:
         self,
         *,
         resumed: bool,
+        run_from: RunFrom | None = None,
         model: str | None = None,
         config_diff: Sequence[str] = (),
         data: DigestedStage | None | _Unset = _UNSET,
@@ -233,11 +238,16 @@ class TaskSaver:
         fresh run writes its own. A stage identity given here replaces the
         carried one (``None`` sets it unknown); a stage not given is carried
         from a resumed ``meta.json`` of the same identity schema.
-        Self-creates ``_root_dir``. A failed write raises.
+
+        *run_from* starts a resume across tasks: the directory's history begins
+        with this run (``start: "from"``) and its origin fields are this run's,
+        since this run created the directory; the copied directory and its
+        identity are recorded in ``runs[].from``. Self-creates ``_root_dir``. A
+        failed write raises.
         """
         from sieval import __version__
 
-        existing = await self._read_meta() if resumed else None
+        existing = await self._read_meta() if resumed and run_from is None else None
         meta: TaskRunMeta
         if existing is not None and isinstance(existing.get("version"), str):
             meta = cast(TaskRunMeta, {"version": existing["version"]})
@@ -253,12 +263,15 @@ class TaskSaver:
         if model is not None:
             meta["model"] = model
         meta["identity"] = carried_identity(existing)
-        meta["runs"] = [
-            *carried_runs(existing),
-            new_run_record(
+        if run_from is not None:
+            run = new_run_record(__version__, "from", config=config_diff)
+            run["from"] = run_from
+        else:
+            run = new_run_record(
                 __version__, "resume" if resumed else "fresh", config=config_diff
-            ),
-        ]
+            )
+        meta["runs"] = [*carried_runs(existing), run]
+        self._run_index = len(meta["runs"])
         self._meta = meta
         self._apply_identity(data, prompt, inference, grader)
         await self._write_meta()
@@ -400,12 +413,26 @@ class TaskSaver:
                 f"{c.sample_id}\t{c.iteration}\t{c.stage.value}\t{current}\t{length}"
                 f"\t{(c.error_action.value if c.error_action else '')}"
                 f"\t{(c.error_reason or '')}"
-                f"\t{c.retry_count}\n"
+                f"\t{c.retry_count}"
+                f"\t{self._run_index}\n"
             )
             current += length
 
         async with await anyio.open_file(idx_path, "a") as idx_f:
             await idx_f.write("".join(idx_lines))
+
+    async def write_records(self, contexts: Iterable[TaskContext]) -> None:
+        """Write *contexts* as full records and flush, with the manifest.
+
+        For records a run writes outside the compute stream: the samples a
+        per-stage resume keeps, rewritten so no superseded record can outrank
+        them on load.
+        """
+        for ctx in contexts:
+            self._update_manifest_entry(ctx)
+            self._stage_queue.append(ctx)
+        await self.flush()
+        await self._write_manifest()
 
     def sync_manifest(self, initial_manifest: dict[str | int, TaskManifest]):
         """Import pre-existing manifest entries from the loader.

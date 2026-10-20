@@ -24,7 +24,6 @@ import anyio
 import yaml
 from anyio.to_thread import run_sync
 from loguru import logger
-from packaging.version import InvalidVersion, Version
 
 from sieval import __version__
 from sieval.cli._filter_spec import (
@@ -118,12 +117,9 @@ from sieval.core.models.requirements import (
     aggregate_task_requirements,
 )
 from sieval.core.runners import (
+    LegacyStageMatch,
     MultiTaskRunner,
-    ResumeAction,
     TaskRunnerConfig,
-    read_run_version,
-    resume_version_verdict,
-    run_started,
 )
 from sieval.core.tasks.context import TaskAction
 from sieval.core.tasks.services import check_service_names
@@ -1104,290 +1100,62 @@ def _diff_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     return diffs
 
 
-def _describe_order_change(before: list[Any], after: list[Any]) -> str:
-    """Name the first key that moved. Both sides hold the same keys, so printing
-    the two sequences in full makes a one-key swap in a 12-key ``engine_params``
-    block a 500-character line the reader has to diff by eye.
-    """
-    moved = [
-        (i, now)
-        for i, (was, now) in enumerate(zip(before, after, strict=True))
-        if was != now
-    ]
-    if not moved:
-        return f"identical order ({len(before)} keys)"
-    i, key = moved[0]
-    return (
-        f"{key!r} moved from position {before.index(key)} to {i} ({len(before)} keys)"
-    )
+#: Task ``args`` that reach the request, as :meth:`Task.inference_args` reads them.
+_INFERENCE_TASK_ARGS = ("n", "stop", "logprobs")
+#: Runner keys in the inference identity (``INFERENCE_RUNNER_KEYS``).
+_INFERENCE_RUNNER_CONFIG_KEYS = ("max_iterations", "max_retries")
 
 
-def _diff_key_shape(
-    a: dict[str, Any], b: dict[str, Any]
-) -> tuple[list[str], list[str]]:
-    """Return ``(presence, order)`` key differences a parsed leaf diff cannot see.
-
-    Only meaningful once :func:`_diff_lines` is empty, and two different things
-    hide there. **presence**: leaves are read with ``.get()``, so a
-    ``None``-valued key is indistinguishable from an absent one — dropping a
-    ``foo: null`` leaves no leaf diff, and every ``infer_plans.yaml`` carries a
-    ``scaling: null``. **order**: the same keys resequenced, which a
-    byte-for-byte comparison rejects. Plain dicts from ``yaml.safe_load``
-    preserve document order, so both are recoverable.
-    """
-    presence: list[str] = []
-    order: list[str] = []
-
-    def _walk(x: Any, y: Any, path: str) -> None:
-        if isinstance(x, dict) and isinstance(y, dict):
-            label = path or "(root)"
-            removed = [k for k in x if k not in y]
-            added = [k for k in y if k not in x]
-            if removed or added:
-                changes = []
-                if removed:
-                    changes.append(f"removed {removed}")
-                if added:
-                    changes.append(f"added {added}")
-                presence.append(f"- {label}: {', '.join(changes)}")
-            elif list(x) != list(y):
-                order.append(f"- {label}: {_describe_order_change(list(x), list(y))}")
-            for k in x:
-                if k in y:
-                    _walk(x[k], y[k], f"{path}.{k}" if path else k)
-        elif isinstance(x, list) and isinstance(y, list) and len(x) == len(y):
-            for i, (xv, yv) in enumerate(zip(x, y, strict=True)):
-                _walk(xv, yv, f"{path}[{i}]")
-
-    _walk(a, b, "")
-    return presence, order
-
-
-def _diff_dicts(a: dict[str, Any], b: dict[str, Any]) -> str:
-    """Return a short human-readable hint describing which keys differ.
-
-    Up to 10 leaf paths from :func:`_diff_lines`; failing that,
-    :func:`_diff_key_shape`, since a byte comparison aborts on key set and order
-    too and "nothing differs" is not actionable. Only once the key shape matches
-    as well is the difference genuinely layout.
-    """
-    lines = _diff_lines(a, b)
-    if lines:
-        return "Diff:\n" + "\n".join(f"  {line}" for line in lines[:10])
-
-    presence, order = _diff_key_shape(a, b)
-    blocks: list[str] = []
-    if presence:
-        blocks.append(
-            "keys added or removed — a null-valued key and a missing key hold "
-            "the same value, so this shows up as no value difference at all:\n"
-            + "\n".join(f"  {line}" for line in presence[:10])
-        )
-    if order:
-        blocks.append(
-            "same keys, different order (the comparison is byte-for-byte, so "
-            "order counts):\n" + "\n".join(f"  {line}" for line in order[:10])
-        )
-    if blocks:
-        return "Diff: " + "\nDiff: ".join(blocks)
-    return "Diff: (whitespace / formatting only)"
-
-
-def _sort_versions(versions: set[str]) -> list[str]:
-    """Sort by version, not text (``0.10.0`` after ``0.7.0``). Unparseable strings
-    sort last — ``resume_version_verdict`` rejects those too, so they reach here.
-    """
-
-    def key(v: str) -> tuple[int, Version, str]:
-        try:
-            return (0, Version(v), v)
-        except InvalidVersion:
-            return (1, Version("0"), v)
-
-    return sorted(versions, key=key)
-
-
-async def _cross_version_resume_hint(result_path: anyio.Path) -> str:
-    """Return a note when this result_dir was produced by an incompatible version.
-
-    ``EvalSession`` compares its artifacts before any ``TaskRunner`` exists, so
-    ``gate_resume_version`` (in ``TaskRunner.__init__``) cannot pre-empt those
-    aborts and a cross-version resume arrives as a bare artifact diff. This
-    annotates the diff rather than moving the gate, which reads a *per-task*
-    ``meta.json`` and is fail-closed on a missing one — a not-yet-started task
-    legitimately has none, so hoisting it changes resume semantics.
-
-    Scoped to the dirs the gate would read: those where a run has started, by
-    :func:`~sieval.core.runners.run_started`.
-
-    States the incompatibility and stops — it does **not** claim to explain the
-    diff above it. Both can be true at once, and on a dev/local install every
-    non-identical version pair is incompatible, so a claim about cause would
-    often be the wrong one.
-
-    ``""`` when nothing incompatible is found, and on any read problem: a hint
-    must never mask the caller's own abort, nor invent a version problem.
-    """
-
-    def _scan() -> set[str]:
-        found: set[str] = set()
-        root = Path(result_path)
-        if not root.is_dir():
-            return found
-        for task_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-            if not run_started(task_dir):
-                continue
-            version = read_run_version(task_dir)
-            if version is None:
-                continue
-            verdict = resume_version_verdict(version, __version__)
-            if verdict.action is ResumeAction.REJECT:
-                found.add(version)
-        return found
-
+def _read_persisted_config(path: Path) -> dict[str, Any] | None:
     try:
-        persisted = await run_sync(_scan)
-    except Exception as e:
-        # Never mask the caller's own abort — this is only an annotation on it.
-        logger.debug("Skipping cross-version resume hint: {}", e)
-        return ""
-
-    if not persisted:
-        return ""
-    versions = _sort_versions(persisted)
-    subject = (
-        f"{versions[0]}, which is not"
-        if len(versions) == 1
-        else f"{', '.join(versions)}, none of which is"
-    )
-    return (
-        f"Note: this result_dir holds task directories produced by sieval "
-        f"{subject} resume-compatible with {__version__} — any task resuming "
-        f"from those is refused on the version alone, independently of the "
-        f"difference above.\n"
-    )
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
-def _brief_diff(existing: str, current: str) -> str:
-    """Return a short human-readable hint describing which YAML keys differ.
+def _stage_config(cfg: Mapping[str, Any], task_name: str, stage: str) -> object:
+    """The part of a session config that decides *stage* for *task_name*.
 
-    Falls back to a generic message if either body fails to parse — this
-    can happen when the persisted file has been hand-edited into invalid
-    YAML, and we don't want the parse error to mask the caller's Resume
-    aborted RuntimeError.
+    For a recorded run without stage identities, compared between its
+    persisted config and this run's. ``data``: the task's dataset block,
+    resolved by name. ``inference``: the candidate model's config chain without
+    endpoint, key or concurrency, the task's ``infer_args`` and inference
+    ``args``, the result-changing runner keys and ``deterministic``.
     """
-    try:
-        e = yaml.safe_load(existing) or {}
-        c = yaml.safe_load(current) or {}
-    except yaml.YAMLError:
-        return "Diff: (existing file is not valid YAML — cannot compute key-level diff)"
-    return _diff_dicts(e, c)
-
-
-# ── Resume strict-match field policy (must partition TaskRunnerConfig) ──
-# Adjustable across --resume only if a field touches neither the sample data
-# nor any persisted artifact: pure scheduling + console-only progress.
-_THROUGHPUT_RUNNER_KEYS: frozenset[str] = frozenset(
-    {
-        "concurrency_limit",
-        "concurrency_limits",
-        "shard_read_concurrency",
-        "shard_write_concurrency",
-        "write_buffer_size",
-        "write_buffer_flush_interval",
-        # Console-only (tqdm bar + log cadence); not the progress.json dump.
-        "show_progress",
-        "progress_log_interval",
-        "progress_log_pct_interval",
+    tasks = cfg.get("tasks") or {}
+    task = tasks.get(task_name) or {}
+    models = cfg.get("models") or {}
+    datasets = cfg.get("datasets") or {}
+    if stage == "data":
+        ref = task.get("dataset")
+        return datasets.get(ref) if isinstance(ref, str) else ref
+    model_name = task.get("model")
+    if model_name is None and len(models) == 1:
+        model_name = next(iter(models))
+    chain = []
+    seen: set[str] = set()
+    while (
+        isinstance(model_name, str) and model_name in models and model_name not in seen
+    ):
+        seen.add(model_name)
+        mcfg = dict(models[model_name] or {})
+        for key in ("api_base", "api_key", "concurrency_limit", "max_retries"):
+            mcfg.pop(key, None)
+        args = dict(mcfg.get("args") or {})
+        args.pop("concurrency_limit", None)
+        mcfg["args"] = args
+        chain.append(mcfg)
+        model_name = mcfg.get("base")
+    runner = {**(cfg.get("runner_config") or {}), **(task.get("runner_config") or {})}
+    task_args = task.get("args") or {}
+    return {
+        "models": chain,
+        "infer_args": task.get("infer_args"),
+        "args": {k: task_args.get(k) for k in _INFERENCE_TASK_ARGS},
+        "runner": {k: runner.get(k) for k in _INFERENCE_RUNNER_CONFIG_KEYS},
+        "deterministic": bool(cfg.get("deterministic", False)),
     }
-)
-
-# Must match: affect sample data, an on-disk artifact, or a recorded outcome's
-# meaning — e.g. max_retries is the failure signal written into FAILED records;
-# profile_*/detect_anomalies*/dump_progress write profiler/anomaly/progress files.
-_STRICT_RUNNER_KEYS: frozenset[str] = frozenset(
-    {
-        "shard_samples",
-        "record_each_stage",
-        "record_type_metadata",
-        "record_meta",
-        "max_iterations",
-        "deterministic",
-        "max_retries",
-        "profile_io",
-        "profile_stages",
-        "profile_usage",
-        "detect_anomalies",
-        "detect_anomalies_on_resume",
-        "dump_progress",
-        "progress_dump_interval",
-    }
-)
-
-# Neither adjustable nor strict: `auto_resume` only decides WHETHER to resume,
-# the stage_meta hooks are non-serializable callables, and `result_dir` says
-# WHERE output goes. Usually none reach a persisted runner_config block — but a
-# config may spell one out, and then it persists and is compared. `--resume`
-# forces the runner's auto_resume on regardless of the YAML
-# (_build_runner_config), so an invocation that also flips the YAML value to
-# request that resume aborts on the field asking for it, with nothing to match.
-_NONMATCH_RUNNER_KEYS: frozenset[str] = frozenset(
-    {
-        "result_dir",
-        "auto_resume",
-        "stage_meta_hook",
-        "stage_meta_hooks",
-    }
-)
-
-# Stripped from every runner_config block; `result_dir` deliberately is not.
-# Inside a block it selects the artifact directory — a hand-authored value beats
-# the `<result_dir>/<task.name>` MultiTaskRunner derives — so changing it across
-# a resume moves which shards are read and written. Only the top-level key is
-# stripped, where it is the location of the compared file.
-_NONMATCH_KEYS_STRIPPED_IN_BLOCKS: frozenset[str] = _NONMATCH_RUNNER_KEYS - {
-    "result_dir"
-}
-
-
-def _strip_noncomparable_fields(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Deep-copy ``cfg`` with resume-mutable fields removed, for comparison.
-
-    Strips (input never mutated) top-level ``concurrency_limit`` /
-    ``concurrency_limits`` / ``result_dir``, ``models.*.args.concurrency_limit``,
-    and ``_THROUGHPUT_RUNNER_KEYS`` plus ``_NONMATCH_KEYS_STRIPPED_IN_BLOCKS``
-    from every ``runner_config`` block.
-    """
-    out = copy.deepcopy(cfg)
-
-    for key in ("concurrency_limit", "concurrency_limits", "result_dir"):
-        out.pop(key, None)
-
-    models = out.get("models")
-    if isinstance(models, dict):
-        for mcfg in models.values():
-            if isinstance(mcfg, dict):
-                args = mcfg.get("args")
-                if isinstance(args, dict):
-                    args.pop("concurrency_limit", None)
-
-    # runner_config carries throughput knobs in two equivalent places: the
-    # top-level defaults block (merged into every task) and per-task overrides.
-    # Strip both identically.
-    runner_config_blocks = [out.get("runner_config")]
-    tasks = out.get("tasks")
-    if isinstance(tasks, dict):
-        runner_config_blocks.extend(
-            tcfg.get("runner_config")
-            for tcfg in tasks.values()
-            if isinstance(tcfg, dict)
-        )
-    for rc in runner_config_blocks:
-        if isinstance(rc, dict):
-            for key in _THROUGHPUT_RUNNER_KEYS | _NONMATCH_KEYS_STRIPPED_IN_BLOCKS:
-                rc.pop(key, None)
-
-    return out
 
 
 def resolve_deterministic(cli_override: bool | None, config: Mapping[str, Any]) -> bool:
@@ -1523,7 +1291,6 @@ def _format_comment_header(
     ``yaml.safe_dump`` cannot preserve comments, so this header is
     prepended to the dumped body via string concatenation.
     """
-    from sieval import __version__
 
     now = datetime.now(UTC).isoformat()
     border = "# " + "-" * 70
@@ -1642,10 +1409,16 @@ class EvalSession:
         realized_deployments: Mapping[str, Deployment] | None = None,
         model_capability_profiles: Mapping[str, ModelCapabilityProfile] | None = None,
         serving_reconciler: ServingReconciler | None = None,
+        resume_from: str | Path | None = None,
     ):
         self.config_path = Path(config_path)
         self.model_override = model_override
         self.resume_override = resume
+        # A recorded session result_dir (or one task directory, when the config
+        # has one task) to resume each task from; see `_build_runner_config`.
+        self.resume_from: Path | None = (
+            Path(resume_from).expanduser() if resume_from is not None else None
+        )
         self.result_dir_override = result_dir_override
         self.deterministic_override = deterministic_override
         legacy_endpoint_map = dict(endpoint_map or {})
@@ -4745,7 +4518,9 @@ class EvalSession:
             )
 
             # Build runner config
-            runner_config = self._build_runner_config(task_cfg, runner_defaults)
+            runner_config = self._build_runner_config(
+                task_cfg, runner_defaults, task_name
+            )
 
             assert self.runner is not None, "Runner not initialized"
             self.runner.add_task(
@@ -4753,8 +4528,78 @@ class EvalSession:
                 config=runner_config,
                 inference_recipe=self._inference_recipe_for(candidate.config_name),
                 resume_config_diff=list(self._resume_config_diff),
+                legacy_match=self._legacy_match_for(task_name, runner_config),
             )
             logger.info("Added task '{}' with class '{}'", task_name, task_spec)
+
+    def _resume_from_for(self, task_name: str, configured: object) -> Path | None:
+        """The recorded task directory *task_name* resumes from, if any.
+
+        ``--resume-from DIR`` (``resume_from``) names a recorded session
+        ``result_dir``: the task resumes from ``DIR/<task_name>``. When ``DIR``
+        is itself a task directory (it holds ``meta.json``) and the config has
+        one task, that task resumes from ``DIR``. A task with no directory
+        under ``DIR`` runs fresh. ``runner_config.resume_from`` in the YAML,
+        per task or in the top-level defaults, names one task directory and
+        wins over the option.
+        """
+        if isinstance(configured, str) and configured:
+            return Path(configured).expanduser()
+        resume_from: Path | None = getattr(self, "resume_from", None)
+        if resume_from is None:
+            return None
+        candidate = resume_from / task_name
+        if candidate.is_dir():
+            return candidate
+        tasks = self._get_named_config_map("tasks")
+        if len(tasks) == 1 and (resume_from / "meta.json").is_file():
+            return resume_from
+        logger.info(
+            "Task '{}': no recorded directory under {}; runs fresh",
+            task_name,
+            resume_from,
+        )
+        return None
+
+    def _legacy_match_for(
+        self, task_name: str, runner_config: TaskRunnerConfig
+    ) -> LegacyStageMatch | None:
+        """Compare this run's config with the one a recorded run persisted.
+
+        Read only by a runner whose recorded directory carries no stage
+        identities (written before they existed). The recorded run's
+        ``effective_config.yaml`` sits in its session ``result_dir``, the task
+        directory's parent. Data matches when the task's ``dataset`` block
+        does; inference when the candidate model's config chain, the task's
+        ``infer_args``, its inference ``args`` (``n``, ``stop``, ``logprobs``),
+        the result-changing runner keys and ``deterministic`` all do. ``None``
+        when no persisted config is found: both stages stay unknown.
+        """
+        task_dir = (
+            Path(runner_config.resume_from)
+            if runner_config.resume_from
+            else Path(runner_config.result_dir)
+            if runner_config.result_dir
+            else None
+        )
+        if task_dir is None:
+            return None
+        persisted = _read_persisted_config(task_dir.parent / "effective_config.yaml")
+        if persisted is None:
+            return None
+        recorded_tasks = persisted.get("tasks") or {}
+        recorded_name = task_name if task_name in recorded_tasks else None
+        if recorded_name is None and len(recorded_tasks) == 1:
+            recorded_name = next(iter(recorded_tasks))
+        if recorded_name is None:
+            return None
+        current = self._reified_config
+        return {
+            "data": _stage_config(current, task_name, "data")
+            == _stage_config(persisted, recorded_name, "data"),
+            "inference": _stage_config(current, task_name, "inference")
+            == _stage_config(persisted, recorded_name, "inference"),
+        }
 
     def _inference_recipe_for(self, model_name: str) -> dict[str, JSONValue] | None:
         """The serving plan of *model_name*'s root, for the inference identity.
@@ -4838,7 +4683,10 @@ class EvalSession:
         )
 
     def _build_runner_config(
-        self, task_cfg: TaskConfigDict, defaults: dict[str, Any]
+        self,
+        task_cfg: TaskConfigDict,
+        defaults: dict[str, Any],
+        task_name: str | None = None,
     ) -> TaskRunnerConfig:
         """Build TaskRunnerConfig from task config and defaults."""
         # Start with defaults
@@ -4853,6 +4701,10 @@ class EvalSession:
         # Handle resume override
         if self.resume_override:
             cfg_dict["auto_resume"] = True
+        if task_name is not None:
+            source = self._resume_from_for(task_name, cfg_dict.get("resume_from"))
+            if source is not None:
+                cfg_dict["resume_from"] = str(source)
 
         # Filter to valid TaskRunnerConfig fields
         valid_fields = set(TaskRunnerConfig.__dataclass_fields__.keys())
@@ -4891,26 +4743,24 @@ class EvalSession:
         """
         return self.result_dir_override or self._raw_config.get("result_dir")
 
-    async def _persist_yaml_with_strict_resume(
+    async def _persist_audit_yaml(
         self,
         *,
         target_name: str,
         body: str,
         header: str,
         audit_label: str,
-        mutable_strip: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        note_diff: bool = False,
     ) -> None:
         """Atomically write ``header + body`` to ``result_dir/target_name``.
 
-        Under ``--resume`` with an existing file: an identical body skips the
-        rewrite (timestamps survive). With ``mutable_strip=None`` (e.g. infer
-        plans) any other diff raises. Otherwise both bodies are parsed and
-        compared with ``mutable_strip`` applied; a diff that vanishes
-        (resume-mutable or formatting) is tolerated — the file is rewritten
-        with the new body under its original header, and what changed is kept
-        for ``meta.json`` ``runs[].config`` — and any residual diff raises.
-        ``RuntimeError`` is the only failure the caller observes; all else is
-        best-effort and logged.
+        Under ``--resume`` with an existing file, an identical body skips the
+        rewrite (timestamps survive); a different one is rewritten under the
+        original header, which keeps the first run's provenance. Nothing here
+        refuses a resume: each task compares its stage identities with the
+        recorded ``meta.json`` instead. With *note_diff*, what changed goes to
+        each task's ``meta.json`` ``runs[].config``. Best effort: a failure is
+        logged.
         """
         effective_result_dir = self._resolve_result_dir()
         if effective_result_dir is None:
@@ -4921,97 +4771,23 @@ class EvalSession:
 
         result_path = anyio.Path(effective_result_dir)
         target = result_path / target_name
-
         write_header = header
 
-        if self.resume_override and await target.exists():
-            try:
+        try:
+            if self.resume_override and await target.exists():
                 existing = await target.read_text(encoding="utf-8")
-            except OSError as e:
-                raise RuntimeError(
-                    f"Resume aborted: cannot read existing {target}: {e}\n"
-                    "Either:\n"
-                    "  1. Remove the result_dir and start fresh\n"
-                    f"  2. Ensure {target} is readable"
-                ) from e
-
-            existing_header, existing_body = _split_header(existing)
-
-            if existing_body == body:
-                logger.info("Resume: {} matches — skipping rewrite", target_name)
-                return
-
-            if mutable_strip is None:
-                # Byte-for-byte strict (e.g. infer plans): any diff aborts.
-                raise RuntimeError(
-                    f"Resume aborted: {target} does not match current invocation.\n"
-                    f"{_brief_diff(existing_body, body)}\n"
-                    f"{await _cross_version_resume_hint(result_path)}"
-                    "Either:\n"
-                    "  1. Remove the result_dir and start fresh\n"
-                    f"  2. Match the invocation to the persisted {audit_label}"
-                )
-
-            # Parse both sides so YAML type coercion (tuple→list) and key
-            # ordering can't cause a spurious mismatch.
-            try:
-                existing_cfg = yaml.safe_load(existing_body) or {}
-                current_cfg = yaml.safe_load(body) or {}
-            except yaml.YAMLError as e:
-                raise RuntimeError(
-                    f"Resume aborted: cannot parse existing {target} to verify "
-                    f"match: {e}\n"
-                    "Either:\n"
-                    "  1. Remove the result_dir and start fresh\n"
-                    f"  2. Restore {target} to valid YAML matching the persisted "
-                    f"{audit_label}"
-                ) from e
-
-            # current_cfg is always a dict (we dump a mapping); a tampered file
-            # may parse to a scalar/list. Refuse cleanly so mutable_strip can't
-            # raise an opaque AttributeError instead of the documented RuntimeError.
-            if not isinstance(existing_cfg, dict) or not isinstance(current_cfg, dict):
-                raise RuntimeError(
-                    f"Resume aborted: existing {target} is not a YAML mapping — "
-                    "cannot verify match.\n"
-                    "Either:\n"
-                    "  1. Remove the result_dir and start fresh\n"
-                    f"  2. Restore {target} to valid YAML matching the persisted "
-                    f"{audit_label}"
-                )
-
-            stripped_existing = mutable_strip(existing_cfg)
-            stripped_current = mutable_strip(current_cfg)
-            if stripped_existing != stripped_current:
-                raise RuntimeError(
-                    f"Resume aborted: {target} does not match current invocation.\n"
-                    f"{_diff_dicts(stripped_existing, stripped_current)}\n"
-                    f"{await _cross_version_resume_hint(result_path)}"
-                    "Either:\n"
-                    "  1. Remove the result_dir and start fresh\n"
-                    f"  2. Match the invocation to the persisted {audit_label}"
-                )
-
-            # Only resume-mutable (or formatting) fields differ — rewrite with
-            # the new body under the original header, which keeps the first
-            # run's provenance; a header-less file gets a fresh one. What
-            # changed goes to each task's `meta.json` `runs[].config`.
-            logger.info(
-                "Resume: {} resume-mutable fields changed — updating file",
-                target_name,
-            )
-            # Genuine resume-mutable changes only; result_dir is a never-compared
-            # location field (reification injects it), so it stays out.
-            note_before = {k: v for k, v in existing_cfg.items() if k != "result_dir"}
-            note_after = {k: v for k, v in current_cfg.items() if k != "result_dir"}
-            self._resume_config_diff.extend(
-                line.removeprefix("- ") for line in _diff_lines(note_before, note_after)
-            )
-            write_header = existing_header or header
+                existing_header, existing_body = _split_header(existing)
+                if existing_body == body:
+                    logger.info("Resume: {} matches — skipping rewrite", target_name)
+                    return
+                write_header = existing_header or header
+                if note_diff:
+                    self._note_config_diff(existing_body, body)
+        except OSError as e:
+            logger.warning("Could not read existing {}: {}", target, e)
 
         tmp_path = target.with_name(target.name + ".tmp")
         content = write_header + body
-
         try:
             await result_path.mkdir(parents=True, exist_ok=True)
             async with await anyio.open_file(tmp_path, "w", encoding="utf-8") as f:
@@ -5022,6 +4798,23 @@ class EvalSession:
             with contextlib.suppress(OSError):
                 await tmp_path.unlink(missing_ok=True)
             logger.error("Failed to save {}: {}", target_name, e)
+
+    def _note_config_diff(self, existing_body: str, body: str) -> None:
+        """Keep what a resume changed in the config, for ``runs[].config``."""
+        try:
+            before = yaml.safe_load(existing_body) or {}
+            after = yaml.safe_load(body) or {}
+        except yaml.YAMLError as e:
+            logger.warning("Cannot diff the persisted config: {}", e)
+            return
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return
+        # `result_dir` is where the file lives, not a change in what ran.
+        before.pop("result_dir", None)
+        after.pop("result_dir", None)
+        self._resume_config_diff.extend(
+            line.removeprefix("- ") for line in _diff_lines(before, after)
+        )
 
     async def _persist_effective_config(self) -> None:
         """Write effective_config.yaml to result_dir at session start.
@@ -5059,12 +4852,12 @@ class EvalSession:
             invocation=self.invocation,
             extra_lines=extra_lines,
         )
-        await self._persist_yaml_with_strict_resume(
+        await self._persist_audit_yaml(
             target_name="effective_config.yaml",
             body=body,
             header=header,
             audit_label="effective config",
-            mutable_strip=_strip_noncomparable_fields,
+            note_diff=True,
         )
 
     async def _persist_infer_plans(self) -> None:
@@ -5072,11 +4865,8 @@ class EvalSession:
 
         Rerun re-resolves plans from the ``infer:`` section of
         effective_config.yaml plus the installed sieval version, so this file
-        is audit-only — not load-bearing for rerun. Under ``--resume`` it IS
-        still part of the strict-match contract: a re-resolved plan that
-        differs from the persisted one (different GPU fleet, different sieval
-        version emitting a different recipe translation) means resuming would
-        merge results from incompatible deployments.
+        is audit-only. It never blocks a resume: the serving recipe is part of
+        each task's inference identity, which a resume compares instead.
         """
         if not self._infer_plans:
             return
@@ -5098,7 +4888,7 @@ class EvalSession:
                 "  effective_config.yaml + installed sieval version.",
             ],
         )
-        await self._persist_yaml_with_strict_resume(
+        await self._persist_audit_yaml(
             target_name="infer_plans.yaml",
             body=body,
             header=header,
@@ -5109,7 +4899,7 @@ class EvalSession:
         """Run all configured tasks asynchronously."""
         try:
             # Pure prelaunch resolution stamps the binding-local seed contract
-            # into effective_config before the strict resume comparison. No
+            # into effective_config before it is persisted. No
             # model client, dataset, or serving I/O has happened at this point;
             # pure config/requirement errors may therefore surface first.
             await run_sync(self.prepare_prelaunch)
@@ -5173,6 +4963,7 @@ async def arun_session(
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] | set[str] = frozenset(),
     realized_deployments: Mapping[str, Deployment] | None = None,
+    resume_from: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run tasks defined in a YAML configuration file asynchronously.
 
@@ -5197,6 +4988,9 @@ async def arun_session(
             warning to genuinely external endpoints.
         realized_deployments: Typed realized deployments keyed by root model
             config name.
+        resume_from: A recorded session ``result_dir`` to resume each task
+            from (``<resume_from>/<task>``), possibly read-only; see
+            :meth:`EvalSession._resume_from_for`.
 
     Returns:
         A dictionary mapping task names to their reports.
@@ -5212,6 +5006,7 @@ async def arun_session(
         invocation=invocation,
         self_managed_endpoints=self_managed_endpoints,
         realized_deployments=realized_deployments,
+        resume_from=resume_from,
     )
 
     return await runner.arun()
@@ -5228,6 +5023,7 @@ def run_session(
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] | set[str] = frozenset(),
     realized_deployments: Mapping[str, Deployment] | None = None,
+    resume_from: str | Path | None = None,
 ) -> dict[str, Any]:
     return anyio.run(
         arun_session,
@@ -5241,4 +5037,5 @@ def run_session(
         invocation,
         self_managed_endpoints,
         realized_deployments,
+        resume_from,
     )

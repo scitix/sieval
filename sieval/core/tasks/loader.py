@@ -40,20 +40,24 @@ class ShardOffset(TypedDict):
 
 
 class ShardOffsetWithIteration(TypedDict):
-    """Shard file location tagged with the iteration it was written in."""
+    """Shard file location tagged with the iteration and run it was written in."""
 
     shard: Path
     offset: int
     length: int
     iteration: int
+    run: int
 
 
-# (iteration, stage_rank, shard_path, byte_offset, byte_length)
+# (run, iteration, stage_rank, shard_path, byte_offset, byte_length)
 # stage_rank uses -1 when comparing stage-only offsets (for dependency loading)
-OffsetMeta = tuple[int, int, Path, int, int]
-"""Tuple ``(iteration, stage_rank, shard_path, byte_offset, byte_length)``
+OffsetMeta = tuple[int, int, int, Path, int, int]
+"""Tuple ``(run, iteration, stage_rank, shard_path, byte_offset, byte_length)``
 used for deterministic latest-offset selection.
 
+``run`` is the ordinal of the run that wrote the record, ``0`` for a record
+written before the column existed: a later run's record supersedes an earlier
+one's even at a lower stage, which is how a per-stage resume rewinds a sample.
 ``stage_rank`` is set to ``-1`` for per-stage comparisons (dependency loading)
 where only iteration and file position matter."""
 
@@ -127,6 +131,7 @@ class IdxRecord(TypedDict):
     error_action: NotRequired[str]
     error_reason: NotRequired[str | None]
     retry_count: NotRequired[int]
+    run: NotRequired[int]
 
 
 def _should_replace_offset(current: OffsetMeta | None, candidate: OffsetMeta) -> bool:
@@ -134,16 +139,20 @@ def _should_replace_offset(current: OffsetMeta | None, candidate: OffsetMeta) ->
     Choose the latest offset deterministically for stage and best hydration records.
 
     Priority:
-    1) higher iteration
-    2) higher stage rank (use -1 for stage-only comparisons)
-    3) for same shard, larger offset (later append)
-    4) deterministic fallback by (shard path, offset, length)
+    1) later run
+    2) higher iteration
+    3) higher stage rank (use -1 for stage-only comparisons)
+    4) for same shard, larger offset (later append)
+    5) deterministic fallback by (shard path, offset, length)
     """
     if current is None:
         return True
 
-    cand_it, cand_rank, cand_shard, cand_offset, cand_length = candidate
-    cur_it, cur_rank, cur_shard, cur_offset, cur_length = current
+    cand_run, cand_it, cand_rank, cand_shard, cand_offset, cand_length = candidate
+    cur_run, cur_it, cur_rank, cur_shard, cur_offset, cur_length = current
+
+    if cand_run != cur_run:
+        return cand_run > cur_run
 
     if cand_it != cur_it:
         return cand_it > cur_it
@@ -191,6 +200,8 @@ def _parse_idx_line(parts: list[str]) -> IdxRecord | None:
             rec["error_reason"] = parts[6]
         if len(parts) > 7 and parts[7]:
             rec["retry_count"] = int(parts[7])
+        if len(parts) > 8 and parts[8]:
+            rec["run"] = int(parts[8])
         return rec
     except (ValueError, KeyError):
         return None
@@ -669,12 +680,14 @@ class TaskLoader:
                     it_val = r["iteration"]
                     stg_val = r["stage"]
                     rank = STAGE_RANK[stg_val]
+                    run_val = r.get("run", 0)
 
                     off_with_it: ShardOffsetWithIteration = {
                         "shard": shard,
                         "offset": r["offset"],
                         "length": r["length"],
                         "iteration": it_val,
+                        "run": run_val,
                     }
 
                     # Keep the latest offset per (sample, stage).
@@ -683,6 +696,7 @@ class TaskLoader:
                     stage_current_meta: OffsetMeta | None = None
                     if existing is not None:
                         stage_current_meta = (
+                            existing["run"],
                             existing["iteration"],
                             -1,
                             existing["shard"],
@@ -690,6 +704,7 @@ class TaskLoader:
                             existing["length"],
                         )
                     stage_candidate_meta: OffsetMeta = (
+                        run_val,
                         it_val,
                         -1,
                         shard,
@@ -700,6 +715,7 @@ class TaskLoader:
                         stage_map[stg_val] = off_with_it
 
                     candidate_meta: OffsetMeta = (
+                        run_val,
                         it_val,
                         rank,
                         shard,
@@ -750,6 +766,7 @@ class TaskLoader:
                     it_val = r["iteration"]
                     stg_val = r["stage"]
                     rank = STAGE_RANK[stg_val]
+                    run_val = r.get("run", 0)
 
                     # Keep the latest offset per (sample, stage) for dependency loading.
                     off_with_it: ShardOffsetWithIteration = {
@@ -757,12 +774,14 @@ class TaskLoader:
                         "offset": r["offset"],
                         "length": r["length"],
                         "iteration": it_val,
+                        "run": run_val,
                     }
                     stage_map = all_stage_offsets.setdefault(sid, {})
                     existing = stage_map.get(stg_val)
                     stage_current_meta: OffsetMeta | None = None
                     if existing is not None:
                         stage_current_meta = (
+                            existing["run"],
                             existing["iteration"],
                             -1,
                             existing["shard"],
@@ -770,6 +789,7 @@ class TaskLoader:
                             existing["length"],
                         )
                     stage_candidate_meta: OffsetMeta = (
+                        run_val,
                         it_val,
                         -1,
                         shard,
@@ -780,6 +800,7 @@ class TaskLoader:
                         stage_map[stg_val] = off_with_it
 
                     candidate_meta: OffsetMeta = (
+                        run_val,
                         it_val,
                         rank,
                         shard,
@@ -800,7 +821,7 @@ class TaskLoader:
         self._sample_offsets = {}
 
         for sid, (meta, r) in best_records.items():
-            it_val, _rank, shard, offset, length = meta
+            _run, it_val, _rank, shard, offset, length = meta
             # Reconstruct manifest entry
             entry: TaskManifest = {
                 "sample_id": sid,
@@ -824,6 +845,16 @@ class TaskLoader:
 
         self._all_stage_offsets = all_stage_offsets
         logger.info("Compensated manifest with {} entries.", len(self._manifest))
+
+    def prepare_failed_retries(
+        self, contexts: dict[str | int, TaskContext], record_each_stage: bool
+    ) -> None:
+        """Reset failed contexts for retry; see :meth:`_prepare_failed_retries`.
+
+        Public for a per-stage resume, which decides what to keep from the
+        recorded contexts before they are rolled back.
+        """
+        self._prepare_failed_retries(contexts, record_each_stage)
 
     def _prepare_failed_retries(
         self, contexts: dict[str | int, TaskContext], record_each_stage: bool

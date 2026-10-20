@@ -3,6 +3,7 @@
 AI-Generated Code - Claude Fable 5 (Anthropic)
 """
 
+import inspect
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Mapping, Sequence
@@ -366,11 +367,69 @@ class Task[
 
         Part of the inference identity, beside the model's own resolved request
         arguments. The default reports ``n``, the rollout count every sampling
-        task keeps as ``self._n``. Override it in a task with another argument
-        that reaches the request.
+        task keeps as ``self._n``, and the call-time ``stop`` and ``logprobs``
+        a task keeps as ``self._stop`` and ``self._logprobs``. Override it in a
+        task with another argument that reaches the request.
         """
+        args: dict[str, JSONValue] = {}
         n = getattr(self, "_n", None)
-        return {"n": n} if isinstance(n, int) and not isinstance(n, bool) else {}
+        if isinstance(n, int) and not isinstance(n, bool):
+            args["n"] = n
+        # Call-time request arguments the k-shot base and CLP tasks hold.
+        stop = getattr(self, "_stop", None)
+        if isinstance(stop, (list, tuple)) and all(isinstance(s, str) for s in stop):
+            args["stop"] = list(stop)
+        logprobs = getattr(self, "_logprobs", None)
+        if isinstance(logprobs, int) and not isinstance(logprobs, bool):
+            args["logprobs"] = logprobs
+        return args
+
+    #: Constructor parameters :meth:`grader_args` never reports: the inputs every
+    #: task takes, the pooled role models (each judge is identified on its own),
+    #: and pure scheduling.
+    GRADER_ARGS_EXCLUDED: ClassVar[frozenset[str]] = frozenset(
+        {"self", "dataset", "model", "name", "models_by_role", "max_concurrency"}
+    )
+
+    def grader_args(self) -> Mapping[str, JSONValue]:
+        """Task arguments that change how answers are graded, for ``meta.json``.
+
+        Part of the grader identity, beside the grading modules and the judge
+        models. The default reads every constructor parameter of the task's
+        classes back from the instance, as ``self._<name>`` or ``self.<name>``,
+        leaving out :attr:`GRADER_ARGS_EXCLUDED`, :meth:`inference_args` and
+        anything holding a :class:`Model` (a judge, identified by
+        :meth:`judge_models`). So a judge held as a string, such as a
+        ``judge_model`` name, or an ``embed_threshold`` counts. A value that
+        will not encode as JSON is left out. Override it when a task keeps an
+        argument under another name.
+        """
+        excluded = set(self.GRADER_ARGS_EXCLUDED) | set(self.inference_args())
+        names: list[str] = []
+        for klass in type(self).__mro__:
+            init = klass.__dict__.get("__init__")
+            if init is None or klass is object:
+                continue
+            try:
+                params = inspect.signature(init).parameters.values()
+            except (TypeError, ValueError):
+                continue
+            for param in params:
+                if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                    continue
+                if param.name not in excluded and param.name not in names:
+                    names.append(param.name)
+        missing = object()
+        args: dict[str, JSONValue] = {}
+        for name in sorted(names):
+            value = getattr(self, f"_{name}", missing)
+            if value is missing:
+                value = getattr(self, name, missing)
+            if value is missing or callable(value) or isinstance(value, Model):
+                continue
+            if _json_encodable(value):
+                args[name] = cast(JSONValue, value)
+        return args
 
     def judge_models(self) -> Mapping[str, Model]:
         """The models this task calls while grading, by role, for ``meta.json``.
@@ -538,3 +597,14 @@ class Task[
     async def shutdown(self) -> None:
         """Lifecycle hook called after execution ends (no-op by default)."""
         return
+
+
+def _json_encodable(value: object) -> bool:
+    """Whether *value* is plain JSON: what a grader argument may be recorded as."""
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_json_encodable(v) for v in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and _json_encodable(v) for k, v in value.items())
+    return False

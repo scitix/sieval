@@ -35,27 +35,35 @@ class TestTryTaskAction:
 
 class TestShouldReplaceOffset:
     def test_replace_when_current_missing(self):
-        candidate = (0, -1, Path("0/final/0.jsonl"), 10, 20)
+        candidate = (0, 0, -1, Path("0/final/0.jsonl"), 10, 20)
         assert _should_replace_offset(None, candidate)
 
     def test_stage_prefers_higher_iteration(self):
-        current = (0, -1, Path("0/final/0.jsonl"), 100, 20)
-        candidate = (1, -1, Path("0/final/0.jsonl"), 0, 20)
+        current = (0, 0, -1, Path("0/final/0.jsonl"), 100, 20)
+        candidate = (0, 1, -1, Path("0/final/0.jsonl"), 0, 20)
         assert _should_replace_offset(current, candidate)
 
     def test_stage_same_iteration_same_shard_prefers_later_offset(self):
-        current = (1, -1, Path("1/final/0.jsonl"), 100, 20)
-        candidate = (1, -1, Path("1/final/0.jsonl"), 120, 20)
+        current = (0, 1, -1, Path("1/final/0.jsonl"), 100, 20)
+        candidate = (0, 1, -1, Path("1/final/0.jsonl"), 120, 20)
         assert _should_replace_offset(current, candidate)
 
     def test_best_same_iteration_prefers_higher_rank(self):
-        current = (1, 1, Path("1/preprocessed/0.jsonl"), 100, 20)
-        candidate = (1, 2, Path("1/inferred/0.jsonl"), 0, 20)
+        current = (0, 1, 1, Path("1/preprocessed/0.jsonl"), 100, 20)
+        candidate = (0, 1, 2, Path("1/inferred/0.jsonl"), 0, 20)
         assert _should_replace_offset(current, candidate)
 
+    def test_a_later_run_supersedes_a_higher_stage(self):
+        """A per-stage resume rewinds a sample by writing it again; that run's
+        record wins over an earlier run's later stage."""
+        current = (1, 0, 5, Path("0/final/0.jsonl"), 100, 20)
+        candidate = (2, 0, 2, Path("0/inferred/0.jsonl"), 0, 20)
+        assert _should_replace_offset(current, candidate)
+        assert not _should_replace_offset(candidate, current)
+
     def test_cross_shard_tiebreak_is_deterministic(self):
-        current = (0, -1, Path("0/preprocessed/10.jsonl"), 0, 20)
-        candidate = (0, -1, Path("0/preprocessed/20.jsonl"), 0, 20)
+        current = (0, 0, -1, Path("0/preprocessed/10.jsonl"), 0, 20)
+        candidate = (0, 0, -1, Path("0/preprocessed/20.jsonl"), 0, 20)
         assert _should_replace_offset(current, candidate)
 
 
@@ -77,6 +85,13 @@ class TestParseIdxLine:
         assert rec["error_action"] == "infer"
         assert rec["error_reason"] == "exception::Timeout"
         assert rec["retry_count"] == 2
+        assert "run" not in rec
+
+    def test_run_column(self):
+        parts = ["5", "0", "final", "0", "64", "", "", "0", "3"]
+        rec = _parse_idx_line(parts)
+        assert rec is not None
+        assert rec["run"] == 3
 
     def test_string_sample_id(self):
         parts = ["sample_abc", "0", "inferred", "100", "50"]

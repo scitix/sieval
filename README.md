@@ -76,7 +76,8 @@ sieval dataset download aime_2024     # stage data into $SIEVAL_DATA_DIR
 
 ```bash
 sieval run config.yaml
-sieval run config.yaml --resume
+sieval run config.yaml --resume                        # resume result_dir stage by stage
+sieval run config.yaml --resume-from outputs/earlier   # start from another run's tasks
 ```
 
 **Evaluate against an already-online endpoint:**

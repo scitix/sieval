@@ -23,9 +23,10 @@ The four stage identities describe the run that produced the current
                are left out.
 ``grader``     The source of every module the task class reaches by a static
                import walk under :data:`GRADER_PACKAGES` and the ``sieval_*``
-               plugin package of each class in its MRO, each judge's model,
-               version, sampling arguments and prompt, and each service the
-               task declares, vendored or external.
+               plugin package of each class in its MRO, the task class, its
+               :meth:`~sieval.core.tasks.task.Task.grader_args`, each judge's
+               model, version, sampling arguments and prompt, and each service
+               the task declares, vendored or external.
 =============  ==============================================================
 
 Every digest is ``sha256:`` over canonical JSON (sorted keys, no whitespace).
@@ -126,10 +127,15 @@ class JudgeIdentity(TypedDict):
 
 
 class GraderIdentity(TypedDict):
-    """``services`` is present only for a task that declares one."""
+    """``task`` is the task class's import path and ``args`` its
+    :meth:`~sieval.core.tasks.task.Task.grader_args`, both absent in a block
+    written before they counted; ``services`` is present only for a task that
+    declares one."""
 
     digest: str
+    task: NotRequired[str]
     modules: dict[str, str]
+    args: NotRequired[dict[str, JSONValue]]
     judges: list[JudgeIdentity]
     services: NotRequired[list[ServiceIdentity]]
 
@@ -179,9 +185,10 @@ not. ``report()`` has no identity, so a run that only re-aggregated finished
 samples is ``reran: []`` with ``reported: true``. A run
 stopped by an interrupt writes ``ended`` and ``interrupted: true``, and no
 ``reran``. An entry with no ``ended`` is a run that is still going, or was
-killed or failed before it could say so. ``config`` is the resume-mutable config
-diff, present when non-empty. ``from`` names the directory a resume across
-tasks copied; nothing writes it until that resume exists.
+killed or failed before it could say so. ``config`` is the config diff a resume
+made, present when non-empty. ``from`` names the directory a resume across tasks
+copied, with that directory's identity when it was copied (``None`` stages for a
+directory that recorded none).
 """
 
 
@@ -657,19 +664,55 @@ def grader_identity(
     modules: Mapping[str, str],
     judges: Sequence[JudgeIdentity],
     services: Sequence[ServiceIdentity] = (),
+    args: Mapping[str, JSONValue] | None = None,
+    task: str | None = None,
 ) -> GraderIdentity:
-    """A task with no services digests exactly as before the field existed."""
-    covered: dict[str, Any] = {"modules": dict(modules), "judges": list(judges)}
-    if services:
-        covered["services"] = list(services)
+    """Build the grader identity.
+
+    *task* is the task class's import path: two task classes in one module
+    share every module digest and may still grade differently.
+    """
     identity: GraderIdentity = {
-        "digest": digest(covered),
+        "digest": "",
         "modules": dict(modules),
+        "args": dict(args or {}),
         "judges": list(judges),
     }
+    if task is not None:
+        identity["task"] = task
     if services:
         identity["services"] = list(services)
+    identity["digest"] = digest({k: v for k, v in identity.items() if k != "digest"})
     return identity
+
+
+def grader_key(grader: Mapping[str, Any] | None) -> str | None:
+    """What a resume compares of a grader identity: all but what a judge reported.
+
+    Every field except ``digest`` counts, so a field added to the grader
+    identity later counts without a change here. A judge's ``version`` is what
+    its API answered once called, so a run that has not called it yet cannot
+    know it, and ``ref`` names where the judge was served; both are recorded,
+    neither decides a regrade. A block written before ``args`` existed reads
+    as empty ``args``. ``None`` when *grader* is unknown or malformed.
+    """
+    if not isinstance(grader, Mapping):
+        return None
+    if not isinstance(grader.get("modules"), Mapping) or not isinstance(
+        grader.get("judges"), list
+    ):
+        return None
+    payload = {k: v for k, v in grader.items() if k != "digest"}
+    payload.setdefault("args", {})
+    payload["judges"] = [
+        {k: v for k, v in j.items() if k not in ("version", "ref")}
+        for j in grader["judges"]
+        if isinstance(j, Mapping)
+    ]
+    try:
+        return digest(payload)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------

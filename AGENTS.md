@@ -14,9 +14,9 @@ SiEval is a **model delivery quality verification system**: eval-side knowledge 
 
 Precise reproducibility is a product contract, not a nicety.
 
-- Safety guards (e.g. `--resume` strict match) ship strict-only. No `--force-*` flags, no bypass env vars, no "(future)" escape-hatch hints in errors.
-- `--resume` match scope is narrowed, not bypassed: only fields that touch neither sample data nor any persisted artifact may differ across a resume — pure scheduling (concurrency, shard-I/O, write buffers), console-only progress, `auto_resume`, the non-serializable `stage_meta` hooks, and top-level `result_dir`. Everything affecting on-disk content stays strict (sampling/seeds, `max_iterations`, `shard_samples`, `record_*`, `max_retries`, `profile_*`, `detect_anomalies*`, the `progress.json` dump, and `runner_config.result_dir`, which picks the artifact directory), as does `infer_plans.yaml`.
-- Recovery: "start fresh" or "match the invocation". Escape-hatch proposals must re-justify the contract, not just add a flag.
+- Safety guards (e.g. the resume stage comparison) ship strict-only. No `--force-*` flags, no bypass env vars, no "(future)" escape-hatch hints in errors.
+- A resume (`--resume`, `--resume-from`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): data or prompt differ for a sample → it reruns from the start; inference differs → refused, naming the stage; grader differs → `postprocess`, `feedback` and `report` rerun on the recorded inference. A stage that cannot be identified is unknown, and a resume that would reuse it is refused. The version-series gate stays. `effective_config.yaml` and `infer_plans.yaml` are audit records; a resume's config changes go to `meta.json` `runs[].config`.
+- Recovery: "start fresh" or "match the stage the refusal names". Escape-hatch proposals must re-justify the contract, not just add a flag.
 
 ## Project Structure & Module Organization
 

@@ -121,15 +121,18 @@ class EchoingModel(MockChatModel):
 
 
 class StopTask(RecordTask):
-    """Passes `stop` at call time, like the k-shot base tasks."""
+    """Passes `stop` at call time, under a name `inference_args` does not read."""
 
     def __init__(self, dataset, model, name=None, stop=None):
         super().__init__(dataset=dataset, model=model, name=name)
-        self._stop = stop
+        self._stop_words = stop
+
+    def grader_args(self):
+        return {}
 
     async def infer(self, pre, ctx):
-        if self._stop:
-            return await self.model.agenerate(pre["prompt"], stop=self._stop)
+        if self._stop_words:
+            return await self.model.agenerate(pre["prompt"], stop=self._stop_words)
         return await self.model.agenerate(pre["prompt"])
 
 
@@ -792,14 +795,16 @@ class TestEndRunFailure:
 
     async def _assert_refinalized(self, tmp_path):
         reports: list = []
-
-        class Spy(RecordTask):
-            async def report(self, finals, fails):
-                reports.append(len(finals))
-                return await super().report(finals, fails)
-
         model = MockCountingChatModel(answers=ANSWERS)
-        task = Spy(dataset=MockDataset(SAMPLES), model=model, name="t")
+        task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
+        original = task.report
+
+        async def _spy(finals, fails):
+            reports.append(len(finals))
+            return await original(finals, fails)
+
+        # On the instance: a subclass would be another grader, and regrade.
+        setattr(task, "report", _spy)  # noqa: B010
         resumed = _runner(tmp_path, task=task, auto_resume=True)
         await resumed.arun()
         meta = _meta(resumed.root_dir)

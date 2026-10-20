@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING — a resume compares stage identities instead of the config text.** Data or prompt that differ rerun those samples, a grader difference regrades on the recorded inference, and an inference difference is refused naming the stage. `effective_config.yaml` and `infer_plans.yaml` no longer refuse a resume. `gate_resume_identity` is removed; another task's finished directory is regraded, not handed back (#148).
+
+### Added
+
+- `--resume-from DIR` on `sieval run` / `sieval eval`, and `runner_config.resume_from`, to resume from another, possibly read-only, run of another task (#148).
+- `Task.grader_args()`: task arguments that change grading, folded into the grader identity (#148).
+
 ## [0.9.0] - 2026-09-11
 
 A minor bump for four breaking changes, none of which raise on an old input: a

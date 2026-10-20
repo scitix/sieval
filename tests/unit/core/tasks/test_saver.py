@@ -518,6 +518,19 @@ class TestRunMeta:
         assert [r["start"] for r in meta["runs"]] == ["resume"]
 
     @pytest.mark.anyio
+    async def test_a_from_run_starts_the_history_and_names_its_source(self, tmp_path):
+        root = tmp_path / "copied"
+        source = {"dir": "/mnt/old/task", "identity": {"schema": 1}}
+        saver = TaskSaver(root_dir=root, deterministic=True, task_identity=_IDENTITY)
+        await saver.begin_run(resumed=True, run_from=source)  # type: ignore[arg-type]
+        meta = _read_meta(root)
+        [run] = meta["runs"]
+        assert run["start"] == "from"
+        assert run["from"] == source
+        assert meta["deterministic"] is True
+        assert meta["task"] == _IDENTITY
+
+    @pytest.mark.anyio
     async def test_resume_does_not_backfill_deterministic(self, tmp_path):
         """A `meta.json` that never recorded `deterministic` keeps not saying it;
         the resuming process's value would describe it, not the samples."""

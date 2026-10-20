@@ -110,3 +110,31 @@ Built-in anomaly detection runs automatically after each task and saves to `anom
 ## Sharded Persistence
 
 Append-only sharded storage provides crash recovery via `auto_resume`, stream processing (low memory), and parallel shard writes. Custom dataclass types in `TaskContext` fields must use `@sieval_record` for proper deserialization.
+
+## Resume
+
+A resume compares the stage identities in each task's `meta.json` with the ones
+the new run computes:
+
+| Differs | Resume |
+| --- | --- |
+| Data or prompt, for some samples | Reuses the samples that match; reruns the rest from the start |
+| Inference | Refused, naming the stage |
+| Grader (grading code, `grader_args()`, judges) | Reruns `postprocess`, `feedback` and `report` on the recorded inference |
+
+A grader-only change therefore needs no hand-deleted shards: rerun with
+`--resume` and the task regrades.
+
+`--resume-from DIR` starts from another run, possibly read-only and of another
+task. `DIR` is a session `result_dir`; each task copies the shards of
+`DIR/<task>` into its own empty `result_dir`, then resumes as above. With a
+one-task config, `DIR` may be the task directory itself. A task with no
+directory under `DIR` runs fresh. Per task, `runner_config.resume_from: <task
+dir>` does the same and wins over the option. The run is recorded as
+`runs[].start: "from"` with `runs[].from = {dir, identity}`; `DIR` is never
+written. Rerunning the same command after an interruption resumes the copy.
+
+A directory recorded before stage identities can still be resumed from. Its
+prompt is digested from the recorded `preprocess` outputs; its data and
+inference are compared through the `effective_config.yaml` beside it. Without
+that file they are unknown, and the resume is refused.

@@ -8,7 +8,6 @@ import pytest
 from sieval.core.runners.resume_gate import (
     ResumeAction,
     ResumeVersionError,
-    format_identity_reject_message,
     format_reject_message,
     resume_version_verdict,
 )
@@ -248,46 +247,6 @@ class TestBreakAxis:
         )
 
 
-class TestFormatIdentityRejectMessage:
-    """Previously untested entirely — 18 mutants with no test to see them.
-
-    This is the message shown when a result directory was produced by a
-    *different* task. Its own text states the stake: a finished run is matched by
-    path alone, so resuming here would hand back the persisted task's report as
-    this task's result without running a sample. The operator can only act on it
-    if it names both tasks and both ways out.
-    """
-
-    def _msg(self) -> str:
-        return format_identity_reject_message("gsm8k_0shot_gen", "math_500_0shot_gen")
-
-    def test_names_both_tasks(self):
-        msg = self._msg()
-        assert "gsm8k_0shot_gen" in msg
-        assert "math_500_0shot_gen" in msg
-
-    def test_distinguishes_persisted_from_current(self):
-        # Both names appear; without labels the operator cannot tell which is
-        # which, and the two fixes are not symmetric.
-        msg = self._msg()
-        persisted = msg.index("gsm8k_0shot_gen")
-        current = msg.index("math_500_0shot_gen")
-        assert msg.index("persisted") < persisted < current
-        assert "meta.json" in msg, "the operator has to know where to look"
-
-    def test_states_the_consequence(self):
-        msg = self._msg()
-        assert "without running a single sample" in msg
-
-    def test_offers_both_recovery_paths(self):
-        msg = self._msg()
-        assert "Remove the result_dir and start fresh" in msg
-        assert "Give this task its own result_dir" in msg
-
-    def test_leads_with_the_abort(self):
-        assert self._msg().startswith("Resume aborted:")
-
-
 class TestFormatRejectMessageStructure:
     """The message body, not just that four substrings appear somewhere."""
 
@@ -312,18 +271,6 @@ class TestFormatRejectMessageStructure:
         msg = self._msg()
         assert "Remove the result_dir and start fresh" in msg
         assert "Reinstall sieval matching the persisted version series" in msg
-
-    def test_the_two_builders_do_not_share_a_recovery_path(self):
-        # They abort for different reasons and the second option differs: a
-        # version mismatch is fixed by reinstalling, an identity mismatch by
-        # giving the task its own directory. Swapping them would send the
-        # operator down a route that cannot work.
-        version_msg = self._msg()
-        identity_msg = format_identity_reject_message("a_task", "b_task")
-        assert "Reinstall sieval" in version_msg
-        assert "Reinstall sieval" not in identity_msg
-        assert "its own result_dir" in identity_msg
-        assert "its own result_dir" not in version_msg
 
 
 class TestUnpinnableBuildsRejectOnEitherSide:
@@ -358,24 +305,16 @@ class TestUnpinnableBuildsRejectOnEitherSide:
 class TestRejectMessagesExplainThemselves:
     """The explanation is the load-bearing half of an operator message.
 
-    Both builders spell out *why* the abort happened. Without it the operator
-    sees two versions or two task names and a pair of options, with nothing to
-    choose between them.
+    The builder spells out *why* the abort happened. Without it the operator
+    sees two versions and a pair of options, with nothing to choose between
+    them.
     """
-
-    def test_identity_message_explains_the_path_match(self):
-        msg = format_identity_reject_message("a_task", "b_task")
-        assert "a finished run is matched by path alone" in msg
-        assert "would hand back the persisted task's report" in msg
 
     def test_version_message_names_the_incompatibility(self):
         msg = format_reject_message("0.6.0", "0.7.0", "incompatible version series")
         assert "sieval version is incompatible with the persisted run" in msg
 
     def test_both_messages_end_on_an_actionable_choice(self):
-        for msg in (
-            format_identity_reject_message("a_task", "b_task"),
-            format_reject_message("0.6.0", "0.7.0", "series"),
-        ):
+        for msg in (format_reject_message("0.6.0", "0.7.0", "series"),):
             assert "Either:" in msg
             assert "  1. " in msg and "  2. " in msg

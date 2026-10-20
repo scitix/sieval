@@ -21,6 +21,7 @@ from sieval.core.tasks.run_meta import (
     ABSENT,
     GRADER_PACKAGES,
     JUDGE_MODEL_REF_ENV,
+    JudgeIdentity,
     aggregate_digest,
     call_key,
     canonical_json,
@@ -29,6 +30,7 @@ from sieval.core.tasks.run_meta import (
     digest,
     empty_identity,
     grader_identity,
+    grader_key,
     grader_modules,
     inference_identity,
     judge_identities,
@@ -635,3 +637,36 @@ class TestDocument:
 
     def test_ordered_stages(self):
         assert ordered_stages({"grader", "data", "bogus"}) == ["data", "grader"]
+
+
+class TestGraderKey:
+    JUDGE: JudgeIdentity = {
+        "role": "grader",
+        "model": "j",
+        "version": "j-2026",
+        "sampling": {},
+        "prompt": None,
+        "ref": "hm://j@1",
+    }
+
+    def test_args_and_task_change_the_grader(self):
+        base = grader_identity({"m": "sha256:1"}, [], args={"t": 0.5}, task="a.T")
+        assert base["args"] == {"t": 0.5}
+        assert base["task"] == "a.T"
+        other_args = grader_identity({"m": "sha256:1"}, [], args={"t": 0.9}, task="a.T")
+        other_task = grader_identity({"m": "sha256:1"}, [], args={"t": 0.5}, task="a.U")
+        keys = {grader_key(g) for g in (base, other_args, other_task)}
+        assert len(keys) == 3
+
+    def test_a_reported_version_or_ref_is_not_a_regrade(self):
+        """Only known after the judge is called, or where it was served."""
+        unreported = self.JUDGE.copy()
+        unreported["version"] = None
+        before = grader_identity({}, [unreported])
+        after = grader_identity({}, [self.JUDGE])
+        assert before["digest"] != after["digest"]
+        assert grader_key(before) == grader_key(after)
+
+    def test_unknown_or_malformed_is_none(self):
+        assert grader_key(None) is None
+        assert grader_key({"modules": "x", "judges": []}) is None

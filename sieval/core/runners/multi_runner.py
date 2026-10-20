@@ -13,6 +13,7 @@ from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 
 from .runner import TaskRunner, TaskRunnerConfig
+from .stage_resume import LegacyStageMatch
 
 
 class MultiTaskRunner:
@@ -61,11 +62,12 @@ class MultiTaskRunner:
         *,
         inference_recipe: dict[str, JSONValue] | None = None,
         resume_config_diff: list[str] | None = None,
+        legacy_match: LegacyStageMatch | None = None,
     ) -> Self:
         """Register a task for parallel execution.
 
-        *inference_recipe* and *resume_config_diff* pass through to
-        :class:`TaskRunner` for ``meta.json``.
+        *inference_recipe*, *resume_config_diff* and *legacy_match* pass
+        through to :class:`TaskRunner`.
 
         Auto-sets ``result_dir`` to ``<base_result_dir>/<task.name>`` when
         a base was provided and the task's config lacks its own.
@@ -92,6 +94,7 @@ class MultiTaskRunner:
             config=cfg,
             inference_recipe=inference_recipe,
             resume_config_diff=resume_config_diff,
+            legacy_match=legacy_match,
         )
 
         if runner.root_dir in self._output_dirs:

@@ -5,6 +5,7 @@ AI-Generated Code - Claude Opus 4.7 (1M context) (Anthropic)
 """
 
 import contextlib
+import copy
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -422,7 +423,7 @@ class TestPersistInferPlans:
         assert (result_dir / "infer_plans.yaml").exists()
 
 
-class TestStrictResumeMatch:
+class TestResumePersistence:
     @pytest.mark.anyio
     async def test_identical_resume_is_silent(self, tmp_path: Path):
         cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
@@ -506,56 +507,6 @@ class TestStrictResumeMatch:
 
         assert target.read_text() == original
 
-    @pytest.mark.anyio
-    async def test_deterministic_seed_contract_drift_aborts_resume(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        cfg_path = _write_yaml(
-            tmp_path,
-            "cfg.yaml",
-            "deterministic: true\n"
-            "models:\n"
-            "  m:\n"
-            "    name: mock-chat\n"
-            "    type: chat\n"
-            "tasks:\n"
-            "  eval:\n"
-            "    class: tests.unit.core.runners.test_runner.MockTask\n"
-            "    dataset:\n"
-            "      class: tests.conftest.MockDataset\n"
-            "    model: m\n",
-        )
-        result_dir = tmp_path / "out"
-        first = EvalSession(
-            config_path=str(cfg_path),
-            result_dir_override=str(result_dir),
-        )
-        first.prepare_prelaunch()
-        first._stamp_deterministic_seed_contract()
-        await first._persist_effective_config()
-
-        monkeypatch.setattr(
-            "sieval.cli.leaderboard.session.DETERMINISTIC_DEFAULT_SEED", 1
-        )
-        replayed = EvalSession(
-            config_path=str(result_dir / "effective_config.yaml"),
-            result_dir_override=str(tmp_path / "replayed"),
-        )
-        replayed.prepare_prelaunch()
-        with pytest.raises(RuntimeError, match="persisted deterministic-seed contract"):
-            replayed._stamp_deterministic_seed_contract()
-
-        resumed = EvalSession(
-            config_path=str(cfg_path),
-            resume=True,
-            result_dir_override=str(result_dir),
-        )
-        resumed.prepare_prelaunch()
-        resumed._stamp_deterministic_seed_contract()
-
-        with pytest.raises(RuntimeError, match="_sieval_deterministic_seed_contract"):
-            await resumed._persist_effective_config()
-
     def test_explicit_seed_contract_ignores_unused_default_changes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -591,81 +542,6 @@ class TestStrictResumeMatch:
         assert replayed._reified_config[_DETERMINISTIC_SEED_CONTRACT_KEY] == original
 
     @pytest.mark.anyio
-    async def test_legacy_baked_automatic_seed_aborts_resume(self, tmp_path: Path):
-        cfg_path = _write_yaml(
-            tmp_path,
-            "cfg.yaml",
-            "models:\n  base:\n    name: m\n    args:\n      max_tokens: 32\n",
-        )
-        result_dir = tmp_path / "out"
-        result_dir.mkdir()
-        _write_yaml(
-            result_dir,
-            "effective_config.yaml",
-            "deterministic: true\n"
-            "models:\n"
-            "  base:\n"
-            "    name: m\n"
-            "    args:\n"
-            "      max_tokens: 32\n"
-            "      seed: 0\n"
-            f"result_dir: {result_dir}\n",
-        )
-
-        resumed = EvalSession(
-            config_path=str(cfg_path),
-            resume=True,
-            deterministic_override=True,
-            result_dir_override=str(result_dir),
-        )
-        with pytest.raises(RuntimeError, match=r"models\.base\.args\.seed"):
-            await resumed._persist_effective_config()
-
-    @pytest.mark.anyio
-    async def test_mismatched_deterministic_raises(self, tmp_path: Path):
-        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
-        result_dir = tmp_path / "out"
-
-        # First run: no deterministic
-        s1 = EvalSession(
-            config_path=str(cfg_path),
-            result_dir_override=str(result_dir),
-        )
-        await s1._persist_effective_config()
-
-        # Resume with --deterministic → mismatch
-        s2 = EvalSession(
-            config_path=str(cfg_path),
-            resume=True,
-            deterministic_override=True,
-            result_dir_override=str(result_dir),
-        )
-        with pytest.raises(RuntimeError, match=r"Resume aborted"):
-            await s2._persist_effective_config()
-
-    @pytest.mark.anyio
-    async def test_mismatched_model_override_raises(self, tmp_path: Path):
-        cfg_path = _write_yaml(
-            tmp_path, "cfg.yaml", "models:\n  base:\n    name: original\n"
-        )
-        result_dir = tmp_path / "out"
-
-        s1 = EvalSession(
-            config_path=str(cfg_path),
-            result_dir_override=str(result_dir),
-        )
-        await s1._persist_effective_config()
-
-        s2 = EvalSession(
-            config_path=str(cfg_path),
-            resume=True,
-            model_override="different",
-            result_dir_override=str(result_dir),
-        )
-        with pytest.raises(RuntimeError, match=r"Resume aborted"):
-            await s2._persist_effective_config()
-
-    @pytest.mark.anyio
     async def test_legacy_endpoint_change_does_not_trigger_mismatch(
         self, tmp_path: Path
     ):
@@ -695,44 +571,6 @@ class TestStrictResumeMatch:
         await s2._persist_effective_config()
 
     @pytest.mark.anyio
-    async def test_resume_read_failure_surfaces_as_resume_aborted(
-        self, tmp_path: Path, monkeypatch
-    ):
-        """If the persisted file is unreadable under ``--resume`` (EACCES,
-        unlink race, etc.), the user gets a resume-shaped RuntimeError —
-        not a bare OSError from the persistence internals. Rationale: a
-        user who triggers this sees the same "Resume aborted" class of
-        error as a body mismatch, with an actionable message, instead of
-        a file-io traceback they may not know originates from persistence."""
-        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
-        result_dir = tmp_path / "out"
-
-        # Seed an existing persisted file.
-        s1 = EvalSession(
-            config_path=str(cfg_path),
-            result_dir_override=str(result_dir),
-        )
-        await s1._persist_effective_config()
-        assert (result_dir / "effective_config.yaml").exists()
-
-        # Now resume with a read that simulates EACCES on the existing file.
-        import anyio
-
-        async def _fail_read(*_a, **_kw):
-            raise PermissionError("simulated EACCES")
-
-        monkeypatch.setattr(anyio.Path, "read_text", _fail_read)
-
-        s2 = EvalSession(
-            config_path=str(cfg_path),
-            resume=True,
-            result_dir_override=str(result_dir),
-        )
-
-        with pytest.raises(RuntimeError, match=r"Resume aborted: cannot read"):
-            await s2._persist_effective_config()
-
-    @pytest.mark.anyio
     async def test_non_resume_overwrites(self, tmp_path: Path):
         """Without --resume, an existing file is overwritten — no strict check."""
         cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
@@ -751,32 +589,6 @@ class TestStrictResumeMatch:
         loaded = yaml.safe_load((result_dir / "effective_config.yaml").read_text())
         # Written over the stale file
         assert "base" in loaded["models"]
-
-    @pytest.mark.anyio
-    async def test_mismatched_infer_plans_raises(self, tmp_path: Path):
-        """Symmetric to test_mismatched_*_raises for effective_config:
-        _persist_infer_plans must also abort on strict-match mismatch."""
-        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models: {}\n")
-        result_dir = tmp_path / "out"
-
-        s1 = EvalSession(
-            config_path=str(cfg_path),
-            result_dir_override=str(result_dir),
-            infer_plans={"m": _real_plan_dict()},
-        )
-        await s1._persist_infer_plans()
-
-        # Resume with a plan that differs (different backend) → must mismatch
-        mutated = _real_plan_dict()
-        mutated["backend"] = "sglang"
-        s2 = EvalSession(
-            config_path=str(cfg_path),
-            resume=True,
-            result_dir_override=str(result_dir),
-            infer_plans={"m": mutated},
-        )
-        with pytest.raises(RuntimeError, match=r"Resume aborted"):
-            await s2._persist_infer_plans()
 
     @pytest.mark.anyio
     async def test_matching_infer_plans_is_silent(self, tmp_path: Path):
@@ -861,44 +673,6 @@ class TestStrictResumeMatch:
         assert loaded["models"]["base"]["args"]["temperature"] == 0.0
 
     @pytest.mark.anyio
-    async def test_resume_aborts_on_max_retries_change(self, tmp_path: Path):
-        # max_retries is the failure signal (written into FAILED records) — strict.
-        base = (
-            "models:\n  base:\n    name: m\ntasks:\n  t:\n"
-            "    runner_config:\n      max_retries: {}\n"
-        )
-        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format(3))
-        result_dir = tmp_path / "out"
-        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
-        await s1._persist_effective_config()
-
-        cfg_path.write_text(base.format(10))
-        s2 = EvalSession(
-            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
-        )
-        with pytest.raises(RuntimeError, match=r"Resume aborted"):
-            await s2._persist_effective_config()
-
-    @pytest.mark.anyio
-    async def test_resume_aborts_on_profile_change(self, tmp_path: Path):
-        # profile_* write per-record meta + the profiler summary file — strict.
-        base = (
-            "models:\n  base:\n    name: m\ntasks:\n  t:\n"
-            "    runner_config:\n      profile_usage: {}\n"
-        )
-        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format("true"))
-        result_dir = tmp_path / "out"
-        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
-        await s1._persist_effective_config()
-
-        cfg_path.write_text(base.format("false"))
-        s2 = EvalSession(
-            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
-        )
-        with pytest.raises(RuntimeError, match=r"Resume aborted"):
-            await s2._persist_effective_config()
-
-    @pytest.mark.anyio
     async def test_resume_tolerates_console_progress_change(self, tmp_path: Path):
         # show_progress is console-only (never the progress.json dump) — adjustable.
         base = (
@@ -918,48 +692,6 @@ class TestStrictResumeMatch:
 
         loaded = yaml.safe_load((result_dir / "effective_config.yaml").read_text())
         assert loaded["tasks"]["t"]["runner_config"]["show_progress"] is False
-
-    @pytest.mark.anyio
-    async def test_resume_aborts_on_throughput_plus_result_change(self, tmp_path: Path):
-        cfg_path = _write_yaml(
-            tmp_path,
-            "cfg.yaml",
-            "concurrency_limit: 8\nmodels:\n  base:\n    name: m\n",
-        )
-        result_dir = tmp_path / "out"
-        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
-        await s1._persist_effective_config()
-
-        # Throughput AND a result-affecting field change together.
-        cfg_path.write_text(
-            "concurrency_limit: 2\ndeterministic: true\nmodels:\n  base:\n    name: m\n"
-        )
-        s2 = EvalSession(
-            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
-        )
-        with pytest.raises(RuntimeError, match=r"Resume aborted") as exc:
-            await s2._persist_effective_config()
-        # Diff surfaces the result field, not the throughput noise.
-        assert "deterministic" in str(exc.value)
-        assert "concurrency_limit" not in str(exc.value)
-
-    @pytest.mark.anyio
-    async def test_resume_aborts_on_shard_samples_change(self, tmp_path: Path):
-        base = (
-            "models:\n  base:\n    name: m\ntasks:\n  t:\n"
-            "    runner_config:\n      shard_samples: {}\n"
-        )
-        cfg_path = _write_yaml(tmp_path, "cfg.yaml", base.format(1024))
-        result_dir = tmp_path / "out"
-        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
-        await s1._persist_effective_config()
-
-        cfg_path.write_text(base.format(512))
-        s2 = EvalSession(
-            config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
-        )
-        with pytest.raises(RuntimeError, match=r"Resume aborted"):
-            await s2._persist_effective_config()
 
     @pytest.mark.anyio
     async def test_resume_rewrite_with_missing_header_emits_fresh_header(
@@ -1074,38 +806,74 @@ class TestStrictResumeMatch:
         assert _split_header(after) == (header, body)
 
     @pytest.mark.anyio
-    async def test_resume_aborts_on_non_mapping_existing_file(self, tmp_path: Path):
-        # A tampered persisted file that parses to a non-mapping must surface as
-        # the documented RuntimeError, not an opaque AttributeError from the strip.
-        result_dir = tmp_path / "out"
-        result_dir.mkdir()
-        header = _format_comment_header(
-            title="Persisted by", source_config="/x", invocation="sieval run x"
+    async def test_a_changed_config_is_rewritten_not_refused(self, tmp_path: Path):
+        """The strict match is gone: each task compares its stage identities.
+        A changed config is rewritten under the first run's header, and what
+        changed goes to `runs[].config`."""
+        cfg_path = _write_yaml(
+            tmp_path,
+            "cfg.yaml",
+            "models:\n  base:\n    name: m\nrunner_config:\n  max_retries: 1\n",
         )
-        (result_dir / "effective_config.yaml").write_text(header + "- a\n- b\n")
-        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
-        s = EvalSession(
+        result_dir = tmp_path / "out"
+        s1 = EvalSession(config_path=str(cfg_path), result_dir_override=str(result_dir))
+        await s1._persist_effective_config()
+        first_header = _split_header(
+            (result_dir / "effective_config.yaml").read_text()
+        )[0]
+
+        cfg_path.write_text(
+            "models:\n  base:\n    name: m\nrunner_config:\n  max_retries: 3\n"
+        )
+        s2 = EvalSession(
             config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
         )
-        with pytest.raises(RuntimeError, match=r"not a YAML mapping"):
-            await s._persist_effective_config()
+        await s2._persist_effective_config()
+        header, body = _split_header((result_dir / "effective_config.yaml").read_text())
+        assert header == first_header
+        assert "max_retries: 3" in body
+        assert s2._resume_config_diff == ["runner_config.max_retries: 1 → 3"]
 
     @pytest.mark.anyio
-    async def test_resume_aborts_on_unparseable_existing_file(self, tmp_path: Path):
-        # A tampered persisted body that is not valid YAML must surface as the
-        # documented RuntimeError, not the raw yaml.YAMLError from the strip path.
+    async def test_changed_infer_plans_do_not_block_a_resume(self, tmp_path: Path):
+        """The serving recipe is in each task's inference identity; the file
+        stays as an audit record of the latest plan."""
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  m:\n    name: m\n")
+        result_dir = tmp_path / "out"
+        plan = _real_plan_dict()
+        s1 = EvalSession(
+            config_path=str(cfg_path),
+            result_dir_override=str(result_dir),
+            infer_plans={"m": plan},
+        )
+        await s1._persist_infer_plans()
+        changed = copy.deepcopy(plan)
+        changed["recipe"] = "changed-recipe"
+        s2 = EvalSession(
+            config_path=str(cfg_path),
+            resume=True,
+            result_dir_override=str(result_dir),
+            infer_plans={"m": changed},
+        )
+        await s2._persist_infer_plans()
+        assert "changed-recipe" in (result_dir / "infer_plans.yaml").read_text()
+        # Not a config change: the plan is recorded in the inference identity.
+        assert s2._resume_config_diff == []
+
+    @pytest.mark.anyio
+    async def test_an_unreadable_existing_file_is_rewritten(
+        self, tmp_path: Path, monkeypatch
+    ):
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
         result_dir = tmp_path / "out"
         result_dir.mkdir()
-        header = _format_comment_header(
-            title="Persisted by", source_config="/x", invocation="sieval run x"
-        )
-        (result_dir / "effective_config.yaml").write_text(header + "key: [unclosed\n")
-        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models:\n  base:\n    name: m\n")
+        (result_dir / "effective_config.yaml").write_text("- not\n- a mapping\n")
         s = EvalSession(
             config_path=str(cfg_path), resume=True, result_dir_override=str(result_dir)
         )
-        with pytest.raises(RuntimeError, match=r"cannot parse existing"):
-            await s._persist_effective_config()
+        await s._persist_effective_config()
+        assert "name: m" in (result_dir / "effective_config.yaml").read_text()
+        assert s._resume_config_diff == []
 
 
 class TestPersistTimingBeforeRunnerArun:
@@ -1136,3 +904,79 @@ class TestPersistTimingBeforeRunnerArun:
 
         # File written despite the crash
         assert (result_dir / "effective_config.yaml").exists()
+
+
+class TestResumeFromSurface:
+    """`--resume-from DIR` / `runner_config.resume_from`, as Harmony mounts it."""
+
+    CONFIG = (
+        "models:\n"
+        "  base:\n"
+        "    name: m\n"
+        "    api_base: http://a/v1\n"
+        "datasets:\n"
+        "  ds:\n"
+        "    class: tests.conftest.MockDataset\n"
+        "tasks:\n"
+        "  qa:\n"
+        "    class: tests.unit.core.runners.test_runner.MockTask\n"
+        "    dataset: ds\n"
+        "    args:\n"
+        "      n: 1\n"
+    )
+
+    def _session(self, tmp_path: Path, resume_from=None, body=None) -> EvalSession:
+        cfg = _write_yaml(tmp_path, "cfg.yaml", body or self.CONFIG)
+        return EvalSession(
+            config_path=str(cfg),
+            result_dir_override=str(tmp_path / "out"),
+            resume_from=resume_from,
+        )
+
+    def test_a_session_dir_resolves_per_task(self, tmp_path: Path):
+        (tmp_path / "old" / "qa").mkdir(parents=True)
+        session = self._session(tmp_path, resume_from=tmp_path / "old")
+        assert session._resume_from_for("qa", None) == tmp_path / "old" / "qa"
+        rc = session._build_runner_config({}, {}, "qa")
+        assert rc.resume_from == str(tmp_path / "old" / "qa")
+
+    def test_a_task_dir_serves_a_one_task_config(self, tmp_path: Path):
+        (tmp_path / "old").mkdir()
+        (tmp_path / "old" / "meta.json").write_text("{}")
+        session = self._session(tmp_path, resume_from=tmp_path / "old")
+        assert session._resume_from_for("qa", None) == tmp_path / "old"
+
+    def test_a_task_missing_there_runs_fresh(self, tmp_path: Path):
+        (tmp_path / "old").mkdir()
+        session = self._session(tmp_path, resume_from=tmp_path / "old")
+        assert session._resume_from_for("qa", None) is None
+
+    def test_the_yaml_key_wins(self, tmp_path: Path):
+        session = self._session(tmp_path, resume_from=tmp_path / "old")
+        assert session._resume_from_for("qa", "/mnt/x/qa") == Path("/mnt/x/qa")
+
+    def test_legacy_match_reads_the_recorded_config(self, tmp_path: Path):
+        old = tmp_path / "old"
+        (old / "qa").mkdir(parents=True)
+        (old / "effective_config.yaml").write_text(
+            self.CONFIG.replace("http://a/v1", "http://b/v1")
+        )
+        session = self._session(tmp_path, resume_from=old)
+        rc = session._build_runner_config({}, {}, "qa")
+        # An endpoint is not inference.
+        assert session._legacy_match_for("qa", rc) == {
+            "data": True,
+            "inference": True,
+        }
+
+        (old / "effective_config.yaml").write_text(self.CONFIG.replace("n: 1", "n: 4"))
+        assert session._legacy_match_for("qa", rc) == {
+            "data": True,
+            "inference": False,
+        }
+
+    def test_no_recorded_config_leaves_stages_unknown(self, tmp_path: Path):
+        (tmp_path / "old" / "qa").mkdir(parents=True)
+        session = self._session(tmp_path, resume_from=tmp_path / "old")
+        rc = session._build_runner_config({}, {}, "qa")
+        assert session._legacy_match_for("qa", rc) is None
