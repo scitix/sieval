@@ -149,11 +149,15 @@ class Task[
         requires: Provider-neutral input and scoring semantics required from the
             candidate model. The decorator projects legacy ``model_type`` onto
             its input kind while preserving schema-version-1 metadata.
+        services: Processes the task calls besides models, by name from
+            :data:`~sieval.core.tasks.services.SERVICE_ENDPOINT_ENV`, such as
+            ``{"code-eval"}``. The CLI starts each one whose endpoint is unset.
     """
 
     model_type: ClassVar[Literal["chat", "gen"] | None] = None
     tags: ClassVar[AbstractSet[str]] = frozenset()  # override in subclasses
     requires: ClassVar[TaskRequirements] = TaskRequirements()
+    services: ClassVar[AbstractSet[str]] = frozenset()
 
     def __init__(
         self, dataset: Dataset[TRawSample], model: Model, name: str | None = None

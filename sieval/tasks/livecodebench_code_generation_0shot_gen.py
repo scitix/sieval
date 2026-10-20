@@ -37,6 +37,7 @@ from sieval.core.tasks.metrics import (
     sampling_report,
     ungated_intervals,
 )
+from sieval.core.tasks.services import CODE_EVAL
 from sieval.datasets import LiveCodeBenchDatasetSample
 
 from ._code_eval_msg import is_timeout_message
@@ -76,6 +77,8 @@ class LiveCodeBenchCodeGenerationZeroShotGenTask(
         dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
+    services = frozenset({CODE_EVAL})
+
     def __init__(
         self,
         dataset,

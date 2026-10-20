@@ -31,9 +31,11 @@ env:
   # the java/javascript decode path, the one thing the vendored source-text
   # parsers exist to make work, and an untested path silently rots. The cost is
   # one small C extension (tree-sitter) built from sdist per run.
+  # `code-eval` lets tests/integration/test_vendored_code_eval.py start the real
+  # vendored evaluator.
   INSTALL_GROUPS: >-
-    -G bfcl-v3 -G drop -G ifbench -G ifeval -G iheval -G math -G scicode -G spider
-    -G test -G dev
+    -G bfcl-v3 -G code-eval -G drop -G ifbench -G ifeval -G iheval -G math
+    -G scicode -G spider -G test -G dev
 
 jobs:
   changes:

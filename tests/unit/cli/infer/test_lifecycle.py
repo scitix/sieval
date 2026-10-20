@@ -776,3 +776,103 @@ class TestEngineLogRetention:
         }
         assert all(p.exists() for p in old)
         assert "keep_logs" not in json.loads((tmp_path / "m.json").read_text())
+
+
+class TestFollowUps149:
+    """Review findings on #149: vanished logs, orphaned pending launches."""
+
+    def test_prune_skips_a_log_a_concurrent_prune_deleted(self, tmp_path: Path) -> None:
+        from sieval.cli.infer.lifecycle import _prune_group
+
+        logs = [tmp_path / f"full-{i}.log" for i in range(3)]
+        for i, path in enumerate(logs):
+            path.write_text(str(i))
+            os.utime(path, (i, i))
+        logs[0].unlink()  # removed after the caller listed it
+        deleted = _prune_group(list(logs), 1, set())
+        assert deleted == [logs[1]]
+        assert logs[2].exists()
+
+    def test_sweep_keeps_a_pending_handle_whose_engine_outlived_its_owner(
+        self, tmp_path: Path
+    ) -> None:
+        owner = _dead_pid()
+        dead = tmp_path / f"run-{owner}"
+        dead.mkdir()
+        (dead / "m.json").write_text(
+            json.dumps(
+                {
+                    "phase": "pending",
+                    "owner_pid": owner,
+                    "engine_pids": [_dead_pid(), os.getpid()],
+                }
+            )
+        )
+        (dead / "n.json").write_text(
+            json.dumps(
+                {"phase": "pending", "owner_pid": owner, "engine_pids": [_dead_pid()]}
+            )
+        )
+        assert sweep_stale_run_dirs() == []
+        assert (dead / "m.json").exists()
+        assert not (dead / "n.json").exists()
+
+    def test_a_pending_handle_with_a_live_engine_is_held(self, tmp_path: Path) -> None:
+        path = tmp_path / "m.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "phase": "pending",
+                    "owner_pid": _dead_pid(),
+                    "engine_pids": [os.getpid()],
+                }
+            )
+        )
+        with pytest.raises(HandleHeldError) as held:
+            claim_handle(path, replace_stale=True)
+        assert held.value.pid == os.getpid()
+
+    @pytest.mark.anyio
+    async def test_launch_records_each_engine_pid_before_ready(
+        self, tmp_path: Path
+    ) -> None:
+        seen: list[object] = []
+        path = tmp_path / "m.json"
+
+        async def _deploy(commands, **kwargs):  # noqa: ANN001, ANN003, ARG001
+            handles = [_make_handle("4242"), _make_handle("4243")]
+            for handle in handles:
+                kwargs["on_launch"](handle)
+                seen.append(json.loads(path.read_text()).get("engine_pids"))
+            return handles
+
+        deployer = AsyncMock()
+        deployer.deploy.side_effect = _deploy
+        with patch(
+            "sieval.cli.infer.lifecycle.collect_basic_env",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            await launch_model("m", [], backend="sglang", deployer=deployer)
+        assert seen == [[4242], [4242, 4243]]
+
+    def test_record_engine_pid_leaves_a_running_handle_alone(
+        self, tmp_path: Path
+    ) -> None:
+        from sieval.cli.infer.lifecycle import record_engine_pid
+
+        path = tmp_path / "m.json"
+        path.write_text(json.dumps({"phase": "running", "engine_pid": 1}))
+        record_engine_pid(path, "4242")
+        record_engine_pid(path, "not-a-pid")
+        assert "engine_pids" not in json.loads(path.read_text())
+
+    def test_remove_if_engine_spares_a_reclaimed_handle(self, tmp_path: Path) -> None:
+        from sieval.cli.infer.lifecycle import remove_if_engine
+
+        path = tmp_path / "m.json"
+        path.write_text(json.dumps({"phase": "running", "engine_pid": 5151}))
+        assert remove_if_engine(path, "4242") is None
+        assert path.exists()
+        assert remove_if_engine(path, "5151") is not None
+        assert not path.exists()

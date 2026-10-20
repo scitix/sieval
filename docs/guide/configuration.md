@@ -56,6 +56,9 @@ tasks:
   invents or converts that plan locally
 - **Quota allocation**: `concurrency_limit` in `args` adds a local cap while
   retaining the root's shared cap
+- **Reserved task name**: `logs` (`<result_dir>/logs/` holds engine and service logs)
+- **Services**: code tasks start the vendored evaluator unless
+  `SIEVAL_CODE_EVAL_API` is set; see [Services a task needs](infer.md#services-a-task-needs)
 - **Class resolution**: built-in classes (exported by `sieval.tasks` / `sieval.datasets`) use short names; custom classes must use full module paths (`my_pkg.my_module.MyTask`)
 
 ## Task Pipeline

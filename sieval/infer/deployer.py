@@ -111,6 +111,7 @@ class LocalDeployer:
         poll_interval: float = 5.0,
         on_progress: ProgressCallback | None = None,
         log_files: Mapping[str, Path] | None = None,
+        on_launch: Callable[[InferHandle], None] | None = None,
     ) -> list[InferHandle]:
         """Deploy all commands and wait for readiness.
 
@@ -122,6 +123,8 @@ class LocalDeployer:
             on_progress: Optional callback(elapsed_seconds, status_string).
             log_files: Log path per role. A role absent here logs to
                 ``ENGINE_LOG_DIR/<role>-<new deployment id>.log``.
+            on_launch: Called with each role's handle as soon as its process
+                starts, before readiness, so a caller can record its PID.
 
         Returns:
             List of InferHandles (one per command).
@@ -133,6 +136,8 @@ class LocalDeployer:
                 log_file = (log_files or {}).get(cmd.role)
                 handle = await self._launch_one(cmd, log_file=log_file)
                 handles.append(handle)
+                if on_launch is not None:
+                    on_launch(handle)
 
             if detach:
                 return handles

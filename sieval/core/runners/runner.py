@@ -60,6 +60,7 @@ from sieval.core.tasks.run_meta import (
     validate_judge_model_ref,
 )
 from sieval.core.tasks.saver import TaskSaver
+from sieval.core.tasks.services import service_identities
 from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 from sieval.core.utils.concurrency import CompositeLimiter
@@ -1326,7 +1327,11 @@ class TaskRunner:
                 self._task.judge_prompts(),
                 versions=self._judge_versions,
             )
-            return grader_identity(grader_modules(type(self._task)), judges)
+            return grader_identity(
+                grader_modules(type(self._task)),
+                judges,
+                service_identities(type(self._task).services),
+            )
         except (TypeError, ValueError, AttributeError, SyntaxError, OSError) as exc:
             logger.warning("Grader identity unavailable: {}", exc)
             return None

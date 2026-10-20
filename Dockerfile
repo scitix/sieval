@@ -19,3 +19,5 @@ COPY ./dist/sieval-0.9.0-py3-none-any.whl /tmp/
 RUN pip install /tmp/sieval-0.9.0-py3-none-any.whl && rm /tmp/sieval-0.9.0-py3-none-any.whl
 
 COPY vendor /app/vendor
+# The wheel carries no vendor/; this is the code-evaluator SiEval starts.
+ENV SIEVAL_CODE_EVAL_DIR=/app/vendor/code-evaluator

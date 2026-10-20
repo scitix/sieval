@@ -61,6 +61,7 @@ from sieval.core.tasks.metrics import (
     budget_metrics,
     health_metrics,
 )
+from sieval.core.tasks.services import CODE_EVAL
 from sieval.datasets import LiveOIBenchDatasetSample
 
 _UPSTREAM = "https://github.com/LiveOIBench/LiveOIBench-Evaluation/blob/7759e3b8672307cfbdc8ab8e679bd87cc1dd4c12"
@@ -86,6 +87,10 @@ def _cutoff(value) -> float | None:
     except (TypeError, ValueError):
         return None
     return None if number != number else number
+
+
+# `exec_cpp._compile`'s reply when the evaluator host has no g++.
+_NO_TOOLCHAIN_MSG = "compilation error: g++ not found"
 
 
 @sieval_task(
@@ -150,6 +155,8 @@ class LiveOIBenchZeroShotGenTask(
         dict[str, float | str],
     ]
 ):
+    services = frozenset({CODE_EVAL})
+
     def __init__(
         self,
         dataset,
@@ -175,6 +182,32 @@ class LiveOIBenchZeroShotGenTask(
         self._http_client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=max_concurrency)
         )
+
+    @override
+    async def setup(self) -> None:
+        """Refuse an evaluator that says it cannot compile C++, before inference.
+
+        Without ``g++`` every rollout comes back a compile error, which scores as
+        a model that solved nothing. An evaluator without ``/languages`` cannot
+        say, so :meth:`_grade` checks each reply instead.
+        """
+        url = self._code_eval_api.rstrip("/").rsplit("/", 1)[0] + "/languages"
+        try:
+            resp = await self._http_client.get(url, timeout=10.0)
+        except httpx.HTTPError as e:
+            raise RuntimeError(
+                f"cannot reach the code-eval service at {url} "
+                f"([{type(e).__name__}] {e})"
+            ) from e
+        if resp.status_code == 404:
+            return
+        resp.raise_for_status()
+        if "cpp" not in (resp.json().get("data") or []):
+            raise RuntimeError(
+                f"the code-eval service at {url} has no C++ toolchain (g++). "
+                "Install g++ on that host, or point SIEVAL_CODE_EVAL_API at an "
+                "image built from vendor/code-evaluator/docker/Dockerfile.multipl-e."
+            )
 
     @override
     async def preprocess(self, raw, ctx):
@@ -396,6 +429,12 @@ class LiveOIBenchZeroShotGenTask(
             )
             raise
 
+        if msg.startswith(_NO_TOOLCHAIN_MSG):
+            # A deployment fault, not a verdict: scored, it reads as a zero.
+            raise RuntimeError(
+                f"the code-eval service cannot compile C++ ({msg}); install g++ "
+                "there or point SIEVAL_CODE_EVAL_API at an evaluator that has it."
+            )
         verdicts = data.get("case_verdicts")
         case_names = data.get("case_names")
         if verdicts is None or case_names is None:

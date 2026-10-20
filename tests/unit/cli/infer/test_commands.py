@@ -373,3 +373,34 @@ class TestPerOwnerHandles:
         assert result.exit_code == 1
         assert "already running" in json.loads(result.stdout)["error"]
         launch.assert_not_awaited()
+
+
+class TestInferStopRace:
+    """`infer stop` probes outside the lock; the handle may change meanwhile."""
+
+    @pytest.fixture
+    def handle_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        d = tmp_path / "handles"
+        d.mkdir()
+        monkeypatch.setattr("sieval.cli.infer.lifecycle.HANDLE_DIR", d)
+        return d
+
+    def test_stop_keeps_a_handle_another_start_reclaimed(self, handle_dir: Path):
+        from sieval.infer.config import InferPhase
+
+        path = handle_dir / "m.json"
+        path.write_text(json.dumps({"phase": "running", "engine_pid": 4242}))
+
+        async def _reclaimed(_handle):  # noqa: ANN001
+            # A new `infer start` took the name while the old engine exited.
+            path.write_text(json.dumps({"phase": "running", "engine_pid": 5151}))
+            return InferPhase.STOPPED, {}
+
+        with patch("sieval.cli.infer.lifecycle.default_deployer") as deployer:
+            deployer.delete = AsyncMock()
+            deployer.status = AsyncMock(side_effect=_reclaimed)
+            with patch("sieval.cli.infer.commands.default_deployer", deployer):
+                result = runner.invoke(infer_app, ["stop", "m", "-o", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(path.read_text()) == {"phase": "running", "engine_pid": 5151}

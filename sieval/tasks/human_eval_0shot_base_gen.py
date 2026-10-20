@@ -49,6 +49,7 @@ from sieval.core.tasks.metrics import (
     sampling_report,
     ungated_intervals,
 )
+from sieval.core.tasks.services import CODE_EVAL
 from sieval.datasets import HumanEvalDatasetSample
 
 from ._code_eval_msg import is_timeout_message
@@ -96,6 +97,8 @@ class HumanEvalZeroShotBaseGenTask(
         dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
+    services = frozenset({CODE_EVAL})
+
     def __init__(
         self,
         dataset,

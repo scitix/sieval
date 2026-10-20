@@ -48,6 +48,7 @@ from sieval.core.tasks.metrics import (
     health_metrics,
     interval_metrics,
 )
+from sieval.core.tasks.services import CODE_EVAL
 from sieval.datasets import QuoteBenchDatasetSample
 
 #: The modules that define what is asked and what is accepted. Must match
@@ -127,6 +128,8 @@ class QuoteBenchTask(
     ]
 ):
     """Abstract: a leaf sets SYSTEM_PROMPT and CONTRACT and nothing else."""
+
+    services = frozenset({CODE_EVAL})
 
     #: Upstream's system prompt for this contract, used verbatim.
     SYSTEM_PROMPT: ClassVar[str]

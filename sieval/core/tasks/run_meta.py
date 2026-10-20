@@ -23,8 +23,9 @@ The four stage identities describe the run that produced the current
                are left out.
 ``grader``     The source of every module the task class reaches by a static
                import walk under :data:`GRADER_PACKAGES` and the ``sieval_*``
-               plugin package of each class in its MRO, and each judge's model,
-               version, sampling arguments and prompt.
+               plugin package of each class in its MRO, each judge's model,
+               version, sampling arguments and prompt, and each service the
+               task declares, vendored or external.
 =============  ==============================================================
 
 Every digest is ``sha256:`` over canonical JSON (sorted keys, no whitespace).
@@ -48,6 +49,8 @@ from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from sieval.core.models import Model
 from sieval.core.types import JSONValue
+
+from .services import ServiceIdentity
 
 #: Version of the ``identity`` block's layout.
 IDENTITY_SCHEMA = 1
@@ -123,9 +126,12 @@ class JudgeIdentity(TypedDict):
 
 
 class GraderIdentity(TypedDict):
+    """``services`` is present only for a task that declares one."""
+
     digest: str
     modules: dict[str, str]
     judges: list[JudgeIdentity]
+    services: NotRequired[list[ServiceIdentity]]
 
 
 class RunIdentity(TypedDict):
@@ -643,13 +649,22 @@ def judge_identities(
 
 
 def grader_identity(
-    modules: Mapping[str, str], judges: Sequence[JudgeIdentity]
+    modules: Mapping[str, str],
+    judges: Sequence[JudgeIdentity],
+    services: Sequence[ServiceIdentity] = (),
 ) -> GraderIdentity:
-    return {
-        "digest": digest({"modules": dict(modules), "judges": list(judges)}),
+    """A task with no services digests exactly as before the field existed."""
+    covered: dict[str, Any] = {"modules": dict(modules), "judges": list(judges)}
+    if services:
+        covered["services"] = list(services)
+    identity: GraderIdentity = {
+        "digest": digest(covered),
         "modules": dict(modules),
         "judges": list(judges),
     }
+    if services:
+        identity["services"] = list(services)
+    return identity
 
 
 # ---------------------------------------------------------------------------

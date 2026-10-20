@@ -153,6 +153,7 @@ from sieval.core.tasks.metrics import (
     sampling_report,
     ungated_intervals,
 )
+from sieval.core.tasks.services import CODE_EVAL
 from sieval.datasets import AgLiveCodeBenchXDatasetSample
 
 # --- The frozen DSPy 3.0.0b2 ChatAdapter rendering -------------------------
@@ -442,6 +443,8 @@ class AgLiveCodeBenchXZeroShotGenTask(
         dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
+    services = frozenset({CODE_EVAL})
+
     def __init__(
         self,
         dataset,

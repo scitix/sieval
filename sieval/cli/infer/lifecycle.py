@@ -178,20 +178,29 @@ def _as_pid(raw: object) -> int | None:
         return None
 
 
-def holder_pid(data: Mapping[str, object]) -> int | None:
-    """The PID whose liveness decides whether a handle is held.
+def holder_pids(data: Mapping[str, object]) -> list[int]:
+    """The PIDs whose liveness decides whether a handle is held.
 
-    A pending handle has no engine yet, so its owner holds it; afterwards the
-    engine process does.
+    A pending handle: its owner and every role launched so far (``engine_pids``),
+    which can outlive an owner killed mid-launch. Afterwards: the engine.
     """
-    if parse_phase(data) == InferPhase.PENDING:
-        return _as_pid(data.get("owner_pid"))
-    return _as_pid(data.get("engine_pid"))
+    if parse_phase(data) != InferPhase.PENDING:
+        pid = _as_pid(data.get("engine_pid"))
+        return [] if pid is None else [pid]
+    pids = [_as_pid(data.get("owner_pid"))]
+    launched = data.get("engine_pids")
+    if isinstance(launched, list):
+        pids.extend(_as_pid(p) for p in cast(list[object], launched))
+    return [p for p in pids if p is not None]
+
+
+def live_holder(data: Mapping[str, object]) -> int | None:
+    """The first PID holding *data* that is still alive, else ``None``."""
+    return next((pid for pid in holder_pids(data) if pid_alive(pid)), None)
 
 
 def _holder_alive(data: Mapping[str, object]) -> bool:
-    pid = holder_pid(data)
-    return pid is not None and pid_alive(pid)
+    return live_holder(data) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -356,15 +365,14 @@ def sweep_stale_run_dirs() -> list[Path]:
             kept = False
             for path in run_dir.glob("*.json"):
                 data = _read_handle_file(path)
-                if (
-                    data is not None
-                    and parse_phase(data) != InferPhase.PENDING
-                    and _holder_alive(data)
-                ):
+                # The owner is dead, so a live holder is an engine: running, or
+                # launched by a pending handle whose owner died mid-launch.
+                engine = None if data is None else live_holder(data)
+                if engine is not None:
                     kept = True
                     logger.warning(
                         "Engine PID {} from finished sieval run {} is still alive",
-                        data.get("engine_pid"),
+                        engine,
                         owner,
                     )
                     continue
@@ -397,8 +405,8 @@ def claim_handle(
     def _claim(current: dict[str, object] | None) -> dict[str, object]:
         if current is not None:
             if not current.get("corrupt"):
-                pid = holder_pid(current)
-                if pid is not None and pid_alive(pid):
+                pid = live_holder(current)
+                if pid is not None:
                     raise HandleHeldError(handle_path, current, pid)
             if not replace_stale:
                 raise FileExistsError(f"{handle_path} already exists")
@@ -467,6 +475,28 @@ def record_log_files(handle_path: Path, log_files: list[Path]) -> None:
     transition(handle_path, _record)
 
 
+def record_engine_pid(handle_path: Path, engine_pid: str) -> None:
+    """Add a just-launched role's PID to a pending handle, before it is ready."""
+    pid = _as_pid(engine_pid)
+    if pid is None:
+        return
+
+    def _record(current: dict[str, object] | None) -> dict[str, object] | _Unchanged:
+        if (
+            current is None
+            or current.get("corrupt")
+            or parse_phase(current) != InferPhase.PENDING
+        ):
+            return UNCHANGED
+        launched = current.get("engine_pids")
+        pids = list(cast(list[object], launched)) if isinstance(launched, list) else []
+        if pid in pids:
+            return UNCHANGED
+        return {**current, "engine_pids": [*pids, pid]}
+
+    transition(handle_path, _record)
+
+
 def mark_stopping(handle_path: Path) -> None:
     """Move a handle to STOPPING, if it still exists."""
 
@@ -488,6 +518,24 @@ def remove_handle(handle_path: Path) -> dict[str, object] | None:
         return None
 
     transition(handle_path, _remove)
+    return removed
+
+
+def remove_if_engine(handle_path: Path, engine_pid: str) -> dict[str, object] | None:
+    """Delete a handle only while it still names *engine_pid*; return its data.
+
+    ``infer stop`` probes outside the lock, so the name may have been reclaimed.
+    """
+    removed: dict[str, object] | None = None
+
+    def _check(current: dict[str, object] | None) -> None | _Unchanged:
+        nonlocal removed
+        if current is None or str(current.get("engine_pid", "")) != engine_pid:
+            return UNCHANGED
+        removed = current
+        return None
+
+    transition(handle_path, _check)
     return removed
 
 
@@ -518,7 +566,8 @@ async def probe_and_sync(
     """Probe deployer status and sync changes back to the handle file.
 
     The probe runs outside the lock; the write-back is one ``transition()``.
-    A handle deleted in the meantime stays deleted.
+    A handle deleted in the meantime stays deleted, and one reclaimed for
+    another engine is left alone.
     """
     phase, conditions = await default_deployer.status(handle)
     new_conds = {
@@ -527,6 +576,9 @@ async def probe_and_sync(
 
     def _sync(current: dict[str, object] | None) -> dict[str, object] | _Unchanged:
         if current is None or current.get("corrupt"):
+            return UNCHANGED
+        recorded = current.get("engine_pid")
+        if recorded is not None and str(recorded) != handle.handle_id:
             return UNCHANGED
         # Don't let a probe overwrite STOPPING with a non-terminal phase: the
         # stop command set it, and the engine may still answer until it exits.
@@ -581,10 +633,19 @@ def _live_log_files() -> set[Path]:
 
 
 def _prune_group(logs: list[Path], keep: int, live: set[Path]) -> list[Path]:
-    """Delete all but the newest *keep* of *logs*, sparing live ones."""
-    logs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    """Delete all but the newest *keep* of *logs*, sparing live ones.
+
+    A log a concurrent prune deleted after the listing is skipped.
+    """
+    dated: list[tuple[float, Path]] = []
+    for path in logs:
+        try:
+            dated.append((path.stat().st_mtime, path))
+        except FileNotFoundError:
+            continue
+    dated.sort(key=lambda item: item[0], reverse=True)
     deleted: list[Path] = []
-    for path in logs[keep:]:
+    for _, path in dated[keep:]:
         if path.resolve() in live:
             continue
         with contextlib.suppress(FileNotFoundError):
@@ -651,6 +712,8 @@ async def launch_model(
     on_progress: Callable[[float, str], None] | None = None,
     detach: bool = False,
     timeout: float = DEFAULT_READY_TIMEOUT,
+    poll_interval: float = 5.0,
+    collect_env: bool = True,
     already_claimed: bool = False,
     replace_stale: bool = False,
 ) -> tuple[list[InferHandle], InferEnv | None]:
@@ -662,6 +725,9 @@ async def launch_model(
     each role logs to ``<log_dir>/<role>.log`` and *keep_logs* is ignored;
     otherwise logs go to ``ENGINE_LOG_DIR/<model_name>/``, pruned to
     *keep_logs* (default ``DEFAULT_KEEP_LOGS``) per role.
+
+    *collect_env* False skips the GPU and framework probe, for a process that
+    is not an inference engine.
 
     When *already_claimed* is True, skips the ``claim_handle`` call (the
     caller already owns the handle file). Otherwise raises
@@ -695,13 +761,16 @@ async def launch_model(
             commands,
             detach=detach,
             timeout=timeout,
+            poll_interval=poll_interval,
             on_progress=on_progress,
             log_files=log_files,
+            on_launch=lambda h: record_engine_pid(path, h.handle_id),
         )
 
         env: InferEnv | None = None
         try:
-            env = await collect_basic_env(backend)
+            if collect_env:
+                env = await collect_basic_env(backend)
         except Exception as exc:
             logger.debug("collect_env failed for {}: {}", model_name, exc)
 

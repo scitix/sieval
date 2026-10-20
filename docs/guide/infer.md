@@ -79,6 +79,44 @@ counting the new one; other models' logs and `result_dir` logs are untouched.
 Set N with `--keep-logs` (on `infer start` and `run`), else `SIEVAL_KEEP_LOGS`,
 else 3. `0` deletes the log when the service stops; a negative N keeps all.
 
+A task may not be named `logs`: `<result_dir>/logs/` is reserved for these logs.
+
+## Services a task needs
+
+A task declares the processes it calls besides the model in `Task.services`.
+Today there is one, `code-eval`, the code-execution service vendored at
+`vendor/code-evaluator`, used by HumanEval, MBPP, LiveCodeBench,
+Ag-LiveCodeBench-X, LiveOIBench, MultiPL-E, SciCode and QuoteBench.
+
+When `SIEVAL_CODE_EVAL_API` is unset, `sieval run`, `sieval eval` and
+`sieval leaderboard run` start the vendored copy once per run on a free port,
+set the variable, and stop it when the run ends. When it is set, that endpoint
+is used and nothing starts.
+
+**A started evaluator runs model-generated code on this host**, guarded by
+resource limits and disabled builtins, not by a sandbox; QuoteBench runs bash
+with network access. To isolate grading, build an image from
+`vendor/code-evaluator/docker/` and set `SIEVAL_CODE_EVAL_API` to it.
+
+| Variable | Default |
+| --- | --- |
+| `SIEVAL_CODE_EVAL_DIR` | `vendor/code-evaluator` of the source checkout; set it when SiEval is installed from a wheel |
+| `SIEVAL_CODE_EVAL_PYTHON` | SiEval's own interpreter, which needs the `code-eval` group (`pip install 'sieval[code-eval]'`) |
+
+Graded programs run with the evaluator's host and interpreter: LiveOIBench needs
+`g++` on `PATH`, MultiPL-E each language's toolchain, SciCode the `scicode`
+group. LiveOIBench and MultiPL-E refuse to start when their toolchain is missing.
+
+The service's handle is `run-<pid>/service-<name>.json` and its log
+`<result_dir>/logs/<name>/server.log`, else `~/.sieval/logs/<name>/`. Only one
+run per process may start a given service.
+
+Each task's `meta.json` records what graded it under `identity.grader.services`:
+`"source": "vendored"` with the `VENDORED.md` commit, a digest of the
+evaluator's Python sources and its `runtime` (Python version, platform, versions
+of the packages graded programs import); or `"source": "external"`, with no URL.
+A change to any of these changes the grader identity.
+
 ## YAML Infer Configuration
 
 Models with a `path` field (and no `api_base`) or an `infer` section in the YAML config are automatically launched by `sieval run` and stopped after evaluation completes.

@@ -72,6 +72,7 @@ from sieval.core.tasks.metrics import (
     SCORE_KEY_FIELD,
     interval_metrics,
 )
+from sieval.core.tasks.services import CODE_EVAL
 from sieval.core.types import JSONValue
 from sieval.core.utils.meta import build_stage_meta
 from sieval.datasets import SciCodeDatasetSample
@@ -217,6 +218,8 @@ class SciCodeZeroShotGenTask(
         dict[str, float | str | list[float] | dict[str, str]],
     ]
 ):
+    services = frozenset({CODE_EVAL})
+
     def __init__(
         self,
         dataset,

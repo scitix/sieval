@@ -80,6 +80,7 @@ from sieval.core.tasks.metrics import (
     sampling_report,
     ungated_intervals,
 )
+from sieval.core.tasks.services import CODE_EVAL
 from sieval.tasks._code_eval_msg import (
     CODE_EVAL_BUILD_TIMEOUT_PREFIXES,
     CODE_EVAL_RUN_TIMEOUT_PREFIXES,
@@ -283,6 +284,8 @@ class MultiPLETask[TSample](
     Leaves supply the sample type; subclasses supply :attr:`suite`,
     :attr:`eval_source` and the protocol methods.
     """
+
+    services = frozenset({CODE_EVAL})
 
     # `humaneval` / `mbpp` -- only used in messages; the dataset decides the rows.
     suite: ClassVar[str] = ""

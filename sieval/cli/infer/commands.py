@@ -62,8 +62,8 @@ from .lifecycle import (
     normalize_handle_data,
     parse_phase,
     probe_and_sync,
-    remove_handle,
     remove_if_dead,
+    remove_if_engine,
     resolve_keep_logs,
     sweep_stale_run_dirs,
 )
@@ -634,7 +634,9 @@ def infer_stop(
     # Verify the process actually stopped
     phase, conditions = anyio.run(probe_and_sync, handle, handle_path)
     if phase in (InferPhase.STOPPED, InferPhase.FAILED):
-        delete_logs_if_unkept(remove_handle(handle_path))
+        # Only the handle of the engine just stopped: an `infer start` may have
+        # reclaimed the name since the probe.
+        delete_logs_if_unkept(remove_if_engine(handle_path, handle.handle_id))
         result = CommandResult(
             command="infer.stop",
             ok=True,

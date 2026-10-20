@@ -57,6 +57,7 @@ from sieval.cli.resolution import (
     validate_task_config_args,
     validate_task_model_requirements,
 )
+from sieval.cli.services import RESERVED_LOG_DIR, vendored_services_for
 from sieval.core.datasets import Dataset, TFilterKey
 from sieval.core.models import ChatModel, GenModel, Model, SglangGenModel
 from sieval.core.models.capabilities import (
@@ -125,6 +126,7 @@ from sieval.core.runners import (
     run_started,
 )
 from sieval.core.tasks.context import TaskAction
+from sieval.core.tasks.services import check_service_names
 from sieval.core.types import JSONValue
 from sieval.infer import deployment_plan_projection
 from sieval.infer.params import merge_params
@@ -1754,6 +1756,8 @@ class EvalSession:
         self.postlaunch_reconcile_result: ReconcileResult | None = None
         self._normalized_model_bindings: dict[str, NormalizedModelBinding] = {}
         self._task_requirement_contexts: dict[str, RequirementContext] = {}
+        # Vendored services the configured tasks declare (`Task.services`).
+        self._required_services: set[str] = set()
         self._task_model_requirements: tuple[TaskModelRequirement, ...] = ()
         self._aggregated_requirements: dict[str, AggregatedTaskRequirements] = {}
         self._model_types_by_root: dict[str, Literal["chat", "gen"]] = {}
@@ -3093,11 +3097,20 @@ class EvalSession:
             self._normalized_model_bindings[binding.binding_id] = binding
 
         records: list[TaskModelRequirement] = []
+        self._required_services = set()
         for task_name, task_cfg in tasks_cfg.items():
+            if task_name == RESERVED_LOG_DIR:
+                raise ValueError(
+                    f"Task name {RESERVED_LOG_DIR!r} is reserved for "
+                    f"<result_dir>/{RESERVED_LOG_DIR}/; rename the task."
+                )
             task_spec = task_cfg.get("class")
             if not isinstance(task_spec, str) or not task_spec:
                 raise ValueError(f"Task '{task_name}' requires 'class' field")
             task_class = resolve_task_class(task_spec)
+            declared = frozenset(getattr(task_class, "services", frozenset()))
+            check_service_names(declared, f"Task '{task_name}'")
+            self._required_services |= declared
             model_name = self._task_model_config_name(task_name, task_cfg, models_cfg)
             context = self._requirement_context_for_task(
                 task_name,
@@ -5060,10 +5073,15 @@ class EvalSession:
             self._stamp_deterministic_seed_contract()
             await self._persist_effective_config()
             await self._persist_infer_plans()
-            await self._prepare_execution()
-            if self.runner is None:
-                raise RuntimeError("Runner not initialized")
-            return await self.runner.arun()
+            # Tasks read their endpoints when built, so services start first.
+            async with vendored_services_for(
+                self._required_services,
+                result_dir=self._resolve_result_dir,
+            ):
+                await self._prepare_execution()
+                if self.runner is None:
+                    raise RuntimeError("Runner not initialized")
+                return await self.runner.arun()
         finally:
             await self._close_owned_model_resources()
 

@@ -56,6 +56,8 @@ class _StubChatModel(ChatModel):
 
 
 class _Response:
+    status_code = 200
+
     def __init__(self, payload: dict):
         self._payload = payload
 
@@ -332,6 +334,66 @@ async def test_an_evaluator_without_the_cpp_path_is_an_error_not_a_zero():
             )
     finally:
         await task.shutdown()
+
+
+@pytest.mark.anyio
+async def test_an_evaluator_without_gpp_is_an_error_not_a_zero():
+    class _NoCompiler(_Evaluator):
+        async def post(self, url, *, json, timeout):
+            self.bodies.append(json)
+            return _Response(
+                {
+                    "status": False,
+                    "msg": "compilation error: g++ not found: this evaluator "
+                    "image has no C++ toolchain",
+                    "data": {"case_verdicts": [False] * 3, "case_names": CASE_NAMES},
+                }
+            )
+
+    task = _task(_raw(), _NoCompiler([]))
+    try:
+        with pytest.raises(RuntimeError, match=r"cannot compile C\+\+"):
+            await task.feedback(
+                build_prediction_record(["int main(){}"]),
+                TaskContext(sample_id=0, raw_sample=_raw()),
+            )
+    finally:
+        await task.shutdown()
+
+
+class _Languages(_Evaluator):
+    """Answers the ``/languages`` probe with *status* and *langs*."""
+
+    def __init__(self, status: int, langs: list[str] | None = None):
+        super().__init__([])
+        self._status = status
+        self._langs = langs
+        self.probed: list[str] = []
+
+    async def get(self, url, *, timeout):
+        _ = timeout
+        self.probed.append(url)
+        reply = _Response({"status": True, "msg": "", "data": self._langs})
+        reply.status_code = self._status
+        return reply
+
+
+@pytest.mark.anyio
+async def test_setup_refuses_an_evaluator_that_cannot_run_cpp(monkeypatch):
+    monkeypatch.setenv("SIEVAL_CODE_EVAL_API", "http://ce:1/evaluations/")
+    evaluator = _Languages(200, ["javascript", "python"])
+    task = _task(_raw(), evaluator)
+    with pytest.raises(RuntimeError, match=r"no C\+\+ toolchain"):
+        await task.setup()
+    assert evaluator.probed == ["http://ce:1/languages"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("status", "langs"), [(200, ["cpp", "python"]), (404, None)])
+async def test_setup_passes_an_evaluator_with_cpp_or_without_the_probe(status, langs):
+    evaluator = _Languages(status, langs)
+    await _task(_raw(), evaluator).setup()
+    assert len(evaluator.probed) == 1
 
 
 @pytest.mark.anyio

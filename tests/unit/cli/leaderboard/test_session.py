@@ -6398,6 +6398,7 @@ class TestEvalSessionWrappers:
     async def test_arun_raises_when_runner_missing_after_prepare(self):
         runner = object.__new__(EvalSession)
         runner.runner = None
+        runner._required_services = set()
         with (
             patch.object(runner, "prepare_prelaunch", MagicMock(return_value=None)),
             patch.object(runner, "_stamp_deterministic_seed_contract"),
@@ -6419,6 +6420,7 @@ class TestEvalSessionWrappers:
         pool = types.SimpleNamespace(aclose=AsyncMock())
         runner._owned_pools = {"model:m": pool}
         runner._owned_legacy_models = {}
+        runner._required_services = set()
 
         with (
             patch.object(runner, "prepare_prelaunch", MagicMock(return_value=None)),

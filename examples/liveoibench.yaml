@@ -21,6 +21,7 @@
 # base evaluator image cannot do — build it from
 # `vendor/code-evaluator/docker/Dockerfile.multipl-e` (the image that carries a
 # C++ toolchain; it serves this source too) and point SIEVAL_CODE_EVAL_API at it.
+# Unset, SiEval starts the evaluator on this host, which then needs g++.
 # The evaluator also reads the test directory off disk, so it needs the data
 # volume mounted; if it cannot see it, set `inline_tests: true` below and accept
 # ~140 MB per rollout on the wire.
