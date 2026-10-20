@@ -211,6 +211,24 @@ class TestAnomalies:
         assert _read(root, "anomalies.json")["meta"]["rules_hash"] == get_rules_hash()
 
     @pytest.mark.anyio
+    async def test_a_fast_resume_keeps_the_report_count_with_anomalies_json(
+        self, tmp_path
+    ):
+        """Re-detection on a fast resume rewrites `anomalies.json`; the reused
+        report's `sieval.anomalies` follows it, and nothing else changes."""
+        runner, _ = await _full(tmp_path)
+        root = runner.root_dir
+        report = _read(root, "report.json")
+        report["sieval"]["anomalies"] = 0  # as counted under older rules
+        (root / "report.json").write_bytes(orjson.dumps(report))
+        await _run(tmp_path, model=TruncatingModel(answers=ANSWERS), auto_resume=True)
+        refreshed = _read(root, "report.json")
+        assert refreshed["sieval"]["anomalies"] == 3
+        assert len(_read(root, "anomalies.json")["samples"]) == 3
+        report["sieval"]["anomalies"] = 3
+        assert refreshed == report
+
+    @pytest.mark.anyio
     async def test_an_interrupted_run_records_its_rules_hash(self, tmp_path):
         runner = TaskRunner(
             GenTask(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t"),

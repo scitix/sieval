@@ -41,8 +41,8 @@ class MultiTaskRunner:
     ):
         """Initialize the multi-task runner.
 
-        *effective_config* is the session's config file, recorded in each
-        task's ``meta.json`` unless the task's config names its own.
+        *effective_config* is recorded in each task's ``meta.json`` unless
+        the task's config sets its own.
 
         When *result_dir* is set, tasks without their own ``result_dir`` will
         write to ``<result_dir>/<task.name>``.

@@ -98,11 +98,10 @@ _NOT_REPORTED: Any = object()
 
 
 class SievalCounts(TypedDict):
-    """The ``sieval`` block of ``report.json``: how many samples ended how.
+    """The ``sieval`` block of ``report.json``.
 
-    ``total`` is every sample the run covers, ``final`` and ``failed`` the
-    terminal ones, ``anomalies`` the final samples any anomaly rule flagged.
-    A fast resume reads ``total == final`` and ``failed == 0`` from here.
+    ``anomalies`` counts final samples any rule flagged. A fast resume needs
+    ``total == final`` and ``failed == 0``.
     """
 
     total: int
@@ -129,11 +128,9 @@ def _counts(
 
 
 def _reported_complete(report: object) -> bool:
-    """Whether a cached ``report.json`` says every sample ended final.
+    """Whether a cached report's ``sieval`` counts say every sample is final.
 
-    Read from its ``sieval`` counts. A report without them (from before the
-    counts, or a task whose report is not a mapping) cannot say, and is
-    finalized again from the shards.
+    A report without them cannot say, and is finalized again from the shards.
     """
     if not isinstance(report, dict):
         return False
@@ -191,7 +188,7 @@ class TaskRunnerConfig:
             If ``None``, auto-generated under ``outputs/<task_name>/<timestamp>``.
         auto_resume: When ``True``, detect and resume from existing result_dir.
         effective_config: The session's ``effective_config.yaml``, recorded in
-            ``meta.json`` as ``config``, relative to ``result_dir``.
+            ``meta.json`` as ``config``. Not part of any identity.
         resume_from: A recorded task directory, possibly another task's and
             read-only, whose shards are copied into an empty ``result_dir`` and
             resumed (see :mod:`sieval.core.runners.stage_resume`). Implies
@@ -202,8 +199,6 @@ class TaskRunnerConfig:
     result_dir: str | None = None
     auto_resume: bool = False
     resume_from: str | None = None
-    # The session's effective_config.yaml, recorded in meta.json relative to
-    # result_dir. Where the config is, not what it says: no identity reads it.
     effective_config: str | None = None
 
     profile_io: bool = False  # timings
@@ -266,10 +261,9 @@ def _read_run_meta(root_dir: Path) -> dict | None:
 def run_started(root_dir: Path) -> bool:
     """Whether a run has started in *root_dir*, so a new one would resume it.
 
-    Read from ``meta.json``'s ``runs[]``, which a run appends before it does any
-    work. A directory written before ``runs[]`` existed has a ``meta.json``
-    without it, written once when its run started, so that file alone is the
-    signal there; a ``meta.json`` with an empty ``runs[]`` is not.
+    Read from ``meta.json``'s ``runs[]``, which a run appends before any work.
+    Versions before ``runs[]`` wrote ``meta.json`` once at run start, so a
+    ``meta.json`` without ``runs`` counts; an empty ``runs[]`` does not.
     """
     meta = _read_run_meta(root_dir)
     if meta is None:
@@ -838,9 +832,8 @@ class TaskRunner:
             # Failures to retry, samples left, or a report from before the
             # `sieval` counts: the full path decides.
             return None
-        # Nothing reruns, so the identity stays the one that produced this
-        # report; the run is recorded, and the views are refreshed from the
-        # shards like every other exit.
+        # Nothing reruns, so the identity is kept; the views are rebuilt from
+        # the shards like every other exit.
         await self._saver.begin_run(
             resumed=True,
             model=self._model_name(),
@@ -855,6 +848,8 @@ class TaskRunner:
             prepare_retries=False,
             record_each_stage=self._record_each_stage,
         )
+        # The resume gate pins the dataset, and the report says every sample
+        # is final, so the recorded samples are the whole run.
         self._total_samples = len(self._contexts)
         return await self._finalize(cached_report=cached_report)
 
@@ -1280,9 +1275,9 @@ class TaskRunner:
         has a type of its own: raising here would abort the rest of :meth:`arun`'s
         finalization, so a declaration defect would cost the finished run its
         ``anomalies.json`` -- the artifact the paragraph above exists to protect.
-        The completion path catches :class:`UnreadableIntervalError`, writes what
-        is left, and re-raises it unchanged. The early-return path has nothing
-        after it and lets it propagate straight out.
+        :meth:`_finalize`, which every exit path goes through, catches
+        :class:`UnreadableIntervalError`, writes what is left, and re-raises it
+        unchanged.
 
         *counts* go in as the ``sieval`` block (see :class:`SievalCounts`).
         Non-dict reports are saved unchanged; ``None`` skips the save. Returns
@@ -1330,15 +1325,12 @@ class TaskRunner:
         return True
 
     async def _finalize(self, cached_report: Any = _NOT_REPORTED) -> Any:
-        """Finish a run, the same way on every exit path.
+        """Finish a run the same way on every exit path.
 
-        The full run, the all-terminal early exit and the fast resume all end
-        here, with every terminal sample hydrated in ``_contexts``: the
-        profile from every sample's ``stage_meta``, ``report.json`` with its
-        ``sieval`` counts (a fast resume passes the *cached_report* it reuses
-        and writes none), ``anomalies.json`` over every iteration with its
-        rules hash in ``runs[]``, the ``runs[]`` entry ended, and
-        ``progress.json`` refreshed to ``finished``.
+        Expects every terminal sample hydrated in ``_contexts``. Writes the
+        profile, ``report.json`` (a fast resume passes *cached_report* and
+        reuses it), ``anomalies.json``, the ended ``runs[]`` entry and
+        ``progress.json``.
         """
         finals, fails = self._final_and_failed()
         anomalies = self._anomalies_of(finals)
@@ -1358,17 +1350,15 @@ class TaskRunner:
                     report, finals, fails, counts
                 )
             except UnreadableIntervalError as exc:
-                # HELD, not swallowed. `report.json` is already on disk and the
-                # run itself finished, so the remaining artifacts are written
-                # before this surfaces -- refusing an unreadable declaration
-                # must not also cost the run its `anomalies.json`, which is the
-                # evidence a reader of the failure needs. Re-raised unchanged
-                # below; only this one type is deferred.
+                # Held, not swallowed: `report.json` is on disk, so write the
+                # remaining artifacts first, then re-raise below.
                 refusal = exc
 
         rules_hash = None
         if not reused or self._config.detect_anomalies_on_resume:
             rules_hash = await self._write_anomalies(anomalies)
+            if reused and rules_hash is not None:
+                await self._refresh_anomaly_count(report, finals, fails, anomalies)
         if refusal is None:
             if reused:
                 await self._saver.end_run((), rules_hash=rules_hash)
@@ -1379,14 +1369,25 @@ class TaskRunner:
             raise refusal
         return report
 
+    async def _refresh_anomaly_count(
+        self,
+        report: dict,
+        finals: list[TaskContext],
+        fails: list[TaskContext],
+        anomalies: dict[str | int, dict[int, dict[str, list[int]]]],
+    ) -> None:
+        """Match a reused report's ``sieval.anomalies`` to the re-detection."""
+        counts = report[SIEVAL_COUNTS_KEY]
+        count = _counts(self._total_samples, finals, fails, anomalies)["anomalies"]
+        if counts.get("anomalies") != count:
+            counts["anomalies"] = count
+            await self._saver.save_report(report)
+
     def _anomalies_of(
         self, finals: list[TaskContext]
     ) -> dict[str | int, dict[int, dict[str, list[int]]]]:
-        """Anomalies of every iteration this run saw, and of every final sample.
-
-        The dispatcher collects each final it sees; a final recorded by an
-        earlier run is detected here, so every exit covers every sample.
-        """
+        """This run's per-iteration anomalies, plus detection on the final
+        samples an earlier run recorded."""
         results: dict[str | int, dict[int, dict[str, list[int]]]] = {
             sid: dict(iterations) for sid, iterations in self._anomaly_results.items()
         }
@@ -1411,12 +1412,7 @@ class TaskRunner:
         return await self._anomaly_detector.write(results, self._task.name)
 
     async def _profile(self, contexts: list[TaskContext]) -> None:
-        """Rebuild the profile from every terminal sample's ``stage_meta``.
-
-        With ``record_meta`` on, each sample's timings and model calls are on
-        its record, resumed samples included, so ``profile.json`` covers them
-        all whatever ``profile_stages`` and ``profile_usage`` say.
-        """
+        """Rebuild ``profile.json`` from every terminal sample's ``stage_meta``."""
         by_id = {ctx.sample_id: ctx for ctx in contexts}
         if self._config.record_meta:
             self._profiler.include_stage_meta()
@@ -1431,7 +1427,7 @@ class TaskRunner:
         fails: list[TaskContext],
         anomalies: dict[str | int, dict[int, dict[str, list[int]]]],
     ) -> None:
-        """Refresh ``progress.json`` to ``finished: true``, on every exit."""
+        """Write ``progress.json`` with ``finished: true``."""
         progress = self._progress
         if progress is None:
             progress = TaskProgress(
@@ -1767,7 +1763,7 @@ class TaskRunner:
         )
 
     def _config_path(self) -> str | None:
-        """The session config's path relative to this directory, for ``meta.json``."""
+        """``effective_config`` relative to this directory."""
         configured = self._config.effective_config
         if not configured:
             return None

@@ -461,6 +461,33 @@ class TestScanReadsMeta:
         assert run.model_name == "candidate-7b"
         assert run.config == (task_dir.parent / "effective_config.yaml").resolve()
 
+    def test_a_recorded_run_id_outranks_an_older_directory_name(
+        self, tmp_path: Path
+    ) -> None:
+        """A directory name sorts after a run ID as a string; it must not win."""
+        for session, meta, score in (
+            ("old", {"model": "m", "runs": [{"start": "fresh"}]}, 0.1),
+            (
+                "new",
+                {"model": "m", "runs": [{"id": "20261020T000000.000000Z-ab"}]},
+                0.9,
+            ),
+        ):
+            task_dir = tmp_path / session / "gsm8k"
+            task_dir.mkdir(parents=True)
+            (task_dir / "report.json").write_text(json.dumps({"score": score}))
+            (task_dir / "meta.json").write_text(json.dumps(meta))
+        [result] = build_matrix(scan_runs([tmp_path]))["results"]
+        assert result["report"] == {"score": 0.9}
+
+    def test_a_config_not_named_effective_config_is_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        task_dir = self._task_dir(tmp_path, {"config": "../other.yaml"})
+        (task_dir.parent / "other.yaml").write_text("tasks: {}\n")
+        [run] = scan_runs([tmp_path])
+        assert run.config is None
+
     def test_without_meta_the_directory_patterns_apply(self, tmp_path: Path) -> None:
         self._task_dir(tmp_path, None)
         [run] = scan_runs([tmp_path])

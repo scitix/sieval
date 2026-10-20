@@ -198,9 +198,7 @@ class TaskAnomalyDetector:
     ) -> AnomalyReport:
         """``anomalies.json`` from ``{sid: {iteration: {rule: indices}}}``.
 
-        Counts are not repeated here: they are in ``report.json``'s ``sieval``
-        block, and ``meta.json``'s ``runs[].rules_hash`` names the rules a run
-        applied.
+        Counts live in ``report.json``'s ``sieval`` block, not here.
         """
         samples = {
             str(sid): {
@@ -234,7 +232,7 @@ class TaskAnomalyDetector:
     ) -> str | None:
         """Write ``anomalies.json``; return its rules hash, ``None`` if it failed.
 
-        A view for people, read by no decision: a failed write is logged.
+        No decision reads it, so a failed write is only logged.
         """
         report = self.build_report(results, task_name)
         try:

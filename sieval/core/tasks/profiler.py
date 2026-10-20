@@ -222,11 +222,9 @@ class TaskProfiler:
         self._stage_total_mismatches: dict[str, int] = {}
 
     def include_stage_meta(self) -> None:
-        """Build stage timings and token usage from recorded ``stage_meta``.
+        """Aggregate stage timings and token usage regardless of the flags.
 
-        For a run with ``record_meta`` on: every sample's record carries both,
-        resumed samples included, so ``profile.json`` covers all of them
-        whatever ``profile_stages`` and ``profile_usage`` were set to.
+        For ``record_meta`` runs, whose every record carries both.
         """
         self._profile_stages = True
         self._profile_usage = True

@@ -1,10 +1,8 @@
 """Persistence recovery: the ``.idx`` scan and shard hydration.
 
-A sample's state is its latest shard record, found through the ``.idx`` beside
-each shard. The saver appends a record before its ``.idx`` line, so a run
-killed between the two leaves a record no line points at: the sample reads as
-its previous record and that stage reruns. A line pointing past its shard's end
-(a shard truncated after the line was written) is dropped.
+A sample's state is its latest shard record, found through ``.idx``. The saver
+appends a record before its ``.idx`` line, so a record no line points at was
+never committed: that stage reruns. A line past its shard's end is dropped.
 """
 
 import sys
@@ -629,14 +627,11 @@ class TaskLoader:
         return idx_files
 
     async def _scan_idx(self) -> None:
-        """Parallel scan of every ``.idx`` file into the latest record per sample.
+        """Rebuild the latest record and offsets per sample from every ``.idx``.
 
-        Each line is checked against its shard's length first: one pointing
-        past the end is dropped. The latest record per sample is chosen by
-        :func:`_should_replace_offset`, and ``self._latest`` /
-        ``self._sample_offsets`` / ``self._all_stage_offsets`` are rebuilt.
+        Lines past their shard's end are dropped; the latest record is chosen
+        by :func:`_should_replace_offset`.
         """
-
         self._latest = {}
         self._sample_offsets = {}
         self._all_stage_offsets = {}
@@ -711,8 +706,6 @@ class TaskLoader:
             for idx, shard in idx_files:
                 tg.start_soon(_scan_one, idx, shard)
 
-        self._latest = {}
-        self._sample_offsets = {}
         for sid, (meta, r) in best_records.items():
             _run, _it, _rank, shard, offset, length = meta
             self._latest[sid] = r

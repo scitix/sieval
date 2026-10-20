@@ -49,8 +49,7 @@ class TaskRunMeta(TypedDict):
     the directory and are kept across resumes; the resume gates read them.
     ``model``, ``config``, ``identity`` and ``runs`` are rewritten by every
     run — see :mod:`sieval.core.tasks.run_meta` for their shape. ``config`` is
-    the path of the run's ``effective_config.yaml``, relative to this
-    directory, when the run has one.
+    the run's ``effective_config.yaml``, relative to this directory.
 
     Readers tolerate older files: ``deterministic`` absent is a pre-feature
     run, ``task`` absent is a pre-feature run or an undecorated ``Task``, and

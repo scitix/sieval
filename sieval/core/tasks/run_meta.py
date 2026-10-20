@@ -183,9 +183,8 @@ RunRecord = TypedDict(
 )
 """One ``runs[]`` entry, appended when a run starts.
 
-``id`` identifies the run: :func:`new_run_id`, sortable by start time, so a
-reader picks the latest run of a task by it. ``rules_hash`` is the anomaly
-rules' hash when the run wrote ``anomalies.json``.
+``id`` (:func:`new_run_id`) sorts by start time. ``rules_hash`` is set when
+the run wrote ``anomalies.json``.
 While the run is in flight the entry has neither ``ended`` nor ``reran``.
 A run that saves its ``report.json`` writes both: ``ended`` (ISO 8601 UTC, like
 ``at``) and ``reran``, the stages it executed, ``[]`` for a fast resume.

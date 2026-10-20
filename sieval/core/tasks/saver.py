@@ -1,7 +1,6 @@
 """Buffered async shard writer, with atomic ``report.json`` and ``meta.json``.
 
-Each sample's state lives in its shard records; the ``.idx`` beside a shard is
-their index, written after the records it points at (see the loader).
+A shard's ``.idx`` lines are written after the records they point at.
 """
 
 import time
@@ -316,7 +315,7 @@ class TaskSaver:
         """Mark the current ``runs[]`` entry ended, with the stages it reran.
 
         *reported* is set by a run that wrote ``report.json``; *rules_hash* by
-        one that wrote ``anomalies.json``, naming the rules it applied.
+        one that wrote ``anomalies.json``.
         """
         meta = self._require_meta()
         run = meta["runs"][-1]
