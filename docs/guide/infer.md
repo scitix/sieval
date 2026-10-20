@@ -153,15 +153,14 @@ Rejected before any network I/O:
   (`additionalProperties`, `$ref`, type arrays, numeric enums) — use `/v1beta`;
   on both versions, a function needs a non-empty description and an explicit
   `type: object` parameter root;
-- explicit `temperature`/`top_p`/`top_k` on a model named `gemini-3…`. Google
+- explicit `temperature`/`top_p`/`top_k` on `gemini-3…` models: Google
   [advises omitting them](https://ai.google.dev/gemini-api/docs/latest-model)
-  but accepts them, so the record could claim a control that had little or no
-  effect. This is the only check keyed on the model name; a gateway alias that
-  does not start with `gemini-3` skips it.
+  but accepts them, so the record could claim a control with no effect.
 
-Per-model limits Google enforces itself — which thinking levels a model
-accepts, thinking-budget ranges, candidate counts, tool combinations — are not
-duplicated here: the provider's 400 is the error.
+Per-model limits Google enforces itself (thinking levels, thinking budgets,
+candidate counts, tool combinations) are left to its 400. The sampling check
+above and the Gemini 3 call-id/`thoughtSignature` contracts match the model
+name, so a gateway alias not starting with `gemini-3` skips them.
 
 Provider-only root controls such as `safetySettings`, `serviceTier`, or `store`
 go through `dialect_options` (`cachedContent` and `labels` are `v1beta`-only).

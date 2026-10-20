@@ -1605,7 +1605,7 @@ class TestPreIORejections:
         result = await _run(
             handler,
             _request(sampling=SamplingParams(n=2)),
-            model="gemini-2.5-flash",
+            model=model,
         )
 
         assert result.texts == ("first", "second")
@@ -1997,6 +1997,20 @@ class TestToolContextCirculation:
             await connection.aclose()
 
 
+async def _assert_thinking_reaches_wire(
+    model: str, reasoning: ReasoningParams, expected: dict[str, object]
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        thinking = json.loads(request.content)["generationConfig"]["thinkingConfig"]
+        assert thinking == expected
+        return httpx.Response(
+            200,
+            json=_response([{"text": "thought", "thought": True}, {"text": "answer"}]),
+        )
+
+    await _run(handler, _request(reasoning=reasoning), model=model)
+
+
 class TestModelSpecificRequestConstraints:
     @pytest.mark.anyio
     @pytest.mark.parametrize(
@@ -2012,7 +2026,9 @@ class TestModelSpecificRequestConstraints:
         self, model: str, effort: str
     ) -> None:
         # Google 400s an unsupported level itself; send it unchanged.
-        await self.test_documented_thinking_levels_reach_the_wire(model, effort)
+        await _assert_thinking_reaches_wire(
+            model, ReasoningParams(effort=effort), {"thinkingLevel": effort.upper()}
+        )
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
@@ -2030,23 +2046,8 @@ class TestModelSpecificRequestConstraints:
     async def test_documented_thinking_levels_reach_the_wire(
         self, model: str, effort: str
     ) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            thinking = json.loads(request.content)["generationConfig"]["thinkingConfig"]
-            assert thinking == {"thinkingLevel": effort.upper()}
-            return httpx.Response(
-                200,
-                json=_response(
-                    [
-                        {"text": "thought", "thought": True},
-                        {"text": "answer"},
-                    ]
-                ),
-            )
-
-        await _run(
-            handler,
-            _request(reasoning=ReasoningParams(effort=effort)),
-            model=model,
+        await _assert_thinking_reaches_wire(
+            model, ReasoningParams(effort=effort), {"thinkingLevel": effort.upper()}
         )
 
     @pytest.mark.anyio
@@ -2064,8 +2065,8 @@ class TestModelSpecificRequestConstraints:
         self, model: str, budget: int
     ) -> None:
         # Google 400s an out-of-range budget itself; send it unchanged.
-        await self.test_documented_thinking_budget_boundaries_reach_the_wire(
-            model, budget
+        await _assert_thinking_reaches_wire(
+            model, ReasoningParams(budget_tokens=budget), {"thinkingBudget": budget}
         )
 
     @pytest.mark.anyio
@@ -2083,23 +2084,8 @@ class TestModelSpecificRequestConstraints:
     async def test_documented_thinking_budget_boundaries_reach_the_wire(
         self, model: str, budget: int
     ) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            thinking = json.loads(request.content)["generationConfig"]["thinkingConfig"]
-            assert thinking == {"thinkingBudget": budget}
-            return httpx.Response(
-                200,
-                json=_response(
-                    [
-                        {"text": "thought", "thought": True},
-                        {"text": "answer"},
-                    ]
-                ),
-            )
-
-        await _run(
-            handler,
-            _request(reasoning=ReasoningParams(budget_tokens=budget)),
-            model=model,
+        await _assert_thinking_reaches_wire(
+            model, ReasoningParams(budget_tokens=budget), {"thinkingBudget": budget}
         )
 
     @pytest.mark.anyio
@@ -5467,8 +5453,7 @@ class TestAdditionalResponseContracts:
     async def test_malformed_provider_response_fails_loudly(
         self, payload: Mapping[str, object], message: str
     ) -> None:
-        # Use a valid single-family request so a model-level tool-combination
-        # rejection cannot mask the response field this case is testing.
+        # Server-tool cases need a hosted tool for the response part to be allowed.
         server_tool_case = message.startswith(("toolCall", "toolResponse"))
         request = _request(
             tools=(

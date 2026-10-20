@@ -116,11 +116,10 @@ _RFC3339_TIMESTAMP_PATTERN = re.compile(
     r"(?:\.(?P<fraction>\d{1,9}))?"
     r"(?P<offset>Z|[+\-]\d{2}:\d{2})"
 )
-# The one name-keyed check left. Google validates thinking levels/budgets,
-# candidate counts and tool combinations server-side (a 400), but ACCEPTS
-# Gemini 3 sampling controls it advises omitting, so a recorded temperature
-# could have had no effect. Response-side signature/call-id contracts also
-# key on it. A gateway alias skips this; see docs/guide/infer.md.
+# Per-model limits Google rejects itself (thinking levels/budgets, candidate
+# counts, tool combinations) are not mirrored here. This pattern keys only the
+# Gemini 3 sampling rejection (accepted but advised against, so a recorded value
+# may have had no effect) and the call-id/signature contracts. Aliases skip it.
 _GEMINI_3_MODEL_PATTERN = re.compile(r"gemini-3(?:[.\-]|$)")
 _GEMINI_3_SAMPLING_PATHS = frozenset(
     {"sampling.temperature", "sampling.top_p", "sampling.top_k"}
