@@ -735,8 +735,12 @@ class TestFailedWrites:
         fails the task still fails, but every sample that finished reaches disk,
         whether the storage worker had buffered it or it was still in the
         stream, instead of dying with the storage worker."""
-        samples = [{"question": f"q{i}", "answer": str(i)} for i in range(20)]
-        # The first write is `begin_run`; the second is the input identity.
+        # Few enough samples that every record fits in the storage stream's
+        # buffer, so the stalled storage worker never blocks the dispatcher.
+        samples = [{"question": f"q{i}", "answer": str(i)} for i in range(4)]
+        last = len(samples) - 1
+        # The first write is `begin_run`; the second is the input identity,
+        # made once the last sample is past preprocess.
         self._fail_replace_of(monkeypatch, "meta.json", OSError("EIO"), after=1)
 
         async def _stalled(*_args):
@@ -745,14 +749,26 @@ class TestFailedWrites:
             await anyio.sleep_forever()
 
         monkeypatch.setattr(TaskSaver, "consume_stream", _stalled)
-        task = RecordTask(dataset=MockDataset(samples), model=MockChatModel(), name="t")
+
+        class HeldTask(RecordTask):
+            async def preprocess(self, raw, ctx):
+                # Hold the last sample until every other one has finished, so
+                # the failing write lands after exactly those.
+                if ctx.sample_id == last:
+                    while (
+                        sum(c.is_terminal() for c in runner._contexts.values()) < last
+                    ):
+                        await anyio.sleep(0.001)
+                return await super().preprocess(raw, ctx)
+
+        task = HeldTask(dataset=MockDataset(samples), model=MockChatModel(), name="t")
         runner = TaskRunner(task, make_config(tmp_path))
         with pytest.raises(ExceptionGroup) as raised:
             await runner.arun()
         assert raised.group_contains(OSError, match="EIO")
 
         finished = {s for s, c in runner._contexts.items() if c.is_terminal()}
-        assert finished
+        assert finished == set(range(last))
         loader = TaskLoader(task=task, root_dir=runner.root_dir)
         on_disk = await loader.load_initial_state()
         assert {s for s, c in on_disk.items() if c.is_terminal()} == finished
