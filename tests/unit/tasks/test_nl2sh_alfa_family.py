@@ -171,6 +171,7 @@ async def _judge(
 
 @pytest.fixture(autouse=True)
 def _embed_credential(monkeypatch):
+    monkeypatch.setenv("SIEVAL_EMBED_API", "https://embed.example/model-api")
     monkeypatch.setenv("SIEVAL_EMBED_API_KEY", "fake-embed-key")
 
 
@@ -536,12 +537,14 @@ async def test_a_shared_change_with_the_same_hash_passes():
 # --------------------------------------------------------------------------- #
 # Configuration
 # --------------------------------------------------------------------------- #
-def test_a_missing_embedding_credential_fails_at_construction(monkeypatch):
-    # The FEH is not an optional axis here, so a run without a credential is
-    # misconfigured rather than reduced -- and finding that out after paying for
-    # 300 completions is the failure this guard exists to prevent.
-    monkeypatch.delenv("SIEVAL_EMBED_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="SIEVAL_EMBED_API_KEY"):
+@pytest.mark.parametrize("variable", ["SIEVAL_EMBED_API", "SIEVAL_EMBED_API_KEY"])
+def test_a_missing_embedding_setting_fails_at_construction(monkeypatch, variable):
+    # The FEH is not an optional axis here, so a run without an endpoint or a
+    # credential is misconfigured rather than reduced -- and finding that out
+    # after paying for 300 completions is the failure this guard exists to
+    # prevent. Neither has a default to fall back to.
+    monkeypatch.delenv(variable, raising=False)
+    with pytest.raises(ValueError, match=variable):
         _task()
 
 

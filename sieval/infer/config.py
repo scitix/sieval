@@ -17,7 +17,7 @@ MetadataValue = str | int | list[str]
 class InferConfigDict(TypedDict, total=False):
     """YAML-level infer configuration for a model."""
 
-    backend: str  # backend name (vllm, sglang, siflow)
+    backend: str  # backend name (vllm, sglang)
     recipe: str  # reference recipe name
     checkpoint: str  # model weights path
     overrides: dict[str, ParamValue]  # user overrides on top of recipe

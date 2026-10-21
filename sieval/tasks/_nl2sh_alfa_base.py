@@ -170,9 +170,6 @@ _FS_ID_PLACEHOLDER = "{fs_id}"
 #: Default shell-route template. The ports are the five the vendored README's
 #: `docker run` loop publishes (11451..11455).
 _DEFAULT_SHELL_EVAL_API = "http://localhost:1145{fs_id}/shell-evaluations"
-#: The embedding endpoint, sharing `t_eval_before_calling_0shot_gen`'s two
-#: variables so one credential covers every embedding-scored task.
-_DEFAULT_EMBED_API = "https://console.siflow.cn/model-api"
 #: Upstream's model name for the FEH, as Ollama spells it.
 _DEFAULT_EMBED_MODEL = "mxbai-embed-large"
 
@@ -223,14 +220,18 @@ class NL2SHAlfaSharedZeroShotGenTask(
         # misconfigured run, not a reduced one. An explicit "" would skip the
         # OpenAI client's own OPENAI_API_KEY fallback and then name that
         # variable, which does not help -- this endpoint is not OpenAI's.
+        # The endpoint has no default, for the same reason. It shares
+        # `t_eval_before_calling_0shot_gen`'s two variables, so one setting covers
+        # every embedding-scored task.
+        embed_api = os.getenv("SIEVAL_EMBED_API")
         api_key = os.getenv("SIEVAL_EMBED_API_KEY")
-        if not api_key:
+        if not embed_api or not api_key:
             raise ValueError(
                 "NL2SH-ALFA's functional-equivalence heuristic embeds both "
-                "command outputs, so it needs a credential for the embedding "
-                "endpoint: set SIEVAL_EMBED_API_KEY (and SIEVAL_EMBED_API if the "
-                f"endpoint is not {_DEFAULT_EMBED_API}). The model defaults to "
-                f"{_DEFAULT_EMBED_MODEL!r}, which is what upstream scores with."
+                "command outputs, so it needs an OpenAI-compatible embedding "
+                "endpoint: set SIEVAL_EMBED_API and SIEVAL_EMBED_API_KEY. The "
+                f"model defaults to {_DEFAULT_EMBED_MODEL!r}, which is what "
+                "upstream scores with."
             )
         # One in-flight request per filesystem, and no knob for it: a second
         # concurrent request to one instance can only queue, and `_execute`'s
@@ -239,9 +240,7 @@ class NL2SHAlfaSharedZeroShotGenTask(
         self._http_client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=len(FS_ENTRYPOINT))
         )
-        self._embed_client = AsyncOpenAI(
-            base_url=os.getenv("SIEVAL_EMBED_API", _DEFAULT_EMBED_API), api_key=api_key
-        )
+        self._embed_client = AsyncOpenAI(base_url=embed_api, api_key=api_key)
 
     def _endpoint_for(self, fs_id: int) -> str:
         """The service instance hosting *fs_id*.

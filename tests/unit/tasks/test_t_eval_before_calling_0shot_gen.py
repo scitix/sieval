@@ -80,6 +80,7 @@ class TestMetricKeys:
         # Enabling the axis builds the embedding client in `__init__`, which
         # requires a key -- so the axis is not configurable without one. Nothing
         # is called here; only `_metric_keys`.
+        monkeypatch.setenv("SIEVAL_EMBED_API", "https://embed.example/model-api")
         monkeypatch.setenv("SIEVAL_EMBED_API_KEY", "not-a-real-key")
         assert _task(eval_thought=True)._metric_keys() == [
             "thought",
@@ -99,6 +100,7 @@ class TestMetricKeys:
         # variable that would not help. Both an unset and an empty key must reach
         # sieval's message instead; "" is the reachable case, since it is what an
         # exported-but-blank variable gives.
+        monkeypatch.setenv("SIEVAL_EMBED_API", "https://embed.example/model-api")
         if value is None:
             monkeypatch.delenv("SIEVAL_EMBED_API_KEY", raising=False)
         else:
@@ -107,6 +109,15 @@ class TestMetricKeys:
             _task(eval_thought=True)
         assert "OPENAI_API_KEY" not in str(excinfo.value)
         # The way out has to be in the message: the axis is optional.
+        assert "eval_thought" in str(excinfo.value)
+
+    def test_thought_scoring_without_an_endpoint_names_the_variable(self, monkeypatch):
+        # There is no public embedding endpoint to default to, so an unset one
+        # must stop the run here rather than send the key somewhere unintended.
+        monkeypatch.delenv("SIEVAL_EMBED_API", raising=False)
+        monkeypatch.setenv("SIEVAL_EMBED_API_KEY", "not-a-real-key")
+        with pytest.raises(ValueError, match="SIEVAL_EMBED_API and") as excinfo:
+            _task(eval_thought=True)
         assert "eval_thought" in str(excinfo.value)
 
     @pytest.mark.parametrize(
