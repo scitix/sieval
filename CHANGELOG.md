@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] - 2026-10-22
+
+A patch release despite two breaking changes, because neither touches an
+on-disk format: `meta.json`, `report.json` and the shard records read as
+before, `IDENTITY_SCHEMA` stays 1, and a 0.10.0 result directory still resumes
+(one retuned serving plan aside, below). What breaks is configuration (the
+embedding endpoint must now be set) and the grader digest; a resume that sees a
+changed grader digest regrades on the recorded inference, so no sample is
+inferred again.
+
+### Added
+
+- **Per-rollout generation logprobs at `n > 1`.** `infer_args: {return_logprobs: true, top_logprobs: N}` used to be refused above `n: 1`; now every rollout's logprobs land in `ModelOutput.choice_logprobs`, one `RolloutLogprobs` per rollout in `texts` order, and the single-sequence fields stay `None`. Supported on `sglang_legacy` (each sample's own `meta_info`, and a reply with a sample count other than `n` is refused), `openai_completions` and `openai_chat` (streaming included). `google_genai` and `openai_responses` refuse it before any I/O. Old records decode with `choice_logprobs=None`. For dialect authors: an `OutputContract` defined outside SiEval needs a `choice_logprobs` rule, or building it raises (#171, #175).
+- **`client_timeout: {connect, read, write, pool}`**, in seconds, wherever `max_retries` is accepted (a root model, top level or `args`, and an inline `grader` / `extractor`; a derived model is refused). It is a client setting: never sent in the request body and in no stage identity, so changing it resumes without a rerun or regrade. Defaults are 5 s connect and 600 s for the rest; an engine `sieval run` launched defaults to a 30 s connect. A model's `args.timeout` is still a request argument, not the client timeout (#169, #174).
+
+### Fixed
+
+- `qwen3-30b-a3b` SGLang `mem_fraction_static` drops from 0.90 to 0.87 on A100-80G bf16 and H100-80G bf16/fp8. At tp2×dp4, 0.90 left DP0 too little memory for SGLang's piecewise CUDA graph capture and the server OOMed at startup; that H100 configuration never came up at 0.90. The serving plan is part of the inference identity, so an earlier result for this model on these GPUs that used the recipe default (no hand-pinned value) now reads as a different inference: `--resume` refuses it, and a leaderboard shows it Pending (#168, #172).
+- A request timeout's `error_msg` names the phase that timed out, e.g. `Request timed out. (timeout phase: connect)`; `error_reason` is unchanged (#169, #174).
+
+### Changed
+
+- **BREAKING — NL2SH-ALFA and T-Eval no longer default to an internal embedding endpoint.** NL2SH-ALFA (both readings) and T-Eval with `eval_thought=True` need both `SIEVAL_EMBED_API` and `SIEVAL_EMBED_API_KEY` set, and the task fails at construction if either is unset. T-Eval without `eval_thought` needs neither (#167).
+- **BREAKING — the grader identity is keyed by file path within its code root, not by import name.** `identity.grader.modules` keys become file paths (`sieval/tasks/gsm8k_0shot_gen.py`, or `./…` for the task's own plugin package), and `identity.grader.task` becomes `<file key>:<qualname>`. Every plugin package the walk reaches is digested whole, whatever its name, namespace packages included. Within the task's own plugin package, absolute self-imports are normalised before hashing and a directory without `__init__.py` digests as having an empty one, so a renamed copy (such as sieval-plugins' `sieval_plugins__<task>__<variant>`) digests the same as the original. Grader digests rotate fleet-wide, built-in tasks included; `IDENTITY_SCHEMA` stays 1, and a resume of a 0.10.0 directory regrades on the recorded inference (#170, #173, #176).
+- CI's change detection compares a push to `main` against the previous commit, so a re-run no longer fails on a stale default-branch name (#166).
+
 ## [0.10.0] - 2026-10-21
 
 A minor bump for four breaking changes, all in on-disk or CLI-report contracts:
@@ -341,6 +367,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.10.1]: https://github.com/scitix/sieval/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/scitix/sieval/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/scitix/sieval/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/scitix/sieval/compare/v0.7.0...v0.8.0
