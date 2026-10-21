@@ -358,6 +358,7 @@ OUTPUT_CONTRACT = OutputContract(
             _tuple_validator(TokenLogprob, "logprobs"),
         ),
         "top_logprobs": OutputRule(Guarantee.PRESENT_OR_ERROR, validate_top_logprobs),
+        "choice_logprobs": OutputRule(Guarantee.NEVER),
         "input_scoring": OutputRule(Guarantee.NEVER),
         "citations": OutputRule(
             Guarantee.BEST_EFFORT, _tuple_validator(Citation, "citations")
@@ -2313,6 +2314,12 @@ class GoogleGenAIDialect:
                 audit.rejected(path, "Google images have no per-image detail field")
             elif path == "scoring.input_scoring":
                 audit.rejected(path, "Gemini cannot score input tokens")
+            elif path == "scoring.sampled_logprobs" and req.sampling.n > 1:
+                # The lift reads one logprobs sequence across candidates, so
+                # it has no per-candidate form to fill.
+                audit.rejected(
+                    path, "google_genai returns logprobs for one candidate only"
+                )
             elif path == "sampling.temperature" and not (
                 0 <= cast(float, req.sampling.temperature) <= 2
             ):

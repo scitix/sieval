@@ -11,6 +11,7 @@ from sieval.core.models.ir import (
     CapabilityEvidence,
     ChatInput,
     ChatMessage,
+    ChoiceLogprobs,
     Citation,
     CompletionInput,
     DialectOptions,
@@ -344,6 +345,11 @@ class TestResponseContract:
         with pytest.raises(ValueError, match="reasoning must align"):
             Response(texts=("a", "b"), reasoning=(ReasoningOutput(text="one"),))
 
+    def test_choice_logprobs_must_align_with_choices(self):
+        with pytest.raises(ValueError, match="choice_logprobs must align"):
+            Response(texts=("a", "b"), choice_logprobs=(ChoiceLogprobs(()),))
+        assert response_field_contract()["choice_logprobs"] == ("channel", True)
+
     def test_finish_reasons_must_align_with_choices(self):
         with pytest.raises(ValueError, match="finish_reasons must align"):
             Response(texts=("a", "b"), finish_reasons=("stop",))
@@ -448,6 +454,27 @@ class TestSerializationRoundTrip:
         assert isinstance(back.logprobs[0], TokenLogprob)
         assert back.top_logprobs is not None
         assert isinstance(back.top_logprobs[0][0], TopKEntry)
+
+    def test_choice_logprobs_rehydrate(self):
+        back = self._round_trip(
+            Response(
+                texts=("a", "b"),
+                choice_logprobs=(
+                    ChoiceLogprobs(
+                        (TokenLogprob(token="a", logprob=-0.1),),
+                        ((TopKEntry(token="a", logprob=-0.1),),),
+                    ),
+                    ChoiceLogprobs((TokenLogprob(token="b", logprob=-0.4),)),
+                ),
+            )
+        )
+        assert back.choice_logprobs is not None
+        first, second = back.choice_logprobs
+        assert isinstance(first, ChoiceLogprobs)
+        assert isinstance(first.tokens[0], TokenLogprob)
+        assert first.top_logprobs is not None
+        assert isinstance(first.top_logprobs[0][0], TopKEntry)
+        assert second.top_logprobs is None
 
     def test_grounding_citation_and_server_tool_use_rehydrate(self):
         back = self._round_trip(

@@ -38,6 +38,7 @@ from sieval.core.models.dialect import (
     WireEvidence,
     WireObservation,
     active_request_leaves,
+    validate_choice_logprobs,
     validate_reasoning,
     validate_request_invariants,
     validate_runtime_binding_plan,
@@ -48,6 +49,7 @@ from sieval.core.models.dialect import (
 from sieval.core.models.ir import (
     ChatInput,
     ChatMessage,
+    ChoiceLogprobs,
     FunctionToolCall,
     ImagePart,
     ReasoningOutput,
@@ -192,6 +194,9 @@ OUTPUT_CONTRACT = OutputContract(
             _tuple_validator(TokenLogprob, "logprobs"),
         ),
         "top_logprobs": OutputRule(Guarantee.PRESENT_OR_ERROR, validate_top_logprobs),
+        "choice_logprobs": OutputRule(
+            Guarantee.PRESENT_OR_ERROR, validate_choice_logprobs
+        ),
         "input_scoring": OutputRule(Guarantee.NEVER),
         "citations": OutputRule(Guarantee.NEVER),
         "grounding": OutputRule(Guarantee.NEVER),
@@ -375,6 +380,35 @@ def _content_to_ir(
             parsed_top.append(TopKEntry(token=top_token, logprob=top_logprob))
         alternatives.append(tuple(parsed_top))
     return tuple(sampled), tuple(alternatives)
+
+
+def _split_logprobs(
+    req: Request, choices: list[ChoiceLogprobs | None]
+) -> tuple[
+    tuple[TokenLogprob, ...] | None,
+    tuple[tuple[TopKEntry, ...], ...] | None,
+    tuple[ChoiceLogprobs, ...] | None,
+]:
+    """Route per-choice logprobs to the channel the request's ``n`` selects.
+
+    ``n == 1`` fills the singular ``logprobs``/``top_logprobs`` from choice 0,
+    unchanged from before per-choice logprobs existed. ``n > 1`` fills
+    ``choice_logprobs``; a choice without logprobs is left out of it, so the
+    output contract's length check names the gap instead of this lift
+    inventing an empty sequence. Top-k is dropped when no breadth was asked:
+    chat returns an empty list per position, which is not a top-k.
+    """
+    if req.sampling.n == 1:
+        first = choices[0]
+        if first is None:
+            return None, None, None
+        return first.tokens, first.top_logprobs, None
+    present = [item for item in choices if item is not None]
+    if not present:
+        return None, None, None
+    if req.scoring.top_logprobs == 0:
+        present = [ChoiceLogprobs(item.tokens) for item in present]
+    return None, None, tuple(present)
 
 
 def _tool_call_to_ir(raw: Any) -> FunctionToolCall:
@@ -997,8 +1031,7 @@ class OpenAIChatDialect:
         finish_reasons = [""] * n
         reasoning: list[ReasoningOutput | None] = [None] * n
         tool_calls: tuple[FunctionToolCall, ...] | None = None
-        logprobs: tuple[TokenLogprob, ...] | None = None
-        top_logprobs: tuple[tuple[TopKEntry, ...], ...] | None = None
+        choice_logprobs: list[ChoiceLogprobs | None] = [None] * n
         seen: set[int] = set()
         for raw_choice in _choice_sequence(getattr(raw, "choices", None)):
             choice = cast(Any, raw_choice)
@@ -1018,12 +1051,13 @@ class OpenAIChatDialect:
                 raw_calls = getattr(message, "tool_calls", None)
                 if raw_calls:
                     tool_calls = tuple(_tool_call_to_ir(call) for call in raw_calls)
-                raw_logprobs = getattr(choice, "logprobs", None)
-                if raw_logprobs is not None:
-                    logprobs, top_logprobs = _content_to_ir(
-                        getattr(raw_logprobs, "content", None)
-                    )
+            raw_logprobs = getattr(choice, "logprobs", None)
+            if raw_logprobs is not None:
+                choice_logprobs[index] = ChoiceLogprobs(
+                    *_content_to_ir(getattr(raw_logprobs, "content", None))
+                )
         _validate_choice_coverage(seen, n, streaming=False)
+        logprobs, top_logprobs, per_choice = _split_logprobs(req, choice_logprobs)
         return Response(
             texts=tuple(texts),
             reasoning=tuple(reasoning) if any(reasoning) else None,
@@ -1032,6 +1066,7 @@ class OpenAIChatDialect:
             structured_output=self._structured_output(req, texts),
             logprobs=logprobs,
             top_logprobs=top_logprobs,
+            choice_logprobs=per_choice,
             usage=_chat_usage_stats(getattr(raw, "usage", None)),
             request_params=params,
             response_model=_optional_response_string(
@@ -1051,9 +1086,9 @@ class OpenAIChatDialect:
         reasoning_texts = [""] * n
         tool_fragments: dict[int, dict[str, str]] = {}
         usage: UsageStats | None = None
-        saw_logprobs = False
-        logprobs: list[TokenLogprob] = []
-        top_logprobs: list[tuple[TopKEntry, ...]] = []
+        saw_logprobs = [False] * n
+        logprobs: list[list[TokenLogprob]] = [[] for _ in range(n)]
+        top_logprobs: list[list[tuple[TopKEntry, ...]]] = [[] for _ in range(n)]
         response_model: str | None = None
         system_fingerprint: str | None = None
         seen: set[int] = set()
@@ -1101,15 +1136,14 @@ class OpenAIChatDialect:
                                 target["arguments"] += (
                                     getattr(function, "arguments", None) or ""
                                 )
-                if choice_index == 0:
-                    raw_logprobs = getattr(choice, "logprobs", None)
-                    if raw_logprobs is not None:
-                        saw_logprobs = True
-                        chunk_logprobs, chunk_top = _content_to_ir(
-                            getattr(raw_logprobs, "content", None)
-                        )
-                        logprobs.extend(chunk_logprobs)
-                        top_logprobs.extend(chunk_top)
+                raw_logprobs = getattr(choice, "logprobs", None)
+                if raw_logprobs is not None:
+                    saw_logprobs[choice_index] = True
+                    chunk_logprobs, chunk_top = _content_to_ir(
+                        getattr(raw_logprobs, "content", None)
+                    )
+                    logprobs[choice_index].extend(chunk_logprobs)
+                    top_logprobs[choice_index].extend(chunk_top)
             if getattr(chunk, "usage", None) is not None:
                 usage = _chat_usage_stats(chunk.usage)
 
@@ -1128,14 +1162,24 @@ class OpenAIChatDialect:
         reasoning = tuple(
             ReasoningOutput(text=value) if value else None for value in reasoning_texts
         )
+        sampled, top, per_choice = _split_logprobs(
+            req,
+            [
+                ChoiceLogprobs(tuple(logprobs[index]), tuple(top_logprobs[index]))
+                if saw_logprobs[index]
+                else None
+                for index in range(n)
+            ],
+        )
         return Response(
             texts=tuple(texts),
             reasoning=reasoning if any(reasoning) else None,
             finish_reasons=tuple(finish_reasons),
             tool_calls=calls or None,
             structured_output=self._structured_output(req, texts),
-            logprobs=tuple(logprobs) if saw_logprobs else None,
-            top_logprobs=tuple(top_logprobs) if saw_logprobs else None,
+            logprobs=sampled,
+            top_logprobs=top,
+            choice_logprobs=per_choice,
             usage=usage,
             request_params=params,
             response_model=response_model,

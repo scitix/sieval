@@ -19,6 +19,7 @@ import pytest
 from sieval.core.models import (
     ChatInput,
     ChatModel,
+    ChoiceLogprobs,
     CompletionInput,
     ConnectionIdentity,
     ConnectionPool,
@@ -33,6 +34,7 @@ from sieval.core.models import (
     Request,
     RequestDefaults,
     Response,
+    RolloutLogprobs,
     SamplingParams,
     StructuredOutputParams,
     TextPart,
@@ -843,6 +845,31 @@ class TestModelOutputResponseMetadata:
         assert output.finish_reason_sources == [
             "promptFeedback.blockReason",
             "candidate.finishReason",
+        ]
+
+    def test_choice_logprobs_reach_model_output_per_rollout(self):
+        response = Response(
+            texts=("a", ""),
+            choice_logprobs=(
+                ChoiceLogprobs(
+                    (TokenLogprob("a", -0.1),),
+                    ((TopKEntry("a", -0.1), TopKEntry("a", -0.5)),),
+                ),
+                ChoiceLogprobs((), ()),
+            ),
+        )
+        output = response_to_model_output(
+            {"model": "m", "api_base": None, "default_params": {}}, response
+        )
+
+        assert output.logprobs is None
+        assert output.top_logprobs is None
+        assert output.choice_logprobs == [
+            # A repeated top-k token keeps its best logprob, as the singular
+            # field does.
+            RolloutLogprobs(["a"], [-0.1], [{"a": -0.1}]),
+            # An empty rollout keeps its empty top-k list rather than None.
+            RolloutLogprobs([], [], []),
         ]
 
     def test_model_output_response_metadata_defaults(self):

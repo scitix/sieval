@@ -1617,10 +1617,6 @@ class TestPreIORejections:
         [
             _request(
                 sampling=SamplingParams(n=2),
-                scoring=ScoringParams(sampled_logprobs=True),
-            ),
-            _request(
-                sampling=SamplingParams(n=2),
                 tools=ToolParams(
                     functions=({"name": "f", "description": "Function f"},)
                 ),
@@ -1639,6 +1635,17 @@ class TestPreIORejections:
         self, req: Request
     ) -> None:
         with pytest.raises(ValueError, match="singular response channels"):
+            await _run(_no_io, req)
+
+    @pytest.mark.anyio
+    async def test_multiple_candidates_reject_logprobs_before_io(self) -> None:
+        # Logprobs are choice-indexed in the IR, but this lift reads one
+        # sequence across candidates, so the dialect refuses them itself.
+        req = _request(
+            sampling=SamplingParams(n=2),
+            scoring=ScoringParams(sampled_logprobs=True),
+        )
+        with pytest.raises(ValueError, match="logprobs for one candidate only"):
             await _run(_no_io, req)
 
 

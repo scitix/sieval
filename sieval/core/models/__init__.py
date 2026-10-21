@@ -3,7 +3,13 @@
 AI-Generated Code - Claude Fable 5 (Anthropic)
 """
 
-from ._legacy_bridge import ModelCallMeta, ModelMeta, ModelOutput, ModelUsage
+from ._legacy_bridge import (
+    ModelCallMeta,
+    ModelMeta,
+    ModelOutput,
+    ModelUsage,
+    RolloutLogprobs,
+)
 from .capabilities import (
     Capability,
     CapabilityKey,
@@ -53,6 +59,7 @@ from .ir import (
     CapabilityEvidence,
     ChatInput,
     ChatMessage,
+    ChoiceLogprobs,
     Citation,
     CompletionInput,
     ContentPart,
@@ -113,6 +120,7 @@ __all__ = [
     "ChatModel",
     "ChatInput",
     "ChatMessage",
+    "ChoiceLogprobs",
     "Citation",
     "CompletionInput",
     "CONNECTION_FACTORY_REGISTRY",
@@ -168,6 +176,7 @@ __all__ = [
     "RequestSeedSupport",
     "ResolvedRoute",
     "Response",
+    "RolloutLogprobs",
     "RouteIntent",
     "RuntimeBindingPlan",
     "SamplingParams",

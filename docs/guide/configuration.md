@@ -131,6 +131,39 @@ models:
   `Request timed out. (timeout phase: connect)`.
 - It is in no stage identity, so changing it resumes without a rerun.
 
+## Generation Logprobs
+
+Ask for per-token logprobs of sampled text in a task's `infer_args`:
+
+```yaml
+tasks:
+    human_eval_0shot_base_gen:
+        class: HumanEvalZeroShotBaseGenTask
+        dataset: human_eval
+        model: base_model
+        args:
+            n: 8
+            k: 1
+        infer_args:
+            return_logprobs: true   # sampled tokens and their logprobs
+            top_logprobs: 20        # plus the top-20 alternatives per position
+```
+
+Each `infer` record's `ModelOutput` carries them as `logprobs_tokens`,
+`logprobs` and `top_logprobs` at `n: 1`, and at `n > 1` as `choice_logprobs`:
+one entry per rollout, in `texts` order, with the same three fields.
+
+| Dialect | `n: 1` | `n > 1` |
+| --- | --- | --- |
+| `sglang_legacy`, `openai_completions`, `openai_chat` | yes | yes |
+| `google_genai` | yes | refused |
+| `openai_responses` | yes | refused (no `n`) |
+| `anthropic_messages` | refused | refused |
+
+A refused request fails before any network I/O; a reply missing a rollout's
+logprobs fails that sample. `infer_args` are part of the inference identity,
+so changing them on a resume reruns inference.
+
 ## Task Pipeline
 
 Each task implements a typed 5-stage pipeline:

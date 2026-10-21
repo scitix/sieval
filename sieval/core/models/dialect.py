@@ -20,6 +20,7 @@ from sieval.core.types import JSONValue
 from ._shared import copy_json_value, freeze_json_mapping, thaw_json_mapping
 from .ir import (
     ChatInput,
+    ChoiceLogprobs,
     CompletionInput,
     FunctionToolCall,
     ImagePart,
@@ -29,6 +30,7 @@ from .ir import (
     Response,
     StructuredOutput,
     TextPart,
+    TokenLogprob,
     ToolCallPart,
     ToolResultPart,
     TopKEntry,
@@ -545,9 +547,11 @@ def active_response_channels(req: Request) -> frozenset[str]:
         )
     ):
         channels.add("reasoning")
+    # One sampled sequence fills the singular channels; several fill one
+    # ``ChoiceLogprobs`` per choice, which carries the top-k alongside.
     if req.scoring.sampled_logprobs:
-        channels.add("logprobs")
-    if req.scoring.top_logprobs > 0:
+        channels.add("logprobs" if req.sampling.n == 1 else "choice_logprobs")
+    if req.scoring.top_logprobs > 0 and req.sampling.n == 1:
         channels.add("top_logprobs")
     if req.scoring.input_scoring:
         channels.add("input_scoring")
@@ -726,6 +730,16 @@ class OutputContract:
                     "payload for every choice"
                 )
 
+        if (
+            response.choice_logprobs is not None
+            and req.scoring.top_logprobs > 0
+            and any(item.top_logprobs is None for item in response.choice_logprobs)
+        ):
+            raise OutputContractError(
+                "top_logprobs were requested but a choice in choice_logprobs "
+                "carries none"
+            )
+
         if len(response.texts) != req.sampling.n:
             raise OutputContractError(
                 f"expected {req.sampling.n} choices, received {len(response.texts)}"
@@ -753,6 +767,25 @@ def validate_top_logprobs(value: object) -> None:
         for position in value
     ):
         raise OutputContractError("top_logprobs channel has invalid shape")
+
+
+def validate_choice_logprobs(value: object) -> None:
+    if not isinstance(value, tuple):
+        raise OutputContractError("choice_logprobs channel has invalid shape")
+    for choice in value:
+        if (
+            not isinstance(choice, ChoiceLogprobs)
+            or not isinstance(choice.tokens, tuple)
+            or not all(isinstance(item, TokenLogprob) for item in choice.tokens)
+        ):
+            raise OutputContractError("choice_logprobs channel has invalid shape")
+        if choice.top_logprobs is None:
+            continue
+        validate_top_logprobs(choice.top_logprobs)
+        if len(choice.top_logprobs) != len(choice.tokens):
+            raise OutputContractError(
+                "choice_logprobs top-k positions do not align with its tokens"
+            )
 
 
 def validate_input_scoring(value: object) -> None:

@@ -719,6 +719,13 @@ class Model:
                 # branch in case the call sequence is edited later.
                 raise DialectError(f"unknown request-check verifier: {check.verifier}")
             channel = _RESPONSE_CHANNEL_BY_CAPABILITY.get(check.capability)
+            if req.sampling.n > 1 and check.capability in {
+                "sampled_logprobs",
+                "top_logprobs",
+            }:
+                # Several choices carry their logprobs, top-k included, per
+                # choice; the output contract has checked their shape.
+                channel = "choice_logprobs"
             if channel is None:
                 raise DialectError(
                     "validate_response_channel has no channel for capability "

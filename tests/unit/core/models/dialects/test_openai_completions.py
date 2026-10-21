@@ -38,6 +38,7 @@ from sieval.core.models.dialects.openai_completions import (
 from sieval.core.models.ir import (
     ChatInput,
     ChatMessage,
+    ChoiceLogprobs,
     CompletionInput,
     DialectOptions,
     Request,
@@ -47,6 +48,7 @@ from sieval.core.models.ir import (
     StructuredOutputParams,
     TextPart,
     TokenLogprob,
+    TopKEntry,
     UsageStats,
     response_field_contract,
 )
@@ -968,3 +970,141 @@ class TestOutputLifting:
         assert create.await_args.kwargs["stream"] is True
         assert create.await_args.kwargs["stream_options"] == {"include_usage": True}
         OUTPUT_CONTRACT.validate(_Plan(), req, result)
+
+
+class TestPerChoiceLogprobs:
+    """``n > 1`` keeps one logprob sequence per choice (issue #171)."""
+
+    @staticmethod
+    def _request(*, stream: bool = False, top_logprobs: int = 1) -> Request:
+        return Request(
+            input=CompletionInput("p"),
+            sampling=SamplingParams(n=2),
+            scoring=ScoringParams(sampled_logprobs=True, top_logprobs=top_logprobs),
+            scheduling=SchedulingParams(stream=stream),
+        )
+
+    @pytest.mark.anyio
+    async def test_non_stream_lifts_each_choice_in_index_order(self) -> None:
+        # Choices arrive out of order: the lift must key on ``index``.
+        dialect, _ = _dialect(
+            _response(
+                _choice(
+                    text=" b",
+                    index=1,
+                    tokens=[" b"],
+                    token_logprobs=[-0.9],
+                    top_logprobs=[{" b": -0.9}],
+                ),
+                _choice(
+                    text=" a",
+                    index=0,
+                    tokens=[" a"],
+                    token_logprobs=[-0.1],
+                    top_logprobs=[{" a": -0.1}],
+                ),
+            )
+        )
+        req = self._request()
+        _, prepared = _prepare(dialect, req)
+        result = await dialect.execute(prepared)
+
+        assert result.texts == (" a", " b")
+        assert result.logprobs is None
+        assert result.top_logprobs is None
+        assert result.choice_logprobs == (
+            ChoiceLogprobs((TokenLogprob(" a", -0.1),), ((TopKEntry(" a", -0.1),),)),
+            ChoiceLogprobs((TokenLogprob(" b", -0.9),), ((TopKEntry(" b", -0.9),),)),
+        )
+        OUTPUT_CONTRACT.validate(_Plan(), req, result)
+
+    @pytest.mark.anyio
+    async def test_stream_accumulates_each_choice_separately(self) -> None:
+        dialect, _ = _dialect(
+            _AsyncItems(
+                [
+                    _response(
+                        _choice(
+                            text=" a",
+                            index=0,
+                            finish_reason=None,
+                            tokens=[" a"],
+                            token_logprobs=[-0.1],
+                        ),
+                        _choice(
+                            text=" x",
+                            index=1,
+                            finish_reason=None,
+                            tokens=[" x"],
+                            token_logprobs=[-0.5],
+                        ),
+                    ),
+                    _response(
+                        _choice(
+                            text=" y", index=1, tokens=[" y"], token_logprobs=[-0.6]
+                        ),
+                        _choice(text="", index=0, tokens=[], token_logprobs=[]),
+                    ),
+                ]
+            )
+        )
+        req = self._request(stream=True, top_logprobs=0)
+        _, prepared = _prepare(dialect, req)
+        result = await dialect.execute(prepared)
+
+        assert result.texts == (" a", " x y")
+        assert result.choice_logprobs == (
+            ChoiceLogprobs((TokenLogprob(" a", -0.1),)),
+            ChoiceLogprobs((TokenLogprob(" x", -0.5), TokenLogprob(" y", -0.6))),
+        )
+        OUTPUT_CONTRACT.validate(_Plan(), req, result)
+
+    @pytest.mark.anyio
+    async def test_choice_without_logprobs_fails_the_output_contract(self) -> None:
+        dialect, _ = _dialect(
+            _response(
+                _choice(
+                    text=" a",
+                    index=0,
+                    tokens=[" a"],
+                    token_logprobs=[-0.1],
+                    top_logprobs=[{" a": -0.1}],
+                ),
+                _choice(text=" b", index=1),
+            )
+        )
+        req = self._request()
+        _, prepared = _prepare(dialect, req)
+
+        with pytest.raises(ValueError, match="choice_logprobs must align"):
+            await dialect.execute(prepared)
+
+    @pytest.mark.anyio
+    async def test_choice_missing_requested_top_k_fails_the_output_contract(
+        self,
+    ) -> None:
+        dialect, _ = _dialect(
+            _response(
+                _choice(text=" a", index=0, tokens=[" a"], token_logprobs=[-0.1]),
+                _choice(text=" b", index=1, tokens=[" b"], token_logprobs=[-0.2]),
+            )
+        )
+        req = self._request()
+        _, prepared = _prepare(dialect, req)
+        result = await dialect.execute(prepared)
+
+        with pytest.raises(OutputContractError, match="carries none"):
+            OUTPUT_CONTRACT.validate(_Plan(), req, result)
+
+    @pytest.mark.anyio
+    async def test_no_choice_with_logprobs_is_a_missing_channel(self) -> None:
+        dialect, _ = _dialect(
+            _response(_choice(text=" a", index=0), _choice(text=" b", index=1))
+        )
+        req = self._request()
+        _, prepared = _prepare(dialect, req)
+        result = await dialect.execute(prepared)
+
+        assert result.choice_logprobs is None
+        with pytest.raises(OutputContractError, match="'choice_logprobs' is absent"):
+            OUTPUT_CONTRACT.validate(_Plan(), req, result)

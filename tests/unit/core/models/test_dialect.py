@@ -25,6 +25,7 @@ from sieval.core.models.dialect import (
     nondefault_leaf_paths,
     request_capability,
     required_response_channels,
+    validate_choice_logprobs,
     validate_input_scoring,
     validate_reasoning,
     validate_request_invariants,
@@ -35,6 +36,7 @@ from sieval.core.models.dialect import (
 from sieval.core.models.ir import (
     ChatInput,
     ChatMessage,
+    ChoiceLogprobs,
     CompletionInput,
     DialectOptions,
     FunctionToolCall,
@@ -53,8 +55,10 @@ from sieval.core.models.ir import (
     StructuredOutput,
     StructuredOutputParams,
     TextPart,
+    TokenLogprob,
     ToolParams,
     ToolResultPart,
+    TopKEntry,
     normalize_chat_input,
     response_field_contract,
 )
@@ -607,20 +611,44 @@ class TestPlanAndInvariants:
         with pytest.raises(ValueError, match="requires sampled"):
             validate_request_invariants(req)
 
-    def test_n_gt_one_allows_choice_indexed_reasoning_but_not_scoring(self):
+    def test_n_gt_one_allows_choice_indexed_channels_but_not_input_scoring(self):
         reasoning = Request(
             input=CompletionInput("x"),
             sampling=SamplingParams(n=2),
         )
         validate_request_invariants(reasoning)
 
+        sampled = Request(
+            input=CompletionInput("x"),
+            sampling=SamplingParams(n=2),
+            scoring=ScoringParams(sampled_logprobs=True, top_logprobs=5),
+        )
+        validate_request_invariants(sampled)
+
         scoring = Request(
             input=CompletionInput("x"),
             sampling=SamplingParams(n=2),
-            scoring=ScoringParams(sampled_logprobs=True),
+            scoring=ScoringParams(input_scoring=True),
         )
-        with pytest.raises(ValueError, match="singular.*logprobs"):
+        with pytest.raises(ValueError, match="singular.*input_scoring"):
             validate_request_invariants(scoring)
+
+    def test_n_selects_the_logprobs_channel_form(self):
+        scoring = ScoringParams(sampled_logprobs=True, top_logprobs=5)
+        single = Request(input=CompletionInput("x"), scoring=scoring)
+        several = Request(
+            input=CompletionInput("x"),
+            sampling=SamplingParams(n=3),
+            scoring=scoring,
+        )
+
+        assert active_response_channels(single) >= {"logprobs", "top_logprobs"}
+        assert "choice_logprobs" not in active_response_channels(single)
+        assert active_response_channels(several) & {
+            "logprobs",
+            "top_logprobs",
+            "choice_logprobs",
+        } == {"choice_logprobs"}
 
     @pytest.mark.parametrize(
         ("model_request", "error", "message"),
@@ -946,6 +974,23 @@ class TestOutputContract:
             (validate_tool_calls, (object(),), "tool_calls"),
             (validate_input_scoring, object(), "input_scoring"),
             (validate_structured_output, object(), "structured_output"),
+            (validate_choice_logprobs, [], "choice_logprobs"),
+            (validate_choice_logprobs, (object(),), "choice_logprobs"),
+            (
+                validate_choice_logprobs,
+                (ChoiceLogprobs(cast(Any, (object(),))),),
+                "choice_logprobs",
+            ),
+            (
+                validate_choice_logprobs,
+                (ChoiceLogprobs((TokenLogprob("a"),), ()),),
+                "do not align",
+            ),
+            (
+                validate_choice_logprobs,
+                (ChoiceLogprobs((TokenLogprob("a"),), cast(Any, ((object(),),))),),
+                "top_logprobs",
+            ),
         ],
     )
     def test_response_channel_validators_reject_wrong_shapes(
@@ -959,3 +1004,10 @@ class TestOutputContract:
         validate_tool_calls((FunctionToolCall("call", "tool", {}),))
         validate_input_scoring(InputScoringResult(()))
         validate_structured_output(StructuredOutput({"ok": True}))
+        validate_choice_logprobs(
+            (
+                ChoiceLogprobs((TokenLogprob("a", -0.1),)),
+                ChoiceLogprobs((TokenLogprob("b"),), ((TopKEntry("b", -0.2),),)),
+                ChoiceLogprobs((), ()),
+            )
+        )

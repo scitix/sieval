@@ -262,6 +262,7 @@ OUTPUT_CONTRACT = OutputContract(
         ),
         "logprobs": OutputRule(Guarantee.NEVER),
         "top_logprobs": OutputRule(Guarantee.NEVER),
+        "choice_logprobs": OutputRule(Guarantee.NEVER),
         "input_scoring": OutputRule(Guarantee.NEVER),
         "citations": OutputRule(Guarantee.NEVER),
         "grounding": OutputRule(Guarantee.NEVER),

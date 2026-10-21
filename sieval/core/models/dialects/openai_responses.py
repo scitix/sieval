@@ -270,6 +270,7 @@ OUTPUT_CONTRACT = OutputContract(
             _tuple_validator(TokenLogprob, "logprobs"),
         ),
         "top_logprobs": OutputRule(Guarantee.PRESENT_OR_ERROR, validate_top_logprobs),
+        "choice_logprobs": OutputRule(Guarantee.NEVER),
         "input_scoring": OutputRule(Guarantee.NEVER),
         "citations": OutputRule(
             Guarantee.BEST_EFFORT,

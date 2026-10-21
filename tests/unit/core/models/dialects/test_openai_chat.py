@@ -35,6 +35,7 @@ from sieval.core.models.dialects.openai_chat import (
 from sieval.core.models.ir import (
     ChatInput,
     ChatMessage,
+    ChoiceLogprobs,
     CompletionInput,
     DialectOptions,
     FunctionToolCall,
@@ -54,6 +55,7 @@ from sieval.core.models.ir import (
     ToolCallPart,
     ToolParams,
     ToolResultPart,
+    TopKEntry,
     UsageStats,
 )
 from sieval.core.types import JSONValue
@@ -1539,3 +1541,93 @@ def _chunk(
         model=model,
         system_fingerprint=fingerprint,
     )
+
+
+def _content(*tokens: tuple[str, float]) -> object:
+    return SimpleNamespace(
+        content=[
+            SimpleNamespace(
+                token=token,
+                logprob=logprob,
+                top_logprobs=[SimpleNamespace(token=token, logprob=logprob)],
+            )
+            for token, logprob in tokens
+        ]
+    )
+
+
+class TestPerChoiceLogprobs:
+    """``n > 1`` keeps one logprob sequence per choice (issue #171)."""
+
+    @staticmethod
+    def _request(*, stream: bool = False, top_logprobs: int = 1) -> Request:
+        return Request(
+            input=_chat(),
+            sampling=SamplingParams(n=2),
+            scoring=ScoringParams(sampled_logprobs=True, top_logprobs=top_logprobs),
+            scheduling=SchedulingParams(stream=stream),
+        )
+
+    @pytest.mark.anyio
+    async def test_non_stream_lifts_each_choice(self) -> None:
+        dialect, _ = _dialect(
+            _response(
+                _choice(1, "B", logprobs=_content(("B", -0.9))),
+                _choice(0, "A", logprobs=_content(("A", -0.1))),
+            )
+        )
+
+        response = await dialect.arun(self._request())
+
+        assert response.logprobs is None
+        assert response.top_logprobs is None
+        assert response.choice_logprobs == (
+            ChoiceLogprobs((TokenLogprob("A", -0.1),), ((TopKEntry("A", -0.1),),)),
+            ChoiceLogprobs((TokenLogprob("B", -0.9),), ((TopKEntry("B", -0.9),),)),
+        )
+
+    @pytest.mark.anyio
+    async def test_stream_accumulates_each_choice_without_breadth(self) -> None:
+        dialect, _ = _dialect(
+            _AsyncItems(
+                [
+                    _chunk(index=0, content="A", logprobs=_content(("A", -0.1))),
+                    _chunk(index=1, content="B", logprobs=_content(("B", -0.2))),
+                    _chunk(
+                        index=1,
+                        content="C",
+                        finish_reason="stop",
+                        logprobs=_content(("C", -0.3)),
+                    ),
+                    _chunk(index=0, finish_reason="stop"),
+                ]
+            )
+        )
+
+        response = await dialect.arun(self._request(stream=True, top_logprobs=0))
+
+        assert response.texts == ("A", "BC")
+        # No breadth asked: the per-position lists are not a top-k.
+        assert response.choice_logprobs == (
+            ChoiceLogprobs((TokenLogprob("A", -0.1),)),
+            ChoiceLogprobs((TokenLogprob("B", -0.2), TokenLogprob("C", -0.3))),
+        )
+
+    @pytest.mark.anyio
+    async def test_choice_without_logprobs_fails_loudly(self) -> None:
+        dialect, _ = _dialect(
+            _response(
+                _choice(0, "A", logprobs=_content(("A", -0.1))),
+                _choice(1, "B"),
+            )
+        )
+
+        with pytest.raises(ValueError, match="choice_logprobs must align"):
+            await dialect.arun(self._request())
+
+    @pytest.mark.anyio
+    async def test_no_choice_with_logprobs_is_a_missing_channel(self) -> None:
+        dialect, _ = _dialect(_response(_choice(0, "A"), _choice(1, "B")))
+
+        with pytest.raises(OutputContractError, match="'choice_logprobs' is absent"):
+            await dialect.arun(self._request())

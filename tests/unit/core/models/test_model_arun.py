@@ -15,12 +15,14 @@ from sieval.core.models import (
     ChatInput,
     ChatMessage,
     ChatModel,
+    ChoiceLogprobs,
     CompletionInput,
     GenModel,
     OpaqueContinuation,
     ReasoningOutput,
     Request,
     Response,
+    SamplingParams,
     ScoringParams,
     SessionParams,
     TextPart,
@@ -164,6 +166,45 @@ class TestArun:
             )
         )
         assert scored.top_logprobs == ((TopKEntry("x", -0.1),),)
+
+    @pytest.mark.anyio
+    async def test_logprob_request_checks_read_choice_logprobs_when_n_gt_one(self):
+        from tests.conftest import HandlerTransport
+
+        choices = (
+            ChoiceLogprobs((TokenLogprob("a", -0.1),), ((TopKEntry("a", -0.1),),)),
+            ChoiceLogprobs((TokenLogprob("b", -0.2),), ((TopKEntry("b", -0.2),),)),
+        )
+
+        async def handler(req: Request) -> Response:
+            del req
+            return Response(texts=("a", "b"), choice_logprobs=choices)
+
+        stub = HandlerTransport(handler, "openai_completions")
+        model = GenModel(model="g", api_key="k", transport=stub)
+        model._runtime_plan = dataclasses.replace(
+            model._runtime_plan,
+            request_checks=tuple(
+                DeferredCheck(
+                    capability,
+                    CheckStage.REQUEST,
+                    "validate_response_channel",
+                    "aggregated logprobs requirement",
+                )
+                for capability in ("sampled_logprobs", "top_logprobs")
+            ),
+        )
+
+        # ``logprobs`` / ``top_logprobs`` are None at n > 1; a check reading
+        # them would refuse every pass@k rollout set.
+        scored = await model.arun(
+            Request(
+                input=CompletionInput("prompt"),
+                sampling=SamplingParams(n=2),
+                scoring=ScoringParams(sampled_logprobs=True, top_logprobs=1),
+            )
+        )
+        assert scored.choice_logprobs == choices
 
     @pytest.mark.anyio
     async def test_inactive_unknown_request_check_does_not_block_plain_generation(

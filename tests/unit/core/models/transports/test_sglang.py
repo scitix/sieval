@@ -374,6 +374,125 @@ class TestNSamples:
         )
         assert post.call_args[1]["body"]["sampling_params"]["n"] == 3
 
+    @pytest.mark.anyio
+    async def test_logprobs_are_lifted_per_sample(self):
+        # Each sample carries its own meta_info; reading sample 0 only would
+        # hand every rollout the first one's sequence.
+        t, post = _make_transport(
+            [
+                {
+                    "text": "a",
+                    "meta_info": _meta(
+                        output_token_logprobs=[[-0.1, 1, "Ġa"]],
+                        output_top_logprobs=[[[-0.1, 1, "Ġa"], [-2.0, 9, "z"]]],
+                    ),
+                },
+                {
+                    "text": "bc",
+                    "meta_info": _meta(
+                        output_token_logprobs=[[-0.2, 2, "b"], [-0.3, 3, "c"]],
+                        output_top_logprobs=[
+                            [[-0.2, 2, "b"]],
+                            [[-0.3, 3, "c"]],
+                        ],
+                    ),
+                },
+            ]
+        )
+        resp = await t.arun(
+            _request(
+                "x",
+                sampling=SamplingParams(n=2),
+                sampled_logprobs=True,
+                top_logprobs=2,
+            )
+        )
+
+        assert resp.logprobs is None
+        assert resp.top_logprobs is None
+        assert resp.choice_logprobs is not None
+        first, second = resp.choice_logprobs
+        assert first.tokens == (TokenLogprob(token=" a", logprob=-0.1, token_id=1),)
+        assert first.top_logprobs == (
+            (
+                TopKEntry(token=" a", logprob=-0.1, token_id=1),
+                TopKEntry(token="z", logprob=-2.0, token_id=9),
+            ),
+        )
+        assert [item.token for item in second.tokens] == ["b", "c"]
+        assert second.top_logprobs is not None
+        assert len(second.top_logprobs) == 2
+        body = post.call_args[1]["body"]
+        assert body["return_logprob"] is True
+        assert body["logprob_start_len"] == -1
+        assert body["top_logprobs_num"] == 2
+
+    @pytest.mark.anyio
+    async def test_per_sample_logprobs_without_breadth_carry_no_top_k(self):
+        t, _ = _make_transport(
+            [
+                {
+                    "text": "a",
+                    "meta_info": _meta(output_token_logprobs=[[-0.1, 1, "a"]]),
+                },
+                {"text": "", "meta_info": _meta(output_token_logprobs=[])},
+            ]
+        )
+        resp = await t.arun(
+            _request("x", sampling=SamplingParams(n=2), sampled_logprobs=True)
+        )
+
+        assert resp.choice_logprobs is not None
+        assert [item.top_logprobs for item in resp.choice_logprobs] == [None, None]
+        # A sample that generated nothing is an empty sequence, not an error.
+        assert resp.choice_logprobs[1].tokens == ()
+
+    @pytest.mark.anyio
+    async def test_sample_missing_its_logprobs_raises(self):
+        t, _ = _make_transport(
+            [
+                {
+                    "text": "a",
+                    "meta_info": _meta(output_token_logprobs=[[-0.1, 1, "a"]]),
+                },
+                {"text": "b", "meta_info": _meta()},
+            ]
+        )
+        with pytest.raises(RuntimeError, match="no output_token_logprobs"):
+            await t.arun(
+                _request("x", sampling=SamplingParams(n=2), sampled_logprobs=True)
+            )
+
+    @pytest.mark.anyio
+    async def test_sample_short_of_requested_top_k_raises(self):
+        t, _ = _make_transport(
+            [
+                {
+                    "text": "ab",
+                    "meta_info": _meta(
+                        output_token_logprobs=[[-0.1, 1, "a"], [-0.2, 2, "b"]],
+                        output_top_logprobs=[[[-0.1, 1, "a"]]],
+                    ),
+                },
+                {
+                    "text": "c",
+                    "meta_info": _meta(
+                        output_token_logprobs=[[-0.3, 3, "c"]],
+                        output_top_logprobs=[[[-0.3, 3, "c"]]],
+                    ),
+                },
+            ]
+        )
+        with pytest.raises(RuntimeError, match="top logprobs for 1 of 2"):
+            await t.arun(
+                _request(
+                    "x",
+                    sampling=SamplingParams(n=2),
+                    sampled_logprobs=True,
+                    top_logprobs=1,
+                )
+            )
+
 
 class TestLift:
     @pytest.mark.anyio

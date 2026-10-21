@@ -26,10 +26,12 @@ from sieval.core.models import (
     CompletionInput,
     DialectOptions,
     HostedToolSpec,
+    ModelOutput,
     OpaqueContinuation,
     ReasoningParams,
     Request,
     Response,
+    RolloutLogprobs,
     SamplingParams,
     SchedulingParams,
     ScoringParams,
@@ -41,6 +43,7 @@ from sieval.core.models._legacy_binding import build_legacy_openai_binding
 from sieval.core.models.dialect import RequestAuditError
 from sieval.core.models.reconcile import RuntimeBindingPlan
 from sieval.core.models.transports.sglang import SglangTransport
+from sieval.core.utils.serialization import dict_to_obj, obj_to_dict
 
 
 def _a_runtime_plan() -> RuntimeBindingPlan:
@@ -509,3 +512,66 @@ class TestLegacyLifecycle:
 
         assert transport.calls == 1
         assert root.pool.is_closed is True
+
+
+class TestPerRolloutLogprobs:
+    """``infer_args: {return_logprobs, top_logprobs}`` at ``n > 1`` (issue #171)."""
+
+    @pytest.mark.anyio
+    async def test_agenerate_persists_one_logprob_sequence_per_rollout(self):
+        payload = [
+            {
+                "text": text,
+                "meta_info": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 1,
+                    "finish_reason": {"type": "stop"},
+                    "output_token_logprobs": [[logprob, index, text]],
+                    "output_top_logprobs": [[[logprob, index, text]]],
+                },
+            }
+            for index, (text, logprob) in enumerate([("a", -0.1), ("b", -0.7)])
+        ]
+        client = SimpleNamespace(
+            base_url="http://host:8000/v1/",
+            close=AsyncMock(),
+            post=AsyncMock(return_value=payload),
+        )
+        with patch(
+            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
+            return_value=client,
+        ):
+            base = SglangGenModel(
+                model="m", api_base="http://host:8000/v1", api_key="local"
+            )
+        # The derivation a task's ``infer_args`` applies to the candidate.
+        model = base.with_args(return_logprobs=True, top_logprobs=20)
+
+        output = await model.agenerate("prompt", n=2)
+
+        assert output.texts == ["a", "b"]
+        # The single-sequence fields stay empty rather than holding rollout 0.
+        assert output.logprobs is None
+        assert output.logprobs_tokens is None
+        assert output.top_logprobs is None
+        assert output.choice_logprobs == [
+            RolloutLogprobs(
+                logprobs_tokens=["a"], logprobs=[-0.1], top_logprobs=[{"a": -0.1}]
+            ),
+            RolloutLogprobs(
+                logprobs_tokens=["b"], logprobs=[-0.7], top_logprobs=[{"b": -0.7}]
+            ),
+        ]
+        await_args = client.post.await_args
+        assert await_args is not None
+        body = await_args.kwargs["body"]
+        assert body["top_logprobs_num"] == 20
+        assert body["sampling_params"]["n"] == 2
+
+        # Shard records round-trip back to the typed rollout entries.
+        restored = dict_to_obj(obj_to_dict(output, add_type=True), {})
+        assert isinstance(restored, ModelOutput)
+        assert restored.choice_logprobs == output.choice_logprobs
+        assert restored.choice_logprobs is not None
+        assert isinstance(restored.choice_logprobs[0], RolloutLogprobs)
+        await model.aclose()
