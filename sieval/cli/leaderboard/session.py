@@ -989,6 +989,7 @@ class ModelConfigDict(TypedDict, total=False):
     base: str  # For derived models
     args: dict[str, Any]
     api_key: str
+    api_key_env: str  # Environment variable holding the API key
     api_base: str
     max_retries: int
     concurrency_limit: int
@@ -1074,29 +1075,40 @@ def _strip_header(text: str) -> str:
     return _split_header(text)[1]
 
 
+#: Config keys whose value is a secret. ``api_key_env`` is not one: it names a
+#: variable, and the name is safe to record.
+_SECRET_CONFIG_KEYS = frozenset({"api_key", "authorization"})
+
+
 def _diff_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     """Return ``- <path>: <old> → <new>`` lines for every differing leaf.
 
     Walks two parsed-config mappings depth-first. Empty list means the two
     parse to the same structure (any textual difference was whitespace /
-    formatting only).
+    formatting only). A changed secret (``api_key``, ``authorization``) is
+    recorded as changed, never by value: these lines reach ``meta.json``.
     """
     diffs: list[str] = []
 
-    def _walk(x: Any, y: Any, path: str) -> None:
+    def _shown(key: str, value: Any) -> str:
+        if key in _SECRET_CONFIG_KEYS and value is not None:
+            return "<redacted>"
+        return repr(value)
+
+    def _walk(x: Any, y: Any, path: str, key: str) -> None:
         if isinstance(x, dict) and isinstance(y, dict):
             for k in sorted(set(x) | set(y)):
-                _walk(x.get(k), y.get(k), f"{path}.{k}" if path else k)
+                _walk(x.get(k), y.get(k), f"{path}.{k}" if path else k, k)
         elif isinstance(x, list) and isinstance(y, list):
             if len(x) != len(y):
                 diffs.append(f"- {path}: list length {len(x)} → {len(y)}")
             else:
                 for i, (xv, yv) in enumerate(zip(x, y, strict=True)):
-                    _walk(xv, yv, f"{path}[{i}]")
+                    _walk(xv, yv, f"{path}[{i}]", key)
         elif x != y:
-            diffs.append(f"- {path}: {x!r} → {y!r}")
+            diffs.append(f"- {path}: {_shown(key, x)} → {_shown(key, y)}")
 
-    _walk(a, b, "")
+    _walk(a, b, "", "")
     return diffs
 
 
@@ -1104,6 +1116,60 @@ def _diff_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
 _INFERENCE_TASK_ARGS = ("n", "stop", "logprobs")
 #: Runner keys in the inference identity (``INFERENCE_RUNNER_KEYS``).
 _INFERENCE_RUNNER_CONFIG_KEYS = ("max_iterations", "max_retries")
+
+
+#: Config keys that carry a model's credential: the key itself, or the name of
+#: the environment variable holding it. Neither is an inference input.
+_CREDENTIAL_KEYS = ("api_key", "api_key_env")
+
+
+def _names_credential(config: Mapping[str, object]) -> bool:
+    """Whether ``config`` configures its own credential, by key or by variable.
+
+    Both forms are one credential scope, so switching between them, or
+    rotating the key, changes no identity.
+    """
+    return any(key in config for key in _CREDENTIAL_KEYS)
+
+
+def _configured_credential(
+    config: Mapping[str, object],
+    nested: Mapping[str, object],
+    subject: str,
+    environ: Mapping[str, str],
+) -> str | None:
+    """The credential ``config`` names, read from ``environ`` for ``api_key_env``.
+
+    A top-level key wins over the same key in ``args``. Setting both
+    ``api_key`` and ``api_key_env`` is refused, as is a named variable that is
+    unset or empty: a missing credential surfaces before any engine starts,
+    not as the first request's 401. The value is returned, never logged.
+    """
+    api_key = config.get("api_key", nested.get("api_key"))
+    env_name = config.get("api_key_env", nested.get("api_key_env"))
+    if api_key is not None and env_name is not None:
+        raise ValueError(
+            f"{subject} sets both 'api_key' and 'api_key_env'; keep one: "
+            "'api_key' is the key itself, 'api_key_env' names the environment "
+            "variable that holds it"
+        )
+    if env_name is not None:
+        if not isinstance(env_name, str) or not env_name or "=" in env_name:
+            raise ValueError(
+                f"{subject} 'api_key_env' must name an environment variable, "
+                f"got {env_name!r}"
+            )
+        value = environ.get(env_name)
+        if not value:
+            state = "empty" if value is not None else "unset"
+            raise ValueError(
+                f"{subject} reads its API key from environment variable "
+                f"{env_name}, which is {state}; export {env_name} before the run"
+            )
+        return value
+    if api_key is not None and not isinstance(api_key, str):
+        raise TypeError("api_key must be a string")
+    return api_key
 
 
 def _read_persisted_config(path: Path) -> dict[str, Any] | None:
@@ -1140,7 +1206,13 @@ def _stage_config(cfg: Mapping[str, Any], task_name: str, stage: str) -> object:
     ):
         seen.add(model_name)
         mcfg = dict(models[model_name] or {})
-        for key in ("api_base", "api_key", "concurrency_limit", "max_retries"):
+        for key in (
+            "api_base",
+            "api_key",
+            "api_key_env",
+            "concurrency_limit",
+            "max_retries",
+        ):
             mcfg.pop(key, None)
         args = dict(mcfg.get("args") or {})
         args.pop("concurrency_limit", None)
@@ -1236,8 +1308,9 @@ def _apply_endpoint_injection(
 
     For each model in ``endpoint_map``:
         - Set ``api_base`` to the given endpoint (always overrides).
-        - If no ``api_key`` present at either top level or inside ``args``,
-          set ``api_key: "local"`` placeholder (OpenAI client needs one).
+        - If neither ``api_key`` nor ``api_key_env`` is present at either top
+          level or inside ``args``, set ``api_key: "local"`` placeholder
+          (OpenAI client needs one).
         - If ``name`` is absent, derive from checkpoint basename (from
           ``infer.checkpoint`` or top-level ``path``).
     """
@@ -1252,10 +1325,10 @@ def _apply_endpoint_injection(
 
         mcfg["api_base"] = endpoint
 
-        if not mcfg.get("api_key"):
-            args = mcfg.get("args") or {}
-            if not (isinstance(args, dict) and args.get("api_key")):
-                mcfg["api_key"] = "local"
+        args = mcfg.get("args") or {}
+        nested = args if isinstance(args, dict) else {}
+        if not any(mcfg.get(k) or nested.get(k) for k in _CREDENTIAL_KEYS):
+            mcfg["api_key"] = "local"
 
         if "name" not in mcfg:
             checkpoint = ""
@@ -1845,6 +1918,7 @@ class EvalSession:
                 {
                     "api_base",
                     "api_key",
+                    "api_key_env",
                     "capabilities",
                     "dialect",
                     "engine",
@@ -1863,7 +1937,7 @@ class EvalSession:
         if not isinstance(raw_args, Mapping):
             raise ValueError(f"Model '{model_name}' args must be a dictionary")
         allowed_args = (
-            frozenset({"api_base", "api_key", "max_retries"})
+            frozenset({"api_base", "api_key", "api_key_env", "max_retries"})
             if is_root
             else frozenset()
         )
@@ -1877,6 +1951,15 @@ class EvalSession:
             raise ValueError(
                 f"{kind} model '{model_name}' places binding resource(s) on an "
                 f"unsupported surface: {', '.join(paths)}"
+            )
+        if is_root:
+            # Resolve the credential now, so an unset ``api_key_env`` fails
+            # before any engine starts, on every dialect including the bypass.
+            _configured_credential(
+                config,
+                cast(Mapping[str, object], raw_args),
+                f"Model '{model_name}'",
+                os.environ,
             )
 
     def _normalized_external_binding(
@@ -2670,6 +2753,7 @@ class EvalSession:
             _, max_retries, _ = self._connection_options(
                 typed_source,
                 nested_args=True,
+                subject=self._binding_subject(binding.binding_id),
             )
             raw_args = typed_source.get("args")
             nested: Mapping[str, object] = (
@@ -2679,7 +2763,7 @@ class EvalSession:
             )
             credential_kind = (
                 "explicit"
-                if "api_key" in typed_source or "api_key" in nested
+                if _names_credential(typed_source) or _names_credential(nested)
                 else "environment"
             )
             return ConnectionScope(
@@ -2692,10 +2776,13 @@ class EvalSession:
         root_name, root_config = chain[0]
         args = root_config.get("args")
         args = args if isinstance(args, Mapping) else {}
-        has_explicit_credential = "api_key" in root_config or "api_key" in args
+        has_explicit_credential = _names_credential(root_config) or _names_credential(
+            args
+        )
         _, max_retries, _ = self._connection_options(
             root_config,
             nested_args=True,
+            subject=f"Model '{root_name}'",
         )
         return ConnectionScope(
             (
@@ -3443,6 +3530,15 @@ class EvalSession:
             )
         self._reified_config[_DETERMINISTIC_SEED_CONTRACT_KEY] = resolved
 
+    def _binding_subject(self, binding_id: str) -> str:
+        """Name a role binding the way its config does, for error messages."""
+
+        for task_name, context in self._task_requirement_contexts.items():
+            for role, binding in context.model_bindings.items():
+                if binding.binding_id == binding_id:
+                    return f"Task '{task_name}' {role}"
+        return f"Model binding '{binding_id}'"
+
     def _source_for_binding(self, binding_id: str) -> object | None:
         """Return the runtime-only config/model source for a role binding."""
 
@@ -3486,8 +3582,14 @@ class EvalSession:
         config: Mapping[str, object],
         *,
         nested_args: bool,
+        subject: str = "Model",
+        environ: Mapping[str, str] | None = None,
     ) -> tuple[str | None, int, int | None]:
-        """Extract client/pool options without treating them as request defaults."""
+        """Extract client/pool options without treating them as request defaults.
+
+        The credential comes from ``api_key`` or, read from the environment
+        when the connection is built, from the variable ``api_key_env`` names.
+        """
 
         args = config.get("args")
         nested: Mapping[str, object] = (
@@ -3495,13 +3597,13 @@ class EvalSession:
             if nested_args and isinstance(args, Mapping)
             else {}
         )
-        api_key = config.get("api_key", nested.get("api_key"))
+        api_key = _configured_credential(
+            config, nested, subject, os.environ if environ is None else environ
+        )
         max_retries = config.get("max_retries", nested.get("max_retries", 3))
         concurrency_limit = config.get(
             "concurrency_limit", nested.get("concurrency_limit")
         )
-        if api_key is not None and not isinstance(api_key, str):
-            raise TypeError("api_key must be a string")
         if isinstance(max_retries, bool) or not isinstance(max_retries, int):
             raise TypeError("max_retries must be an integer")
         if isinstance(concurrency_limit, bool) or (
@@ -3719,7 +3821,13 @@ class EvalSession:
         if not isinstance(raw, Mapping):
             raise ValueError("model args must be a dictionary")
         args = dict(raw)
-        for key in ("api_base", "api_key", "max_retries", "concurrency_limit"):
+        for key in (
+            "api_base",
+            "api_key",
+            "api_key_env",
+            "max_retries",
+            "concurrency_limit",
+        ):
             args.pop(key, None)
         extra = args.pop("extra", None)
         return args, extra
@@ -3756,7 +3864,7 @@ class EvalSession:
                 return pool
 
         api_key, max_retries, concurrency_limit = self._connection_options(
-            config, nested_args=nested_args
+            config, nested_args=nested_args, subject=f"Model root '{root_key}'"
         )
         retry_policy = factory.retry_policy(max_retries)
         if identity.retry_policy != retry_policy:
@@ -3873,8 +3981,13 @@ class EvalSession:
                     args,
                     self._request_seed_decisions_by_binding[binding.binding_id],
                 )
-            if "api_key" in cfg:
-                args["api_key"] = cfg["api_key"]
+            credential = _configured_credential(
+                cfg, args, f"Model '{name}'", os.environ
+            )
+            for key in _CREDENTIAL_KEYS:
+                args.pop(key, None)
+            if credential is not None:
+                args["api_key"] = credential
             if "api_base" in cfg:
                 args["api_base"] = cfg["api_base"]
             legacy_model = SglangGenModel(model=binding.requested_model_id, **args)
@@ -4001,6 +4114,7 @@ class EvalSession:
                 "model",
                 "api_base",
                 "api_key",
+                "api_key_env",
                 "max_retries",
                 "concurrency_limit",
                 "dialect",

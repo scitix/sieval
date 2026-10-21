@@ -30,6 +30,7 @@ BINDING_RESOURCE_KEYS = frozenset(
     {
         "api_base",
         "api_key",
+        "api_key_env",
         "authorization",
         "base_url",
         "capabilities",

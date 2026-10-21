@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`api_key_env: <VAR>`** reads a model's key from an environment variable when its connection is built, so a config in a repository can name a key without holding it. Accepted wherever `api_key` is — a root model's top level or `args`, and an inline `grader` / `extractor` in task args — on every dialect. Setting both is refused, and an unset or empty variable fails before any engine starts, naming the model or role and the variable. The value never reaches `effective_config.yaml`, `meta.json`, logs or an identity; the variable name is kept in `effective_config.yaml` only. Rotating a key or switching between `api_key` and `api_key_env` resumes without a rerun or regrade, and `runs[].config` shows a changed `api_key` as `<redacted>` (#148).
+
 ### Fixed
 
 - A `--resume-from` run killed before `meta.json` recorded it now resumes on the same command, instead of being refused as a run of unknown version. The copy writes `.copying` first and removes it once the run is recorded; the same `--resume-from` copies again over a marked directory, and `--resume` alone refuses it (`UnfinishedCopyError`). (#162)

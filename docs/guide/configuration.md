@@ -61,6 +61,52 @@ tasks:
   `SIEVAL_CODE_EVAL_API` is set; see [Services a task needs](infer.md#services-a-task-needs)
 - **Class resolution**: built-in classes (exported by `sieval.tasks` / `sieval.datasets`) use short names; custom classes must use full module paths (`my_pkg.my_module.MyTask`)
 
+## Credentials
+
+A model's key is either written as `api_key` or read from the environment
+variable named by `api_key_env`. Both are accepted on a root model (top level
+or under `args`) and on an inline role model in task args (`grader`,
+`extractor`), and every dialect sends the key in its own header.
+
+```yaml
+models:
+    candidate:
+        name: org/candidate
+        api_base: https://gateway.example/v1
+        api_key_env: CANDIDATE_API_KEY
+
+tasks:
+    simpleqa_verified_0shot_gen:
+        class: SimpleQAVerifiedZeroShotGenTask
+        dataset: simpleqa
+        model: candidate
+        args:
+            grader:
+                model: gemini-3.8-flash
+                dialect: google_genai
+                api_base: https://generativelanguage.googleapis.com
+                api_key_env: SIEVAL_JUDGE_API_KEY
+```
+
+The YAML loader does not expand `${VAR}` in `api_key`; `api_key_env` is the way
+to keep a key out of a config file.
+
+- Setting both `api_key` and `api_key_env` on one model is refused.
+- An unset or empty variable fails before any engine starts, naming the model
+  or task role and the variable.
+- A derived model (`base:`) uses its root's key and cannot set either.
+- The value is never written to `effective_config.yaml`, `meta.json`, logs or
+  any identity. The variable name is kept in `effective_config.yaml` so the
+  file reruns where the variable is set.
+- Neither the key nor the variable name is part of a stage identity. Rotating
+  a key, renaming its variable or switching between the two forms resumes
+  without a rerun or regrade; `runs[].config` notes the change and shows a
+  changed `api_key` as `<redacted>`.
+
+Omit both only when the endpoint needs no authentication. An `openai_chat` or
+`openai_completions` model with neither falls back to `OPENAI_API_KEY`, as the
+OpenAI client does.
+
 ## Task Pipeline
 
 Each task implements a typed 5-stage pipeline:

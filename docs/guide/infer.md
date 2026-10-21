@@ -134,7 +134,7 @@ models:
     name: claude-sonnet-4-5
     dialect: anthropic_messages
     api_base: https://api.anthropic.com/v1
-    api_key: "<your Anthropic API key>"
+    api_key_env: ANTHROPIC_API_KEY
     args:
       max_tokens: 1024
 ```
@@ -152,10 +152,9 @@ inject arbitrary Anthropic body fields or HTTP headers; in particular, there is
 currently no way to send the `anthropic-beta` header. Features that require a
 beta header are unsupported until they receive an explicit, audited mapping.
 
-The YAML loader does not expand environment-variable expressions in `api_key`.
-Replace the placeholder above through your configuration/secret-management
-workflow; omit `api_key` only when the target endpoint does not require
-authentication.
+The key is sent in the `x-api-key` header. `api_key_env` reads it from the
+named variable; a literal `api_key` also works. See
+[Credentials](configuration.md#credentials).
 
 ### Google GenAI
 
@@ -169,13 +168,15 @@ models:
     type: chat
     dialect: google_genai
     api_base: https://generativelanguage.googleapis.com
-    api_key: "<your Gemini API key>"
+    api_key_env: GEMINI_API_KEY
 ```
 
 The model name may be `gemini-...` or `models/gemini-...`. An endpoint root
 uses `v1beta`; an explicit `/v1` or `/v1beta` suffix selects that version, and
 gateway path prefixes are preserved. The key is sent only in the
-`x-goog-api-key` header. Vertex AI resource paths and OAuth are not supported.
+`x-goog-api-key` header; `api_key_env` or `api_key` supplies it (see
+[Credentials](configuration.md#credentials)). Vertex AI resource paths and
+OAuth are not supported.
 
 Supported: text and image input, function tools, the `google_search` and
 `url_context` hosted tools, JSON output, thinking controls, logprobs,

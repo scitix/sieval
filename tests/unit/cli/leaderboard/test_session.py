@@ -4155,6 +4155,377 @@ tasks:
         assert plan_fingerprints[0] == plan_fingerprints[1]
         client_factory.assert_not_called()
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("dialect", "header", "expected"),
+        [
+            ("openai_chat", "authorization", "Bearer SENTINEL-ENV-KEY"),
+            ("anthropic_messages", "x-api-key", "SENTINEL-ENV-KEY"),
+            ("google_genai", "x-goog-api-key", "SENTINEL-ENV-KEY"),
+        ],
+    )
+    async def test_inline_api_key_env_sends_the_variable_on_the_wire(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        dialect: str,
+        header: str,
+        expected: str,
+    ) -> None:
+        import httpx
+        from openai import AsyncOpenAI
+
+        from sieval.core.models import connection_factory
+
+        monkeypatch.setenv("SIEVAL_JUDGE_API_KEY", "SENTINEL-ENV-KEY")
+        sent: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request.headers.get(header))
+            return httpx.Response(400, json={"error": {"message": "stop"}})
+
+        real_openai = AsyncOpenAI
+
+        def openai_client(**kwargs: Any) -> AsyncOpenAI:
+            client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            return real_openai(**kwargs, http_client=client)
+
+        monkeypatch.setattr(connection_factory, "AsyncOpenAI", openai_client)
+        monkeypatch.setattr(
+            connection_factory.httpx,
+            "AsyncHTTPTransport",
+            lambda **_: httpx.MockTransport(handler),
+        )
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  candidate:
+    name: org/candidate
+    api_key: candidate-key
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: judge-model
+        dialect: {dialect}
+        api_base: https://judge.example/v1
+        api_key_env: SIEVAL_JUDGE_API_KEY
+        max_tokens: 16
+""",
+        )
+        session = EvalSession(config_path)
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=self.JudgeTask,
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+        grader = session._bound_task_role_models["judged"]["grader"]
+
+        with pytest.raises(Exception):  # noqa: B017 - the 400 only ends the call
+            await grader.agenerate("hi")
+        await session._close_owned_model_resources()
+
+        assert sent
+        assert set(sent) == {expected}
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_unset_api_key_env_fails_at_prelaunch_naming_role_and_variable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        value: str | None,
+    ) -> None:
+        if value is None:
+            monkeypatch.delenv("SIEVAL_JUDGE_API_KEY", raising=False)
+        else:
+            monkeypatch.setenv("SIEVAL_JUDGE_API_KEY", value)
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: org/grader
+        args:
+          api_key_env: SIEVAL_JUDGE_API_KEY
+""",
+        )
+        session = EvalSession(config_path)
+        state = "unset" if value is None else "empty"
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI") as client,
+            pytest.raises(
+                ValueError,
+                match=(
+                    rf"Task 'judged' grader reads its API key from environment "
+                    rf"variable SIEVAL_JUDGE_API_KEY, which is {state}"
+                ),
+            ),
+        ):
+            session.prepare_prelaunch()
+        client.assert_not_called()
+
+    @pytest.mark.parametrize("dialect", ["openai_chat", "sglang_legacy"])
+    def test_unset_api_key_env_on_a_named_model_fails_at_prelaunch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        dialect: str,
+    ) -> None:
+        monkeypatch.delenv("CANDIDATE_KEY", raising=False)
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  candidate:
+    name: org/candidate
+    type: gen
+    engine: sglang
+    dialect: {dialect}
+    api_base: https://candidate.example/v1
+    api_key_env: CANDIDATE_KEY
+tasks:
+  completion:
+    class: fake.CompletionTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.CompletionTask,
+            ),
+            pytest.raises(
+                ValueError,
+                match=r"Model 'candidate' reads its API key from environment "
+                r"variable CANDIDATE_KEY, which is unset",
+            ),
+        ):
+            session.prepare_prelaunch()
+
+    @pytest.mark.parametrize(
+        "credentials",
+        [
+            "api_key: literal\n    api_key_env: CANDIDATE_KEY",
+            "api_key: literal\n    args:\n      api_key_env: CANDIDATE_KEY",
+        ],
+    )
+    def test_named_model_refuses_both_credential_forms(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        credentials: str,
+    ) -> None:
+        monkeypatch.setenv("CANDIDATE_KEY", "value")
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  candidate:
+    name: org/candidate
+    {credentials}
+tasks:
+  chat:
+    class: fake.ChatTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.ChatTask,
+            ),
+            pytest.raises(
+                ValueError,
+                match=r"Model 'candidate' sets both 'api_key' and 'api_key_env'",
+            ),
+        ):
+            session.prepare_prelaunch()
+
+    def test_inline_grader_refuses_both_credential_forms(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SIEVAL_JUDGE_API_KEY", "value")
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: org/grader
+        api_key: literal
+        api_key_env: SIEVAL_JUDGE_API_KEY
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ),
+            pytest.raises(
+                ValueError,
+                match=r"Task 'judged' grader sets both 'api_key' and 'api_key_env'",
+            ),
+        ):
+            session.prepare_prelaunch()
+
+    @pytest.mark.parametrize("name", ["", "A=B", 3])
+    def test_api_key_env_must_name_a_variable(
+        self, tmp_path: Path, name: object
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  candidate:
+    name: org/candidate
+    api_key_env: {json.dumps(name)}
+tasks:
+  chat:
+    class: fake.ChatTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.ChatTask,
+            ),
+            pytest.raises(ValueError, match="'api_key_env' must name an environment"),
+        ):
+            session.prepare_prelaunch()
+
+    def test_derived_model_cannot_set_api_key_env(self, tmp_path: Path) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  base:
+    name: org/base
+  derived:
+    base: base
+    api_key_env: DERIVED_KEY
+tasks:
+  chat:
+    class: fake.ChatTask
+    dataset:
+      class: fake.Dataset
+    model: derived
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.ChatTask,
+            ),
+            pytest.raises(ValueError, match=r"Derived model 'derived'.*api_key_env"),
+        ):
+            session.prepare_prelaunch()
+
+    def test_api_key_env_and_rotation_keep_the_stable_binding_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rotating the key, renaming its variable, or switching between the
+        literal and the variable form keeps every identity a resume compares."""
+
+        observed: list[tuple[object, ...]] = []
+        forms = [
+            ("api_key: SECRET-LITERAL", {}),
+            ("api_key_env: KEY_ONE", {"KEY_ONE": "SECRET-A"}),
+            ("api_key_env: KEY_ONE", {"KEY_ONE": "SECRET-B"}),
+            ("api_key_env: KEY_TWO", {"KEY_TWO": "SECRET-C"}),
+        ]
+        with patch("sieval.core.models.connection_factory.AsyncOpenAI"):
+            for credential, env in forms:
+                for name, value in env.items():
+                    monkeypatch.setenv(name, value)
+                config_path = self._config(
+                    tmp_path,
+                    f"""
+models:
+  candidate:
+    name: org/candidate
+    {credential}
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: org/grader
+        {credential}
+        temperature: 0
+""",
+                )
+                session = EvalSession(config_path)
+                with patch(
+                    "sieval.cli.leaderboard.session.resolve_task_class",
+                    return_value=self.JudgeTask,
+                ):
+                    result = session.prepare_prelaunch()
+                bindings = session._task_requirement_contexts["judged"].model_bindings
+                grader = bindings["grader"]
+                assert isinstance(grader, InlineModelBinding)
+                assert "api_key_env" not in grader.config
+                plans = result.binding_plans
+                observed.append(
+                    (
+                        grader.binding_id,
+                        grader.config,
+                        plans[grader.binding_id].fingerprint,
+                        plans[bindings["candidate"].binding_id].fingerprint,
+                    )
+                )
+                assert "SECRET" not in repr(result.to_json_value())
+
+        assert all(entry == observed[0] for entry in observed)
+
     @pytest.mark.parametrize(
         ("nested", "expected_path"),
         [(False, "helper"), (True, "settings.helper")],
@@ -8619,6 +8990,16 @@ class TestDiffLines:
     def test_nested_leaf_path(self):
         lines = _diff_lines({"a": {"b": 1}}, {"a": {"b": 2}})
         assert lines == ["- a.b: 1 → 2"]
+
+    def test_secret_values_are_redacted_but_variable_names_are_not(self):
+        before = {"m": {"api_key": "SECRET-A", "args": {"authorization": "X"}}}
+        after = {"m": {"api_key_env": "KEY", "args": {"authorization": "Y"}}}
+        lines = _diff_lines(before, after)
+        assert lines == [
+            "- m.api_key: <redacted> → None",
+            "- m.api_key_env: None → 'KEY'",
+            "- m.args.authorization: <redacted> → <redacted>",
+        ]
 
 
 # ── Tests for env expansion + error-hint wrapping in _setup_datasets ──

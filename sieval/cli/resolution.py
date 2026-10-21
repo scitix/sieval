@@ -54,7 +54,11 @@ _TASK_MODEL_ROLE_SENTINELS: Mapping[str, frozenset[str]] = MappingProxyType(
     {"extractor": frozenset({"self"})}
 )
 COMPOSITION_OWNED_TASK_ARGS = frozenset({"dataset", "model", "models_by_role", "name"})
-_INLINE_SECRET_KEYS = frozenset({"api_key", "authorization"})
+# Keys left out of an inline binding's identity. ``api_key`` and
+# ``authorization`` are secrets; ``api_key_env`` only names where the key is
+# read from. None of them changes what the model answers, so rotating a key,
+# renaming its variable, or switching between the two forms keeps the binding.
+_INLINE_CREDENTIAL_KEYS = frozenset({"api_key", "api_key_env", "authorization"})
 
 
 def is_task_model_role_sentinel(role: str, source: object) -> bool:
@@ -183,13 +187,13 @@ def _safe_inline_model_config(
     for key, value in config.items():
         if not isinstance(key, str):
             raise TypeError("inline model config keys must be strings")
-        if key in _INLINE_SECRET_KEYS:
+        if key in _INLINE_CREDENTIAL_KEYS:
             continue
         if key == "args" and isinstance(value, Mapping):
             value = {
                 nested_key: nested_value
                 for nested_key, nested_value in value.items()
-                if nested_key not in _INLINE_SECRET_KEYS
+                if nested_key not in _INLINE_CREDENTIAL_KEYS
             }
         safe[key] = cast(JSONValue, copy.deepcopy(value))
     return safe
@@ -206,6 +210,7 @@ def normalize_inline_model_binding(
         {
             "api_base",
             "api_key",
+            "api_key_env",
             "capabilities",
             "dialect",
             "engine",
@@ -223,7 +228,7 @@ def normalize_inline_model_binding(
         raise ValueError(f"Task '{task_name}' inline {role} args must be a mapping")
     nested = binding_resource_argument_paths(
         cast(Mapping[str, object], raw_args),
-        allowed=frozenset({"api_base", "api_key", "max_retries"}),
+        allowed=frozenset({"api_base", "api_key", "api_key_env", "max_retries"}),
     )
     paths = (*misplaced, *(f"args.{path}" for path in nested))
     if paths:
