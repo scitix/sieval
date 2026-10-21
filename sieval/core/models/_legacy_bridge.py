@@ -87,11 +87,9 @@ class ModelCallMeta(TypedDict):
 @sieval_record
 @dataclass
 class RolloutLogprobs:
-    """One rollout's sampled-token logprobs, in ``ModelOutput``'s flat shape.
+    """One rollout's logprobs, under ``ModelOutput``'s single-sequence names.
 
-    The same three fields ``ModelOutput`` carries for a single sequence, so a
-    reader of one rollout reads them under the same names. ``top_logprobs`` is
-    ``None`` when no top-k breadth was requested.
+    ``top_logprobs`` is ``None`` unless top-k was requested.
     """
 
     logprobs_tokens: list[str]
@@ -115,10 +113,8 @@ class ModelOutput:
     logprobs_tokens: list[str] | None = None
     logprobs: list[float | None] | None = None
     top_logprobs: list[dict[str, float]] | None = None
-    #: Logprobs per rollout, index-aligned with ``texts``, when a call sampled
-    #: ``n > 1`` with logprobs. The three fields above then stay ``None``: they
-    #: describe one sequence, and picking rollout 0 for them would hide the
-    #: other ``n - 1``.
+    #: Per-rollout logprobs, aligned with ``texts``, at ``n > 1``; the three
+    #: fields above then stay ``None``.
     choice_logprobs: list[RolloutLogprobs] | None = None
     usage: ModelUsage | None = None
     request_params: dict[str, JSONValue] | None = None
@@ -468,8 +464,8 @@ def _flat_top_logprobs(
 
 
 def _rollout_logprobs(choice: ChoiceLogprobs) -> RolloutLogprobs:
-    # Unlike the singular field, an empty top-k list stays a list: it belongs
-    # to a rollout that generated no token, beside an empty token list.
+    # An empty top-k stays ``[]`` (a rollout with no tokens), unlike the
+    # singular field.
     return RolloutLogprobs(
         logprobs_tokens=[item.token for item in choice.tokens],
         logprobs=[item.logprob for item in choice.tokens],

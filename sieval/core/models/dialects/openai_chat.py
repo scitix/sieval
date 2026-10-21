@@ -389,25 +389,28 @@ def _split_logprobs(
     tuple[tuple[TopKEntry, ...], ...] | None,
     tuple[ChoiceLogprobs, ...] | None,
 ]:
-    """Route per-choice logprobs to the channel the request's ``n`` selects.
+    """Route per-choice logprobs to the singular channels (``n == 1``) or to
+    ``choice_logprobs`` (``n > 1``).
 
-    ``n == 1`` fills the singular ``logprobs``/``top_logprobs`` from choice 0,
-    unchanged from before per-choice logprobs existed. ``n > 1`` fills
-    ``choice_logprobs``; a choice without logprobs is left out of it, so the
-    output contract's length check names the gap instead of this lift
-    inventing an empty sequence. Top-k is dropped when no breadth was asked:
-    chat returns an empty list per position, which is not a top-k.
+    Chat sends an empty top-k list per position even when none was asked for,
+    so top-k is dropped unless requested.
     """
     if req.sampling.n == 1:
         first = choices[0]
         if first is None:
             return None, None, None
         return first.tokens, first.top_logprobs, None
-    present = [item for item in choices if item is not None]
-    if not present:
+    if all(item is None for item in choices):
         return None, None, None
-    if req.scoring.top_logprobs == 0:
-        present = [ChoiceLogprobs(item.tokens) for item in present]
+    present: list[ChoiceLogprobs] = []
+    for index, item in enumerate(choices):
+        if item is None:
+            raise OutputContractError(
+                f"chat response omitted logprobs for choice index {index}"
+            )
+        present.append(
+            item if req.scoring.top_logprobs else ChoiceLogprobs(item.tokens)
+        )
     return None, None, tuple(present)
 
 

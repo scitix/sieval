@@ -493,6 +493,25 @@ class TestNSamples:
                 )
             )
 
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("sampled_logprobs", [False, True])
+    async def test_sample_count_short_of_n_raises(self, sampled_logprobs):
+        # A lone dict for n=2 must not pass as one rollout with singular logprobs.
+        t, _ = _make_transport(
+            {
+                "text": "a",
+                "meta_info": _meta(output_token_logprobs=[[-0.1, 1, "a"]]),
+            }
+        )
+        with pytest.raises(RuntimeError, match="returned 1 samples for n=2"):
+            await t.arun(
+                _request(
+                    "x",
+                    sampling=SamplingParams(n=2),
+                    sampled_logprobs=sampled_logprobs,
+                )
+            )
+
 
 class TestLift:
     @pytest.mark.anyio

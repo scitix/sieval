@@ -1060,7 +1060,7 @@ class TestPerChoiceLogprobs:
         OUTPUT_CONTRACT.validate(_Plan(), req, result)
 
     @pytest.mark.anyio
-    async def test_choice_without_logprobs_fails_the_output_contract(self) -> None:
+    async def test_choice_without_logprobs_fails_the_lift(self) -> None:
         dialect, _ = _dialect(
             _response(
                 _choice(
@@ -1076,8 +1076,37 @@ class TestPerChoiceLogprobs:
         req = self._request()
         _, prepared = _prepare(dialect, req)
 
-        with pytest.raises(ValueError, match="choice_logprobs must align"):
+        with pytest.raises(
+            OutputContractError, match="omitted logprobs for choice index 1"
+        ):
             await dialect.execute(prepared)
+
+    @pytest.mark.anyio
+    async def test_unrequested_top_k_is_dropped(self) -> None:
+        # vLLM sends the sampled token as a top-k entry even at logprobs=0.
+        dialect, _ = _dialect(
+            _response(
+                *(
+                    _choice(
+                        text=" a",
+                        index=index,
+                        tokens=[" a"],
+                        token_logprobs=[-0.1],
+                        top_logprobs=[{" a": -0.1}],
+                    )
+                    for index in range(2)
+                )
+            )
+        )
+        req = self._request(top_logprobs=0)
+        _, prepared = _prepare(dialect, req)
+        result = await dialect.execute(prepared)
+
+        assert result.choice_logprobs == (
+            ChoiceLogprobs((TokenLogprob(" a", -0.1),)),
+            ChoiceLogprobs((TokenLogprob(" a", -0.1),)),
+        )
+        OUTPUT_CONTRACT.validate(_Plan(), req, result)
 
     @pytest.mark.anyio
     async def test_choice_missing_requested_top_k_fails_the_output_contract(

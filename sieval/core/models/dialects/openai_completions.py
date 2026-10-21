@@ -211,6 +211,7 @@ _IR_OWNED_BODY_KEYS = BINDING_RESOURCE_KEYS | frozenset(
 class _CompletionContext:
     n: int
     input_scoring: bool
+    top_logprobs: int
 
 
 @dataclass(frozen=True)
@@ -530,6 +531,7 @@ class OpenAICompletionsDialect:
             context=_CompletionContext(
                 n=sampling.n,
                 input_scoring=scoring.input_scoring,
+                top_logprobs=scoring.top_logprobs,
             ),
         )
         return prepared
@@ -632,8 +634,7 @@ class _Accumulator:
         self._texts = [""] * context.n
         self._finish_reasons = [""] * context.n
         self._seen_indices: set[int] = set()
-        # Logprob buffers per choice index.  ``n == 1`` lifts choice 0 into
-        # the singular channels; ``n > 1`` lifts one ``ChoiceLogprobs`` each.
+        # Logprob buffers, one per choice index.
         self._choice_tokens: list[list[str]] = [[] for _ in range(context.n)]
         self._choice_token_logprobs: list[list[float | None]] = [
             [] for _ in range(context.n)
@@ -748,6 +749,15 @@ class _Accumulator:
         )
         return sampled, top
 
+    def _choice_logprobs(self, index: int) -> ChoiceLogprobs:
+        if not self._choice_saw_logprobs[index]:
+            raise OutputContractError(
+                f"completion response omitted logprobs for choice index {index}"
+            )
+        sampled, top = self._lift_choice(index)
+        # Top-k the request did not ask for is dropped, as in chat.
+        return ChoiceLogprobs(sampled, top if self._context.top_logprobs else None)
+
     def response(self, usage: UsageStats | None) -> Response:
         missing = sorted(set(range(self._context.n)) - self._seen_indices)
         if missing:
@@ -773,14 +783,9 @@ class _Accumulator:
 
         choice_logprobs: tuple[ChoiceLogprobs, ...] | None = None
         if self._context.n > 1:
-            # A choice the server sent no logprobs for is left out of the
-            # tuple's length, so the output contract's alignment check
-            # reports it rather than this lift inventing an empty sequence.
             if any(self._choice_saw_logprobs):
                 choice_logprobs = tuple(
-                    ChoiceLogprobs(*self._lift_choice(index))
-                    for index in range(self._context.n)
-                    if self._choice_saw_logprobs[index]
+                    self._choice_logprobs(index) for index in range(self._context.n)
                 )
         elif self._choice_saw_logprobs[0]:
             all_tokens, all_top = self._lift_choice(0)

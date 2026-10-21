@@ -386,12 +386,9 @@ class TopKEntry:
 @sieval_record
 @dataclass(frozen=True)
 class ChoiceLogprobs:
-    """One choice's sampled-token logprobs, and its top-k when requested.
+    """One choice's ``logprobs`` / ``top_logprobs``, used when ``n > 1``.
 
-    The per-choice form of ``Response.logprobs`` / ``Response.top_logprobs``,
-    used when a request samples more than one choice. ``top_logprobs`` is
-    ``None`` when no breadth was requested; when present it is
-    position-aligned with ``tokens``.
+    ``top_logprobs`` is ``None`` unless requested, else aligned with ``tokens``.
     """
 
     tokens: tuple[TokenLogprob, ...]
@@ -571,9 +568,8 @@ class Response:
     top_logprobs: tuple[tuple[TopKEntry, ...], ...] | None = field(
         default=None, metadata=_SINGULAR_CHANNEL
     )
-    #: Sampled logprobs per choice, for a request with ``sampling.n > 1``.
-    #: There the two singular channels above stay ``None``; at ``n == 1``
-    #: this one does, so each request fills exactly one form.
+    #: Per-choice logprobs at ``n > 1``, where the two fields above stay
+    #: ``None``; at ``n == 1`` only those are filled.
     choice_logprobs: tuple[ChoiceLogprobs, ...] | None = field(
         default=None, metadata=_CHOICE_CHANNEL
     )

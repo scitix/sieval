@@ -723,8 +723,7 @@ class Model:
                 "sampled_logprobs",
                 "top_logprobs",
             }:
-                # Several choices carry their logprobs, top-k included, per
-                # choice; the output contract has checked their shape.
+                # The output contract has already checked its shape.
                 channel = "choice_logprobs"
             if channel is None:
                 raise DialectError(

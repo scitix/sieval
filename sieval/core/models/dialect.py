@@ -547,8 +547,7 @@ def active_response_channels(req: Request) -> frozenset[str]:
         )
     ):
         channels.add("reasoning")
-    # One sampled sequence fills the singular channels; several fill one
-    # ``ChoiceLogprobs`` per choice, which carries the top-k alongside.
+    # At n > 1, ``choice_logprobs`` carries both logprobs and top-k.
     if req.scoring.sampled_logprobs:
         channels.add("logprobs" if req.sampling.n == 1 else "choice_logprobs")
     if req.scoring.top_logprobs > 0 and req.sampling.n == 1:

@@ -1622,7 +1622,9 @@ class TestPerChoiceLogprobs:
             )
         )
 
-        with pytest.raises(ValueError, match="choice_logprobs must align"):
+        with pytest.raises(
+            OutputContractError, match="omitted logprobs for choice index 1"
+        ):
             await dialect.arun(self._request())
 
     @pytest.mark.anyio

@@ -2315,8 +2315,6 @@ class GoogleGenAIDialect:
             elif path == "scoring.input_scoring":
                 audit.rejected(path, "Gemini cannot score input tokens")
             elif path == "scoring.sampled_logprobs" and req.sampling.n > 1:
-                # The lift reads one logprobs sequence across candidates, so
-                # it has no per-candidate form to fill.
                 audit.rejected(
                     path, "google_genai returns logprobs for one candidate only"
                 )
