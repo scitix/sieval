@@ -9,13 +9,19 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from loguru import logger
 from typer.testing import CliRunner
 
 from sieval.cli import app
-from sieval.core.runners import resume_option
+from sieval.core.utils.logging import configure_logging
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _logging_configured():
+    """Register the ``USER`` level even where a test patches the setup out."""
+    configure_logging()
+
 
 COMMANDS = [["run"], ["eval"], ["leaderboard", "run"]]
 
@@ -126,6 +132,14 @@ class TestParse:
         assert code == 0
         assert kw["resume"] == Path("/runs/old")
 
+    @pytest.mark.parametrize("glued", ["-ro", "-rm"])
+    def test_r_glued_to_a_value_option_is_refused(self, command, config, glued):
+        """``-ro json`` would be ``--resume o``; refused rather than guessed."""
+        code, kw, output = _invoke(command, [config, glued, "x"])
+        assert code == 2
+        assert kw == {}
+        assert "ambiguous" in output
+
     def test_an_attached_value_is_never_the_positional(self, command, config):
         """``--resume=X`` names ``X`` as ``DIR`` outright; CONFIG is missing."""
         code, _, output = _invoke(command, [f"--resume={config}"])
@@ -149,17 +163,6 @@ class TestParse:
 
 @pytest.mark.parametrize("command", COMMANDS, ids=" ".join)
 class TestResumeFromAlias:
-    @pytest.fixture
-    def warnings(self):
-        resume_option._warned.clear()
-        messages: list[str] = []
-        sink = logger.add(
-            lambda m: messages.append(m.record["message"]), level="WARNING"
-        )
-        yield messages
-        logger.remove(sink)
-        resume_option._warned.clear()
-
     def test_maps_to_resume_dir_and_warns(self, command, config, warnings):
         code, kw, _ = _invoke(command, [config, "--resume-from", "/runs/old"])
         assert code == 0

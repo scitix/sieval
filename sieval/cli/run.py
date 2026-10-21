@@ -134,7 +134,7 @@ async def _prepare_launch_batch(
 async def _run_dry_run(
     config_path: Path,
     *,
-    resume: bool | str | Path | None = False,
+    resume: bool | str | Path | None = None,
     model: str | None = None,
     result_dir: str | None = None,
     deterministic: bool | None = None,
@@ -189,7 +189,7 @@ async def _run_dry_run(
 async def _run_all(
     config_path: Path,
     verbose: bool = False,
-    resume: bool | str | Path | None = False,
+    resume: bool | str | Path | None = None,
     model: str | None = None,
     result_dir: str | None = None,
     deterministic: bool | None = None,

@@ -1,18 +1,8 @@
-"""One resume option: ``True`` resumes in place, a directory starts from it.
+"""The ``resume`` option: ``True`` resumes in place, a directory is copied from.
 
-``resume`` is the single way to resume a task, on the CLI (``--resume [DIR]``),
-in YAML (``runner_config.resume``) and in Python (``TaskRunnerConfig.resume``):
-
-* ``True``: resume the task's own ``result_dir``.
-* A directory: start from that recorded task directory, copied into an empty
-  ``result_dir`` (:mod:`sieval.core.runners.stage_resume`). A directory that is
-  the task's own ``result_dir`` resumes in place, as ``True`` does.
-* ``False`` or ``None``: no resume.
-
-:func:`resume_source` is the one place that tells a copy from an in-place
-resume. The deprecated aliases ``auto_resume`` and ``resume_from`` fold into
-``resume`` through :func:`fold_resume_aliases`, kept apart so dropping them is
-a small diff.
+A directory that is the task's own ``result_dir`` resumes in place;
+:func:`resume_source` is the one place that decides. The deprecated
+``auto_resume`` / ``resume_from`` fold in via :func:`fold_resume_aliases`.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -26,11 +16,7 @@ type ResumeValue = bool | Path | None
 
 
 def as_resume(value: object, where: str = "resume") -> ResumeValue:
-    """*value* as a resume: a bool, a directory, or ``None``.
-
-    A string or path-like names a directory, ``~`` expanded. An empty one, or
-    any other type, is refused.
-    """
+    """*value* as a bool, a ``~``-expanded directory, or ``None``."""
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, (str, os.PathLike)):
@@ -49,19 +35,13 @@ def same_dir(a: Path, b: Path) -> bool:
 
 
 def resume_source(resume: object, own_dir: Path) -> Path | None:
-    """The directory a resume copies from, or ``None``.
-
-    ``None`` when *resume* resumes in place (``True``, or *own_dir* itself) or
-    does not resume at all.
-    """
+    """The directory to copy from; ``None`` for in place or no resume."""
     if not isinstance(resume, Path):
         return None
     return None if same_dir(resume, own_dir) else resume
 
 
-# ----------------------------------------------------------------------
-# Deprecated aliases, for one release: `auto_resume` and `resume_from`.
-# ----------------------------------------------------------------------
+# Deprecated aliases, removed next release.
 
 
 def fold_resume_aliases(
@@ -73,18 +53,12 @@ def fold_resume_aliases(
     auto: str,
     source: str,
 ) -> ResumeValue:
-    """Fold the deprecated aliases into *resume*, warning once for each.
+    """Fold the deprecated aliases into *resume*, warning once each.
 
-    *new*, *auto* and *source* name ``resume``, ``auto_resume`` and
-    ``resume_from`` where the caller reads them, so a warning or refusal says
-    what the user wrote. ``auto_resume`` maps to ``resume: true`` (or
-    ``false``) and ``resume_from`` to ``resume: <dir>``, which wins over
-    ``auto_resume`` as it did.
-
-    *resume* and the aliases must agree. ``true`` agrees with a directory,
-    which resumes too, and the directory is kept: ``--resume --resume-from
-    DIR`` meant ``DIR`` before. Two directories agree only when they are one;
-    ``false`` agrees only with ``false``. Anything else is refused.
+    *new* / *auto* / *source* are the names the user wrote, for messages.
+    ``resume_from`` wins over ``auto_resume``. The result must agree with
+    *resume*: ``true`` with a directory (kept), a directory only with itself,
+    ``false`` only with ``false``; otherwise refused.
     """
     alias: ResumeValue = None
     name = ""
@@ -121,8 +95,7 @@ def _merge(a: bool | Path, b: bool | Path) -> bool | Path | None:
     return a if a == b else None
 
 
-#: Deprecations already reported, so a config read twice in one process (a
-#: prelaunch check, then the run) warns once.
+#: Warned already: a config is read twice per process (prelaunch, then run).
 _warned: set[str] = set()
 
 

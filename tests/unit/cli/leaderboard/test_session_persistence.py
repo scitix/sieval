@@ -1099,7 +1099,7 @@ class TestResumeFromSurface:
         old = tmp_path / "old"
         (old / "qa").mkdir(parents=True)
         (old / "effective_config.yaml").write_text(with_args(recorded))
-        session = self._session(tmp_path, resume_from=old, body=with_args(current))
+        session = self._session(tmp_path, resume=old, body=with_args(current))
         rc = session._build_runner_config({}, {}, "qa")
         assert session._legacy_match_for("qa", rc) == {
             "data": True,
@@ -1160,21 +1160,6 @@ class TestDeprecatedResumeKeys:
     """`runner_config.auto_resume` and `.resume_from` fold into `.resume`."""
 
     BASE = TestResumeFromSurface.CONFIG
-
-    @pytest.fixture
-    def warnings(self):
-        from loguru import logger
-
-        from sieval.core.runners import resume_option
-
-        resume_option._warned.clear()
-        messages: list[str] = []
-        sink = logger.add(
-            lambda m: messages.append(m.record["message"]), level="WARNING"
-        )
-        yield messages
-        logger.remove(sink)
-        resume_option._warned.clear()
 
     def _session(self, tmp_path: Path, top: str = "", task: str = "", **kw):
         body = self.BASE
@@ -1247,4 +1232,24 @@ class TestDeprecatedResumeKeys:
         assert session.resume_override == tmp_path / "old"
         rc = session._build_runner_config({}, {}, "qa")
         assert rc.resume == tmp_path / "old" / "qa"
+        assert warnings == ["resume_from is deprecated; use resume <dir>"]
+
+    def test_run_session_takes_the_alias_alone(self, tmp_path: Path, warnings):
+        """``resume`` left at its default must not read as ``false``, which
+        disagrees with any ``resume_from``."""
+        from sieval.cli.leaderboard import session as session_mod
+
+        built: list[EvalSession] = []
+
+        def build(*args, **kwargs):
+            built.append(EvalSession(*args, **kwargs))
+            raise KeyboardInterrupt  # stop before anything runs
+
+        cfg = _write_yaml(tmp_path, "cfg.yaml", self.BASE)
+        with (
+            patch.object(session_mod, "EvalSession", build),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            session_mod.run_session(cfg, resume_from=tmp_path / "old")
+        assert built[0].resume_override == tmp_path / "old"
         assert warnings == ["resume_from is deprecated; use resume <dir>"]

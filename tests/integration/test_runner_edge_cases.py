@@ -2,9 +2,9 @@
 Integration tests: runner edge cases not covered by existing test files.
 
 Covers:
-  - Fast resume: auto_resume returns cached report when all samples are final
+  - Fast resume: resume returns cached report when all samples are final
     and detect_anomalies=False.
-  - Resume with failures: auto_resume re-processes failed samples instead of
+  - Resume with failures: resume re-processes failed samples instead of
     returning the cached report.
   - Anomaly report completeness on resume: anomalies.json includes samples that
     completed before the resume, not just newly completed samples.
@@ -105,7 +105,7 @@ class TestRunnerAnomalyOnResume:
         assert report1["accuracy"] == 1.0
         assert report1["completed"] == 3
 
-        # --- Second run: auto_resume with a counting model ---
+        # --- Second run: resume with a counting model ---
         counting_model = CountingMockChatModel(answers=EDGE_ANSWERS)
         task2 = EdgeTask(
             dataset=dataset, model=counting_model, name="cached_report_test"
@@ -157,7 +157,7 @@ class TestRunnerAnomalyOnResume:
         runner1 = TaskRunner(task1, config1)
         await runner1.arun()
 
-        # --- Second run: auto_resume triggers early-exit path ---
+        # --- Second run: resume triggers early-exit path ---
         # All samples are FINAL, so step 5 fires immediately before the pipeline.
         # disable the cached-report fast-path by removing report.json so that
         # the code reaches step 5 (early-exit after hydration).
@@ -219,7 +219,7 @@ class TestRunnerAnomalyOnResume:
     @pytest.mark.anyio
     async def test_full_resume_with_failures_does_not_return_cached(self, tmp_path):
         """
-        When some samples failed in the first run, auto_resume must NOT
+        When some samples failed in the first run, resume must NOT
         return the cached report — it must re-process the failed samples.
         """
         result_dir = str(tmp_path / "partial_fail_results")
@@ -234,7 +234,7 @@ class TestRunnerAnomalyOnResume:
 
         assert report1["failed"] == 3
 
-        # --- Second run: auto_resume with a model that succeeds ---
+        # --- Second run: resume with a model that succeeds ---
         ok_model = CountingMockChatModel(answers=EDGE_ANSWERS)
         task2 = EdgeTask(dataset=dataset, model=ok_model, name="partial_fail_test")
         config2 = make_config(

@@ -7,9 +7,12 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 import os
 
 import pytest
+from loguru import logger
 
 from sieval.core.models import ModelMeta, ModelOutput, ModelUsage
+from sieval.core.runners import resume_option
 from sieval.core.tasks.context import TaskContext, TaskStageMeta
+from sieval.core.utils.logging import configure_logging
 
 # scripts/ tests are repo-hygiene checks (preflight, layer imports) that run
 # tooling against the LIVE repo tree. Inside mutmut's mutants/ sandbox that
@@ -65,3 +68,19 @@ def base_context() -> TaskContext:
     return TaskContext(
         sample_id=0, raw_sample={"question": "What is 1+1?", "answer": "2"}
     )
+
+
+@pytest.fixture
+def warnings():
+    """Warning messages logged during the test; resume deprecations warn anew.
+
+    ``configure_logging()`` first: its first call in a process removes every
+    sink, so a CLI under test would otherwise drop this one.
+    """
+    configure_logging()
+    resume_option._warned.clear()
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(m.record["message"]), level="WARNING")
+    yield messages
+    logger.remove(sink)
+    resume_option._warned.clear()

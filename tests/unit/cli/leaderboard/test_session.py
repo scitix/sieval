@@ -6944,7 +6944,7 @@ class TestEvalSessionWrappers:
         EvalSessionCls.assert_called_once_with(
             config_path="cfg.yaml",
             model_override=None,
-            resume=False,
+            resume=None,
             result_dir_override=None,
             deterministic_override=None,
             endpoint_map=endpoint_map,
@@ -6972,7 +6972,7 @@ class TestEvalSessionWrappers:
             arun_session,
             "cfg.yaml",
             None,
-            False,
+            None,
             None,
             None,
             endpoint_map,

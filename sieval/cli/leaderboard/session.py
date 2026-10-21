@@ -1196,8 +1196,7 @@ def _configured_credential(
     return api_key
 
 
-#: The runner keys that say whether a run resumes; ``auto_resume`` and
-#: ``resume_from`` are deprecated aliases of ``resume``.
+#: ``resume`` and its deprecated aliases.
 _RESUME_KEYS = ("resume", "auto_resume", "resume_from")
 
 
@@ -1225,11 +1224,7 @@ def _drop_resume_keys(cfg: dict[str, Any]) -> None:
 
 
 def _fold_runner_resume_aliases(cfg: dict[str, Any]) -> None:
-    """Rewrite the deprecated ``auto_resume`` and ``resume_from`` as ``resume``.
-
-    In place, in the top-level ``runner_config`` and each task's. A directory
-    stays as written; each alias warns once.
-    """
+    """Rewrite ``auto_resume`` / ``resume_from`` as ``resume``, in place."""
     for where, block in _runner_config_blocks(cfg).items():
         if not {"auto_resume", "resume_from"} & block.keys():
             continue
@@ -1560,11 +1555,8 @@ class EvalSession:
     ):
         self.config_path = Path(config_path)
         self.model_override = model_override
-        # `True` resumes each task in place; a directory is a recorded session
-        # result_dir (or one task directory, when the config has one task) to
-        # start each task from, see `_cli_resume_for`. `resume_from` is its
-        # deprecated alias. Set to `True` below when it is this session's own
-        # result_dir.
+        # `True`, or a recorded session dir each task starts from; see
+        # `_cli_resume_for`.
         self.resume_override: ResumeValue = fold_resume_aliases(
             as_resume(resume),
             resume_from=resume_from,
@@ -1684,8 +1676,7 @@ class EvalSession:
             model=model_override,
             result_dir=result_dir_override,
         )
-        # The deprecated resume keys become `resume`, here so that both
-        # `effective_config.yaml` and the run read only the new key.
+        # Before persisting, so effective_config.yaml records only `resume`.
         _fold_runner_resume_aliases(reified)
         # Before the copy, so the digests reach both the persisted view (and
         # therefore --resume) and the runtime view below. Not where the
@@ -4897,10 +4888,8 @@ class EvalSession:
     ) -> TaskRunnerConfig:
         """Build TaskRunnerConfig from task config and defaults.
 
-        ``resume``: a directory in the YAML, per task before the top-level
-        defaults, wins over the session's ``resume``; otherwise the session's
-        applies, and without one the YAML's ``true`` or ``false``. A
-        directory that is the task's own ``result_dir`` resumes in place.
+        ``resume`` precedence: a YAML directory, then the CLI, then the YAML's
+        ``true`` / ``false``.
         """
         # Start with defaults
         cfg_dict = dict(defaults)
@@ -5035,8 +5024,7 @@ class EvalSession:
             return
         if not isinstance(before, dict) or not isinstance(after, dict):
             return
-        # `result_dir` is where the file lives and `resume` how this run
-        # started, not a change in what ran.
+        # Where the file lives and how the run started, not what ran.
         for cfg in (before, after):
             cfg.pop("result_dir", None)
             _drop_resume_keys(cfg)
@@ -5189,7 +5177,7 @@ class EvalSession:
 async def arun_session(
     config: str | Path,
     model: str | None = None,
-    resume: bool | str | Path | None = False,
+    resume: bool | str | Path | None = None,
     result_dir: str | None = None,
     deterministic: bool | None = None,
     endpoint_map: Mapping[str, str] | None = None,
@@ -5204,11 +5192,9 @@ async def arun_session(
     Args:
         config: Path to the YAML configuration file.
         model: Override model name for all base models.
-        resume: ``True`` resumes every task in its own result_dir. A directory
-            is a recorded session ``result_dir`` each task starts from
-            (``<resume>/<task>``), possibly read-only, or with one task that
-            task's directory; the session's own ``result_dir`` resumes in
-            place. See :meth:`EvalSession._cli_resume_for`.
+        resume: ``True`` resumes each task in place; a directory is a
+            recorded session ``result_dir`` each task starts from (see
+            :meth:`EvalSession._cli_resume_for`).
         result_dir: Override result directory.
         deterministic: Monotone override. ``None`` defers to YAML, ``True``
             forces on, ``False`` is a no-op (cannot downgrade YAML).
@@ -5251,7 +5237,7 @@ async def arun_session(
 def run_session(
     config: str | Path,
     model: str | None = None,
-    resume: bool | str | Path | None = False,
+    resume: bool | str | Path | None = None,
     result_dir: str | None = None,
     deterministic: bool | None = None,
     endpoint_map: Mapping[str, str] | None = None,

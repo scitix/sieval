@@ -1,17 +1,9 @@
-"""``--resume [DIR]``, shared by ``sieval run``, ``sieval eval`` and
-``sieval leaderboard run``.
+"""``--resume [DIR]`` for ``sieval run``, ``eval`` and ``leaderboard run``.
 
-``--resume`` alone resumes each task in its own result_dir; ``--resume DIR``
-starts each task from ``DIR/<task>`` of a recorded run (see
-:meth:`sieval.cli.leaderboard.session.EvalSession._cli_resume_for`).
-``--resume-from DIR`` is its deprecated alias.
-
-The value is optional, click's ``is_flag=False, flag_value=...``, so click
-takes the next token as ``DIR`` unless it starts with ``-``. Typer does not
-expose that, so :class:`ResumeCommand` sets it on the click option. It also
-keeps the forms ``--resume`` had as a flag: a token taken as ``DIR`` that
-leaves ``CONFIG`` empty goes back to ``CONFIG`` (``sieval run --resume
-cfg.yaml``), and ``-rv`` is still ``-r -v``.
+Typer cannot declare an option whose value is optional, so
+:class:`ResumeCommand` sets it up on the click option. It also keeps the forms
+``--resume`` had as a flag: ``--resume cfg.yaml`` still names the config, and
+``-rv`` is still ``-r -v``.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -25,8 +17,8 @@ from typer.core import TyperCommand
 
 from sieval.core.runners import ResumeValue, fold_resume_aliases
 
-#: What click passes for ``--resume`` given without a value. Not empty, which
-#: Typer turns into ``None``, and no path: a path holds no NUL.
+#: Click's value for a bare ``--resume``: not empty (Typer makes that ``None``)
+#: and never a path (no path holds NUL).
 _IN_PLACE = "\x00"
 
 RESUME_HELP = (
@@ -58,11 +50,9 @@ ResumeFromOption = Annotated[
 
 
 def cli_resume(resume: str | None, resume_from: Path | None) -> ResumeValue:
-    """``--resume [DIR]`` and its deprecated ``--resume-from DIR``, as one value.
+    """``True`` for a bare ``--resume``, a path for ``DIR``, else ``None``.
 
-    ``True`` for ``--resume`` alone, a path for a ``DIR``, ``None`` for
-    neither. ``--resume-from`` warns, and is refused beside a different
-    ``--resume DIR``.
+    Folds in the deprecated ``--resume-from``.
     """
     value: ResumeValue = (
         None if resume is None else True if resume == _IN_PLACE else Path(resume)
@@ -77,15 +67,14 @@ def cli_resume(resume: str | None, resume_from: Path | None) -> ResumeValue:
 
 
 class ResumeCommand(TyperCommand):
-    """A command with ``--resume [DIR]``; see the module docstring."""
+    """A command with ``--resume [DIR]``."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         for param in self.params:
             if param.name == "resume" and isinstance(param, click.Option):
-                # Typer 0.24 passes neither `flag_value` nor, by giving every
-                # option a default, the inferred `_flag_needs_value` that
-                # lets `--resume` stand alone.
+                # Typer 0.24 drops both; private click attribute, so
+                # TestParse.test_no_value_resumes_in_place guards it.
                 param.flag_value = _IN_PLACE
                 param._flag_needs_value = True
 
@@ -94,20 +83,19 @@ class ResumeCommand(TyperCommand):
         return super().parse_args(ctx, self._unswallow(ctx, args))
 
     def _split_short_flags(self, args: list[str]) -> list[str]:
-        """A short group holding ``r``, such as ``-rv`` or ``-vr``, one by one.
+        """Split a group of short flags holding ``r`` (``-rv``, ``-vr``).
 
-        Only when every other letter is a flag, so ``-rDIR`` stays a value.
-        Click would read the letters after ``r`` as ``DIR``; while ``-r`` was
-        a flag ``-rv`` was ``-r -v``, so ``r`` inside a group resumes in place
-        and ``r`` last is ``-r``, which may take the next token.
+        As when ``-r`` was a flag: ``r`` inside the group resumes in place,
+        ``r`` last is ``-r`` and may take the next token. ``-rDIR`` is left
+        alone; ``-r`` glued to a value-taking option is refused.
         """
-        flags = {
-            opt[1]
-            for p in self.params
-            if isinstance(p, click.Option) and p.is_flag
-            for opt in p.opts
-            if len(opt) == 2 and opt[0] == "-" and opt[1] != "-"
-        }
+        flags: set[str] = set()
+        short: set[str] = set()
+        for p in self.params:
+            if isinstance(p, click.Option) and p.name != "resume":
+                for opt in p.opts:
+                    if len(opt) == 2 and opt[0] == "-" and opt[1] != "-":
+                        (flags if p.is_flag else short).add(opt[1])
         out: list[str] = []
         for i, token in enumerate(args):
             if token == "--":
@@ -127,11 +115,17 @@ class ResumeCommand(TyperCommand):
                     else f"-{c}"
                     for j, c in enumerate(letters)
                 ]
+            elif token[:2] == "-r" and len(token) == 3 and token[2] in short:
+                # `-ro json` reads as `--resume o`, not `-r -o json`.
+                raise click.UsageError(
+                    f"{token} is ambiguous: use --resume=DIR or -r -{token[2]}"
+                )
             else:
                 out.append(token)
         return out
 
     def _unswallow(self, ctx: click.Context, args: list[str]) -> list[str]:
+        """Give ``--resume X`` back to ``CONFIG`` when ``CONFIG`` is missing."""
         try:
             opts, _, _ = self.make_parser(ctx).parse_args(args=list(args))
         except click.UsageError:

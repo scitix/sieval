@@ -209,18 +209,13 @@ class TaskRunnerConfig:
     Attributes:
         result_dir: Output directory for shards, manifest, and report.
             If ``None``, auto-generated under ``outputs/<task_name>/<timestamp>``.
-        resume: ``True`` resumes ``result_dir`` in place. A directory names a
-            recorded task directory, possibly another task's and read-only,
-            whose shards are copied into an empty ``result_dir`` and resumed
-            (see :mod:`sieval.core.runners.stage_resume`); ``result_dir``
-            itself resumes in place. A copy is ignored once ``result_dir``
-            holds a run, so the same config resumes an interrupted copy, and
-            one stopped before its run began is replaced by a new one. A
-            string is read as a directory (:mod:`.resume_option`).
-        auto_resume: Deprecated alias of ``resume=True``; folded into
-            ``resume`` and cleared.
-        resume_from: Deprecated alias of ``resume=<dir>``; folded into
-            ``resume`` and cleared.
+        resume: ``True`` resumes ``result_dir`` in place. A directory is a
+            recorded task directory (read-only ok) copied into an empty
+            ``result_dir`` and resumed; ``result_dir`` itself resumes in
+            place. Once ``result_dir`` holds a run the copy is skipped, so the
+            same config resumes an interrupted copy.
+        auto_resume: Deprecated; folded into ``resume`` and cleared.
+        resume_from: Deprecated; folded into ``resume`` and cleared.
         effective_config: The session's ``effective_config.yaml``, recorded in
             ``meta.json`` as ``config``. Not part of any identity.
     """
@@ -480,7 +475,6 @@ class TaskRunner:
         self._anomaly_results: dict[str | int, dict[int, dict[str, list[int]]]] = (
             defaultdict(dict)
         )
-        # Whether this run resumes at all, in place or from a copy.
         self._resumes = bool(self._config.resume)
         # Paths
         self._resumed_from_existing, self._root_dir = self._resolve_result_dir(

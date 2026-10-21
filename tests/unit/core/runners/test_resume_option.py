@@ -8,26 +8,13 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 from pathlib import Path
 
 import pytest
-from loguru import logger
 
-from sieval.core.runners import resume_option
 from sieval.core.runners.resume_option import (
     as_resume,
     fold_resume_aliases,
     resume_source,
 )
 from sieval.core.runners.runner import TaskRunnerConfig
-
-
-@pytest.fixture
-def warnings():
-    """Deprecation warnings logged, each process-wide once, reset per test."""
-    resume_option._warned.clear()
-    messages: list[str] = []
-    sink = logger.add(lambda m: messages.append(m.record["message"]), level="WARNING")
-    yield messages
-    logger.remove(sink)
-    resume_option._warned.clear()
 
 
 def _fold(resume=None, **aliases):
