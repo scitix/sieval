@@ -152,8 +152,7 @@ inject arbitrary Anthropic body fields or HTTP headers; in particular, there is
 currently no way to send the `anthropic-beta` header. Features that require a
 beta header are unsupported until they receive an explicit, audited mapping.
 
-The key is sent in the `x-api-key` header. `api_key_env` reads it from the
-named variable; a literal `api_key` also works. See
+The key is sent in the `x-api-key` header; see
 [Credentials](configuration.md#credentials).
 
 ### Google GenAI
@@ -174,9 +173,8 @@ models:
 The model name may be `gemini-...` or `models/gemini-...`. An endpoint root
 uses `v1beta`; an explicit `/v1` or `/v1beta` suffix selects that version, and
 gateway path prefixes are preserved. The key is sent only in the
-`x-goog-api-key` header; `api_key_env` or `api_key` supplies it (see
-[Credentials](configuration.md#credentials)). Vertex AI resource paths and
-OAuth are not supported.
+`x-goog-api-key` header (see [Credentials](configuration.md#credentials)).
+Vertex AI resource paths and OAuth are not supported.
 
 Supported: text and image input, function tools, the `google_search` and
 `url_context` hosted tools, JSON output, thinking controls, logprobs,

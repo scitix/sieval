@@ -1075,20 +1075,16 @@ def _strip_header(text: str) -> str:
     return _split_header(text)[1]
 
 
-#: Config keys whose value is a secret. ``api_key_env`` is not one: it names a
-#: variable, and the name is safe to record.
+#: Keys whose value is a secret. ``api_key_env`` only names a variable.
 _SECRET_CONFIG_KEYS = frozenset({"api_key", "authorization"})
-#: What a persisted audit file holds in place of a secret value.
 _REDACTED = "<redacted>"
 
 
 def _redact_secrets(value: Any) -> Any:
     """A copy of *value* with every secret config value, at any depth, redacted.
 
-    Audit files land in result directories that are often shared; a key in
-    one is a key handed to everyone who can read the volume. Credentials are
-    in no stage identity, so a resume against a redacted file compares the
-    same.
+    Matched by key name anywhere, so a task arg named ``api_key`` is redacted
+    too. Credentials are in no stage identity, so a resume compares the same.
     """
     if isinstance(value, Mapping):
         return {
@@ -1107,8 +1103,8 @@ def _diff_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
 
     Walks two parsed-config mappings depth-first. Empty list means the two
     parse to the same structure (any textual difference was whitespace /
-    formatting only). A changed secret (``api_key``, ``authorization``) is
-    recorded as changed, never by value: these lines reach ``meta.json``.
+    formatting only). Secret values are shown redacted: these lines reach
+    ``meta.json``.
     """
     diffs: list[str] = []
 
@@ -1140,17 +1136,13 @@ _INFERENCE_TASK_ARGS = ("n", "stop", "logprobs")
 _INFERENCE_RUNNER_CONFIG_KEYS = ("max_iterations", "max_retries")
 
 
-#: Config keys that carry a model's credential: the key itself, or the name of
-#: the environment variable holding it. Neither is an inference input.
+#: A model's credential, by value or by variable name. Neither is an inference
+#: input, and both are one credential scope.
 _CREDENTIAL_KEYS = ("api_key", "api_key_env")
+_ENV_VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _names_credential(config: Mapping[str, object]) -> bool:
-    """Whether ``config`` configures its own credential, by key or by variable.
-
-    Both forms are one credential scope, so switching between them, or
-    rotating the key, changes no identity.
-    """
     return any(key in config for key in _CREDENTIAL_KEYS)
 
 
@@ -1162,10 +1154,9 @@ def _configured_credential(
 ) -> str | None:
     """The credential ``config`` names, read from ``environ`` for ``api_key_env``.
 
-    A top-level key wins over the same key in ``args``. Setting both
-    ``api_key`` and ``api_key_env`` is refused, as is a named variable that is
-    unset or empty: a missing credential surfaces before any engine starts,
-    not as the first request's 401. The value is returned, never logged.
+    A top-level key wins over ``args``. Both forms at once, an unset or empty
+    variable, and a redacted key are refused, so a missing key fails before
+    any engine starts rather than as a 401.
     """
     api_key = config.get("api_key", nested.get("api_key"))
     env_name = config.get("api_key_env", nested.get("api_key_env"))
@@ -1176,7 +1167,7 @@ def _configured_credential(
             "variable that holds it"
         )
     if env_name is not None:
-        if not isinstance(env_name, str) or not env_name or "=" in env_name:
+        if not isinstance(env_name, str) or not _ENV_VAR_NAME.fullmatch(env_name):
             raise ValueError(
                 f"{subject} 'api_key_env' must name an environment variable, "
                 f"got {env_name!r}"
@@ -1243,7 +1234,8 @@ def _stage_config(cfg: Mapping[str, Any], task_name: str, stage: str) -> object:
         ):
             mcfg.pop(key, None)
         args = dict(mcfg.get("args") or {})
-        args.pop("concurrency_limit", None)
+        for key in ("api_key", "api_key_env", "concurrency_limit"):
+            args.pop(key, None)
         mcfg["args"] = args
         chain.append(mcfg)
         model_name = mcfg.get("base")
@@ -1981,8 +1973,7 @@ class EvalSession:
                 f"unsupported surface: {', '.join(paths)}"
             )
         if is_root:
-            # Resolve the credential now, so an unset ``api_key_env`` fails
-            # before any engine starts, on every dialect including the bypass.
+            # Fail an unset ``api_key_env`` here, on every dialect.
             _configured_credential(
                 config,
                 cast(Mapping[str, object], raw_args),
@@ -3613,11 +3604,7 @@ class EvalSession:
         subject: str = "Model",
         environ: Mapping[str, str] | None = None,
     ) -> tuple[str | None, int, int | None]:
-        """Extract client/pool options without treating them as request defaults.
-
-        The credential comes from ``api_key`` or, read from the environment
-        when the connection is built, from the variable ``api_key_env`` names.
-        """
+        """Extract client/pool options without treating them as request defaults."""
 
         args = config.get("args")
         nested: Mapping[str, object] = (
@@ -4973,11 +4960,11 @@ class EvalSession:
 
         Dumps ``self._reified_config`` (raw YAML + CLI reification + the
         resolved deterministic-seed contract, minus legacy endpoint-adapter
-        injection). User-supplied ``api_base`` and ``api_key_env`` names are
-        preserved; every ``api_key`` / ``authorization`` value is written as
-        ``<redacted>``, which a rerun of this file refuses. Runtime endpoints
-        are excluded, so ``sieval run <this file>`` can re-launch services
-        from the preserved ``path`` / ``infer`` fields.
+        injection). User-supplied ``api_base`` and ``api_key_env`` are
+        preserved; ``api_key`` / ``authorization`` values are redacted, and a
+        rerun of this file refuses them. Runtime endpoints are excluded, so
+        ``sieval run <this file>`` can re-launch services from the preserved
+        ``path`` / ``infer`` fields.
         """
         body = yaml.safe_dump(
             _redact_secrets(self._reified_config),

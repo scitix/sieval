@@ -54,10 +54,7 @@ _TASK_MODEL_ROLE_SENTINELS: Mapping[str, frozenset[str]] = MappingProxyType(
     {"extractor": frozenset({"self"})}
 )
 COMPOSITION_OWNED_TASK_ARGS = frozenset({"dataset", "model", "models_by_role", "name"})
-# Keys left out of an inline binding's identity. ``api_key`` and
-# ``authorization`` are secrets; ``api_key_env`` only names where the key is
-# read from. None of them changes what the model answers, so rotating a key,
-# renaming its variable, or switching between the two forms keeps the binding.
+# Left out of an inline binding's identity: none changes what the model answers.
 _INLINE_CREDENTIAL_KEYS = frozenset({"api_key", "api_key_env", "authorization"})
 
 

@@ -1024,6 +1024,33 @@ class TestResumeFromSurface:
             "inference": False,
         }
 
+    @pytest.mark.parametrize(
+        ("recorded", "current"),
+        [
+            ("api_key: <redacted>", "api_key: sk-live"),
+            ("api_key_env: KEY_A", "api_key_env: KEY_B"),
+            ("api_key: sk-old", "api_key_env: KEY_B"),
+        ],
+    )
+    def test_a_credential_in_args_is_not_inference(
+        self, tmp_path: Path, recorded: str, current: str
+    ):
+        def with_args(line: str) -> str:
+            return self.CONFIG.replace(
+                "    api_base: http://a/v1\n",
+                f"    api_base: http://a/v1\n    args:\n      {line}\n",
+            )
+
+        old = tmp_path / "old"
+        (old / "qa").mkdir(parents=True)
+        (old / "effective_config.yaml").write_text(with_args(recorded))
+        session = self._session(tmp_path, resume_from=old, body=with_args(current))
+        rc = session._build_runner_config({}, {}, "qa")
+        assert session._legacy_match_for("qa", rc) == {
+            "data": True,
+            "inference": True,
+        }
+
     def test_no_recorded_config_leaves_stages_unknown(self, tmp_path: Path):
         (tmp_path / "old" / "qa").mkdir(parents=True)
         session = self._session(tmp_path, resume_from=tmp_path / "old")

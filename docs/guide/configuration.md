@@ -63,10 +63,10 @@ tasks:
 
 ## Credentials
 
-A model's key is either written as `api_key` or read from the environment
-variable named by `api_key_env`. Both are accepted on a root model (top level
-or under `args`) and on an inline role model in task args (`grader`,
-`extractor`), and every dialect sends the key in its own header.
+Write a key as `api_key`, or name the environment variable holding it with
+`api_key_env` (the loader does not expand `${VAR}`). Either is accepted on a
+root model (top level or `args`) and on an inline `grader` / `extractor`, on
+every dialect. A derived model (`base:`) uses its root's key.
 
 ```yaml
 models:
@@ -88,27 +88,17 @@ tasks:
                 api_key_env: SIEVAL_JUDGE_API_KEY
 ```
 
-The YAML loader does not expand `${VAR}` in `api_key`; `api_key_env` is the way
-to keep a key out of a config file.
+- Setting both is refused. An unset or empty variable fails before any engine
+  starts, `--dry-run` included.
+- `effective_config.yaml` and `infer_plans.yaml` keep the variable name but
+  write every `api_key` / `authorization` value as `<redacted>`; rerunning such
+  a file is refused until the key is supplied again.
+- Credentials are in no identity: rotating a key, renaming its variable or
+  switching forms resumes without a rerun or regrade. `runs[].config` records
+  a switch of form, not a rotated value.
 
-- Setting both `api_key` and `api_key_env` on one model is refused.
-- An unset or empty variable fails before any engine starts, naming the model
-  or task role and the variable.
-- A derived model (`base:`) uses its root's key and cannot set either.
-- The value is never written to `effective_config.yaml`, `meta.json`, logs or
-  any identity. The variable name is kept in `effective_config.yaml` so the
-  file reruns where the variable is set.
-- A literal `api_key` or `authorization` is written to `effective_config.yaml`
-  and `infer_plans.yaml` as `<redacted>`. Rerunning such a file is refused
-  until the key is restored or replaced by `api_key_env`.
-- Neither the key nor the variable name is part of a stage identity. Rotating
-  a key, renaming its variable or switching between the two forms resumes
-  without a rerun or regrade; `runs[].config` notes the change and shows a
-  changed `api_key` as `<redacted>`.
-
-Omit both only when the endpoint needs no authentication. An `openai_chat` or
-`openai_completions` model with neither falls back to `OPENAI_API_KEY`, as the
-OpenAI client does.
+With neither set, `openai_chat` / `openai_completions` fall back to
+`OPENAI_API_KEY`, as the OpenAI client does.
 
 ## Task Pipeline
 

@@ -4407,7 +4407,7 @@ tasks:
         ):
             session.prepare_prelaunch()
 
-    @pytest.mark.parametrize("name", ["", "A=B", 3])
+    @pytest.mark.parametrize("name", ["", "A=B", "MY KEY", "1KEY", 3])
     def test_api_key_env_must_name_a_variable(
         self, tmp_path: Path, name: object
     ) -> None:
