@@ -6,6 +6,8 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 
 import hashlib
 import json
+import os
+import subprocess
 import sys
 import textwrap
 from datetime import UTC, datetime
@@ -23,6 +25,7 @@ from sieval.core.tasks.run_meta import (
     JUDGE_MODEL_REF_ENV,
     JudgeIdentity,
     _file_key,
+    _without_own_name,
     aggregate_digest,
     call_key,
     canonical_json,
@@ -583,16 +586,6 @@ class TestGraderKeysByPath:
         assert {"./task.py", "./scoring.py", "./_dynamic.py"} <= set(modules)
         assert modules == grader_modules(merged)
 
-    def test_an_absolute_self_import_digests_per_name(self, load):
-        """The name is in the file's bytes, so only a relative import keys a
-        renamed copy the same."""
-        task = "from {pkg}.scoring import grade\nclass VTask:\n    pass\n"
-        local = load("sieval_plugins", task.format(pkg="sieval_plugins"))
-        name = "sieval_plugins__ugmathbench__math1k_ex"
-        merged = load(name, task.format(pkg=name))
-        assert set(grader_modules(local)) == set(grader_modules(merged))
-        assert grader_modules(local) != grader_modules(merged)
-
     def test_a_file_outside_its_package_is_refused(self):
         with pytest.raises(ValueError, match="outside package"):
             _file_key("sieval.tasks.x", "/elsewhere/x.py", None)
@@ -612,6 +605,260 @@ class TestGraderKeysByPath:
         assert grader_task(GSM8KZeroShotGenTask) == (
             "sieval/tasks/gsm8k_0shot_gen.py:GSM8KZeroShotGenTask"
         )
+
+
+#: Env var naming sieval-plugins' ``tools/variants/rewrite.py``; the test that
+#: runs it is skipped without one.
+REWRITE_ENV = "SIEVAL_TEST_VARIANT_REWRITE"
+
+
+class TestGraderOwnPackageName:
+    """A plugin importing itself by absolute name digests the same once a
+    tool renames the package and its imports, as sieval-plugins' variant
+    rewrite does to merge variants into one process (#170)."""
+
+    OWN = "sieval_plugins"
+    RENAMED = "sieval_plugins__ugmathbench__math1k_ex"
+
+    #: Each absolute import form, a string, a comment and an attribute
+    #: naming the package, which stay as they are.
+    TASK = (
+        '"""Grades with {pkg}.scoring."""\n'
+        "import json\n"
+        "import {pkg}\n"
+        "import {pkg}.scoring\n"
+        "import {pkg}.scoring as sc\n"
+        "import os, {pkg}.scoring as sc2\n"
+        "from {pkg} import scoring  # trailing comment kept\n"
+        "from {pkg}.scoring import (\n"
+        "    grade,\n"
+        ")\n"
+        "from sieval.core.tasks.task import Task\n"
+        "from sieval_shared import RUBRIC\n"
+        "from . import scoring as rel\n"
+        "NAME = 'see {pkg} docs'  # {pkg}\n"
+        "class VTask(Task):\n"
+        "    def score(self):\n"
+        "        return {pkg}.scoring.grade() + sc.grade() + json.loads('1')\n"
+    )
+
+    #: ``TASK`` as the variant rewrite writes it under package *pkg*.
+    REWRITTEN = (
+        '"""Grades with sieval_plugins.scoring."""\n'
+        "import json\n"
+        "import {pkg} as sieval_plugins\n"
+        "import {pkg}.scoring, {pkg} as sieval_plugins\n"
+        "import {pkg}.scoring as sc\n"
+        "import os, {pkg}.scoring as sc2\n"
+        "from {pkg} import scoring  # trailing comment kept\n"
+        "from {pkg}.scoring import grade\n"
+        "from sieval.core.tasks.task import Task\n"
+        "from sieval_shared import RUBRIC\n"
+        "from . import scoring as rel\n"
+        "NAME = 'see sieval_plugins docs'  # sieval_plugins\n"
+        "class VTask(Task):\n"
+        "    def score(self):\n"
+        "        return sieval_plugins.scoring.grade() + sc.grade() + "
+        "json.loads('1')\n"
+    )
+
+    #: Imported by nothing, so only the whole-package walk digests it.
+    SELFTEST = "from {pkg}.scoring import grade\nassert grade() == 1\n"
+
+    @staticmethod
+    def write(root, name: str, task: str, selftest: str) -> None:
+        pkg = root / name
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("")
+        (pkg / "scoring.py").write_text("def grade():\n    return 1\n")
+        (pkg / "_selftest.py").write_text(selftest)
+        (pkg / "task.py").write_text(task)
+
+    @pytest.fixture
+    def load(self, tmp_path, monkeypatch):
+        import importlib
+
+        shared = tmp_path / "shared" / "sieval_shared"
+        shared.mkdir(parents=True)
+        (shared / "__init__.py").write_text("RUBRIC = 1\n")
+        monkeypatch.syspath_prepend(str(tmp_path / "shared"))
+        loaded: list[str] = []
+
+        def load(root, name: str) -> type:
+            monkeypatch.syspath_prepend(str(root))
+            loaded.append(name)
+            return importlib.import_module(f"{name}.task").VTask
+
+        yield load
+        for name in list(sys.modules):
+            if name.partition(".")[0] in (*loaded, "sieval_shared"):
+                sys.modules.pop(name, None)
+
+    def original(self, tmp_path, load) -> type:
+        root = tmp_path / "original"
+        own = self.OWN
+        self.write(root, own, self.TASK.format(pkg=own), self.SELFTEST.format(pkg=own))
+        return load(root, own)
+
+    def test_a_rewritten_copy_digests_the_same(self, tmp_path, load):
+        original = self.original(tmp_path, load)
+        root = tmp_path / "rewritten"
+        name = self.RENAMED
+        self.write(
+            root,
+            name,
+            self.REWRITTEN.format(pkg=name),
+            self.SELFTEST.format(pkg=name),
+        )
+        renamed = load(root, name)
+        assert grader_modules(original) == grader_modules(renamed)
+
+    def test_the_name_outside_an_import_still_counts(self, tmp_path, load):
+        """A renamed copy whose code, not just its imports, spells the new
+        name differs: only import statements are normalised."""
+        original = self.original(tmp_path, load)
+        root = tmp_path / "copy"
+        name = self.RENAMED
+        task = self.REWRITTEN.replace("return sieval_plugins.", "return {pkg}.")
+        task = task.replace(" as sieval_plugins\n", " as {pkg}\n")
+        self.write(root, name, task.format(pkg=name), self.SELFTEST.format(pkg=name))
+        renamed = grader_modules(load(root, name))
+        assert renamed["./task.py"] != grader_modules(original)["./task.py"]
+        assert renamed["./_selftest.py"] == grader_modules(original)["./_selftest.py"]
+
+    def test_an_unimported_file_with_a_self_import_counts(self, tmp_path, load):
+        original = self.original(tmp_path, load)
+        before = grader_modules(original)
+        assert "./_selftest.py" in before
+        selftest = tmp_path / "original" / self.OWN / "_selftest.py"
+        selftest.write_text(self.SELFTEST.format(pkg=self.OWN) + "# edited\n")
+        after = grader_modules(original)
+        assert after["./_selftest.py"] != before["./_selftest.py"]
+
+    def test_a_changed_import_target_still_counts(self, tmp_path, load):
+        """Only the package's own name is left out, not what it imports."""
+        original = self.original(tmp_path, load)
+        before = grader_modules(original)
+        task = tmp_path / "original" / self.OWN / "task.py"
+        edited = task.read_text().replace("    grade,\n", "    grade as g,\n")
+        assert edited != task.read_text()
+        task.write_text(edited)
+        assert grader_modules(original)["./task.py"] != before["./task.py"]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "from sieval_shared import RUBRIC\n",
+            "from sieval_plugins__other__v1.scoring import grade\n",
+            "import sieval_plugins__other__v1.scoring\n",
+            "import sieval\n",
+        ],
+    )
+    def test_another_packages_name_still_counts(self, line):
+        """A cross-package import names code this one depends on, whose name
+        the key does not record."""
+        renamed = line.replace("sieval_shared", "sieval_shared2").replace(
+            "__other__v1", "__other__v2"
+        )
+        renamed = renamed.replace("import sieval\n", "import sieval2\n")
+        own = self.OWN
+        assert _without_own_name(line.encode(), own) == line.encode()
+        assert _without_own_name(line.encode(), own) != _without_own_name(
+            renamed.encode(), own
+        )
+
+    def test_a_file_without_a_self_import_hashes_its_raw_bytes(self, tmp_path, load):
+        """As on 81ad90c: the rotation touches only files with a self-import."""
+        original = self.original(tmp_path, load)
+        pkg = tmp_path / "original" / self.OWN
+        modules = grader_modules(original)
+        for rel in ("__init__.py", "scoring.py"):
+            raw = hashlib.sha256((pkg / rel).read_bytes()).hexdigest()
+            assert modules[f"./{rel}"] == f"sha256:{raw}"
+        shared = (tmp_path / "shared" / "sieval_shared" / "__init__.py").read_bytes()
+        assert modules["sieval_shared/__init__.py"] == (
+            f"sha256:{hashlib.sha256(shared).hexdigest()}"
+        )
+        task = (pkg / "task.py").read_bytes()
+        assert modules["./task.py"] != f"sha256:{hashlib.sha256(task).hexdigest()}"
+
+    def test_only_the_import_spans_change(self):
+        source = self.TASK.format(pkg=self.OWN).encode()
+        out = _without_own_name(source, self.OWN).decode()
+        assert "import <package> as sieval_plugins\n" in out
+        assert "import <package>.scoring, <package> as sieval_plugins\n" in out
+        assert "from <package> import scoring  # trailing comment kept\n" in out
+        assert "from <package>.scoring import grade\n" in out
+        assert "'see sieval_plugins docs'  # sieval_plugins\n" in out
+        assert '"""Grades with sieval_plugins.scoring."""' in out
+        assert "return sieval_plugins.scoring.grade()" in out
+        assert "from . import scoring as rel\n" in out
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            b"from sieval_plugins.scoring import grade\ndef broken(:\n",
+            b"# -*- coding: latin-1 -*-\nimport sieval_plugins.x\nS = '\xe9'\n",
+            b"import sieval_plugins.x\nS = '\xff'\n",
+        ],
+        ids=["syntax-error", "latin-1", "not-utf-8"],
+    )
+    def test_an_unreadable_file_keeps_its_raw_bytes(self, source):
+        assert _without_own_name(source, self.OWN) == source
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [b"\xef\xbb\xbf", b"# -*- coding: latin-1 -*-\n"],
+        ids=["byte-order-mark", "latin-1-cookie"],
+    )
+    def test_offsets_index_the_utf_8_bytes(self, prefix):
+        """Column offsets count UTF-8 bytes of the decoded text, whatever
+        the file declares, so a multibyte character before the import does
+        not shift the span."""
+        line = "S = '\u00e9'; from sieval_plugins import x  # \u00e9\n"
+        out = _without_own_name(prefix + line.encode(), self.OWN)
+        expected = line.replace("sieval_plugins", "<package>")
+        assert out == prefix + expected.encode()
+
+    @pytest.mark.skipif(
+        not os.environ.get(REWRITE_ENV), reason=f"{REWRITE_ENV} is not set"
+    )
+    def test_sieval_plugins_variant_rewrite_digests_the_same(self, tmp_path, load):
+        """Runs the real tool on a copy, as a merged run would."""
+        original = self.original(tmp_path, load)
+        target = tmp_path / "merged"
+        script = (
+            "import importlib.util, pathlib, sys\n"
+            "spec = importlib.util.spec_from_file_location('rewrite', sys.argv[1])\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "sys.modules['rewrite'] = mod\n"
+            "spec.loader.exec_module(mod)\n"
+            "copied = mod.copy_package(\n"
+            "    pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]),"
+            " 'ugmathbench/math1k-ex'\n"
+            ")\n"
+            "print(copied.package)\n"
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                script,
+                os.environ[REWRITE_ENV],
+                str(tmp_path / "original"),
+                str(target),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        name = result.stdout.strip().splitlines()[-1]
+        assert name == self.RENAMED
+        assert (target / name / "task.py").read_text() == self.REWRITTEN.format(
+            pkg=name
+        )
+        assert grader_modules(original) == grader_modules(load(target, name))
 
 
 class TestGraderPatchesAndDynamicImports:
