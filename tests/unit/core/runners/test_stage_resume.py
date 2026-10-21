@@ -6,6 +6,7 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import os
+import shutil
 import stat
 from pathlib import Path
 
@@ -14,9 +15,12 @@ import orjson
 import pytest
 from loguru import logger
 
+from sieval.core.runners import runner as runner_module
+from sieval.core.runners import stage_resume
 from sieval.core.runners.resume_gate import ResumeVersionError
-from sieval.core.runners.runner import TaskRunner
+from sieval.core.runners.runner import TaskRunner, UnfinishedCopyError, run_started
 from sieval.core.runners.stage_resume import (
+    COPY_MARKER,
     StageResumeError,
     copy_recorded_dir,
     recorded_identity,
@@ -414,7 +418,8 @@ class TestResumeFrom:
         (src / "logs").mkdir()
         dst = tmp_path / "dst"
         copy_recorded_dir(src, dst)
-        assert sorted(p.name for p in dst.iterdir()) == ["0"]
+        # The marker stays until the run that copied records itself.
+        assert sorted(p.name for p in dst.iterdir()) == [COPY_MARKER, "0"]
         # Shifted under the new run's ordinals, keeping their order; a line
         # without the column is run 0.
         assert (dst / "0" / "final" / "0.idx").read_text() == (
@@ -697,3 +702,186 @@ def test_recorded_identity_reads_only_this_schema():
     assert identity is not None
     assert identity["data"] == {"digest": "x"}
     assert identity["grader"] is None
+
+
+# ===================================================================
+# A resume_from copy interrupted before its run began
+# ===================================================================
+class _Killed(BaseException):
+    """Stands in for SIGKILL: nothing after it runs, the rollback included."""
+
+
+class TestInterruptedCopy:
+    """The same ``resume_from`` command resumes a copy wherever a kill
+    stopped it. A kill runs no rollback, so each test disables it."""
+
+    @staticmethod
+    def _no_rollback(monkeypatch):
+        monkeypatch.setattr(TaskRunner, "_abandon_copy", lambda self: None)
+        monkeypatch.setattr(stage_resume, "abandon_copy", lambda root, created: None)
+
+    @staticmethod
+    async def _rerun(tmp_path, src):
+        task, model = _task(cls=StrictQATask)
+        runner, report = await _run(tmp_path, "second", task, resume_from=str(src))
+        assert model.call_count == 0
+        assert task.calls["feedback"] == 3
+        assert report["strict"] is True
+        assert not (runner.root_dir / COPY_MARKER).exists()
+        return _meta(runner.root_dir)
+
+    @pytest.mark.anyio
+    async def test_killed_during_the_copy(self, tmp_path, monkeypatch):
+        src = await _first(tmp_path)
+        (src / "1" / "final").mkdir(parents=True)
+        (src / "1" / "final" / "0.idx").write_text("")
+        (src / "1" / "final" / "0.jsonl").write_text("")
+        copied = 0
+        original = stage_resume._copy_idx
+
+        def _copy_one(*args):
+            nonlocal copied
+            if copied:
+                raise _Killed
+            copied += 1
+            original(*args)
+
+        with monkeypatch.context() as m:
+            self._no_rollback(m)
+            m.setattr(stage_resume, "_copy_idx", _copy_one)
+            task, _ = _task(cls=StrictQATask)
+            with pytest.raises(_Killed):
+                await _run(tmp_path, "second", task, resume_from=str(src))
+        dst = tmp_path / "second"
+        assert (dst / COPY_MARKER).read_text() == str(src)
+        assert list(dst.rglob("*.idx"))
+        assert not (dst / "meta.json").exists()
+        assert run_started(dst)
+
+        meta = await self._rerun(tmp_path, src)
+        assert [r["start"] for r in meta["runs"]] == ["from"]
+        assert meta["runs"][0]["reran"] == ["grader"]
+
+    @pytest.mark.anyio
+    async def test_killed_after_the_copy_before_meta(self, tmp_path, monkeypatch):
+        """Resume planning (load, hydrate, plan) runs between the copy and
+        ``meta.json``."""
+        src = await _first(tmp_path)
+
+        async def _plan(_self):
+            raise _Killed
+
+        with monkeypatch.context() as m:
+            self._no_rollback(m)
+            m.setattr(TaskRunner, "_plan_stage_resume", _plan)
+            task, _ = _task(cls=StrictQATask)
+            with pytest.raises(_Killed):
+                await _run(tmp_path, "second", task, resume_from=str(src))
+        dst = tmp_path / "second"
+        assert (dst / COPY_MARKER).exists()
+        assert sorted(p.name for p in dst.iterdir()) == [COPY_MARKER, "0"]
+
+        meta = await self._rerun(tmp_path, src)
+        assert [r["start"] for r in meta["runs"]] == ["from"]
+
+    @pytest.mark.anyio
+    async def test_killed_after_meta(self, tmp_path, monkeypatch):
+        """``meta.json`` records the run, so the marker beside it is stale:
+        the copy is this directory's run and is resumed, not copied again."""
+        src = await _first(tmp_path)
+
+        def _end_copy(_root):
+            raise _Killed
+
+        with monkeypatch.context() as m:
+            m.setattr(runner_module, "end_copy", _end_copy)
+            task, _ = _task(cls=StrictQATask)
+            with pytest.raises(_Killed):
+                await _run(tmp_path, "second", task, resume_from=str(src))
+        dst = tmp_path / "second"
+        assert (dst / COPY_MARKER).exists()
+        assert [r["start"] for r in _meta(dst)["runs"]] == ["from"]
+
+        meta = await self._rerun(tmp_path, src)
+        assert [r["start"] for r in meta["runs"]] == ["from", "resume"]
+
+    @pytest.mark.anyio
+    async def test_the_reviewer_reproduction(self, tmp_path):
+        """A source's shards copied by hand into an empty directory, as a kill
+        during the copy leaves them, with the marker the copy writes first."""
+        src = await _first(tmp_path)
+        dst = tmp_path / "second"
+        dst.mkdir()
+        (dst / COPY_MARKER).write_text(str(src))
+        shutil.copytree(src / "0", dst / "0")
+        meta = await self._rerun(tmp_path, src)
+        assert [r["start"] for r in meta["runs"]] == ["from"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("auto_resume", [True, False])
+    async def test_without_resume_from_names_the_copy(
+        self, tmp_path, monkeypatch, auto_resume
+    ):
+        """A plain ``--resume`` has no source to copy again, and the copy is
+        no run to resume; nothing is touched."""
+        src = await _first(tmp_path)
+
+        async def _plan(_self):
+            raise _Killed
+
+        with monkeypatch.context() as m:
+            self._no_rollback(m)
+            m.setattr(TaskRunner, "_plan_stage_resume", _plan)
+            task, _ = _task(cls=StrictQATask)
+            with pytest.raises(_Killed):
+                await _run(tmp_path, "second", task, resume_from=str(src))
+        dst = tmp_path / "second"
+        before = {p: p.read_bytes() for p in dst.rglob("*") if p.is_file()}
+        task, _ = _task(cls=StrictQATask)
+        with pytest.raises(UnfinishedCopyError) as exc:
+            TaskRunner(
+                task,
+                make_config(tmp_path, result_dir=str(dst), auto_resume=auto_resume),
+            )
+        assert exc.value.path == dst
+        assert exc.value.source == str(src)
+        assert "same `resume_from`" in str(exc.value)
+        assert {p: p.read_bytes() for p in dst.rglob("*") if p.is_file()} == before
+
+    @pytest.mark.anyio
+    async def test_a_refused_copy_removes_its_marker(self, tmp_path):
+        src = await _first(tmp_path)
+        task, _ = _task(cls=StrictQATask, n=2)
+        with pytest.raises(StageResumeError):
+            await _run(tmp_path, "second", task, resume_from=str(src))
+        dst = tmp_path / "second"
+        assert not (dst / COPY_MARKER).exists()
+        assert not run_started(dst)
+
+    def test_a_failed_copy_removes_its_marker(self, tmp_path, monkeypatch):
+        src = tmp_path / "src"
+        (src / "0" / "final").mkdir(parents=True)
+        (src / "0" / "final" / "0.idx").write_text("0\t0\tfinal\t0\t3\t\t\t0\t1\n")
+        (src / "0" / "final" / "0.jsonl").write_text("{}\n")
+
+        def _fail(*_args):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(stage_resume, "_copy_idx", _fail)
+        dst = tmp_path / "dst"
+        with pytest.raises(OSError, match="disk full"):
+            copy_recorded_dir(src, dst)
+        assert list(dst.iterdir()) == []
+
+    def test_a_shard_dir_left_by_the_rollback_keeps_the_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """A removal that missed a directory leaves it replaceable, not
+        unmarked shards that would lock the directory."""
+        dst = tmp_path / "dst"
+        (dst / "0" / "final").mkdir(parents=True)
+        (dst / "0" / "final" / "0.idx").write_text("")
+        (dst / COPY_MARKER).write_text("src")
+        monkeypatch.setattr(stage_resume, "remove_copied", lambda created: None)
+        stage_resume.abandon_copy(dst, [dst / "0"])
+        assert (dst / COPY_MARKER).exists()

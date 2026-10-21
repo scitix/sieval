@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- A `--resume-from` run killed before `meta.json` recorded it resumes on the same command. 0.10.0 moved the copy into `TaskRunner.arun` so that a runner never run copies nothing (#160), but left a window between the copy and `meta.json`, resume planning included, in which a kill left shards and no `meta.json`; the next run refused the directory as a run of unknown version. The copy now writes `.copying` first and removes it once `meta.json` records the run, and the same `resume_from` replaces a marked directory with a fresh copy. `--resume` without `--resume-from` refuses one and names its source (`UnfinishedCopyError`).
+- Only SiEval's stage directories (`<iteration>/<stage>/`, one per `TaskStage`) hold shards: an `.idx` under any other directory neither marks a run started nor is loaded.
+
 ## [0.10.0] - 2026-10-20
 
 A minor bump for four breaking changes, all in on-disk or CLI-report contracts:

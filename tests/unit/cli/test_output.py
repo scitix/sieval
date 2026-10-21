@@ -23,7 +23,7 @@ from sieval.cli.output import (
     is_cli_command,
     render,
 )
-from sieval.core.runners import ResultDirExistsError
+from sieval.core.runners import ResultDirExistsError, UnfinishedCopyError
 
 
 def _collect_log_user(mock_log_user):
@@ -77,6 +77,16 @@ class TestCliErrorMessage:
         assert "--resume" in msg
         assert "--result-dir" in msg
         assert "auto_resume=True" not in msg
+
+    def test_unfinished_copy_surfaces_cli_flags(self, tmp_path):
+        exc = UnfinishedCopyError(tmp_path / "dst", str(tmp_path / "src"))
+        msg = cli_error_message(exc)
+
+        assert str(tmp_path / "dst") in msg
+        assert str(tmp_path / "src") in msg
+        assert "--resume-from" in msg
+        assert "--result-dir" in msg
+        assert "`resume_from`" not in msg
 
     def test_generic_exception_falls_through_to_str(self):
         assert cli_error_message(RuntimeError("kaboom")) == "kaboom"

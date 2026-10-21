@@ -27,7 +27,11 @@ from sieval.core.tasks.concurrency import (
     min_limit,
     prepare_limiters,
 )
-from sieval.core.tasks.consts import NON_RETRIABLE_REASON, NonRetriableSampleError
+from sieval.core.tasks.consts import (
+    NON_RETRIABLE_REASON,
+    STAGE_DIRS,
+    NonRetriableSampleError,
+)
 from sieval.core.tasks.context import (
     TaskAction,
     TaskContext,
@@ -83,12 +87,14 @@ from .resume_gate import (
 from .stage_resume import (
     LegacyStageMatch,
     StageResumeError,
+    abandon_copy,
+    copy_pending,
     copy_recorded_dir,
+    end_copy,
     has_graded,
     iteration_dirs,
     recorded_identity,
     recorded_sample_digests,
-    remove_copied,
 )
 
 #: Key of the run's own counts in ``report.json``.
@@ -162,6 +168,22 @@ class ResultDirExistsError(FileExistsError):
         )
 
 
+class UnfinishedCopyError(FileExistsError):
+    """``result_dir`` holds an unfinished ``resume_from`` copy and this run
+    names no source to copy again. ``.path`` is the directory, ``.source``
+    the copy's source."""
+
+    def __init__(self, path: Path, source: str) -> None:
+        self.path = path
+        self.source = source
+        super().__init__(
+            f"Resume aborted: {path} holds an unfinished copy of {source}, made "
+            "by `resume_from` and stopped before its run began.\n"
+            "Run again with the same `resume_from` to copy it again, or start "
+            "fresh in another result_dir."
+        )
+
+
 class UnreadableIntervalError(ValueError):
     """A finished report publishes an interval no reader can use.
 
@@ -194,7 +216,8 @@ class TaskRunnerConfig:
             read-only, whose shards are copied into an empty ``result_dir`` and
             resumed (see :mod:`sieval.core.runners.stage_resume`). Implies
             ``auto_resume``; ignored once ``result_dir`` holds a run, so the
-            same config resumes an interrupted copy.
+            same config resumes an interrupted copy. A copy stopped before
+            its run began is replaced by a new one.
     """
 
     result_dir: str | None = None
@@ -276,8 +299,33 @@ def run_started(root_dir: Path) -> bool:
 
 
 def _holds_shards(root_dir: Path) -> bool:
-    """Whether *root_dir* holds any shard index, ``<iteration>/<stage>/*.idx``."""
-    return any(next(d.glob("*/*.idx"), None) for d in iteration_dirs(root_dir))
+    """Whether *root_dir* holds any shard index, ``<iteration>/<stage>/*.idx``.
+
+    Only SiEval's stage directories count, so a stray ``0/backup/x.idx`` does
+    not start a run.
+    """
+    return any(
+        next(d.glob(f"{stage}/*.idx"), None)
+        for d in iteration_dirs(root_dir)
+        for stage in STAGE_DIRS
+    )
+
+
+def _unfinished_copy(root_dir: Path) -> str | None:
+    """The source of a ``resume_from`` copy into *root_dir* that no run
+    began on, or ``None``.
+
+    A copy writes :data:`~sieval.core.runners.stage_resume.COPY_MARKER`
+    first and removes it once ``meta.json`` records the run, so a marker with
+    no ``runs[]`` is a copy a kill left, possibly partial. A marker beside a
+    recorded run is stale and ignored.
+    """
+    source = copy_pending(root_dir)
+    if source is None:
+        return None
+    meta = _read_run_meta(root_dir)
+    runs = meta.get("runs") if meta is not None else None
+    return None if isinstance(runs, list) and runs else source
 
 
 def read_run_version(root_dir: Path) -> str | None:
@@ -566,8 +614,10 @@ class TaskRunner:
 
             if self._recorded is not None:
                 self._seed_judge_versions(self._recorded)
-            # Copied here, not in `__init__`: copied shards without a run
-            # would read as started and lock result_dir.
+            # Copied here, not in `__init__`, so a runner never run copies
+            # nothing. Until `_begin_run` records the run, the copy is marked
+            # unfinished: a kill in between leaves a directory the same
+            # `resume_from` copies into again (see `_resolve_result_dir`).
             if self._run_from is not None:
                 self._copied = copy_recorded_dir(
                     Path(self._run_from["dir"]), self._root_dir
@@ -578,6 +628,8 @@ class TaskRunner:
             except BaseException:
                 self._abandon_copy()
                 raise
+            # Also clears a marker left by a kill after `meta.json` was written.
+            end_copy(self._root_dir)
 
             # 1. Load Initial State
             if not resumed:
@@ -1570,10 +1622,12 @@ class TaskRunner:
 
     def _abandon_copy(self) -> None:
         """Undo a ``resume_from`` copy no run began on."""
+        if self._run_from is None:
+            return
         if self._copied:
-            remove_copied(self._copied)
             (self._root_dir / "meta.json").unlink(missing_ok=True)
-            self._copied = []
+        abandon_copy(self._root_dir, self._copied)
+        self._copied = []
 
     def _recorded_stages_match(self) -> bool:
         """Whether a finished run may be fast-resumed: same data, inference and
@@ -2055,7 +2109,7 @@ class TaskRunner:
             p = Path(result_dir).expanduser()
             if p.exists() and p.is_file():
                 raise ValueError("result_dir is a file")
-            if p.exists() and run_started(p):
+            if self._holds_run(p):
                 if not auto_resume:
                     raise ResultDirExistsError(p)
                 return True, p
@@ -2069,10 +2123,26 @@ class TaskRunner:
             ]
             if candidates:
                 latest = max(candidates, key=lambda x: x.name)
-                if run_started(latest):
+                if self._holds_run(latest):
                     return True, latest
         ts = datetime.now().strftime("%Y%m%d%H%M%S")
         return False, root / ts
+
+    def _holds_run(self, p: Path) -> bool:
+        """Whether *p* holds a run this one would resume or refuse.
+
+        An unfinished ``resume_from`` copy holds none when this run copies
+        again; otherwise :class:`UnfinishedCopyError` names its source.
+        """
+        if not p.exists() or not run_started(p):
+            return False
+        source = _unfinished_copy(p)
+        if source is None:
+            return True
+        if not self._config.resume_from:
+            raise UnfinishedCopyError(p, source)
+        logger.info("{} holds an unfinished copy of {}; copying again", p, source)
+        return False
 
     def _normalize_limits(self, raw_limits: dict | None) -> dict[str, int]:
         raw_limits = raw_limits or {}

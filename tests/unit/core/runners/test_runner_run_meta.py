@@ -831,6 +831,21 @@ class TestShardsMeanStarted:
         assert [r["start"] for r in _meta(root)["runs"]] == ["resume"]
 
     @pytest.mark.anyio
+    async def test_a_stray_index_outside_a_stage_dir_is_not_a_run(self, tmp_path):
+        """Only SiEval's stage directories hold shards: an ``.idx`` elsewhere
+        under ``<iteration>/`` neither starts a run nor is loaded by one."""
+        root = tmp_path / "results"
+        (root / "0" / "backup").mkdir(parents=True)
+        (root / "0" / "backup" / "x.idx").write_text("not\tan\tindex\n")
+        assert not run_started(root)
+        runner = _runner(tmp_path)
+        await runner.arun()
+        meta = _meta(root)
+        assert [r["start"] for r in meta["runs"]] == ["fresh"]
+        assert meta["runs"][0]["reran"] == ["data", "prompt", "inference", "grader"]
+        assert (root / "0" / "backup" / "x.idx").read_text() == "not\tan\tindex\n"
+
+    @pytest.mark.anyio
     async def test_an_empty_directory_runs_fresh(self, tmp_path):
         root = tmp_path / "results"
         (root / "0" / "final").mkdir(parents=True)

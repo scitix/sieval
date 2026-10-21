@@ -21,7 +21,7 @@ import yaml
 from loguru import logger
 
 from sieval.cli._readiness import MISSING_KINDS
-from sieval.core.runners import ResultDirExistsError
+from sieval.core.runners import ResultDirExistsError, UnfinishedCopyError
 from sieval.core.utils.logging import log_user
 
 if TYPE_CHECKING:
@@ -69,6 +69,14 @@ def cli_error_message(exc: Exception) -> str:
             "To continue from it, pass --resume.\n"
             "To start fresh, pass --result-dir <path> "
             "or delete the existing directory."
+        )
+    if isinstance(exc, UnfinishedCopyError):
+        return (
+            f"Result directory '{exc.path}' holds an unfinished copy of "
+            f"'{exc.source}', made by --resume-from and stopped before its run "
+            "began.\n"
+            "To copy it again, rerun with the same --resume-from.\n"
+            "To start fresh, pass --result-dir <path>."
         )
     return str(exc)
 

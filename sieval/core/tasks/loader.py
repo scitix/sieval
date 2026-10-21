@@ -26,6 +26,7 @@ from .consts import (
     ERROR_ACTION_CLEAR_FIELDS,
     ERROR_ACTION_PREV_STAGE,
     ERROR_REASONS_NON_RETRIABLE,
+    STAGE_DIRS,
     STAGE_RANK,
     STAGE_TO_RESULT_FIELD,
     TaskAction,
@@ -621,7 +622,7 @@ class TaskLoader:
         for iter_dir in self._root_dir.iterdir():
             if iter_dir.is_dir() and iter_dir.name.isdigit():
                 for stage_dir in iter_dir.iterdir():
-                    if stage_dir.is_dir():
+                    if stage_dir.is_dir() and stage_dir.name in STAGE_DIRS:
                         for idx_file in stage_dir.glob("*.idx"):
                             idx_files.append((idx_file, idx_file.with_suffix(".jsonl")))
         return idx_files
