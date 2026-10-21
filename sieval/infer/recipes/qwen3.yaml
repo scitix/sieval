@@ -431,10 +431,9 @@ qwen3-30b-a3b:
           dtype: bfloat16
           mem_fraction_static: 0.90
           context_length: 16384
-    # 80GB SGLang: 0.87, not 0.90. At --tp 2 --dp-size 4, DP0's CUDA graph
-    # capture takes ~3.7 GB more than the other replicas, and 0.90 leaves too
-    # little for the piecewise capture SGLang runs by default (scitix/sieval#168).
-    # fp8 shares the value: the headroom sits outside the static pool.
+    # 80GB SGLang: 0.87, measured on H100-80G with SGLang 0.5.13.post1 at
+    # tp2×dp4, where 0.90 OOMs DP0's piecewise CUDA graph capture
+    # (scitix/sieval#168). fp8 shares it; A100-80G copies it, unmeasured.
     A100-80G:
       bf16:
         vllm:
