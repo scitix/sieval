@@ -111,19 +111,14 @@ def iteration_dirs(root: Path) -> list[Path]:
     return sorted(p for p in root.iterdir() if p.is_dir() and p.name.isdigit())
 
 
-#: Written into a task directory before :func:`copy_recorded_dir` copies into
-#: it, and removed by :func:`end_copy` once ``meta.json`` records the run. While
-#: it is there with no run in ``meta.json``, the shards are only a copy, which a
-#: kill may have left partial; the next copy replaces them.
+#: Written before :func:`copy_recorded_dir` copies anything, removed by
+#: :func:`end_copy` once ``meta.json`` records the run. Until then the shards
+#: are only a copy, possibly partial, and the next copy replaces them.
 COPY_MARKER = ".copying"
 
 
 def copy_pending(root: Path) -> str | None:
-    """The source of an unfinished copy into *root*, or ``None`` if none.
-
-    The marker's presence is the signal; its text, the source directory, is
-    only for messages.
-    """
+    """The source named by *root*'s :data:`COPY_MARKER`, or ``None``."""
     try:
         return (root / COPY_MARKER).read_text(encoding="utf-8")
     except OSError:
@@ -131,16 +126,13 @@ def copy_pending(root: Path) -> str | None:
 
 
 def end_copy(root: Path) -> None:
-    """Remove :data:`COPY_MARKER`: the copy in *root* is a run's, or gone."""
+    """Remove *root*'s :data:`COPY_MARKER`."""
     (root / COPY_MARKER).unlink(missing_ok=True)
 
 
 def abandon_copy(root: Path, created: list[Path]) -> None:
-    """Undo a copy into *root* no run began on.
-
-    The marker goes only once no shard directory is left, so shards a removal
-    missed stay replaceable rather than lock *root*.
-    """
+    """Undo a copy into *root* no run began on. The marker stays while any
+    shard directory does, so leftovers remain replaceable."""
     remove_copied(created)
     if not iteration_dirs(root):
         end_copy(root)
@@ -155,13 +147,11 @@ def copy_recorded_dir(src: Path, dst: Path) -> list[Path]:
     read-only source yields writable copies. Returns the
     directories created, for :func:`remove_copied` to undo.
 
-    :data:`COPY_MARKER` is written first and left for the caller to remove
-    with :func:`end_copy` once ``meta.json`` records the run, so a kill
-    anywhere before that leaves a directory the next copy may replace.
+    :data:`COPY_MARKER` is written first; the caller removes it with
+    :func:`end_copy` once ``meta.json`` records the run.
 
-    The caller has established that no run started in *dst*: it holds no
-    ``.idx``, or only an unfinished copy's. Shard directories already there
-    are replaced.
+    The caller has established that *dst* holds no run, only perhaps an
+    unfinished copy, whose shard directories are replaced.
     """
     dst.mkdir(parents=True, exist_ok=True)
     atomic_write(dst / COPY_MARKER, str(src).encode())

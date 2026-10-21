@@ -152,9 +152,9 @@ may be read-only or another task's: its shards are copied into the empty
 `result_dir`, then resumed as above. `DIR` is never written. A task missing
 there runs fresh; with a one-task config `DIR` may be the task directory.
 `runner_config.resume_from` names one task directory and wins over the option.
-Rerunning the same command after an interruption resumes the copy. A copy
-stopped before its run was recorded is marked by `.copying` in the task
-directory: the same command copies again, and `--resume` alone refuses it.
+Rerunning the same command after an interruption resumes the copy, or copies
+again if the run never began (`.copying` in the task directory); `--resume`
+alone refuses such a directory.
 
 A directory recorded before stage identities is compared through the session's
 `effective_config.yaml`. Without one, `--resume-from` it is refused, and a

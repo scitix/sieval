@@ -169,9 +169,8 @@ class ResultDirExistsError(FileExistsError):
 
 
 class UnfinishedCopyError(FileExistsError):
-    """``result_dir`` holds an unfinished ``resume_from`` copy and this run
-    names no source to copy again. ``.path`` is the directory, ``.source``
-    the copy's source."""
+    """``result_dir`` holds an unfinished ``resume_from`` copy, and this run
+    names no source to copy again."""
 
     def __init__(self, path: Path, source: str) -> None:
         self.path = path
@@ -216,8 +215,8 @@ class TaskRunnerConfig:
             read-only, whose shards are copied into an empty ``result_dir`` and
             resumed (see :mod:`sieval.core.runners.stage_resume`). Implies
             ``auto_resume``; ignored once ``result_dir`` holds a run, so the
-            same config resumes an interrupted copy. A copy stopped before
-            its run began is replaced by a new one.
+            same config resumes an interrupted copy, or copies again if the
+            run never began.
     """
 
     result_dir: str | None = None
@@ -299,11 +298,8 @@ def run_started(root_dir: Path) -> bool:
 
 
 def _holds_shards(root_dir: Path) -> bool:
-    """Whether *root_dir* holds any shard index, ``<iteration>/<stage>/*.idx``.
-
-    Only SiEval's stage directories count, so a stray ``0/backup/x.idx`` does
-    not start a run.
-    """
+    """Whether *root_dir* holds any shard index, ``<iteration>/<stage>/*.idx``,
+    in a directory named for a :class:`TaskStage`."""
     return any(
         next(d.glob(f"{stage}/*.idx"), None)
         for d in iteration_dirs(root_dir)
@@ -312,14 +308,8 @@ def _holds_shards(root_dir: Path) -> bool:
 
 
 def _unfinished_copy(root_dir: Path) -> str | None:
-    """The source of a ``resume_from`` copy into *root_dir* that no run
-    began on, or ``None``.
-
-    A copy writes :data:`~sieval.core.runners.stage_resume.COPY_MARKER`
-    first and removes it once ``meta.json`` records the run, so a marker with
-    no ``runs[]`` is a copy a kill left, possibly partial. A marker beside a
-    recorded run is stale and ignored.
-    """
+    """The source of a ``resume_from`` copy into *root_dir* that no run began
+    on, or ``None``. A marker beside a recorded run is stale and ignored."""
     source = copy_pending(root_dir)
     if source is None:
         return None
@@ -615,9 +605,8 @@ class TaskRunner:
             if self._recorded is not None:
                 self._seed_judge_versions(self._recorded)
             # Copied here, not in `__init__`, so a runner never run copies
-            # nothing. Until `_begin_run` records the run, the copy is marked
-            # unfinished: a kill in between leaves a directory the same
-            # `resume_from` copies into again (see `_resolve_result_dir`).
+            # nothing. The copy stays marked unfinished until `_begin_run`
+            # records the run (see `_holds_run`).
             if self._run_from is not None:
                 self._copied = copy_recorded_dir(
                     Path(self._run_from["dir"]), self._root_dir
@@ -628,7 +617,6 @@ class TaskRunner:
             except BaseException:
                 self._abandon_copy()
                 raise
-            # Also clears a marker left by a kill after `meta.json` was written.
             end_copy(self._root_dir)
 
             # 1. Load Initial State
@@ -2131,14 +2119,15 @@ class TaskRunner:
     def _holds_run(self, p: Path) -> bool:
         """Whether *p* holds a run this one would resume or refuse.
 
-        An unfinished ``resume_from`` copy holds none when this run copies
-        again; otherwise :class:`UnfinishedCopyError` names its source.
+        An unfinished ``resume_from`` copy is checked first, since it may not
+        have reached an ``.idx`` yet: this run copies again if it has a
+        ``resume_from``, else :class:`UnfinishedCopyError` names the source.
         """
-        if not p.exists() or not run_started(p):
+        if not p.exists():
             return False
         source = _unfinished_copy(p)
         if source is None:
-            return True
+            return run_started(p)
         if not self._config.resume_from:
             raise UnfinishedCopyError(p, source)
         logger.info("{} holds an unfinished copy of {}; copying again", p, source)

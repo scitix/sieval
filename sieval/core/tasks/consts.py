@@ -17,9 +17,8 @@ class TaskStage(StrEnum):
     FAILED = "failed"
 
 
-#: Names of the ``<iteration>/<stage>/`` shard directories. A directory by
-#: any other name under ``<iteration>/`` is not SiEval's: neither read nor
-#: counted as a started run.
+#: Names of the ``<iteration>/<stage>/`` shard directories; no other
+#: directory under ``<iteration>/`` is read.
 STAGE_DIRS = frozenset(stage.value for stage in TaskStage)
 
 

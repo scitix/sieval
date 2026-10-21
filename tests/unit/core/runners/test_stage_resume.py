@@ -762,6 +762,47 @@ class TestInterruptedCopy:
         assert [r["start"] for r in meta["runs"]] == ["from"]
         assert meta["runs"][0]["reran"] == ["grader"]
 
+    @staticmethod
+    async def _kill_before_any_index(tmp_path, monkeypatch):
+        """Kill at the first ``.idx``: the marker, but no ``.idx`` yet."""
+        src = await _first(tmp_path)
+
+        def _kill(*_args):
+            raise _Killed
+
+        with monkeypatch.context() as m:
+            TestInterruptedCopy._no_rollback(m)
+            m.setattr(stage_resume, "_copy_idx", _kill)
+            task, _ = _task(cls=StrictQATask)
+            with pytest.raises(_Killed):
+                await _run(tmp_path, "second", task, resume_from=str(src))
+        dst = tmp_path / "second"
+        assert (dst / COPY_MARKER).exists()
+        assert not list(dst.rglob("*.idx"))
+        assert not run_started(dst)
+        return src, dst
+
+    @pytest.mark.anyio
+    async def test_killed_before_any_index(self, tmp_path, monkeypatch):
+        src, _ = await self._kill_before_any_index(tmp_path, monkeypatch)
+        meta = await self._rerun(tmp_path, src)
+        assert [r["start"] for r in meta["runs"]] == ["from"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("auto_resume", [True, False])
+    async def test_killed_before_any_index_without_resume_from(
+        self, tmp_path, monkeypatch, auto_resume
+    ):
+        """No ``.idx`` yet, so no run started; the marker alone must refuse."""
+        src, dst = await self._kill_before_any_index(tmp_path, monkeypatch)
+        task, _ = _task(cls=StrictQATask)
+        with pytest.raises(UnfinishedCopyError) as exc:
+            TaskRunner(
+                task,
+                make_config(tmp_path, result_dir=str(dst), auto_resume=auto_resume),
+            )
+        assert exc.value.source == str(src)
+
     @pytest.mark.anyio
     async def test_killed_after_the_copy_before_meta(self, tmp_path, monkeypatch):
         """Resume planning (load, hydrate, plan) runs between the copy and
