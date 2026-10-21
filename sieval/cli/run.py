@@ -17,6 +17,12 @@ import typer
 import yaml
 from loguru import logger
 
+from sieval.cli._resume_option import (
+    ResumeCommand,
+    ResumeFromOption,
+    ResumeOption,
+    cli_resume,
+)
 from sieval.cli.infer import (
     HandleHeldError,
     cleanup_model,
@@ -128,7 +134,7 @@ async def _prepare_launch_batch(
 async def _run_dry_run(
     config_path: Path,
     *,
-    resume: bool = False,
+    resume: bool | str | Path | None = False,
     model: str | None = None,
     result_dir: str | None = None,
     deterministic: bool | None = None,
@@ -183,8 +189,7 @@ async def _run_dry_run(
 async def _run_all(
     config_path: Path,
     verbose: bool = False,
-    resume: bool = False,
-    resume_from: Path | None = None,
+    resume: bool | str | Path | None = False,
     model: str | None = None,
     result_dir: str | None = None,
     deterministic: bool | None = None,
@@ -361,7 +366,6 @@ async def _run_all(
             config_path,
             model=model,
             resume=resume,
-            resume_from=resume_from,
             result_dir=result_dir,
             deterministic=deterministic,
             self_managed_endpoints=frozenset(realized_deployments),
@@ -386,7 +390,7 @@ async def _run_all(
 def register_run_command(app: typer.Typer) -> None:
     """Register the run command directly on the main app."""
 
-    @app.command()
+    @app.command(cls=ResumeCommand)
     @cli_command
     def run(
         config: Annotated[
@@ -401,14 +405,7 @@ def register_run_command(app: typer.Typer) -> None:
                 help="Override model name for all base models",
             ),
         ] = None,
-        resume: Annotated[
-            bool,
-            typer.Option(
-                "--resume",
-                "-r",
-                help="Enable auto-resume for all tasks",
-            ),
-        ] = False,
+        resume: ResumeOption = None,
         result_dir: Annotated[
             str | None,
             typer.Option(
@@ -416,13 +413,7 @@ def register_run_command(app: typer.Typer) -> None:
                 help="Override result directory",
             ),
         ] = None,
-        resume_from: Annotated[
-            Path | None,
-            typer.Option(
-                "--resume-from",
-                help="Start each task from <DIR>/<task> of another run (read-only ok)",
-            ),
-        ] = None,
+        resume_from: ResumeFromOption = None,
         deterministic: Annotated[
             bool | None,
             typer.Option(
@@ -472,13 +463,14 @@ def register_run_command(app: typer.Typer) -> None:
         ] = OutputFormat.TEXT,
     ) -> None:
         """All-in-one: launch inference services, run evaluation, and cleanup."""
+        configure_logging(verbose)
+        resumed = cli_resume(resume, resume_from)
         if dry_run:
-            configure_logging(verbose)
 
             async def _go_dry() -> dict[str, object]:
                 return await _run_dry_run(
                     config,
-                    resume=resume,
+                    resume=resumed,
                     model=model,
                     result_dir=result_dir,
                     deterministic=deterministic,
@@ -519,8 +511,7 @@ def register_run_command(app: typer.Typer) -> None:
             return await _run_all(
                 config,
                 verbose=verbose,
-                resume=resume,
-                resume_from=resume_from,
+                resume=resumed,
                 model=model,
                 result_dir=result_dir,
                 deterministic=deterministic,

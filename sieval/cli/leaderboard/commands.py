@@ -13,6 +13,12 @@ from typing import Annotated
 import anyio
 import typer
 
+from sieval.cli._resume_option import (
+    ResumeCommand,
+    ResumeFromOption,
+    ResumeOption,
+    cli_resume,
+)
 from sieval.cli.output import CommandResult, OutputFormat, cli_command, render
 from sieval.cli.signals import terminate_as_interrupt
 
@@ -143,7 +149,7 @@ def list_cmd(
     render(result, output)
 
 
-@leaderboard_app.command("run")
+@leaderboard_app.command("run", cls=ResumeCommand)
 @cli_command
 def run(
     ctx: typer.Context,
@@ -155,21 +161,12 @@ def run(
         str | None,
         typer.Option("--model", "-m", help="Override model name for all base models"),
     ] = None,
-    resume: Annotated[
-        bool,
-        typer.Option("--resume", "-r", help="Enable auto-resume for all tasks"),
-    ] = False,
+    resume: ResumeOption = None,
     result_dir: Annotated[
         str | None,
         typer.Option("--result-dir", help="Override result directory"),
     ] = None,
-    resume_from: Annotated[
-        Path | None,
-        typer.Option(
-            "--resume-from",
-            help="Start each task from <DIR>/<task> of another run (read-only ok)",
-        ),
-    ] = None,
+    resume_from: ResumeFromOption = None,
     deterministic: Annotated[
         bool | None,
         typer.Option(
@@ -197,6 +194,7 @@ def run(
     from sieval.core.utils.logging import configure_logging
 
     configure_logging(verbose)
+    resumed = cli_resume(resume, resume_from)
 
     # The 'eval' shortcut and 'leaderboard run' share this exact callable;
     # the CommandResult.command reflects the entry point the user invoked so
@@ -212,7 +210,7 @@ def run(
         dry_result = run_dry_run(
             config,
             model_override=model,
-            resume=resume,
+            resume=resumed,
             result_dir_override=result_dir,
             deterministic_override=deterministic,
             invocation=shlex.join(sys.argv),
@@ -234,8 +232,7 @@ def run(
         return await arun_session(
             config,
             model=model,
-            resume=resume,
-            resume_from=resume_from,
+            resume=resumed,
             result_dir=result_dir,
             deterministic=deterministic,
             invocation=shlex.join(sys.argv),

@@ -45,7 +45,7 @@ class TestResumePartialCompletion:
             answers={"Q1": "A1", "Q2": "A2", "Q3": "A3"}
         )
         task2 = ResumeTask(dataset=dataset, model=counting_model, name="resume_test")
-        config2 = make_config(tmp_path, result_dir=result_dir, auto_resume=True)
+        config2 = make_config(tmp_path, result_dir=result_dir, resume=True)
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
 
@@ -72,7 +72,7 @@ class TestResumePartialCompletion:
 
         task2 = ResumeTask(dataset=dataset, model=model, name="resume_s_true")
         config2 = make_config(
-            tmp_path, result_dir=result_dir, record_each_stage=True, auto_resume=True
+            tmp_path, result_dir=result_dir, record_each_stage=True, resume=True
         )
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
@@ -97,7 +97,7 @@ class TestResumePartialCompletion:
 
         task2 = ResumeTask(dataset=dataset, model=model, name="resume_s_false")
         config2 = make_config(
-            tmp_path, result_dir=result_dir, record_each_stage=False, auto_resume=True
+            tmp_path, result_dir=result_dir, record_each_stage=False, resume=True
         )
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
@@ -132,7 +132,7 @@ class TestResumePartialCompletionOnly:
 
         counting_model = Recovered(answers={"Q1": "A1", "Q2": "A2", "Q3": "A3"})
         task2 = ResumeTask(dataset=dataset, model=counting_model, name="partial_only")
-        config2 = make_config(tmp_path, result_dir=result_dir, auto_resume=True)
+        config2 = make_config(tmp_path, result_dir=result_dir, resume=True)
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
 

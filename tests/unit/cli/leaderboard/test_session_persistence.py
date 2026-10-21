@@ -956,7 +956,7 @@ class TestPersistTimingBeforeRunnerArun:
 
 
 class TestResumeFromSurface:
-    """`--resume-from DIR` / `runner_config.resume_from`, as Harmony mounts it."""
+    """`--resume DIR` / `runner_config.resume: <dir>`, as Harmony mounts it."""
 
     CONFIG = (
         "models:\n"
@@ -974,35 +974,90 @@ class TestResumeFromSurface:
         "      n: 1\n"
     )
 
-    def _session(self, tmp_path: Path, resume_from=None, body=None) -> EvalSession:
+    def _session(self, tmp_path: Path, resume=None, body=None) -> EvalSession:
         cfg = _write_yaml(tmp_path, "cfg.yaml", body or self.CONFIG)
         return EvalSession(
             config_path=str(cfg),
             result_dir_override=str(tmp_path / "out"),
-            resume_from=resume_from,
+            resume=resume,
         )
 
     def test_a_session_dir_resolves_per_task(self, tmp_path: Path):
         (tmp_path / "old" / "qa").mkdir(parents=True)
-        session = self._session(tmp_path, resume_from=tmp_path / "old")
-        assert session._resume_from_for("qa", None) == tmp_path / "old" / "qa"
+        session = self._session(tmp_path, resume=tmp_path / "old")
+        assert session._cli_resume_for("qa") == tmp_path / "old" / "qa"
         rc = session._build_runner_config({}, {}, "qa")
-        assert rc.resume_from == str(tmp_path / "old" / "qa")
+        assert rc.resume == tmp_path / "old" / "qa"
 
     def test_a_task_dir_serves_a_one_task_config(self, tmp_path: Path):
         (tmp_path / "old").mkdir()
         (tmp_path / "old" / "meta.json").write_text("{}")
-        session = self._session(tmp_path, resume_from=tmp_path / "old")
-        assert session._resume_from_for("qa", None) == tmp_path / "old"
+        session = self._session(tmp_path, resume=tmp_path / "old")
+        assert session._cli_resume_for("qa") == tmp_path / "old"
 
     def test_a_task_missing_there_runs_fresh(self, tmp_path: Path):
         (tmp_path / "old").mkdir()
-        session = self._session(tmp_path, resume_from=tmp_path / "old")
-        assert session._resume_from_for("qa", None) is None
+        session = self._session(tmp_path, resume=tmp_path / "old")
+        assert session._cli_resume_for("qa") is None
+        assert session._build_runner_config({}, {}, "qa").resume is None
 
-    def test_the_yaml_key_wins(self, tmp_path: Path):
-        session = self._session(tmp_path, resume_from=tmp_path / "old")
-        assert session._resume_from_for("qa", "/mnt/x/qa") == Path("/mnt/x/qa")
+    def test_no_value_resumes_in_place(self, tmp_path: Path):
+        session = self._session(tmp_path, resume=True)
+        assert session._build_runner_config({}, {}, "qa").resume is True
+
+    def test_the_sessions_own_dir_resumes_in_place(self, tmp_path: Path):
+        session = self._session(tmp_path, resume=tmp_path / "out")
+        assert session.resume_override is True
+        assert session._build_runner_config({}, {}, "qa").resume is True
+
+    def test_the_tasks_own_dir_resumes_in_place(self, tmp_path: Path):
+        """A one-task config may name the task directory, as a copy can."""
+        own = tmp_path / "out" / "qa"
+        own.mkdir(parents=True)
+        (own / "meta.json").write_text("{}")
+        session = self._session(tmp_path, resume=own)
+        assert session._build_runner_config({}, {}, "qa").resume is True
+
+    def test_a_string_is_a_directory(self, tmp_path: Path):
+        (tmp_path / "old" / "qa").mkdir(parents=True)
+        session = self._session(tmp_path, resume=str(tmp_path / "old"))
+        assert session._build_runner_config({}, {}, "qa").resume == (
+            tmp_path / "old" / "qa"
+        )
+
+    def test_a_yaml_dir_wins_over_the_cli(self, tmp_path: Path):
+        (tmp_path / "old" / "qa").mkdir(parents=True)
+        session = self._session(tmp_path, resume=tmp_path / "old")
+        rc = session._build_runner_config({}, {"resume": "/mnt/x/qa"}, "qa")
+        assert rc.resume == Path("/mnt/x/qa")
+
+    def test_a_per_task_dir_wins_over_the_defaults_and_cli(self, tmp_path: Path):
+        session = self._session(tmp_path, resume=True)
+        rc = session._build_runner_config(
+            {"runner_config": {"resume": "/mnt/task/qa"}},
+            {"resume": "/mnt/top/qa"},
+            "qa",
+        )
+        assert rc.resume == Path("/mnt/task/qa")
+
+    def test_a_yaml_dir_equal_to_the_tasks_own_resumes_in_place(self, tmp_path: Path):
+        session = self._session(tmp_path)
+        rc = session._build_runner_config(
+            {"runner_config": {"resume": str(tmp_path / "out" / "qa")}}, {}, "qa"
+        )
+        assert rc.resume is True
+
+    def test_yaml_true_resumes_without_the_cli(self, tmp_path: Path):
+        session = self._session(tmp_path)
+        rc = session._build_runner_config({}, {"resume": True}, "qa")
+        assert rc.resume is True
+
+    def test_a_cli_resume_wins_over_yaml_false(self, tmp_path: Path):
+        """`resume: false` in YAML is the default; `--resume` turns it on, as
+        `--resume` did over `auto_resume: false`."""
+        session = self._session(tmp_path, resume=True)
+        rc = session._build_runner_config({}, {"resume": False}, "qa")
+        assert rc.resume is True
 
     def test_legacy_match_reads_the_recorded_config(self, tmp_path: Path):
         old = tmp_path / "old"
@@ -1010,7 +1065,7 @@ class TestResumeFromSurface:
         (old / "effective_config.yaml").write_text(
             self.CONFIG.replace("http://a/v1", "http://b/v1")
         )
-        session = self._session(tmp_path, resume_from=old)
+        session = self._session(tmp_path, resume=old)
         rc = session._build_runner_config({}, {}, "qa")
         # An endpoint is not inference.
         assert session._legacy_match_for("qa", rc) == {
@@ -1053,7 +1108,7 @@ class TestResumeFromSurface:
 
     def test_no_recorded_config_leaves_stages_unknown(self, tmp_path: Path):
         (tmp_path / "old" / "qa").mkdir(parents=True)
-        session = self._session(tmp_path, resume_from=tmp_path / "old")
+        session = self._session(tmp_path, resume=tmp_path / "old")
         rc = session._build_runner_config({}, {}, "qa")
         assert session._legacy_match_for("qa", rc) is None
 
@@ -1077,7 +1132,119 @@ class TestResumeFromSurface:
             "inference": False,
         }
 
+    @pytest.mark.anyio
+    async def test_a_resume_dir_is_no_config_change(self, tmp_path: Path):
+        """How a run starts is not what it runs: `resume` never reaches
+        `runs[].config`, so it never regrades or refuses a resume."""
+        await self._session(tmp_path)._persist_effective_config()
+        body = self.CONFIG.replace(
+            "    dataset: ds\n",
+            "    dataset: ds\n    runner_config:\n      resume: /mnt/old/qa\n",
+        )
+        cfg = _write_yaml(tmp_path, "cfg.yaml", body)
+        session = EvalSession(
+            config_path=str(cfg),
+            result_dir_override=str(tmp_path / "out"),
+            resume=True,
+        )
+        await session._persist_effective_config()
+        assert session._resume_config_diff == []
+
     def test_a_fresh_run_has_nothing_to_compare(self, tmp_path: Path):
         session = self._session(tmp_path)
         rc = session._build_runner_config({}, {}, "qa")
         assert session._legacy_match_for("qa", rc) is None
+
+
+class TestDeprecatedResumeKeys:
+    """`runner_config.auto_resume` and `.resume_from` fold into `.resume`."""
+
+    BASE = TestResumeFromSurface.CONFIG
+
+    @pytest.fixture
+    def warnings(self):
+        from loguru import logger
+
+        from sieval.core.runners import resume_option
+
+        resume_option._warned.clear()
+        messages: list[str] = []
+        sink = logger.add(
+            lambda m: messages.append(m.record["message"]), level="WARNING"
+        )
+        yield messages
+        logger.remove(sink)
+        resume_option._warned.clear()
+
+    def _session(self, tmp_path: Path, top: str = "", task: str = "", **kw):
+        body = self.BASE
+        if top:
+            body = f"runner_config:\n{top}" + body
+        if task:
+            body = body.replace(
+                "    dataset: ds\n", f"    dataset: ds\n    runner_config:\n{task}"
+            )
+        cfg = _write_yaml(tmp_path, "cfg.yaml", body)
+        return EvalSession(
+            config_path=str(cfg), result_dir_override=str(tmp_path / "out"), **kw
+        )
+
+    def test_auto_resume_becomes_resume(self, tmp_path: Path, warnings):
+        session = self._session(tmp_path, top="  auto_resume: true\n")
+        assert session._reified_config["runner_config"] == {"resume": True}
+        rc = session._build_runner_config({}, session.config["runner_config"], "qa")
+        assert rc.resume is True
+        assert warnings == [
+            "runner_config.auto_resume is deprecated; use runner_config.resume: true"
+        ]
+
+    def test_resume_from_becomes_resume(self, tmp_path: Path, warnings):
+        session = self._session(tmp_path, task="      resume_from: /mnt/old/qa\n")
+        task_rc = session._reified_config["tasks"]["qa"]["runner_config"]
+        assert task_rc == {"resume": "/mnt/old/qa"}
+        rc = session._build_runner_config(session.config["tasks"]["qa"], {}, "qa")
+        assert rc.resume == Path("/mnt/old/qa")
+        assert warnings == [
+            "tasks.qa.runner_config.resume_from is deprecated; "
+            "use tasks.qa.runner_config.resume <dir>"
+        ]
+
+    @pytest.mark.anyio
+    async def test_effective_config_records_only_resume(self, tmp_path: Path):
+        session = self._session(
+            tmp_path,
+            top="  auto_resume: false\n",
+            task="      resume_from: /mnt/old/qa\n",
+        )
+        await session._persist_effective_config()
+        persisted = yaml.safe_load(
+            (tmp_path / "out" / "effective_config.yaml").read_text()
+        )
+        assert persisted["runner_config"] == {"resume": False}
+        assert persisted["tasks"]["qa"]["runner_config"] == {"resume": "/mnt/old/qa"}
+
+    def test_an_alias_beside_a_different_resume_is_refused(self, tmp_path: Path):
+        with pytest.raises(ValueError, match="disagree; set only"):
+            self._session(
+                tmp_path,
+                task="      resume: /mnt/a/qa\n      resume_from: /mnt/b/qa\n",
+            )
+
+    def test_auto_resume_false_beside_resume_true_is_refused(self, tmp_path: Path):
+        with pytest.raises(ValueError, match="runner_config.auto_resume"):
+            self._session(tmp_path, top="  resume: true\n  auto_resume: false\n")
+
+    def test_a_per_task_alias_beats_the_cli(self, tmp_path: Path, warnings):
+        session = self._session(
+            tmp_path, task="      resume_from: /mnt/old/qa\n", resume=True
+        )
+        rc = session._build_runner_config(session.config["tasks"]["qa"], {}, "qa")
+        assert rc.resume == Path("/mnt/old/qa")
+
+    def test_the_session_alias_maps_to_resume(self, tmp_path: Path, warnings):
+        (tmp_path / "old" / "qa").mkdir(parents=True)
+        session = self._session(tmp_path, resume_from=tmp_path / "old")
+        assert session.resume_override == tmp_path / "old"
+        rc = session._build_runner_config({}, {}, "qa")
+        assert rc.resume == tmp_path / "old" / "qa"
+        assert warnings == ["resume_from is deprecated; use resume <dir>"]

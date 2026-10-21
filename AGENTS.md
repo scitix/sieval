@@ -15,7 +15,7 @@ SiEval is a **model delivery quality verification system**: eval-side knowledge 
 Precise reproducibility is a product contract, not a nicety.
 
 - Safety guards (e.g. the resume stage comparison) ship strict-only. No `--force-*` flags, no bypass env vars, no "(future)" escape-hatch hints in errors.
-- A resume (`--resume`, `--resume-from`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): changed data or prompt → those samples rerun; changed grader → regrade on the recorded inference; changed inference, or an unknown stage it would reuse → refused. The version-series gate stays. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
+- A resume (`--resume`, `--resume DIR`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): changed data or prompt → those samples rerun; changed grader → regrade on the recorded inference; changed inference, or an unknown stage it would reuse → refused. The version-series gate stays. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
 - Recovery: "start fresh" or "match the stage the refusal names". Escape-hatch proposals must re-justify the contract, not just add a flag.
 
 ## Project Structure & Module Organization
@@ -65,7 +65,7 @@ Precise reproducibility is a product contract, not a nicety.
 ## Architecture Guardrails
 
 - Preserve the async staged pipeline design: no synchronous rewrite, no global stage barriers.
-- Keep resumability semantics intact (`auto_resume`, per-sample failure handling, bounded iterations).
+- Keep resumability semantics intact (`resume`, per-sample failure handling, bounded iterations).
 - Persistence is append-only and sharded; disk state is source of truth. Do not replace with monolithic or memory-only storage.
 - Respect record-mode behavior: `record_each_stage=True` is the fail-safe default and must remain resume-compatible.
 

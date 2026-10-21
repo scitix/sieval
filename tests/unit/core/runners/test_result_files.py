@@ -93,7 +93,7 @@ class TestNoManifest:
 
         model = MockCountingChatModel(answers=ANSWERS)
         _, report = await _run(
-            tmp_path, model=model, auto_resume=True, record_each_stage=False
+            tmp_path, model=model, resume=True, record_each_stage=False
         )
         assert model.call_count == 1
         assert report["total"] == 3
@@ -117,7 +117,7 @@ class TestNoManifest:
         assert report["sieval"] == {"total": 3, "final": 3, "failed": 0, "anomalies": 0}
 
         model = MockCountingChatModel(answers=ANSWERS)
-        _, cached = await _run(tmp_path, model=model, auto_resume=True)
+        _, cached = await _run(tmp_path, model=model, resume=True)
         assert cached == report
         assert model.call_count == 0
 
@@ -136,7 +136,7 @@ class TestNoManifest:
                 return await super().report(finals, fails)
 
         # Another class is another grader: the full path regrades and reports.
-        await _run(tmp_path, task_cls=Spy, auto_resume=True)
+        await _run(tmp_path, task_cls=Spy, resume=True)
         assert reports == [3]
 
 
@@ -152,18 +152,14 @@ async def _all_terminal(tmp_path):
     (runner.root_dir / "report.json").unlink()
     for name in ("anomalies.json", "progress.json", "profile.json"):
         (runner.root_dir / name).unlink(missing_ok=True)
-    return await _run(
-        tmp_path, model=TruncatingModel(answers=ANSWERS), auto_resume=True
-    )
+    return await _run(tmp_path, model=TruncatingModel(answers=ANSWERS), resume=True)
 
 
 async def _fast_resume(tmp_path):
     runner, _ = await _full(tmp_path)
     for name in ("anomalies.json", "progress.json", "profile.json"):
         (runner.root_dir / name).unlink(missing_ok=True)
-    return await _run(
-        tmp_path, model=TruncatingModel(answers=ANSWERS), auto_resume=True
-    )
+    return await _run(tmp_path, model=TruncatingModel(answers=ANSWERS), resume=True)
 
 
 @pytest.mark.parametrize("exit_path", [_full, _all_terminal, _fast_resume])
@@ -204,7 +200,7 @@ class TestAnomalies:
         anomalies = _read(root, "anomalies.json")
         anomalies["meta"]["rules_hash"] = "older-rules"
         (root / "anomalies.json").write_bytes(orjson.dumps(anomalies))
-        await _run(tmp_path, model=TruncatingModel(answers=ANSWERS), auto_resume=True)
+        await _run(tmp_path, model=TruncatingModel(answers=ANSWERS), resume=True)
         assert sorted(p.name for p in root.glob("anomalies*.json")) == [
             "anomalies.json"
         ]
@@ -221,7 +217,7 @@ class TestAnomalies:
         report = _read(root, "report.json")
         report["sieval"]["anomalies"] = 0  # as counted under older rules
         (root / "report.json").write_bytes(orjson.dumps(report))
-        await _run(tmp_path, model=TruncatingModel(answers=ANSWERS), auto_resume=True)
+        await _run(tmp_path, model=TruncatingModel(answers=ANSWERS), resume=True)
         refreshed = _read(root, "report.json")
         assert refreshed["sieval"]["anomalies"] == 3
         assert len(_read(root, "anomalies.json")["samples"]) == 3
@@ -252,7 +248,7 @@ class TestMetaForReaders:
     @pytest.mark.anyio
     async def test_runs_carry_a_sortable_id(self, tmp_path):
         await _run(tmp_path)
-        await _run(tmp_path, auto_resume=True)
+        await _run(tmp_path, resume=True)
         runs = _read(tmp_path / "results", "meta.json")["runs"]
         ids = [run["id"] for run in runs]
         assert len(set(ids)) == 2

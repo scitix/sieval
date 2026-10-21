@@ -11,7 +11,7 @@ runner_config:
     concurrency_limits:
         infer: 128
     max_iterations: 3
-    auto_resume: false
+    resume: false
     profile_io: true
     profile_stages: true
 

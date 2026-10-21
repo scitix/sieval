@@ -46,7 +46,7 @@ class TestCLIEval:
         # config is still passed as the first positional arg
         assert str(call_args.args[0]) == str(config)
         assert call_args.kwargs["model"] is None
-        assert call_args.kwargs["resume"] is False
+        assert call_args.kwargs["resume"] is None
         assert call_args.kwargs["result_dir"] is None
 
     def test_eval_with_options(self, tmp_path):

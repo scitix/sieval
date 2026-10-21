@@ -8,6 +8,7 @@ from typing import Annotated
 
 import typer
 
+from sieval.cli._resume_option import ResumeCommand
 from sieval.cli.dataset import dataset_app
 from sieval.cli.infer import infer_app
 from sieval.cli.leaderboard import leaderboard_app
@@ -31,6 +32,7 @@ register_run_command(app)
 # decide whether to emit `command="eval"` or `command="leaderboard.run"`.
 app.command(
     name="eval",
+    cls=ResumeCommand,
     help="Shortcut for 'sieval leaderboard run' (evaluate against an online endpoint).",
 )(_leaderboard_run)
 

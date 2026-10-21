@@ -121,7 +121,7 @@ class TestRunCommand:
         assert "--resume" in error
         assert "--result-dir" in error
         assert str(existing) in error
-        assert "auto_resume=True" not in error
+        assert "resume=True" not in error
 
     def test_run_help_shows_ready_timeout(self):
         """`sieval run` exposes the readiness budget it has always enforced."""

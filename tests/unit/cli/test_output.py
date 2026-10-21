@@ -76,7 +76,7 @@ class TestCliErrorMessage:
         assert str(tmp_path / "existing") in msg
         assert "--resume" in msg
         assert "--result-dir" in msg
-        assert "auto_resume=True" not in msg
+        assert "resume=True" not in msg
 
     def test_unfinished_copy_surfaces_cli_flags(self, tmp_path):
         exc = UnfinishedCopyError(tmp_path / "dst", str(tmp_path / "src"))
@@ -84,9 +84,9 @@ class TestCliErrorMessage:
 
         assert str(tmp_path / "dst") in msg
         assert str(tmp_path / "src") in msg
-        assert "--resume-from" in msg
+        assert f"--resume {tmp_path / 'src'}" in msg
         assert "--result-dir" in msg
-        assert "`resume_from`" not in msg
+        assert "`resume`" not in msg
 
     def test_generic_exception_falls_through_to_str(self):
         assert cli_error_message(RuntimeError("kaboom")) == "kaboom"

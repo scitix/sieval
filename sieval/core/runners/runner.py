@@ -84,6 +84,7 @@ from .resume_gate import (
     format_reject_message,
     resume_version_verdict,
 )
+from .resume_option import as_resume, fold_resume_aliases, resume_source
 from .stage_resume import (
     LegacyStageMatch,
     StageResumeError,
@@ -162,14 +163,14 @@ class ResultDirExistsError(FileExistsError):
         self.path = path
         super().__init__(
             f"Result directory '{path}' already exists and contains data. "
-            "To continue, set `auto_resume=True`; "
+            "To continue, set `resume=True`; "
             "to start fresh, specify a different `result_dir` "
             "or delete the directory manually."
         )
 
 
 class UnfinishedCopyError(FileExistsError):
-    """``result_dir`` holds an unfinished ``resume_from`` copy, and this run
+    """``result_dir`` holds an unfinished ``resume=<dir>`` copy, and this run
     names no source to copy again."""
 
     def __init__(self, path: Path, source: str) -> None:
@@ -177,8 +178,8 @@ class UnfinishedCopyError(FileExistsError):
         self.source = source
         super().__init__(
             f"Resume aborted: {path} holds an unfinished copy of {source}, made "
-            "by `resume_from` and stopped before its run began.\n"
-            "Run again with the same `resume_from` to copy it again, or start "
+            "by `resume` and stopped before its run began.\n"
+            "Run again with the same `resume` directory to copy it again, or start "
             "fresh in another result_dir."
         )
 
@@ -208,19 +209,25 @@ class TaskRunnerConfig:
     Attributes:
         result_dir: Output directory for shards, manifest, and report.
             If ``None``, auto-generated under ``outputs/<task_name>/<timestamp>``.
-        auto_resume: When ``True``, detect and resume from existing result_dir.
+        resume: ``True`` resumes ``result_dir`` in place. A directory names a
+            recorded task directory, possibly another task's and read-only,
+            whose shards are copied into an empty ``result_dir`` and resumed
+            (see :mod:`sieval.core.runners.stage_resume`); ``result_dir``
+            itself resumes in place. A copy is ignored once ``result_dir``
+            holds a run, so the same config resumes an interrupted copy, and
+            one stopped before its run began is replaced by a new one. A
+            string is read as a directory (:mod:`.resume_option`).
+        auto_resume: Deprecated alias of ``resume=True``; folded into
+            ``resume`` and cleared.
+        resume_from: Deprecated alias of ``resume=<dir>``; folded into
+            ``resume`` and cleared.
         effective_config: The session's ``effective_config.yaml``, recorded in
             ``meta.json`` as ``config``. Not part of any identity.
-        resume_from: A recorded task directory, possibly another task's and
-            read-only, whose shards are copied into an empty ``result_dir`` and
-            resumed (see :mod:`sieval.core.runners.stage_resume`). Implies
-            ``auto_resume``; ignored once ``result_dir`` holds a run, so the
-            same config resumes an interrupted copy, or copies again if the
-            run never began.
     """
 
     result_dir: str | None = None
-    auto_resume: bool = False
+    resume: bool | Path | None = None
+    auto_resume: bool | None = None
     resume_from: str | None = None
     effective_config: str | None = None
 
@@ -266,6 +273,18 @@ class TaskRunnerConfig:
     # Metadata-only; engine-level determinism is enforced by backend translators.
     deterministic: bool = False
 
+    def __post_init__(self) -> None:
+        self.resume = fold_resume_aliases(
+            as_resume(self.resume),
+            auto_resume=self.auto_resume,
+            resume_from=self.resume_from,
+            new="resume",
+            auto="auto_resume",
+            source="resume_from",
+        )
+        self.auto_resume = None
+        self.resume_from = None
+
 
 def _read_run_meta(root_dir: Path) -> dict | None:
     """Return the parsed ``root_dir/meta.json``, or ``None`` if unusable.
@@ -308,7 +327,7 @@ def _holds_shards(root_dir: Path) -> bool:
 
 
 def _unfinished_copy(root_dir: Path) -> str | None:
-    """The source of a ``resume_from`` copy into *root_dir* that no run began
+    """The source of a ``resume=<dir>`` copy into *root_dir* that no run began
     on, or ``None``. A marker beside a recorded run is stale and ignored."""
     source = copy_pending(root_dir)
     if source is None:
@@ -346,7 +365,7 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
     """
     v_run = read_run_version(root_dir)
     if v_run is None:
-        # *root_dir* may be a `resume_from` source, so never advise removing it.
+        # *root_dir* may be a `resume` source, so never advise removing it.
         raise ResumeVersionError(
             f"Resume aborted: {root_dir} holds a run, but its meta.json is "
             "missing, unreadable, or has no version, so the sieval version "
@@ -461,11 +480,13 @@ class TaskRunner:
         self._anomaly_results: dict[str | int, dict[int, dict[str, list[int]]]] = (
             defaultdict(dict)
         )
-        self._auto_resume = self._config.auto_resume or bool(self._config.resume_from)
+        # Whether this run resumes at all, in place or from a copy.
+        self._resumes = bool(self._config.resume)
         # Paths
         self._resumed_from_existing, self._root_dir = self._resolve_result_dir(
-            self._config.result_dir, task, self._auto_resume
+            self._config.result_dir, task, self._resumes
         )
+        source = resume_source(self._config.resume, self._root_dir)
         # Read off the task, not looked up by name: `task.name` is a
         # user-chosen YAML key, not the registered `@sieval_task(name=...)`.
         self._task_identity = get_task_run_identity(task)
@@ -473,8 +494,8 @@ class TaskRunner:
             gate_resume_version(self._root_dir, __version__)
             self._recorded = _read_run_meta(self._root_dir)
             logger.info("Auto resumed from: {}", self._root_dir)
-        elif self._config.resume_from:
-            self._prepare_resume_from(Path(self._config.resume_from).expanduser())
+        elif source is not None:
+            self._prepare_resume_from(source)
 
         # Profiling
         self._profiler = TaskProfiler(
@@ -650,7 +671,7 @@ class TaskRunner:
                 # retry_count > max_retries: retry_count=1 means "on retry #1",
                 # so max_retries=1 allows exactly one retry.
                 if (
-                    self._auto_resume
+                    self._resumes
                     and self._max_retries is not None
                     and not ctx.is_terminal()
                     and ctx.retry_count > self._max_retries
@@ -837,13 +858,13 @@ class TaskRunner:
             TaskStage.POSTPROCESSED,
             TaskStage.FEEDBACK,
         }
-        if self._auto_resume:
+        if self._resumes:
             stages |= {TaskStage.FINAL, TaskStage.FAILED}
         await self._loader.hydrate(
             self._contexts,
             self._hydrated_ids,
             include_stages=stages,
-            prepare_retries=self._auto_resume and not resumed,
+            prepare_retries=self._resumes and not resumed,
             record_each_stage=self._record_each_stage,
         )
 
@@ -854,7 +875,7 @@ class TaskRunner:
         grader identity reads, so even a fast resume pays for ``setup()``: a
         task that contacts a service there needs it up.
         """
-        if not self._auto_resume:
+        if not self._resumes:
             return None
         cached_report = await self._loader.load_cached_report()
         if cached_report is not None and not await self._last_run_ended():
@@ -1535,12 +1556,7 @@ class TaskRunner:
         *src* is read, never written; this run records it in ``runs[].from``.
         """
         if not src.is_dir():
-            raise FileNotFoundError(f"resume_from directory not found: {src}")
-        if src.resolve() == self._root_dir.resolve():
-            raise ValueError(
-                f"resume_from is this task's own result_dir ({src}); use "
-                "auto_resume to resume it"
-            )
+            raise FileNotFoundError(f"resume directory not found: {src}")
         gate_resume_version(src, __version__)
         recorded = _read_run_meta(src)
         identity = recorded_identity(recorded)
@@ -1609,7 +1625,7 @@ class TaskRunner:
         return self._run_from["dir"] if self._run_from else str(self._root_dir)
 
     def _abandon_copy(self) -> None:
-        """Undo a ``resume_from`` copy no run began on."""
+        """Undo a ``resume=<dir>`` copy no run began on."""
         if self._run_from is None:
             return
         if self._copied:
@@ -2091,19 +2107,19 @@ class TaskRunner:
         await self._saver.end_run(reran, reported=reported, rules_hash=rules_hash)
 
     def _resolve_result_dir(
-        self, result_dir: str | None, task: Task, auto_resume: bool
+        self, result_dir: str | None, task: Task, resumes: bool
     ) -> tuple[bool, Path]:
         if result_dir:
             p = Path(result_dir).expanduser()
             if p.exists() and p.is_file():
                 raise ValueError("result_dir is a file")
             if self._holds_run(p):
-                if not auto_resume:
+                if not resumes:
                     raise ResultDirExistsError(p)
                 return True, p
             return False, p
         root = Path("outputs") / task.name
-        if auto_resume and root.exists():
+        if resumes and root.exists():
             candidates = [
                 d
                 for d in root.iterdir()
@@ -2119,16 +2135,16 @@ class TaskRunner:
     def _holds_run(self, p: Path) -> bool:
         """Whether *p* holds a run this one would resume or refuse.
 
-        An unfinished ``resume_from`` copy is checked first, since it may not
+        An unfinished ``resume=<dir>`` copy is checked first, since it may not
         have reached an ``.idx`` yet: this run copies again if it has a
-        ``resume_from``, else :class:`UnfinishedCopyError` names the source.
+        ``resume`` directory, else :class:`UnfinishedCopyError` names the source.
         """
         if not p.exists():
             return False
         source = _unfinished_copy(p)
         if source is None:
             return run_started(p)
-        if not self._config.resume_from:
+        if resume_source(self._config.resume, p) is None:
             raise UnfinishedCopyError(p, source)
         logger.info("{} holds an unfinished copy of {}; copying again", p, source)
         return False

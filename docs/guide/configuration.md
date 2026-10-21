@@ -11,7 +11,7 @@ runner_config:
     concurrency_limits:
         infer: 128
     max_iterations: 3
-    auto_resume: false
+    resume: false
 
 models:
     base_model:
@@ -148,7 +148,7 @@ Built-in anomaly detection runs automatically after each task and saves per-samp
 
 ## Sharded Persistence
 
-Append-only sharded storage provides crash recovery via `auto_resume`, stream processing (low memory), and parallel shard writes. Custom dataclass types in `TaskContext` fields must use `@sieval_record` for proper deserialization.
+Append-only sharded storage provides crash recovery via `resume`, stream processing (low memory), and parallel shard writes. Custom dataclass types in `TaskContext` fields must use `@sieval_record` for proper deserialization.
 
 A task directory holds:
 
@@ -186,15 +186,43 @@ A resume with another model regrades and reports on the recorded inference:
 `identity.inference.requests` is unknown. If any sample would be inferred, the
 resume is refused. A refused resume leaves `meta.json` as it was.
 
-`--resume-from DIR` starts each task from `DIR/<task>` of another run, which
-may be read-only or another task's: its shards are copied into the empty
-`result_dir`, then resumed as above. `DIR` is never written. A task missing
-there runs fresh; with a one-task config `DIR` may be the task directory.
-`runner_config.resume_from` names one task directory and wins over the option.
+One option says how a run starts:
+
+| Form | Means |
+| --- | --- |
+| `--resume` | Resume each task in its own `result_dir` |
+| `--resume DIR` | Start each task from `DIR/<task>` of another run; with a one-task config `DIR` may be the task directory |
+| `runner_config.resume: true` | Resume this task in place |
+| `runner_config.resume: <dir>` | Start this task from one recorded task directory |
+
+`--resume` takes `DIR` only as its next token, and never one that starts with
+`-`: `sieval run cfg.yaml --resume -v` and `sieval run --resume cfg.yaml` both
+resume in place. `--resume=DIR` is unambiguous.
+
+Starting from `DIR` copies its shards into the empty `result_dir`, then resumes
+as above. `DIR` may be read-only or another task's, and is never written; a
+task missing there runs fresh. A `DIR` that is the run's own `result_dir`, or
+for one task the task's own directory, resumes in place, as `--resume` does.
+`runs[].start` says which: `from` for a copy, `resume` in place.
+
+In YAML, per task beats the top-level `runner_config`, and a directory in the
+YAML beats `--resume`. `--resume` beats `resume: false`.
+
 Rerunning the same command after an interruption resumes the copy, or copies
 again if the run never began (`.copying` in the task directory); `--resume`
 alone refuses such a directory.
 
+`resume` is how a run starts, not what it runs: it is left out of the config
+diff in `runs[].config`, so changing it never regrades or refuses a resume.
+
 A directory recorded before stage identities is compared through the session's
-`effective_config.yaml`. Without one, `--resume-from` it is refused, and a
-same-directory `--resume` trusts it, as before.
+`effective_config.yaml`. Without one, `--resume DIR` it is refused, and an
+in-place `--resume` trusts it, as before.
+
+Deprecated, for one release: `--resume-from DIR` is `--resume DIR`;
+`runner_config.auto_resume: true` is `resume: true`;
+`runner_config.resume_from: <dir>` is `resume: <dir>`; the same holds for the
+`TaskRunnerConfig` fields and the `resume_from=` argument of `EvalSession` and
+`arun_session`. Each warns once, naming its replacement, and
+`effective_config.yaml` records `resume`. An alias set beside `resume` with
+another meaning is refused.

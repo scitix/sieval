@@ -132,9 +132,12 @@ def _prepare_eval_session(
     config_path: Path,
     *,
     models: dict[str, Model] | None = None,
-    resume: bool = False,
+    resume: bool | str | Path | None = False,
+    result_dir: str | None = None,
 ) -> MultiTaskRunner:
-    runner = EvalSession(config_path=str(config_path), resume=resume)
+    runner = EvalSession(
+        config_path=str(config_path), resume=resume, result_dir_override=result_dir
+    )
     if models is not None:
         runner.models = models
     tasks_cfg = runner._get_named_config_map("tasks")
@@ -937,7 +940,7 @@ tasks:
 
     @pytest.mark.anyio
     async def test_yaml_resume_override(self, tmp_path):
-        """The resume CLI flag should set auto_resume on all tasks."""
+        """The resume CLI flag should set resume on all tasks."""
         yaml_content = """\
 result_dir: "{result_dir}"
 
@@ -986,6 +989,116 @@ tasks:
         results2 = await task_runner2.arun()
 
         assert results2["resume_eval"] == results1["resume_eval"]
+
+    @pytest.mark.anyio
+    async def test_resume_dir_copies_and_its_own_dir_resumes_in_place(self, tmp_path):
+        """`--resume DIR` copies another run; `--resume <own result_dir>`
+        resumes in place, as `--resume` does, with no refusal."""
+        config_path = _write_yaml_config(
+            tmp_path, "cfg.yaml", self.RESUME_CONFIG.format(result_dir="unused")
+        )
+        first, second = tmp_path / "first", tmp_path / "second"
+
+        async def _run(result_dir, resume):
+            runner = _prepare_eval_session(
+                config_path,
+                models={"mock_model": MockChatModel()},
+                resume=resume,
+                result_dir=str(result_dir),
+            )
+            return await runner.arun()
+
+        await _run(first, None)
+        await _run(second, first)
+        await _run(first, first)
+        starts = {
+            d.name: [
+                r["start"]
+                for r in json.loads((d / "resume_eval" / "meta.json").read_text())[
+                    "runs"
+                ]
+            ]
+            for d in (first, second)
+        }
+        assert starts == {"first": ["fresh", "resume"], "second": ["from"]}
+
+    @pytest.mark.anyio
+    async def test_an_interrupted_resume_dir_copy_reruns_on_the_same_command(
+        self, tmp_path, monkeypatch
+    ):
+        """#162 under `--resume DIR`: a kill between the copy and `meta.json`
+        leaves `.copying`; the same `--resume DIR` copies again, and a plain
+        `--resume` refuses it naming the source."""
+        from sieval.core.runners import stage_resume
+        from sieval.core.runners.runner import TaskRunner, UnfinishedCopyError
+
+        config_path = _write_yaml_config(
+            tmp_path, "cfg.yaml", self.RESUME_CONFIG.format(result_dir="unused")
+        )
+        first, second = tmp_path / "first", tmp_path / "second"
+
+        async def _run(result_dir, resume):
+            runner = _prepare_eval_session(
+                config_path,
+                models={"mock_model": MockChatModel()},
+                resume=resume,
+                result_dir=str(result_dir),
+            )
+            return await runner.arun()
+
+        await _run(first, None)
+
+        class _Killed(BaseException):
+            pass
+
+        async def _plan(_self):
+            raise _Killed
+
+        with monkeypatch.context() as m:
+            m.setattr(TaskRunner, "_abandon_copy", lambda self: None)
+            m.setattr(stage_resume, "abandon_copy", lambda root, created: None)
+            m.setattr(TaskRunner, "_plan_stage_resume", _plan)
+            with pytest.raises((_Killed, BaseExceptionGroup)):
+                await _run(second, first)
+        task_dir = second / "resume_eval"
+        assert (task_dir / stage_resume.COPY_MARKER).exists()
+
+        with pytest.raises(UnfinishedCopyError):
+            await _run(second, True)
+
+        await _run(second, first)
+        meta = json.loads((task_dir / "meta.json").read_text())
+        assert [r["start"] for r in meta["runs"]] == ["from"]
+        assert not (task_dir / stage_resume.COPY_MARKER).exists()
+
+    RESUME_CONFIG = """\
+result_dir: "{result_dir}"
+
+models:
+  mock_model:
+    name: "mock-chat"
+    type: "chat"
+    args:
+      api_key: "fake"
+
+datasets:
+  test_ds:
+    class: tests.conftest.MockDataset
+    args: {{}}
+
+tasks:
+  resume_eval:
+    class: tests.unit.core.runners.test_runner.MockTask
+    dataset: test_ds
+    model: mock_model
+    runner_config:
+      show_progress: false
+      detect_anomalies: false
+      profile_io: false
+      profile_stages: false
+      profile_usage: false
+      dump_progress: false
+"""
 
     @pytest.mark.anyio
     async def test_yaml_model_derivation(self, tmp_path):
@@ -1468,20 +1581,23 @@ class TestBuildRunnerConfigFull:
         runner.runner = None
         return runner
 
-    # (resume_override, defaults, task_cfg, expected_auto_resume)
+    # (resume_override, defaults, task_cfg, expected_resume)
     @pytest.mark.parametrize(
-        "resume_override,defaults,task_cfg,expected_auto_resume",
+        "resume_override,defaults,task_cfg,expected_resume",
         [
             (True, {}, {}, True),
             (False, {}, {}, False),
+            (None, {}, {}, None),
+            (None, {"resume": True}, {}, True),
+            (None, {"resume": True}, {"runner_config": {"resume": False}}, False),
         ],
     )
-    def test_auto_resume_resolution(
-        self, resume_override, defaults, task_cfg, expected_auto_resume
+    def test_resume_resolution(
+        self, resume_override, defaults, task_cfg, expected_resume
     ):
         runner = self._make_runner(resume_override=resume_override)
         cfg = runner._build_runner_config(task_cfg, defaults)
-        assert cfg.auto_resume is expected_auto_resume
+        assert cfg.resume is expected_resume
 
     # (defaults, task_cfg, expected_concurrency_limit, expected_show_progress)
     @pytest.mark.parametrize(

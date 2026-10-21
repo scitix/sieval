@@ -347,7 +347,7 @@ class TestInferenceIdentityFromRunner:
         root = tmp_path / "results"
         await _runner(tmp_path, record_meta=False).arun()
         (root / "report.json").unlink()
-        await _runner(tmp_path, record_meta=False, auto_resume=True).arun()
+        await _runner(tmp_path, record_meta=False, resume=True).arun()
         requests = _meta(root)["identity"]["inference"]["requests"]
         assert requests == {"digest": None, "samples": 3, "unknown": 3}
 
@@ -479,7 +479,7 @@ class TestJudgeIdentity:
 
         # Same name, other sampling: the recorded version describes another judge.
         second = _runner(
-            tmp_path, task=judged(MockJudgeModel(temperature=1.0)), auto_resume=True
+            tmp_path, task=judged(MockJudgeModel(temperature=1.0)), resume=True
         )
         await second.arun()
         [judge] = _meta(second.root_dir)["identity"]["grader"]["judges"]
@@ -544,7 +544,7 @@ class TestResume:
         await first.arun()
         identity = _meta(first.root_dir)["identity"]
 
-        second = _runner(tmp_path, auto_resume=True)
+        second = _runner(tmp_path, resume=True)
         await second.arun()
         meta = _meta(second.root_dir)
         assert [r["start"] for r in meta["runs"]] == ["fresh", "resume"]
@@ -578,7 +578,7 @@ class TestResume:
             return await original(finals, fails)
 
         setattr(task, "report", _spy)  # noqa: B010
-        await _runner(tmp_path, task=task, auto_resume=True).arun()
+        await _runner(tmp_path, task=task, resume=True).arun()
         meta = _meta(root)
         assert model.call_count == 0
         assert reports == [3]  # not fast-resumed
@@ -603,7 +603,7 @@ class TestResume:
 
         model = Other(answers=ANSWERS)
         task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
-        runner = _runner(tmp_path, task=task, auto_resume=True)
+        runner = _runner(tmp_path, task=task, resume=True)
         with pytest.raises(StageResumeError, match="1 sample"):
             await runner.arun()
         assert model.call_count == 0
@@ -621,7 +621,7 @@ class TestResume:
         _forget_last_sample(root)
         model = MockCountingChatModel(answers=ANSWERS)
         task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
-        resumed = _runner(tmp_path, task=task, auto_resume=True)
+        resumed = _runner(tmp_path, task=task, resume=True)
         await resumed.arun()
 
         meta = _meta(root)
@@ -645,7 +645,7 @@ class TestResume:
         await first.arun()
         (first.root_dir / "report.json").unlink()
 
-        second = _runner(tmp_path, task=judged(), auto_resume=True)
+        second = _runner(tmp_path, task=judged(), resume=True)
         await second.arun()
         meta = _meta(second.root_dir)
         # Only `report()` ran, which has no identity.
@@ -660,7 +660,7 @@ class TestResume:
         task = RecordTask(dataset=MockDataset(SAMPLES), model=MockChatModel(), name="t")
         runner = TaskRunner(
             task,
-            make_config(tmp_path, auto_resume=True),
+            make_config(tmp_path, resume=True),
             resume_config_diff=["concurrency_limit: 8 → 2"],
         )
         await runner.arun()
@@ -676,7 +676,7 @@ class TestResume:
         meta["version"] = __version__  # same series, so the gate admits it
         (first.root_dir / "meta.json").write_bytes(orjson.dumps(meta))
 
-        second = _runner(tmp_path, auto_resume=True, deterministic=True)
+        second = _runner(tmp_path, resume=True, deterministic=True)
         await second.arun()
         assert _meta(second.root_dir)["deterministic"] is True
 
@@ -712,7 +712,7 @@ class TestRunStartedHere:
         with pytest.raises(ResultDirExistsError):
             _runner(tmp_path)
 
-        resumed = _runner(tmp_path, auto_resume=True)
+        resumed = _runner(tmp_path, resume=True)
         await resumed.arun()
         meta = _meta(root)
         assert [r["start"] for r in meta["runs"]] == ["fresh", "resume"]
@@ -786,7 +786,7 @@ class TestShardsMeanStarted:
         root, recorded = await self._shards_under(tmp_path, "runs-empty")
         model = MockCountingChatModel(answers=ANSWERS)
         task = RecordTask(dataset=MockDataset(SAMPLES), model=model, name="t")
-        await _runner(tmp_path, task=task, auto_resume=True).arun()
+        await _runner(tmp_path, task=task, resume=True).arun()
         assert model.call_count == 0
         meta = _meta(root)
         assert [r["start"] for r in meta["runs"]] == ["resume"]
@@ -798,7 +798,7 @@ class TestShardsMeanStarted:
         self, tmp_path
     ):
         root, recorded = await self._shards_under(tmp_path, "runs-empty")
-        runner, model = self._other_model_runner(tmp_path, auto_resume=True)
+        runner, model = self._other_model_runner(tmp_path, resume=True)
         await runner.arun()
         assert model.call_count == 0
         assert _meta(root)["model"] == recorded["model"] == "mock-chat"
@@ -807,7 +807,7 @@ class TestShardsMeanStarted:
     async def test_runs_empty_with_shards_refuses_to_mix_models(self, tmp_path):
         root, _ = await self._shards_under(tmp_path, "runs-empty")
         _forget_last_sample(root)
-        runner, model = self._other_model_runner(tmp_path, auto_resume=True)
+        runner, model = self._other_model_runner(tmp_path, resume=True)
         with pytest.raises(StageResumeError, match="'other-model'"):
             await runner.arun()
         assert model.call_count == 0
@@ -817,7 +817,7 @@ class TestShardsMeanStarted:
     async def test_missing_meta_with_shards_fails_closed(self, tmp_path):
         root, _ = await self._shards_under(tmp_path, "missing")
         with pytest.raises(ResumeVersionError) as exc:
-            self._other_model_runner(tmp_path, auto_resume=True)
+            self._other_model_runner(tmp_path, resume=True)
         message = str(exc.value)
         assert str(root) in message
         assert "another result_dir" in message
@@ -826,7 +826,7 @@ class TestShardsMeanStarted:
     @pytest.mark.anyio
     async def test_a_pre_runs_meta_with_shards_resumes(self, tmp_path):
         root, _ = await self._shards_under(tmp_path, "pre-runs")
-        runner = _runner(tmp_path, auto_resume=True)
+        runner = _runner(tmp_path, resume=True)
         await runner.arun()
         assert [r["start"] for r in _meta(root)["runs"]] == ["resume"]
 
@@ -868,7 +868,7 @@ class TestBackwardCompatibleRead:
         )
         (root / "report.json").unlink()
 
-        resumed = _runner(tmp_path, auto_resume=True)
+        resumed = _runner(tmp_path, resume=True)
         await resumed.arun()
         meta = _meta(root)
         assert "task" not in meta
@@ -1032,7 +1032,7 @@ class TestEndRunFailure:
 
         # On the instance: a subclass would be another grader, and regrade.
         setattr(task, "report", _spy)  # noqa: B010
-        resumed = _runner(tmp_path, task=task, auto_resume=True)
+        resumed = _runner(tmp_path, task=task, resume=True)
         await resumed.arun()
         meta = _meta(resumed.root_dir)
         assert reports == [3]  # `report()` reran on the recorded samples
@@ -1053,13 +1053,13 @@ class TestEndRunFailure:
         first = _runner(tmp_path)
         await first.arun()
         (first.root_dir / "report.json").unlink()
-        await self._end_run_fails(_runner(tmp_path, auto_resume=True))
+        await self._end_run_fails(_runner(tmp_path, resume=True))
         await self._assert_refinalized(tmp_path)
 
     @pytest.mark.anyio
     async def test_fast_resume(self, tmp_path):
         await _runner(tmp_path).arun()
-        await self._end_run_fails(_runner(tmp_path, auto_resume=True))
+        await self._end_run_fails(_runner(tmp_path, resume=True))
         await self._assert_refinalized(tmp_path)
 
     @pytest.mark.anyio
@@ -1069,7 +1069,7 @@ class TestEndRunFailure:
         await self._end_run_fails(_runner(tmp_path, detect_anomalies=True))
         root = tmp_path / "results"
         (root / "anomalies.json").unlink()
-        await _runner(tmp_path, auto_resume=True, detect_anomalies=True).arun()
+        await _runner(tmp_path, resume=True, detect_anomalies=True).arun()
         anomalies = orjson.loads((root / "anomalies.json").read_bytes())
         assert "summary" not in anomalies
         last = _meta(root)["runs"][-1]
@@ -1088,7 +1088,7 @@ class TestEndRunFailure:
             return await original(finals, fails)
 
         setattr(task, "report", _spy)  # noqa: B010
-        runner = _runner(tmp_path, task=task, auto_resume=True)
+        runner = _runner(tmp_path, task=task, resume=True)
         await runner.arun()
         assert reports == []
         assert model.call_count == 0

@@ -422,4 +422,4 @@ class TestLeaderboardRun:
         assert "--resume" in error
         assert "--result-dir" in error
         assert str(existing) in error
-        assert "auto_resume=True" not in error
+        assert "resume=True" not in error

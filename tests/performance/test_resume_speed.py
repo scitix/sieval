@@ -55,7 +55,7 @@ class TestResumeByCompletion:
         config = make_perf_config(
             tmp_path / f"cfg_{completion_pct}",
             result_dir=str(result_dir),
-            auto_resume=True,
+            resume=True,
             concurrency_limit=64,
         )
 
@@ -99,7 +99,7 @@ class TestCachedReportFastResume:
         config = make_perf_config(
             tmp_path / "cfg_fast",
             result_dir=str(result_dir),
-            auto_resume=True,
+            resume=True,
         )
 
         runner = TaskRunner(task, config)
@@ -133,7 +133,7 @@ class TestResumeStress:
         config = make_perf_config(
             tmp_path / "cfg_stress",
             result_dir=str(result_dir),
-            auto_resume=True,
+            resume=True,
         )
 
         runner = TaskRunner(task, config)

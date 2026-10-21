@@ -135,7 +135,7 @@ class TestSameDirectory:
     async def test_unchanged_finished_run_fast_resumes(self, tmp_path):
         await _first(tmp_path)
         task, model = _task()
-        runner, _ = await _run(tmp_path, "first", task, auto_resume=True)
+        runner, _ = await _run(tmp_path, "first", task, resume=True)
         assert model.call_count == 0
         assert task.calls["report"] == 0
         assert _meta(runner.root_dir)["runs"][-1]["reran"] == []
@@ -157,7 +157,7 @@ class TestSameDirectory:
         task, _ = _task(cls=Resolving)
         await _run(tmp_path, "first", task)
         task, model = _task(cls=Resolving)
-        runner, _ = await _run(tmp_path, "first", task, auto_resume=True)
+        runner, _ = await _run(tmp_path, "first", task, resume=True)
         assert model.call_count == 0
         assert task.calls["report"] == 0
         assert _meta(runner.root_dir)["runs"][-1]["reran"] == []
@@ -174,7 +174,7 @@ class TestSameDirectory:
         task, _ = _task(cls=Workers)
         await _run(tmp_path, "first", task)
         task, _ = _task(cls=Workers, workers=8)
-        await _run(tmp_path, "first", task, auto_resume=True)
+        await _run(tmp_path, "first", task, resume=True)
         assert task.calls["postprocess"] == 0
         assert task.calls["report"] == 0
 
@@ -183,7 +183,7 @@ class TestSameDirectory:
         """Supported regrading: no shard is deleted by hand."""
         root = await _first(tmp_path)
         task, model = _task(threshold=0.9)
-        _, report = await _run(tmp_path, "first", task, auto_resume=True)
+        _, report = await _run(tmp_path, "first", task, resume=True)
         assert model.call_count == 0
         assert task.calls["postprocess"] == 3
         assert task.calls["feedback"] == 3
@@ -194,7 +194,7 @@ class TestSameDirectory:
 
         # The regrade is now the record: a third run fast-resumes.
         again, model = _task(threshold=0.9)
-        await _run(tmp_path, "first", again, auto_resume=True)
+        await _run(tmp_path, "first", again, resume=True)
         assert model.call_count == 0
         assert again.calls["feedback"] == 0
         assert _meta(root)["runs"][-1]["reran"] == []
@@ -214,10 +214,10 @@ class TestSameDirectory:
 
         # On the instance: a subclass would be another grader.
         setattr(task, "feedback", _feedback)  # noqa: B010
-        await _run(tmp_path, "first", task, auto_resume=True)
+        await _run(tmp_path, "first", task, resume=True)
 
         resumed, model = _task(threshold=0.9)
-        await _run(tmp_path, "first", resumed, auto_resume=True)
+        await _run(tmp_path, "first", resumed, resume=True)
         assert model.call_count == 0
         assert resumed.calls["postprocess"] == 0
         assert resumed.calls["feedback"] == 2
@@ -229,7 +229,7 @@ class TestSameDirectory:
         before = (root / "meta.json").read_bytes()
         task, model = _task(n=2)
         with pytest.raises(StageResumeError, match="stage `inference`") as raised:
-            await _run(tmp_path, "first", task, auto_resume=True)
+            await _run(tmp_path, "first", task, resume=True)
         assert raised.value.stage == "inference"
         assert model.call_count == 0
         # A refusal leaves the recorded run as it was.
@@ -241,7 +241,7 @@ class TestSameDirectory:
     ):
         root = await _first(tmp_path)
         task, model = _task(prefix="Q: ")
-        await _run(tmp_path, "first", task, auto_resume=True)
+        await _run(tmp_path, "first", task, resume=True)
         assert model.call_count == 3
         assert _meta(root)["runs"][-1]["reran"] == [
             "data",
@@ -255,7 +255,7 @@ class TestSameDirectory:
         root = await _first(tmp_path)
         changed = [*SAMPLES[:2], {"question": "What is 1+1?", "answer": "3"}]
         task, model = _task(samples=changed)
-        _, report = await _run(tmp_path, "first", task, auto_resume=True)
+        _, report = await _run(tmp_path, "first", task, resume=True)
         assert model.call_count == 1
         assert report["total"] == 3
         assert _meta(root)["identity"]["data"]["samples"] == 3
@@ -264,7 +264,7 @@ class TestSameDirectory:
     async def test_a_sample_subset_drops_the_samples_left_out(self, tmp_path):
         root = await _first(tmp_path)
         task, model = _task(samples=SAMPLES[:2])
-        _, report = await _run(tmp_path, "first", task, auto_resume=True)
+        _, report = await _run(tmp_path, "first", task, resume=True)
         assert model.call_count == 0
         assert report["total"] == 2
         assert _meta(root)["identity"]["data"]["samples"] == 2
@@ -272,7 +272,7 @@ class TestSameDirectory:
         # Widening again reuses the dropped sample's records: its data,
         # prompt and inference still match.
         widened, model = _task()
-        _, report = await _run(tmp_path, "first", widened, auto_resume=True)
+        _, report = await _run(tmp_path, "first", widened, resume=True)
         assert model.call_count == 0
         assert report["total"] == 3
         assert _meta(root)["identity"]["data"]["samples"] == 3
@@ -291,7 +291,7 @@ class TestResumeFrom:
             tmp_path,
             "second",
             task,
-            resume_from=str(src),
+            resume=str(src),
             profile_stages=True,
         )
         assert model.call_count == 0
@@ -326,7 +326,7 @@ class TestResumeFrom:
                 os.chmod(Path(dirpath) / name, stat.S_IRUSR)
         try:
             task, _ = _task(cls=StrictQATask)
-            runner, _ = await _run(tmp_path, "second", task, resume_from=str(src))
+            runner, _ = await _run(tmp_path, "second", task, resume=str(src))
             assert _meta(runner.root_dir)["runs"][0]["start"] == "from"
         finally:
             for dirpath, _dirs, files in os.walk(src):
@@ -340,7 +340,7 @@ class TestResumeFrom:
         src = await _first(tmp_path)
         task, model = _task(cls=StrictQATask, n=2)
         with pytest.raises(StageResumeError, match="stage `inference`"):
-            await _run(tmp_path, "second", task, resume_from=str(src))
+            await _run(tmp_path, "second", task, resume=str(src))
         assert model.call_count == 0
         dst = tmp_path / "second"
         assert not dst.exists() or not any(dst.iterdir())
@@ -355,11 +355,11 @@ class TestResumeFrom:
 
         setattr(task, "setup", _setup)  # noqa: B010
         with pytest.raises(RuntimeError, match="sandbox down"):
-            await _run(tmp_path, "second", task, resume_from=str(src))
+            await _run(tmp_path, "second", task, resume=str(src))
         dst = tmp_path / "second"
         assert not list(dst.rglob("*.idx"))
         again, model = _task(cls=StrictQATask)
-        runner, _ = await _run(tmp_path, "second", again, resume_from=str(src))
+        runner, _ = await _run(tmp_path, "second", again, resume=str(src))
         assert model.call_count == 0
         assert _meta(runner.root_dir)["runs"][0]["start"] == "from"
 
@@ -370,12 +370,10 @@ class TestResumeFrom:
         src = await _first(tmp_path)
         dst = tmp_path / "second"
         task, _ = _task(cls=StrictQATask)
-        TaskRunner(
-            task, make_config(tmp_path, result_dir=str(dst), resume_from=str(src))
-        )
+        TaskRunner(task, make_config(tmp_path, result_dir=str(dst), resume=str(src)))
         assert not list(dst.rglob("*.idx"))
         again, model = _task(cls=StrictQATask)
-        await _run(tmp_path, "second", again, resume_from=str(src))
+        await _run(tmp_path, "second", again, resume=str(src))
         assert model.call_count == 0
 
     @pytest.mark.anyio
@@ -384,7 +382,7 @@ class TestResumeFrom:
         (src / "meta.json").unlink()
         task, _ = _task(cls=StrictQATask)
         with pytest.raises(ResumeVersionError) as exc:
-            await _run(tmp_path, "second", task, resume_from=str(src))
+            await _run(tmp_path, "second", task, resume=str(src))
         message = str(exc.value)
         assert str(src) in message
         assert "Remove" not in message
@@ -396,14 +394,55 @@ class TestResumeFrom:
         the source again."""
         src = await _first(tmp_path)
         first, _ = _task(cls=StrictQATask)
-        await _run(tmp_path, "second", first, resume_from=str(src))
+        await _run(tmp_path, "second", first, resume=str(src))
         again, model = _task(cls=StrictQATask)
-        runner, _ = await _run(tmp_path, "second", again, resume_from=str(src))
+        runner, _ = await _run(tmp_path, "second", again, resume=str(src))
         assert model.call_count == 0
         assert [r["start"] for r in _meta(runner.root_dir)["runs"]] == [
             "from",
             "resume",
         ]
+
+    @pytest.mark.anyio
+    async def test_its_own_directory_resumes_in_place(self, tmp_path):
+        """``resume=<result_dir>`` is ``resume=True``: no copy, no refusal."""
+        src = await _first(tmp_path)
+        task, model = _task(cls=StrictQATask)
+        runner, report = await _run(tmp_path, "first", task, resume=str(src))
+        assert model.call_count == 0
+        assert report["strict"] is True
+        [_, run] = _meta(runner.root_dir)["runs"]
+        assert run["start"] == "resume"
+        assert "from" not in run
+        assert not (src / COPY_MARKER).exists()
+
+    @pytest.mark.anyio
+    async def test_true_and_its_own_directory_record_alike(self, tmp_path):
+        await _first(tmp_path, name="a")
+        await _first(tmp_path, name="b")
+        task, _ = _task()
+        await _run(tmp_path, "a", task, resume=True)
+        task, _ = _task()
+        await _run(tmp_path, "b", task, resume=str(tmp_path / "b"))
+        assert [r["start"] for r in _meta(tmp_path / "a")["runs"]] == [
+            r["start"] for r in _meta(tmp_path / "b")["runs"]
+        ]
+
+    @pytest.mark.anyio
+    async def test_the_deprecated_resume_from_still_copies(self, tmp_path):
+        src = await _first(tmp_path)
+        task, model = _task(cls=StrictQATask)
+        runner, _ = await _run(tmp_path, "second", task, resume_from=str(src))
+        assert model.call_count == 0
+        assert _meta(runner.root_dir)["runs"][0]["start"] == "from"
+
+    @pytest.mark.anyio
+    async def test_the_deprecated_auto_resume_still_resumes(self, tmp_path):
+        src = await _first(tmp_path)
+        task, model = _task()
+        runner, _ = await _run(tmp_path, "first", task, auto_resume=True)
+        assert model.call_count == 0
+        assert runner.root_dir == src
 
     def test_the_copy_holds_only_shards(self, tmp_path):
         src = tmp_path / "src"
@@ -442,10 +481,10 @@ class TestResumeFrom:
             return await original(post, ctx)
 
         setattr(strict, "feedback", _feedback)  # noqa: B010
-        await _run(tmp_path, "first", strict, auto_resume=True, record_meta=False)
+        await _run(tmp_path, "first", strict, resume=True, record_meta=False)
 
         task, model = _task(cls=StrictQATask)
-        await _run(tmp_path, "second", task, resume_from=str(src), record_meta=False)
+        await _run(tmp_path, "second", task, resume=str(src), record_meta=False)
         assert model.call_count == 0
         assert task.calls["feedback"] == 2
 
@@ -489,7 +528,7 @@ class TestPreIdentityDirectory:
         _strip_identities(root)
         (root / "report.json").unlink()
         task, model = _task()
-        await _run(tmp_path, "first", task, auto_resume=True)
+        await _run(tmp_path, "first", task, resume=True)
         assert model.call_count == 0
         assert task.calls["feedback"] == 0
 
@@ -505,7 +544,7 @@ class TestPreIdentityDirectory:
         task, model = _task(n=3)
         runner = TaskRunner(
             task,
-            make_config(tmp_path, result_dir=str(root), auto_resume=True),
+            make_config(tmp_path, result_dir=str(root), resume=True),
             legacy_match={"data": True, "inference": False},
         )
         with pytest.raises(StageResumeError, match="stage `inference`"):
@@ -521,7 +560,7 @@ class TestPreIdentityDirectory:
         before = (src / "meta.json").read_bytes()
         task, model = _task(cls=StrictQATask)
         with pytest.raises(StageResumeError, match="stage `inference`"):
-            await _run(tmp_path, "second", task, resume_from=str(src))
+            await _run(tmp_path, "second", task, resume=str(src))
         assert model.call_count == 0
         assert (src / "meta.json").read_bytes() == before
 
@@ -538,7 +577,7 @@ class TestPreIdentityDirectory:
             make_config(
                 tmp_path,
                 result_dir=str(tmp_path / "second"),
-                resume_from=str(src),
+                resume=str(src),
             ),
             legacy_match={"data": True, "inference": True},
         )
@@ -567,7 +606,7 @@ class TestPreIdentityDirectory:
             make_config(
                 tmp_path,
                 result_dir=str(tmp_path / "second"),
-                resume_from=str(src),
+                resume=str(src),
             ),
             legacy_match={"data": True, "inference": True},
         )
@@ -584,7 +623,7 @@ class TestPreIdentityDirectory:
             make_config(
                 tmp_path,
                 result_dir=str(tmp_path / "second"),
-                resume_from=str(src),
+                resume=str(src),
             ),
             legacy_match={"inference": True},
         )
@@ -632,7 +671,7 @@ class TestInterruptedBeforeEveryPreprocess:
         for _ in range(2):
             task, _ = _task()
             report = await _run(
-                tmp_path, "qa", task, auto_resume=True, record_meta=record_meta
+                tmp_path, "qa", task, resume=True, record_meta=record_meta
             )
             assert report[1]["total"] == 3
         runs = _meta(root)["runs"]
@@ -670,7 +709,7 @@ class TestInterruptedBeforeEveryPreprocess:
         sink = logger.add(records.append, format="{message}", level="WARNING")
         try:
             task, model = _task(cls=Slow)
-            await _run(tmp_path, "qa", task, auto_resume=True, record_meta=record_meta)
+            await _run(tmp_path, "qa", task, resume=True, record_meta=record_meta)
         finally:
             logger.remove(sink)
         assert model.call_count == calls
@@ -687,7 +726,7 @@ class TestInterruptedBeforeEveryPreprocess:
         task, _ = _task()
         runner = TaskRunner(
             task,
-            make_config(tmp_path, result_dir=str(root), auto_resume=True),
+            make_config(tmp_path, result_dir=str(root), resume=True),
             legacy_match={"inference": True},
         )
         with pytest.raises(StageResumeError, match="stage `data`"):
@@ -705,14 +744,14 @@ def test_recorded_identity_reads_only_this_schema():
 
 
 # ===================================================================
-# A resume_from copy interrupted before its run began
+# A resume=<dir> copy interrupted before its run began
 # ===================================================================
 class _Killed(BaseException):
     """Stands in for SIGKILL: nothing after it runs, the rollback included."""
 
 
 class TestInterruptedCopy:
-    """The same ``resume_from`` command resumes a copy wherever a kill
+    """The same ``resume=<dir>`` command resumes a copy wherever a kill
     stopped it. A kill runs no rollback, so each test disables it."""
 
     @staticmethod
@@ -723,7 +762,7 @@ class TestInterruptedCopy:
     @staticmethod
     async def _rerun(tmp_path, src):
         task, model = _task(cls=StrictQATask)
-        runner, report = await _run(tmp_path, "second", task, resume_from=str(src))
+        runner, report = await _run(tmp_path, "second", task, resume=str(src))
         assert model.call_count == 0
         assert task.calls["feedback"] == 3
         assert report["strict"] is True
@@ -751,7 +790,7 @@ class TestInterruptedCopy:
             m.setattr(stage_resume, "_copy_idx", _copy_one)
             task, _ = _task(cls=StrictQATask)
             with pytest.raises(_Killed):
-                await _run(tmp_path, "second", task, resume_from=str(src))
+                await _run(tmp_path, "second", task, resume=str(src))
         dst = tmp_path / "second"
         assert (dst / COPY_MARKER).read_text() == str(src)
         assert list(dst.rglob("*.idx"))
@@ -775,7 +814,7 @@ class TestInterruptedCopy:
             m.setattr(stage_resume, "_copy_idx", _kill)
             task, _ = _task(cls=StrictQATask)
             with pytest.raises(_Killed):
-                await _run(tmp_path, "second", task, resume_from=str(src))
+                await _run(tmp_path, "second", task, resume=str(src))
         dst = tmp_path / "second"
         assert (dst / COPY_MARKER).exists()
         assert not list(dst.rglob("*.idx"))
@@ -799,7 +838,7 @@ class TestInterruptedCopy:
         with pytest.raises(UnfinishedCopyError) as exc:
             TaskRunner(
                 task,
-                make_config(tmp_path, result_dir=str(dst), auto_resume=auto_resume),
+                make_config(tmp_path, result_dir=str(dst), resume=auto_resume),
             )
         assert exc.value.source == str(src)
 
@@ -817,7 +856,7 @@ class TestInterruptedCopy:
             m.setattr(TaskRunner, "_plan_stage_resume", _plan)
             task, _ = _task(cls=StrictQATask)
             with pytest.raises(_Killed):
-                await _run(tmp_path, "second", task, resume_from=str(src))
+                await _run(tmp_path, "second", task, resume=str(src))
         dst = tmp_path / "second"
         assert (dst / COPY_MARKER).exists()
         assert sorted(p.name for p in dst.iterdir()) == [COPY_MARKER, "0"]
@@ -838,7 +877,7 @@ class TestInterruptedCopy:
             m.setattr(runner_module, "end_copy", _end_copy)
             task, _ = _task(cls=StrictQATask)
             with pytest.raises(_Killed):
-                await _run(tmp_path, "second", task, resume_from=str(src))
+                await _run(tmp_path, "second", task, resume=str(src))
         dst = tmp_path / "second"
         assert (dst / COPY_MARKER).exists()
         assert [r["start"] for r in _meta(dst)["runs"]] == ["from"]
@@ -875,18 +914,18 @@ class TestInterruptedCopy:
             m.setattr(TaskRunner, "_plan_stage_resume", _plan)
             task, _ = _task(cls=StrictQATask)
             with pytest.raises(_Killed):
-                await _run(tmp_path, "second", task, resume_from=str(src))
+                await _run(tmp_path, "second", task, resume=str(src))
         dst = tmp_path / "second"
         before = {p: p.read_bytes() for p in dst.rglob("*") if p.is_file()}
         task, _ = _task(cls=StrictQATask)
         with pytest.raises(UnfinishedCopyError) as exc:
             TaskRunner(
                 task,
-                make_config(tmp_path, result_dir=str(dst), auto_resume=auto_resume),
+                make_config(tmp_path, result_dir=str(dst), resume=auto_resume),
             )
         assert exc.value.path == dst
         assert exc.value.source == str(src)
-        assert "same `resume_from`" in str(exc.value)
+        assert "same `resume` directory" in str(exc.value)
         assert {p: p.read_bytes() for p in dst.rglob("*") if p.is_file()} == before
 
     @pytest.mark.anyio
@@ -894,7 +933,7 @@ class TestInterruptedCopy:
         src = await _first(tmp_path)
         task, _ = _task(cls=StrictQATask, n=2)
         with pytest.raises(StageResumeError):
-            await _run(tmp_path, "second", task, resume_from=str(src))
+            await _run(tmp_path, "second", task, resume=str(src))
         dst = tmp_path / "second"
         assert not (dst / COPY_MARKER).exists()
         assert not run_started(dst)

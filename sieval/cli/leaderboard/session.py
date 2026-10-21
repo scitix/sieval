@@ -119,7 +119,12 @@ from sieval.core.models.requirements import (
 from sieval.core.runners import (
     LegacyStageMatch,
     MultiTaskRunner,
+    ResumeValue,
     TaskRunnerConfig,
+    as_resume,
+    fold_resume_aliases,
+    resume_source,
+    same_dir,
 )
 from sieval.core.tasks.context import TaskAction
 from sieval.core.tasks.services import check_service_names
@@ -1191,6 +1196,55 @@ def _configured_credential(
     return api_key
 
 
+#: The runner keys that say whether a run resumes; ``auto_resume`` and
+#: ``resume_from`` are deprecated aliases of ``resume``.
+_RESUME_KEYS = ("resume", "auto_resume", "resume_from")
+
+
+def _runner_config_blocks(cfg: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """The top-level ``runner_config`` and each task's, by where they sit."""
+    blocks: dict[str, Any] = {"runner_config": cfg.get("runner_config")}
+    tasks = cfg.get("tasks")
+    if isinstance(tasks, dict):
+        for name, task in tasks.items():
+            if isinstance(task, dict):
+                blocks[f"tasks.{name}.runner_config"] = task.get("runner_config")
+    return {k: v for k, v in blocks.items() if isinstance(v, dict)}
+
+
+def _drop_resume_keys(cfg: dict[str, Any]) -> None:
+    """Remove every resume key in place, and a ``runner_config`` left empty."""
+    for block in _runner_config_blocks(cfg).values():
+        for key in _RESUME_KEYS:
+            block.pop(key, None)
+    if cfg.get("runner_config") == {}:
+        del cfg["runner_config"]
+    for task in (cfg.get("tasks") or {}).values():
+        if isinstance(task, dict) and task.get("runner_config") == {}:
+            del task["runner_config"]
+
+
+def _fold_runner_resume_aliases(cfg: dict[str, Any]) -> None:
+    """Rewrite the deprecated ``auto_resume`` and ``resume_from`` as ``resume``.
+
+    In place, in the top-level ``runner_config`` and each task's. A directory
+    stays as written; each alias warns once.
+    """
+    for where, block in _runner_config_blocks(cfg).items():
+        if not {"auto_resume", "resume_from"} & block.keys():
+            continue
+        resume = fold_resume_aliases(
+            as_resume(block.get("resume"), f"{where}.resume"),
+            auto_resume=block.pop("auto_resume", None),
+            resume_from=block.pop("resume_from", None),
+            new=f"{where}.resume",
+            auto=f"{where}.auto_resume",
+            source=f"{where}.resume_from",
+        )
+        if resume is not None:
+            block["resume"] = str(resume) if isinstance(resume, Path) else resume
+
+
 def _read_persisted_config(path: Path) -> dict[str, Any] | None:
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -1492,7 +1546,7 @@ class EvalSession:
         self,
         config_path: str | Path,
         model_override: str | None = None,
-        resume: bool = False,
+        resume: bool | str | Path | None = None,
         result_dir_override: str | None = None,
         deterministic_override: bool | None = None,
         endpoint_map: Mapping[str, str] | None = None,
@@ -1506,11 +1560,17 @@ class EvalSession:
     ):
         self.config_path = Path(config_path)
         self.model_override = model_override
-        self.resume_override = resume
-        # A recorded session result_dir (or one task directory, when the config
-        # has one task) to resume each task from; see `_build_runner_config`.
-        self.resume_from: Path | None = (
-            Path(resume_from).expanduser() if resume_from is not None else None
+        # `True` resumes each task in place; a directory is a recorded session
+        # result_dir (or one task directory, when the config has one task) to
+        # start each task from, see `_cli_resume_for`. `resume_from` is its
+        # deprecated alias. Set to `True` below when it is this session's own
+        # result_dir.
+        self.resume_override: ResumeValue = fold_resume_aliases(
+            as_resume(resume),
+            resume_from=resume_from,
+            new="resume",
+            auto="resume",
+            source="resume_from",
         )
         self.result_dir_override = result_dir_override
         self.deterministic_override = deterministic_override
@@ -1604,6 +1664,15 @@ class EvalSession:
             alignment_card = load_card(card_path)
         self.alignment_card: AlignmentCard | None = alignment_card
 
+        # A directory that is this session's own result_dir resumes in place.
+        own = self._resolve_result_dir()
+        if (
+            isinstance(self.resume_override, Path)
+            and own is not None
+            and same_dir(self.resume_override, Path(own))
+        ):
+            self.resume_override = True
+
         # Raw + CLI reification, BEFORE legacy endpoint injection — this is
         # what gets persisted to effective_config.yaml, so rerun via
         # `sieval run` re-launches services instead of connecting to a stale
@@ -1615,6 +1684,9 @@ class EvalSession:
             model=model_override,
             result_dir=result_dir_override,
         )
+        # The deprecated resume keys become `resume`, here so that both
+        # `effective_config.yaml` and the run read only the new key.
+        _fold_runner_resume_aliases(reified)
         # Before the copy, so the digests reach both the persisted view (and
         # therefore --resume) and the runtime view below. Not where the
         # operation runs: `arun` persists before `_prepare_execution`, so by
@@ -4675,32 +4747,28 @@ class EvalSession:
             )
             logger.info("Added task '{}' with class '{}'", task_name, task_spec)
 
-    def _resume_from_for(self, task_name: str, configured: object) -> Path | None:
-        """The recorded task directory *task_name* resumes from, if any.
+    def _cli_resume_for(self, task_name: str) -> ResumeValue:
+        """What the session's ``resume`` (``--resume [DIR]``) means for *task_name*.
 
-        ``--resume-from DIR`` (``resume_from``) names a recorded session
-        ``result_dir``: the task resumes from ``DIR/<task_name>``. When ``DIR``
+        ``True`` resumes the task in place. ``DIR`` names a recorded session
+        ``result_dir``: the task starts from ``DIR/<task_name>``. When ``DIR``
         is itself a task directory (it holds ``meta.json``) and the config has
-        one task, that task resumes from ``DIR``. A task with no directory
-        under ``DIR`` runs fresh. ``runner_config.resume_from`` in the YAML,
-        per task or in the top-level defaults, names one task directory and
-        wins over the option.
+        one task, that task starts from ``DIR``. A task with no directory
+        under ``DIR`` runs fresh.
         """
-        if isinstance(configured, str) and configured:
-            return Path(configured).expanduser()
-        resume_from: Path | None = getattr(self, "resume_from", None)
-        if resume_from is None:
-            return None
-        candidate = resume_from / task_name
+        resume = self.resume_override
+        if not isinstance(resume, Path):
+            return resume
+        candidate = resume / task_name
         if candidate.is_dir():
             return candidate
         tasks = self._get_named_config_map("tasks")
-        if len(tasks) == 1 and (resume_from / "meta.json").is_file():
-            return resume_from
+        if len(tasks) == 1 and (resume / "meta.json").is_file():
+            return resume
         logger.info(
             "Task '{}': no recorded directory under {}; runs fresh",
             task_name,
-            resume_from,
+            resume,
         )
         return None
 
@@ -4712,15 +4780,15 @@ class EvalSession:
         Read only for a recorded directory without stage identities (see
         :func:`_stage_config`). The recorded config is the
         ``effective_config.yaml`` of the session ``result_dir`` the task
-        directory sits in: ``resume_from``'s parent, or for a same-directory
-        resume the one this run found before rewriting it. ``None`` when there
-        is none: both stages stay unknown.
+        directory sits in: the parent of the ``resume`` directory copied, or
+        for an in-place resume the one this run found before rewriting it.
+        ``None`` when there is none: both stages stay unknown.
         """
-        if runner_config.resume_from:
+        if isinstance(runner_config.resume, Path):
             persisted = _read_persisted_config(
-                Path(runner_config.resume_from).parent / "effective_config.yaml"
+                runner_config.resume.parent / "effective_config.yaml"
             )
-        elif self.resume_override:
+        elif runner_config.resume:
             persisted = self._recorded_config
         else:
             return None
@@ -4827,7 +4895,13 @@ class EvalSession:
         defaults: dict[str, Any],
         task_name: str | None = None,
     ) -> TaskRunnerConfig:
-        """Build TaskRunnerConfig from task config and defaults."""
+        """Build TaskRunnerConfig from task config and defaults.
+
+        ``resume``: a directory in the YAML, per task before the top-level
+        defaults, wins over the session's ``resume``; otherwise the session's
+        applies, and without one the YAML's ``true`` or ``false``. A
+        directory that is the task's own ``result_dir`` resumes in place.
+        """
         # Start with defaults
         cfg_dict = dict(defaults)
 
@@ -4837,13 +4911,26 @@ class EvalSession:
         )
         cfg_dict.update(task_runner_cfg)
 
-        # Handle resume override
-        if self.resume_override:
-            cfg_dict["auto_resume"] = True
-        if task_name is not None:
-            source = self._resume_from_for(task_name, cfg_dict.get("resume_from"))
-            if source is not None:
-                cfg_dict["resume_from"] = str(source)
+        configured = as_resume(cfg_dict.get("resume"), "runner_config.resume")
+        if not isinstance(configured, Path):
+            cli = (
+                self._cli_resume_for(task_name)
+                if task_name is not None
+                else as_resume(self.resume_override)
+            )
+            # A CLI resume wins over the YAML's true or false.
+            if cli or configured is None:
+                configured = cli
+        if isinstance(configured, Path):
+            own = cfg_dict.get("result_dir") or (
+                Path(session_dir) / task_name
+                if task_name is not None
+                and (session_dir := self._resolve_result_dir()) is not None
+                else None
+            )
+            if own is not None and resume_source(configured, Path(own)) is None:
+                configured = True
+        cfg_dict["resume"] = configured
 
         # Filter to valid TaskRunnerConfig fields
         valid_fields = set(TaskRunnerConfig.__dataclass_fields__.keys())
@@ -4913,7 +5000,7 @@ class EvalSession:
         write_header = header
 
         try:
-            if self.resume_override and await target.exists():
+            if self.resume_override is True and await target.exists():
                 existing = await target.read_text(encoding="utf-8")
                 existing_header, existing_body = _split_header(existing)
                 if existing_body == body:
@@ -4948,9 +5035,11 @@ class EvalSession:
             return
         if not isinstance(before, dict) or not isinstance(after, dict):
             return
-        # `result_dir` is where the file lives, not a change in what ran.
-        before.pop("result_dir", None)
-        after.pop("result_dir", None)
+        # `result_dir` is where the file lives and `resume` how this run
+        # started, not a change in what ran.
+        for cfg in (before, after):
+            cfg.pop("result_dir", None)
+            _drop_resume_keys(cfg)
         self._resume_config_diff.extend(
             line.removeprefix("- ") for line in _diff_lines(before, after)
         )
@@ -4973,7 +5062,7 @@ class EvalSession:
             sort_keys=False,
         )
         result_dir = self._resolve_result_dir()
-        if self.resume_override and result_dir:
+        if self.resume_override is True and result_dir:
             self._recorded_config = await run_sync(
                 _read_persisted_config, Path(result_dir) / "effective_config.yaml"
             )
@@ -5100,7 +5189,7 @@ class EvalSession:
 async def arun_session(
     config: str | Path,
     model: str | None = None,
-    resume: bool = False,
+    resume: bool | str | Path | None = False,
     result_dir: str | None = None,
     deterministic: bool | None = None,
     endpoint_map: Mapping[str, str] | None = None,
@@ -5115,7 +5204,11 @@ async def arun_session(
     Args:
         config: Path to the YAML configuration file.
         model: Override model name for all base models.
-        resume: Enable auto-resume for all tasks.
+        resume: ``True`` resumes every task in its own result_dir. A directory
+            is a recorded session ``result_dir`` each task starts from
+            (``<resume>/<task>``), possibly read-only, or with one task that
+            task's directory; the session's own ``result_dir`` resumes in
+            place. See :meth:`EvalSession._cli_resume_for`.
         result_dir: Override result directory.
         deterministic: Monotone override. ``None`` defers to YAML, ``True``
             forces on, ``False`` is a no-op (cannot downgrade YAML).
@@ -5133,9 +5226,7 @@ async def arun_session(
             warning to genuinely external endpoints.
         realized_deployments: Typed realized deployments keyed by root model
             config name.
-        resume_from: A recorded session ``result_dir`` to resume each task
-            from (``<resume_from>/<task>``), possibly read-only; see
-            :meth:`EvalSession._resume_from_for`.
+        resume_from: Deprecated alias of ``resume=<dir>``; warns.
 
     Returns:
         A dictionary mapping task names to their reports.
@@ -5160,7 +5251,7 @@ async def arun_session(
 def run_session(
     config: str | Path,
     model: str | None = None,
-    resume: bool = False,
+    resume: bool | str | Path | None = False,
     result_dir: str | None = None,
     deterministic: bool | None = None,
     endpoint_map: Mapping[str, str] | None = None,

@@ -87,7 +87,7 @@ class TestRunnerAnomalyOnResume:
     @pytest.mark.anyio
     async def test_full_resume_returns_cached_report(self, tmp_path):
         """
-        After a complete run, a second run with auto_resume=True and
+        After a complete run, a second run with resume=True and
         detect_anomalies=False must return the exact same cached report
         without invoking the model again (fast-path at runner.py).
         """
@@ -113,7 +113,7 @@ class TestRunnerAnomalyOnResume:
         config2 = make_config(
             tmp_path,
             result_dir=result_dir,
-            auto_resume=True,
+            resume=True,
             detect_anomalies=False,
         )
         runner2 = TaskRunner(task2, config2)
@@ -173,7 +173,7 @@ class TestRunnerAnomalyOnResume:
         config2 = make_config(
             tmp_path,
             result_dir=result_dir,
-            auto_resume=True,
+            resume=True,
             detect_anomalies=False,
             record_each_stage=True,
             record_meta=True,
@@ -240,7 +240,7 @@ class TestRunnerAnomalyOnResume:
         config2 = make_config(
             tmp_path,
             result_dir=result_dir,
-            auto_resume=True,
+            resume=True,
             detect_anomalies=False,
         )
         runner2 = TaskRunner(task2, config2)
@@ -323,7 +323,7 @@ class TestRunnerAnomalyOnResume:
         config2 = make_config(
             tmp_path,
             result_dir=result_dir,
-            auto_resume=True,
+            resume=True,
             detect_anomalies=True,
         )
         runner2 = TaskRunner(task2, config2)

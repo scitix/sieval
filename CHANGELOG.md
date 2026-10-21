@@ -11,11 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`api_key_env: <VAR>`** reads a model's key from an environment variable, wherever `api_key` is accepted (root models and inline `grader` / `extractor`), on every dialect. Setting both is refused; an unset variable fails before any engine starts. Neither the value nor the name is in any identity, so rotating a key or switching forms resumes without a rerun (#148).
 
+### Changed
+
+- **One resume option, `--resume [DIR]`**, on `sieval run`, `sieval eval` and `sieval leaderboard run`. `--resume` resumes each task in place; `--resume DIR` starts each task from `DIR/<task>`, as `--resume-from DIR` did. A `DIR` that is the run's own directory resumes in place instead of being refused. YAML: `runner_config.resume` (`true` or a task directory). Python: `TaskRunnerConfig.resume` and `resume=` on `EvalSession` / `arun_session` / `run_session`. `resume` never enters `runs[].config`.
+
+### Deprecated
+
+- `--resume-from`, `runner_config.auto_resume` / `resume_from`, the matching `TaskRunnerConfig` fields and the `resume_from=` argument map to `resume` and warn once. An alias that disagrees with `resume` is refused. Removed next release.
+
 ### Fixed
 
 - `effective_config.yaml` and `infer_plans.yaml` write every `api_key` / `authorization` value as `<redacted>`; rerunning such a file is refused until the key is supplied again.
 - A resume's `runs[].config` in `meta.json` showed a changed `api_key` by value; it now shows `<redacted>`.
-- A `--resume-from` run killed before `meta.json` recorded it now resumes on the same command, instead of being refused as a run of unknown version. The copy writes `.copying` first and removes it once the run is recorded; the same `--resume-from` copies again over a marked directory, and `--resume` alone refuses it (`UnfinishedCopyError`). (#162)
+- A `--resume DIR` run killed before `meta.json` recorded it now resumes on the same command, instead of being refused as a run of unknown version. The copy writes `.copying` first and removes it once the run is recorded; the same `--resume DIR` copies again, and `--resume` alone refuses it (`UnfinishedCopyError`). (#162)
 - An `.idx` outside a `<iteration>/<stage>/` directory named for a `TaskStage` is neither loaded nor counts as a started run. (#162)
 
 ## [0.10.0] - 2026-10-20

@@ -431,7 +431,7 @@ class TestFinishedDirOfAnotherTask:
                 model=MockChatModel(answers=DEFAULT_ANSWERS),
                 name="shared",
             ),
-            make_config(tmp_path, result_dir=str(runner.root_dir), auto_resume=True),
+            make_config(tmp_path, result_dir=str(runner.root_dir), resume=True),
         )
         report = await other.arun()
         assert report["other"] == 3
@@ -702,7 +702,7 @@ class TestE2EEdgeCases:
         model_ok = MockChatModel(answers=DEFAULT_ANSWERS)
         task2 = MockTask(dataset=dataset, model=model_ok, name="e2e_max_retry")
         config2 = make_config(
-            tmp_path, result_dir=result_dir, auto_resume=True, max_retries=0
+            tmp_path, result_dir=result_dir, resume=True, max_retries=0
         )
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
@@ -733,7 +733,7 @@ class TestE2EEdgeCases:
         model_ok = MockChatModel(answers=DEFAULT_ANSWERS)
         task2 = MockTask(dataset=dataset, model=model_ok, name="e2e_retry")
         config2 = make_config(
-            tmp_path, result_dir=result_dir, auto_resume=True, max_retries=1
+            tmp_path, result_dir=result_dir, resume=True, max_retries=1
         )
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
@@ -805,16 +805,14 @@ class TestE2ERunnerGuardRails:
             orjson.dumps({"version": __version__, "runs": [{"start": "fresh"}]})
         )
         task_existing = MockTask(dataset=dataset, model=model, name="e2e_existing")
-        existing_cfg = make_config(
-            tmp_path, result_dir=str(result_dir), auto_resume=False
-        )
+        existing_cfg = make_config(tmp_path, result_dir=str(result_dir), resume=False)
         # Back-compat: keep both the subclass and FileExistsError assertions.
         with pytest.raises(ResultDirExistsError) as exc_info:
             TaskRunner(task_existing, existing_cfg)
         assert isinstance(exc_info.value, FileExistsError)
         assert exc_info.value.path == result_dir
         msg = str(exc_info.value)
-        assert "auto_resume=True" in msg
+        assert "resume=True" in msg
         assert "--resume" not in msg
 
     def test_sync_run_wrapper(self, tmp_path):
@@ -991,7 +989,7 @@ class TestResolveResultDir:
 
         # Second run with auto_resume: should pick up the same directory
         task2 = MockTask(dataset=dataset, model=model, name=task_name)
-        config2 = make_config(tmp_path, result_dir=None, auto_resume=True)
+        config2 = make_config(tmp_path, result_dir=None, resume=True)
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
 
@@ -1001,7 +999,7 @@ class TestResolveResultDir:
     def test_resume_dir_selection_respects_auto_resume_flag(
         self, tmp_path, monkeypatch
     ):
-        """auto_resume=True should reuse latest dir; auto_resume=False should not."""
+        """resume=True should reuse latest dir; resume=False should not."""
         monkeypatch.chdir(tmp_path)
 
         task_name = "resume_flag_semantics"
@@ -1024,13 +1022,13 @@ class TestResolveResultDir:
 
         resumed_runner = TaskRunner(
             MockTask(dataset=dataset, model=model, name=task_name),
-            make_config(tmp_path, result_dir=None, auto_resume=True),
+            make_config(tmp_path, result_dir=None, resume=True),
         )
         assert resumed_runner.root_dir == root_rel / latest.name
 
         fresh_runner = TaskRunner(
             MockTask(dataset=dataset, model=model, name=task_name),
-            make_config(tmp_path, result_dir=None, auto_resume=False),
+            make_config(tmp_path, result_dir=None, resume=False),
         )
         assert fresh_runner.root_dir.parent == root_rel
         assert fresh_runner.root_dir not in {
@@ -1084,7 +1082,7 @@ class TestRunnerFastResumeAnomaly:
         task = MockTask(dataset=MockDataset(), model=model, name=name)
         runner = TaskRunner(
             task,
-            make_config(tmp_path, result_dir=result_dir, auto_resume=True, **cfg),
+            make_config(tmp_path, result_dir=result_dir, resume=True, **cfg),
         )
         return runner, model
 
@@ -1146,7 +1144,7 @@ class TestRunnerFastResumeAnomaly:
         task = MockTask(dataset=dataset, model=model, name="resume_progress_seed")
         runner = TaskRunner(
             task,
-            make_config(tmp_path, auto_resume=True, detect_anomalies=True),
+            make_config(tmp_path, resume=True, detect_anomalies=True),
         )
 
         final_ctx = task.make_context(0, samples[0]).to_final()
@@ -1309,7 +1307,7 @@ class TestRunnerFastResumeAnomaly:
         dataset = MockDataset(samples)
         model = MockChatModel(answers={"q0": "a0", "q1": "a1"})
         task = MockTask(dataset=dataset, model=model, name="all_terminal_resume")
-        runner = TaskRunner(task, make_config(tmp_path, auto_resume=True))
+        runner = TaskRunner(task, make_config(tmp_path, resume=True))
 
         terminal_ctx = {
             0: task.make_context(0, samples[0]).to_final(),
@@ -1444,7 +1442,7 @@ class TestRunnerResumeState:
         task = MockTask(dataset=dataset, model=model, name="resume_retry_limit")
         runner = TaskRunner(
             task,
-            make_config(tmp_path, auto_resume=True, max_retries=1),
+            make_config(tmp_path, resume=True, max_retries=1),
         )
 
         in_retry = replace(task.make_context(0, sample), retry_count=2)
@@ -2466,9 +2464,7 @@ class TestResumeVersionGate:
 
         task2 = MockTask(dataset=MockDataset(), model=model, name="gate_block")
         with pytest.raises(ResumeVersionError):
-            TaskRunner(
-                task2, make_config(tmp_path, result_dir=result_dir, auto_resume=True)
-            )
+            TaskRunner(task2, make_config(tmp_path, result_dir=result_dir, resume=True))
 
     @pytest.mark.anyio
     async def test_same_version_resume_allowed(self, tmp_path):
@@ -2479,7 +2475,7 @@ class TestResumeVersionGate:
 
         task2 = MockTask(dataset=MockDataset(), model=model, name="gate_ok")
         runner2 = TaskRunner(
-            task2, make_config(tmp_path, result_dir=result_dir, auto_resume=True)
+            task2, make_config(tmp_path, result_dir=result_dir, resume=True)
         )  # meta.json holds the current version -> EXACT -> no raise
         assert runner2._resumed_from_existing
 
@@ -2783,7 +2779,7 @@ class TestReportTruncation:
             replace(
                 make_config(tmp_path, detect_anomalies=True),
                 result_dir=str(runner.root_dir),
-                auto_resume=True,
+                resume=True,
             ),
         )
         reloaded = await resumed.arun()
@@ -2849,7 +2845,7 @@ class TestReportTruncation:
             replace(
                 make_config(tmp_path, record_meta=False),
                 result_dir=str(root),
-                auto_resume=True,
+                resume=True,
             ),
         )
         report = await resumed.arun()
@@ -2879,7 +2875,7 @@ class TestReportTruncation:
         )
         report = await TaskRunner(
             resumed_task,
-            replace(make_config(tmp_path), result_dir=str(root), auto_resume=True),
+            replace(make_config(tmp_path), result_dir=str(root), resume=True),
         ).arun()
 
         assert report["n_truncated"] == 3

@@ -81,7 +81,7 @@ class TestResumeCrossStageAccess:
             fail_feedback_first_run=False,
         )
         config2 = make_config(
-            tmp_path, result_dir=result_dir, record_each_stage=True, auto_resume=True
+            tmp_path, result_dir=result_dir, record_each_stage=True, resume=True
         )
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
@@ -125,7 +125,7 @@ class TestResumeCrossStageAccess:
             fail_feedback_first_run=False,
         )
         config2 = make_config(
-            tmp_path, result_dir=result_dir, record_each_stage=False, auto_resume=True
+            tmp_path, result_dir=result_dir, record_each_stage=False, resume=True
         )
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
@@ -197,7 +197,7 @@ class TestIterationBoundarySnapshots:
             result_dir=result_dir,
             record_each_stage=False,
             max_iterations=5,
-            auto_resume=True,
+            resume=True,
         )
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
@@ -223,7 +223,7 @@ class TestMaxRetries:
             dataset=dataset, model=MockAlwaysFailModel(), name="retry_test"
         )
         config2 = make_config(
-            tmp_path, result_dir=result_dir, max_retries=1, auto_resume=True
+            tmp_path, result_dir=result_dir, max_retries=1, resume=True
         )
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()
@@ -232,7 +232,7 @@ class TestMaxRetries:
         counting_model = CountingMockChatModel(answers={"R1": "A1", "R2": "A2"})
         task3 = ResumeTask(dataset=dataset, model=counting_model, name="retry_test")
         config3 = make_config(
-            tmp_path, result_dir=result_dir, max_retries=1, auto_resume=True
+            tmp_path, result_dir=result_dir, max_retries=1, resume=True
         )
         runner3 = TaskRunner(task3, config3)
         report3 = await runner3.arun()
@@ -256,7 +256,7 @@ class TestMaxRetries:
         ok_model = MockChatModel(answers={"R1": "A1", "R2": "A2"})
         task2 = ResumeTask(dataset=dataset, model=ok_model, name="retry_ok")
         config2 = make_config(
-            tmp_path, result_dir=result_dir, max_retries=3, auto_resume=True
+            tmp_path, result_dir=result_dir, max_retries=3, resume=True
         )
         runner2 = TaskRunner(task2, config2)
         report2 = await runner2.arun()

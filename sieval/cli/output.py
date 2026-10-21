@@ -73,9 +73,9 @@ def cli_error_message(exc: Exception) -> str:
     if isinstance(exc, UnfinishedCopyError):
         return (
             f"Result directory '{exc.path}' holds an unfinished copy of "
-            f"'{exc.source}', made by --resume-from and stopped before its run "
+            f"'{exc.source}', made by --resume DIR and stopped before its run "
             "began.\n"
-            "To copy it again, rerun with the same --resume-from.\n"
+            f"To copy it again, rerun with --resume {exc.source}.\n"
             "To start fresh, pass --result-dir <path>."
         )
     return str(exc)

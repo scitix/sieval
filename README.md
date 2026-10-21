@@ -77,7 +77,7 @@ sieval dataset download aime_2024     # stage data into $SIEVAL_DATA_DIR
 ```bash
 sieval run config.yaml
 sieval run config.yaml --resume                        # resume result_dir stage by stage
-sieval run config.yaml --resume-from outputs/earlier   # start from another run's tasks
+sieval run config.yaml --resume outputs/earlier        # start from another run's tasks
 ```
 
 **Evaluate against an already-online endpoint:**
@@ -114,7 +114,7 @@ async def main():
 
     runner = TaskRunner(
         task=task,
-        config=TaskRunnerConfig(result_dir="./outputs/mmlu", auto_resume=True),
+        config=TaskRunnerConfig(result_dir="./outputs/mmlu", resume=True),
     )
     results = await runner.arun()
     print(results)

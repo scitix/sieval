@@ -244,7 +244,7 @@ async def _run_resume_scenario(tmp_path: Path) -> BenchmarkResult:
     config = make_perf_config(
         tmp_path / "resume_cfg",
         result_dir=str(result_dir),
-        auto_resume=True,
+        resume=True,
         concurrency_limit=64,
     )
 
