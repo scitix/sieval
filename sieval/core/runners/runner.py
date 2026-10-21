@@ -59,6 +59,7 @@ from sieval.core.tasks.run_meta import (
     grader_identity,
     grader_key,
     grader_modules,
+    grader_task,
     inference_identity,
     judge_identities,
     prompt_of,
@@ -1915,7 +1916,7 @@ class TaskRunner:
                 judges,
                 service_identities(task_cls.services),
                 args=self._task.grader_args(),
-                task=f"{task_cls.__module__}.{task_cls.__qualname__}",
+                task=grader_task(task_cls),
             )
         except (TypeError, ValueError, AttributeError, SyntaxError, OSError) as exc:
             logger.warning("Grader identity unavailable: {}", exc)

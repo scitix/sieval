@@ -32,6 +32,7 @@ from sieval.core.tasks.run_meta import (
     grader_identity,
     grader_key,
     grader_modules,
+    grader_task,
     inference_identity,
     judge_identities,
     judge_model_id,
@@ -386,28 +387,31 @@ class TestGraderModules:
 
         modules = grader_modules(GSM8KZeroShotGenTask)
         assert set(modules) == {
-            "sieval.tasks.gsm8k_0shot_gen",
-            "sieval.tasks._math_verify",
-            "sieval.community.math",
-            "sieval.community.deepseek_math",
-            "sieval.community._sympy_guards",
+            "sieval/tasks/gsm8k_0shot_gen.py",
+            "sieval/tasks/_math_verify.py",
+            "sieval/community/math.py",
+            "sieval/community/deepseek_math.py",
+            "sieval/community/_sympy_guards.py",
         }
         assert all(v.startswith("sha256:") for v in modules.values())
 
-    def test_follows_plugins_relative_imports_and_reexports(self, plugin_tree):
+    def test_digests_its_own_package_whole_and_follows_sieval(self, plugin_tree):
+        """The task's own package is keyed by path under `.`, unimported
+        files included; `sieval` only as far as imports reach."""
         pkg, task_cls = plugin_tree
         modules = grader_modules(task_cls)
         assert set(modules) == {
-            "sieval_plugins.task",
-            "sieval_plugins.helpers",
-            "sieval_plugins.graders",
-            "sieval_plugins.graders.exact",
-            "sieval.tasks._math_verify",
-            "sieval.community.math",
+            "./__init__.py",
+            "./task.py",
+            "./helpers.py",
+            "./unused.py",
+            "./graders/__init__.py",
+            "./graders/exact.py",
+            "sieval/tasks/_math_verify.py",
+            "sieval/community/math.py",
         }
-        assert "sieval_plugins.unused" not in modules
         source = (pkg / "helpers.py").read_bytes()
-        assert modules["sieval_plugins.helpers"] == (
+        assert modules["./helpers.py"] == (
             "sha256:" + hashlib.sha256(source).hexdigest()
         )
 
@@ -416,8 +420,8 @@ class TestGraderModules:
         before = grader_modules(task_cls)
         (pkg / "helpers.py").write_text("def helper():\n    return 2\n")
         after = grader_modules(task_cls)
-        assert before["sieval_plugins.helpers"] != after["sieval_plugins.helpers"]
-        assert before["sieval_plugins.task"] == after["sieval_plugins.task"]
+        assert before["./helpers.py"] != after["./helpers.py"]
+        assert before["./task.py"] == after["./task.py"]
 
     def test_walks_the_mro(self, plugin_tree):
         _, task_cls = plugin_tree
@@ -426,7 +430,7 @@ class TestGraderModules:
             pass
 
         Sub.__module__ = "tests.not_followed"
-        assert "sieval_plugins.task" in grader_modules(Sub)
+        assert "./task.py" in grader_modules(Sub)
 
     def test_a_task_outside_the_packages_has_no_modules(self):
         from tests.conftest import MockDataset  # noqa: F401 -- only for its module
@@ -437,8 +441,8 @@ class TestGraderModules:
         assert grader_modules(Local) == {}
 
     def test_shared_package_is_followed(self, tmp_path, monkeypatch):
-        """A plugin importing the shared package counts it, top-level
-        ``__init__`` included; parent-relative imports resolve."""
+        """The shared package is digested whole like any plugin package;
+        parent-relative imports resolve."""
         assert "sieval_shared" in GRADER_PACKAGES
         root = tmp_path / "shared"
         (root / "sieval_shared" / "judging").mkdir(parents=True)
@@ -452,10 +456,13 @@ class TestGraderModules:
         class Local:
             pass
 
+        (root / "sieval_shared" / "judging" / "unused.py").write_text("X = 1\n")
         Local.__module__ = "sieval_shared.judging.prompts"
         assert set(grader_modules(Local)) == {
-            "sieval_shared",
-            "sieval_shared.judging.prompts",
+            "./__init__.py",
+            "./judging/__init__.py",
+            "./judging/prompts.py",
+            "./judging/unused.py",
         }
 
     def test_an_uninstalled_package_is_skipped(self):
@@ -493,10 +500,10 @@ class TestGraderPluginPackages:
     def test_its_own_package_is_walked(self, plugin):
         _, task_cls = plugin
         modules = grader_modules(task_cls)
-        assert "sieval_sysbench_plugin.task" in modules
-        assert "sieval_sysbench_plugin._scoring" in modules
-        assert "sieval.tasks._math_verify" in modules
-        excluded = ("sieval.core", "sieval.datasets")
+        assert "./task.py" in modules
+        assert "./_scoring.py" in modules
+        assert "sieval/tasks/_math_verify.py" in modules
+        excluded = ("sieval/core/", "sieval/datasets/")
         assert not any(m.startswith(excluded) for m in modules)
 
     def test_a_changed_plugin_helper_changes_the_digest(self, plugin):
@@ -511,6 +518,77 @@ class TestGraderPluginPackages:
 
         Local.__module__ = "tests.conftest"
         assert grader_modules(Local) == {}
+
+
+class TestGraderKeysByPath:
+    """Issue #170: the same plugin code under another package name, as a
+    runner merging several variants into one process places it, digests the
+    same."""
+
+    TASK = (
+        "from sieval.core.tasks.task import Task\n"
+        "from sieval_shared import RUBRIC\n"
+        "from .scoring import grade\n"
+        "class VTask(Task):\n    pass\n"
+    )
+
+    @pytest.fixture
+    def load(self, tmp_path, monkeypatch):
+        import importlib
+
+        shared = tmp_path / "shared" / "sieval_shared"
+        shared.mkdir(parents=True)
+        (shared / "__init__.py").write_text("RUBRIC = 1\n")
+        monkeypatch.syspath_prepend(str(tmp_path / "shared"))
+        loaded: list[str] = []
+
+        def load(name: str, task: str = self.TASK) -> type:
+            root = tmp_path / name
+            pkg = root / name
+            pkg.mkdir(parents=True)
+            (pkg / "__init__.py").write_text("")
+            (pkg / "scoring.py").write_text("def grade():\n    return 1\n")
+            (pkg / "_dynamic.py").write_text("Y = 1\n")
+            (pkg / "task.py").write_text(task)
+            monkeypatch.syspath_prepend(str(root))
+            loaded.append(name)
+            return importlib.import_module(f"{name}.task").VTask
+
+        yield load
+        for name in list(sys.modules):
+            if name.partition(".")[0] in (*loaded, "sieval_shared"):
+                sys.modules.pop(name, None)
+
+    def test_a_renamed_copy_digests_the_same(self, load):
+        local = load("sieval_plugins")
+        merged = load("sieval_plugins__ugmathbench__math1k_ex")
+        assert grader_modules(local) == grader_modules(merged)
+        assert grader_task(local) == grader_task(merged) == "./task.py:VTask"
+        assert "./_dynamic.py" in grader_modules(local)
+        assert "sieval_shared/__init__.py" in grader_modules(local)
+
+    def test_a_renamed_copy_with_a_changed_file_differs(self, load):
+        local = load("sieval_plugins")
+        merged = load(
+            "sieval_plugins__ugmathbench__math1k_ex", self.TASK + "# edited\n"
+        )
+        assert grader_modules(local) != grader_modules(merged)
+
+    def test_a_task_without_source_keeps_its_import_path(self):
+        class Local:
+            pass
+
+        Local.__module__ = "sieval_plugins_never_installed_here.task"
+        assert grader_task(Local) == (
+            f"sieval_plugins_never_installed_here.task.{Local.__qualname__}"
+        )
+
+    def test_a_builtin_task_is_keyed_under_sieval(self):
+        from sieval.tasks import GSM8KZeroShotGenTask
+
+        assert grader_task(GSM8KZeroShotGenTask) == (
+            "sieval/tasks/gsm8k_0shot_gen.py:GSM8KZeroShotGenTask"
+        )
 
 
 class TestGraderPatchesAndDynamicImports:
@@ -551,9 +629,12 @@ class TestGraderPatchesAndDynamicImports:
         before = grader_modules(Local)
         module.apply(Local)
         after = grader_modules(Local)
-        assert not any(m.startswith("arck_demo_patch") for m in before)
-        assert {"arck_demo_patch", "arck_demo_patch.patch"} <= set(after)
-        assert "arck_demo_patch._helpers" in after
+        assert not any(m.startswith("arck_demo_patch/") for m in before)
+        assert {
+            "arck_demo_patch/__init__.py",
+            "arck_demo_patch/patch.py",
+            "arck_demo_patch/_helpers.py",
+        } <= set(after)
         (pkg / "_helpers.py").write_text("SCALE = 2\n")
         assert grader_modules(Local) != after
 
@@ -597,11 +678,11 @@ class TestGraderPatchesAndDynamicImports:
                 if name.startswith("sieval_dyn_plugin"):
                     sys.modules.pop(name, None)
         assert {
-            "sieval_dyn_plugin",
-            "sieval_dyn_plugin.task",
-            "sieval_dyn_plugin.graders",
-            "sieval_dyn_plugin.graders.venus",
-            "sieval_dyn_plugin.graders.tape",
+            "./__init__.py",
+            "./task.py",
+            "./graders/__init__.py",
+            "./graders/venus.py",
+            "./graders/tape.py",
         } <= set(modules)
 
 
