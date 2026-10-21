@@ -100,6 +100,41 @@ tasks:
 With neither set, `openai_chat` / `openai_completions` fall back to
 `OPENAI_API_KEY`, as the OpenAI client does.
 
+## Client Timeout
+
+`client_timeout` bounds the HTTP client, phase by phase, in seconds. It is a
+client setting, not a request argument: it is never sent to the model. It is
+accepted where `max_retries` is: a root model (top level or `args`) and an
+inline `grader` / `extractor`. A derived model (`base:`) uses its root's.
+
+```yaml
+models:
+    candidate:
+        name: org/candidate
+        api_base: https://gateway.example/v1
+        client_timeout:
+            connect: 30
+            read: 1800
+```
+
+| Phase | Default | Default, engine `sieval run` launched | Bounds |
+| --- | --- | --- | --- |
+| `connect` | 5 | 30 | opening a connection |
+| `read` | 600 | 600 | a gap between stream chunks; the whole response when not streamed |
+| `write` | 600 | 600 | sending the request |
+| `pool` | 600 | 600 | waiting for a free connection |
+
+- A phase you leave out keeps its default. An unknown phase or a non-positive
+  value fails before any engine starts.
+- An engine `sieval run` launched gets a 30 s `connect`: it passed its readiness
+  check, and a run opening every `concurrency_limit` stream at once can queue
+  connections past 5 s.
+- A sample that times out records the phase in `error_msg`, e.g.
+  `Request timed out. (timeout phase: connect)`: `connect` means the engine was
+  never reached, `read` that it stalled.
+- Like `max_retries`, it is in no stage identity: changing it resumes without a
+  rerun or regrade.
+
 ## Task Pipeline
 
 Each task implements a typed 5-stage pipeline:

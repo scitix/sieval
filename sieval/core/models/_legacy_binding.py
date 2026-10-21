@@ -17,6 +17,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import anyio
+import httpx
 from openai import AsyncOpenAI
 
 from sieval.core.types import JSONValue
@@ -400,6 +401,7 @@ def build_legacy_openai_binding(
     max_retries: int,
     concurrency_limit: int | None,
     parent_limiter: anyio.CapacityLimiter | None,
+    client_timeout: httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
 ) -> _LegacyOpenAIBinding:
     """Create the wrapper-owned client/pool boundary used for one cycle."""
 
@@ -407,7 +409,7 @@ def build_legacy_openai_binding(
         base_url=api_base,
         api_key=api_key,
         max_retries=max_retries,
-        timeout=DEFAULT_REQUEST_TIMEOUT,
+        timeout=client_timeout,
     )
     endpoint = str(client.base_url).rstrip("/")
     local_limiter = (

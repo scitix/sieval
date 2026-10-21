@@ -10,6 +10,8 @@ from typing import TypedDict
 from unittest.mock import AsyncMock, MagicMock
 
 import anyio
+import httpx
+import openai
 import orjson
 import pytest
 
@@ -2069,6 +2071,47 @@ class TestRunnerInternalBranches:
         assert new_ctx.error_reason == NON_RETRIABLE_REASON
         assert new_ctx.error_reason in ERROR_REASONS_NON_RETRIABLE
         assert new_ctx.error_msg == "gold will not parse"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("httpx_error", "phase"),
+        [
+            (httpx.ConnectTimeout, "connect"),
+            (httpx.ReadTimeout, "read"),
+            (httpx.WriteTimeout, "write"),
+            (httpx.PoolTimeout, "pool"),
+        ],
+    )
+    async def test_a_client_timeout_records_its_phase_in_error_msg(
+        self, tmp_path, monkeypatch, httpx_error, phase
+    ):
+        """The SDK's message is one string for every phase; the phase is not.
+
+        Raised as the SDK raises it -- ``APITimeoutError`` *from* the httpx
+        error -- so the phase is only reachable through the cause chain.
+        """
+        dataset = MockDataset([{"question": "q", "answer": "a"}])
+        model = MockChatModel(answers={"q": "a"})
+        task = MockTask(dataset=dataset, model=model, name="internal_stage_timeout")
+        runner = TaskRunner(task, make_config(tmp_path))
+        ctx = task.make_context(0, {"question": "q", "answer": "a"})
+        request = httpx.Request("POST", "http://127.0.0.1:30000/v1/chat/completions")
+
+        async def _preprocess(_raw, _ctx):
+            try:
+                raise httpx_error("timed out", request=request)
+            except httpx.TimeoutException as err:
+                raise openai.APITimeoutError(request=request) from err
+
+        monkeypatch.setattr(task, "preprocess", _preprocess)
+
+        send, recv = anyio.create_memory_object_stream[TaskContext](1)
+        async with send, recv:
+            await runner._execute_stage_logic(ctx, send, TaskAction.PREPROCESS)
+            new_ctx = await recv.receive()
+
+        assert new_ctx.error_reason == "exception::APITimeoutError"
+        assert new_ctx.error_msg == f"Request timed out. (timeout phase: {phase})"
 
 
 class TestRunnerInterruptHandling:

@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Any, Literal, TypedDict, cast
 
 import anyio
+import httpx
 import yaml
 from anyio.to_thread import run_sync
 from loguru import logger
@@ -72,7 +73,10 @@ from sieval.core.models.capabilities import (
 )
 from sieval.core.models.connection_factory import (
     CONNECTION_FACTORY_REGISTRY,
+    DEFAULT_REQUEST_TIMEOUT,
+    MANAGED_ENGINE_REQUEST_TIMEOUT,
     ConnectionRequest,
+    client_timeout,
 )
 from sieval.core.models.deployment import (
     ConnectionPool,
@@ -997,6 +1001,7 @@ class ModelConfigDict(TypedDict, total=False):
     api_key_env: str  # Environment variable holding the API key
     api_base: str
     max_retries: int
+    client_timeout: dict[str, float]  # connect/read/write/pool seconds
     concurrency_limit: int
     infer: _InferDict  # infer config for `sieval infer`
     infer_meta: _InferMetaDict  # infer metadata for audit
@@ -1196,6 +1201,38 @@ def _configured_credential(
     return api_key
 
 
+def _nested_args(config: Mapping[str, object]) -> Mapping[str, object]:
+    args = config.get("args")
+    return cast(Mapping[str, object], args) if isinstance(args, Mapping) else {}
+
+
+def _default_client_timeout(deployment: Deployment) -> httpx.Timeout:
+    """A longer connect bound for an engine this run launched and saw ready."""
+    return (
+        MANAGED_ENGINE_REQUEST_TIMEOUT
+        if deployment.plan is not None
+        else DEFAULT_REQUEST_TIMEOUT
+    )
+
+
+def _configured_client_timeout(
+    config: Mapping[str, object],
+    nested: Mapping[str, object],
+    default: httpx.Timeout,
+    subject: str,
+) -> httpx.Timeout:
+    """The client timeout ``config`` sets over *default*; a top-level key wins.
+
+    A client setting, not a request argument: it never reaches the request
+    body, and like ``max_retries`` it is in no stage identity.
+    """
+    return client_timeout(
+        config.get("client_timeout", nested.get("client_timeout")),
+        default=default,
+        subject=subject,
+    )
+
+
 #: ``resume`` and its deprecated aliases.
 _RESUME_KEYS = ("resume", "auto_resume", "resume_from")
 
@@ -1278,12 +1315,13 @@ def _stage_config(cfg: Mapping[str, Any], task_name: str, stage: str) -> object:
             "api_base",
             "api_key",
             "api_key_env",
+            "client_timeout",
             "concurrency_limit",
             "max_retries",
         ):
             mcfg.pop(key, None)
         args = dict(mcfg.get("args") or {})
-        for key in ("api_key", "api_key_env", "concurrency_limit"):
+        for key in ("api_key", "api_key_env", "client_timeout", "concurrency_limit"):
             args.pop(key, None)
         mcfg["args"] = args
         chain.append(mcfg)
@@ -2003,6 +2041,7 @@ class EvalSession:
                     "api_key",
                     "api_key_env",
                     "capabilities",
+                    "client_timeout",
                     "dialect",
                     "engine",
                     "max_retries",
@@ -2020,7 +2059,9 @@ class EvalSession:
         if not isinstance(raw_args, Mapping):
             raise ValueError(f"Model '{model_name}' args must be a dictionary")
         allowed_args = (
-            frozenset({"api_base", "api_key", "api_key_env", "max_retries"})
+            frozenset(
+                {"api_base", "api_key", "api_key_env", "client_timeout", "max_retries"}
+            )
             if is_root
             else frozenset()
         )
@@ -2036,12 +2077,19 @@ class EvalSession:
                 f"unsupported surface: {', '.join(paths)}"
             )
         if is_root:
-            # Fail an unset ``api_key_env`` here, on every dialect.
+            # Fail an unset ``api_key_env`` or a bad ``client_timeout`` here,
+            # on every dialect.
             _configured_credential(
                 config,
                 cast(Mapping[str, object], raw_args),
                 f"Model '{model_name}'",
                 os.environ,
+            )
+            _configured_client_timeout(
+                config,
+                cast(Mapping[str, object], raw_args),
+                DEFAULT_REQUEST_TIMEOUT,
+                f"Model '{model_name}'",
             )
 
     def _normalized_external_binding(
@@ -3689,6 +3737,9 @@ class EvalSession:
             and (not isinstance(concurrency_limit, int) or concurrency_limit < 1)
         ):
             raise ValueError("concurrency_limit must be a positive integer")
+        # Checked here so a bad value fails at prelaunch; the default it falls
+        # back to is chosen once the deployment is realized.
+        _configured_client_timeout(config, nested, DEFAULT_REQUEST_TIMEOUT, subject)
         return api_key, max_retries, concurrency_limit
 
     def _configured_deployment_for(
@@ -3903,6 +3954,7 @@ class EvalSession:
             "api_base",
             "api_key",
             "api_key_env",
+            "client_timeout",
             "max_retries",
             "concurrency_limit",
         ):
@@ -3967,6 +4019,12 @@ class EvalSession:
                 endpoint=identity.endpoint,
                 credential=api_key,
                 max_retries=max_retries,
+                timeout=_configured_client_timeout(
+                    config,
+                    _nested_args(config) if nested_args else {},
+                    _default_client_timeout(deployment),
+                    f"Model root '{root_key}'",
+                ),
             ),
         )
         pool = ConnectionPool(connection, identity, root_limiters[root_key])
@@ -4068,7 +4126,20 @@ class EvalSession:
                 args["api_key"] = credential
             if "api_base" in cfg:
                 args["api_base"] = cfg["api_base"]
-            legacy_model = SglangGenModel(model=binding.requested_model_id, **args)
+            timeout = _configured_client_timeout(
+                cfg,
+                args,
+                (
+                    MANAGED_ENGINE_REQUEST_TIMEOUT
+                    if name in self._realized_deployments
+                    else DEFAULT_REQUEST_TIMEOUT
+                ),
+                f"Model '{name}'",
+            )
+            args.pop("client_timeout", None)
+            legacy_model = SglangGenModel(
+                model=binding.requested_model_id, client_timeout=timeout, **args
+            )
             self.models[name] = legacy_model
             bound_by_binding[binding.binding_id] = legacy_model
             self._owned_legacy_models[binding.root_deployment_key] = legacy_model
@@ -4193,6 +4264,7 @@ class EvalSession:
                 "api_base",
                 "api_key",
                 "api_key_env",
+                "client_timeout",
                 "max_retries",
                 "concurrency_limit",
                 "dialect",

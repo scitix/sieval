@@ -209,6 +209,7 @@ def normalize_inline_model_binding(
             "api_key",
             "api_key_env",
             "capabilities",
+            "client_timeout",
             "dialect",
             "engine",
             "max_retries",
@@ -225,7 +226,9 @@ def normalize_inline_model_binding(
         raise ValueError(f"Task '{task_name}' inline {role} args must be a mapping")
     nested = binding_resource_argument_paths(
         cast(Mapping[str, object], raw_args),
-        allowed=frozenset({"api_base", "api_key", "api_key_env", "max_retries"}),
+        allowed=frozenset(
+            {"api_base", "api_key", "api_key_env", "client_timeout", "max_retries"}
+        ),
     )
     paths = (*misplaced, *(f"args.{path}" for path in nested))
     if paths:

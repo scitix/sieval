@@ -14,6 +14,7 @@ from typing import Any, Self, cast
 from uuid import uuid4
 
 import anyio
+import httpx
 from openai import AsyncOpenAI
 
 from sieval.core.types import JSONValue
@@ -144,6 +145,7 @@ class SglangGenModel(Model):
         parent_limiter: anyio.CapacityLimiter | None = None,
         extra: dict[str, JSONValue] | None = None,
         transport: SglangTransport | None = None,
+        client_timeout: httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
         **kwargs: object,
     ) -> None:
         self._model = model
@@ -152,7 +154,7 @@ class SglangGenModel(Model):
             base_url=api_base,
             api_key=api_key,
             max_retries=max_retries,
-            timeout=DEFAULT_REQUEST_TIMEOUT,
+            timeout=client_timeout,
         )
         self._kwargs = dict(kwargs)
         self._extra = dict(extra) if extra is not None else None

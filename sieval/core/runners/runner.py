@@ -20,6 +20,7 @@ from loguru import logger
 from sieval import __version__
 from sieval.core.datasets import repeat_index_of
 from sieval.core.models import ModelOutput
+from sieval.core.models.connection_factory import timeout_phase
 from sieval.core.tasks.anomaly import TaskAnomalyDetector
 from sieval.core.tasks.concurrency import (
     compute_stream_buffer_capacity,
@@ -391,6 +392,17 @@ def _reuses_inference(ctx: TaskContext) -> bool:
     if ctx.stage is TaskStage.FAILED:
         return ctx.error_action not in (TaskAction.PREPROCESS, TaskAction.INFER)
     return ctx.stage not in (TaskStage.INITIAL, TaskStage.PREPROCESSED)
+
+
+def _failure_message(exc: Exception) -> str:
+    """``error_msg`` for a stage that raised *exc*.
+
+    A client timeout names its phase: the SDK's "Request timed out." reads the
+    same whether the engine was never reached (``connect``) or stalled
+    mid-generation (``read``).
+    """
+    phase = timeout_phase(exc)
+    return str(exc) if phase is None else f"{exc} (timeout phase: {phase})"
 
 
 class TaskRunner:
@@ -1251,7 +1263,7 @@ class TaskRunner:
                 if isinstance(e, NonRetriableSampleError)
                 else f"exception::{e.__class__.__name__}"
             )
-            new_ctx = ctx.to_failed(action, reason, str(e))
+            new_ctx = ctx.to_failed(action, reason, _failure_message(e))
 
         # Outside the handler above: a failed `meta.json` write fails the task,
         # not this sample.

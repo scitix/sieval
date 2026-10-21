@@ -36,7 +36,84 @@ from openai import AsyncOpenAI
 #: sieval asks for all of them in one call. That second reading is the one a long
 #: high-``n`` run can exhaust. ``SchedulingParams.stream`` is ``False``; the legacy
 #: ``ChatModel``/``GenModel`` wrappers send ``True``.
+#:
+#: A model's ``client_timeout`` mapping overrides any phase of it.
 DEFAULT_REQUEST_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
+
+#: The default for an engine SiEval launched itself. Only ``connect`` differs:
+#: the engine passed its readiness check before the run started, so failing
+#: fast on an unroutable endpoint buys nothing there, while a run opening every
+#: ``concurrency_limit`` stream at once can queue connections past 5s and lose
+#: those samples before a request reaches the engine.
+MANAGED_ENGINE_REQUEST_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
+
+#: The phases a ``client_timeout`` mapping may set, named as ``httpx`` names them.
+CLIENT_TIMEOUT_PHASES = ("connect", "read", "write", "pool")
+
+_TIMEOUT_PHASE_BY_TYPE: tuple[tuple[type[httpx.TimeoutException], str], ...] = (
+    (httpx.ConnectTimeout, "connect"),
+    (httpx.ReadTimeout, "read"),
+    (httpx.WriteTimeout, "write"),
+    (httpx.PoolTimeout, "pool"),
+)
+
+
+def client_timeout(
+    value: object,
+    *,
+    default: httpx.Timeout,
+    subject: str = "Model",
+) -> httpx.Timeout:
+    """Resolve a model's ``client_timeout`` mapping over *default*.
+
+    ``None`` keeps *default*. A mapping sets any of :data:`CLIENT_TIMEOUT_PHASES`
+    in seconds; a phase it leaves out keeps *default*'s value.
+    """
+
+    if value is None:
+        return default
+    if not isinstance(value, Mapping):
+        raise ValueError(
+            f"{subject} 'client_timeout' must be a mapping of "
+            f"{', '.join(CLIENT_TIMEOUT_PHASES)} to seconds, got {value!r}"
+        )
+    unknown = sorted(str(key) for key in value if key not in CLIENT_TIMEOUT_PHASES)
+    if unknown:
+        raise ValueError(
+            f"{subject} 'client_timeout' has unknown phase(s) {', '.join(unknown)}; "
+            f"expected any of {', '.join(CLIENT_TIMEOUT_PHASES)}"
+        )
+    phases = default.as_dict()
+    for phase, seconds in value.items():
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, int | float)
+            or not seconds > 0
+        ):
+            raise ValueError(
+                f"{subject} 'client_timeout.{phase}' must be a positive number "
+                f"of seconds, got {seconds!r}"
+            )
+        phases[str(phase)] = float(seconds)
+    return httpx.Timeout(**phases)
+
+
+def timeout_phase(exc: BaseException) -> str | None:
+    """The ``httpx`` phase that timed out behind *exc*, if one did.
+
+    Walks the cause chain: the OpenAI SDK raises ``APITimeoutError`` from the
+    ``httpx`` exception, and only the latter says which phase fired.
+    """
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for timeout_type, phase in _TIMEOUT_PHASE_BY_TYPE:
+            if isinstance(current, timeout_type):
+                return phase
+        current = current.__cause__ or current.__context__
+    return None
 
 
 class UnknownConnectionFamily(ValueError):
@@ -50,6 +127,7 @@ class ConnectionRequest:
     endpoint: str
     credential: str | None = field(repr=False)
     max_retries: int
+    timeout: httpx.Timeout = field(default_factory=lambda: DEFAULT_REQUEST_TIMEOUT)
 
     def __post_init__(self) -> None:
         if not isinstance(self.endpoint, str) or not self.endpoint:
@@ -60,6 +138,8 @@ class ConnectionRequest:
             raise TypeError("ConnectionRequest.max_retries must be an integer")
         if self.max_retries < 0:
             raise ValueError("ConnectionRequest.max_retries must be non-negative")
+        if not isinstance(self.timeout, httpx.Timeout):
+            raise TypeError("ConnectionRequest.timeout must be an httpx.Timeout")
 
 
 class AsyncHTTPJSONConnection:
@@ -215,7 +295,7 @@ def _openai_sdk_connection(request: ConnectionRequest) -> AsyncOpenAI:
         base_url=request.endpoint,
         api_key=request.credential,
         max_retries=request.max_retries,
-        timeout=DEFAULT_REQUEST_TIMEOUT,
+        timeout=request.timeout,
     )
 
 
@@ -226,7 +306,7 @@ def _async_http_json_connection(
     client = httpx.AsyncClient(
         base_url=request.endpoint,
         transport=transport,
-        timeout=DEFAULT_REQUEST_TIMEOUT,
+        timeout=request.timeout,
     )
     return AsyncHTTPJSONConnection(client, request.credential)
 

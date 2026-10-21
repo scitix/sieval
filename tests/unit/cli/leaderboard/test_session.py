@@ -16,6 +16,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
+import httpx
 import pytest
 import yaml
 
@@ -59,7 +60,10 @@ from sieval.core.models.capabilities import (
     ModelCapabilityStatus,
     RequestDefaults,
 )
-from sieval.core.models.connection_factory import DEFAULT_REQUEST_TIMEOUT
+from sieval.core.models.connection_factory import (
+    DEFAULT_REQUEST_TIMEOUT,
+    MANAGED_ENGINE_REQUEST_TIMEOUT,
+)
 from sieval.core.models.deployment import RouteIntent
 from sieval.core.models.dialect import RequestAuditError
 from sieval.core.models.dialect_registry import RequestSeedSupport
@@ -4582,6 +4586,240 @@ tasks:
         ):
             session.prepare_prelaunch()
 
+    @pytest.mark.parametrize(
+        "placement",
+        [
+            "client_timeout: {connect: 45, read: 1800}",
+            "args:\n      client_timeout: {connect: 45, read: 1800}",
+        ],
+    )
+    def test_named_model_client_timeout_reaches_the_client_not_the_request(
+        self, tmp_path: Path, placement: str
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  candidate:
+    name: org/candidate
+    api_base: https://candidate.example/v1
+    {placement}
+tasks:
+  chat:
+    class: fake.ChatTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.ChatTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+
+        assert client_factory.call_count == 1
+        assert client_factory.call_args.kwargs["timeout"] == httpx.Timeout(
+            connect=45.0, read=1800.0, write=600.0, pool=600.0
+        )
+        meta = session.models["candidate"].meta()
+        assert "client_timeout" not in meta["default_params"]
+        assert "client_timeout" not in meta.get("extra", {})
+
+    def test_external_model_without_client_timeout_keeps_the_declared_default(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+    api_base: https://candidate.example/v1
+tasks:
+  chat:
+    class: fake.ChatTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.ChatTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+
+        assert client_factory.call_args.kwargs["timeout"] is DEFAULT_REQUEST_TIMEOUT
+
+    def test_inline_grader_client_timeout_reaches_its_client(
+        self, tmp_path: Path
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            """
+models:
+  candidate:
+    name: org/candidate
+    api_base: https://candidate.example/v1
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: org/grader
+        api_base: https://judge.example/v1
+        client_timeout: {connect: 12}
+        temperature: 0
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ),
+            patch(
+                "sieval.core.models.connection_factory.AsyncOpenAI"
+            ) as client_factory,
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+
+        timeouts = {
+            call.kwargs["base_url"]: call.kwargs["timeout"]
+            for call in client_factory.call_args_list
+        }
+        assert timeouts == {
+            "https://candidate.example/v1": DEFAULT_REQUEST_TIMEOUT,
+            "https://judge.example/v1": httpx.Timeout(600.0, connect=12.0),
+        }
+        grader = session._bound_task_role_models["judged"]["grader"]
+        assert grader.meta()["default_params"] == {"temperature": 0}
+
+    @pytest.mark.parametrize(
+        ("models", "grader", "match"),
+        [
+            (
+                "client_timeout: {conect: 30}",
+                "",
+                r"Model 'candidate' 'client_timeout' has unknown phase\(s\) conect",
+            ),
+            (
+                "args:\n      client_timeout: 30",
+                "",
+                r"Model 'candidate' 'client_timeout' must be a mapping",
+            ),
+            (
+                "",
+                "client_timeout: {read: 0}",
+                r"Task 'judged' grader 'client_timeout.read' must be a positive",
+            ),
+        ],
+    )
+    def test_a_bad_client_timeout_fails_at_prelaunch(
+        self, tmp_path: Path, models: str, grader: str, match: str
+    ) -> None:
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  candidate:
+    name: org/candidate
+    {models}
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: org/grader
+        {grader}
+""",
+        )
+        session = EvalSession(config_path)
+
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ),
+            patch("sieval.core.models.connection_factory.AsyncOpenAI") as client,
+            pytest.raises(ValueError, match=match),
+        ):
+            session.prepare_prelaunch()
+        client.assert_not_called()
+
+    def test_client_timeout_keeps_the_candidate_binding_identity(
+        self, tmp_path: Path
+    ) -> None:
+        """A client setting, like ``max_retries``: changing it must not make a
+        resume rerun. An inline grader's binding id moves, as it does for
+        ``max_retries``; its judge identity does not (see the inline test)."""
+
+        observed: list[tuple[object, ...]] = []
+        for setting in ("", "client_timeout: {connect: 60, read: 1200}"):
+            config_path = self._config(
+                tmp_path,
+                f"""
+models:
+  candidate:
+    name: org/candidate
+    {setting}
+tasks:
+  judged:
+    class: fake.JudgeTask
+    dataset:
+      class: fake.Dataset
+    model: candidate
+    args:
+      grader:
+        model: org/grader
+        {setting}
+        temperature: 0
+""",
+            )
+            session = EvalSession(config_path)
+            with patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.JudgeTask,
+            ):
+                result = session.prepare_prelaunch()
+            bindings = session._task_requirement_contexts["judged"].model_bindings
+            observed.append(
+                (
+                    bindings["candidate"].binding_id,
+                    result.binding_plans[bindings["candidate"].binding_id].fingerprint,
+                )
+            )
+
+        assert observed[0] == observed[1]
+
     def test_api_key_env_and_rotation_keep_the_stable_binding_identity(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -4945,11 +5183,12 @@ tasks:
             return_value=connection,
         ) as client_factory:
             session._setup_models()
+        # An engine this run launched gets the longer connect bound (#169).
         client_factory.assert_called_once_with(
             base_url="https://realized.example/v1",
             api_key=None,
             max_retries=9,
-            timeout=DEFAULT_REQUEST_TIMEOUT,
+            timeout=MANAGED_ENGINE_REQUEST_TIMEOUT,
         )
         await session._close_owned_model_resources()
         close.assert_awaited_once()
@@ -4961,6 +5200,7 @@ tasks:
             ("api_base", "https://child.example/v1"),
             ("engine", "sglang"),
             ("max_retries", 7),
+            ("client_timeout", {"connect": 30}),
             ("connection_family", "native-http"),
             ("authorization", "Bearer secret"),
         ],
@@ -5004,6 +5244,7 @@ tasks:
             ("api_key", "child-key"),
             ("api_base", "https://child.example/v1"),
             ("max_retries", 7),
+            ("client_timeout", {"connect": 30}),
             ("connection_family", "native-http"),
             ("authorization", "Bearer secret"),
         ],

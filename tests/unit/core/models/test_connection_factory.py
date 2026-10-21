@@ -7,16 +7,20 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import httpx
+import openai
 import pytest
 
 from sieval.core.models.connection_factory import (
     CONNECTION_FACTORY_REGISTRY,
     DEFAULT_REQUEST_TIMEOUT,
+    MANAGED_ENGINE_REQUEST_TIMEOUT,
     AsyncHTTPJSONConnection,
     ConnectionFactoryRegistry,
     ConnectionFactorySpec,
     ConnectionRequest,
     UnknownConnectionFamily,
+    client_timeout,
+    timeout_phase,
 )
 from sieval.core.models.dialect_registry import DIALECT_SPECS
 
@@ -255,3 +259,108 @@ class TestBuiltInConnectionFactories:
         openai_sdk = CONNECTION_FACTORY_REGISTRY.create("openai_sdk", request)
         assert cast(Any, openai_sdk).timeout == DEFAULT_REQUEST_TIMEOUT
         await cast(Any, openai_sdk).close()
+
+    @pytest.mark.anyio
+    async def test_both_families_use_the_requested_timeout(self) -> None:
+        timeout = httpx.Timeout(42.0, connect=7.0)
+        request = ConnectionRequest(
+            endpoint="https://models.example/v1",
+            credential="runtime-only",
+            max_retries=0,
+            timeout=timeout,
+        )
+
+        http_json = CONNECTION_FACTORY_REGISTRY.create("async_http_json", request)
+        assert isinstance(http_json, AsyncHTTPJSONConnection)
+        assert http_json.client.timeout == timeout
+        await http_json.aclose()
+
+        openai_sdk = CONNECTION_FACTORY_REGISTRY.create("openai_sdk", request)
+        assert cast(Any, openai_sdk).timeout == timeout
+        await cast(Any, openai_sdk).close()
+
+    def test_request_refuses_a_timeout_that_is_not_an_httpx_timeout(self) -> None:
+        with pytest.raises(TypeError, match="timeout must be an httpx.Timeout"):
+            ConnectionRequest(
+                "https://models.example/v1", None, 0, timeout=cast(Any, 30.0)
+            )
+
+    def test_the_managed_engine_default_only_lengthens_connect(self) -> None:
+        assert MANAGED_ENGINE_REQUEST_TIMEOUT.connect == 30.0
+        assert MANAGED_ENGINE_REQUEST_TIMEOUT.read == DEFAULT_REQUEST_TIMEOUT.read
+        assert MANAGED_ENGINE_REQUEST_TIMEOUT.write == DEFAULT_REQUEST_TIMEOUT.write
+        assert MANAGED_ENGINE_REQUEST_TIMEOUT.pool == DEFAULT_REQUEST_TIMEOUT.pool
+
+
+class TestClientTimeout:
+    def test_none_keeps_the_default(self) -> None:
+        assert (
+            client_timeout(None, default=DEFAULT_REQUEST_TIMEOUT)
+            is DEFAULT_REQUEST_TIMEOUT
+        )
+
+    def test_a_phase_left_out_keeps_the_default_value(self) -> None:
+        resolved = client_timeout(
+            {"connect": 60, "read": 1800.5},
+            default=MANAGED_ENGINE_REQUEST_TIMEOUT,
+        )
+
+        assert resolved == httpx.Timeout(
+            connect=60.0, read=1800.5, write=600.0, pool=600.0
+        )
+
+    @pytest.mark.parametrize(
+        ("value", "match"),
+        [
+            (30, r"'client_timeout' must be a mapping of connect, read, write, pool"),
+            ({"conect": 30}, r"'client_timeout' has unknown phase\(s\) conect"),
+            ({"connect": 0}, r"'client_timeout.connect' must be a positive number"),
+            ({"read": -1}, r"'client_timeout.read' must be a positive number"),
+            ({"read": True}, r"'client_timeout.read' must be a positive number"),
+            ({"pool": None}, r"'client_timeout.pool' must be a positive number"),
+            ({"write": "60"}, r"'client_timeout.write' must be a positive number"),
+        ],
+    )
+    def test_invalid_values_name_the_model_and_phase(
+        self, value: object, match: str
+    ) -> None:
+        with pytest.raises(ValueError, match=rf"Model 'candidate' {match}"):
+            client_timeout(
+                value, default=DEFAULT_REQUEST_TIMEOUT, subject="Model 'candidate'"
+            )
+
+
+class TestTimeoutPhase:
+    _REQUEST = httpx.Request("POST", "http://127.0.0.1:30000/v1/chat/completions")
+
+    @pytest.mark.parametrize(
+        ("error_type", "phase"),
+        [
+            (httpx.ConnectTimeout, "connect"),
+            (httpx.ReadTimeout, "read"),
+            (httpx.WriteTimeout, "write"),
+            (httpx.PoolTimeout, "pool"),
+        ],
+    )
+    def test_reads_the_phase_through_the_sdk_wrapper(
+        self, error_type: type[httpx.TimeoutException], phase: str
+    ) -> None:
+        try:
+            try:
+                raise error_type("timed out", request=self._REQUEST)
+            except httpx.TimeoutException as err:
+                raise openai.APITimeoutError(request=self._REQUEST) from err
+        except openai.APITimeoutError as wrapped:
+            assert timeout_phase(wrapped) == phase
+
+    def test_an_error_without_a_timeout_cause_has_no_phase(self) -> None:
+        assert timeout_phase(RuntimeError("boom")) is None
+        assert timeout_phase(openai.APITimeoutError(request=self._REQUEST)) is None
+
+    def test_a_cyclic_cause_chain_terminates(self) -> None:
+        first = RuntimeError("a")
+        second = RuntimeError("b")
+        first.__cause__ = second
+        second.__cause__ = first
+
+        assert timeout_phase(first) is None

@@ -34,6 +34,7 @@ BINDING_RESOURCE_KEYS = frozenset(
         "authorization",
         "base_url",
         "capabilities",
+        "client_timeout",
         "connection",
         "connection_family",
         "connection_pool",
