@@ -22,6 +22,7 @@ from sieval.core.tasks.run_meta import (
     GRADER_PACKAGES,
     JUDGE_MODEL_REF_ENV,
     JudgeIdentity,
+    _file_key,
     aggregate_digest,
     call_key,
     canonical_json,
@@ -542,11 +543,12 @@ class TestGraderKeysByPath:
         monkeypatch.syspath_prepend(str(tmp_path / "shared"))
         loaded: list[str] = []
 
-        def load(name: str, task: str = self.TASK) -> type:
+        def load(name: str, task: str = self.TASK, init: bool = True) -> type:
             root = tmp_path / name
             pkg = root / name
             pkg.mkdir(parents=True)
-            (pkg / "__init__.py").write_text("")
+            if init:
+                (pkg / "__init__.py").write_text("")
             (pkg / "scoring.py").write_text("def grade():\n    return 1\n")
             (pkg / "_dynamic.py").write_text("Y = 1\n")
             (pkg / "task.py").write_text(task)
@@ -573,6 +575,27 @@ class TestGraderKeysByPath:
             "sieval_plugins__ugmathbench__math1k_ex", self.TASK + "# edited\n"
         )
         assert grader_modules(local) != grader_modules(merged)
+
+    def test_a_renamed_namespace_package_digests_the_same(self, load):
+        local = load("sieval_plugins", init=False)
+        merged = load("sieval_plugins__ugmathbench__math1k_ex", init=False)
+        modules = grader_modules(local)
+        assert {"./task.py", "./scoring.py", "./_dynamic.py"} <= set(modules)
+        assert modules == grader_modules(merged)
+
+    def test_an_absolute_self_import_digests_per_name(self, load):
+        """The name is in the file's bytes, so only a relative import keys a
+        renamed copy the same."""
+        task = "from {pkg}.scoring import grade\nclass VTask:\n    pass\n"
+        local = load("sieval_plugins", task.format(pkg="sieval_plugins"))
+        name = "sieval_plugins__ugmathbench__math1k_ex"
+        merged = load(name, task.format(pkg=name))
+        assert set(grader_modules(local)) == set(grader_modules(merged))
+        assert grader_modules(local) != grader_modules(merged)
+
+    def test_a_file_outside_its_package_is_refused(self):
+        with pytest.raises(ValueError, match="outside package"):
+            _file_key("sieval.tasks.x", "/elsewhere/x.py", None)
 
     def test_a_task_without_source_keeps_its_import_path(self):
         class Local:
