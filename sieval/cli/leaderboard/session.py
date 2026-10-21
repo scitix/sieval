@@ -76,7 +76,7 @@ from sieval.core.models.connection_factory import (
     DEFAULT_REQUEST_TIMEOUT,
     MANAGED_ENGINE_REQUEST_TIMEOUT,
     ConnectionRequest,
-    client_timeout,
+    resolve_client_timeout,
 )
 from sieval.core.models.deployment import (
     ConnectionPool,
@@ -1206,11 +1206,11 @@ def _nested_args(config: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], args) if isinstance(args, Mapping) else {}
 
 
-def _default_client_timeout(deployment: Deployment) -> httpx.Timeout:
-    """A longer connect bound for an engine this run launched and saw ready."""
+def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
+    """Managed (``sieval run`` launched, ``plan`` set) or external default."""
     return (
         MANAGED_ENGINE_REQUEST_TIMEOUT
-        if deployment.plan is not None
+        if deployment is not None and deployment.plan is not None
         else DEFAULT_REQUEST_TIMEOUT
     )
 
@@ -1221,12 +1221,8 @@ def _configured_client_timeout(
     default: httpx.Timeout,
     subject: str,
 ) -> httpx.Timeout:
-    """The client timeout ``config`` sets over *default*; a top-level key wins.
-
-    A client setting, not a request argument: it never reaches the request
-    body, and like ``max_retries`` it is in no stage identity.
-    """
-    return client_timeout(
+    """``config``'s ``client_timeout`` over *default*; a top-level key wins."""
+    return resolve_client_timeout(
         config.get("client_timeout", nested.get("client_timeout")),
         default=default,
         subject=subject,
@@ -2077,8 +2073,8 @@ class EvalSession:
                 f"unsupported surface: {', '.join(paths)}"
             )
         if is_root:
-            # Fail an unset ``api_key_env`` or a bad ``client_timeout`` here,
-            # on every dialect.
+            # Fail an unset ``api_key_env`` or bad ``client_timeout`` on every
+            # dialect.
             _configured_credential(
                 config,
                 cast(Mapping[str, object], raw_args),
@@ -3737,8 +3733,7 @@ class EvalSession:
             and (not isinstance(concurrency_limit, int) or concurrency_limit < 1)
         ):
             raise ValueError("concurrency_limit must be a positive integer")
-        # Checked here so a bad value fails at prelaunch; the default it falls
-        # back to is chosen once the deployment is realized.
+        # Validate at prelaunch; the real default needs the realized deployment.
         _configured_client_timeout(config, nested, DEFAULT_REQUEST_TIMEOUT, subject)
         return api_key, max_retries, concurrency_limit
 
@@ -4129,11 +4124,7 @@ class EvalSession:
             timeout = _configured_client_timeout(
                 cfg,
                 args,
-                (
-                    MANAGED_ENGINE_REQUEST_TIMEOUT
-                    if name in self._realized_deployments
-                    else DEFAULT_REQUEST_TIMEOUT
-                ),
+                _default_client_timeout(self._realized_deployments.get(name)),
                 f"Model '{name}'",
             )
             args.pop("client_timeout", None)

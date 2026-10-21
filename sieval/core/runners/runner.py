@@ -395,12 +395,7 @@ def _reuses_inference(ctx: TaskContext) -> bool:
 
 
 def _failure_message(exc: Exception) -> str:
-    """``error_msg`` for a stage that raised *exc*.
-
-    A client timeout names its phase: the SDK's "Request timed out." reads the
-    same whether the engine was never reached (``connect``) or stalled
-    mid-generation (``read``).
-    """
+    """``error_msg`` for *exc*; a client timeout names its phase."""
     phase = timeout_phase(exc)
     return str(exc) if phase is None else f"{exc} (timeout phase: {phase})"
 

@@ -12,6 +12,7 @@ round-trip through the recovery path.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 from uuid import uuid4
@@ -24,7 +25,7 @@ from sieval.core.types import JSONValue
 
 from ._fingerprint import fingerprint_mapping
 from .capabilities import RequestDefaults, Supported
-from .connection_factory import DEFAULT_REQUEST_TIMEOUT
+from .connection_factory import DEFAULT_REQUEST_TIMEOUT, resolve_client_timeout
 from .deployment import (
     ConnectionIdentity,
     ConnectionPool,
@@ -401,7 +402,7 @@ def build_legacy_openai_binding(
     max_retries: int,
     concurrency_limit: int | None,
     parent_limiter: anyio.CapacityLimiter | None,
-    client_timeout: httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
+    client_timeout: httpx.Timeout | Mapping[str, float] | None = None,
 ) -> _LegacyOpenAIBinding:
     """Create the wrapper-owned client/pool boundary used for one cycle."""
 
@@ -409,7 +410,9 @@ def build_legacy_openai_binding(
         base_url=api_base,
         api_key=api_key,
         max_retries=max_retries,
-        timeout=client_timeout,
+        timeout=resolve_client_timeout(
+            client_timeout, default=DEFAULT_REQUEST_TIMEOUT, subject=f"Model '{model}'"
+        ),
     )
     endpoint = str(client.base_url).rstrip("/")
     local_limiter = (

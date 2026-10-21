@@ -8,8 +8,10 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from sieval.core.models._legacy_binding import (
@@ -111,6 +113,53 @@ class TestLegacyBindingClient:
             max_retries=4,
             timeout=DEFAULT_REQUEST_TIMEOUT,
         )
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (
+                {"read": 1800},
+                httpx.Timeout(connect=5.0, read=1800.0, write=600.0, pool=600.0),
+            ),
+            (httpx.Timeout(7.0), httpx.Timeout(7.0)),
+        ],
+    )
+    def test_client_resolves_a_mapping_or_timeout(
+        self, value: object, expected: httpx.Timeout
+    ) -> None:
+        """``ChatModel(**grader)`` hands over the YAML mapping as is."""
+        client = SimpleNamespace(
+            base_url="https://legacy.example/v1/", close=AsyncMock()
+        )
+        with patch(
+            "sieval.core.models._legacy_binding.AsyncOpenAI",
+            return_value=client,
+        ) as client_factory:
+            build_legacy_openai_binding(
+                dialect_id="openai_chat",
+                model="m",
+                api_base="https://legacy.example/v1",
+                api_key="sk-runtime-only",
+                max_retries=4,
+                concurrency_limit=None,
+                parent_limiter=None,
+                client_timeout=cast(Any, value),
+            )
+
+        assert client_factory.call_args.kwargs["timeout"] == expected
+
+    def test_client_refuses_an_unknown_timeout_phase(self) -> None:
+        with pytest.raises(ValueError, match=r"Model 'm' 'client_timeout' has unknown"):
+            build_legacy_openai_binding(
+                dialect_id="openai_chat",
+                model="m",
+                api_base="https://legacy.example/v1",
+                api_key="sk-runtime-only",
+                max_retries=4,
+                concurrency_limit=None,
+                parent_limiter=None,
+                client_timeout=cast(Any, {"conect": 30}),
+            )
 
     def test_persisted_fingerprints_exclude_the_private_runtime_scope(self) -> None:
         client = SimpleNamespace(

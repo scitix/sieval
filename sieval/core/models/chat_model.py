@@ -17,7 +17,6 @@ import httpx
 from sieval.core.types import JSONValue
 
 from ._legacy_binding import build_legacy_openai_binding
-from .connection_factory import DEFAULT_REQUEST_TIMEOUT
 from .dialect import Dialect
 from .dialect_registry import _register_compat_model_type
 from .dialects.openai_chat import OpenAIChatDialect
@@ -38,7 +37,7 @@ class ChatModel(Model):
         parent_limiter: anyio.CapacityLimiter | None = None,
         extra: dict[str, JSONValue] | None = None,
         transport: Dialect | None = None,
-        client_timeout: httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
+        client_timeout: httpx.Timeout | Mapping[str, float] | None = None,
         **kwargs: object,
     ) -> None:
         binding = build_legacy_openai_binding(

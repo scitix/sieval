@@ -102,10 +102,11 @@ With neither set, `openai_chat` / `openai_completions` fall back to
 
 ## Client Timeout
 
-`client_timeout` bounds the HTTP client, phase by phase, in seconds. It is a
-client setting, not a request argument: it is never sent to the model. It is
-accepted where `max_retries` is: a root model (top level or `args`) and an
-inline `grader` / `extractor`. A derived model (`base:`) uses its root's.
+`client_timeout` sets the HTTP client's timeout per phase, in seconds. It is
+accepted where `max_retries` is (a root model, top level or `args`; an inline
+`grader` / `extractor`) and is never sent to the model; a derived model
+(`base:`) uses its root's. `args.timeout` is different: it is a request
+argument, forwarded to the server.
 
 ```yaml
 models:
@@ -117,23 +118,18 @@ models:
             read: 1800
 ```
 
-| Phase | Default | Default, engine `sieval run` launched | Bounds |
-| --- | --- | --- | --- |
-| `connect` | 5 | 30 | opening a connection |
-| `read` | 600 | 600 | a gap between stream chunks; the whole response when not streamed |
-| `write` | 600 | 600 | sending the request |
-| `pool` | 600 | 600 | waiting for a free connection |
+| Phase | Default | Bounds |
+| --- | --- | --- |
+| `connect` | 5 (30 for an engine `sieval run` launched) | opening a connection |
+| `read` | 600 | a gap between stream chunks; the whole response when not streamed |
+| `write` | 600 | sending the request |
+| `pool` | 600 | waiting for a free connection |
 
-- A phase you leave out keeps its default. An unknown phase or a non-positive
-  value fails before any engine starts.
-- An engine `sieval run` launched gets a 30 s `connect`: it passed its readiness
-  check, and a run opening every `concurrency_limit` stream at once can queue
-  connections past 5 s.
-- A sample that times out records the phase in `error_msg`, e.g.
-  `Request timed out. (timeout phase: connect)`: `connect` means the engine was
-  never reached, `read` that it stalled.
-- Like `max_retries`, it is in no stage identity: changing it resumes without a
-  rerun or regrade.
+- An omitted phase keeps its default; an unknown phase or non-positive value
+  fails before any engine starts.
+- A timed-out sample's `error_msg` names the phase, e.g.
+  `Request timed out. (timeout phase: connect)`.
+- It is in no stage identity, so changing it resumes without a rerun.
 
 ## Task Pipeline
 

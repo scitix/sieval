@@ -37,17 +37,14 @@ from openai import AsyncOpenAI
 #: high-``n`` run can exhaust. ``SchedulingParams.stream`` is ``False``; the legacy
 #: ``ChatModel``/``GenModel`` wrappers send ``True``.
 #:
-#: A model's ``client_timeout`` mapping overrides any phase of it.
+#: A model's ``client_timeout`` overrides any phase of it.
 DEFAULT_REQUEST_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 
-#: The default for an engine SiEval launched itself. Only ``connect`` differs:
-#: the engine passed its readiness check before the run started, so failing
-#: fast on an unroutable endpoint buys nothing there, while a run opening every
-#: ``concurrency_limit`` stream at once can queue connections past 5s and lose
-#: those samples before a request reaches the engine.
+#: The default for an engine SiEval launched: it already passed its readiness
+#: check, and a run opening every ``concurrency_limit`` stream at once can queue
+#: connections past 5s.
 MANAGED_ENGINE_REQUEST_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 
-#: The phases a ``client_timeout`` mapping may set, named as ``httpx`` names them.
 CLIENT_TIMEOUT_PHASES = ("connect", "read", "write", "pool")
 
 _TIMEOUT_PHASE_BY_TYPE: tuple[tuple[type[httpx.TimeoutException], str], ...] = (
@@ -58,20 +55,23 @@ _TIMEOUT_PHASE_BY_TYPE: tuple[tuple[type[httpx.TimeoutException], str], ...] = (
 )
 
 
-def client_timeout(
+def resolve_client_timeout(
     value: object,
     *,
     default: httpx.Timeout,
     subject: str = "Model",
 ) -> httpx.Timeout:
-    """Resolve a model's ``client_timeout`` mapping over *default*.
+    """Resolve a ``client_timeout`` over *default*.
 
-    ``None`` keeps *default*. A mapping sets any of :data:`CLIENT_TIMEOUT_PHASES`
-    in seconds; a phase it leaves out keeps *default*'s value.
+    ``None`` keeps *default* and an ``httpx.Timeout`` is used as is. A mapping
+    sets any of :data:`CLIENT_TIMEOUT_PHASES` in seconds; the rest keep
+    *default*'s value.
     """
 
     if value is None:
         return default
+    if isinstance(value, httpx.Timeout):
+        return value
     if not isinstance(value, Mapping):
         raise ValueError(
             f"{subject} 'client_timeout' must be a mapping of "
@@ -101,8 +101,9 @@ def client_timeout(
 def timeout_phase(exc: BaseException) -> str | None:
     """The ``httpx`` phase that timed out behind *exc*, if one did.
 
-    Walks the cause chain: the OpenAI SDK raises ``APITimeoutError`` from the
-    ``httpx`` exception, and only the latter says which phase fired.
+    Follows ``__cause__`` only: the OpenAI SDK raises ``APITimeoutError``
+    *from* the ``httpx`` error, while an unrelated error raised inside an
+    ``except`` block merely has it as ``__context__``.
     """
 
     seen: set[int] = set()
@@ -112,7 +113,7 @@ def timeout_phase(exc: BaseException) -> str | None:
         for timeout_type, phase in _TIMEOUT_PHASE_BY_TYPE:
             if isinstance(current, timeout_type):
                 return phase
-        current = current.__cause__ or current.__context__
+        current = current.__cause__
     return None
 
 

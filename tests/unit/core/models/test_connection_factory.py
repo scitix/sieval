@@ -19,7 +19,7 @@ from sieval.core.models.connection_factory import (
     ConnectionFactorySpec,
     ConnectionRequest,
     UnknownConnectionFamily,
-    client_timeout,
+    resolve_client_timeout,
     timeout_phase,
 )
 from sieval.core.models.dialect_registry import DIALECT_SPECS
@@ -295,12 +295,19 @@ class TestBuiltInConnectionFactories:
 class TestClientTimeout:
     def test_none_keeps_the_default(self) -> None:
         assert (
-            client_timeout(None, default=DEFAULT_REQUEST_TIMEOUT)
+            resolve_client_timeout(None, default=DEFAULT_REQUEST_TIMEOUT)
             is DEFAULT_REQUEST_TIMEOUT
         )
 
+    def test_a_timeout_is_used_as_is(self) -> None:
+        timeout = httpx.Timeout(7.0)
+
+        assert (
+            resolve_client_timeout(timeout, default=DEFAULT_REQUEST_TIMEOUT) is timeout
+        )
+
     def test_a_phase_left_out_keeps_the_default_value(self) -> None:
-        resolved = client_timeout(
+        resolved = resolve_client_timeout(
             {"connect": 60, "read": 1800.5},
             default=MANAGED_ENGINE_REQUEST_TIMEOUT,
         )
@@ -325,7 +332,7 @@ class TestClientTimeout:
         self, value: object, match: str
     ) -> None:
         with pytest.raises(ValueError, match=rf"Model 'candidate' {match}"):
-            client_timeout(
+            resolve_client_timeout(
                 value, default=DEFAULT_REQUEST_TIMEOUT, subject="Model 'candidate'"
             )
 
@@ -356,6 +363,16 @@ class TestTimeoutPhase:
     def test_an_error_without_a_timeout_cause_has_no_phase(self) -> None:
         assert timeout_phase(RuntimeError("boom")) is None
         assert timeout_phase(openai.APITimeoutError(request=self._REQUEST)) is None
+
+    def test_a_timeout_only_in_the_context_has_no_phase(self) -> None:
+        """An unrelated error raised while handling a timeout is not one."""
+        try:
+            try:
+                raise httpx.ReadTimeout("timed out", request=self._REQUEST)
+            except httpx.TimeoutException:
+                raise ValueError("grader failed")  # noqa: B904
+        except ValueError as unrelated:
+            assert timeout_phase(unrelated) is None
 
     def test_a_cyclic_cause_chain_terminates(self) -> None:
         first = RuntimeError("a")

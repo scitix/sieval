@@ -17,6 +17,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import anyio
+import httpx
 import pytest
 
 from sieval.core.models import (
@@ -107,6 +108,22 @@ class TestDefaultTransport:
             api_key="local",
             max_retries=3,
             timeout=DEFAULT_REQUEST_TIMEOUT,
+        )
+
+    def test_client_resolves_a_client_timeout_mapping(self):
+        client = SimpleNamespace(base_url="http://host:8000/v1/", close=AsyncMock())
+        with patch(
+            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
+            return_value=client,
+        ) as client_factory:
+            SglangGenModel(
+                model="m",
+                api_base="http://host:8000/v1",
+                client_timeout=cast(Any, {"connect": 30}),
+            )
+
+        assert client_factory.call_args.kwargs["timeout"] == httpx.Timeout(
+            600.0, connect=30.0
         )
 
     def test_subclass_does_not_use_registered_compatibility_factory(self):
