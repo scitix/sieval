@@ -50,10 +50,8 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          # Without `base`, a push compares against the event payload's default
-          # branch, which a re-run replays as recorded; one recorded as `master`
-          # fails every retry. A push to `main` with `base: main` compares
-          # against `github.event.before`; pull requests ignore `base`.
+          # Otherwise a push compares against the payload's recorded default
+          # branch, and re-runs replay a stale one.
           base: main
           filters: |
             code:
