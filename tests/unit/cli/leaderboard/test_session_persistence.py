@@ -108,11 +108,13 @@ class TestPersistEffectiveConfig:
         assert "already has api_base" in text
 
     @pytest.mark.anyio
-    async def test_user_declared_api_base_is_preserved(self, tmp_path: Path):
-        """User-set ``api_base`` / ``api_key`` in the source YAML flow through
-        to effective_config.yaml unchanged. Only runtime injection by the
-        legacy external endpoint adapter is stripped; the PR's "no api_base
-        baked in" claim applies to that adapter only."""
+    async def test_user_declared_api_base_is_preserved_and_secrets_redacted(
+        self, tmp_path: Path
+    ):
+        """User-set ``api_base`` and ``api_key_env`` flow through to
+        effective_config.yaml unchanged; every ``api_key`` / ``authorization``
+        value, at any depth, is written as ``<redacted>``. Only runtime
+        injection by the legacy external endpoint adapter is stripped."""
         cfg_path = _write_yaml(
             tmp_path,
             "cfg.yaml",
@@ -120,7 +122,23 @@ class TestPersistEffectiveConfig:
             "  remote:\n"
             "    name: gpt-4\n"
             "    api_base: https://api.openai.com/v1\n"
-            "    api_key: sk-user\n",
+            "    api_key: SENTINEL-TOP\n"
+            "  nested:\n"
+            "    name: other\n"
+            "    api_key_env: OTHER_KEY\n"
+            "    args:\n"
+            "      api_key: SENTINEL-ARGS\n"
+            "tasks:\n"
+            "  judged:\n"
+            "    args:\n"
+            "      grader:\n"
+            "        model: judge\n"
+            "        authorization: SENTINEL-AUTH\n"
+            "        args:\n"
+            "          api_key: SENTINEL-GRADER\n"
+            "      extractor:\n"
+            "        model: helper\n"
+            "        api_key_env: HELPER_KEY\n",
         )
         result_dir = tmp_path / "out"
         session = EvalSession(
@@ -130,10 +148,22 @@ class TestPersistEffectiveConfig:
 
         await session._persist_effective_config()
 
-        loaded = yaml.safe_load((result_dir / "effective_config.yaml").read_text())
+        text = (result_dir / "effective_config.yaml").read_text()
+        assert "SENTINEL" not in text
+        loaded = yaml.safe_load(text)
         m = loaded["models"]["remote"]
         assert m["api_base"] == "https://api.openai.com/v1"
-        assert m["api_key"] == "sk-user"
+        assert m["api_key"] == "<redacted>"
+        assert loaded["models"]["nested"]["api_key_env"] == "OTHER_KEY"
+        assert loaded["models"]["nested"]["args"]["api_key"] == "<redacted>"
+        roles = loaded["tasks"]["judged"]["args"]
+        assert roles["grader"]["authorization"] == "<redacted>"
+        assert roles["grader"]["args"]["api_key"] == "<redacted>"
+        assert roles["extractor"]["api_key_env"] == "HELPER_KEY"
+        # The session's own config is untouched: the run still has its keys.
+        assert session._reified_config["models"]["remote"]["api_key"] == (
+            "SENTINEL-TOP"
+        )
 
     @pytest.mark.anyio
     async def test_header_is_valid_yaml_and_contains_metadata(self, tmp_path: Path):
@@ -299,6 +329,25 @@ def _real_plan_dict() -> dict:
 
 
 class TestPersistInferPlans:
+    @pytest.mark.anyio
+    async def test_secrets_in_plans_are_redacted(self, tmp_path: Path):
+        cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models: {}\n")
+        result_dir = tmp_path / "out"
+        plan = _real_plan_dict()
+        plan["env"] = {"api_key": "SENTINEL-PLAN", "HF_HOME": "/cache"}
+        session = EvalSession(
+            config_path=str(cfg_path),
+            result_dir_override=str(result_dir),
+            infer_plans={"m": plan},
+        )
+
+        await session._persist_infer_plans()
+
+        text = (result_dir / "infer_plans.yaml").read_text()
+        assert "SENTINEL" not in text
+        env = yaml.safe_load(text)["models"]["m"]["env"]
+        assert env == {"api_key": "<redacted>", "HF_HOME": "/cache"}
+
     @pytest.mark.anyio
     async def test_no_file_when_infer_plans_none(self, tmp_path: Path):
         cfg_path = _write_yaml(tmp_path, "cfg.yaml", "models: {}\n")

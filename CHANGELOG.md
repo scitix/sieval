@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`api_key_env: <VAR>`** reads a model's key from an environment variable when its connection is built, so a config in a repository can name a key without holding it. Accepted wherever `api_key` is — a root model's top level or `args`, and an inline `grader` / `extractor` in task args — on every dialect. Setting both is refused, and an unset or empty variable fails before any engine starts, naming the model or role and the variable. The value never reaches `effective_config.yaml`, `meta.json`, logs or an identity; the variable name is kept in `effective_config.yaml` only. Rotating a key or switching between `api_key` and `api_key_env` resumes without a rerun or regrade, and `runs[].config` shows a changed `api_key` as `<redacted>` (#148).
+- **`api_key_env: <VAR>`** reads a model's key from an environment variable when its connection is built, so a config in a repository can name a key without holding it. Accepted wherever `api_key` is — a root model's top level or `args`, and an inline `grader` / `extractor` in task args — on every dialect. Setting both is refused, and an unset or empty variable fails before any engine starts, naming the model or role and the variable. The value never reaches `effective_config.yaml`, `meta.json`, logs or an identity; the variable name is kept in `effective_config.yaml` only. Rotating a key or switching between `api_key` and `api_key_env` resumes without a rerun or regrade (#148).
 
 ### Fixed
 
+- `effective_config.yaml` and `infer_plans.yaml` no longer hold a literal key: every `api_key` and `authorization` value, at any depth (models, `args`, inline `grader` / `extractor`), is written as `<redacted>`. A resume against a redacted file reruns and regrades nothing; rerunning the file itself is refused on the redacted key instead of sending it.
+- A resume's `runs[].config` in `meta.json` showed a changed `api_key` by value; it now shows `<redacted>`.
 - A `--resume-from` run killed before `meta.json` recorded it now resumes on the same command, instead of being refused as a run of unknown version. The copy writes `.copying` first and removes it once the run is recorded; the same `--resume-from` copies again over a marked directory, and `--resume` alone refuses it (`UnfinishedCopyError`). (#162)
 - An `.idx` outside a `<iteration>/<stage>/` directory named for a `TaskStage` is neither loaded nor counts as a started run. (#162)
 

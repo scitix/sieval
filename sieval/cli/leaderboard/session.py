@@ -1078,6 +1078,28 @@ def _strip_header(text: str) -> str:
 #: Config keys whose value is a secret. ``api_key_env`` is not one: it names a
 #: variable, and the name is safe to record.
 _SECRET_CONFIG_KEYS = frozenset({"api_key", "authorization"})
+#: What a persisted audit file holds in place of a secret value.
+_REDACTED = "<redacted>"
+
+
+def _redact_secrets(value: Any) -> Any:
+    """A copy of *value* with every secret config value, at any depth, redacted.
+
+    Audit files land in result directories that are often shared; a key in
+    one is a key handed to everyone who can read the volume. Credentials are
+    in no stage identity, so a resume against a redacted file compares the
+    same.
+    """
+    if isinstance(value, Mapping):
+        return {
+            k: _REDACTED
+            if k in _SECRET_CONFIG_KEYS and v is not None
+            else _redact_secrets(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_secrets(item) for item in value]
+    return value
 
 
 def _diff_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
@@ -1092,7 +1114,7 @@ def _diff_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
 
     def _shown(key: str, value: Any) -> str:
         if key in _SECRET_CONFIG_KEYS and value is not None:
-            return "<redacted>"
+            return _REDACTED
         return repr(value)
 
     def _walk(x: Any, y: Any, path: str, key: str) -> None:
@@ -1169,6 +1191,12 @@ def _configured_credential(
         return value
     if api_key is not None and not isinstance(api_key, str):
         raise TypeError("api_key must be a string")
+    if api_key == _REDACTED:
+        raise ValueError(
+            f"{subject} has api_key {_REDACTED!r}: this config was persisted "
+            "with its key removed. Set 'api_key_env' to the variable holding "
+            "the key, or write the key back, before rerunning it"
+        )
     return api_key
 
 
@@ -4945,13 +4973,14 @@ class EvalSession:
 
         Dumps ``self._reified_config`` (raw YAML + CLI reification + the
         resolved deterministic-seed contract, minus legacy endpoint-adapter
-        injection). User-supplied ``api_base`` / ``api_key`` in the source
-        YAML ARE preserved. Runtime endpoints are excluded, so ``sieval run
-        <this file>`` can re-launch services from the preserved ``path`` /
-        ``infer`` fields.
+        injection). User-supplied ``api_base`` and ``api_key_env`` names are
+        preserved; every ``api_key`` / ``authorization`` value is written as
+        ``<redacted>``, which a rerun of this file refuses. Runtime endpoints
+        are excluded, so ``sieval run <this file>`` can re-launch services
+        from the preserved ``path`` / ``infer`` fields.
         """
         body = yaml.safe_dump(
-            self._reified_config,
+            _redact_secrets(self._reified_config),
             default_flow_style=False,
             allow_unicode=True,
             sort_keys=False,
@@ -5002,7 +5031,7 @@ class EvalSession:
 
         payload = {"models": dict(self._infer_plans)}
         body = yaml.safe_dump(
-            payload,
+            _redact_secrets(payload),
             default_flow_style=False,
             allow_unicode=True,
             sort_keys=False,

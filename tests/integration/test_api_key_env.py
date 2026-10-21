@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
+import yaml
 from loguru import logger
 from openai import AsyncOpenAI
 
@@ -330,6 +331,53 @@ class TestApiKeyEnvRun:
         assert "models.candidate.api_key_env: None → 'CANDIDATE_KEY'" in changes
         assert "tasks.judged.args.grader.api_key: <redacted> → None" in changes
         assert "SENTINEL" not in json.dumps(meta)
+
+    @pytest.mark.anyio
+    async def test_literal_keys_are_redacted_from_audit_files(
+        self,
+        tmp_path: Path,
+        wire: _Wire,
+        captured_logs: list[str],
+    ) -> None:
+        results = tmp_path / "results"
+        config = _write_config(
+            tmp_path,
+            candidate_credential="api_key: SENTINEL-CANDIDATE-LITERAL",
+            judge_credential="api_key: SENTINEL-JUDGE-LITERAL",
+        )
+        await arun_session(config)
+        assert set(wire.judge_keys) == {"SENTINEL-JUDGE-LITERAL"}
+
+        effective = results / "effective_config.yaml"
+        assert "SENTINEL" not in effective.read_text()
+        persisted = yaml.safe_load(effective.read_text())
+        assert persisted["models"]["candidate"]["api_key"] == "<redacted>"
+        grader = persisted["tasks"]["judged"]["args"]["grader"]
+        assert grader["api_key"] == "<redacted>"
+        assert _files_containing(results, "SENTINEL") == []
+        assert not any("SENTINEL" in line for line in captured_logs)
+
+        # A resume compares the redacted record with the live config: no
+        # rerun, no regrade, and the recorded file stays as it was.
+        meta_path = results / "judged" / "meta.json"
+        first_identity = json.loads(meta_path.read_text())["identity"]
+        recorded = effective.read_text()
+        wire.candidate_keys.clear()
+        wire.judge_keys.clear()
+        await arun_session(config, resume=True)
+
+        meta = json.loads(meta_path.read_text())
+        assert meta["identity"] == first_identity
+        assert meta["runs"][-1]["reran"] == []
+        assert "config" not in meta["runs"][-1]
+        assert wire.candidate_keys == wire.judge_keys == []
+        assert effective.read_text() == recorded
+
+        # Rerunning the persisted file is refused on the redacted key, before
+        # any request: "<redacted>" is never sent as a credential.
+        with pytest.raises(ValueError, match="persisted with its key removed"):
+            await arun_session(effective, result_dir=str(tmp_path / "rerun"))
+        assert wire.candidate_keys == wire.judge_keys == []
 
     @pytest.mark.anyio
     async def test_unset_variable_fails_before_any_request(

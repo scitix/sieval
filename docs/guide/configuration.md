@@ -98,6 +98,9 @@ to keep a key out of a config file.
 - The value is never written to `effective_config.yaml`, `meta.json`, logs or
   any identity. The variable name is kept in `effective_config.yaml` so the
   file reruns where the variable is set.
+- A literal `api_key` or `authorization` is written to `effective_config.yaml`
+  and `infer_plans.yaml` as `<redacted>`. Rerunning such a file is refused
+  until the key is restored or replaced by `api_key_env`.
 - Neither the key nor the variable name is part of a stage identity. Rotating
   a key, renaming its variable or switching between the two forms resumes
   without a rerun or regrade; `runs[].config` notes the change and shows a
