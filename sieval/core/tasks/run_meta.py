@@ -58,9 +58,8 @@ from sieval.core.types import JSONValue
 
 from .services import ServiceIdentity
 
-#: Version of the ``identity`` block's layout. A digest computed differently
-#: is not a layout change: it differs from the recorded one, so a resume reruns
-#: that stage, where a new schema would discard every recorded stage at once.
+#: Version of the ``identity`` block's layout. A digest computed differently is
+#: not a layout change: it reruns one stage, a new schema would discard them all.
 IDENTITY_SCHEMA = 1
 
 #: A per-sample digest of a value that was legitimately absent: the prompt of a
@@ -580,19 +579,40 @@ def _package_files(top: str) -> list[str]:
     shows, so the walk digests it whole.
     """
     found: list[str] = []
+    for _, rel, filenames in _package_dirs(top):
+        prefix = top if rel == "." else f"{top}.{rel.replace(os.sep, '.')}"
+        for filename in sorted(filenames):
+            if not filename.endswith(".py"):
+                continue
+            stem = filename[:-3]
+            found.append(prefix if stem == "__init__" else f"{prefix}.{stem}")
+    return found
+
+
+def _package_dirs(top: str) -> Iterable[tuple[str, str, list[str]]]:
+    """``(root, dir relative to root, file names)`` for each directory of *top*."""
     for root in _root_dirs(top):
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = sorted(
                 d for d in dirnames if not d.startswith((".", "__pycache__"))
             )
-            rel = os.path.relpath(dirpath, root)
-            prefix = top if rel == "." else f"{top}.{rel.replace(os.sep, '.')}"
-            for filename in sorted(filenames):
-                if not filename.endswith(".py"):
-                    continue
-                stem = filename[:-3]
-                found.append(prefix if stem == "__init__" else f"{prefix}.{stem}")
-    return found
+            yield root, os.path.relpath(dirpath, root), filenames
+
+
+def _absent_inits(top: str) -> dict[str, str]:
+    """``{file key: empty digest}`` for each directory of *top* lacking ``__init__.py``.
+
+    sieval-plugins' variant rewrite adds an empty one to each, so a renamed
+    copy keys the same only if a missing one reads as empty.
+    """
+    empty = "sha256:" + hashlib.sha256(b"").hexdigest()
+    return {
+        "/".join(
+            (OWN_PACKAGE, *([] if rel == "." else rel.split(os.sep)), "__init__.py")
+        ): empty
+        for _, rel, filenames in _package_dirs(top)
+        if "__init__.py" not in filenames
+    }
 
 
 #: File-key label of the task class's own plugin package, whatever its name.
@@ -615,8 +635,7 @@ def _file_key(name: str, path: str, own: str | None) -> str:
     raise ValueError(f"{path} is outside package {top}")
 
 
-#: What a file in the task's own plugin package reads as naming that package
-#: in an import. Not an identifier, so no real import can spell it.
+#: The task's own plugin package as its imports are digested; no import spells it.
 SELF_IMPORT = "<package>"
 
 
@@ -625,13 +644,12 @@ def _names_own(module: str | None, own: str) -> bool:
 
 
 def _self_import_text(node: ast.Import | ast.ImportFrom, own: str) -> str | None:
-    """*node* regenerated with *own* as :data:`SELF_IMPORT`, or ``None``.
+    """*node* with *own* spelt :data:`SELF_IMPORT`, or ``None`` if it names none.
 
-    An unaliased ``import own.x`` also binds the name ``own``, which the code
-    goes on to use, so it reads as ``import <package>.x, <package> as own``.
-    When the next name is already ``own as n``, that alias is the binding:
-    sieval-plugins' variant rewrite writes ``import sieval_plugins.x`` as
-    ``import <new>.x, <new> as sieval_plugins``.
+    An unaliased ``import own.x`` also binds ``own``, so it reads as
+    ``import <package>.x, <package> as own``, the form sieval-plugins' variant
+    rewrite writes; a following ``own as n`` is taken as that binding. A
+    hand-written ``import own.x, own as n`` therefore still digests per name.
     """
     moved = len(own)
     if isinstance(node, ast.ImportFrom):
@@ -658,19 +676,16 @@ def _self_import_text(node: ast.Import | ast.ImportFrom, own: str) -> str | None
 
 
 def _without_own_name(source: bytes, own: str) -> bytes:
-    """*source* with package *own* left out of each import that names it absolutely.
+    """*source* with each absolute import of *own* as :func:`_self_import_text`.
 
-    Each such statement's span becomes :func:`_self_import_text` of it, so a
-    copy of the package under another name, its imports renamed, reads the
-    same. Relative imports, imports of other packages, strings, comments and
-    other names are left as they are. A file that is not UTF-8 or does not
-    parse, or that names no *own* import, is returned unchanged.
+    Nothing outside those spans changes; comments inside one drop out, as in
+    the variant rewrite. A file that is not UTF-8 or does not parse is returned
+    unchanged.
     """
     bom = codecs.BOM_UTF8 if source.startswith(codecs.BOM_UTF8) else b""
     body = source[len(bom) :]
     try:
-        # Parsed as decoded text, so a coding cookie cannot move the offsets
-        # off the UTF-8 bytes they index.
+        # Decoded first, so a coding cookie cannot move the UTF-8 byte offsets.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
             tree = ast.parse(body.decode("utf-8"))
@@ -722,9 +737,10 @@ def grader_modules(task_cls: type) -> dict[str, str]:
     nothing is imported or run. A package outside ``sieval`` that the walk
     reaches is digested whole (:func:`_package_files`); under ``sieval`` only
     what is reached counts. Returns ``{file key: "sha256:…"}`` over each
-    module's source bytes (:func:`_file_key`). In the task's own plugin
-    package, an absolute import of that package is digested with the name
-    left out (:func:`_without_own_name`), so a renamed copy digests the same.
+    module's source bytes (:func:`_file_key`). So that a renamed copy of the
+    task's own plugin package digests the same, its imports of itself are
+    digested without its name (:func:`_without_own_name`) and a missing
+    ``__init__.py`` as an empty one (:func:`_absent_inits`).
     """
     starts = {klass.__module__ for klass in task_cls.__mro__}
     own = {root for module in starts if (root := _own_root(module)) is not None}
@@ -759,6 +775,8 @@ def grader_modules(task_cls: type) -> dict[str, str]:
         hashed = _without_own_name(source, top) if top == own_package else source
         modules[key] = "sha256:" + hashlib.sha256(hashed).hexdigest()
         pending.extend(_imports_of(name, source, is_package, roots))
+    if own_package is not None:
+        modules = _absent_inits(own_package) | modules
     return dict(sorted(modules.items()))
 
 

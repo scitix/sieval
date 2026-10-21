@@ -607,21 +607,18 @@ class TestGraderKeysByPath:
         )
 
 
-#: Env var naming sieval-plugins' ``tools/variants/rewrite.py``; the test that
-#: runs it is skipped without one.
+#: Path to sieval-plugins' ``tools/variants/rewrite.py``; unset skips that test.
 REWRITE_ENV = "SIEVAL_TEST_VARIANT_REWRITE"
 
 
 class TestGraderOwnPackageName:
-    """A plugin importing itself by absolute name digests the same once a
-    tool renames the package and its imports, as sieval-plugins' variant
-    rewrite does to merge variants into one process (#170)."""
+    """A plugin package renamed by sieval-plugins' variant rewrite (#170)
+    digests the same as the original."""
 
     OWN = "sieval_plugins"
     RENAMED = "sieval_plugins__ugmathbench__math1k_ex"
 
-    #: Each absolute import form, a string, a comment and an attribute
-    #: naming the package, which stay as they are.
+    #: Every absolute self-import form, plus non-import uses of the name.
     TASK = (
         '"""Grades with {pkg}.scoring."""\n'
         "import json\n"
@@ -714,8 +711,7 @@ class TestGraderOwnPackageName:
         assert grader_modules(original) == grader_modules(renamed)
 
     def test_the_name_outside_an_import_still_counts(self, tmp_path, load):
-        """A renamed copy whose code, not just its imports, spells the new
-        name differs: only import statements are normalised."""
+        """Only import statements are normalised."""
         original = self.original(tmp_path, load)
         root = tmp_path / "copy"
         name = self.RENAMED
@@ -755,8 +751,7 @@ class TestGraderOwnPackageName:
         ],
     )
     def test_another_packages_name_still_counts(self, line):
-        """A cross-package import names code this one depends on, whose name
-        the key does not record."""
+        """A cross-package name is the dependency's identity; it stays."""
         renamed = line.replace("sieval_shared", "sieval_shared2").replace(
             "__other__v1", "__other__v2"
         )
@@ -768,7 +763,7 @@ class TestGraderOwnPackageName:
         )
 
     def test_a_file_without_a_self_import_hashes_its_raw_bytes(self, tmp_path, load):
-        """As on 81ad90c: the rotation touches only files with a self-import."""
+        """Unchanged from 81ad90c: only files with a self-import rotate."""
         original = self.original(tmp_path, load)
         pkg = tmp_path / "original" / self.OWN
         modules = grader_modules(original)
@@ -794,6 +789,52 @@ class TestGraderOwnPackageName:
         assert "return sieval_plugins.scoring.grade()" in out
         assert "from . import scoring as rel\n" in out
 
+    def test_an_explicit_own_alias_is_not_normalised(self):
+        """``import own.x, own as n`` reads as the rewrite's form, which
+        appends a second binding, so it still digests per name."""
+        own, name = self.OWN, self.RENAMED
+        line = f"import {own}.x, {own} as sp\n"
+        rewritten = f"import {name}.x, {name} as {own}, {name} as sp\n"
+        assert _without_own_name(line.encode(), own) == (
+            b"import <package>.x, <package> as sp\n"
+        )
+        assert _without_own_name(line.encode(), own) != _without_own_name(
+            rewritten.encode(), name
+        )
+
+    def test_a_missing_init_digests_as_the_empty_one_the_rewrite_adds(
+        self, tmp_path, load
+    ):
+        def build(root, name: str, init: bool) -> type:
+            self.write(
+                root,
+                name,
+                self.TASK.format(pkg=name)
+                if name == self.OWN
+                else self.REWRITTEN.format(pkg=name),
+                self.SELFTEST.format(pkg=name),
+            )
+            prompts = root / name / "prompts"
+            prompts.mkdir()
+            (prompts / "a.txt").write_text("prompt\n")
+            if init:
+                (prompts / "__init__.py").write_text("")
+            return load(root, name)
+
+        original = grader_modules(build(tmp_path / "original", self.OWN, False))
+        renamed = grader_modules(build(tmp_path / "copy", self.RENAMED, True))
+        assert original == renamed
+        assert original["./prompts/__init__.py"] == (
+            f"sha256:{hashlib.sha256(b'').hexdigest()}"
+        )
+
+    def test_an_empty_init_on_disk_digests_as_a_missing_one(self, tmp_path, load):
+        original = self.original(tmp_path, load)
+        init = tmp_path / "original" / self.OWN / "__init__.py"
+        before = grader_modules(original)
+        init.unlink()
+        assert grader_modules(original) == before
+
     @pytest.mark.parametrize(
         "source",
         [
@@ -812,9 +853,7 @@ class TestGraderOwnPackageName:
         ids=["byte-order-mark", "latin-1-cookie"],
     )
     def test_offsets_index_the_utf_8_bytes(self, prefix):
-        """Column offsets count UTF-8 bytes of the decoded text, whatever
-        the file declares, so a multibyte character before the import does
-        not shift the span."""
+        """A multibyte character before the import does not shift the span."""
         line = "S = '\u00e9'; from sieval_plugins import x  # \u00e9\n"
         out = _without_own_name(prefix + line.encode(), self.OWN)
         expected = line.replace("sieval_plugins", "<package>")
@@ -824,7 +863,7 @@ class TestGraderOwnPackageName:
         not os.environ.get(REWRITE_ENV), reason=f"{REWRITE_ENV} is not set"
     )
     def test_sieval_plugins_variant_rewrite_digests_the_same(self, tmp_path, load):
-        """Runs the real tool on a copy, as a merged run would."""
+        """Against the real tool."""
         original = self.original(tmp_path, load)
         target = tmp_path / "merged"
         script = (
