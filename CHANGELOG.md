@@ -5,28 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Added
-
-- **`api_key_env: <VAR>`** reads a model's key from an environment variable, wherever `api_key` is accepted (root models and inline `grader` / `extractor`), on every dialect. Setting both is refused; an unset variable fails before any engine starts. Neither the value nor the name is in any identity, so rotating a key or switching forms resumes without a rerun (#148).
-
-### Changed
-
-- **One resume option, `--resume [DIR]`**, on `sieval run`, `sieval eval` and `sieval leaderboard run`. `--resume` resumes each task in place; `--resume DIR` starts each task from `DIR/<task>`, as `--resume-from DIR` did. A `DIR` that is the run's own directory resumes in place instead of being refused. YAML: `runner_config.resume` (`true` or a task directory). Python: `TaskRunnerConfig.resume` and `resume=` on `EvalSession` / `arun_session` / `run_session`. `resume` never enters `runs[].config`.
-
-### Deprecated
-
-- `--resume-from`, `runner_config.auto_resume` / `resume_from`, the matching `TaskRunnerConfig` fields and the `resume_from=` argument map to `resume` and warn once. An alias that disagrees with `resume` is refused. Removed next release.
-
-### Fixed
-
-- `effective_config.yaml` and `infer_plans.yaml` write every `api_key` / `authorization` value as `<redacted>`; rerunning such a file is refused until the key is supplied again.
-- A resume's `runs[].config` in `meta.json` showed a changed `api_key` by value; it now shows `<redacted>`.
-- A `--resume DIR` run killed before `meta.json` recorded it now resumes on the same command, instead of being refused as a run of unknown version. The copy writes `.copying` first and removes it once the run is recorded; the same `--resume DIR` copies again, and `--resume` alone refuses it (`UnfinishedCopyError`). (#162)
-- An `.idx` outside a `<iteration>/<stage>/` directory named for a `TaskStage` is neither loaded nor counts as a started run. (#162)
-
-## [0.10.0] - 2026-10-20
+## [0.10.0] - 2026-10-21
 
 A minor bump for four breaking changes, all in on-disk or CLI-report contracts:
 `manifest.json` is gone, every exit path finalizes `report.json` and
@@ -39,7 +18,8 @@ services land alongside.
 
 ### Added
 
-- **Per-stage resume.** `--resume` and the new `--resume-from DIR` / `runner_config.resume_from` (start from another, possibly read-only, run of another task) compare the four stage identities: changed data or prompt reruns those samples, a changed grader regrades on the recorded inference, a changed inference or an unknown stage it would reuse is refused (#157).
+- **`api_key_env: <VAR>`** reads a model's key from an environment variable, wherever `api_key` is accepted (root models and inline `grader` / `extractor`), on every dialect. Setting both is refused; an unset variable fails before any engine starts. Neither the value nor the name is in any identity, so rotating a key or switching forms resumes without a rerun (#148, #163).
+- **Per-stage resume.** `--resume` (in place) and `--resume DIR` / `runner_config.resume` (start from another, possibly read-only, run of another task) compare the four stage identities: changed data or prompt reruns those samples, a changed grader regrades on the recorded inference, a changed inference or an unknown stage it would reuse is refused (#157).
 - `Task.grader_args()`: task arguments folded into the grader identity, read after `setup()`; a task excludes arguments that cannot change a verdict via `GRADER_ARGS_EXCLUDED` (#157, #158).
 - **Stage identities and run history in `meta.json`.** `identity` (schema 1) holds `data`, `prompt`, `inference` and `grader` digests — the inference digest folds in what each sample was actually sent, the grader digest walks the task's MRO, its static imports and plugin packages, and records each judge's model, version, sampling and prompt (never its `api_base`). `runs[]` is append-only, and `meta.json` is rewritten atomically on every run (#150, #154).
 - **`dialect: anthropic_messages`** — native Anthropic Messages JSON and SSE, with explicit capability admission, request auditing, replay-safe extended-thinking continuations, and refusals lifted as scoreable terminal outcomes. `max_tokens` is required (#145).
@@ -50,6 +30,10 @@ services land alongside.
 
 ### Fixed
 
+- `effective_config.yaml` and `infer_plans.yaml` write every `api_key` / `authorization` value as `<redacted>`; rerunning such a file is refused until the key is supplied again (#163).
+- A resume's `runs[].config` in `meta.json` showed a changed `api_key` by value; it now shows `<redacted>` (#163).
+- A `--resume DIR` run killed before `meta.json` recorded it now resumes on the same command, instead of being refused as a run of unknown version. The copy writes `.copying` first and removes it once the run is recorded; the same `--resume DIR` copies again, and `--resume` alone refuses it (`UnfinishedCopyError`) (#162).
+- An `.idx` outside a `<iteration>/<stage>/` directory named for a `TaskStage` is neither loaded nor counts as a started run (#162).
 - A directory holding shards counts as started whatever `meta.json` says: a fresh run refuses it instead of adopting its samples, and a resume without a usable `meta.json` (a killed v0.6 run, including the latest `outputs/<task>/<timestamp>`, no longer skipped) is refused by the version gate (#160).
 - A run stopped mid-way keeps every finished sample: the saver flushes on every exit, samples still in the storage stream are drained to disk, and a failed or cancelled flush re-queues its batch instead of dropping it (#154, #158).
 - A run interrupted before every sample passed `preprocess` resumes instead of refusing on `data`; a refused resume appends no `runs[]` entry (#158).
@@ -67,6 +51,7 @@ services land alongside.
 
 ### Changed
 
+- **One resume option, `--resume [DIR]`**, on `sieval run`, `sieval eval` and `sieval leaderboard run`. `--resume` resumes each task in place; `--resume DIR` starts each task from `DIR/<task>`, as `--resume-from DIR` did. A `DIR` that is the run's own directory resumes in place instead of being refused. YAML: `runner_config.resume` (`true` or a task directory). Python: `TaskRunnerConfig.resume` and `resume=` on `EvalSession` / `arun_session` / `run_session`. `resume` never enters `runs[].config` (#164).
 - **BREAKING — `manifest.json` is removed.** A sample's state is its latest shard record, found through `.idx`; read per-sample status from the `.idx` columns or the record's `error_*` fields (#159).
 - **BREAKING — every exit path finalizes the same way.** `report.json` gains a `sieval` block (`total`, `final`, `failed`, `anomalies`) that decides a fast resume; `anomalies.json` covers every iteration and loses `summary` and its timestamped backups; `runs[].rules_hash` names the rules applied (#159).
 - **BREAKING — a resume compares stage identities, not config text.** `effective_config.yaml` and `infer_plans.yaml` no longer refuse a resume and are audit records; `gate_resume_identity` and `_append_resume_note` are removed, and YAML headers keep only the first run's provenance. The version-series gate stays (#150, #157).
@@ -77,6 +62,10 @@ services land alongside.
 - `google_genai` no longer validates Gemini limits by model name: unsupported thinking levels and budgets get Google's own 400, Gemini 3 `candidateCount > 1` is allowed, and Gemini 3 `temperature`/`top_p`/`top_k` are forwarded and recorded (#153, #156).
 - User-visible dialect and capability errors describe current behavior instead of citing PR numbers (#146).
 - Agent configuration is harness-neutral: `AGENTS.md` is the instruction source of truth with a generated rule map, and skills live under `.agents/skills/` (#144).
+
+### Deprecated
+
+- `--resume-from`, `runner_config.auto_resume` / `resume_from`, the matching `TaskRunnerConfig` fields and the `resume_from=` argument map to `resume` and warn once. An alias that disagrees with `resume` is refused. Removed next release (#164).
 
 ### Docs
 
