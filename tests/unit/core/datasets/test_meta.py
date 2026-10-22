@@ -104,6 +104,7 @@ def test_dataset_meta_to_dict_roundtrip():
         "deps_group": None,
         "license": None,
         "checksums": {},
+        "gated": False,
     }
 
 
@@ -603,4 +604,47 @@ def test_checksums_key_must_be_url_basename():
             checksums={"other.csv": "sha256:" + "a" * 64},
         )
         class CkKeyDataset(Dataset[CkSample]):
+            pass
+
+
+class GatedSample(TypedDict):
+    prompt: str
+
+
+def test_gated_round_trips_and_defaults_false_when_absent():
+    @sieval_dataset(
+        name="gated_ds",
+        display_name="Gated",
+        description="gated dataset.",
+        source="hf:org/gated@abc123",
+        categories=(Category(Level1Category.KNOWLEDGE, "Multi-domain"),),
+        gated=True,
+    )
+    class GatedDataset(Dataset[GatedSample]):
+        pass
+
+    meta = get_dataset_meta(GatedDataset)
+    assert meta.gated is True
+
+    wire = dataset_meta_to_dict(meta)
+    assert wire["gated"] is True
+    assert dataset_meta_from_dict(wire).gated is True
+    # An index.json written before the field existed still loads, as ungated.
+    no_gated = {k: v for k, v in wire.items() if k != "gated"}
+    assert dataset_meta_from_dict(no_gated).gated is False
+
+
+def test_gated_without_hf_source_rejected():
+    with pytest.raises(ValueError, match="no hf: source"):
+
+        @sieval_dataset(
+            name="gated_url",
+            display_name="GatedUrl",
+            description="gated url dataset.",
+            source="url:https://example.com/y.csv",
+            categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+            checksums={"y.csv": "sha256:" + "a" * 64},
+            gated=True,
+        )
+        class GatedUrlDataset(Dataset[GatedSample]):
             pass

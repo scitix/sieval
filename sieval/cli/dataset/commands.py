@@ -9,6 +9,8 @@ from typing import Annotated
 
 import click
 import typer
+from huggingface_hub import get_token
+from huggingface_hub.errors import GatedRepoError
 from loguru import logger
 
 from sieval.cli.dataset.render import (
@@ -20,6 +22,7 @@ from sieval.core.datasets.meta import DatasetMeta, Level1Category
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.core.utils.paths import resolve_data_dir
 from sieval.datasets.downloaders import resolve as resolve_handler
+from sieval.datasets.downloaders.hf import parse_hf_source
 from sieval.datasets.downloaders.local import LocalSourceUnavailable
 from sieval.datasets.downloaders.resolver import extras_unsatisfied
 from sieval.datasets.downloaders.verify import verify_checksums
@@ -280,6 +283,32 @@ def _summary(dest_root: Path, records: list[dict]) -> dict:
     }
 
 
+def _gated_message(m: DatasetMeta, src: str, reason: str) -> str:
+    """Say what a gated ``hf:`` source needs, instead of the Hub's bare 401."""
+    repo_id = parse_hf_source(src).repo_id
+    registered = (
+        "is a gated Hugging Face dataset"
+        if m.gated
+        else "has a gated Hugging Face source (not registered gated=True)"
+    )
+    return (
+        f"{m.name!r} {registered} and {reason}. Accept the access gate at "
+        f"https://huggingface.co/datasets/{repo_id}, then set HF_TOKEN (or run "
+        f"`hf auth login`) and re-run `sieval dataset download {m.name}`."
+    )
+
+
+def _require_hf_token(m: DatasetMeta, src: str) -> None:
+    """Refuse a gated fetch up front when no Hub token is configured.
+
+    ``get_token`` reads ``HF_TOKEN`` and the token ``hf auth login`` stores, the
+    same lookup ``snapshot_download`` makes, so this refuses exactly the fetch
+    the Hub would answer with a 401.
+    """
+    if get_token() is None:
+        raise RuntimeError(_gated_message(m, src, "no Hugging Face token is set"))
+
+
 def _download_one(
     m: DatasetMeta, dest_root: Path, force: bool, warnings: list[str]
 ) -> dict:
@@ -303,8 +332,12 @@ def _download_one(
             already_present += 1
             continue
         log_user("[{}] fetching {}", m.name, src)
+        if m.gated and src.startswith("hf:"):
+            _require_hf_token(m, src)
         try:
             h.download(src, dest_root, m.name, force=force)
+        except GatedRepoError as e:
+            raise RuntimeError(_gated_message(m, src, "the Hub refused access")) from e
         except LocalSourceUnavailable as e:
             # BYO corpus: surface the instructions and track for a summary.
             _warn(warnings, f"[{m.name}] {e}")

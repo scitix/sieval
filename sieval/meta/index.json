@@ -22,7 +22,8 @@
       ],
       "deps_group": null,
       "license": "apache-2.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "advanced_if",
@@ -43,7 +44,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "ag_livecodebench_x",
@@ -68,7 +70,8 @@
       ],
       "deps_group": null,
       "license": null,
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "agieval",
@@ -133,7 +136,8 @@
         "sat-en-without-passage.jsonl": "sha256:77eb57bb6f6f39466d5d169de5253e77755ef521ad6692f582307672affbf593",
         "sat-en.jsonl": "sha256:33fe87b32ff16ae7ba52b27bb398190b082253b3617a3eb9737005262ba12dd4",
         "sat-math.jsonl": "sha256:9cde4c0522b6196852a5562db6e72bf8817b4802822db0fc10013d1becdab3c3"
-      }
+      },
+      "gated": false
     },
     {
       "name": "aime_2024",
@@ -154,7 +158,8 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "aime_2025",
@@ -175,7 +180,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "aime_2026",
@@ -196,7 +202,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "apex_2025",
@@ -217,7 +224,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "apex_shortlist_2025",
@@ -238,7 +246,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "arc_challenge",
@@ -260,7 +269,8 @@
       ],
       "deps_group": null,
       "license": "cc-by-sa-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "arc_easy",
@@ -282,7 +292,8 @@
       ],
       "deps_group": null,
       "license": "cc-by-sa-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "bfcl_v3_live",
@@ -303,7 +314,8 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "bfcl_v3_non_live",
@@ -324,7 +336,8 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "browsecomp",
@@ -349,7 +362,8 @@
       "license": "MIT",
       "checksums": {
         "browse_comp_test_set.csv": "sha256:7b24471cd5b3eb2a46830a14802b5c029ea62f488ff75a0f88af7923d1454abf"
-      }
+      },
+      "gated": false
     },
     {
       "name": "brumo_2025",
@@ -370,7 +384,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "c_eval",
@@ -391,7 +406,8 @@
       ],
       "deps_group": null,
       "license": "cc-by-nc-sa-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "cmimc_2025",
@@ -412,7 +428,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "cmmlu",
@@ -435,7 +452,8 @@
       "license": "CC-BY-NC-SA-4.0",
       "checksums": {
         "d6e7b716d8ac694f38969a6c0407437d1fded799.zip": "sha256:154593336d5074d793ed990222876b83490b0aed97638a62618d1fe2da7c2cac"
-      }
+      },
+      "gated": false
     },
     {
       "name": "complex_constraints",
@@ -457,7 +475,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "drop",
@@ -482,7 +501,8 @@
       "checksums": {
         "drop_v0_dev.jsonl.gz": "sha256:7a58d35552dc476699d87ee8af0254f63e9f00f5a7f6b8b033e11c933157e186",
         "drop_v0_train.jsonl.gz": "sha256:d4a3a00ea2cfbe69d11f0bd24f5ba069731c645489bd39248b480d8eb34e1fb6"
-      }
+      },
+      "gated": false
     },
     {
       "name": "gpqa_diamond",
@@ -510,7 +530,8 @@
       "license": "CC-BY-4.0",
       "checksums": {
         "gpqa_diamond.csv": "sha256:41d1213cd7a4998605a26c2798500652572007161b3a92817ba46b35befcd305"
-      }
+      },
+      "gated": false
     },
     {
       "name": "gsm1k",
@@ -532,7 +553,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "gsm8k",
@@ -554,7 +576,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "gsm_plus",
@@ -577,7 +600,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "hellaswag",
@@ -599,7 +623,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "hendrycks_math",
@@ -620,7 +645,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "hle",
@@ -642,7 +668,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": true
     },
     {
       "name": "hmmt_feb_2025",
@@ -663,7 +690,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "hmmt_feb_2026",
@@ -684,7 +712,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "hmmt_nov_2025",
@@ -705,7 +734,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "human_eval",
@@ -727,7 +757,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "ifbench",
@@ -748,7 +779,8 @@
       ],
       "deps_group": null,
       "license": "ODC-BY-1.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "ifeval",
@@ -769,7 +801,8 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "iheval",
@@ -794,7 +827,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-ND-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "imo_answer_bench",
@@ -817,7 +851,8 @@
       "license": "CC-BY-4.0",
       "checksums": {
         "answerbench_v2.csv": "sha256:275877a9d988d85278fad3a5f8a41d7f83393a60bf259531ec0a5161e6b21cf9"
-      }
+      },
+      "gated": false
     },
     {
       "name": "inverse_ifeval",
@@ -839,7 +874,8 @@
       ],
       "deps_group": null,
       "license": null,
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "livecodebench_code_generation",
@@ -861,7 +897,8 @@
       ],
       "deps_group": null,
       "license": "cc",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "liveoibench",
@@ -885,7 +922,8 @@
       ],
       "deps_group": null,
       "license": "cc-by-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "math_500",
@@ -906,7 +944,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "math_perturb_hard",
@@ -930,7 +969,8 @@
       "license": "Apache-2.0",
       "checksums": {
         "math_perturb_hard.jsonl": "sha256:418ca51e02f3b639a919dda72b5201ce35ac6c6d7d31c3231735beb4ea012dd7"
-      }
+      },
+      "gated": false
     },
     {
       "name": "math_perturb_simple",
@@ -954,7 +994,8 @@
       "license": "Apache-2.0",
       "checksums": {
         "math_perturb_simple.jsonl": "sha256:2130821d4235dc1f5d962bee7f84a096651bf98fcb17b6dcfd3d0a48875ba5bb"
-      }
+      },
+      "gated": false
     },
     {
       "name": "mbpp",
@@ -976,7 +1017,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "mmlu",
@@ -997,7 +1039,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "mmlu_pro",
@@ -1018,7 +1061,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "mmmlu",
@@ -1039,7 +1083,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "multi_if",
@@ -1061,7 +1106,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-2.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "multipl_e_humaneval",
@@ -1082,7 +1128,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "multipl_e_mbpp",
@@ -1103,7 +1150,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "nl2sh_alfa",
@@ -1125,7 +1173,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "openbookqa",
@@ -1147,7 +1196,8 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "platinum_bench",
@@ -1169,7 +1219,8 @@
       ],
       "deps_group": null,
       "license": "cc-by-sa-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "quotebench",
@@ -1191,7 +1242,8 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "ruler",
@@ -1219,7 +1271,8 @@
       "checksums": {
         "dev-v2.0.json": "sha256:80a5225e94905956a6446d296ca1093975c4d3b3260f1d6c8f68bc2ab77182d8",
         "english_words.json": "sha256:affcd6d45fdf3cc843d585c99c97ad615094e760e6c4756b654bab6c73bc2eca"
-      }
+      },
+      "gated": false
     },
     {
       "name": "scicode",
@@ -1247,7 +1300,8 @@
         "problems_all.jsonl": "sha256:38797fef78f434720be6d053b4f3a86839d6f8ea5fb9115450677cd3a6edf81d",
         "problems_dev.jsonl": "sha256:193968aff23b7ed931c8f6d196b611e2f6694adb49e6cc085444a60ad2fc4f7b",
         "raw_ground.h5": "sha256:48b0272a88b17dbd29777c217e1b4fb2b019b92e11cc2add847409db9541b890"
-      }
+      },
+      "gated": false
     },
     {
       "name": "scitarc",
@@ -1273,7 +1327,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "simpleqa_verified",
@@ -1295,7 +1350,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "smt_2025",
@@ -1316,7 +1372,8 @@
       ],
       "deps_group": null,
       "license": "CC-BY-NC-SA-4.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "spider",
@@ -1342,7 +1399,8 @@
       "checksums": {
         "download": "sha256:9ec24ea8debc6bd04abfe137b5f1a739b5a8836f32c0464e4dfc94eb7f41da96",
         "spider_data.zip": "sha256:00636695dabed6b5f4b8328a16b13e069a2f16591d5efcce57660669c85b121b"
-      }
+      },
+      "gated": false
     },
     {
       "name": "spider2_lite",
@@ -1369,7 +1427,8 @@
       "checksums": {
         "cafb867313aab4e674652054198f383cf4018943.zip": "sha256:1e3cbb6a0eb13d9a397a8a786d9cd9b06ba54df124b6a193dd52f2949580276b",
         "download": "sha256:d56acf7c9d89be4bdf1f4f1281f4a03d91735f1858f6d6d0cfe0f9d562e3a94f"
-      }
+      },
+      "gated": false
     },
     {
       "name": "sysbench",
@@ -1394,7 +1453,8 @@
       "license": null,
       "checksums": {
         "system_benchmark_eval_datas.json": "sha256:d58186c227d8284e153619005cea704010e7290b4d3329c23445c6b504de1af2"
-      }
+      },
+      "gated": false
     },
     {
       "name": "t_eval_before_calling",
@@ -1416,7 +1476,8 @@
       ],
       "deps_group": null,
       "license": "Apache-2.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "theoremqa",
@@ -1442,7 +1503,8 @@
       ],
       "deps_group": null,
       "license": "MIT",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "ugmathbench",
@@ -1463,7 +1525,8 @@
       ],
       "deps_group": null,
       "license": "GPL-3.0",
-      "checksums": {}
+      "checksums": {},
+      "gated": false
     },
     {
       "name": "wikisql",
@@ -1488,7 +1551,8 @@
       "license": "BSD-3-Clause",
       "checksums": {
         "data.tar.bz2": "sha256:755c728ab188e364575705c8641f3fafd86fb089cb8b08e8c03f01832aae0881"
-      }
+      },
+      "gated": false
     }
   ],
   "tasks": [

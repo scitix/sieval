@@ -31,5 +31,8 @@ There is no shared cross-benchmark sample schema — every Task binds 1:1 to its
 - `deps_group` here is **loader-side** deps; evaluator-side deps stay on the Task.
 - `hf:` sources MUST be revision-pinned (`hf:org/name@<sha>`); `url:` sources MUST declare
   per-file `checksums` (sha256). `check_datasets` enforces both.
+- Set `gated=True` when an `hf:` source is a gated Hub repo (the Hub API's `gated` is not
+  `false`). `sieval dataset download` then refuses up front without a token and names the
+  gate; downstream catalogs read it from `index.json`.
 - Re-run `scripts/sync_meta_index.py` after editing `source`/`checksums` (the runtime reads
   the generated `index.json`).

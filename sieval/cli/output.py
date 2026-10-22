@@ -586,9 +586,15 @@ _DATASET_LIST_COLS: list[tuple[str, str]] = [
     ("DOMAIN", "domain"),
     ("DEPS_GROUP", "deps_group"),
     ("LICENSE", "license"),
+    ("GATED", "gated"),
     ("READY", "ready"),
 ]
 _DATASET_LIST_PINNED: frozenset[str] = frozenset({"name", "ready"})
+
+
+def _yes_no(flag: bool) -> str:
+    """Text form of a bool wire field, matching READY's ``yes``/``no``."""
+    return "yes" if flag else "no"
 
 
 def _render_text_dataset_list(result: CommandResult) -> None:
@@ -602,6 +608,7 @@ def _render_text_dataset_list(result: CommandResult) -> None:
     if not data:
         log_user("No datasets registered.")
         return
+    data = [r | {"gated": _yes_no(r["gated"])} for r in data]
     visible, collapsed = _collapse_constant_columns(
         data, _DATASET_LIST_COLS, never_collapse=_DATASET_LIST_PINNED
     )
@@ -740,6 +747,7 @@ def _render_text_dataset_show(result: CommandResult) -> None:
     log_user("Tags:          {}", ", ".join(d["tags"]) if d["tags"] else "-")
     log_user("Deps:          {}", d["deps_group"] or "-")
     log_user("License:       {}", d["license"])
+    log_user("Gated:         {}", _yes_no(d["gated"]))
     log_user("")
     log_user("Ready:         {}", d["ready"])
     missing = d.get("missing") or []
