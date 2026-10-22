@@ -16,8 +16,11 @@ AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 
 import dataclasses
 import json
+import os
+import threading
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 import pytest
 
@@ -404,6 +407,40 @@ class TestRunnerProgress:
         assert state["finished"] is True, (
             "Expected finished=True in final progress.json"
         )
+
+    @pytest.mark.anyio
+    async def test_progress_file_is_never_written_on_the_event_loop(self, tmp_path):
+        """Every runner in a session shares one loop; an fsync on it stalls all."""
+        loop_thread = threading.get_ident()
+        threads: list[int] = []
+        real_replace = os.replace
+
+        def _record(src, dst) -> None:
+            if Path(dst).name == "progress.json":
+                threads.append(threading.get_ident())
+            real_replace(src, dst)
+
+        result_dir = tmp_path / "progress_off_loop"
+        task = EdgeTask(
+            dataset=MockDataset(EDGE_SAMPLES),
+            model=MockChatModel(answers=EDGE_ANSWERS),
+            name="progress_off_loop",
+        )
+        config = make_config(
+            tmp_path,
+            result_dir=str(result_dir),
+            dump_progress=True,
+            progress_dump_interval=0.0,
+        )
+        with patch("sieval.core.utils.atomic.os.replace", _record):
+            report = await TaskRunner(task, config).arun()
+
+        assert report is not None
+        assert len(threads) >= 2  # during the run, and the final one
+        assert loop_thread not in threads
+        state = json.loads((result_dir / "progress.json").read_bytes())
+        assert state["finished"] is True
+        assert state["completed"] == 3
 
     @pytest.mark.anyio
     async def test_progress_file_not_created_when_dump_progress_false(self, tmp_path):

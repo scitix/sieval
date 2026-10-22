@@ -1203,7 +1203,10 @@ class TestRunnerFastResumeAnomaly:
             def set_status(self, *_args, **_kwargs):
                 return
 
-            def close(self):
+            def write_in(self, _group):
+                return
+
+            async def aclose(self):
                 return
 
             def finish(self):
@@ -1567,7 +1570,10 @@ class TestRunnerInternalBranches:
             def set_status(self, *_args: object, **_kwargs: object) -> None:
                 return
 
-            def close(self) -> None:
+            def write_in(self, _group: object) -> None:
+                return
+
+            async def aclose(self) -> None:
                 return
 
             def finish(self) -> None:
@@ -1645,7 +1651,10 @@ class TestRunnerInternalBranches:
             def set_status(self, *_args: object, **_kwargs: object) -> None:
                 return
 
-            def close(self) -> None:
+            def write_in(self, _group: object) -> None:
+                return
+
+            async def aclose(self) -> None:
                 return
 
             def finish(self) -> None:
@@ -2165,11 +2174,11 @@ class TestRunnerInterruptHandling:
         monkeypatch.setattr(runner._loader, "load_initial_state", load_initial_state)
         monkeypatch.setattr(runner._loader, "hydrate", hydrate)
 
-        def _close_progress(self):
+        async def _close_progress(self):
             progress_closed.append(self)
 
         monkeypatch.setattr(
-            "sieval.core.runners.runner.TaskProgress.close",
+            "sieval.core.runners.runner.TaskProgress.aclose",
             _close_progress,
         )
 

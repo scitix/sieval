@@ -6,10 +6,13 @@ and tqdm interactions (via a fake pbar), rather than private fields.
 """
 
 import io
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import anyio
 import orjson
+import pytest
 from loguru import logger
 
 from sieval.core.tasks.progress import TaskProgress
@@ -26,6 +29,10 @@ def _capture_logs(fn) -> str:
     finally:
         logger.remove(logger_id)
     return sink.getvalue()
+
+
+def _close(prog: TaskProgress) -> None:
+    anyio.run(prog.aclose)
 
 
 def _read_progress(root: Path) -> dict:
@@ -84,7 +91,7 @@ class TestTTYDetection:
 
         output = _capture_logs(lambda: non_tty.init_state(completed_ids=[0]))
         assert "test started: 1/10 (10.0%)" in output
-        non_tty.close()
+        _close(non_tty)
 
         fake_pbar = _FakePbar()
         with (
@@ -99,7 +106,7 @@ class TestTTYDetection:
         assert output.strip() == ""
         tqdm_cls.assert_called_once()
         assert fake_pbar.updates == [1]
-        tty.close()
+        _close(tty)
         assert fake_pbar.closed is True
 
         with (
@@ -108,7 +115,7 @@ class TestTTYDetection:
         ):
             no_show = make_progress(show_progress=False)
         tqdm_cls.assert_not_called()
-        no_show.close()
+        _close(no_show)
 
         with (
             patch("sys.stderr.isatty", return_value=True),
@@ -116,7 +123,7 @@ class TestTTYDetection:
         ):
             zero_total = make_progress(total=0)
         tqdm_cls.assert_not_called()
-        zero_total.close()
+        _close(zero_total)
 
 
 # ===================================================================
@@ -131,7 +138,7 @@ class TestInitState:
             anomaly_ids=[0],
             anomaly_details={"missing_field": 1},
         )
-        prog.close()
+        _close(prog)
 
         data = _read_progress(tmp_path)
         assert data["completed"] == 3
@@ -147,7 +154,7 @@ class TestInitState:
 
         output = _capture_logs(lambda: prog.init_state(completed_ids=[3, 4, 5]))
         assert "test started: 3/10 (30.0%)" in output
-        prog.close()
+        _close(prog)
 
 
 # ===================================================================
@@ -158,7 +165,7 @@ class TestUpdate:
         prog = make_progress(total=10, root_dir=tmp_path, dump_progress=True)
         prog.update(sample_id=3, current_hydrated_count=1, failed=True)
         prog.update(sample_id=3, current_hydrated_count=1, failed=True)
-        prog.close()
+        _close(prog)
 
         data = _read_progress(tmp_path)
         assert data["completed"] == 1
@@ -170,7 +177,7 @@ class TestUpdate:
             sample_id=0, current_hydrated_count=1, anomalies={"truncated", "low_score"}
         )
         prog.update(sample_id=1, current_hydrated_count=2, anomalies={"truncated"})
-        prog.close()
+        _close(prog)
 
         data = _read_progress(tmp_path)
         assert data["anomalies"] == 2
@@ -187,7 +194,7 @@ class TestTick:
         def _run_disabled():
             prog.init_state(completed_ids=[])
             prog.update(sample_id=0, current_hydrated_count=1)
-            prog.close()
+            _close(prog)
 
         disabled_output = _capture_logs(_run_disabled)
         assert disabled_output.strip() == ""
@@ -195,7 +202,7 @@ class TestTick:
         with patch("sys.stderr.isatty", return_value=False):
             zero_total = make_progress(total=0, show_progress=True)
 
-        zero_output = _capture_logs(lambda: (zero_total.tick(0), zero_total.close()))
+        zero_output = _capture_logs(lambda: (zero_total.tick(0), _close(zero_total)))
         assert zero_output.strip() == ""
 
     def test_tick_logs_on_finish(self):
@@ -211,7 +218,7 @@ class TestTick:
             prog.init_state(completed_ids=[])
             prog.update(sample_id=0, current_hydrated_count=1)
             prog.update(sample_id=1, current_hydrated_count=2)
-            prog.close()
+            _close(prog)
 
         output = _capture_logs(_run)
         assert "test finished: 2/2 (100.0%)" in output
@@ -226,7 +233,7 @@ class TestStateDump:
             total=5, root_dir=tmp_path, dump_progress=True, dump_interval=0.0
         )
         prog.init_state(completed_ids=[0, 1], failed_ids=[0])
-        prog.close()
+        _close(prog)
 
         progress_file = tmp_path / "progress.json"
         assert progress_file.exists(), "progress.json was not written"
@@ -245,7 +252,7 @@ class TestStateDump:
         )
         for i in range(total):
             prog.update(sample_id=i, current_hydrated_count=i + 1)
-        prog.close()
+        _close(prog)
 
         data = _read_progress(tmp_path)
         assert data["finished"] is True
@@ -253,12 +260,12 @@ class TestStateDump:
     def test_no_dump_when_disabled_or_root_dir_missing(self, tmp_path):
         no_dump_flag = make_progress(root_dir=tmp_path, dump_progress=False)
         no_dump_flag.update(sample_id=0, current_hydrated_count=1)
-        no_dump_flag.close()
+        _close(no_dump_flag)
         assert not (tmp_path / "progress.json").exists()
 
         no_root = make_progress(root_dir=None, dump_progress=True)
         no_root.update(sample_id=0, current_hydrated_count=1)
-        no_root.close()
+        _close(no_root)
         assert not (tmp_path / "progress.json").exists()
 
     def test_dump_respects_interval(self, tmp_path):
@@ -266,7 +273,6 @@ class TestStateDump:
         prog = make_progress(
             total=5, root_dir=tmp_path, dump_progress=True, dump_interval=9999.0
         )
-        progress_file = tmp_path / "progress.json"
         # Control perf_counter so update() stays within dump_interval.
         with patch(
             "sieval.core.tasks.progress.time.perf_counter",
@@ -274,44 +280,163 @@ class TestStateDump:
         ):
             # Force first dump via init_state (force=True).
             prog.init_state(completed_ids=[])
-            content_after_init = progress_file.read_bytes()
+            dump_after_init = prog._pending_dump
 
             # Non-forced update should NOT re-dump within interval.
             prog.update(sample_id=0, current_hydrated_count=1)
-            content_after_update = progress_file.read_bytes()
 
-        assert content_after_init == content_after_update, (
-            "progress.json was re-written within the dump interval"
+        assert dump_after_init is not None
+        assert prog._pending_dump is dump_after_init, (
+            "progress.json was re-dumped within the dump interval"
         )
-        prog.close()
+        _close(prog)
 
-    def test_dump_write_failure_is_non_fatal(self, tmp_path):
-        """If the write fails, a warning is logged but no exception is raised."""
-        prog = make_progress(
-            total=2, root_dir=tmp_path, dump_progress=True, dump_interval=0.0
-        )
-        with patch(
-            "sieval.core.tasks.progress.open",
-            side_effect=OSError("disk full"),
-        ):
-            # Should not raise
+
+# ===================================================================
+# Writes off the event loop
+# ===================================================================
+class TestOffLoopWrite:
+    """progress.json is written by a task in the runner's group, never inline.
+
+    Every runner in a session shares one event loop; an fsync on it stalls
+    every other task for as long as the filesystem takes.
+    """
+
+    def test_a_dump_alone_never_touches_disk(self, tmp_path):
+        prog = make_progress(total=5, root_dir=tmp_path, dump_progress=True)
+        with patch("sieval.core.tasks.progress.aatomic_write") as write:
             prog.init_state(completed_ids=[0])
             prog.update(sample_id=1, current_hydrated_count=2)
+            prog.set_status({"infer": 1}, 2)
+        write.assert_not_called()
+        assert not (tmp_path / "progress.json").exists()
+
+    @pytest.mark.anyio
+    async def test_the_write_runs_on_a_worker_thread(self, tmp_path):
+        threads: list[int] = []
+
+        def _record(path: Path, data: bytes) -> None:
+            threads.append(threading.get_ident())
+            path.write_bytes(data)
+
+        prog = make_progress(total=5, root_dir=tmp_path, dump_progress=True)
+        with patch("sieval.core.utils.atomic.atomic_write", _record):
+            async with anyio.create_task_group() as tg:
+                prog.write_in(tg)
+                prog.set_status({"infer": 2}, 2)
+            prog.write_in(None)
+            await prog.aclose()
+
+        assert len(threads) == 2  # the dump inside the group, then the final one
+        assert threading.get_ident() not in threads
+        assert _read_progress(tmp_path)["finished"] is False
+
+    @pytest.mark.anyio
+    async def test_a_dump_before_write_in_is_written_once_it_is_given(self, tmp_path):
+        prog = make_progress(total=5, root_dir=tmp_path, dump_progress=True)
+        prog.init_state(completed_ids=[0, 1])
+        async with anyio.create_task_group() as tg:
+            prog.write_in(tg)
+        prog.write_in(None)
+        assert _read_progress(tmp_path)["completed"] == 2
+        await prog.aclose()
+
+    @pytest.mark.anyio
+    async def test_dumps_during_a_write_coalesce_into_the_latest(self, tmp_path):
+        written: list[dict] = []
+        release = anyio.Event()
+
+        async def _slow_write(_path: Path, data: bytes) -> None:
+            written.append(orjson.loads(data))
+            await release.wait()
+
+        prog = make_progress(total=5, root_dir=tmp_path, dump_progress=True)
+        with patch("sieval.core.tasks.progress.aatomic_write", _slow_write):
+            async with anyio.create_task_group() as tg:
+                prog.write_in(tg)
+                prog.set_status({"infer": 1}, 1)
+                await anyio.wait_all_tasks_blocked()
+                # The first write is in flight; these three must not queue.
+                prog.set_status({"infer": 2}, 2)
+                prog.set_status({"infer": 3}, 3)
+                prog.set_status({"infer": 4}, 4)
+                release.set()
+
+        assert [w["active_details"] for w in written] == [{"infer": 1}, {"infer": 4}]
+
+    @pytest.mark.anyio
+    async def test_a_dump_after_the_writer_drains_starts_a_new_write(self, tmp_path):
+        written: list[dict] = []
+
+        async def _write(_path: Path, data: bytes) -> None:
+            written.append(orjson.loads(data))
+
+        prog = make_progress(total=5, root_dir=tmp_path, dump_progress=True)
+        with patch("sieval.core.tasks.progress.aatomic_write", _write):
+            async with anyio.create_task_group() as tg:
+                prog.write_in(tg)
+                prog.set_status({"infer": 1}, 1)
+                await anyio.wait_all_tasks_blocked()
+                prog.set_status({"infer": 2}, 2)
+
+        assert [w["active_details"] for w in written] == [{"infer": 1}, {"infer": 2}]
+
+    @pytest.mark.anyio
+    async def test_write_failure_is_non_fatal(self, tmp_path):
+        """A failed write logs a warning; it never fails the runner's group."""
+        prog = make_progress(total=2, root_dir=tmp_path, dump_progress=True)
+
+        async def _run() -> None:
+            with patch(
+                "sieval.core.tasks.progress.aatomic_write",
+                side_effect=OSError("disk full"),
+            ):
+                async with anyio.create_task_group() as tg:
+                    prog.write_in(tg)
+                    prog.update(sample_id=0, current_hydrated_count=1)
+                prog.write_in(None)
+                await prog.aclose()
+
+        sink = io.StringIO()
+        logger_id = logger.add(sink, format="{message}")
+        try:
+            await _run()
+        finally:
+            logger.remove(logger_id)
+        assert sink.getvalue().count("Failed to write progress file: disk full") == 2
+
+    @pytest.mark.anyio
+    async def test_aclose_writes_inline_after_the_group_is_detached(self, tmp_path):
+        prog = make_progress(total=2, root_dir=tmp_path, dump_progress=True)
+        async with anyio.create_task_group() as tg:
+            prog.write_in(tg)
+        prog.write_in(None)
+        # The group is gone; neither may start a task in it.
+        prog.update(sample_id=0, current_hydrated_count=1)
+        prog.finish()
+        await prog.aclose()
+        data = _read_progress(tmp_path)
+        assert data["completed"] == 1
+        assert data["finished"] is True
 
 
 # ===================================================================
 # set_status
 # ===================================================================
 class TestSetStatus:
-    def test_set_status_writes_active_counts_to_dump(self, tmp_path):
+    @pytest.mark.anyio
+    async def test_set_status_writes_active_counts_to_dump(self, tmp_path):
         prog = make_progress(total=10, root_dir=tmp_path, dump_progress=True)
 
-        prog.set_status({"preprocess": 3, "infer": 7}, 5)
+        async with anyio.create_task_group() as tg:
+            prog.write_in(tg)
+            prog.set_status({"preprocess": 3, "infer": 7}, 5)
+        prog.write_in(None)
         data = _read_progress(tmp_path)
         assert data["active_details"] == {"preprocess": 3, "infer": 7}
 
         prog.set_status({"infer": 5, "feedback": 2}, 5)
-        prog.close()
+        await prog.aclose()
         data = _read_progress(tmp_path)
         assert data["active_details"] == {"infer": 5, "feedback": 2}
 
@@ -326,21 +451,25 @@ class TestSetStatus:
         output = _capture_logs(lambda: prog.set_status({"infer": 3}, 5))
         assert "test" in output
         assert "2/10" in output
-        prog.close()
+        _close(prog)
 
 
 # ===================================================================
 # close
 # ===================================================================
 class TestClose:
-    def test_close_triggers_final_dump(self, tmp_path):
+    @pytest.mark.anyio
+    async def test_close_triggers_final_dump(self, tmp_path):
         prog = make_progress(
             total=2, root_dir=tmp_path, dump_progress=True, dump_interval=9999.0
         )
         prog.init_state(completed_ids=[0, 1])
+        async with anyio.create_task_group() as tg:
+            prog.write_in(tg)
+        prog.write_in(None)
         # remove file to test that close writes it
         (tmp_path / "progress.json").unlink()
-        prog.close()
+        await prog.aclose()
         assert (tmp_path / "progress.json").exists()
 
 
@@ -361,7 +490,7 @@ class TestPbarPaths:
         prog.init_state(completed_ids=[0, 1, 2])
         assert fake_pbar.updates == [3]
         assert fake_pbar.n == 3
-        prog.close()
+        _close(prog)
 
     def test_update_and_set_status_update_postfix(self):
         fake_pbar = _FakePbar()
@@ -386,7 +515,7 @@ class TestPbarPaths:
             "anomalies": 1,
             "infer": 2,
         }
-        prog.close()
+        _close(prog)
 
     def test_set_status_clears_existing_postfix_when_empty(self):
         fake_pbar = _FakePbar()
@@ -401,7 +530,7 @@ class TestPbarPaths:
 
         assert fake_pbar.postfix_calls
         assert fake_pbar.postfix_calls[-1] == ({}, False)
-        prog.close()
+        _close(prog)
 
 
 class TestPbarConstruction:
@@ -417,11 +546,13 @@ class TestPbarConstruction:
             patch("sys.stderr.isatty", return_value=True),
             patch("sieval.core.tasks.progress.tqdm") as tqdm_cls,
         ):
-            TaskProgress(
-                total=overrides.pop("total", 42),
-                desc=overrides.pop("desc", "a-task"),
-                **overrides,
-            ).close()
+            _close(
+                TaskProgress(
+                    total=overrides.pop("total", 42),
+                    desc=overrides.pop("desc", "a-task"),
+                    **overrides,
+                )
+            )
         return dict(tqdm_cls.call_args.kwargs)
 
     def test_total_and_desc_are_forwarded(self):
@@ -453,7 +584,7 @@ class TestNonTtyLogFallback:
         with patch("sys.stderr.isatty", return_value=tty):
             prog = make_progress(show_progress=show_progress)
         enabled = prog._enable_log
-        prog.close()
+        _close(prog)
         return enabled
 
     def test_enabled_only_off_tty(self):
@@ -475,7 +606,7 @@ class TestDumpGating:
     def _has_file(self, *, root_dir, dump_progress: bool) -> bool:
         prog = make_progress(root_dir=root_dir, dump_progress=dump_progress)
         has = prog._progress_file is not None
-        prog.close()
+        _close(prog)
         return has
 
     def test_both_required(self, tmp_path):
@@ -492,4 +623,4 @@ class TestDumpGating:
     def test_the_file_is_named_progress_json(self, tmp_path):
         prog = make_progress(root_dir=tmp_path, dump_progress=True)
         assert prog._progress_file == tmp_path / "progress.json"
-        prog.close()
+        _close(prog)

@@ -1,4 +1,12 @@
-"""Task progress reporting: tqdm TTY bar, non-TTY loguru log, and JSON dump."""
+"""Task progress reporting: tqdm TTY bar, non-TTY loguru log, and JSON dump.
+
+``progress.json`` is written off the event loop: every runner in a session
+shares one loop, and the fsync behind each write costs milliseconds on a network
+filesystem. :meth:`TaskProgress._dump_state` only snapshots the state; a task in
+the group given to :meth:`TaskProgress.write_in` writes it. Snapshots taken while
+a write is in flight coalesce into the latest one; with no group, they wait for
+the next one or for :meth:`TaskProgress.aclose`.
+"""
 
 import sys
 import time
@@ -7,10 +15,11 @@ from pathlib import Path
 from typing import Any
 
 import orjson
+from anyio.abc import TaskGroup
 from loguru import logger
 from tqdm import tqdm
 
-from sieval.core.utils.atomic import atomic_write
+from sieval.core.utils.atomic import aatomic_write
 
 
 class TaskProgress:
@@ -21,6 +30,8 @@ class TaskProgress:
       and percentage thresholds.
 
     Optionally writes a ``progress.json`` file for external monitoring tools.
+    While a task group is attached with :meth:`write_in` the file is rewritten
+    as the state changes; :meth:`aclose` writes the final state.
     """
 
     def __init__(
@@ -67,6 +78,9 @@ class TaskProgress:
         )
         self._last_dump_time: float = 0.0
         self._dump_interval: float = dump_interval
+        self._pending_dump: bytes | None = None
+        self._dump_group: TaskGroup | None = None
+        self._writing = False
 
         # Internal state
         self._completed_ids: set[str | int] = set()
@@ -251,8 +265,37 @@ class TaskProgress:
             "finished": self._finished or completed == self._total,
         }
 
+        self._pending_dump = orjson.dumps(state)
+        self._start_writer()
+
+    def write_in(self, group: TaskGroup | None) -> None:
+        """Write dumps from tasks in *group*; ``None`` detaches it.
+
+        A dump taken with no group attached waits for one. Detach *group* once
+        it has exited: its exit waits for the write in flight, so a later
+        :meth:`aclose` writes last.
+        """
+        self._dump_group = group
+        self._start_writer()
+
+    def _start_writer(self) -> None:
+        if self._dump_group is None or self._writing or self._pending_dump is None:
+            return
+        self._writing = True
+        self._dump_group.start_soon(self._write_pending)
+
+    async def _write_pending(self) -> None:
         try:
-            atomic_write(self._progress_file, orjson.dumps(state))
+            while self._pending_dump is not None:
+                data, self._pending_dump = self._pending_dump, None
+                await self._write(data)
+        finally:
+            self._writing = False
+
+    async def _write(self, data: bytes) -> None:
+        assert self._progress_file is not None
+        try:
+            await aatomic_write(self._progress_file, data)
         except OSError as e:
             logger.warning("Failed to write progress file: {}", e)
 
@@ -261,8 +304,14 @@ class TaskProgress:
         self._finished = True
         self._active_counts = {}
 
-    def close(self) -> None:
-        """Close the tqdm bar (if any) and force a final progress state dump."""
+    async def aclose(self) -> None:
+        """Close the tqdm bar (if any) and write the final progress state.
+
+        Call it once no :meth:`write_in` group is attached.
+        """
         if self._pbar:
             self._pbar.close()
         self._dump_state(force=True)
+        data, self._pending_dump = self._pending_dump, None
+        if data is not None:
+            await self._write(data)

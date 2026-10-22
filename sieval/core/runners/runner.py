@@ -775,6 +775,9 @@ class TaskRunner:
                     compute_send, compute_recv, storage_recv, storage_send, pending_ids
                 )
             finally:
+                # The stream group has exited and with it the progress writer.
+                if self._progress:
+                    self._progress.write_in(None)
                 # A raised stage or an interrupt cancels the storage worker
                 # before its final flush; every finished sample still reaches
                 # disk, wherever it was held. A no-op after a clean exit.
@@ -803,7 +806,8 @@ class TaskRunner:
                 except Exception as e:
                     logger.error("Flush failed: {}", e)
             if self._progress:
-                self._progress.close()
+                with anyio.CancelScope(shield=True):
+                    await self._progress.aclose()
             return None
 
         finally:
@@ -945,6 +949,10 @@ class TaskRunner:
         """Run the compute dispatcher and the storage worker until every sample
         is terminal, seeding resumed and new samples."""
         async with anyio.create_task_group() as tg:
+            # Writes progress.json off the loop until arun detaches it.
+            if self._progress:
+                self._progress.write_in(tg)
+
             # Setup Concurrency: Always create local limiters
             # This ensures task-specific limits are always respected
             self._local_limiter, self._local_stage_limiters = prepare_limiters(
@@ -1445,7 +1453,7 @@ class TaskRunner:
                 await self._saver.end_run((), rules_hash=rules_hash)
             else:
                 await self._end_run(reported=reported, rules_hash=rules_hash)
-        self._finish_progress(finals, fails, anomalies)
+        await self._finish_progress(finals, fails, anomalies)
         if refusal is not None:
             raise refusal
         return report
@@ -1502,7 +1510,7 @@ class TaskRunner:
         self._profiler.log_summary()
         await self._profiler.save(self._root_dir)
 
-    def _finish_progress(
+    async def _finish_progress(
         self,
         finals: list[TaskContext],
         fails: list[TaskContext],
@@ -1529,7 +1537,7 @@ class TaskRunner:
                 anomaly_details=details,
             )
         progress.finish()
-        progress.close()
+        await progress.aclose()
 
     # ------------------------------------------------------------------
     # meta.json: stage identities and run history
