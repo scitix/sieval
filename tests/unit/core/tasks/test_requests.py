@@ -24,6 +24,7 @@ def _line(**overrides: JSONValue) -> dict[str, JSONValue]:
         "outcome": "2xx",
         "latency_s": 0.5,
         "queue_s": 0.1,
+        "connect_s": 0.01,
         "retry_after_s": None,
         "in_flight": {"task": {"borrowed": 2, "total": 4}},
     }
@@ -105,8 +106,9 @@ class TestSummary:
         assert cand["in_flight"] == {"task": {"peak": 4, "limit": 4}}
         assert cand["latency"]["count"] == 3
         assert cand["latency"]["max_s"] == 2.5
-        # Only first attempts carry a queue wait.
+        # Only first attempts carry a queue wait; every sent attempt a connect.
         assert cand["queue"]["count"] == 2
+        assert cand["connect"]["count"] == 3
         judge = by_phase["judge"]["j"]
         assert judge["outcomes"] == {"timeout_read": 1}
 

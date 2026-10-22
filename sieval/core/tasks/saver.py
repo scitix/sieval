@@ -26,6 +26,7 @@ from .run_meta import (
     GraderIdentity,
     InferenceIdentity,
     RunFrom,
+    RunRequests,
     carried_identity,
     carried_runs,
     new_run_record,
@@ -311,11 +312,13 @@ class TaskSaver:
         *,
         reported: bool = False,
         rules_hash: str | None = None,
+        requests: RunRequests | None = None,
     ) -> None:
         """Mark the current ``runs[]`` entry ended, with the stages it reran.
 
         *reported* is set by a run that wrote ``report.json``; *rules_hash* by
-        one that wrote ``anomalies.json``.
+        one that wrote ``anomalies.json``; *requests* by one that made model
+        requests and recorded them.
         """
         meta = self._require_meta()
         run = meta["runs"][-1]
@@ -325,9 +328,16 @@ class TaskSaver:
             run["reported"] = True
         if rules_hash is not None:
             run["rules_hash"] = rules_hash
+        if requests:
+            run["requests"] = requests
         await self._write_meta()
 
-    async def interrupt_run(self, *, rules_hash: str | None = None) -> None:
+    async def interrupt_run(
+        self,
+        *,
+        rules_hash: str | None = None,
+        requests: RunRequests | None = None,
+    ) -> None:
         """Mark the current ``runs[]`` entry ended by an interrupt, without ``reran``.
 
         A no-op before :meth:`begin_run`: an interrupt that early left nothing
@@ -340,6 +350,8 @@ class TaskSaver:
         run["interrupted"] = True
         if rules_hash is not None:
             run["rules_hash"] = rules_hash
+        if requests:
+            run["requests"] = requests
         await self._write_meta()
 
     @property

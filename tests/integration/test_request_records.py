@@ -48,6 +48,19 @@ def _rate_limit_once() -> Callable[[httpx.Request], httpx.Response | None]:
     return before
 
 
+def _refuse(question: str) -> Callable[[httpx.Request], httpx.Response | None]:
+    """A 400 -- never retried -- for every candidate request asking *question*."""
+
+    def before(request: httpx.Request) -> httpx.Response | None:
+        if request.url.host != CANDIDATE_HOST:
+            return None
+        if json.loads(request.content)["messages"][-1]["content"] != question:
+            return None
+        return httpx.Response(400, json={"error": {"message": "bad request"}})
+
+    return before
+
+
 def _lines(task_dir: Path) -> list[dict]:
     return [
         json.loads(raw) for raw in (task_dir / REQUESTS_FILE).read_text().splitlines()
@@ -150,10 +163,40 @@ class TestRequestRecords:
         monkeypatch.setenv("CANDIDATE_KEY", "k1")
         monkeypatch.setenv("JUDGE_KEY", "k2")
         config = _write_config(tmp_path)
-        await arun_session(config)
         task_dir = tmp_path / "results" / "judged"
-        first = (task_dir / REQUESTS_FILE).read_text()
+        meta_path = task_dir / "meta.json"
 
+        # Run 1: Q2's candidate request is refused, so that sample fails.
+        wire.before = _refuse("Q2")
+        await arun_session(config)
+        first = _lines(task_dir)
+        # Run 2 reruns the failed sample only, and appends its lines.
+        wire.before = None
+        await arun_session(config, resume=True)
+        both = _lines(task_dir)
+        # Run 3 finds the report final and sends nothing.
         await arun_session(config, resume=True)
 
-        assert (task_dir / REQUESTS_FILE).read_text() == first
+        assert both[: len(first)] == first
+        runs = json.loads(meta_path.read_text())["runs"]
+        assert [run["start"] for run in runs] == ["fresh", "resume", "resume"]
+        by_run = {line["run"] for line in both}
+        assert by_run == {runs[0]["id"], runs[1]["id"]}
+        assert _lines(task_dir) == both
+
+        # Each run keeps its own counts; profile/report keep only the latest.
+        assert runs[0]["requests"]["infer"]["org/candidate"] == {
+            "calls": 2,
+            "attempts": 2,
+            "outcomes": {"2xx": 1, "4xx": 1},
+            "in_flight": runs[0]["requests"]["infer"]["org/candidate"]["in_flight"],
+        }
+        assert runs[0]["requests"]["judge"]["gemini-judge"]["calls"] == 1
+        assert runs[1]["requests"]["infer"]["org/candidate"]["outcomes"] == {"2xx": 1}
+        assert runs[1]["requests"]["judge"]["gemini-judge"]["calls"] == 1
+        assert "requests" not in runs[2]
+        for run in runs[:2]:
+            ran = [line for line in both if line["run"] == run["id"]]
+            assert sum(
+                c["attempts"] for p in run["requests"].values() for c in p.values()
+            ) == len(ran)

@@ -29,20 +29,13 @@ from sieval.core.models import Model
 from sieval.core.types import JSONValue
 
 from .profiler import ProfileTimingStats, compute_timing_stats
-from .run_meta import call_key
+from .run_meta import LimiterPeak, RequestCounts, RunRequests, call_key
 
 REQUESTS_FILE = "requests.jsonl"
 
 #: Lines held before a flush is due, and the longest a line waits for one.
 FLUSH_LINES = 256
 FLUSH_INTERVAL_S = 2.0
-
-
-class LimiterPeak(TypedDict):
-    """The most requests a limiter held at once, against its cap."""
-
-    peak: int
-    limit: int | None
 
 
 class RequestSummary(TypedDict):
@@ -57,15 +50,7 @@ class RequestSummary(TypedDict):
     in_flight: dict[str, LimiterPeak]
     latency: NotRequired[ProfileTimingStats]
     queue: NotRequired[ProfileTimingStats]
-
-
-class RequestCounts(TypedDict):
-    """The slice of a :class:`RequestSummary` that ``report.json`` carries."""
-
-    calls: int
-    attempts: int
-    outcomes: dict[str, int]
-    in_flight: dict[str, LimiterPeak]
+    connect: NotRequired[ProfileTimingStats]
 
 
 class RequestProfile(TypedDict):
@@ -86,6 +71,7 @@ class _Totals:
     in_flight: dict[str, LimiterPeak] = field(default_factory=dict)
     latency: list[float] = field(default_factory=list)
     queue: list[float] = field(default_factory=list)
+    connect: list[float] = field(default_factory=list)
 
     def add(self, line: Mapping[str, JSONValue]) -> None:
         self.attempts += 1
@@ -108,6 +94,9 @@ class _Totals:
         queue = line.get("queue_s")
         if isinstance(queue, float | int):
             self.queue.append(float(queue))
+        connect = line.get("connect_s")
+        if isinstance(connect, float | int):
+            self.connect.append(float(connect))
         in_flight = line.get("in_flight")
         if isinstance(in_flight, dict):
             for name, snapshot in in_flight.items():
@@ -138,6 +127,8 @@ class _Totals:
             result["latency"] = compute_timing_stats(self.latency)
         if self.queue:
             result["queue"] = compute_timing_stats(self.queue)
+        if self.connect:
+            result["connect"] = compute_timing_stats(self.connect)
         return result
 
 
@@ -265,12 +256,13 @@ class TaskRequestLog:
             by_phase.setdefault(phase, {})[model] = totals.summary()
         return RequestProfile(run=self._run, by_phase=by_phase)
 
-    def counts(self) -> dict[str, dict[str, RequestCounts]] | None:
-        """The counts and limiter peaks of :meth:`summary`, for ``report.json``."""
+    def counts(self) -> RunRequests | None:
+        """The counts and limiter peaks of :meth:`summary`, for ``report.json``
+        and this run's ``runs[]`` entry."""
 
         if not self._totals:
             return None
-        by_phase: dict[str, dict[str, RequestCounts]] = {}
+        by_phase: RunRequests = {}
         for (phase, model), totals in sorted(self._totals.items()):
             full = totals.summary()
             by_phase.setdefault(phase, {})[model] = RequestCounts(

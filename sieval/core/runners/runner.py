@@ -54,6 +54,7 @@ from sieval.core.tasks.run_meta import (
     InferenceIdentity,
     JudgeIdentity,
     RunFrom,
+    RunRequests,
     aggregate_digest,
     call_key,
     digest,
@@ -814,7 +815,9 @@ class TaskRunner:
                         await self._flush_request_log()
                         # Anomalies of the samples this run saw finish.
                         rules_hash = await self._write_anomalies(self._anomaly_results)
-                        await self._saver.interrupt_run(rules_hash=rules_hash)
+                        await self._saver.interrupt_run(
+                            rules_hash=rules_hash, requests=self._request_counts()
+                        )
                 except Exception as e:
                     logger.error("Flush failed: {}", e)
             if self._progress:
@@ -1160,6 +1163,10 @@ class TaskRunner:
             run_start=self._run_start,
         )
 
+    def _request_counts(self) -> RunRequests | None:
+        """This run's request counts, for ``report.json`` and ``runs[]``."""
+        return self._request_log.counts() if self._request_log is not None else None
+
     async def _flush_request_log(self) -> None:
         if self._request_log is None:
             return
@@ -1451,11 +1458,7 @@ class TaskRunner:
             as_dict = cast(dict[str, JSONValue], report)
             if counts is not None:
                 block = cast(dict[str, JSONValue], dict(counts))
-                requests = (
-                    self._request_log.counts()
-                    if self._request_log is not None
-                    else None
-                )
+                requests = self._request_counts()
                 if requests is not None:
                     block["requests"] = cast(JSONValue, requests)
                 as_dict[SIEVAL_COUNTS_KEY] = block
@@ -2191,7 +2194,12 @@ class TaskRunner:
         # `report()` has no identity: only the stages that grade count.
         if ran & {TaskAction.POSTPROCESS, TaskAction.FEEDBACK}:
             reran.add("grader")
-        await self._saver.end_run(reran, reported=reported, rules_hash=rules_hash)
+        await self._saver.end_run(
+            reran,
+            reported=reported,
+            rules_hash=rules_hash,
+            requests=self._request_counts(),
+        )
 
     def _resolve_result_dir(
         self, result_dir: str | None, task: Task, resumes: bool

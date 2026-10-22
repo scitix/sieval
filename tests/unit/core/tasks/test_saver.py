@@ -617,6 +617,30 @@ class TestRunMeta:
         assert "reran" not in run
 
     @pytest.mark.anyio
+    async def test_each_run_keeps_its_own_request_counts(self, saver, tmp_root):
+        counts = {
+            "infer": {
+                "m": {
+                    "calls": 2,
+                    "attempts": 3,
+                    "outcomes": {"2xx": 2, "429": 1},
+                    "in_flight": {"task": {"peak": 2, "limit": 4}},
+                }
+            }
+        }
+        await saver.begin_run(resumed=False)
+        await saver.interrupt_run(requests=counts)
+        await saver.begin_run(resumed=True)
+        await saver.end_run(["inference"], requests={})  # none made: omitted
+        await saver.begin_run(resumed=True)
+        await saver.end_run([], requests=counts)
+
+        runs = _read_meta(tmp_root)["runs"]
+        assert runs[0]["requests"] == counts
+        assert "requests" not in runs[1]
+        assert runs[2]["requests"] == counts
+
+    @pytest.mark.anyio
     async def test_end_run_orders_stages(self, saver, tmp_root):
         await saver.begin_run(resumed=False)
         await saver.end_run(["grader", "prompt"])
