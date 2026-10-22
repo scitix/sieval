@@ -376,6 +376,5 @@ testpaths = [
   "tests/integration",
   "tests/acceptance",
   "tests/performance",
-  "tests/leaderboards",
 ]
 addopts = ["--strict-markers", "-m", "not stress"]

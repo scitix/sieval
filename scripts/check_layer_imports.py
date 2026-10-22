@@ -62,22 +62,22 @@ FORBIDDEN: dict[str, set[str]] = {
     "tasks": {"cli", "infer"},
 }
 
-# dotted sub-package -> sub-packages it must NOT import. FORBIDDEN is keyed on a
-# single segment, so it cannot express an edge *inside* a layer: `cli/` depends
-# on every layer, which says nothing about its own sub-packages reaching into
-# each other. `sieval.cli.resolution` removes the first edge below; the second
-# keeps provider wire lowering independent of runtime-plan reconciliation.
+# dotted package -> modules it must NOT import: edges *inside* a layer, which
+# FORBIDDEN (keyed on one segment) cannot express. The `sieval` root keeps every
+# module off the deprecated `sieval.cli.leaderboard` alias so it can be deleted.
 FORBIDDEN_SUBPACKAGE: dict[str, set[str]] = {
-    "sieval.cli.infer": {"sieval.cli.leaderboard"},
+    "sieval.cli.infer": {"sieval.cli.session"},
     "sieval.core.models.dialects": {"sieval.core.models.reconcile"},
+    "sieval": {"sieval.cli.leaderboard"},
 }
 
-# Guard: a non-dotted entry can never match a resolved module, so the rule would
-# look enforced while being dead. Same failure mode as _layer_sibling_collision.
+# Guard: an entry outside the package never matches, so its rule would be dead
+# (same failure mode as _layer_sibling_collision). Only a *root* may be bare
+# `sieval`; as a target it would forbid every import.
 _malformed_subpackage_rules = {
     pkg
     for pkg in (
-        *FORBIDDEN_SUBPACKAGE,
+        *(r for r in FORBIDDEN_SUBPACKAGE if r != "sieval"),
         *(t for targets in FORBIDDEN_SUBPACKAGE.values() for t in targets),
     )
     if not pkg.startswith("sieval.")
@@ -101,7 +101,6 @@ _SIEVAL_OUTER_SIBLINGS: frozenset[str] = frozenset(
         "tests",
         "docs",
         "data",
-        "leaderboards",
         "mutants",
         "outputs",
         "vendor",
@@ -156,7 +155,7 @@ def _get_layer(path: Path) -> str | None:
 def _file_package(path: Path) -> str:
     """Return the dotted package containing *path*.
 
-    For ``sieval/cli/leaderboard/session.py`` return ``sieval.cli.leaderboard``.
+    For ``sieval/cli/infer/recipe.py`` return ``sieval.cli.infer``.
     For ``sieval/core/__init__.py`` return ``sieval.core``. Empty string if
     *path* is outside the sieval package — including repo-level sibling
     directories like ``scripts/`` or ``tests/`` under a repo dir named
@@ -308,7 +307,7 @@ def _check_subpackage_imports(path: Path, tree: ast.AST) -> list[str]:
 
     Matches the three shapes ``_check_layer_imports`` does: module path,
     relative form (via ``_absolute_module``), and the imported alias
-    (``from sieval.cli import leaderboard``). Tests are exempt, as in
+    (``from sieval.cli import session``). Tests are exempt, as in
     ``_check_private_access``.
     """
     if "tests" in path.parts:
@@ -349,7 +348,7 @@ def _check_subpackage_imports(path: Path, tree: ast.AST) -> list[str]:
             if target:
                 errors.append(_error(node.lineno, target, module))
                 continue
-            # `from sieval.cli import leaderboard` — the target is the imported
+            # `from sieval.cli import session` — the target is the imported
             # name, not the module path. Same violation, different shape.
             for alias in node.names:
                 composed = f"{module}.{alias.name}"

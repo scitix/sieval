@@ -632,7 +632,7 @@ unit), `timeouts` (the code family), `exact_match` / `flexible_exact_match`
 
 ## Reading a report across versions
 
-Adding a key is non-destructive: `sieval leaderboard report` reads `score` and
+Adding a key is non-destructive: downstream consumers read `score` and
 nothing else, so older runs stay readable and comparable on the headline. They
 are **not** backfilled — metrics are computed inline at report time, so a stored
 `report.json` remains a function of the run that produced it. The per-metric

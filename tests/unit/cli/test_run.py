@@ -499,7 +499,7 @@ class TestDeterministicPlanPropagation:
                 return_value=[],
             ),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),
             ),
         ):
@@ -569,7 +569,7 @@ class TestDeterministicPlanPropagation:
                 return_value=[],
             ),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),
             ),
         ):
@@ -624,7 +624,7 @@ class TestDeterministicPlanPropagation:
                 return_value=[],
             ),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),
             ),
         ):
@@ -685,7 +685,7 @@ class TestDeterministicPlanPropagation:
                 return_value=[],
             ),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),
             ),
         ):
@@ -733,7 +733,7 @@ class TestPathOnlyCapabilityLayer:
             patch("sieval.cli.run.cleanup_model", new=AsyncMock()),
             patch("sieval.infer.topology.validator.validate_plan", return_value=[]),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),
             ),
         ):
@@ -841,7 +841,7 @@ class TestDeterministicPassedToSession:
                 return_value=[],
             ),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=arun_session_mock,
             ),
         ):
@@ -905,7 +905,7 @@ class TestDeterministicPassedToSession:
             patch("sieval.cli.run.cleanup_model", new=AsyncMock()),
             patch("sieval.infer.topology.validator.validate_plan", return_value=[]),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),
             ),
         ):
@@ -968,7 +968,7 @@ class TestRunHandlesAndLogs:
             patch("sieval.cli.run.get_translator", return_value=translator),
             patch("sieval.cli.run.cleanup_model", new=cleanup or AsyncMock()),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),
             ),
         ):
@@ -1170,7 +1170,7 @@ class TestDeploymentPropagation:
                 return_value=[],
             ),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=arun_session_mock,
             ),
         ):
@@ -1239,7 +1239,7 @@ class TestDeploymentPropagation:
             ),
             patch("sieval.cli.run.cleanup_model", new=cleanup),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(side_effect=RuntimeError("evaluation failed")),
             ),
             pytest.raises(RuntimeError, match="evaluation failed"),
@@ -1390,8 +1390,8 @@ class TestEffectiveConfigRerunSafety:
 
     @pytest.mark.anyio
     async def test_persisted_config_has_no_injected_api_base(self, tmp_path: Path):
-        from sieval.cli.leaderboard.session import EvalSession
         from sieval.cli.run import _run_all
+        from sieval.cli.session import EvalSession
 
         config = {
             "models": {
@@ -1460,8 +1460,8 @@ class TestEffectiveConfigRerunSafety:
 
     @pytest.mark.anyio
     async def test_infer_plans_yaml_written_for_auto_serve(self, tmp_path: Path):
-        from sieval.cli.leaderboard.session import EvalSession
         from sieval.cli.run import _run_all
+        from sieval.cli.session import EvalSession
 
         config = {
             "models": {

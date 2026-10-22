@@ -1,10 +1,10 @@
 """Shape of a ``filter`` dataset operation, shared by its two surfaces.
 
 ``cli.validation`` shape-checks a config with no dataset in hand and collects
-every problem; ``cli.leaderboard.session`` applies the operation and raises on
+every problem; ``cli.session`` applies the operation and raises on
 the first. Same questions, different reporting — which is why these return a
 message rather than raising. They live here because ``cli.validation`` already
-imports ``cli.leaderboard.session``, so neither file could hold them without
+imports ``cli.session``, so neither file could hold them without
 pointing that dependency backwards.
 
 Callers prepend their own ``Dataset '<name>': `` to every message returned here.
@@ -178,8 +178,7 @@ def check_by_digest(op_args: Mapping) -> list[str]:
 def resolve_values_path(values_file: str, config_dir: Path) -> Path:
     """A ``values_file`` as an absolute path.
 
-    Relative paths resolve against the config that named them — the rule
-    ``alignment.card`` already follows.
+    Relative paths resolve against the config that named them.
     """
     path = Path(values_file)
     return path if path.is_absolute() else (config_dir / path).resolve()

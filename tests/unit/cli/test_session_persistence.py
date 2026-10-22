@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 
-from sieval.cli.leaderboard.session import (
+from sieval.cli.session import (
     _DETERMINISTIC_SEED_CONTRACT_KEY,
     EvalSession,
     _format_comment_header,
@@ -303,7 +303,7 @@ def _real_plan_dict() -> dict:
     exercise that code path with a real MappingProxyType value."""
     from types import MappingProxyType
 
-    from sieval.cli.leaderboard.session import unwrap_proxies
+    from sieval.cli.session import unwrap_proxies
 
     # Build a dict that contains a MappingProxyType node, mirroring
     # what dataclasses.asdict would produce if it could run.
@@ -581,9 +581,7 @@ class TestResumePersistence:
         first._stamp_deterministic_seed_contract()
         original = first._reified_config[_DETERMINISTIC_SEED_CONTRACT_KEY]
 
-        monkeypatch.setattr(
-            "sieval.cli.leaderboard.session.DETERMINISTIC_DEFAULT_SEED", 1
-        )
+        monkeypatch.setattr("sieval.cli.session.DETERMINISTIC_DEFAULT_SEED", 1)
         replayed = EvalSession(config_path=str(cfg_path))
         replayed.prepare_prelaunch()
         replayed._stamp_deterministic_seed_contract()
@@ -1237,7 +1235,7 @@ class TestDeprecatedResumeKeys:
     def test_run_session_takes_the_alias_alone(self, tmp_path: Path, warnings):
         """``resume`` left at its default must not read as ``false``, which
         disagrees with any ``resume_from``."""
-        from sieval.cli.leaderboard import session as session_mod
+        from sieval.cli import session as session_mod
 
         built: list[EvalSession] = []
 

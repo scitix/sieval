@@ -23,7 +23,6 @@ import orjson
 import pytest
 
 from sieval.cli import services
-from sieval.cli.leaderboard.session import arun_session
 from sieval.cli.services import (
     CODE_EVAL_DIR_ENV,
     CODE_EVAL_PYTHON_ENV,
@@ -36,6 +35,7 @@ from sieval.cli.services import (
     vendored_commit,
     vendored_services_for,
 )
+from sieval.cli.session import arun_session
 from sieval.core.tasks.services import (
     CODE_EVAL,
     SERVICE_ENDPOINT_ENV,

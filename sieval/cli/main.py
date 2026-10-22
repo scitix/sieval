@@ -10,9 +10,8 @@ import typer
 
 from sieval.cli._resume_option import ResumeCommand
 from sieval.cli.dataset import dataset_app
+from sieval.cli.eval import eval_cmd
 from sieval.cli.infer import infer_app
-from sieval.cli.leaderboard import leaderboard_app
-from sieval.cli.leaderboard.commands import run as _leaderboard_run
 from sieval.cli.run import register_run_command
 from sieval.cli.task import task_app
 
@@ -22,19 +21,11 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(infer_app, name="infer")
-app.add_typer(leaderboard_app, name="leaderboard")
 app.add_typer(dataset_app, name="dataset")
 app.add_typer(task_app, name="task")
 register_run_command(app)
 
-# `sieval eval` and `sieval leaderboard run` bind the same callable — options
-# and defaults are inherited verbatim. The callable inspects typer.Context to
-# decide whether to emit `command="eval"` or `command="leaderboard.run"`.
-app.command(
-    name="eval",
-    cls=ResumeCommand,
-    help="Shortcut for 'sieval leaderboard run' (evaluate against an online endpoint).",
-)(_leaderboard_run)
+app.command(name="eval", cls=ResumeCommand)(eval_cmd)
 
 
 def _version_callback(value: bool) -> None:

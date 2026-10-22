@@ -31,7 +31,7 @@ class TestCLIEval:
 
         with (
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 mock_arun,
             ),
             patch("sieval.core.utils.logging.configure_logging"),
@@ -57,7 +57,7 @@ class TestCLIEval:
 
         with (
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 mock_arun,
             ),
             patch("sieval.core.utils.logging.configure_logging"),
@@ -92,7 +92,7 @@ class TestCLIEval:
         )
 
         with (
-            patch("sieval.cli.leaderboard.session.arun_session", mock_arun),
+            patch("sieval.cli.session.arun_session", mock_arun),
             patch("sieval.core.utils.logging.configure_logging"),
             patch("sieval.cli.output.log_user") as mock_log_user,
         ):
@@ -582,7 +582,8 @@ class TestCLIHelp:
         result = runner.invoke(app, [])
         assert "run" in result.stdout
         assert "infer" in result.stdout
-        assert "leaderboard" in result.stdout
+        assert "eval" in result.stdout
+        assert "leaderboard" not in result.stdout
 
 
 class TestMainEntry:

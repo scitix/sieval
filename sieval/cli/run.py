@@ -38,7 +38,6 @@ from sieval.cli.infer import (
     resolve_keep_logs,
     run_handle_dir,
 )
-from sieval.cli.leaderboard.session import resolve_deterministic, unwrap_proxies
 from sieval.cli.output import (
     CommandResult,
     OutputFormat,
@@ -48,6 +47,7 @@ from sieval.cli.output import (
 )
 from sieval.cli.resolution import resolve_config_model_types
 from sieval.cli.services import SERVICE_LOG_DIR
+from sieval.cli.session import resolve_deterministic, unwrap_proxies
 from sieval.cli.signals import terminate_as_interrupt
 from sieval.core.models import Deployment
 from sieval.core.utils.logging import configure_logging, log_user
@@ -278,7 +278,7 @@ async def _run_all(
         # plan must reconcile as one batch before the first subprocess starts.
         # The final EvalSession intentionally repeats this pure check so its
         # execution setup never trusts orchestration-only state.
-        from sieval.cli.leaderboard.session import arun_session
+        from sieval.cli.session import arun_session
         from sieval.cli.validation import prepare_prelaunch_reconciliation
 
         prelaunch_result = prepare_prelaunch_reconciliation(

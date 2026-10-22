@@ -2,8 +2,8 @@
 
 :func:`derive_model_type` is shared by the eval session and infer recipe
 resolution, so it lives here with the class-resolution helpers it stands on
-rather than in ``leaderboard/session.py`` — importing the session to reach it
-would point the dependency sideways across the two CLI subpackages.
+rather than in ``cli/session.py`` — importing the eval engine to reach it
+would point ``cli/infer/`` at the engine.
 ``scripts/check_layer_imports.py`` rejects that edge.
 
 The model-kind resolver consumes the provider-neutral requirements projection

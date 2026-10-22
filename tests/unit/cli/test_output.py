@@ -882,12 +882,12 @@ class TestCliCommand:
         assert capsys.readouterr().out == ""
 
     def test_command_name_follows_the_invoked_path_not_the_callable(self, capsys):
-        """``eval`` and ``leaderboard run`` share one callable; the reported
-        command must be the entry point the user actually typed.
+        """A callable bound at two paths reports the entry point the user
+        actually typed, dotted below the program name.
         """
         app = typer.Typer()
         group = typer.Typer()
-        app.add_typer(group, name="leaderboard")
+        app.add_typer(group, name="group")
 
         @cli_command
         def _shared(
@@ -904,11 +904,11 @@ class TestCliCommand:
         assert json.loads(capsys.readouterr().out)["command"] == "eval"
 
         app(
-            ["leaderboard", "run", "--output", "json"],
+            ["group", "run", "--output", "json"],
             standalone_mode=False,
             prog_name="sieval",
         )
-        assert json.loads(capsys.readouterr().out)["command"] == "leaderboard.run"
+        assert json.loads(capsys.readouterr().out)["command"] == "group.run"
 
     def test_command_without_output_option_renders_as_text(self):
         app = typer.Typer()
@@ -959,9 +959,6 @@ class TestEveryCommandIsWrapped:
             "infer.show",
             "infer.stop",
             "infer.logs",
-            "leaderboard.report",
-            "leaderboard.list",
-            "leaderboard.run",
             "dataset.list",
             "dataset.show",
             "dataset.download",
@@ -1011,7 +1008,7 @@ class TestEveryCommandOffersMachineReadableOutput:
             for name, fn in _walk_commands(app)
             if "output" in inspect.signature(fn).parameters
             and name not in _TEXT_RENDERERS
-            # `eval`/`run`/`leaderboard.run` also register a `<name>.dry_run`
+            # `eval`/`run` also register a `<name>.dry_run`
             # variant; the base name is what the walk yields.
         }
 

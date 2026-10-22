@@ -6,7 +6,7 @@
 
 ## Structure
 
-**Convention:** `tests/unit/` mirrors `sieval/` — e.g. `sieval/core/runners/foo.py` → `tests/unit/core/runners/test_foo.py`. Scripts with non-trivial logic (`scripts/*.py`) go in `tests/unit/scripts/`. Non-`sieval/` top-level artifact dirs get their own sibling under `tests/` that mirrors them directly — e.g. `leaderboards/alignment/<tr-slug>/<stage>.md` → `tests/leaderboards/test_*.py`.
+**Convention:** `tests/unit/` mirrors `sieval/` — e.g. `sieval/core/runners/foo.py` → `tests/unit/core/runners/test_foo.py`. Scripts with non-trivial logic (`scripts/*.py`) go in `tests/unit/scripts/`. Non-`sieval/` top-level artifact dirs get their own sibling under `tests/` that mirrors them directly.
 
 **One carve-out: `tests/unit/vendor/code_evaluator/`.** `vendor/` is a non-`sieval/` top-level dir, so the rule above would put its tests in `tests/vendor/` — but CI runs `pytest tests/unit tests/integration tests/acceptance`, and nothing else, so a sibling directory would be collected by nobody. The carve-out is therefore narrow and conditional: it covers **only** patches that `vendor/code-evaluator/VENDORED.md` marks *in-tree by decision* (today, the `quotebench` source), which have no upstream to be tested in.
 
@@ -31,8 +31,8 @@ tests/
 ├── unit/                        # Unit tests — mirrors sieval/ structure
 │   ├── conftest.py
 │   ├── cli/                     # sieval/cli/
-│   │   ├── eval/                 # sieval/cli/eval/
-│   │   │   └── test_session.py   # EvalSession (YAML config → eval) pure functions & E2E
+│   │   ├── leaderboard/          # sieval/cli/leaderboard/ (deprecated alias, removed after 0.11)
+│   │   │   └── test_session.py   # The alias re-exports the engine and warns
 │   │   ├── infer/                # sieval/cli/infer/
 │   │   │   ├── test_display.py   # Infer display formatting
 │   │   │   ├── test_lifecycle.py # Infer handle I/O, launch, cleanup
@@ -40,6 +40,7 @@ tests/
 │   │   ├── test_main.py          # CLI entry point (command registration)
 │   │   ├── test_run.py           # CLI run command (orchestration)
 │   │   ├── test_eval.py          # CLI eval command (integration)
+│   │   ├── test_session.py       # EvalSession (YAML config → eval) pure functions & E2E
 │   │   ├── test_output.py        # CLI output helpers
 │   │   └── test_validation.py    # eval --dry-run config pre-validation
 │   ├── core/                    # sieval/core/
@@ -111,15 +112,14 @@ tests/
 │   └── performance/
 │       ├── baselines.json       # Regression baselines (_tolerance controls allowed degradation)
 │       └── test_performance_acceptance.py  # 6 scenarios + regression detection
-├── performance/                 # Diagnostic benchmarks — run on-demand, informational
-│   ├── test_concurrency_scaling.py
-│   ├── test_dataset_loading.py
-│   ├── test_io_overhead.py
-│   ├── test_memory_usage.py
-│   ├── test_pipeline_throughput.py
-│   ├── test_resume_speed.py
-│   └── test_serialization.py
-└── leaderboards/                # Mirrors repo-root leaderboards/ — static artifact schema
+└── performance/                 # Diagnostic benchmarks — run on-demand, informational
+    ├── test_concurrency_scaling.py
+    ├── test_dataset_loading.py
+    ├── test_io_overhead.py
+    ├── test_memory_usage.py
+    ├── test_pipeline_throughput.py
+    ├── test_resume_speed.py
+    └── test_serialization.py
 ```
 
 ---

@@ -25,7 +25,6 @@ from sieval.cli._filter_spec import (
     check_by_digest,
     check_values_source,
 )
-from sieval.cli.leaderboard.session import RootConfigDict
 from sieval.cli.resolution import (
     binding_resource_argument_paths,
     resolve_dataset_class,
@@ -33,6 +32,7 @@ from sieval.cli.resolution import (
     validate_configured_engine_id,
     validate_task_config_args,
 )
+from sieval.cli.session import RootConfigDict
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
     CapabilityConfigError,
@@ -719,19 +719,14 @@ def prepare_prelaunch_reconciliation(
     *check_services* also checks each vendored service the run would start, for
     a caller about to launch engines.
 
-    This root-level CLI seam keeps the ``infer`` subpackage independent of the
-    sibling ``leaderboard`` implementation.  It also owns conversion of typed
-    infer-layer plans into the plain mapping shape consumed and persisted by
-    :class:`EvalSession`.
+    This root-level CLI seam keeps the ``infer`` subpackage off the eval
+    engine.  It also converts typed infer-layer plans into the plain mapping
+    :class:`EvalSession` consumes and persists.
 
     Exceptions deliberately propagate.  Only presentation boundaries such as
     :func:`run_dry_run` may turn them into structured diagnostics.
     """
-
-    # Keep the composition-root import local.  ``sieval.cli`` initializes the
-    # infer commands before the leaderboard package, and an eager import here
-    # would make that package initialization order load-bearing.
-    from sieval.cli.leaderboard.session import EvalSession, unwrap_proxies
+    from sieval.cli.session import EvalSession, unwrap_proxies
 
     normalized_plans: dict[str, dict[str, Any]] | None = None
     if infer_plans is not None:

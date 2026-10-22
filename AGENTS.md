@@ -44,7 +44,7 @@ Precise reproducibility is a product contract, not a nicety.
 ## Build, Test, and Development Commands
 
 - Platform: Unix (Linux, macOS) — Windows is not supported. Language: Python ≥ 3.12.
-- CLI: `typer` — top-level shortcuts `sieval run`, `sieval eval`; resource groups `dataset`, `task`, `infer`, `leaderboard` (e.g. `sieval dataset list`, `sieval infer start`).
+- CLI: `typer` — top-level shortcuts `sieval run`, `sieval eval`; resource groups `dataset`, `task`, `infer` (e.g. `sieval dataset list`, `sieval infer start`).
 - Install deps:
     - `pdm install`
     - Dev/test setup: `pdm install -G dev -G test`
@@ -84,9 +84,9 @@ Precise reproducibility is a product contract, not a nicety.
     - Tasks: use package-level imports from `sieval.tasks` for official built-in tasks.
     - Custom/community tasks should prefer full module paths (for example `sieval.tasks.<module>.MyTask`) to avoid naming conflicts.
     - `runners`: canonical path is `sieval.core.runners` (`TaskRunner`, `MultiTaskRunner`).
-    - `session`: canonical path is `sieval.cli.leaderboard.session` (`EvalSession`, `arun_session`).
+    - `session`: canonical path is `sieval.cli.session` (`EvalSession`, `arun_session`). `sieval.cli.leaderboard.session` is a deprecated alias, removed after 0.11.
     - `validation`: canonical path is `sieval.cli.validation` (`validate_eval_config`, `run_dry_run`).
-    - `resolution`: canonical path is `sieval.cli.resolution` (`resolve_task_class`, `resolve_dataset_class`, `derive_model_type`). Reaching them via `session` resolves, but is not API. `cli/infer/` must not import `cli/leaderboard/`.
+    - `resolution`: canonical path is `sieval.cli.resolution` (`resolve_task_class`, `resolve_dataset_class`, `derive_model_type`). `cli/infer/` must not import `cli/session.py`.
     - Within the same package/subpackage: use relative imports (`from .foo import Bar`).
     - Cross-package (including parent): use absolute imports (`from sieval.core.models import ...`).
     - Imports imply public API. Cross-module `from sieval.x.y import _foo` in production code is a smell — promote the name or redesign the call site.

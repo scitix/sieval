@@ -88,8 +88,8 @@ Today there is one, `code-eval`, the code-execution service vendored at
 `vendor/code-evaluator`, used by HumanEval, MBPP, LiveCodeBench,
 Ag-LiveCodeBench-X, LiveOIBench, MultiPL-E, SciCode and QuoteBench.
 
-When `SIEVAL_CODE_EVAL_API` is unset, `sieval run`, `sieval eval` and
-`sieval leaderboard run` start the vendored copy once per run on a free port,
+When `SIEVAL_CODE_EVAL_API` is unset, `sieval run` and `sieval eval` start
+the vendored copy once per run on a free port,
 set the variable, and stop it when the run ends. When it is set, that endpoint
 is used and nothing starts.
 

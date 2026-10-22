@@ -281,10 +281,7 @@ class TestFilePackage:
         assert _file_package(Path("sieval/core/foo.py")) == "sieval.core"
 
     def test_nested_module(self):
-        assert (
-            _file_package(Path("sieval/cli/leaderboard/session.py"))
-            == "sieval.cli.leaderboard"
-        )
+        assert _file_package(Path("sieval/cli/infer/recipe.py")) == "sieval.cli.infer"
 
     def test_init_file(self):
         assert _file_package(Path("sieval/tasks/__init__.py")) == "sieval.tasks"
@@ -998,11 +995,10 @@ class TestCheckSubpackageImports:
     @pytest.mark.parametrize(
         "body",
         [
-            "from sieval.cli.leaderboard.session import EvalSession\n",
-            "import sieval.cli.leaderboard.session\n",
-            "from sieval.cli import leaderboard\n",  # target named as an alias
-            "from ..leaderboard.session import EvalSession\n",  # relative form
-            "from sieval.cli.leaderboard import report\n",
+            "from sieval.cli.session import EvalSession\n",
+            "import sieval.cli.session\n",
+            "from sieval.cli import session\n",  # target named as an alias
+            "from ..session import EvalSession\n",  # relative form
         ],
     )
     def test_every_import_shape_is_flagged(self, tmp_path: Path, body: str):
@@ -1011,7 +1007,7 @@ class TestCheckSubpackageImports:
         f = self._write(tmp_path, "sieval/cli/infer/recipe.py", body)
         errors = _check_subpackage_imports(f, ast.parse(body))
         assert len(errors) == 1
-        assert "sieval.cli.infer must not import sieval.cli.leaderboard" in errors[0]
+        assert "sieval.cli.infer must not import sieval.cli.session" in errors[0]
 
     @pytest.mark.parametrize(
         "body",
@@ -1028,44 +1024,65 @@ class TestCheckSubpackageImports:
 
     def test_rule_does_not_leak_to_other_subpackages(self, tmp_path: Path):
         """`cli/run.py` legitimately imports the session."""
-        body = "from sieval.cli.leaderboard.session import resolve_deterministic\n"
+        body = "from sieval.cli.session import resolve_deterministic\n"
         f = self._write(tmp_path, "sieval/cli/run.py", body)
         assert _check_subpackage_imports(f, ast.parse(body)) == []
 
     def test_rule_binds_descendants_of_the_root(self, tmp_path: Path):
-        body = "from sieval.cli.leaderboard.session import EvalSession\n"
+        body = "from sieval.cli.session import EvalSession\n"
         f = self._write(tmp_path, "sieval/cli/infer/backends/deep.py", body)
         assert len(_check_subpackage_imports(f, ast.parse(body))) == 1
 
     def test_tests_are_exempt(self, tmp_path: Path):
         """Mirrors the carve-out the private-access rules already grant tests."""
-        body = "from sieval.cli.leaderboard.session import EvalSession\n"
+        body = "from sieval.cli.session import EvalSession\n"
         f = self._write(tmp_path, "tests/unit/cli/infer/test_recipe.py", body)
         assert _check_subpackage_imports(f, ast.parse(body)) == []
 
     def test_reaches_the_verdict_through_check_file(self, tmp_path: Path):
         """The wiring, not just the function — an unregistered check is dead."""
-        body = "from sieval.cli.leaderboard.session import derive_model_type\n"
+        body = "from sieval.cli.session import derive_model_type\n"
         f = self._write(tmp_path, "sieval/cli/infer/recipe.py", body)
         errors = _check_file(f)
-        assert any("must not import sieval.cli.leaderboard" in e for e in errors)
+        assert any("must not import sieval.cli.session" in e for e in errors)
 
     def test_forbidden_subpackages_for_matches_subtree_not_prefix(self):
+        shim = "sieval.cli.leaderboard"
         assert _forbidden_subpackages_for("sieval.cli.infer") == {
-            "sieval.cli.leaderboard"
+            "sieval.cli.session",
+            shim,
         }
         assert _forbidden_subpackages_for("sieval.cli.infer.sub") == {
-            "sieval.cli.leaderboard"
+            "sieval.cli.session",
+            shim,
         }
         # A sibling whose name merely starts with the root string must not match.
-        assert _forbidden_subpackages_for("sieval.cli.inference") == set()
-        assert _forbidden_subpackages_for("sieval.cli") == set()
+        assert _forbidden_subpackages_for("sieval.cli.inference") == {shim}
+        assert _forbidden_subpackages_for("sieval.cli") == {shim}
 
     def test_rule_table_entries_are_dotted_sieval_packages(self):
         """A non-dotted entry can never match, so the rule would pass vacuously."""
         for root, targets in FORBIDDEN_SUBPACKAGE.items():
-            assert root.startswith("sieval.")
+            assert root == "sieval" or root.startswith("sieval.")
             assert all(t.startswith("sieval.") for t in targets)
+
+    @pytest.mark.parametrize(
+        ("rel", "body"),
+        [
+            ("sieval/cli/run.py", "from sieval.cli.leaderboard.session import x\n"),
+            ("sieval/cli/run.py", "from sieval.cli import leaderboard\n"),
+            ("sieval/core/foo.py", "import sieval.cli.leaderboard.session\n"),
+        ],
+    )
+    def test_nothing_under_sieval_imports_the_deprecated_shim(
+        self, tmp_path: Path, rel: str, body: str
+    ):
+        """The shim is deleted in the release after 0.11; no internal caller
+        may come to depend on it first (#194)."""
+        f = self._write(tmp_path, rel, body)
+        errors = _check_subpackage_imports(f, ast.parse(body))
+        assert len(errors) == 1
+        assert "must not import sieval.cli.leaderboard" in errors[0]
 
     @pytest.mark.parametrize(
         "body",

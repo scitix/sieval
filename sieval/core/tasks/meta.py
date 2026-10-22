@@ -83,11 +83,6 @@ Status = Literal["stable", "experimental", "deprecated"]
 #: registry has moved on — a *missing* gold is not this field's business, because
 #: a value-reference task with no gold to compare against fails the sample rather
 #: than recording a judgement without one.
-#:
-#: Unrelated to ``cli.leaderboard.card.ReferenceKind`` (``tr`` |
-#: ``user-defined``), which classifies where a published reference *score* came
-#: from. Same word, different layer: this one is about the ground truth a task
-#: compares against.
 ReferenceKind = Literal["value", "procedure"]
 
 

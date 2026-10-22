@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------------
-# Math SFT leaderboard — cover the 3 pilot math tasks against one or more models
+# Math suite — several math tasks against one or more models
 # ------------------------------------------------------------------------------
 # Tasks evaluated: AIME 2024, AIME 2025, AIME 2026, HMMT Feb 2026, MATH-500
 # (all 0-shot, generative).
@@ -9,13 +9,13 @@
 # Two-step flow:
 #   1. sieval dataset download aime_2024 aime_2025 aime_2026 hmmt_feb_2026 math_500
 #      (or: sieval dataset download --all)
-#   2. sieval eval leaderboard-math-sft.yaml
+#   2. sieval eval math-suite.yaml
 #
 # Edit these fields:
 #   models.*.infer.checkpoint  — model paths on disk (one per model entry)
 #   models.*.infer_meta.image  — container image per model
 # ------------------------------------------------------------------------------
-result_dir: ./outputs/leaderboard-math-sft
+result_dir: ./outputs/math-suite
 
 models:
   qwen3-4b:

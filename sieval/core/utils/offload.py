@@ -7,7 +7,7 @@ task. Measured, a co-running benchmark dropped to 0.4% of its solo throughput.
 
 ``anyio.to_thread.run_sync`` is the house pattern for that, called directly at
 the site (``core/tasks/loader.py``, ``infer/deployer.py``,
-``cli/leaderboard/session.py``, scicode's target reads). Reach for a *process*
+``cli/session.py``, scicode's target reads). Reach for a *process*
 only when one of these holds:
 
 1. **A thread changes the answer.** ``math-verify`` bounds ``parse``/``verify``

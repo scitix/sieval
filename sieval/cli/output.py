@@ -13,7 +13,6 @@ import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 import click
 import typer
@@ -23,13 +22,6 @@ from loguru import logger
 from sieval.cli._readiness import MISSING_KINDS
 from sieval.core.runners import ResultDirExistsError, UnfinishedCopyError
 from sieval.core.utils.logging import log_user
-
-if TYPE_CHECKING:
-    # Forward-declared to break the output.py ↔ scanner.py import cycle.
-    # scanner.py imports annotate_cell + CellAnnotationDict; leaderboard/
-    # __init__.py re-exports leaderboard_app from commands.py, which
-    # imports CommandResult from this module.
-    from sieval.cli.leaderboard.scanner import LeaderboardResult
 
 
 class OutputFormat(StrEnum):
@@ -201,10 +193,7 @@ def _invoked_command() -> str:
 
     Derived from Click's context rather than passed in, because the dotted
     names the success paths hardcode are already exactly the invocation path
-    with the program name dropped — so deriving cannot drift from them, and it
-    reproduces for free the one case that is not static: ``eval`` and
-    ``leaderboard run`` bind the same callable and must report the entry point
-    the user actually typed.
+    with the program name dropped — so deriving cannot drift from them.
 
     The trade-off is that only invocation paths are reachable. A command that
     reports a *sub-result* under its own name — ``eval --dry-run`` renders
@@ -398,139 +387,6 @@ def _render_text_dry_run(result: CommandResult) -> None:
         log_user("\nDry-run passed with {} warning(s).", n_warn)
     else:
         log_user("\nDry-run passed.")
-
-
-def _render_text_leaderboard_list(result: CommandResult) -> None:
-    """Text renderer for leaderboard.list — NAME / MODELS / TASKS / PATH."""
-    if not result.ok:
-        logger.error("{}", result.error)
-        return
-    if not isinstance(result.data, dict):
-        logger.error("expected dict data, got {}", type(result.data).__name__)
-        return
-
-    rows = result.data.get("leaderboards", [])
-    if not rows:
-        log_user("No leaderboards found.")
-        return
-
-    table_rows: list[dict[str, str]] = []
-    for row in rows:
-        if row.get("error"):
-            models_cell = "[malformed]"
-            tasks_cell = "[malformed]"
-        else:
-            models_cell = str(len(row["models"]))
-            tasks_cell = str(len(row["tasks"]))
-        table_rows.append(
-            {
-                "name": row["name"],
-                "models": models_cell,
-                "tasks": tasks_cell,
-                "path": row["path"],
-            }
-        )
-
-    _render_tabular(
-        table_rows,
-        [
-            ("NAME", "name"),
-            ("MODELS", "models"),
-            ("TASKS", "tasks"),
-            ("PATH", "path"),
-        ],
-    )
-
-    error_rows = [(row["name"], row["error"]) for row in rows if row.get("error")]
-    if error_rows:
-        log_user("")
-        log_user("Errors:")
-        for name, err in error_rows:
-            log_user("  {}: {}", name, err)
-
-
-def _format_leaderboard_cell(result: "LeaderboardResult | None") -> str:
-    """Format one ``(model, task)`` cell for the text leaderboard table.
-
-    When ``result`` carries an ``annotation`` dict (from an alignment card),
-    append ``(Δ<signed> <glyph>)`` and render score + diff at a precision
-    chosen from the card's ``tolerance`` — so correlation-scale tolerances
-    (0.03) don't collapse to ``Δ-0.0``. Unannotated cells keep the legacy
-    ``.1f`` score. Mixed cases (no result, no score, no annotation) degrade
-    silently: missing cells render as ``-``.
-    """
-    if result is None:
-        return "-"
-    score = result["report"].get("score")
-    if score is None:
-        return "-"
-
-    ann = result.get("annotation")
-    if ann is None:
-        return f"{score:.1f}"
-
-    from sieval.cli.leaderboard.annotation import display_precision
-
-    prec = display_precision(ann["tolerance"])
-    diff = ann["diff"]
-    glyph = "✓" if ann["status"] == "pass" else "✗"  # ✓ / ✗
-    if diff == 0:
-        return f"{score:.{prec}f} (Δ0 {glyph})"
-    sign = "-" if diff < 0 else "+"
-    return f"{score:.{prec}f} (Δ{sign}{abs(diff):.{prec}f} {glyph})"
-
-
-def _render_text_leaderboard_report(result: CommandResult) -> None:
-    """Text renderer for leaderboard.report — tabular model × task matrix."""
-    if not result.ok:
-        logger.error("{}", result.error)
-        return
-    if not isinstance(result.data, dict):
-        logger.error("expected dict data, got {}", type(result.data).__name__)
-        return
-
-    models: list[str] = result.data.get("models", [])
-    tasks: list[str] = result.data.get("tasks", [])
-    results: list[dict] = result.data.get("results", [])
-
-    if not results:
-        log_user("No results found.")
-        return
-
-    # Build (model, task) → formatted cell lookup
-    cell_lookup: dict[tuple[str, str], str] = {}
-    for r in results:
-        cell_lookup[(r["model"], r["task"])] = _format_leaderboard_cell(r)
-
-    # Column widths — per-task, sized to the widest rendered cell (including
-    # any Δ + glyph annotation) so annotated columns don't truncate.
-    model_col_w = max(len("Model"), *(len(m) for m in models))
-    task_col_ws: list[int] = []
-    for t in tasks:
-        widest_cell = max(
-            (len(cell_lookup.get((m, t), "-")) for m in models), default=0
-        )
-        task_col_ws.append(max(len(t), widest_cell, 8))
-
-    # Header row
-    header = f"{'Model':<{model_col_w}}"
-    for t, w in zip(tasks, task_col_ws, strict=True):
-        header += f"  {t:>{w}}"
-    log_user("{}", header)
-
-    # Separator
-    sep = "-" * model_col_w
-    for w in task_col_ws:
-        sep += f"  {'-' * w}"
-    log_user("{}", sep)
-
-    # Data rows
-    for model in models:
-        row = f"{model:<{model_col_w}}"
-        for task, w in zip(tasks, task_col_ws, strict=True):
-            cell = cell_lookup.get((model, task), "-")
-            row += f"  {cell:>{w}}"
-        log_user("{}", row)
 
 
 def _collapse_constant_columns(
@@ -789,12 +645,8 @@ _TEXT_RENDERERS: dict[str, Callable[[CommandResult], None]] = {
     "infer.dry_run": _render_text_infer_dry_run,
     "eval": _render_text_task_reports,
     "run": _render_text_task_reports,
-    "leaderboard.run": _render_text_task_reports,
     "eval.dry_run": _render_text_dry_run,
     "run.dry_run": _render_text_dry_run,
-    "leaderboard.run.dry_run": _render_text_dry_run,
-    "leaderboard.report": _render_text_leaderboard_report,
-    "leaderboard.list": _render_text_leaderboard_list,
     "dataset.list": _render_text_dataset_list,
     "dataset.show": _render_text_dataset_show,
     "dataset.download": _render_text_dataset_download,

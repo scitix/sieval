@@ -1,4 +1,4 @@
-"""``--resume [DIR]`` for ``sieval run``, ``eval`` and ``leaderboard run``.
+"""``--resume [DIR]`` for ``sieval run`` and ``sieval eval``.
 
 Typer cannot declare an option whose value is optional, so
 :class:`ResumeCommand` sets it up on the click option. It also keeps the forms

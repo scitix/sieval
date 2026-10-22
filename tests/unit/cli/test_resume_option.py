@@ -1,6 +1,6 @@
 """
-``--resume [DIR]`` on ``sieval run``, ``sieval eval`` and ``sieval
-leaderboard run``: every parse form, and ``--resume-from`` as its alias.
+``--resume [DIR]`` on ``sieval run`` and ``sieval eval``: every parse form, and
+``--resume-from`` as its alias.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -23,7 +23,7 @@ def _logging_configured():
     configure_logging()
 
 
-COMMANDS = [["run"], ["eval"], ["leaderboard", "run"]]
+COMMANDS = [["run"], ["eval"]]
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def _invoke(command: list[str], args: list[str]) -> tuple[int, dict, str]:
     arun = AsyncMock(return_value={})
     with (
         patch("sieval.cli.run._run_all", run_all),
-        patch("sieval.cli.leaderboard.session.arun_session", arun),
+        patch("sieval.cli.session.arun_session", arun),
     ):
         result = runner.invoke(app, [*command, *args])
     called = run_all if command == ["run"] else arun

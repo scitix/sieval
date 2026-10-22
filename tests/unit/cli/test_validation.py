@@ -154,6 +154,19 @@ class TestValidateStructure:
         assert result.ok  # warnings don't cause failure
         assert any("unknown_key" in w for w in result.warnings)
 
+    def test_removed_alignment_block_warns_instead_of_failing(self):
+        """``alignment:`` left the schema in #194; a config that still has it
+        keeps validating and is told the key is unrecognized."""
+        cfg = {
+            "models": {},
+            "datasets": {},
+            "tasks": {},
+            "alignment": {"card": "card.md"},
+        }
+        result = validate_eval_config(cfg)
+        assert result.ok
+        assert "Unrecognized top-level key 'alignment'" in result.warnings
+
     def test_empty_models_warning(self):
         cfg = {"models": {}, "datasets": {}, "tasks": {}}
         result = validate_eval_config(cfg)
@@ -1528,7 +1541,7 @@ class TestPreparePrelaunchReconciliation:
         session.prepare_prelaunch.return_value = expected
 
         with patch(
-            "sieval.cli.leaderboard.session.EvalSession",
+            "sieval.cli.session.EvalSession",
             return_value=session,
         ) as session_type:
             result = prepare_prelaunch_reconciliation(
@@ -1551,7 +1564,7 @@ class TestPreparePrelaunchReconciliation:
 
         with (
             patch(
-                "sieval.cli.leaderboard.session.EvalSession",
+                "sieval.cli.session.EvalSession",
                 return_value=session,
             ),
             pytest.raises(ValueError, match="binding is invalid"),
@@ -1568,7 +1581,7 @@ class TestPreparePrelaunchReconciliation:
         monkeypatch.delenv(SERVICE_ENDPOINT_ENV[CODE_EVAL], raising=False)
         session = MagicMock()
         session.required_services = frozenset({CODE_EVAL})
-        with patch("sieval.cli.leaderboard.session.EvalSession", return_value=session):
+        with patch("sieval.cli.session.EvalSession", return_value=session):
             prepare_prelaunch_reconciliation(tmp_path / "config.yaml")
             with pytest.raises(FileNotFoundError, match=CODE_EVAL_DIR_ENV):
                 prepare_prelaunch_reconciliation(
@@ -2010,7 +2023,7 @@ class TestRunDryRun:
         assert len(warnings) > 0
 
     def test_capability_reconcile_good_config_is_pure_and_passes(self, tmp_path):
-        from sieval.cli.leaderboard.session import EvalSession
+        from sieval.cli.session import EvalSession
         from sieval.cli.validation import run_dry_run
         from sieval.core.models import Engine
 
@@ -2072,7 +2085,7 @@ class TestRunDryRun:
         write_text.assert_not_called()
 
     def test_dry_run_serializes_the_exact_normal_prelaunch_plan(self, tmp_path):
-        from sieval.cli.leaderboard.session import EvalSession
+        from sieval.cli.session import EvalSession
         from sieval.cli.validation import run_dry_run
 
         config = self._capability_config(tmp_path)
@@ -2087,7 +2100,7 @@ class TestRunDryRun:
         assert check["plan"] == normal_plan
 
     def test_bad_task_dialect_pair_matches_normal_prepare_error(self, tmp_path):
-        from sieval.cli.leaderboard.session import EvalSession
+        from sieval.cli.session import EvalSession
         from sieval.cli.validation import run_dry_run
 
         config = self._capability_config(tmp_path, dialect="openai_completions")

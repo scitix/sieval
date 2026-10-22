@@ -19,7 +19,7 @@ import yaml
 from loguru import logger
 from openai import AsyncOpenAI
 
-from sieval.cli.leaderboard.session import arun_session
+from sieval.cli.session import arun_session
 from sieval.core.models import Model, connection_factory
 from sieval.core.models.request_log import RecordingOpenAIClient
 from sieval.core.tasks import InputKind, Task, TaskRequirements

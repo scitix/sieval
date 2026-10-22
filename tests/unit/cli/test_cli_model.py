@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from sieval.cli import app
 from sieval.cli._cli_model import CliModel, apply_cli_model
-from sieval.cli.leaderboard.session import EvalSession
+from sieval.cli.session import EvalSession
 from sieval.cli.validation import run_dry_run
 
 runner = CliRunner()
@@ -200,7 +200,7 @@ class TestEvalCommand:
     def test_api_base_runs_a_task_only_config(self, tmp_path: Path):
         cfg_path = _task_only(tmp_path)
         with patch(
-            "sieval.cli.leaderboard.session.arun_session",
+            "sieval.cli.session.arun_session",
             new=AsyncMock(return_value={}),
         ) as session:
             result = runner.invoke(
@@ -222,9 +222,7 @@ class TestEvalCommand:
         assert "No such option" in result.output
 
     def test_api_base_without_model_fails_before_running(self, tmp_path: Path):
-        with patch(
-            "sieval.cli.leaderboard.session.arun_session", new=AsyncMock()
-        ) as session:
+        with patch("sieval.cli.session.arun_session", new=AsyncMock()) as session:
             result = runner.invoke(
                 app,
                 ["eval", str(_task_only(tmp_path)), "--api-base", "http://h/v1"]
@@ -303,7 +301,7 @@ class TestRunCommand:
             ),
             patch("sieval.cli.run.cleanup_model", new=AsyncMock()),
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),
             ) as session,
         ):
@@ -331,7 +329,7 @@ class TestRunCommand:
             patch("sieval.cli.validation.prepare_prelaunch_reconciliation") as pre,
             patch("sieval.cli.run.launch_model", new=AsyncMock()) as launch,
             patch(
-                "sieval.cli.leaderboard.session.arun_session",
+                "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),
             ),
         ):

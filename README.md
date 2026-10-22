@@ -59,8 +59,8 @@ sieval dataset download aime_2024
 sieval eval eval.yaml
 ```
 
-See [examples/README.md](examples/README.md) for more scenarios (leaderboard,
-recipe overrides) and [examples/hardware/](examples/hardware/) for
+See [examples/README.md](examples/README.md) for more scenarios (multi-task
+suites, recipe overrides) and [examples/hardware/](examples/hardware/) for
 hardware-pinned reference configs.
 
 **Discover tasks / datasets:**
@@ -84,9 +84,7 @@ sieval run benchmark.yaml --checkpoint /models/my-sft   # config with no models:
 **Evaluate against an already-online endpoint:**
 
 ```bash
-sieval eval leaderboards/sft_fast_202511.yaml --model gpt-4o
-# `sieval eval` is a shortcut for the underlying resource verb:
-sieval leaderboard run leaderboards/sft_fast_202511.yaml --model gpt-4o
+sieval eval examples/math-suite.yaml --model gpt-4o
 # a config with no models: section names the endpoint instead:
 sieval eval benchmark.yaml --api-base http://localhost:8000/v1 --model my-sft
 ```
