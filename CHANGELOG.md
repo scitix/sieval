@@ -5,12 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Fixed
-
-- A `dialect: sglang_legacy` model with an `infer:` block now reaches the engine `sieval run` launched for it. It used to get no base URL and fall back to the OpenAI default, so every `/generate` request failed with HTTP 404. An `api_base` the config sets, top level or under `args`, still wins. Neither the inference nor the grader identity records the endpoint, so a result directory resumes as before (#185).
-
 ## [0.10.1] - 2026-10-22
 
 A patch release despite two breaking changes, because neither touches an

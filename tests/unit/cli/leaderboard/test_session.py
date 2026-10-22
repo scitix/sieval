@@ -6844,27 +6844,18 @@ tasks:
         close.assert_awaited_once()
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("dialect", ["sglang_legacy", "openai_completions"])
     @pytest.mark.parametrize(
-        ("dialect", "endpoint_config", "expected"),
+        "endpoint_config",
         [
-            # No api_base: every dialect reaches the engine `sieval run` launched.
-            ("sglang_legacy", "", "http://127.0.0.1:30000/v1"),
-            ("openai_completions", "", "http://127.0.0.1:30000/v1"),
-            # An api_base the user set keeps winning on the legacy path.
-            (
-                "sglang_legacy",
-                "    api_base: https://proxy.example/v1\n",
-                "https://proxy.example/v1",
-            ),
-            (
-                "sglang_legacy",
-                "    args:\n      api_base: https://proxy.example/v1\n",
-                "https://proxy.example/v1",
-            ),
+            "",
+            "    api_base: https://proxy.example/v1\n",
+            "    args:\n      api_base: https://proxy.example/v1\n",
         ],
+        ids=["none", "top_level", "args"],
     )
-    async def test_launched_endpoint_reaches_every_dialect(
-        self, tmp_path: Path, dialect: str, endpoint_config: str, expected: str
+    async def test_launched_endpoint_wins_for_every_dialect(
+        self, tmp_path: Path, dialect: str, endpoint_config: str
     ) -> None:
         from sieval.core.models import (
             Deployment,
@@ -6932,14 +6923,15 @@ models:
             session._setup_postlaunch_reconciliation()
             session._setup_models()
 
+        launched = "http://127.0.0.1:30000/v1"
         calls = [*legacy_client.call_args_list, *canonical_client.call_args_list]
-        assert [call.kwargs["base_url"] for call in calls] == [expected]
+        assert [call.kwargs["base_url"] for call in calls] == [launched]
         model = session.models["m"]
-        assert model.deployment.api_base == expected
+        assert model.deployment.api_base == launched
         if dialect == "sglang_legacy":
             assert isinstance(model, SglangGenModel)
             generate_url = model._legacy_transport._generate_url()
-            assert generate_url == expected.removesuffix("/v1") + "/generate"
+            assert generate_url == "http://127.0.0.1:30000/generate"
 
         await session._close_owned_model_resources()
 
