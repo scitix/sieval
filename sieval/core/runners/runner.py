@@ -775,7 +775,6 @@ class TaskRunner:
                     compute_send, compute_recv, storage_recv, storage_send, pending_ids
                 )
             finally:
-                # The stream group has exited and with it the progress writer.
                 if self._progress:
                     self._progress.write_in(None)
                 # A raised stage or an interrupt cancels the storage worker
@@ -949,7 +948,6 @@ class TaskRunner:
         """Run the compute dispatcher and the storage worker until every sample
         is terminal, seeding resumed and new samples."""
         async with anyio.create_task_group() as tg:
-            # Writes progress.json off the loop until arun detaches it.
             if self._progress:
                 self._progress.write_in(tg)
 

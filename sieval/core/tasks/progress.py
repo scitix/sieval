@@ -1,11 +1,7 @@
 """Task progress reporting: tqdm TTY bar, non-TTY loguru log, and JSON dump.
 
-``progress.json`` is written off the event loop: every runner in a session
-shares one loop, and the fsync behind each write costs milliseconds on a network
-filesystem. :meth:`TaskProgress._dump_state` only snapshots the state; a task in
-the group given to :meth:`TaskProgress.write_in` writes it. Snapshots taken while
-a write is in flight coalesce into the latest one; with no group, they wait for
-the next one or for :meth:`TaskProgress.aclose`.
+``progress.json`` is written off the event loop, which every runner in a session
+shares: an fsync on a network filesystem costs milliseconds.
 """
 
 import sys
@@ -30,8 +26,6 @@ class TaskProgress:
       and percentage thresholds.
 
     Optionally writes a ``progress.json`` file for external monitoring tools.
-    While a task group is attached with :meth:`write_in` the file is rewritten
-    as the state changes; :meth:`aclose` writes the final state.
     """
 
     def __init__(
@@ -269,12 +263,8 @@ class TaskProgress:
         self._start_writer()
 
     def write_in(self, group: TaskGroup | None) -> None:
-        """Write dumps from tasks in *group*; ``None`` detaches it.
-
-        A dump taken with no group attached waits for one. Detach *group* once
-        it has exited: its exit waits for the write in flight, so a later
-        :meth:`aclose` writes last.
-        """
+        """Write dumps from a task in *group*, at most one write in flight;
+        dumps taken meanwhile coalesce. Detach (``None``) once *group* exits."""
         self._dump_group = group
         self._start_writer()
 
@@ -286,9 +276,10 @@ class TaskProgress:
 
     async def _write_pending(self) -> None:
         try:
-            while self._pending_dump is not None:
-                data, self._pending_dump = self._pending_dump, None
+            while (data := self._pending_dump) is not None:
                 await self._write(data)
+                if self._pending_dump is data:
+                    self._pending_dump = None
         finally:
             self._writing = False
 
@@ -305,10 +296,9 @@ class TaskProgress:
         self._active_counts = {}
 
     async def aclose(self) -> None:
-        """Close the tqdm bar (if any) and write the final progress state.
-
-        Call it once no :meth:`write_in` group is attached.
-        """
+        """Close the tqdm bar (if any) and write the final progress state."""
+        if self._dump_group is not None:
+            raise RuntimeError("aclose() with a write_in() group still attached")
         if self._pbar:
             self._pbar.close()
         self._dump_state(force=True)

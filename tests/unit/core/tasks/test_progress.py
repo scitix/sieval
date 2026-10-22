@@ -296,11 +296,7 @@ class TestStateDump:
 # Writes off the event loop
 # ===================================================================
 class TestOffLoopWrite:
-    """progress.json is written by a task in the runner's group, never inline.
-
-    Every runner in a session shares one event loop; an fsync on it stalls
-    every other task for as long as the filesystem takes.
-    """
+    """progress.json is written by a task in the runner's group, never inline."""
 
     def test_a_dump_alone_never_touches_disk(self, tmp_path):
         prog = make_progress(total=5, root_dir=tmp_path, dump_progress=True)
@@ -404,6 +400,39 @@ class TestOffLoopWrite:
         finally:
             logger.remove(logger_id)
         assert sink.getvalue().count("Failed to write progress file: disk full") == 2
+
+    @pytest.mark.anyio
+    async def test_a_cancelled_write_keeps_its_snapshot(self, tmp_path):
+        written: list[dict] = []
+
+        async def _write(_path: Path, data: bytes) -> None:
+            if not written:
+                written.append({})
+                await anyio.sleep_forever()
+            written.append(orjson.loads(data))
+
+        prog = make_progress(total=5, root_dir=tmp_path, dump_progress=True)
+        with patch("sieval.core.tasks.progress.aatomic_write", _write):
+            async with anyio.create_task_group() as tg:
+                prog.write_in(tg)
+                prog.set_status({"infer": 1}, 1)
+                await anyio.wait_all_tasks_blocked()
+                tg.cancel_scope.cancel()
+            async with anyio.create_task_group() as tg:
+                prog.write_in(tg)
+            prog.write_in(None)
+
+        assert [w["active_details"] for w in written[1:]] == [{"infer": 1}]
+
+    @pytest.mark.anyio
+    async def test_aclose_refuses_while_a_group_is_attached(self, tmp_path):
+        prog = make_progress(total=2, root_dir=tmp_path, dump_progress=True)
+        async with anyio.create_task_group() as tg:
+            prog.write_in(tg)
+            with pytest.raises(RuntimeError, match="still attached"):
+                await prog.aclose()
+        prog.write_in(None)
+        await prog.aclose()
 
     @pytest.mark.anyio
     async def test_aclose_writes_inline_after_the_group_is_detached(self, tmp_path):
