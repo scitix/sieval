@@ -18,6 +18,7 @@ from typing import Any, NotRequired, TypedDict, cast
 
 import yaml
 
+from sieval.cli._cli_model import CliModel, apply_cli_model
 from sieval.cli._filter_spec import (
     check_arg_names,
     check_by,
@@ -711,6 +712,7 @@ def prepare_prelaunch_reconciliation(
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] = frozenset(),
     check_services: bool = False,
+    cli_model: CliModel | None = None,
 ) -> ReconcileResult:
     """Run the shared pure prelaunch reconciliation and fail loud on errors.
 
@@ -751,6 +753,7 @@ def prepare_prelaunch_reconciliation(
         infer_plans=normalized_plans,
         invocation=invocation,
         self_managed_endpoints=self_managed_endpoints,
+        cli_model=cli_model,
     )
     result = session.prepare_prelaunch()
     if check_services:
@@ -771,6 +774,7 @@ def _capability_reconcile_check(
     infer_plans: Mapping[str, dict[str, Any]] | None = None,
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] = frozenset(),
+    cli_model: CliModel | None = None,
 ) -> DryRunCheck:
     """Run the same pure prelaunch reconcile used by normal execution."""
 
@@ -784,6 +788,7 @@ def _capability_reconcile_check(
             infer_plans=infer_plans,
             invocation=invocation,
             self_managed_endpoints=self_managed_endpoints,
+            cli_model=cli_model,
         )
     except Exception as exc:
         return {
@@ -823,8 +828,13 @@ def run_dry_run(
     infer_plans: Mapping[str, dict[str, Any]] | None = None,
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] = frozenset(),
+    cli_model: CliModel | None = None,
 ) -> DryRunResult:
-    """Run config validation and return structured result."""
+    """Run config validation and return structured result.
+
+    *cli_model* is added to the config before any check, and the entry it
+    becomes is shown as the ``cli_model`` check.
+    """
     checks: list[DryRunCheck] = []
 
     # 1. File existence
@@ -863,6 +873,19 @@ def run_dry_run(
             "warnings": list(dup_warnings),
         }
     )
+
+    # 2b. The model --checkpoint/--api-base name, as the config entry it becomes
+    if cli_model is not None:
+        if not isinstance(cfg, dict):
+            cfg = {}
+        try:
+            apply_cli_model(cfg, cli_model, model_override)
+        except ValueError as exc:
+            checks.append({"name": "cli_model", "ok": False, "detail": str(exc)})
+            return {"checks": checks, "n_errors": 1, "n_warnings": len(dup_warnings)}
+        checks.append(
+            {"name": "cli_model", "ok": True, "plan": {"models": cfg["models"]}}
+        )
 
     # 3. Static schema validation
     result = validate_eval_config(cfg)
@@ -917,6 +940,7 @@ def run_dry_run(
                 infer_plans=infer_plans,
                 invocation=invocation,
                 self_managed_endpoints=self_managed_endpoints,
+                cli_model=cli_model,
             )
             checks.append(capability_check)
             result.warnings.extend(capability_check.get("warnings", ()))

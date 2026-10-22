@@ -27,6 +27,7 @@ from anyio.to_thread import run_sync
 from loguru import logger
 
 from sieval import __version__
+from sieval.cli._cli_model import CliModel, apply_cli_model
 from sieval.cli._filter_spec import (
     VALUES_DIGEST_KEY,
     check_arg_names,
@@ -1658,6 +1659,7 @@ class EvalSession:
         model_capability_profiles: Mapping[str, ModelCapabilityProfile] | None = None,
         serving_reconciler: ServingReconciler | None = None,
         resume_from: str | Path | None = None,
+        cli_model: CliModel | None = None,
     ):
         self.config_path = Path(config_path)
         self.model_override = model_override
@@ -1725,6 +1727,8 @@ class EvalSession:
                 loaded_config = {}
             if not isinstance(loaded_config, dict):
                 raise ValueError("Top-level YAML config must be a dictionary")
+        # Before every view below, so the entry is persisted like YAML.
+        apply_cli_model(cast(dict[str, Any], loaded_config), cli_model, model_override)
 
         # Pristine YAML — source of truth for deterministic / result_dir
         # resolution. Deep-copied so downstream in-place mutation on
@@ -5330,6 +5334,7 @@ async def arun_session(
     self_managed_endpoints: frozenset[str] | set[str] = frozenset(),
     realized_deployments: Mapping[str, Deployment] | None = None,
     resume_from: str | Path | None = None,
+    cli_model: CliModel | None = None,
 ) -> dict[str, Any]:
     """Run tasks defined in a YAML configuration file asynchronously.
 
@@ -5357,6 +5362,8 @@ async def arun_session(
         realized_deployments: Typed realized deployments keyed by root model
             config name.
         resume_from: Deprecated alias of ``resume=<dir>``; warns.
+        cli_model: The model ``--checkpoint``/``--api-base`` name, added as the
+            only ``models:`` entry of a config that has none.
 
     Returns:
         A dictionary mapping task names to their reports.
@@ -5373,6 +5380,7 @@ async def arun_session(
         self_managed_endpoints=self_managed_endpoints,
         realized_deployments=realized_deployments,
         resume_from=resume_from,
+        cli_model=cli_model,
     )
 
     return await runner.arun()

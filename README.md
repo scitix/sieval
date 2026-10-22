@@ -78,6 +78,7 @@ sieval dataset download aime_2024     # stage data into $SIEVAL_DATA_DIR
 sieval run config.yaml
 sieval run config.yaml --resume                        # resume result_dir stage by stage
 sieval run config.yaml --resume outputs/earlier        # start from another run's tasks
+sieval run benchmark.yaml --checkpoint /models/my-sft   # config with no models: section
 ```
 
 **Evaluate against an already-online endpoint:**
@@ -86,6 +87,8 @@ sieval run config.yaml --resume outputs/earlier        # start from another run'
 sieval eval leaderboards/sft_fast_202511.yaml --model gpt-4o
 # `sieval eval` is a shortcut for the underlying resource verb:
 sieval leaderboard run leaderboards/sft_fast_202511.yaml --model gpt-4o
+# a config with no models: section names the endpoint instead:
+sieval eval benchmark.yaml --api-base http://localhost:8000/v1 --model my-sft
 ```
 
 **Inference management:**

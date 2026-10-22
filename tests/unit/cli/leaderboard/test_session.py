@@ -7443,6 +7443,7 @@ class TestEvalSessionWrappers:
             self_managed_endpoints=frozenset(),
             realized_deployments=None,
             resume_from=None,
+            cli_model=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7475,6 +7476,7 @@ class TestEvalSessionWrappers:
             self_managed_endpoints=frozenset(),
             realized_deployments=None,
             resume_from=None,
+            cli_model=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7536,6 +7538,7 @@ class TestEvalSessionWrappers:
             self_managed_endpoints=frozenset(),
             realized_deployments=None,
             resume_from=None,
+            cli_model=None,
         )
 
     def test_run_session_forwards_legacy_external_endpoint_adapter_positionally(

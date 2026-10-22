@@ -13,6 +13,7 @@ from typing import Annotated
 import anyio
 import typer
 
+from sieval.cli._cli_model import ApiBaseOption, CliModel
 from sieval.cli._resume_option import (
     ResumeCommand,
     ResumeFromOption,
@@ -161,6 +162,7 @@ def run(
         str | None,
         typer.Option("--model", "-m", help="Override model name for all base models"),
     ] = None,
+    api_base: ApiBaseOption = None,
     resume: ResumeOption = None,
     result_dir: Annotated[
         str | None,
@@ -195,6 +197,8 @@ def run(
 
     configure_logging(verbose)
     resumed = cli_resume(resume, resume_from)
+    # No --checkpoint: this command never launches an engine.
+    cli_model = CliModel.from_options(checkpoint=None, api_base=api_base, model=model)
 
     # The 'eval' shortcut and 'leaderboard run' share this exact callable;
     # the CommandResult.command reflects the entry point the user invoked so
@@ -214,6 +218,7 @@ def run(
             result_dir_override=result_dir,
             deterministic_override=deterministic,
             invocation=shlex.join(sys.argv),
+            cli_model=cli_model,
         )
         result = CommandResult(
             command=dry_run_command,
@@ -236,6 +241,7 @@ def run(
             result_dir=result_dir,
             deterministic=deterministic,
             invocation=shlex.join(sys.argv),
+            cli_model=cli_model,
         )
 
     try:
