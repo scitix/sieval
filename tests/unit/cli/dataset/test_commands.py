@@ -444,6 +444,8 @@ def test_dataset_download_json_batch_failures_are_itemised(tmp_path):
             return_value=True,
         ),
         patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+        # Gated datasets are refused before `download` without a token.
+        patch("sieval.cli.dataset.commands.get_token", return_value="hf_x"),
     ):
         result = runner.invoke(
             dataset_app,
