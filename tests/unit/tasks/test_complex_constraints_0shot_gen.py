@@ -501,3 +501,25 @@ async def test_report_separates_an_empty_response_from_a_failed_rubric():
     assert report["task_pass_rate"] == pytest.approx(0.0)
     assert report["n_graded"] == 2
     assert report["n_unextracted"] == 1
+
+
+@pytest.mark.anyio
+async def test_a_context_overflow_scores_zero_without_calling_the_judge():
+    """What the runner hands this task for a prompt the window could not hold."""
+    from sieval.core.models.overflow import OverflowScope, overflow_scope
+
+    task, model, grader = _task()
+    sample = _sample()
+    ctx = TaskContext(sample_id=0, raw_sample=sample)
+    pre = await task.preprocess(sample, ctx)
+    ctx = TaskContext(sample_id=0, raw_sample=sample, preprocess_result=pre)
+    with overflow_scope(OverflowScope(model, convert=True, replay="too long")):
+        inferred = await task.infer(pre, ctx)
+    assert inferred.texts == [""]
+    assert inferred.finish_reasons == ["context_overflow"]
+    assert model.prompts == []
+    post = await task.postprocess(inferred, ctx)
+    _, judgement = await task.feedback(post, ctx)
+    assert judgement["n_correct"] == 0
+    assert judgement["rollouts"][0]["score"] == 0.0
+    assert grader.prompts == []

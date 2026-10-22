@@ -114,7 +114,13 @@ class TestNoManifest:
     async def test_fast_resume_is_read_from_the_report_counts(self, tmp_path):
         runner, _ = await _run(tmp_path)
         report = _read(runner.root_dir, "report.json")
-        assert report["sieval"] == {"total": 3, "final": 3, "failed": 0, "anomalies": 0}
+        assert report["sieval"] == {
+            "total": 3,
+            "final": 3,
+            "failed": 0,
+            "anomalies": 0,
+            "context_overflow": 0,
+        }
 
         model = MockCountingChatModel(answers=ANSWERS)
         _, cached = await _run(tmp_path, model=model, resume=True)
@@ -169,7 +175,13 @@ class TestOneFinalize:
         runner, _ = await exit_path(tmp_path)
         root = runner.root_dir
         counts = _read(root, "report.json")["sieval"]
-        assert counts == {"total": 3, "final": 3, "failed": 0, "anomalies": 3}
+        assert counts == {
+            "total": 3,
+            "final": 3,
+            "failed": 0,
+            "anomalies": 3,
+            "context_overflow": 0,
+        }
 
         progress = _read(root, "progress.json")
         assert progress["finished"] is True

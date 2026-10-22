@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **A prompt longer than the model's context window is scored as wrong, not failed.** When the server refuses the model under test's prompt as too long (SGLang's "is longer than the model's context length" or "Requested token count exceeds the model's maximum context length", vLLM's and OpenAI's "maximum context length", a 400 or 413), the call inside `infer` returns one empty text per rollout with finish reason `context_overflow`. The task grades it like any blank answer, the new `context_overflow` anomaly rule flags it, and `report.json`'s `sieval` block counts it under `anomalies` and the new `context_overflow` key, not under `failed`. It used to fail the sample on every resume, so a run with one never completed. A task declares `context_overflow = "fail"` to keep the failure, now recorded with reason `context_overflow` and never retried. Timeouts, connection errors, 5xx and a judge's own overflow still fail; a logprob call fails as `context_overflow`. A task that catches the refusal itself (Multi-IF's and SysBench's walks) is unchanged, and one that measures its prompt can record the overflow without sending it with `Model.context_overflow_output`. In `requests.jsonl` and the request summaries the refused attempt keeps its status and is counted under outcome `context_overflow` instead of `4xx`.
+- **A resume scores a recorded overflow without asking again.** A directory whose samples failed with a context-overflow refusal at `infer` (as 0.10.x recorded them) resumes them from the recorded refusal when the inference identity matches: no request is sent, no retry is spent, and the sample is graded and counted as above.
+
+No stage identity changes: the inference and grader digests of every built-in task are the ones 0.10.2 computes, so a 0.10.2 directory resumes. `anomalies.json`'s `rules_hash` changes, since the rule set gained `context_overflow`.
+
 ## [0.10.2] - 2026-10-22
 
 No on-disk format or stage identity changes: `IDENTITY_SCHEMA` stays 1, every

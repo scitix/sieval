@@ -553,3 +553,28 @@ async def test_report_counts_pipeline_failures_as_non_passes():
     assert report["n_grader_unparsed"] == 0.0
     # It has no aspect to attribute to, so the breakdown covers graded rollouts.
     assert report[f"{COMPLEX}_n_graded"] == 1.0
+
+
+@pytest.mark.anyio
+async def test_a_context_overflow_is_judged_as_the_blank_answer_it_is():
+    """What the runner hands this task for a prompt the window could not hold.
+
+    The empty output finishes ``context_overflow``; the grader is still asked,
+    as for any blank answer, and its failed rubrics make the sample wrong.
+    """
+    from sieval.core.models.overflow import OverflowScope, overflow_scope
+
+    sample = _sample()
+    task, grader = _task(grader_reply=_judge_reply({"r1": "NO", "r2": "NO"}, "NO"))
+    with overflow_scope(OverflowScope(task.model, convert=True, replay="too long")):
+        ctx = TaskContext(sample_id=0, raw_sample=sample)
+        pre = await task.preprocess(sample, ctx)
+        ctx = TaskContext(sample_id=0, raw_sample=sample, preprocess_result=pre)
+        inferred = await task.infer(pre, ctx)
+    assert inferred.finish_reasons == ["context_overflow"]
+    post = await task.postprocess(inferred, ctx)
+    assert post["rollouts"][0]["extracted"] is False
+    _, judgement = await task.feedback(post, ctx)
+    assert judgement["n_correct"] == 0
+    assert judgement["rollouts"][0]["score"] == 0.0
+    assert grader.last_prompt is not None and "resp= rubrics" in grader.last_prompt

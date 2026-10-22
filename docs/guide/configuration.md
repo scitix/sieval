@@ -237,6 +237,8 @@ legacy shape adapter for an already-bound model and never changes its dialect.
 
 Built-in anomaly detection runs automatically after each task and saves per-sample detail to `anomalies.json`; the count is in `report.json`'s `sieval` block. Rules are filtered by task tags — custom rules can be added via `@sieval_detection_rule` (see `sieval/core/tasks/anomaly.py`).
 
+`context_overflow` flags a rollout whose prompt the model under test refused as longer than its context window; the sample is scored as an empty answer instead of failing. See [metrics](metrics.md) for the rule, the `sieval.context_overflow` count and how a task opts back into a failure. In `requests.jsonl` the refused attempt keeps its HTTP status and its outcome is `context_overflow` rather than `4xx`.
+
 ## Sharded Persistence
 
 Append-only sharded storage provides crash recovery via `resume`, stream processing (low memory), and parallel shard writes. Custom dataclass types in `TaskContext` fields must use `@sieval_record` for proper deserialization.
