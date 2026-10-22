@@ -715,8 +715,11 @@ def _render_missing_entry(entry: dict) -> None:
     kind = entry["kind"]
     kind_col = f"{kind:<{_MISSING_KIND_WIDTH}s}"
     if kind == "data":
+        stale = entry.get("stale") or {}
         for src in entry.get("sources", []):
-            log_user("  {}{}", kind_col, src)
+            reason = stale.get(src)
+            suffix = f"   [stale: {reason}]" if reason else ""
+            log_user("  {}{}{}", kind_col, src, suffix)
     else:
         group = entry.get("group")
         suffix = f"   [group: {group}]" if group else ""

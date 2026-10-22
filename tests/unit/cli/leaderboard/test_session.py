@@ -8,6 +8,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 import dataclasses
 import hashlib
 import json
+import os
 import re
 import types
 from pathlib import Path
@@ -9640,3 +9641,88 @@ datasets:
         )
         with pytest.raises(ValueError, match="frontmatter"):
             EvalSession(yaml_path)
+
+
+# ── _warn_if_unpinned_staging ──
+
+
+def _stage_aime_2024(dest_root, commit):
+    """Stage `HuggingFaceH4/aime_2024` with a download record naming *commit*,
+    or, for ``None``, as a hand-placed file with no record (issue #179)."""
+    local_dir = dest_root / "HuggingFaceH4" / "aime_2024"
+    local_dir.mkdir(parents=True)
+    (local_dir / "train.jsonl").write_text("{}\n")
+    if commit is not None:
+        record = local_dir / ".cache/huggingface/download/train.jsonl.metadata"
+        record.parent.mkdir(parents=True)
+        record.write_text(f"{commit}\netag\n1786191938.5\n")
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["HuggingFaceH4/aime_2024", "${SIEVAL_DATA_DIR}/HuggingFaceH4/aime_2024"],
+)
+def test_warn_if_unpinned_staging_warns_on_a_hand_placed_copy(
+    monkeypatch, tmp_path, path
+):
+    """Both YAML spellings of the staged path resolve to the same directory."""
+    from unittest.mock import patch
+
+    from sieval.cli.leaderboard.session import _warn_if_unpinned_staging
+    from sieval.datasets import AIME2024Dataset
+
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
+    _stage_aime_2024(tmp_path, None)
+    with patch("sieval.cli.leaderboard.session.logger") as mock_logger:
+        _warn_if_unpinned_staging("aime", AIME2024Dataset, os.path.expandvars(path))
+    mock_logger.warning.assert_called_once()
+    args = mock_logger.warning.call_args.args
+    assert "not the data" in args[0]
+    assert args[4] == "train.jsonl has no download record, so its revision is unknown"
+    assert args[5] == "aime_2024"
+
+
+def test_warn_if_unpinned_staging_silent_on_the_pinned_snapshot(monkeypatch, tmp_path):
+    from unittest.mock import patch
+
+    from sieval.cli.leaderboard.session import _warn_if_unpinned_staging
+    from sieval.datasets import AIME2024Dataset
+    from sieval.datasets.aime_2024 import AIME_2024_REVISION
+
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
+    _stage_aime_2024(tmp_path, AIME_2024_REVISION)
+    with patch("sieval.cli.leaderboard.session.logger") as mock_logger:
+        _warn_if_unpinned_staging("aime", AIME2024Dataset, "HuggingFaceH4/aime_2024")
+    mock_logger.warning.assert_not_called()
+
+
+def test_warn_if_unpinned_staging_silent_for_a_path_outside_staging(
+    monkeypatch, tmp_path
+):
+    """A user's own copy elsewhere has no pin to compare against."""
+    from unittest.mock import patch
+
+    from sieval.cli.leaderboard.session import _warn_if_unpinned_staging
+    from sieval.datasets import AIME2024Dataset
+
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path / "data"))
+    _stage_aime_2024(tmp_path / "data", None)
+    own = tmp_path / "mine"
+    own.mkdir()
+    with patch("sieval.cli.leaderboard.session.logger") as mock_logger:
+        _warn_if_unpinned_staging("aime", AIME2024Dataset, str(own))
+    mock_logger.warning.assert_not_called()
+
+
+def test_warn_if_unpinned_staging_skips_an_undecorated_class(monkeypatch, tmp_path):
+    from unittest.mock import patch
+
+    from sieval.cli.leaderboard.session import _warn_if_unpinned_staging
+
+    class Custom:
+        pass
+
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
+    with patch("sieval.cli.leaderboard.session.logger") as mock_logger:
+        _warn_if_unpinned_staging("x", Custom, "HuggingFaceH4/aime_2024")
+    mock_logger.warning.assert_not_called()

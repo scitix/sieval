@@ -59,6 +59,7 @@ from sieval.cli.resolution import (
 )
 from sieval.cli.services import RESERVED_LOG_DIR, vendored_services_for
 from sieval.core.datasets import Dataset, TFilterKey
+from sieval.core.datasets.meta import get_dataset_meta
 from sieval.core.models import ChatModel, GenModel, Model, SglangGenModel
 from sieval.core.models.capabilities import (
     CAPABILITY_KEYS,
@@ -133,6 +134,9 @@ from sieval.core.runners import (
 from sieval.core.tasks.context import TaskAction
 from sieval.core.tasks.services import check_service_names
 from sieval.core.types import JSONValue
+from sieval.core.utils.hf import maybe_resolve_hf_path
+from sieval.core.utils.paths import resolve_data_dir
+from sieval.datasets.downloaders.staged import probe_source, staged_dir
 from sieval.infer import deployment_plan_projection
 from sieval.infer.params import merge_params
 from sieval.infer.topology.models import DETERMINISTIC_DEFAULT_SEED
@@ -1522,6 +1526,40 @@ def _emit_best_effort_deterministic_warning(labels: list[str]) -> None:
         "`sieval infer start` with a local checkpoint.",
         labels,
     )
+
+
+def _warn_if_unpinned_staging(name: str, ds_class: type, path: str) -> None:
+    """Warn when *path* is a registered source's staging dir holding other bytes.
+
+    A warning, not a refusal: a user may point a dataset at their own copy on
+    purpose. It only fires for a path that resolves to where `sieval dataset
+    download` stages one of the class's sources, since only there does the
+    registry's pin say what the bytes should be.
+    """
+    try:
+        meta = get_dataset_meta(ds_class)
+    except AttributeError:
+        return  # undecorated user-custom class: no registered sources
+    data_dir = resolve_data_dir(None)
+    target = Path(maybe_resolve_hf_path(path)).resolve()
+    for src in meta.source:
+        if staged_dir(meta, src, data_dir).resolve() != target:
+            continue
+        try:
+            probe = probe_source(meta, src, data_dir)
+        except NotImplementedError:
+            continue
+        if probe.status == "stale":
+            logger.warning(
+                "Dataset '{}' loads {}, which is not the data {} pins: {}. "
+                "Results will not reflect the registered dataset; run "
+                "`sieval dataset download {} --force` to replace it.",
+                name,
+                target,
+                src,
+                probe.reason,
+                meta.name,
+            )
 
 
 class EvalSession:
@@ -4391,13 +4429,13 @@ class EvalSession:
             if path is not None:
                 path = os.path.expandvars(path)
             init_args = self._normalize_dict(cfg.get("args"), f"Dataset '{name}' args")
+            if path is not None:
+                _warn_if_unpinned_staging(name, ds_class, path)
 
             try:
                 dataset = ds_class(path, **init_args) if path else ds_class(**init_args)
             except FileNotFoundError as exc:
                 # Also catches `datasets.exceptions.DataFilesNotFoundError`.
-                from sieval.core.datasets.meta import get_dataset_meta
-
                 try:
                     meta = get_dataset_meta(ds_class)
                 except AttributeError:

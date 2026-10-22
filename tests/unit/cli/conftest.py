@@ -7,10 +7,14 @@ Restores the dataset/task registries and the `sieval.datasets.*` /
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import time
+from pathlib import Path
+
 import pytest
 
 from sieval.core.datasets.meta import DATASET_REGISTRY, SAMPLE_TO_DATASET
 from sieval.core.tasks.meta import _TASK_CLASSES, TASK_REGISTRY
+from sieval.datasets.downloaders.hf import parse_hf_source
 from tests.conftest import ModuleIsolation
 
 # `sieval.datasets.downloaders.*` holds no `@sieval_dataset` decorators — it's the
@@ -83,3 +87,16 @@ def _deterministic_help_output(monkeypatch):
     monkeypatch.setattr(_ru, "FORCE_TERMINAL", None, raising=False)
     monkeypatch.setattr(_ru, "COLOR_SYSTEM", None, raising=False)
     monkeypatch.setattr(_ru, "MAX_WIDTH", 200, raising=False)
+
+
+def stage_hf_snapshot(dest_root: Path, source: str, filename: str) -> Path:
+    """Stage *filename* for an ``hf:`` *source* the way ``snapshot_download``
+    leaves it: the file plus its download record naming the pinned commit."""
+    parsed = parse_hf_source(source)
+    local_dir = dest_root / parsed.repo_id
+    (local_dir / filename).parent.mkdir(parents=True, exist_ok=True)
+    (local_dir / filename).write_bytes(b"x")
+    record = local_dir / ".cache" / "huggingface" / "download" / f"{filename}.metadata"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(f"{parsed.revision}\netag\n{time.time()}\n")
+    return local_dir

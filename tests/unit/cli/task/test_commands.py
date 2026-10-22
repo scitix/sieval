@@ -8,6 +8,10 @@ import json
 from typer.testing import CliRunner
 
 from sieval.cli.task.commands import task_app
+from sieval.datasets.aime_2024 import AIME_2024_REVISION
+from tests.unit.cli.conftest import stage_hf_snapshot
+
+AIME_2024_SOURCE = f"hf:HuggingFaceH4/aime_2024@{AIME_2024_REVISION}"
 
 runner = CliRunner()
 
@@ -147,9 +151,7 @@ def test_task_show_text_run_block_when_ready(tmp_path, monkeypatch):
     # data axis is clear in-env. aime_2024_0shot_gen task has deps_group=math,
     # which may or may not be installed. Test both branches conditionally.
     monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
-    local_dir = tmp_path / "HuggingFaceH4" / "aime_2024"
-    local_dir.mkdir(parents=True)
-    (local_dir / "train.parquet").write_bytes(b"x")
+    stage_hf_snapshot(tmp_path, AIME_2024_SOURCE, "train.parquet")
     # Force extras-clear to isolate the text rendering.
     from unittest.mock import patch
 
@@ -179,9 +181,7 @@ def test_task_list_data_dir_flag_overrides_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SIEVAL_DATA_DIR", str(empty))
 
     override = tmp_path / "override"
-    local_dir = override / "HuggingFaceH4" / "aime_2024"
-    local_dir.mkdir(parents=True)
-    (local_dir / "train.parquet").write_bytes(b"x")
+    stage_hf_snapshot(override, AIME_2024_SOURCE, "train.parquet")
 
     r_env = runner.invoke(task_app, ["list", "--dataset", "aime_2024", "-o", "json"])
     payload_env = json.loads(r_env.output)["data"]
@@ -214,9 +214,7 @@ def test_task_show_data_dir_flag_overrides_env(tmp_path, monkeypatch):
     monkeypatch.setenv("SIEVAL_DATA_DIR", str(empty))
 
     override = tmp_path / "override"
-    local_dir = override / "HuggingFaceH4" / "aime_2024"
-    local_dir.mkdir(parents=True)
-    (local_dir / "train.parquet").write_bytes(b"x")
+    stage_hf_snapshot(override, AIME_2024_SOURCE, "train.parquet")
 
     from unittest.mock import patch
 

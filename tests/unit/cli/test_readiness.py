@@ -17,6 +17,7 @@ from sieval.cli._readiness import (
     evaluate_dataset_readiness,
     evaluate_task_readiness,
 )
+from sieval.datasets.downloaders.staged import SourceProbe
 
 # ── MissingEntry / ReadinessReport shape ──────────────────────────────
 
@@ -50,6 +51,7 @@ def test_missing_entry_to_dict_data_kind():
     assert missing_entry_to_dict(e) == {
         "kind": "data",
         "sources": ["hf:a/b", "url:https://x/y.csv"],
+        "stale": {},
     }
 
 
@@ -73,7 +75,7 @@ def test_readiness_to_wire_round_trip():
     )
     ready, missing = readiness_to_wire(r)
     assert ready == "no"
-    assert missing == [{"kind": "data", "sources": ["hf:a/b"]}]
+    assert missing == [{"kind": "data", "sources": ["hf:a/b"], "stale": {}}]
 
 
 # ── _probe_dataset ────────────────────────────────────────────────────
@@ -102,10 +104,10 @@ def _make_dataset_meta(name="ds", sources=("hf:org/name",), deps_group=None):
 def test_probe_dataset_all_clear():
     ds = _make_dataset_meta()
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch("sieval.cli._readiness.extras_unsatisfied", return_value=[]),
     ):
-        mock_resolve.return_value.is_downloaded.return_value = True
+        mock_probe.return_value = SourceProbe("pinned")
         entries, had_unknown = _probe_dataset(ds, Path("/tmp/data"))
     assert entries == []
     assert had_unknown is False
@@ -114,10 +116,10 @@ def test_probe_dataset_all_clear():
 def test_probe_dataset_data_missing():
     ds = _make_dataset_meta(sources=("hf:a/b", "url:https://x/y.csv"))
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch("sieval.cli._readiness.extras_unsatisfied", return_value=[]),
     ):
-        mock_resolve.return_value.is_downloaded.return_value = False
+        mock_probe.return_value = SourceProbe("absent")
         entries, had_unknown = _probe_dataset(ds, Path("/tmp/data"))
     assert had_unknown is False
     assert len(entries) == 1
@@ -130,13 +132,13 @@ def test_probe_dataset_unknown_scheme_does_not_suppress_deps_probe():
     dataset-deps axis from reporting its findings."""
     ds = _make_dataset_meta(sources=("local:/foo",), deps_group="math")
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch(
             "sieval.cli._readiness.extras_unsatisfied",
             return_value=["math-verify>=0.8.0"],
         ),
     ):
-        mock_resolve.side_effect = NotImplementedError("unknown scheme: local")
+        mock_probe.side_effect = NotImplementedError("unknown scheme: local")
         entries, had_unknown = _probe_dataset(ds, Path("/tmp/data"))
     assert had_unknown is True
     # data entry absent (unknown), but dataset-deps entry present
@@ -149,10 +151,10 @@ def test_probe_dataset_extras_probe_runs_when_deps_group_none():
     """deps_group=None → extras probe is skipped entirely (not a bug)."""
     ds = _make_dataset_meta(deps_group=None)
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch("sieval.cli._readiness.extras_unsatisfied") as mock_extras,
     ):
-        mock_resolve.return_value.is_downloaded.return_value = True
+        mock_probe.return_value = SourceProbe("pinned")
         _probe_dataset(ds, Path("/tmp/data"))
     mock_extras.assert_not_called()
 
@@ -163,10 +165,10 @@ def test_probe_dataset_extras_probe_runs_when_deps_group_none():
 def test_dataset_readiness_yes_when_all_clear():
     ds = _make_dataset_meta(deps_group="math")
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch("sieval.cli._readiness.extras_unsatisfied", return_value=[]),
     ):
-        mock_resolve.return_value.is_downloaded.return_value = True
+        mock_probe.return_value = SourceProbe("pinned")
         r = evaluate_dataset_readiness(ds, Path("/tmp/data"))
     assert r.ready == "yes"
     assert r.missing == ()
@@ -175,10 +177,10 @@ def test_dataset_readiness_yes_when_all_clear():
 def test_dataset_readiness_no_on_data_missing():
     ds = _make_dataset_meta()
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch("sieval.cli._readiness.extras_unsatisfied", return_value=[]),
     ):
-        mock_resolve.return_value.is_downloaded.return_value = False
+        mock_probe.return_value = SourceProbe("absent")
         r = evaluate_dataset_readiness(ds, Path("/tmp/data"))
     assert r.ready == "no"
     assert [e.kind for e in r.missing] == ["data"]
@@ -187,13 +189,13 @@ def test_dataset_readiness_no_on_data_missing():
 def test_dataset_readiness_no_on_deps_missing():
     ds = _make_dataset_meta(deps_group="math")
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch(
             "sieval.cli._readiness.extras_unsatisfied",
             return_value=["math-verify>=0.8.0"],
         ),
     ):
-        mock_resolve.return_value.is_downloaded.return_value = True
+        mock_probe.return_value = SourceProbe("pinned")
         r = evaluate_dataset_readiness(ds, Path("/tmp/data"))
     assert r.ready == "no"
     assert [e.kind for e in r.missing] == ["dataset-deps"]
@@ -205,13 +207,13 @@ def test_dataset_readiness_no_on_both_axes_missing_preserves_order():
     """Contract: data entry precedes dataset-deps entry."""
     ds = _make_dataset_meta(deps_group="math")
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch(
             "sieval.cli._readiness.extras_unsatisfied",
             return_value=["math-verify>=0.8.0"],
         ),
     ):
-        mock_resolve.return_value.is_downloaded.return_value = False
+        mock_probe.return_value = SourceProbe("absent")
         r = evaluate_dataset_readiness(ds, Path("/tmp/data"))
     assert r.ready == "no"
     assert [e.kind for e in r.missing] == ["data", "dataset-deps"]
@@ -220,10 +222,10 @@ def test_dataset_readiness_no_on_both_axes_missing_preserves_order():
 def test_dataset_readiness_unknown_scheme_with_no_other_missing():
     ds = _make_dataset_meta(sources=("local:/foo",))
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch("sieval.cli._readiness.extras_unsatisfied", return_value=[]),
     ):
-        mock_resolve.side_effect = NotImplementedError("local scheme")
+        mock_probe.side_effect = NotImplementedError("local scheme")
         r = evaluate_dataset_readiness(ds, Path("/tmp/data"))
     assert r.ready == "unknown"
     assert r.missing == ()
@@ -234,13 +236,13 @@ def test_dataset_readiness_unknown_with_deps_missing_keeps_deps_entry():
     the deps entry so the user sees the actionable fix."""
     ds = _make_dataset_meta(sources=("local:/foo",), deps_group="math")
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch(
             "sieval.cli._readiness.extras_unsatisfied",
             return_value=["math-verify>=0.8.0"],
         ),
     ):
-        mock_resolve.side_effect = NotImplementedError("local scheme")
+        mock_probe.side_effect = NotImplementedError("local scheme")
         r = evaluate_dataset_readiness(ds, Path("/tmp/data"))
     assert r.ready == "unknown"
     assert [e.kind for e in r.missing] == ["dataset-deps"]
@@ -267,10 +269,10 @@ def test_task_readiness_yes_when_all_axes_clear():
     ds = _make_dataset_meta(name="ds1")
     t = _make_task_meta(name="t1", dataset="ds1")
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch("sieval.cli._readiness.extras_unsatisfied", return_value=[]),
     ):
-        mock_resolve.return_value.is_downloaded.return_value = True
+        mock_probe.return_value = SourceProbe("pinned")
         r = evaluate_task_readiness(t, Path("/tmp/data"), ds)
     assert r.ready == "yes"
     assert r.missing == ()
@@ -286,10 +288,10 @@ def test_task_readiness_concatenates_in_contract_order():
         return {"drop": ["scipy>=1.16.3"], "math": ["math-verify>=0.8.0"]}[group]
 
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch("sieval.cli._readiness.extras_unsatisfied", side_effect=fake_extras),
     ):
-        mock_resolve.return_value.is_downloaded.return_value = False
+        mock_probe.return_value = SourceProbe("absent")
         r = evaluate_task_readiness(t, Path("/tmp/data"), ds)
     assert r.ready == "no"
     assert [e.kind for e in r.missing] == ["data", "dataset-deps", "task-deps"]
@@ -302,10 +304,10 @@ def test_task_readiness_unknown_propagates_from_dataset():
     ds = _make_dataset_meta(name="ds3", sources=("local:/x",), deps_group=None)
     t = _make_task_meta(name="t3", dataset="ds3", deps_group="math")
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch("sieval.cli._readiness.extras_unsatisfied", return_value=[]),
     ):
-        mock_resolve.side_effect = NotImplementedError("local scheme")
+        mock_probe.side_effect = NotImplementedError("local scheme")
         r = evaluate_task_readiness(t, Path("/tmp/data"), ds)
     assert r.ready == "unknown"
 
@@ -316,13 +318,13 @@ def test_task_readiness_unknown_with_task_deps_missing_still_reports_deps():
     ds = _make_dataset_meta(name="ds4", sources=("local:/x",))
     t = _make_task_meta(name="t4", dataset="ds4", deps_group="math")
     with (
-        patch("sieval.cli._readiness.resolve_handler") as mock_resolve,
+        patch("sieval.cli._readiness.probe_source") as mock_probe,
         patch(
             "sieval.cli._readiness.extras_unsatisfied",
             return_value=["math-verify>=0.8.0"],
         ),
     ):
-        mock_resolve.side_effect = NotImplementedError("local scheme")
+        mock_probe.side_effect = NotImplementedError("local scheme")
         r = evaluate_task_readiness(t, Path("/tmp/data"), ds)
     assert r.ready == "unknown"
     assert [e.kind for e in r.missing] == ["task-deps"]

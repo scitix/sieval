@@ -10,9 +10,22 @@ from typer.testing import CliRunner
 
 from sieval.cli.dataset.commands import dataset_app
 from sieval.core.datasets.meta import Category, DatasetMeta, Level1Category
+from sieval.datasets.aime_2024 import AIME_2024_REVISION
 from sieval.datasets.downloaders.local import LocalSourceUnavailable
+from tests.unit.cli.conftest import stage_hf_snapshot
+
+AIME_2024_SOURCE = f"hf:HuggingFaceH4/aime_2024@{AIME_2024_REVISION}"
 
 runner = CliRunner()
+
+
+def _pins_match():
+    """Treat every resident source as the pinned bytes. For tests that stub
+    `is_downloaded` with nothing on disk: the pin comparison is covered by
+    `tests/unit/datasets/downloaders/test_staged.py`."""
+    return patch(
+        "sieval.datasets.downloaders.staged._pin_mismatch_reason", return_value=None
+    )
 
 
 def test_dataset_list_shows_pilot_rows():
@@ -98,6 +111,7 @@ def test_dataset_download_by_name_invokes_handler(tmp_path):
 
 def test_dataset_download_skips_when_already_present(tmp_path):
     with (
+        _pins_match(),
         patch(
             "sieval.datasets.downloaders.url.URLHandler.is_downloaded",
             return_value=True,
@@ -155,6 +169,7 @@ def test_dataset_download_all_iterates_all_pilots(tmp_path):
     )
 
     with (
+        _pins_match(),
         patch(
             "sieval.datasets.downloaders.hf.HFHandler.is_downloaded", return_value=True
         ) as mock_hf_probe,
@@ -429,6 +444,7 @@ def test_dataset_download_json_batch_failures_are_itemised(tmp_path):
         raise RuntimeError(f"boom: {dataset_name}")
 
     with (
+        _pins_match(),
         patch(
             "sieval.datasets.downloaders.hf.HFHandler.is_downloaded", return_value=False
         ),
@@ -686,9 +702,7 @@ def test_dataset_list_ready_yes_only_for_present_dataset(tmp_path, monkeypatch):
     Under the new `ready` field the per-source granularity is explicit.
     """
     monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
-    local_dir = tmp_path / "HuggingFaceH4" / "aime_2024"
-    local_dir.mkdir(parents=True)
-    (local_dir / "train.parquet").write_bytes(b"x")
+    stage_hf_snapshot(tmp_path, AIME_2024_SOURCE, "train.parquet")
 
     result = runner.invoke(dataset_app, ["list", "-o", "json"])
     assert result.exit_code == 0
@@ -709,6 +723,11 @@ def test_dataset_list_ready_all_sources_required_for_multi_source(
     from sieval.datasets.downloaders.url import _basename
 
     monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
+    # Presence only: checksum agreement is covered by the staged-probe tests.
+    monkeypatch.setattr(
+        "sieval.datasets.downloaders.staged._pin_mismatch_reason",
+        lambda *_: None,
+    )
     train_url = (
         "https://openaipublic.blob.core.windows.net/simple-evals/drop_v0_train.jsonl.gz"
     )
@@ -804,7 +823,9 @@ def test_download_one_deletes_and_raises_on_checksum_mismatch(tmp_path):
     assert not (tmp_path / "ds" / "f.csv").exists()  # bad file deleted
 
 
-def test_download_one_verifies_even_when_already_present(tmp_path):
+def test_download_one_refuses_present_file_that_fails_its_checksum(tmp_path):
+    """A resident file with other bytes is refused, not skipped as present and
+    not deleted: in a shared data dir it may be someone's own copy."""
     import pytest
 
     from sieval.cli.dataset.commands import _download_one
@@ -818,16 +839,17 @@ def test_download_one_verifies_even_when_already_present(tmp_path):
         categories=(Category(Level1Category.CODE, "CodeGeneration"),),
         checksums=(("f.csv", "sha256:" + "a" * 64),),
     )
-    fake_handler = MagicMock()
-    fake_handler.is_downloaded.return_value = True  # already present, download skipped
+    (tmp_path / "ds").mkdir()
+    (tmp_path / "ds" / "f.csv").write_bytes(b"other-bytes")
 
     with (
-        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
-        pytest.raises(RuntimeError, match="checksum verification failed"),
+        patch("sieval.datasets.downloaders.url.URLHandler.download") as mock_dl,
+        pytest.raises(RuntimeError, match=r"not the pinned data: f\.csv has sha256:"),
     ):
         _download_one(meta, tmp_path, False, [])
 
-    fake_handler.download.assert_not_called()  # verify ran despite the skip
+    mock_dl.assert_not_called()
+    assert (tmp_path / "ds" / "f.csv").read_bytes() == b"other-bytes"
 
 
 def test_dataset_show_text_renders_ready_and_missing(tmp_path, monkeypatch):
@@ -848,3 +870,59 @@ def test_dataset_show_text_renders_ready_and_missing(tmp_path, monkeypatch):
     assert re.search(r"^  data\s", result.output, re.MULTILINE), (
         f"expected an indented 'data' kind line in Missing block; got:\n{result.output}"
     )
+
+
+def _hand_place_aime_2024(dest_root):
+    """Issue #179: the repo dir holds a `train.jsonl` no download wrote."""
+    local_dir = dest_root / "HuggingFaceH4" / "aime_2024"
+    local_dir.mkdir(parents=True)
+    (local_dir / "train.jsonl").write_text("{}\n")
+    return local_dir
+
+
+def test_dataset_download_refuses_a_hand_placed_copy(tmp_path):
+    """Neither skipped as present nor deleted: the user is told to `--force`."""
+    local_dir = _hand_place_aime_2024(tmp_path)
+    with patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_dl:
+        result = runner.invoke(
+            dataset_app,
+            ["download", "aime_2024", "--data-dir", str(tmp_path), "-o", "json"],
+        )
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert "train.jsonl has no download record" in error
+    assert "sieval dataset download aime_2024 --force" in error
+    mock_dl.assert_not_called()
+    assert (local_dir / "train.jsonl").exists()
+
+
+def test_dataset_download_skips_the_pinned_snapshot(tmp_path):
+    stage_hf_snapshot(tmp_path, AIME_2024_SOURCE, "train.parquet")
+    with patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_dl:
+        result = runner.invoke(
+            dataset_app,
+            ["download", "aime_2024", "--data-dir", str(tmp_path), "-o", "json"],
+        )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"]["datasets"][0]["already_present"] == 1
+    mock_dl.assert_not_called()
+
+
+def test_dataset_show_reports_a_hand_placed_copy_as_stale(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
+    _hand_place_aime_2024(tmp_path)
+    reason = "train.jsonl has no download record, so its revision is unknown"
+
+    result = runner.invoke(dataset_app, ["show", "aime_2024", "-o", "json"])
+    data = json.loads(result.output)["data"]
+    assert data["ready"] == "no"
+    assert data["missing"] == [
+        {
+            "kind": "data",
+            "sources": [AIME_2024_SOURCE],
+            "stale": {AIME_2024_SOURCE: reason},
+        }
+    ]
+
+    text = runner.invoke(dataset_app, ["show", "aime_2024"]).output
+    assert f"{AIME_2024_SOURCE}   [stale: {reason}]" in text

@@ -2,7 +2,12 @@ from unittest.mock import patch
 
 import pytest
 
-from sieval.datasets.downloaders.hf import HFHandler, HFSource, parse_hf_source
+from sieval.datasets.downloaders.hf import (
+    HFHandler,
+    HFSource,
+    parse_hf_source,
+    pin_mismatch,
+)
 
 
 def test_scheme():
@@ -178,3 +183,97 @@ def test_is_downloaded_rejects_non_hf_scheme(tmp_path):
     h = HFHandler()
     with pytest.raises(ValueError, match="Expected hf: scheme"):
         h.is_downloaded("url:https://example.com/x", tmp_path, "x")
+
+
+# ── pin_mismatch ──────────────────────────────────────────────────────
+
+_PIN = "a" * 40
+
+
+def _stage(local_dir, rel, commit):
+    """Stage *rel* with the download record `snapshot_download` writes."""
+    (local_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+    (local_dir / rel).write_bytes(b"x")
+    if commit is not None:
+        record = local_dir / ".cache" / "huggingface" / "download" / f"{rel}.metadata"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(f"{commit}\netag\n1786191938.5\n")
+
+
+def test_pin_mismatch_none_when_every_file_records_the_pin(tmp_path):
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "data/train-00000-of-00001.parquet", _PIN)
+    _stage(local_dir, "README.md", _PIN)
+    assert pin_mismatch(f"hf:org/foo@{_PIN}", tmp_path) is None
+
+
+def test_pin_mismatch_flags_a_file_with_no_download_record(tmp_path):
+    """The #179 shape: a hand-placed `train.jsonl` that `is_downloaded`
+    accepts because `.jsonl` is a data suffix."""
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "train.jsonl", None)
+    assert h_is_downloaded(tmp_path)
+    assert pin_mismatch(f"hf:org/foo@{_PIN}", tmp_path) == (
+        "train.jsonl has no download record, so its revision is unknown"
+    )
+
+
+def test_pin_mismatch_flags_a_stray_file_beside_a_pinned_snapshot(tmp_path):
+    """A leftover next to pinned files: `load_dataset(dir)` reads both."""
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "data/train.parquet", _PIN)
+    _stage(local_dir, "train.jsonl", None)
+    reason = pin_mismatch(f"hf:org/foo@{_PIN}", tmp_path)
+    assert reason is not None and reason.startswith("train.jsonl ")
+
+
+def test_pin_mismatch_flags_a_snapshot_of_another_revision(tmp_path):
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "data/train.parquet", "b" * 40)
+    assert pin_mismatch(f"hf:org/foo@{_PIN}", tmp_path) == (
+        f"data/train.parquet is from revision {'b' * 40}, expected {_PIN}"
+    )
+
+
+def test_pin_mismatch_flags_an_empty_download_record(tmp_path):
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "data/train.parquet", "")
+    reason = pin_mismatch(f"hf:org/foo@{_PIN}", tmp_path)
+    assert reason is not None and "no download record" in reason
+
+
+def test_pin_mismatch_unpinned_source_accepts_any_recorded_revision(tmp_path):
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "data/train.parquet", "b" * 40)
+    assert pin_mismatch("hf:org/foo", tmp_path) is None
+
+
+def test_pin_mismatch_ignores_files_under_cache(tmp_path):
+    """`.cache/` holds the records themselves, which have no records."""
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "data/train.parquet", _PIN)
+    (local_dir / ".cache" / "huggingface" / ".gitignore").write_text("*")
+    assert pin_mismatch(f"hf:org/foo@{_PIN}", tmp_path) is None
+
+
+def h_is_downloaded(dest_root):
+    return HFHandler().is_downloaded(f"hf:org/foo@{_PIN}", dest_root, "foo")
+
+
+def test_force_clears_files_snapshot_download_would_leave_behind(tmp_path):
+    """`snapshot_download` keeps files it does not write, so a forced refetch
+    must start from an empty directory."""
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "train.jsonl", None)
+    with patch("huggingface_hub.snapshot_download"):
+        HFHandler().download(f"hf:org/foo@{_PIN}", tmp_path, "foo", force=True)
+    assert local_dir.is_dir()
+    assert not (local_dir / "train.jsonl").exists()
+
+
+def test_download_without_force_keeps_existing_files(tmp_path):
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "train.jsonl", None)
+    with patch("huggingface_hub.snapshot_download"):
+        HFHandler().download(f"hf:org/foo@{_PIN}", tmp_path, "foo", force=False)
+    assert (local_dir / "train.jsonl").exists()
