@@ -3,18 +3,24 @@
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import errno
 import hashlib
+import os
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
 
 from sieval.core.datasets.meta import Category, DatasetMeta, Level1Category
+from sieval.datasets.downloaders import staged
 from sieval.datasets.downloaders.staged import (
     SourceProbe,
     probe_source,
+    record_checksums,
     staged_dir,
+    stat_checksummed,
 )
-from sieval.datasets.downloaders.verify import compute_sha256
+from sieval.datasets.downloaders.verify import compute_sha256, verify_checksums
 
 _PIN = "a" * 40
 _URL = "url:https://example.com/f.csv"
@@ -86,52 +92,136 @@ def test_url_without_a_declared_checksum_is_pinned_on_presence(tmp_path):
     assert probe_source(_meta(src), src, tmp_path) == SourceProbe("pinned")
 
 
-def test_url_rehashes_after_the_file_is_rewritten(tmp_path):
-    """The sidecar is keyed on size+mtime, so a replaced file is re-read."""
+def _stage_url(tmp_path, data: bytes = _GOOD):
     path = tmp_path / "ds" / "f.csv"
-    path.parent.mkdir()
-    path.write_bytes(_GOOD)
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def _tree(root) -> list[tuple[str, int, int]]:
+    return sorted(
+        (str(p.relative_to(root)), p.lstat().st_size, p.lstat().st_mtime_ns)
+        for p in root.rglob("*")
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_memo():
+    staged._HASHED.clear()
+    yield
+    staged._HASHED.clear()
+
+
+@pytest.fixture
+def hashes():
+    with patch(f"{staged.__name__}.compute_sha256", wraps=compute_sha256) as mock:
+        yield mock
+
+
+def test_url_rehashes_after_the_file_is_rewritten(tmp_path, hashes):
+    """The memo is keyed on size+mtime, so a replaced file is re-read."""
+    path = _stage_url(tmp_path)
     assert probe_source(_meta(_URL), _URL, tmp_path).status == "pinned"
     path.write_bytes(b"replaced-bytes")
     assert probe_source(_meta(_URL), _URL, tmp_path).status == "stale"
+    assert hashes.call_count == 2
 
 
-def test_url_hashes_once_across_probes(tmp_path):
-    """The sidecar outlives the process, unlike an in-memory cache."""
-    (tmp_path / "ds").mkdir()
-    (tmp_path / "ds" / "f.csv").write_bytes(_GOOD)
-    with patch(
-        "sieval.datasets.downloaders.staged.compute_sha256", wraps=compute_sha256
-    ) as mock_hash:
-        for _ in range(3):
-            assert probe_source(_meta(_URL), _URL, tmp_path).status == "pinned"
-    assert mock_hash.call_count == 1
-    assert (tmp_path / "ds" / ".f.csv.sha256").is_file()
+def test_url_hashes_once_per_process(tmp_path, hashes):
+    _stage_url(tmp_path)
+    for _ in range(3):
+        assert probe_source(_meta(_URL), _URL, tmp_path).status == "pinned"
+    assert hashes.call_count == 1
 
 
-def test_url_hashes_every_time_in_a_read_only_dir(tmp_path):
-    (tmp_path / "ds").mkdir()
-    (tmp_path / "ds" / "f.csv").write_bytes(_GOOD)
+def test_probing_writes_nothing_into_the_data_dir(tmp_path):
+    _stage_url(tmp_path)
+    before = _tree(tmp_path)
+    assert probe_source(_meta(_URL), _URL, tmp_path).status == "pinned"
+    assert _tree(tmp_path) == before
+
+
+@pytest.mark.parametrize("errno_", [errno.EROFS, errno.EACCES])
+def test_url_probes_a_dir_that_refuses_every_write(tmp_path, hashes, errno_):
+    """A read-only mount fails `unlink` with EROFS too, not ENOENT (#187)."""
+    _stage_url(tmp_path)
+    refuse = OSError(errno_, os.strerror(errno_))
     with (
-        patch("pathlib.Path.write_text", side_effect=PermissionError),
-        patch(
-            "sieval.datasets.downloaders.staged.compute_sha256", wraps=compute_sha256
-        ) as mock_hash,
+        patch("pathlib.Path.mkdir", side_effect=refuse),
+        patch("pathlib.Path.write_text", side_effect=refuse),
+        patch("pathlib.Path.replace", side_effect=refuse),
+        patch("pathlib.Path.unlink", side_effect=refuse),
     ):
         for _ in range(2):
             assert probe_source(_meta(_URL), _URL, tmp_path).status == "pinned"
-    assert mock_hash.call_count == 2
+    assert hashes.call_count == 1
+
+
+@pytest.mark.parametrize("errno_", [errno.EROFS, errno.EACCES, errno.ENOSPC])
+def test_record_checksums_never_raises_when_the_dir_refuses_writes(
+    tmp_path, hashes, errno_
+):
+    _stage_url(tmp_path)
+    refuse = OSError(errno_, os.strerror(errno_))
+    with (
+        patch("pathlib.Path.mkdir", side_effect=refuse),
+        patch("pathlib.Path.write_text", side_effect=refuse),
+        patch("pathlib.Path.unlink", side_effect=refuse),
+    ):
+        record_checksums(_meta(_URL), tmp_path, {"f.csv": "0 0"})
     assert list((tmp_path / "ds").iterdir()) == [tmp_path / "ds" / "f.csv"]
+    assert probe_source(_meta(_URL), _URL, tmp_path).status == "pinned"
+    assert hashes.call_count == 1
 
 
-def test_url_ignores_a_sidecar_with_a_stale_key(tmp_path):
-    """A sidecar copied alongside other bytes is not trusted."""
-    path = tmp_path / "ds" / "f.csv"
-    path.parent.mkdir()
-    path.write_bytes(b"other")
-    good = "sha256:" + hashlib.sha256(_GOOD).hexdigest()
-    (tmp_path / "ds" / ".f.csv.sha256").write_text(f"12 0 {good}")
+def _download(tmp_path, meta=None):
+    """`_download_one`'s verify-and-record step."""
+    meta = meta or _meta(_URL)
+    verified = stat_checksummed(meta, tmp_path)
+    assert verify_checksums(meta, tmp_path) == []
+    record_checksums(meta, tmp_path, verified)
+
+
+def test_record_checksums_skips_a_file_absent_before_verification(tmp_path):
+    (tmp_path / "ds").mkdir()
+    record_checksums(_meta(_URL), tmp_path, stat_checksummed(_meta(_URL), tmp_path))
+    assert list((tmp_path / "ds").iterdir()) == []
+
+
+def test_record_checksums_does_not_vouch_for_a_file_rewritten_after_verification(
+    tmp_path,
+):
+    path = _stage_url(tmp_path)
+    verified = stat_checksummed(_meta(_URL), tmp_path)
+    path.write_bytes(b"rewritten-after-verify")
+    record_checksums(_meta(_URL), tmp_path, verified)
     assert probe_source(_meta(_URL), _URL, tmp_path).status == "stale"
+
+
+def test_url_trusts_its_download_record_without_hashing(tmp_path, hashes):
+    _stage_url(tmp_path)
+    _download(tmp_path)
+    assert (tmp_path / "ds/.sieval/download/f.csv.sha256").is_file()
+    assert probe_source(_meta(_URL), _URL, tmp_path).status == "pinned"
+    assert hashes.call_count == 0
+
+
+def test_url_record_of_an_older_pin_reads_stale(tmp_path, hashes):
+    """The record holds a digest, not a verdict, so a re-pin is caught."""
+    _stage_url(tmp_path)
+    _download(tmp_path)
+    repinned = replace(_meta(_URL), checksums=(("f.csv", "sha256:" + "0" * 64),))
+    assert probe_source(repinned, _URL, tmp_path).status == "stale"
+    assert hashes.call_count == 0
+
+
+def test_url_ignores_a_record_with_a_stale_key(tmp_path, hashes):
+    path = _stage_url(tmp_path)
+    _download(tmp_path)
+    path.write_bytes(b"other")
+    assert probe_source(_meta(_URL), _URL, tmp_path).status == "stale"
+    assert hashes.call_count == 1
 
 
 def test_hf_stale_when_the_dir_holds_only_non_data_files(tmp_path):

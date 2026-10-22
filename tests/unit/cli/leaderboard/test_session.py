@@ -6,6 +6,7 @@ AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
 import dataclasses
+import errno
 import hashlib
 import json
 import os
@@ -9801,6 +9802,39 @@ def test_refuse_unpinned_staging_skips_an_undecorated_class(monkeypatch, tmp_pat
     monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
     _stage_aime_2024(tmp_path, None)
     _refuse_unpinned_staging("x", Custom, "HuggingFaceH4/aime_2024")
+
+
+@pytest.mark.parametrize("staged_bytes", ["pinned", "other"])
+def test_refuse_unpinned_staging_checks_a_read_only_url_dir(
+    monkeypatch, tmp_path, staged_bytes
+):
+    """On a read-only mount every write raises EROFS; the verdict still holds (#187)."""
+    from sieval.cli.leaderboard.session import _refuse_unpinned_staging
+    from sieval.core.datasets.meta import get_dataset_meta
+    from sieval.datasets.gpqa_diamond import GPQADiamondDataset
+
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
+    staged = tmp_path / "gpqa_diamond"
+    staged.mkdir()
+    (staged / "gpqa_diamond.csv").write_bytes(b"other")
+    if staged_bytes == "pinned":
+        # No preimage of the declared digest exists to stage; fake the hash.
+        (expected,) = dict(get_dataset_meta(GPQADiamondDataset).checksums).values()
+        monkeypatch.setattr(
+            "sieval.datasets.downloaders.staged.compute_sha256", lambda _p: expected
+        )
+    erofs = OSError(errno.EROFS, os.strerror(errno.EROFS))
+    for method in ("mkdir", "write_text", "replace", "unlink"):
+        monkeypatch.setattr(Path, method, MagicMock(side_effect=erofs))
+    try:
+        if staged_bytes == "pinned":
+            _refuse_unpinned_staging("gpqa", GPQADiamondDataset, str(staged))
+        else:
+            with pytest.raises(RuntimeError, match="gpqa_diamond.csv has sha256:"):
+                _refuse_unpinned_staging("gpqa", GPQADiamondDataset, str(staged))
+    finally:
+        monkeypatch.undo()
+    assert [p.name for p in staged.iterdir()] == ["gpqa_diamond.csv"]
 
 
 def test_setup_datasets_refuses_a_hand_placed_staging_dir(monkeypatch, tmp_path):

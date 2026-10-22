@@ -25,7 +25,12 @@ from sieval.datasets.downloaders import resolve as resolve_handler
 from sieval.datasets.downloaders.hf import parse_hf_source
 from sieval.datasets.downloaders.local import LocalSourceUnavailable
 from sieval.datasets.downloaders.resolver import extras_unsatisfied
-from sieval.datasets.downloaders.staged import probe_source, staged_dir
+from sieval.datasets.downloaders.staged import (
+    probe_source,
+    record_checksums,
+    staged_dir,
+    stat_checksummed,
+)
 from sieval.datasets.downloaders.verify import verify_checksums
 from sieval.meta import load_index
 
@@ -343,6 +348,7 @@ def _download_one(
         else:
             fetched += 1
 
+    verified = stat_checksummed(m, dest_root)
     mismatches = verify_checksums(m, dest_root)
     if mismatches:
         for mm in mismatches:
@@ -356,6 +362,7 @@ def _download_one(
             f"deleted the mismatched file(s) — re-run "
             f"`sieval dataset download {m.name}` to refetch"
         )
+    record_checksums(m, dest_root, verified)
 
     # BYO corpus: exit non-zero if any local: sources were unavailable. The
     # per-source instructions (including each file's exact target path) were

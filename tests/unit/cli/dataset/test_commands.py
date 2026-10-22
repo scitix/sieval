@@ -3,6 +3,7 @@
 AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 """
 
+import hashlib
 import json
 from unittest.mock import MagicMock, patch
 
@@ -1067,3 +1068,71 @@ def test_dataset_show_reports_a_hand_placed_copy_as_stale(tmp_path, monkeypatch)
 
     text = runner.invoke(dataset_app, ["show", "aime_2024"]).output
     assert f"{AIME_2024_SOURCE}   [stale: {reason}]" in text
+
+
+# ── a read-only or shared data dir (#187) ──
+
+
+def _no_writes(path):
+    def refuse(*_args, **_kwargs):
+        raise AssertionError(f"wrote under {path}")
+
+    return (
+        patch("pathlib.Path.write_text", side_effect=refuse),
+        patch("pathlib.Path.write_bytes", side_effect=refuse),
+        patch("pathlib.Path.mkdir", side_effect=refuse),
+        patch("pathlib.Path.replace", side_effect=refuse),
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (["show", "gpqa_diamond"], "gpqa_diamond.csv has sha256:"),
+        (["list"], '"name": "gpqa_diamond"'),
+    ],
+)
+def test_dataset_reads_a_staged_url_dir_without_writing(
+    tmp_path, monkeypatch, command, expected
+):
+    monkeypatch.setenv("SIEVAL_DATA_DIR", str(tmp_path))
+    staged = tmp_path / "gpqa_diamond"
+    staged.mkdir()
+    (staged / "gpqa_diamond.csv").write_bytes(b"hand-placed")
+    a, b, c, d = _no_writes(tmp_path)
+    with a, b, c, d:
+        result = runner.invoke(dataset_app, [*command, "-o", "json"])
+    assert result.exit_code == 0, result.output
+    assert expected in result.output
+    assert sorted(p.name for p in staged.iterdir()) == ["gpqa_diamond.csv"]
+
+
+def test_download_records_the_verified_checksum_for_later_reads(tmp_path):
+    from sieval.cli.dataset.commands import _download_one
+    from sieval.datasets.downloaders.staged import probe_source
+
+    meta = DatasetMeta(
+        name="ds",
+        display_name="ds",
+        description="d",
+        source=("url:https://example.com/f.csv",),
+        categories=(Category(Level1Category.CODE, "CodeGeneration"),),
+        checksums=(("f.csv", "sha256:" + hashlib.sha256(b"ok").hexdigest()),),
+    )
+
+    def fake_download(_source, dest_root, dataset_name, **_kwargs):  # noqa: ARG001
+        (dest_root / dataset_name).mkdir(parents=True, exist_ok=True)
+        (dest_root / dataset_name / "f.csv").write_bytes(b"ok")
+
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = False
+    fake_handler.download.side_effect = fake_download
+    with patch(
+        "sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler
+    ):
+        _download_one(meta, tmp_path, False, [])
+
+    assert (tmp_path / "ds/.sieval/download/f.csv.sha256").is_file()
+    with patch("sieval.datasets.downloaders.staged.compute_sha256") as mock_hash:
+        assert probe_source(meta, meta.source[0], tmp_path).status == "pinned"
+    mock_hash.assert_not_called()
