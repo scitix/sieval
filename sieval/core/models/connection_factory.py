@@ -14,7 +14,11 @@ from types import MappingProxyType
 import httpx
 from openai import AsyncOpenAI
 
-from .request_log import RecordingAsyncClient, RecordingOpenAIClient
+from .request_log import (
+    DEFAULT_CONNECTION_LIMITS,
+    RecordingAsyncClient,
+    RecordingOpenAIClient,
+)
 
 #: The per-request timeout every sieval client that talks to a model declares.
 #:
@@ -22,8 +26,7 @@ from .request_log import RecordingAsyncClient, RecordingOpenAIClient
 #: ``httpx`` defaults every phase to 5, so a dialect's connection family silently
 #: decided how long a generation could take, and either library can change its
 #: default in a patch release. The value is what ``openai_sdk`` already had in
-#: effect, so it moves only ``async_http_json`` -- whose dialects have no
-#: implemented transport yet, making its 5s a trap rather than a live bug.
+#: effect; ``async_http_json`` had httpx's 5s.
 #:
 #: Scope is clients whose call carries no bound of its own. The code-evaluator and
 #: health-check clients each pass a per-request ``timeout`` derived from a budget
@@ -280,12 +283,13 @@ def _openai_sdk_connection(request: ConnectionRequest) -> AsyncOpenAI:
 def _async_http_json_connection(
     request: ConnectionRequest,
 ) -> AsyncHTTPJSONConnection:
-    # Connect retries run in the client rather than the transport, where each
-    # try is recorded; the schedule is the transport's.
+    # Retries run in the client, on the OpenAI SDK's rule and schedule, so
+    # `max_retries` means the same in both families and each try is recorded.
     client = RecordingAsyncClient(
-        connect_retries=request.max_retries,
+        max_retries=request.max_retries,
         base_url=request.endpoint,
-        transport=httpx.AsyncHTTPTransport(retries=0),
+        # An explicit transport ignores the client's `limits`: give it them.
+        transport=httpx.AsyncHTTPTransport(limits=DEFAULT_CONNECTION_LIMITS),
         timeout=request.timeout,
     )
     return AsyncHTTPJSONConnection(client, request.credential)
@@ -299,7 +303,9 @@ OPENAI_SDK_FACTORY = ConnectionFactorySpec(
 
 ASYNC_HTTP_JSON_FACTORY = ConnectionFactorySpec(
     connection_family="async_http_json",
-    retry_policy_prefix="httpx-transport:max-connect-retries=",
+    # Not the transport's connect-only retries any more: a new name, so a
+    # binding plan made under the old meaning is refused rather than reread.
+    retry_policy_prefix="sieval-http:max-retries=",
     builder=_async_http_json_connection,
 )
 

@@ -325,6 +325,82 @@ class TestStreamedAttempts:
         ]
 
 
+class TestConnectionWait:
+    @pytest.mark.anyio
+    async def test_a_full_pool_is_billed_as_connect_not_hidden(self) -> None:
+        """One pooled connection, two concurrent calls: the second waits for it.
+
+        The wait is inside `latency_s` -- the request was not out -- and
+        `connect_s` says how much of it.
+        """
+
+        release = anyio.Event()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            del request
+            await release.wait()
+            return httpx.Response(200, json={})
+
+        sink = _Sink()
+        client = RecordingAsyncClient(transport=_PoolOfOne(handler))
+        with stage_scope(_scope(sink)):
+            async with anyio.create_task_group() as tg:
+                for _ in range(2):
+                    tg.start_soon(self._one, client)
+                await anyio.sleep(0.05)
+                release.set()
+        await client.aclose()
+        connects = sorted(line["connect_s"] for line in sink.lines)
+        assert connects[0] < 0.01
+        assert connects[1] >= 0.05
+
+    @staticmethod
+    async def _one(client: RecordingAsyncClient) -> None:
+        with observe_call(
+            model_meta=lambda: {"model": "m"}, model={}, n=1, limiters={}
+        ):
+            await client.post("https://gw.example/x")
+
+    @pytest.mark.anyio
+    async def test_a_callers_own_trace_still_runs(self) -> None:
+        names: list[str] = []
+        client = RecordingAsyncClient(
+            transport=_PoolOfOne(lambda _: httpx.Response(200))
+        )
+        sink = _Sink()
+        with (
+            stage_scope(_scope(sink)),
+            observe_call(model_meta=lambda: {"model": "m"}, model={}, n=1, limiters={}),
+        ):
+            await client.post(
+                "https://gw.example/x",
+                extensions={"trace": lambda name, _info: names.append(name)},
+            )
+        await client.aclose()
+        assert "http11.send_request_headers.started" in names
+        assert sink.lines[0]["connect_s"] is not None
+
+
+class _PoolOfOne(httpx.AsyncBaseTransport):
+    """One connection at a time, emitting httpcore's request-headers trace."""
+
+    def __init__(self, handler: Callable) -> None:
+        self._handler = handler
+        self._lock = anyio.Lock()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        async with self._lock:
+            trace = request.extensions.get("trace")
+            if trace is not None:
+                result = trace("http11.send_request_headers.started", {})
+                if hasattr(result, "__await__"):
+                    await result
+            result = self._handler(request)
+            if hasattr(result, "__await__"):
+                result = await result
+            return result
+
+
 class TestNothingIsRecordedOutsideARun:
     @pytest.mark.anyio
     async def test_a_call_without_a_stage_records_nothing(self) -> None:
@@ -354,110 +430,174 @@ class TestNothingIsRecordedOutsideARun:
         assert sink.lines == []
 
 
-class TestConnectRetries:
-    """``async_http_json`` connect retries, moved from the transport to the client."""
+class TestUnifiedRetries:
+    """``async_http_json`` retries the way the OpenAI SDK does, attempt for attempt.
+
+    Each case runs one scripted reply sequence through the real SDK and through
+    :class:`RecordingAsyncClient`, with sleeps captured and jitter pinned, and
+    requires the same number of requests, the same waits and the same outcome.
+    """
 
     @pytest.fixture
     def sleeps(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[list[float]]:
         delays: list[float] = []
 
         async def fake_sleep(delay: float) -> None:
-            delays.append(delay)
+            delays.append(round(delay, 6))
 
         monkeypatch.setattr(rl.anyio, "sleep", fake_sleep)
+        monkeypatch.setattr(openai._base_client.anyio, "sleep", fake_sleep)
+        # Jitter pinned to its midpoint on both sides.
+        monkeypatch.setattr(rl.random, "random", lambda: 0.5)
+        monkeypatch.setattr(openai._base_client, "random", lambda: 0.5)
         yield delays
 
+    @staticmethod
+    def _script() -> list[list[httpx.Response | type[httpx.TransportError]]]:
+        def r(status: int, **headers: str) -> httpx.Response:
+            return httpx.Response(status, json={"error": {}}, headers=headers)
+
+        ok = httpx.Response(200, json=_chat_body())
+        return [
+            [r(429), r(503), r(500), ok],
+            [r(429, **{"retry-after": "2"}), ok],
+            [r(429, **{"retry-after-ms": "1500"}), ok],
+            [r(429, **{"retry-after": "120"}), ok],  # past 60s: backoff instead
+            [r(503, **{"x-should-retry": "false"}), ok],
+            [r(400, **{"x-should-retry": "true"}), ok],
+            [r(400), ok],
+            [r(404), ok],
+            [r(408), r(409), ok],
+            [httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError, ok],
+            [r(502)] * 6,
+        ]
+
+    @staticmethod
+    def _handler(script: list) -> tuple[Callable, list[httpx.Request]]:
+        queue = list(script)
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            item = queue.pop(0)
+            if isinstance(item, type):
+                raise item("scripted", request=request)
+            return httpx.Response(
+                item.status_code, headers=item.headers, content=item.content
+            )
+
+        return handler, seen
+
+    async def _via_sdk(self, script: list, sleeps: list[float]) -> tuple:
+        handler, seen = self._handler(script)
+        sleeps.clear()
+        async with openai.AsyncOpenAI(
+            base_url="https://gw.example/v1",
+            api_key="k",
+            max_retries=3,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        ) as client:
+            try:
+                await client.chat.completions.create(
+                    model="m", messages=[{"role": "user", "content": "q"}]
+                )
+                status: object = 200
+            except openai.APIStatusError as exc:
+                status = exc.status_code
+            except openai.APIConnectionError as exc:
+                status = type(exc.__cause__).__name__
+        return len(seen), list(sleeps), status
+
+    async def _via_recording(self, script: list, sleeps: list[float]) -> tuple:
+        handler, seen = self._handler(script)
+        sleeps.clear()
+        client = RecordingAsyncClient(
+            max_retries=3, transport=httpx.MockTransport(handler)
+        )
+        try:
+            response = await client.post("https://gw.example/v1/x", json={})
+            status: object = response.status_code
+        except httpx.TransportError as exc:
+            status = type(exc).__name__
+        finally:
+            await client.aclose()
+        return len(seen), list(sleeps), status
+
     @pytest.mark.anyio
-    async def test_connect_failures_retry_on_the_transport_schedule(
-        self, sleeps: list[float]
-    ) -> None:
-        request = httpx.Request("POST", "https://gw.example/x")
-        handler, seen = _replies(
-            httpx.ConnectError("refused", request=request),
-            httpx.ConnectTimeout("slow", request=request),
-            httpx.ConnectError("refused", request=request),
-            httpx.Response(200, json={}),
+    @pytest.mark.parametrize("case", range(11))
+    async def test_matches_the_openai_sdk(self, case: int, sleeps: list[float]) -> None:
+        script = self._script()[case]
+        sdk = await self._via_sdk(script, sleeps)
+        ours = await self._via_recording(script, sleeps)
+        assert ours == sdk
+
+    @pytest.mark.anyio
+    async def test_every_try_is_one_recorded_attempt(self, sleeps: list[float]) -> None:
+        handler, _ = self._handler(
+            [
+                httpx.Response(429, headers={"retry-after-ms": "10"}),
+                httpx.ConnectError,
+                httpx.Response(200, json={}),
+            ]
         )
         client = RecordingAsyncClient(
-            connect_retries=3, transport=httpx.MockTransport(handler)
+            max_retries=3, transport=httpx.MockTransport(handler)
         )
         sink = _Sink()
         with (
             stage_scope(_scope(sink)),
             observe_call(model_meta=lambda: {"model": "m"}, model={}, n=1, limiters={}),
         ):
-            response = await client.post("https://gw.example/x", json={})
+            await client.post("https://gw.example/x", json={})
         await client.aclose()
-
-        assert response.status_code == 200
-        assert len(seen) == 4
-        # httpcore's schedule: 0s, then 0.5s doubling.
-        assert sleeps == [0.0, 0.5, 1.0]
         assert [line["outcome"] for line in sink.lines] == [
-            "connection_error",
-            "timeout_connect",
+            "429",
             "connection_error",
             "2xx",
         ]
-
-    @pytest.mark.anyio
-    async def test_connect_retries_stop_at_the_count(self, sleeps: list[float]) -> None:
-        request = httpx.Request("POST", "https://gw.example/x")
-        handler, seen = _replies(
-            *[httpx.ConnectError("refused", request=request) for _ in range(3)]
-        )
-        client = RecordingAsyncClient(
-            connect_retries=1, transport=httpx.MockTransport(handler)
-        )
-        with pytest.raises(httpx.ConnectError):
-            await client.post("https://gw.example/x", json={})
-        await client.aclose()
-        assert len(seen) == 2
-        assert sleeps == [0.0]
-
-    @pytest.mark.anyio
-    async def test_an_http_error_status_is_never_retried(
-        self, sleeps: list[float]
-    ) -> None:
-        handler, seen = _replies(httpx.Response(503), httpx.Response(200))
-        client = RecordingAsyncClient(
-            connect_retries=3, transport=httpx.MockTransport(handler)
-        )
-        response = await client.post("https://gw.example/x", json={})
-        await client.aclose()
-        assert response.status_code == 503
-        assert len(seen) == 1
-        assert sleeps == []
+        assert sink.lines[0]["retry_after_header_s"] == 0.01
+        assert sleeps == [0.01, 0.875]
 
     def test_a_negative_count_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="connect_retries"):
-            RecordingAsyncClient(connect_retries=-1)
+        with pytest.raises(ValueError, match="max_retries"):
+            RecordingAsyncClient(max_retries=-1)
 
     @pytest.mark.anyio
-    async def test_the_factory_moves_retries_off_the_transport(self) -> None:
-        connection = CONNECTION_FACTORY_REGISTRY.create(
+    async def test_both_families_get_the_same_client_defaults(self) -> None:
+        http_json = CONNECTION_FACTORY_REGISTRY.create(
             "async_http_json",
             ConnectionRequest("https://gw.example/v1", None, max_retries=4),
         )
-        assert isinstance(connection, AsyncHTTPJSONConnection)
-        client = connection.client
-        assert isinstance(client, RecordingAsyncClient)
-        assert client._connect_retries == 4
-        pool = client._transport._pool  # ty: ignore[unresolved-attribute]
-        assert pool._retries == 0
-        await connection.aclose()
-
-    @pytest.mark.anyio
-    async def test_the_openai_factory_keeps_the_sdk_retry_count(self) -> None:
-        client = CONNECTION_FACTORY_REGISTRY.create(
+        sdk = CONNECTION_FACTORY_REGISTRY.create(
             "openai_sdk",
-            ConnectionRequest("https://gw.example/v1", SECRET, max_retries=5),
+            ConnectionRequest("https://gw.example/v1", SECRET, max_retries=4),
         )
-        assert isinstance(client, openai.AsyncOpenAI)
-        assert client.max_retries == 5
-        assert isinstance(client._client, RecordingOpenAIClient)
-        assert client._client.timeout == connection_factory.DEFAULT_REQUEST_TIMEOUT
-        await client.close()
+        assert isinstance(http_json, AsyncHTTPJSONConnection)
+        assert isinstance(sdk, openai.AsyncOpenAI)
+        ours, theirs = http_json.client, sdk._client
+        assert isinstance(ours, RecordingAsyncClient)
+        assert isinstance(theirs, RecordingOpenAIClient)
+        # The SDK retries above its client; the httpx family in it.
+        assert (ours._max_retries, theirs._max_retries, sdk.max_retries) == (4, 0, 4)
+        assert ours._transport._pool._retries == 0  # ty: ignore[unresolved-attribute]
+        for client in (ours, theirs):
+            pool = client._transport._pool  # ty: ignore[unresolved-attribute]
+            assert pool._max_connections == 1000
+            assert pool._max_keepalive_connections == 100
+            assert client.follow_redirects is True
+            assert client.timeout == connection_factory.DEFAULT_REQUEST_TIMEOUT
+        await http_json.aclose()
+        await sdk.close()
+
+    def test_the_policy_names_the_new_meaning(self) -> None:
+        assert (
+            CONNECTION_FACTORY_REGISTRY.retry_policy("async_http_json", 3)
+            == "sieval-http:max-retries=3"
+        )
+        with pytest.raises(ValueError, match="does not belong"):
+            CONNECTION_FACTORY_REGISTRY.validate_retry_policy(
+                "async_http_json", "httpx-transport:max-connect-retries=3"
+            )
 
 
 class TestModelArun:
@@ -564,12 +704,12 @@ class TestHelpers:
 
         assert rl.retry_after_header_s(response(**{"retry-after-ms": "250"})) == 0.25
         assert rl.retry_after_header_s(response(**{"retry-after": "3"})) == 3.0
-        assert (
-            rl.retry_after_header_s(
-                response(**{"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"})
-            )
-            is None
+        # An HTTP date is read relative to now, as the SDK reads it.
+        past = rl.retry_after_header_s(
+            response(**{"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"})
         )
+        assert past is not None and past < 0
+        assert rl.retry_after_header_s(response(**{"retry-after": "soon"})) is None
         assert rl.retry_after_header_s(response()) is None
 
     @pytest.mark.parametrize(

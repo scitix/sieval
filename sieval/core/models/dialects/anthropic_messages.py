@@ -67,6 +67,8 @@ from sieval.core.models.ir import (
 )
 from sieval.core.types import JSONValue
 
+from ._http_status import raise_for_provider_status
+
 _ANTHROPIC_VERSION = "2023-06-01"
 _MESSAGES_PATH = "messages"
 _OPAQUE_CONTINUATION_VERSION = 2
@@ -2517,7 +2519,7 @@ class AnthropicMessagesDialect:
                 json=body,
                 headers=headers,
             )
-            response.raise_for_status()
+            raise_for_provider_status(response, "Anthropic")
             return self._lift(_parse_json_response(response), execution)
 
         stream_headers = {**headers, "accept": "text/event-stream"}
@@ -2529,7 +2531,7 @@ class AnthropicMessagesDialect:
         ) as response:
             if not response.is_success:
                 await response.aread()
-            response.raise_for_status()
+            raise_for_provider_status(response, "Anthropic")
             terminal = await _terminal_stream_message(response)
         return self._lift(terminal, execution)
 

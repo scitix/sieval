@@ -1887,13 +1887,15 @@ class TestResponseGuards:
 
     @pytest.mark.anyio
     async def test_http_error_is_not_lifted_as_success(self) -> None:
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
             await _run(
                 lambda _: httpx.Response(
                     401,
                     json={"type": "error", "error": {"message": "bad key"}},
                 )
             )
+        # The provider's reason reaches a failed sample's error text.
+        assert str(exc_info.value).endswith("\nAnthropic: bad key")
 
     @pytest.mark.anyio
     async def test_stream_http_error_is_raised_before_sse_lift(
@@ -1920,6 +1922,10 @@ class TestResponseGuards:
 
         assert exc_info.value.response.status_code == 429
         assert "overloaded_error" in exc_info.value.response.text
+        # No `error.message`: the body itself is the reason.
+        assert str(exc_info.value).endswith(
+            '\nAnthropic: {"type":"error","error":{"type":"overloaded_error"}}'
+        )
         lift.assert_not_awaited()
 
 

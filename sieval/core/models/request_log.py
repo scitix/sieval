@@ -2,10 +2,10 @@
 
 Every client sieval builds to reach a model is a :class:`RecordingAsyncClient`.
 It sits *under* whichever loop retries the request -- the OpenAI SDK's, or its
-own connect-retry loop for ``async_http_json`` -- so each HTTP attempt is seen
-on its own, SDK retries included, while the retry behaviour stays the
-library's. The client cannot see which sample or phase sent a request; two
-context variables carry that:
+own copy of that loop for ``async_http_json`` -- so each HTTP attempt is seen
+on its own, SDK retries included, and ``max_retries`` means the same in both.
+The client cannot see which sample or phase sent a request; two context
+variables carry that:
 
 * :func:`stage_scope` -- set by the runner around one stage of one sample;
 * :func:`observe_call` -- set by ``Model.arun`` / ``SglangGenModel.arun``
@@ -22,9 +22,12 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import contextvars
+import email.utils
+import inspect
 import math
+import random
 import time
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -68,8 +71,68 @@ def timeout_phase(exc: BaseException) -> str | None:
     return None
 
 
-#: httpcore's connect-retry backoff factor: 0s, then 0.5s, 1s, 2s, ...
-_CONNECT_RETRY_BACKOFF = 0.5
+#: Connection limits for every model client sieval builds -- the OpenAI SDK's.
+#: httpx's own default of 100 queued an ``async_http_json`` run's requests
+#: past that silently, whatever its ``concurrency_limit``.
+DEFAULT_CONNECTION_LIMITS = httpx.Limits(
+    max_connections=1000, max_keepalive_connections=100
+)
+
+#: Retry backoff, as the OpenAI SDK has it: 0.5s doubling, capped at 8s.
+INITIAL_RETRY_DELAY = 0.5
+MAX_RETRY_DELAY = 8.0
+#: A server's ``retry-after`` is obeyed only within (0, 60] seconds.
+MAX_RETRY_AFTER = 60.0
+
+
+def should_retry(response: httpx.Response) -> bool:
+    """Whether an error *response* is retried: the OpenAI SDK's rule.
+
+    ``x-should-retry`` decides when the server sends it; otherwise 408, 409,
+    429 and every 5xx are retried.
+    """
+
+    header = response.headers.get("x-should-retry")
+    if header == "true":
+        return True
+    if header == "false":
+        return False
+    status = response.status_code
+    return status in (408, 409, 429) or status >= 500
+
+
+def retry_delay(
+    max_retries: int,
+    remaining: int,
+    headers: httpx.Headers | None,
+) -> float:
+    """Seconds to wait before the next try: the OpenAI SDK's schedule.
+
+    A ``retry-after-ms`` / ``retry-after`` within (0, 60] seconds is obeyed;
+    otherwise ``0.5 * 2**n`` capped at 8, times a jitter in (0.75, 1].
+    """
+
+    retry_after = _retry_after_s(headers) if headers is not None else None
+    if retry_after is not None and 0 < retry_after <= MAX_RETRY_AFTER:
+        return retry_after
+    taken = min(max_retries - remaining, 1000)
+    delay = min(INITIAL_RETRY_DELAY * pow(2.0, taken), MAX_RETRY_DELAY)
+    return max(delay * (1 - 0.25 * random.random()), 0.0)
+
+
+def _retry_after_s(headers: httpx.Headers) -> float | None:
+    for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        value = headers.get(name)
+        if value is None:
+            continue
+        try:
+            return float(value) / scale
+        except ValueError:
+            pass
+    when = email.utils.parsedate_tz(headers.get("retry-after") or "")
+    if when is None:
+        return None
+    return float(email.utils.mktime_tz(when) - time.time())
 
 
 class RequestSink(Protocol):
@@ -137,6 +200,8 @@ class _Attempt:
     outcome: str | None = None
     request_id: str | None = None
     retry_after_header_s: float | None = None
+    #: When the request went out on a connection (httpcore's trace).
+    sent: float | None = None
     on_end: Callable[[], None] | None = field(default=None, repr=False)
 
     def ok(self) -> bool:
@@ -218,6 +283,13 @@ class CallScope:
                 "ended_at": _iso(attempt.started_at + (ended - attempt.started)),
                 "offset_s": round(attempt.started - stage.run_start, 6),
                 "latency_s": round(ended - attempt.started, 6),
+                # Of `latency_s`, the wait for a pooled connection (and any
+                # connect) before the request went out; `None` if it never did.
+                "connect_s": (
+                    round(attempt.sent - attempt.started, 6)
+                    if attempt.sent is not None
+                    else None
+                ),
                 # The limiter wait is the call's, before its first attempt.
                 "queue_s": (
                     round(self.queue_s, 6)
@@ -313,21 +385,9 @@ def request_id_of(response: httpx.Response) -> str | None:
 
 
 def retry_after_header_s(response: httpx.Response) -> float | None:
-    """The server's requested delay in seconds, when it gave a numeric one.
+    """The delay the server asked for, in seconds, read as the retry loops do."""
 
-    ``retry-after-ms`` first, as the OpenAI SDK reads it; an HTTP-date
-    ``retry-after`` is left out.
-    """
-
-    for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
-        value = response.headers.get(name)
-        if value is None:
-            continue
-        try:
-            return float(value) / scale
-        except ValueError:
-            continue
-    return None
+    return _retry_after_s(response.headers)
 
 
 def status_outcome(status: int) -> str:
@@ -398,20 +458,40 @@ class _AttemptStream(httpx.AsyncByteStream):
             self._attempt.end()
 
 
+def _sent_trace(
+    attempt: _Attempt, inner: Callable[..., object] | None
+) -> Callable[[str, dict], Awaitable[None]]:
+    """An httpcore ``trace`` extension stamping when the headers go out."""
+
+    async def trace(name: str, info: dict) -> None:
+        if attempt.sent is None and name.endswith("send_request_headers.started"):
+            attempt.sent = time.monotonic()
+        if inner is not None:
+            result = inner(name, info)
+            if inspect.isawaitable(result):
+                await result
+
+    return trace
+
+
 class RecordingAsyncClient(httpx.AsyncClient):
     """``httpx.AsyncClient`` that records each ``send`` inside an open call.
 
-    *connect_retries* retries a connect failure the way
-    ``httpx.AsyncHTTPTransport(retries=...)`` does -- the same errors and the
-    same 0, 0.5, 1, 2 ... second backoff -- but here, where each try is seen.
+    *max_retries* retries a request the way the OpenAI SDK does (see
+    :func:`should_retry` and :func:`retry_delay`), so ``max_retries`` means
+    the same in every connection family. Each try is one recorded attempt.
     Give the transport no retries of its own.
+
+    ``RecordingOpenAIClient`` passes ``0``: the SDK runs that loop above it.
     """
 
-    def __init__(self, *, connect_retries: int = 0, **kwargs: object) -> None:
+    def __init__(self, *, max_retries: int = 0, **kwargs: object) -> None:
+        kwargs.setdefault("limits", DEFAULT_CONNECTION_LIMITS)
+        kwargs.setdefault("follow_redirects", True)
         super().__init__(**kwargs)  # ty: ignore[invalid-argument-type]
-        if isinstance(connect_retries, bool) or connect_retries < 0:
-            raise ValueError("connect_retries must be a non-negative integer")
-        self._connect_retries = connect_retries
+        if isinstance(max_retries, bool) or max_retries < 0:
+            raise ValueError("max_retries must be a non-negative integer")
+        self._max_retries = max_retries
         self._in_flight = 0
 
     async def send(
@@ -421,17 +501,25 @@ class RecordingAsyncClient(httpx.AsyncClient):
         stream: bool = False,
         **kwargs: object,
     ) -> httpx.Response:
-        retries_left = self._connect_retries
-        delay = 0.0
+        retries_taken = 0
         while True:
+            remaining = self._max_retries - retries_taken
             try:
-                return await self._send_once(request, stream=stream, **kwargs)
-            except (httpx.ConnectError, httpx.ConnectTimeout):
-                if retries_left <= 0:
+                response = await self._send_once(request, stream=stream, **kwargs)
+            except httpx.TransportError:
+                if remaining <= 0:
                     raise
-                retries_left -= 1
-                await anyio.sleep(delay)
-                delay = _CONNECT_RETRY_BACKOFF if delay == 0 else delay * 2
+                await anyio.sleep(retry_delay(self._max_retries, remaining, None))
+                retries_taken += 1
+                continue
+            if remaining > 0 and response.is_error and should_retry(response):
+                await response.aclose()
+                await anyio.sleep(
+                    retry_delay(self._max_retries, remaining, response.headers)
+                )
+                retries_taken += 1
+                continue
+            return response
 
     async def _send_once(
         self,
@@ -446,6 +534,10 @@ class RecordingAsyncClient(httpx.AsyncClient):
         self._in_flight += 1
         attempt = call.begin_attempt(self._in_flight)
         attempt.on_end = self._leave
+        request.extensions = {
+            **request.extensions,
+            "trace": _sent_trace(attempt, request.extensions.get("trace")),
+        }
         try:
             response = await super().send(request, stream=stream, **kwargs)  # ty: ignore[invalid-argument-type]
         except BaseException as exc:
@@ -469,8 +561,8 @@ class RecordingAsyncClient(httpx.AsyncClient):
 
 
 class RecordingOpenAIClient(RecordingAsyncClient, DefaultAsyncHttpxClient):
-    """The OpenAI SDK's own default client (its limits, redirects), recorded.
+    """The OpenAI SDK's own default client, recorded.
 
-    Passed as ``AsyncOpenAI(http_client=...)``; the SDK's retry loop, backoff
-    and idempotency key are untouched and run above it.
+    Passed as ``AsyncOpenAI(http_client=...)``; the SDK's retry loop and
+    backoff are untouched and run above it, so this client retries nothing.
     """

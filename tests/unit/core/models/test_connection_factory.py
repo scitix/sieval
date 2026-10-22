@@ -65,7 +65,7 @@ class TestConnectionFactoryRegistry:
         )
         assert (
             CONNECTION_FACTORY_REGISTRY.retry_policy("async_http_json", 4)
-            == "httpx-transport:max-connect-retries=4"
+            == "sieval-http:max-retries=4"
         )
         with pytest.raises(ValueError, match="does not belong"):
             CONNECTION_FACTORY_REGISTRY.validate_retry_policy(

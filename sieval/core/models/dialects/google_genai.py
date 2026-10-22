@@ -92,6 +92,7 @@ from ._google_genai_wire import (
     validate_function_parameters,
     validate_wire_body,
 )
+from ._http_status import raise_for_provider_status
 
 _THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
 _HOSTED_TOOL_KINDS = frozenset({"google_search", "url_context"})
@@ -861,38 +862,6 @@ def _validate_server_tool_history_signatures(
             )
             if error is not None:
                 raise DialectError(error)
-
-
-_PROVIDER_ERROR_MESSAGE_LIMIT = 500
-
-
-def _raise_for_google_status(response: httpx.Response) -> None:
-    """Raise httpx's status error with Google's ``error.message`` appended.
-
-    Per-model limits are left to Google, so its reason is the diagnostic.
-    """
-
-    try:
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        try:
-            payload = json.loads(response.text)
-        except ValueError:
-            payload = None
-        error = payload.get("error") if isinstance(payload, dict) else None
-        message = error.get("message") if isinstance(error, dict) else None
-        if not isinstance(message, str) or not message:
-            # A proxy in front of Google can answer with a non-JSON body.
-            message = response.text.strip()
-        if not message:
-            raise
-        if len(message) > _PROVIDER_ERROR_MESSAGE_LIMIT:
-            message = message[:_PROVIDER_ERROR_MESSAGE_LIMIT] + "..."
-        raise httpx.HTTPStatusError(
-            f"{exc}\nGoogle: {message}",
-            request=exc.request,
-            response=exc.response,
-        ) from None
 
 
 def _validate_final_request_constraints(
@@ -3373,12 +3342,12 @@ class GoogleGenAIDialect:
             try:
                 if not response.is_success:
                     await response.aread()
-                _raise_for_google_status(response)
+                raise_for_provider_status(response, "Google")
                 return await self._lift_stream(response, execution_context)
             finally:
                 await response.aclose()
         response = await self._connection.client.send(request)
-        _raise_for_google_status(response)
+        raise_for_provider_status(response, "Google")
         payload = _strict_json_loads(response.text, "Google response body")
         return self._lift(payload, execution_context)
 
