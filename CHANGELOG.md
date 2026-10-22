@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **Resume compatibility is keyed on the result schema version, not the package version.** `meta.json` gains `result_schema_version` (`RESULT_SCHEMA_VERSION`, starting at 1), versioning the result directory a resume reads; a resume refuses another one, naming both schema versions and both SiEval versions. A directory without the field maps from its `version`: 0.10.0 and later, local builds included, is 1, so 0.10.x directories resume under this release, and older, unparseable or `0.0.0` ones are refused as before. Dev and local builds (`0.10.2+gc18745b`) now resume across builds when the schema matches. This release keeps schema 1. The package version stays in `version` and `runs[].sieval` as provenance. `resume_version_verdict` is replaced by `resume_schema_verdict` (#202).
 
+### Fixed
+
+- The deprecated `sieval.cli.leaderboard.session` alias forwards every name `sieval.cli.session` (or `sieval.cli.resolution`) holds, with the same `DeprecationWarning`, not only the ten in its `__all__`. `getattr(alias, "DETERMINISTIC_DEFAULT_SEED", None)` returned `None`, so code patching session construction for custom `class:` models dropped `seed` in deterministic runs. Assigning to the alias still does not reach the engine; patch `sieval.cli.session`. `AlignmentCard`, `AlignmentBlockDict` and `load_card` stay removed (#204).
+
 ## [0.10.2] - 2026-10-22
 
 No on-disk format or stage identity changes: `IDENTITY_SCHEMA` stays 1, every
@@ -398,6 +402,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.10.2]: https://github.com/scitix/sieval/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/scitix/sieval/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/scitix/sieval/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/scitix/sieval/compare/v0.8.0...v0.9.0
