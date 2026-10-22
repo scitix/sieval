@@ -1154,6 +1154,8 @@ _INFERENCE_RUNNER_CONFIG_KEYS = ("max_iterations", "max_retries")
 #: input, and both are one credential scope.
 _CREDENTIAL_KEYS = ("api_key", "api_key_env")
 _ENV_VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: A launched engine is unauthenticated; the OpenAI SDK still demands a key.
+_LAUNCHED_ENGINE_CREDENTIAL = "local"
 
 
 def _names_credential(config: Mapping[str, object]) -> bool:
@@ -1217,6 +1219,18 @@ def _default_client_timeout(deployment: Deployment | None) -> httpx.Timeout:
         if deployment is not None and deployment.plan is not None
         else DEFAULT_REQUEST_TIMEOUT
     )
+
+
+def _client_credential(
+    credential: str | None, deployment: Deployment | None
+) -> str | None:
+    """*credential*, or the placeholder for a launched engine that names none.
+
+    External endpoints keep ``None``: the provider SDK reads its env var.
+    """
+    if credential is None and deployment is not None and deployment.plan is not None:
+        return _LAUNCHED_ENGINE_CREDENTIAL
+    return credential
 
 
 def _configured_client_timeout(
@@ -1435,7 +1449,7 @@ def _apply_endpoint_injection(
         args = mcfg.get("args") or {}
         nested = args if isinstance(args, dict) else {}
         if not any(mcfg.get(k) or nested.get(k) for k in _CREDENTIAL_KEYS):
-            mcfg["api_key"] = "local"
+            mcfg["api_key"] = _LAUNCHED_ENGINE_CREDENTIAL
 
         if "name" not in mcfg:
             checkpoint = ""
@@ -4043,7 +4057,7 @@ class EvalSession:
             connection_family,
             ConnectionRequest(
                 endpoint=identity.endpoint,
-                credential=api_key,
+                credential=_client_credential(api_key, deployment),
                 max_retries=max_retries,
                 timeout=_configured_client_timeout(
                     config,
@@ -4143,8 +4157,10 @@ class EvalSession:
                     args,
                     self._request_seed_decisions_by_binding[binding.binding_id],
                 )
-            credential = _configured_credential(
-                cfg, args, f"Model '{name}'", os.environ
+            realized = self._realized_deployments.get(name)
+            credential = _client_credential(
+                _configured_credential(cfg, args, f"Model '{name}'", os.environ),
+                realized,
             )
             for key in _CREDENTIAL_KEYS:
                 args.pop(key, None)

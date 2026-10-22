@@ -5185,15 +5185,179 @@ tasks:
             return_value=connection,
         ) as client_factory:
             session._setup_models()
-        # An engine this run launched gets the longer connect bound (#169).
+        # A launched engine: longer connect bound (#169), placeholder key (#188).
         client_factory.assert_called_once_with(
             base_url="https://realized.example/v1",
-            api_key=None,
+            api_key="local",
             max_retries=9,
             timeout=MANAGED_ENGINE_REQUEST_TIMEOUT,
         )
         await session._close_owned_model_resources()
         close.assert_awaited_once()
+
+    def _launched_session(
+        self, tmp_path: Path, dialect: str, model_type: str, credential_line: str
+    ) -> EvalSession:
+        from sieval.core.models import Deployment, Engine, ServingFacts
+        from sieval.infer import deployment_plan_projection
+
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  m:
+    name: org/model
+    type: {model_type}
+    engine: sglang
+    dialect: {dialect}
+    {credential_line}
+tasks:
+  completion:
+    class: fake.Task
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        raw_plan = {
+            "backend": "sglang",
+            "checkpoint": "/models/org-model",
+            "assignments": [],
+        }
+        realized = Deployment(
+            deployment_id="served-m",
+            plan=deployment_plan_projection(raw_plan),
+            engine=Engine("sglang"),
+            engine_source="deployment",
+            api_base="http://127.0.0.1:30000/v1",
+            endpoints={},
+            topology=None,
+            metrics_url=None,
+            facts=ServingFacts(engine_version="test"),
+        )
+        return EvalSession(
+            config_path,
+            infer_plans={"m": raw_plan},
+            realized_deployments={"m": realized},
+        )
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("dialect", "model_type"),
+        [
+            ("openai_completions", "gen"),
+            ("openai_chat", "chat"),
+            ("openai_responses", "chat"),
+            ("sglang_legacy", "gen"),
+            ("anthropic_messages", "chat"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("credential_line", "expected"),
+        [
+            ("", "local"),
+            ("api_key: explicit-key", "explicit-key"),
+            ("api_key_env: SIEVAL_TEST_ENGINE_KEY", "env-key"),
+        ],
+    )
+    async def test_launched_engine_gets_a_placeholder_key_only_when_none_is_named(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        dialect: str,
+        model_type: str,
+        credential_line: str,
+        expected: str,
+    ) -> None:
+        """#188: built with the real clients, ``OPENAI_API_KEY`` unset."""
+        from sieval.core.models import SglangGenModel
+        from sieval.core.models.connection_factory import AsyncHTTPJSONConnection
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("SIEVAL_TEST_ENGINE_KEY", "env-key")
+        session = self._launched_session(tmp_path, dialect, model_type, credential_line)
+        with patch(
+            "sieval.cli.leaderboard.session.resolve_task_class",
+            return_value=self.ChatTask if model_type == "chat" else self.CompletionTask,
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
+
+        try:
+            if dialect == "sglang_legacy":
+                model = session.models["m"]
+                assert isinstance(model, SglangGenModel)
+                assert model._client.api_key == expected
+            else:
+                (pool,) = session._owned_pools.values()
+                connection = pool.connection
+                if isinstance(connection, AsyncHTTPJSONConnection):
+                    # Sent as ``x-api-key``; harmless to an unauthenticated engine.
+                    assert connection.credential == expected
+                else:
+                    assert connection.api_key == expected
+        finally:
+            await session._close_owned_model_resources()
+
+    @pytest.mark.parametrize("realized", [False, True], ids=["configured", "unplanned"])
+    @pytest.mark.parametrize("dialect", ["openai_completions", "sglang_legacy"])
+    def test_external_engine_without_a_key_still_defers_to_the_sdk_env(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        dialect: str,
+        realized: bool,
+    ) -> None:
+        """An endpoint this run did not launch gets no placeholder."""
+        from openai import OpenAIError
+
+        from sieval.core.models import Deployment, Engine, ServingFacts
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  m:
+    name: org/model
+    type: gen
+    engine: sglang
+    dialect: {dialect}
+    api_base: https://remote.example/v1
+tasks:
+  completion:
+    class: fake.CompletionTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        unplanned = Deployment(
+            deployment_id=None,
+            plan=None,
+            engine=Engine("sglang"),
+            engine_source="deployment",
+            api_base="https://remote.example/v1",
+            endpoints={},
+            topology=None,
+            metrics_url=None,
+            facts=ServingFacts(),
+        )
+        session = EvalSession(
+            config_path,
+            realized_deployments={"m": unplanned} if realized else None,
+        )
+        with (
+            patch(
+                "sieval.cli.leaderboard.session.resolve_task_class",
+                return_value=self.CompletionTask,
+            ),
+            pytest.raises(OpenAIError, match="OPENAI_API_KEY"),
+        ):
+            session._setup_prelaunch_reconciliation()
+            session._setup_postlaunch_reconciliation()
+            session._setup_models()
 
     @pytest.mark.parametrize(
         ("field", "value"),
