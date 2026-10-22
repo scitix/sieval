@@ -68,6 +68,27 @@ def _needs_serve(model_config: dict) -> bool:
     return infer_dict is not None and bool(infer_dict.get("checkpoint"))
 
 
+def _refuse_explicit_endpoint(model_name: str, model_config: dict) -> None:
+    """Refuse to launch an engine for a model that names its own endpoint.
+
+    A top-level ``api_base`` already turns auto-serve off (:func:`_needs_serve`).
+    ``args.api_base`` does not, and the client would send every request there,
+    leaving the launched engine idle while it holds its GPUs.
+    """
+    args = model_config.get("args")
+    if not isinstance(args, dict) or args.get("api_base") is None:
+        return
+    source = "infer.checkpoint" if model_config.get("infer") is not None else "path"
+    serve_key = "infer" if source == "infer.checkpoint" else "path"
+    raise ValueError(
+        f"Model '{model_name}' sets both 'args.api_base' and '{source}': "
+        "`sieval run` would launch an engine that receives no requests. "
+        "Remove 'args.api_base' to evaluate the launched engine, or remove "
+        f"'{serve_key}' to evaluate the endpoint at "
+        f"{args['api_base']!r}."
+    )
+
+
 async def _prepare_launch_batch(
     config_path: Path,
     config: dict[str, Any],
@@ -91,6 +112,7 @@ async def _prepare_launch_batch(
             raise ValueError("models entries must map names to model configurations")
         if not _needs_serve(model_config):
             continue
+        _refuse_explicit_endpoint(model_name, model_config)
 
         infer_dict = model_config.get("infer")
         if infer_dict is not None:

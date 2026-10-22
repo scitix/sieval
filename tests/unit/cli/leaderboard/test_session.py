@@ -3657,6 +3657,57 @@ tasks:
         ):
             session.prepare_prelaunch()
 
+    @pytest.mark.parametrize("dialect", ["openai_completions", "sglang_legacy"])
+    @pytest.mark.parametrize(
+        ("endpoint_block", "named"),
+        [
+            ("    api_base: https://proxy.example/v1\n", "'api_base'"),
+            (
+                "    args:\n      api_base: https://proxy.example/v1\n",
+                "'args.api_base'",
+            ),
+        ],
+    )
+    def test_explicit_api_base_with_realized_deployment_is_refused(
+        self, tmp_path: Path, dialect: str, endpoint_block: str, named: str
+    ) -> None:
+        """Neither the endpoint nor the engine silently wins (#189)."""
+        from sieval.core.models import Deployment, Engine, ServingFacts
+
+        config_path = self._config(
+            tmp_path,
+            f"""
+models:
+  m:
+    name: org/model
+    type: gen
+    dialect: {dialect}
+    api_key: local
+{endpoint_block}tasks:
+  completion:
+    class: fake.CompletionTask
+    dataset:
+      class: fake.Dataset
+    model: m
+""",
+        )
+        realized = Deployment(
+            deployment_id=None,
+            plan=None,
+            engine=Engine("sglang"),
+            engine_source="deployment",
+            api_base="http://127.0.0.1:30000/v1",
+            endpoints={},
+            topology=None,
+            metrics_url=None,
+            facts=ServingFacts(),
+        )
+
+        with pytest.raises(
+            ValueError, match=rf"Model 'm' sets {named} but also has a realized"
+        ):
+            EvalSession(config_path, realized_deployments={"m": realized})
+
     def test_realized_sglang_completions_rejects_input_scoring_postlaunch(
         self, tmp_path: Path
     ) -> None:
@@ -4998,7 +5049,6 @@ models:
   base:
     name: org/model
     type: gen
-    api_base: https://configured.example/v1
     api_key: local
     service_role: decode
     args:

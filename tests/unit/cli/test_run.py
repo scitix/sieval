@@ -1264,6 +1264,97 @@ class TestDeploymentPropagation:
         )
 
 
+class TestExplicitEndpointRefusal:
+    """An ``args.api_base`` next to a checkpoint is refused before launch (#189).
+
+    A top-level ``api_base`` turns auto-serve off; ``args.api_base`` would
+    leave a launched engine idle while requests go elsewhere.
+    """
+
+    @staticmethod
+    def _write(tmp_path: Path, model: dict) -> Path:
+        config_path = tmp_path / "cfg.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "models": {"m": {"name": "org/model", "type": "gen", **model}},
+                    "result_dir": str(tmp_path / "out"),
+                    "tasks": {},
+                }
+            )
+        )
+        return config_path
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("model", "source", "serve_key"),
+        [
+            (
+                {"infer": {"backend": "sglang", "checkpoint": "/tmp/ckpt"}},
+                "infer.checkpoint",
+                "infer",
+            ),
+            ({"path": "/tmp/ckpt"}, "path", "path"),
+        ],
+    )
+    @pytest.mark.parametrize("dry_run", [False, True])
+    async def test_args_api_base_with_checkpoint_refuses_before_resolution(
+        self,
+        tmp_path: Path,
+        model: dict,
+        source: str,
+        serve_key: str,
+        dry_run: bool,
+    ):
+        from sieval.cli.run import _run_all, _run_dry_run
+
+        config_path = self._write(
+            tmp_path, {**model, "args": {"api_base": "https://proxy.example/v1"}}
+        )
+        resolve_infer = AsyncMock()
+        resolve_path = AsyncMock()
+        launch = AsyncMock()
+
+        with (
+            patch("sieval.cli.run.resolve_infer_config", new=resolve_infer),
+            patch("sieval.cli.run.auto_resolve_plan", new=resolve_path),
+            patch("sieval.cli.run.launch_model", new=launch),
+            pytest.raises(ValueError) as excinfo,
+        ):
+            if dry_run:
+                await _run_dry_run(config_path)
+            else:
+                await _run_all(config_path=config_path, verbose=False, resume=False)
+
+        message = str(excinfo.value)
+        assert f"sets both 'args.api_base' and '{source}'" in message
+        assert f"remove '{serve_key}' to evaluate" in message
+        assert "'https://proxy.example/v1'" in message
+        resolve_infer.assert_not_awaited()
+        resolve_path.assert_not_awaited()
+        launch.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_top_level_api_base_still_skips_the_launch(self, tmp_path: Path):
+        from sieval.cli.run import _prepare_launch_batch
+
+        model = {
+            "api_base": "https://proxy.example/v1",
+            "args": {"api_base": "https://proxy.example/v1"},
+            "infer": {"backend": "sglang", "checkpoint": "/tmp/ckpt"},
+        }
+        config_path = self._write(tmp_path, model)
+
+        plans, launches = await _prepare_launch_batch(
+            config_path,
+            yaml.safe_load(config_path.read_text()),
+            effective_deterministic=False,
+        )
+
+        assert plans == {}
+        assert launches == {}
+
+
 class TestEffectiveConfigRerunSafety:
     """End-to-end: `sieval run` produces an effective_config.yaml without
     baked-in api_base/api_key/auto-filled name. Rerun via `sieval run` would

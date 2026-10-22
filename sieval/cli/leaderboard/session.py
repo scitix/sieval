@@ -1418,6 +1418,31 @@ def _reify_cli_overrides(
     return cfg
 
 
+def _refuse_endpoint_with_realized_deployment(
+    config: Mapping[str, Any], realized_deployments: Mapping[str, Deployment]
+) -> None:
+    """Refuse a root model that names an endpoint and has a realized engine.
+
+    Canonical dialects connect to the realized deployment and ``sglang_legacy``
+    connects to the configured ``api_base``; one of the two would sit idle
+    either way, so neither silently wins.
+    """
+
+    for name, model_cfg in (config.get("models") or {}).items():
+        if name not in realized_deployments or not isinstance(model_cfg, dict):
+            continue
+        args = model_cfg.get("args")
+        keys = ["api_base"] if model_cfg.get("api_base") is not None else []
+        if isinstance(args, dict) and args.get("api_base") is not None:
+            keys.append("args.api_base")
+        if keys:
+            raise ValueError(
+                f"Model '{name}' sets {' and '.join(repr(k) for k in keys)} "
+                "but also has a realized deployment; remove the api_base to "
+                "use the deployment, or drop the deployment to use the endpoint"
+            )
+
+
 def _apply_endpoint_injection(
     cfg: dict[str, Any], endpoint_map: Mapping[str, str]
 ) -> dict[str, Any]:
@@ -1770,6 +1795,9 @@ class EvalSession:
         self.config: RootConfigDict = cast(
             RootConfigDict,
             _apply_endpoint_injection(reified, self._legacy_endpoint_map),
+        )
+        _refuse_endpoint_with_realized_deployment(
+            self.config, self._realized_deployments
         )
 
         self.deterministic: bool = resolve_deterministic(

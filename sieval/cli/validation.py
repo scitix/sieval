@@ -232,9 +232,14 @@ def _validate_models(cfg: dict, result: ValidationResult) -> None:
 
             # `infer:` with nothing to serve and no api_base — `sieval run`
             # silently skips; surface it here so every entrypoint sees it.
+            raw_args = mcfg.get("args")
+            args_api_base = (
+                raw_args.get("api_base") if isinstance(raw_args, dict) else None
+            )
             if (
                 has_infer_dict
                 and not mcfg.get("api_base")
+                and not args_api_base
                 and not checkpoint
                 and not path
             ):

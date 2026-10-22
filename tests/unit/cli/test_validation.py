@@ -408,6 +408,22 @@ class TestValidateModels:
         result = validate_eval_config(cfg)
         assert not any("auto-serve" in w for w in result.warnings)
 
+    def test_infer_section_with_args_api_base_no_warning(self):
+        """args.api_base also names the endpoint, so there is nothing to warn."""
+        cfg = {
+            "models": {
+                "m": {
+                    "name": "foo",
+                    "args": {"api_base": "http://localhost:8000/v1"},
+                    "infer": {"backend": "vllm"},
+                }
+            },
+            "datasets": {},
+            "tasks": {},
+        }
+        result = validate_eval_config(cfg)
+        assert not any("auto-serve" in w for w in result.warnings)
+
     def test_infer_section_with_checkpoint_no_warning(self):
         """checkpoint present → we know what to serve, no warning."""
         cfg = {
