@@ -4150,12 +4150,18 @@ class EvalSession:
                 args.pop(key, None)
             if credential is not None:
                 args["api_key"] = credential
+            realized = self._realized_deployments.get(name)
             if "api_base" in cfg:
                 args["api_base"] = cfg["api_base"]
+            elif "api_base" not in args and realized is not None and realized.api_base:
+                # The engine `sieval run` launched; an api_base the user set
+                # wins, as before. Without this the client falls back to the
+                # OpenAI default base and every /generate call 404s.
+                args["api_base"] = realized.api_base
             timeout = _configured_client_timeout(
                 cfg,
                 args,
-                _default_client_timeout(self._realized_deployments.get(name)),
+                _default_client_timeout(realized),
                 f"Model '{name}'",
             )
             args.pop("client_timeout", None)
