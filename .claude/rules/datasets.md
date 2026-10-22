@@ -31,5 +31,6 @@ There is no shared cross-benchmark sample schema — every Task binds 1:1 to its
 - `deps_group` here is **loader-side** deps; evaluator-side deps stay on the Task.
 - `hf:` sources MUST be revision-pinned (`hf:org/name@<sha>`); `url:` sources MUST declare
   per-file `checksums` (sha256). `check_datasets` enforces both.
+- Set `gated=True` when an `hf:` source is a gated Hub repo (Hub API `gated` is not `false`).
 - Re-run `scripts/sync_meta_index.py` after editing `source`/`checksums` (the runtime reads
   the generated `index.json`).

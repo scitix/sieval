@@ -6,6 +6,7 @@ AI-Generated Code - Claude Sonnet 4.6 (Anthropic)
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from sieval.cli.dataset.commands import dataset_app
@@ -52,7 +53,8 @@ def test_dataset_list_json_output():
     data = payload["data"]
     assert isinstance(data, list) and len(data) >= 11
     # Every row has expected keys
-    assert {"name", "domain", "license", "deps_group", "ready"} <= set(data[0])
+    assert {"name", "domain", "license", "deps_group", "gated", "ready"} <= set(data[0])
+    assert all(isinstance(row["gated"], bool) for row in data)
 
 
 def test_dataset_show_known():
@@ -458,6 +460,8 @@ def test_dataset_download_json_batch_failures_are_itemised(tmp_path):
             return_value=True,
         ),
         patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+        # Gated datasets are refused before `download` without a token.
+        patch("sieval.cli.dataset.commands.get_token", return_value="hf_x"),
     ):
         result = runner.invoke(
             dataset_app,
@@ -870,6 +874,125 @@ def test_dataset_show_text_renders_ready_and_missing(tmp_path, monkeypatch):
     assert re.search(r"^  data\s", result.output, re.MULTILINE), (
         f"expected an indented 'data' kind line in Missing block; got:\n{result.output}"
     )
+
+
+def _gated_meta(
+    *, gated: bool = True, source: tuple[str, ...] = ("hf:org/gds@abc123",)
+) -> DatasetMeta:
+    return DatasetMeta(
+        name="gds",
+        display_name="gds",
+        description="d",
+        source=source,
+        categories=(Category(Level1Category.KNOWLEDGE, "Multi-domain"),),
+        gated=gated,
+    )
+
+
+def test_dataset_show_reports_gated():
+    result = runner.invoke(dataset_app, ["show", "hle", "-o", "json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["gated"] is True
+
+    result = runner.invoke(dataset_app, ["show", "hle"])
+    assert result.exit_code == 0, result.output
+    assert "Gated:         yes" in result.output
+
+
+def test_download_one_refuses_gated_source_without_token(tmp_path):
+    from sieval.cli.dataset.commands import _download_one
+
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = False
+    with (
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        patch("sieval.cli.dataset.commands.get_token", return_value=None),
+        patch("sieval.cli.dataset.commands.log_user") as log_user,
+        pytest.raises(RuntimeError, match="no Hugging Face token") as exc_info,
+    ):
+        _download_one(_gated_meta(), tmp_path, False, [])
+
+    message = str(exc_info.value)
+    assert "'gds' is a gated Hugging Face dataset" in message
+    assert "https://huggingface.co/datasets/org/gds" in message
+    fake_handler.download.assert_not_called()
+    log_user.assert_not_called()  # no "fetching" line for a fetch never made
+
+
+def test_download_one_proceeds_on_gated_source_with_token(tmp_path):
+    from sieval.cli.dataset.commands import _download_one
+
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = False
+    with (
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        patch("sieval.cli.dataset.commands.get_token", return_value="hf_x"),
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+    ):
+        record = _download_one(_gated_meta(), tmp_path, False, [])
+
+    assert record["ok"] is True
+    assert fake_handler.download.call_count == 1
+
+
+def test_download_one_skips_token_check_for_ungated_source(tmp_path):
+    from sieval.cli.dataset.commands import _download_one
+
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = False
+    with (
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        patch("sieval.cli.dataset.commands.get_token", return_value=None) as token,
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+    ):
+        record = _download_one(_gated_meta(gated=False), tmp_path, False, [])
+
+    assert record["ok"] is True
+    token.assert_not_called()
+
+
+def test_download_one_checks_token_only_for_hf_source_of_gated_dataset(tmp_path):
+    from sieval.cli.dataset.commands import _download_one
+
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = False
+    meta = _gated_meta(source=("hf:org/gds@abc123", "url:https://example.com/x.csv"))
+    with (
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        patch("sieval.cli.dataset.commands.get_token", return_value="hf_x") as token,
+        patch("sieval.cli.dataset.commands.verify_checksums", return_value=[]),
+    ):
+        record = _download_one(meta, tmp_path, False, [])
+
+    assert record["ok"] is True
+    assert fake_handler.download.call_count == 2
+    token.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("gated", "expected"),
+    [
+        (True, "'gds' is a gated Hugging Face dataset and the Hub refused access"),
+        (False, "not registered gated=True"),
+    ],
+)
+def test_download_one_rewraps_gated_repo_error(tmp_path, gated, expected):
+    from huggingface_hub.errors import GatedRepoError
+
+    from sieval.cli.dataset.commands import _download_one
+
+    fake_handler = MagicMock()
+    fake_handler.is_downloaded.return_value = False
+    fake_handler.download.side_effect = GatedRepoError("401 Client Error")
+    with (
+        patch("sieval.cli.dataset.commands.resolve_handler", return_value=fake_handler),
+        patch("sieval.cli.dataset.commands.get_token", return_value="hf_x"),
+        pytest.raises(RuntimeError) as exc_info,
+    ):
+        _download_one(_gated_meta(gated=gated), tmp_path, False, [])
+
+    assert expected in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, GatedRepoError)
 
 
 def _hand_place_aime_2024(dest_root):

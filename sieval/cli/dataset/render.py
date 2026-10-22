@@ -38,6 +38,7 @@ def _dataset_to_row(m: DatasetMeta, data_dir: Path) -> dict:
         "domain": "/".join(domains) or "-",
         "deps_group": m.deps_group or "-",
         "license": m.license or "unknown",
+        "gated": m.gated,
         "ready": report.ready,
     }
 
@@ -69,6 +70,7 @@ def render_dataset_show(
         "tags": list(m.tags),
         "deps_group": m.deps_group,
         "license": m.license or "unknown",
+        "gated": m.gated,
         "ready": ready,
         "missing": missing,
         "suggested_path": _suggested_yaml_path(m),

@@ -7,7 +7,7 @@ a consumer contract: renames, removals, or type changes require a
 
 Frozen fields on DatasetMeta:
     name, display_name, description, source (schemes hf:/url:), categories[].level1,
-    deps_group, license.
+    deps_group, license, gated.
 
 Not frozen (may change within schema_version=1):
     tags values, Category.level2 vocabulary, Python-side internals.
@@ -116,6 +116,8 @@ class DatasetMeta:
     `deps_group` is the *loader-side* optional-deps group (extras needed to
     load/parse this dataset). Evaluator-side deps (scorers, parsers) live on
     `TaskMeta.deps_group` instead — the two are independent.
+
+    `gated` marks an `hf:` source that is a gated Hub repo (download needs a token).
     """
 
     name: str
@@ -127,6 +129,7 @@ class DatasetMeta:
     deps_group: str | None = None
     license: str | None = None
     checksums: tuple[tuple[str, str], ...] = ()
+    gated: bool = False
 
 
 def _normalize_source(source: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -146,6 +149,7 @@ def _validate(
     description: str,
     categories: tuple[Category, ...],
     source: tuple[str, ...],
+    gated: bool = False,
 ) -> None:
     """Validate DatasetMeta fields; raise ValueError on any violation."""
     if not name:
@@ -178,6 +182,12 @@ def _validate(
                 f"source {src!r} must use scheme from "
                 f"{_VALID_SCHEMES} (e.g. 'hf:org/name')"
             )
+
+    if gated and not any(src.startswith("hf:") for src in source):
+        raise ValueError(
+            f"dataset {name!r} sets gated=True but declares no hf: source; "
+            f"gated marks a gated Hugging Face Hub repo"
+        )
 
     _validate_staged_basenames_unique(name, source)
 
@@ -287,6 +297,7 @@ def sieval_dataset[T: type](
     deps_group: str | None = None,
     license: str | None = None,
     checksums: dict[str, str] | None = None,
+    gated: bool = False,
 ) -> Callable[[T], T]:
     """Decorate a Dataset subclass to register its DatasetMeta.
 
@@ -305,6 +316,7 @@ def sieval_dataset[T: type](
         description=description,
         categories=categories,
         source=normalized_source,
+        gated=gated,
     )
     normalized_checksums = _normalize_checksums(checksums)
     _validate_checksums(name, normalized_source, normalized_checksums)
@@ -318,6 +330,7 @@ def sieval_dataset[T: type](
         deps_group=deps_group,
         license=license,
         checksums=normalized_checksums,
+        gated=gated,
     )
 
     def decorator(cls: T) -> T:
@@ -373,6 +386,7 @@ def dataset_meta_to_dict(meta: DatasetMeta) -> dict[str, Any]:
     Wire-format contract (v0.1, frozen):
       - `source` is ALWAYS a list (single-source datasets become 1-element).
       - `license` is always present (may be null).
+      - `gated` is always present; a row without it reads as `false`.
     """
     return {
         "name": meta.name,
@@ -386,6 +400,7 @@ def dataset_meta_to_dict(meta: DatasetMeta) -> dict[str, Any]:
         "deps_group": meta.deps_group,
         "license": meta.license,
         "checksums": dict(meta.checksums),
+        "gated": meta.gated,
     }
 
 
@@ -412,6 +427,7 @@ def dataset_meta_from_dict(payload: dict[str, Any]) -> DatasetMeta:
         deps_group=payload.get("deps_group"),
         license=payload.get("license"),
         checksums=tuple(sorted(payload.get("checksums", {}).items())),
+        gated=payload.get("gated", False),
     )
 
 

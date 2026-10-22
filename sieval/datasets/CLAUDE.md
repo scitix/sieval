@@ -13,6 +13,7 @@
 - `deps_group` here is **loader-side** deps; evaluator-side deps stay on the Task.
 - `hf:` sources are revision-pinned; `url:` sources carry per-file `checksums` (sha256).
   Regenerate the meta index (`scripts/sync_meta_index.py`) after editing either.
+- A gated Hub repo sets `gated=True` on the decorator.
 
 ## Corrected variants
 

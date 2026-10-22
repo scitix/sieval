@@ -42,6 +42,10 @@ def test_source_pins_hf_revision():
     assert meta_source == (f"hf:cais/hle@{HLE_REVISION}",)
 
 
+def test_registered_as_gated():
+    assert get_dataset_meta(HLEDataset).gated is True
+
+
 def test_load_forwards_path_and_preserves_image_column():
     hf_dict = _hf_dict()
     dataset = HLEDataset(_hf_dict=hf_dict)

@@ -670,6 +670,7 @@ class TestDatasetTaskListTextCollapse:
                 "domain": "A",
                 "deps_group": "-",
                 "license": "MIT",
+                "gated": False,
                 "ready": "yes",
             },
             {
@@ -677,6 +678,7 @@ class TestDatasetTaskListTextCollapse:
                 "domain": "B",
                 "deps_group": "-",
                 "license": "MIT",
+                "gated": False,
                 "ready": "no",
             },
         ]
@@ -686,6 +688,7 @@ class TestDatasetTaskListTextCollapse:
         logged = _format_log_user(mock)
         assert "DEPS_GROUP: all -" in logged
         assert "LICENSE: all MIT" in logged
+        assert "GATED: all no" in logged
         assert "NAME" in logged
         assert "READY" in logged
 
@@ -727,6 +730,7 @@ class TestDatasetTaskListTextCollapse:
                 "domain": "A",
                 "deps_group": "math",
                 "license": "MIT",
+                "gated": True,
                 "ready": "yes",
             },
             {
@@ -734,6 +738,7 @@ class TestDatasetTaskListTextCollapse:
                 "domain": "B",
                 "deps_group": "drop",
                 "license": "Apache-2.0",
+                "gated": False,
                 "ready": "no",
             },
         ]
