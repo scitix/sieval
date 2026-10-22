@@ -113,11 +113,9 @@ class ModelOutput:
     logprobs_tokens: list[str] | None = None
     logprobs: list[float | None] | None = None
     top_logprobs: list[dict[str, float]] | None = None
-    #: The echoed input's top-k, one ``{token: logprob}`` per input token,
-    #: aligned with the start of ``logprobs_tokens``; ``{}`` where the server
-    #: gave none (the first token). ``None`` unless ``alogprobs(echo=True,
-    #: logprobs=N > 0)``. ``top_logprobs`` stays the sampled tokens' only, so
-    #: its first entry is the next-token distribution.
+    #: Top-k per echoed input token, aligned with the start of
+    #: ``logprobs_tokens`` (``{}`` for the first). Set when a request scores
+    #: its input with ``top_logprobs > 0``; ``top_logprobs`` stays sampled-only.
     input_top_logprobs: list[dict[str, float]] | None = None
     #: Per-rollout logprobs, aligned with ``texts``, at ``n > 1``; the three
     #: fields above then stay ``None``.

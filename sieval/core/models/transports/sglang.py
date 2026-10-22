@@ -227,7 +227,6 @@ class SglangTransport:
             body["return_logprob"] = True
             # 0 → all echoed input token logprobs; -1 → output only.
             body["logprob_start_len"] = 0 if req.scoring.input_scoring else -1
-            # One breadth for every returned position, input ones included.
             body["top_logprobs_num"] = req.scoring.top_logprobs
             body["return_text_in_logprobs"] = True
 
@@ -282,11 +281,7 @@ class SglangTransport:
     def _input_top_logprobs(
         cls, meta: dict[str, Any], positions: int
     ) -> tuple[tuple[TopKEntry, ...], ...]:
-        """Lift ``input_top_logprobs``, one entry per echoed input token.
-
-        SGLang sends ``None`` for the first input token, which has no context;
-        that position becomes ``()``.
-        """
+        """Lift ``input_top_logprobs``; the first token's ``None`` becomes ``()``."""
         top = cls._triples_to_topk(meta.get("input_top_logprobs") or [])
         if top is None or len(top) != positions:
             raise RuntimeError(

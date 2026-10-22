@@ -739,6 +739,7 @@ class OutputContract:
                 "carries none"
             )
 
+        # Backstop: in-tree dialects refuse this earlier, a new one may not.
         if (
             req.scoring.input_scoring
             and req.scoring.top_logprobs > 0

@@ -778,13 +778,7 @@ class Model:
         temperature: float = 0.0,
         **kwargs: object,
     ) -> ModelOutput:
-        """Score ``prompt``, and with ``echo`` its own tokens too.
-
-        ``logprobs`` is the top-k breadth at every returned position. With
-        ``echo`` the input's top-k lands in ``ModelOutput.input_top_logprobs``.
-        Unset, it is 5 without ``echo`` and 0 with it, which returns each input
-        token's own logprob only.
-        """
+        """``logprobs`` is the top-k breadth; unset, 0 with ``echo`` and 5 without."""
         if logprobs is None:
             logprobs = 0 if echo else 5
         if echo:
