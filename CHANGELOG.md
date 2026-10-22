@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.2] - 2026-10-22
+
+No on-disk format or stage identity changes: `IDENTITY_SCHEMA` stays 1, every
+built-in task's grader digest is the one 0.10.1 computes, and 0.10.0 and 0.10.1
+result directories resume. Two configurations that used to run are now refused:
+an evaluation that loads a staged dataset holding bytes other than its pinned
+revision, and an `args.api_base` on a model `sieval run` launches.
+
+### Added
+
+- **Input-side top-k logprobs.** A request that scores its input with `top_logprobs > 0`, such as `alogprobs(echo=True, logprobs=N)`, returns the top-N alternatives at every echoed input position in `ModelOutput.input_top_logprobs` (IR: `InputScoringResult.top_logprobs`, aligned with `token_logprobs`). Supported on `sglang_legacy` and `openai_completions`; a missing or misaligned input top-k is refused. `top_logprobs` still holds only the generated tokens'. `alogprobs`' `logprobs` defaults to 0 with `echo` (what was sent before) and 5 without; an explicit value is now sent with `echo` too, so only a caller passing `echo=True, logprobs=N>0` sends a different request than in 0.10.1. No built-in task does (#178).
+- **`gated` in the dataset registry.** `DatasetMeta.gated` (frozen wire field; absent reads as `false`, so older `index.json` files load). `hle` is gated. `sieval dataset list` gains a GATED column, `dataset show` a `Gated:` line, and `dataset download` refuses a gated source without a Hugging Face token, or the Hub's refusal, with a message naming the gate and what to set (#181, #182).
+- **`bbh`, `mgsm`, `mmlu_redux` and `trivia_qa` are registered**, each revision-pinned, so `sieval dataset download` fetches them and tasks name them by bare repo id. MGSM points at `juletxara/mgsm`, since `ljvmiranda921/mgsm` is gone from the Hub. An `hf:` source may end in `#<glob>`, forwarded as `snapshot_download(allow_patterns=...)`; `trivia_qa` stages only `rc.nocontext/*` (about 60 MB of a 35 GB repo) and evaluates `validation`, because upstream `test` is unlabeled (#180, #184).
+
+### Fixed
+
+- **Staged datasets are checked against their pin.** `hf:` sources must carry the download record `snapshot_download` writes naming the pinned commit for every file; `url:` sources must match their declared checksum. `sieval dataset download` records each checksum it verified in `<dataset>/.sieval/download/`, and probes read that record while size and mtime match, else hash once per process. Probes never write into the data dir, so a read-only or shared `SIEVAL_DATA_DIR` works (#179, #183, #187, #190).
+- A `sglang_legacy` model with an `infer:` block reaches the engine `sieval run` launched; it used to fall back to the OpenAI SDK default base and fail every request with HTTP 404 (#185, #186).
+- An engine `sieval run` launched gets the placeholder key `local` when the config names none, instead of failing at client creation without `OPENAI_API_KEY` or sending whatever that variable held. An explicit key still wins, and an endpoint the run did not launch still reads the SDK's env var (#188, #191).
+
+### Changed
+
+- **BREAKING — a stale staged dataset is refused.** `sieval dataset download` refuses a source whose staged directory holds other bytes, with the reason and a `--force` hint, and deletes nothing. `--force` on an `hf:` source clears the repo directory before fetching, since `snapshot_download` keeps files it did not write. Readiness reports such a source as missing data (`missing[].stale` in JSON, `[stale: …]` in text). `sieval run` / `sieval eval` refuse a dataset `path:` that resolves to a registered source's staging directory holding other bytes; a `path:` outside staging loads as given. A data dir filled by hand now reads `ready: no`: re-run `sieval dataset download <name> --force` (#179, #183).
+- **BREAKING — `args.api_base` next to `path` or `infer.checkpoint` is refused** before any engine starts, by `sieval run` and `--dry-run` alike. It used to be ignored by canonical dialects and to bypass the launched engine on `sglang_legacy`. Remove it to evaluate the launched engine (the #185 workaround is no longer needed), or remove `infer`/`path` to evaluate the endpoint. A top-level `api_base` still turns auto-serve off. `EvalSession` also refuses a configured `api_base` that differs from a realized deployment's (#189, #192).
+
 ## [0.10.1] - 2026-10-22
 
 A patch release despite two breaking changes, because neither touches an
