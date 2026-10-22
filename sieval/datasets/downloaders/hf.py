@@ -10,12 +10,16 @@ url-scheme convention ``{dest_root}/<dataset_name>/`` so the runtime side can
 resolve a bare HF repo_id to its on-disk path by string concat — no hub-cache
 indirection, no offline/online split inside ``datasets.load_dataset``.
 
+A trailing ``#<glob>`` (``hf:mandarjoshi/trivia_qa@<sha>#rc.nocontext/*``)
+mirrors only the matching repo paths.
+
 AI-Generated Code - Claude Opus 4.7 (1M context) (Anthropic)
 """
 
 import os
 import shutil
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
 
 # Payload suffixes found across pilot datasets; extend as other formats surface.
@@ -26,20 +30,29 @@ _DATA_SUFFIXES = (".arrow", ".parquet", ".jsonl", ".json", ".csv")
 class HFSource:
     repo_id: str
     revision: str | None
+    # `snapshot_download(allow_patterns=...)`; None mirrors the whole repo.
+    allow_pattern: str | None = None
 
 
 def parse_hf_source(source: str) -> HFSource:
     if not source.startswith("hf:"):
         raise ValueError(f"Expected hf: scheme, got {source!r}")
-    repo_ref = source[len("hf:") :]
+    # Split `#` first: a revision may contain `/` (`refs/pr/1`).
+    repo_ref, fragment, allow_pattern = source[len("hf:") :].partition("#")
+    if fragment and not allow_pattern:
+        raise ValueError(f"Invalid hf source path glob: {source!r}")
     if not repo_ref:
         raise ValueError(f"Invalid hf source: {source!r}")
     repo_id, separator, revision = repo_ref.rpartition("@")
     if not separator:
-        return HFSource(repo_id=repo_ref, revision=None)
+        return HFSource(
+            repo_id=repo_ref, revision=None, allow_pattern=allow_pattern or None
+        )
     if not repo_id or not revision:
         raise ValueError(f"Invalid hf source revision pin: {source!r}")
-    return HFSource(repo_id=repo_id, revision=revision)
+    return HFSource(
+        repo_id=repo_id, revision=revision, allow_pattern=allow_pattern or None
+    )
 
 
 class HFHandler:
@@ -66,6 +79,7 @@ class HFHandler:
             revision=parsed.revision,
             local_dir=str(local_dir),
             force_download=force,
+            allow_patterns=parsed.allow_pattern,
         )
 
     def is_downloaded(
@@ -85,14 +99,18 @@ class HFHandler:
             return False
         # Require at least one actual data payload outside the internal
         # `.cache/` bookkeeping; metadata stubs land early and aren't proof
-        # the download finished.
+        # the download finished. A globbed source needs one its glob selects.
         cache_dir = local_dir / ".cache"
         for p in local_dir.rglob("*"):
             if not p.is_file():
                 continue
             if cache_dir in p.parents:
                 continue
-            if p.suffix in _DATA_SUFFIXES:
+            if p.suffix not in _DATA_SUFFIXES:
+                continue
+            if parsed.allow_pattern is None or fnmatch(
+                p.relative_to(local_dir).as_posix(), parsed.allow_pattern
+            ):
                 return True
         return False
 

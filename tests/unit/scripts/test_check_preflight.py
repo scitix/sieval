@@ -1986,6 +1986,17 @@ class TestDatasetIntegrity:
         assert len(out) == 1 and "d" in out[0]
         assert "hf source not pinned" in out[0]
 
+    def test_path_glob_does_not_count_as_a_pin(self):
+        # `#<glob>` narrows what is mirrored; it is not a revision.
+        out = _dataset_integrity_violations([self._meta("e", ["hf:org/e#cfg/*"])])
+        assert len(out) == 1 and "hf source not pinned" in out[0]
+
+    def test_pinned_source_with_path_glob_passes(self):
+        out = _dataset_integrity_violations(
+            [self._meta("f", ["hf:org/f@" + "0" * 40 + "#cfg/*"])]
+        )
+        assert out == []
+
     def test_local_source_exempt(self):
         out = _dataset_integrity_violations([self._meta("c", ["local:/data/c"])])
         assert out == []

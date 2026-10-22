@@ -32,5 +32,7 @@ There is no shared cross-benchmark sample schema — every Task binds 1:1 to its
 - `hf:` sources MUST be revision-pinned (`hf:org/name@<sha>`); `url:` sources MUST declare
   per-file `checksums` (sha256). `check_datasets` enforces both.
 - Set `gated=True` when an `hf:` source is a gated Hub repo (Hub API `gated` is not `false`).
+- `hf:org/name@<sha>#<glob>` mirrors only matching paths (`trivia_qa`); the glob is not a pin.
+  Read the staged slice by `data_dir=`, not config name.
 - Re-run `scripts/sync_meta_index.py` after editing `source`/`checksums` (the runtime reads
   the generated `index.json`).

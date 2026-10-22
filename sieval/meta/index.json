@@ -296,6 +296,29 @@
       "gated": false
     },
     {
+      "name": "bbh",
+      "display_name": "BIG-Bench Hard",
+      "description": "BIG-Bench Hard — 27 challenging BIG-Bench subsets, 6,511 problems.",
+      "source": [
+        "hf:lukaemon/bbh@982bb89fd79532a8ac676a61fc42eb1aeec63f99"
+      ],
+      "categories": [
+        {
+          "level1": "Logic",
+          "level2": "ComplexLogic"
+        }
+      ],
+      "tags": [
+        "english",
+        "reasoning",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "MIT",
+      "checksums": {},
+      "gated": false
+    },
+    {
       "name": "bfcl_v3_live",
       "display_name": "BFCL v3 (live)",
       "description": "Berkeley Function Calling Leaderboard v3 live: user-contributed AST, irrelevance, relevance.",
@@ -1021,6 +1044,29 @@
       "gated": false
     },
     {
+      "name": "mgsm",
+      "display_name": "MGSM",
+      "description": "Multilingual Grade School Math — 250 GSM8K problems in 11 languages.",
+      "source": [
+        "hf:juletxara/mgsm@b2f13d426afe3be8d69a7e739b36724db8b66bbc"
+      ],
+      "categories": [
+        {
+          "level1": "Mathematics",
+          "level2": "ElementaryMath"
+        }
+      ],
+      "tags": [
+        "multilingual",
+        "math-word-problems",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-SA-4.0",
+      "checksums": {},
+      "gated": false
+    },
+    {
       "name": "mmlu",
       "display_name": "MMLU",
       "description": "Massive Multitask Language Understanding — 57 academic subjects, MCQ.",
@@ -1061,6 +1107,28 @@
       ],
       "deps_group": null,
       "license": "MIT",
+      "checksums": {},
+      "gated": false
+    },
+    {
+      "name": "mmlu_redux",
+      "display_name": "MMLU-Redux",
+      "description": "MMLU-Redux — 3,000 re-annotated MMLU questions, 30 subjects, MCQ.",
+      "source": [
+        "hf:edinburgh-dawg/mmlu-redux@3720db6aeb3d019de48bf37916c1a54074ff4997"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "english",
+        "multiple-choice"
+      ],
+      "deps_group": null,
+      "license": "CC-BY-4.0",
       "checksums": {},
       "gated": false
     },
@@ -1503,6 +1571,28 @@
       ],
       "deps_group": null,
       "license": "MIT",
+      "checksums": {},
+      "gated": false
+    },
+    {
+      "name": "trivia_qa",
+      "display_name": "TriviaQA",
+      "description": "TriviaQA closed-book (rc.nocontext) — 17,944 validation questions.",
+      "source": [
+        "hf:mandarjoshi/trivia_qa@0f7faf33a3908546c6fd5b73a660e0f8ff173c2f#rc.nocontext/*"
+      ],
+      "categories": [
+        {
+          "level1": "Knowledge",
+          "level2": "Multi-domain"
+        }
+      ],
+      "tags": [
+        "english",
+        "open-ended"
+      ],
+      "deps_group": null,
+      "license": "Apache-2.0",
       "checksums": {},
       "gated": false
     },

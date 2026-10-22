@@ -45,6 +45,10 @@ from .arc_easy import (
     ARCEasyDataset,
     ARCEasyDatasetSample,
 )
+from .bbh import (
+    BBHDataset,
+    BBHDatasetSample,
+)
 from .bfcl_v3_live import (
     BfclV3LiveDataset,
     BfclV3LiveDatasetSample,
@@ -169,6 +173,10 @@ from .mbpp import (
     MBPPDataset,
     MBPPDatasetSample,
 )
+from .mgsm import (
+    MGSMDataset,
+    MGSMDatasetSample,
+)
 from .mmlu import (
     MMLUDataset,
     MMLUDatasetSample,
@@ -176,6 +184,10 @@ from .mmlu import (
 from .mmlu_pro import (
     MMLUProDataset,
     MMLUProDatasetSample,
+)
+from .mmlu_redux import (
+    MMLUReduxDataset,
+    MMLUReduxDatasetSample,
 )
 from .mmmlu import (
     MMMLUDataset,
@@ -249,6 +261,10 @@ from .theoremqa import (
     TheoremQADataset,
     TheoremQADatasetSample,
 )
+from .trivia_qa import (
+    TriviaQADataset,
+    TriviaQADatasetSample,
+)
 from .ugmathbench import (
     UGMathBenchDataset,
     UGMathBenchDatasetSample,
@@ -281,6 +297,8 @@ __all__ = [
     "Apex2025DatasetSample",
     "ApexShortlist2025Dataset",
     "ApexShortlist2025DatasetSample",
+    "BBHDataset",
+    "BBHDatasetSample",
     "BRUMO2025Dataset",
     "BRUMO2025DatasetSample",
     "BfclV3LiveDataset",
@@ -343,10 +361,14 @@ __all__ = [
     "MATHPerturbSimpleDatasetSample",
     "MBPPDataset",
     "MBPPDatasetSample",
+    "MGSMDataset",
+    "MGSMDatasetSample",
     "MMLUDataset",
     "MMLUDatasetSample",
     "MMLUProDataset",
     "MMLUProDatasetSample",
+    "MMLUReduxDataset",
+    "MMLUReduxDatasetSample",
     "MMMLUDataset",
     "MMMLUDatasetSample",
     "MultiIFDataset",
@@ -383,6 +405,8 @@ __all__ = [
     "TEvalBeforeCallingDatasetSample",
     "TheoremQADataset",
     "TheoremQADatasetSample",
+    "TriviaQADataset",
+    "TriviaQADatasetSample",
     "UGMathBenchDataset",
     "UGMathBenchDatasetSample",
     "WikiSQLDataset",

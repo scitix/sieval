@@ -292,3 +292,75 @@ def test_download_without_force_keeps_existing_files(tmp_path):
     with patch("huggingface_hub.snapshot_download"):
         HFHandler().download(f"hf:org/foo@{_PIN}", tmp_path, "foo", force=False)
     assert (local_dir / "train.jsonl").exists()
+
+
+def test_parse_hf_source_with_path_glob():
+    assert parse_hf_source("hf:org/foo@abc123#cfg/*") == HFSource(
+        repo_id="org/foo", revision="abc123", allow_pattern="cfg/*"
+    )
+
+
+def test_parse_hf_source_path_glob_without_revision():
+    assert parse_hf_source("hf:org/foo#cfg/*") == HFSource(
+        repo_id="org/foo", revision=None, allow_pattern="cfg/*"
+    )
+
+
+def test_parse_hf_source_revision_with_slash_keeps_glob_apart():
+    # A revision may contain `/` (`refs/pr/1`); only `#` starts the glob.
+    assert parse_hf_source("hf:org/foo@refs/pr/1#cfg/*") == HFSource(
+        repo_id="org/foo", revision="refs/pr/1", allow_pattern="cfg/*"
+    )
+
+
+@pytest.mark.parametrize(
+    "source", ["hf:org/foo@abc123#", "hf:#cfg/*", "hf:org/foo@#cfg/*"]
+)
+def test_parse_hf_source_rejects_invalid_glob_source(source):
+    with pytest.raises(ValueError):
+        parse_hf_source(source)
+
+
+def test_download_without_glob_mirrors_whole_repo(tmp_path):
+    with patch("huggingface_hub.snapshot_download") as mock_snap:
+        HFHandler().download("hf:org/foo@abc123", tmp_path, "foo", force=False)
+    assert mock_snap.call_args.kwargs["allow_patterns"] is None
+
+
+def test_download_forwards_glob_as_allow_patterns(tmp_path):
+    with patch("huggingface_hub.snapshot_download") as mock_snap:
+        HFHandler().download("hf:org/foo@abc123#cfg/*", tmp_path, "foo", force=False)
+    call = mock_snap.call_args
+    assert call.kwargs["allow_patterns"] == "cfg/*"
+    assert call.kwargs["revision"] == "abc123"
+    # The glob narrows what lands, not where: still the repo's own dir.
+    assert call.kwargs["local_dir"] == str(tmp_path / "org" / "foo")
+
+
+def test_is_downloaded_with_glob_requires_a_matching_payload(tmp_path):
+    """Two globbed sources can share one repo dir; another slice's payload
+    must not read as this one being staged."""
+    h = HFHandler()
+    local_dir = tmp_path / "org" / "foo"
+    (local_dir / "other").mkdir(parents=True)
+    (local_dir / "other" / "test.parquet").write_bytes(b"x")
+    assert not h.is_downloaded("hf:org/foo@abc123#cfg/*", tmp_path, "foo")
+    (local_dir / "cfg").mkdir()
+    (local_dir / "cfg" / "test.parquet").write_bytes(b"x")
+    assert h.is_downloaded("hf:org/foo@abc123#cfg/*", tmp_path, "foo")
+
+
+def test_is_downloaded_with_glob_ignores_matching_non_payload(tmp_path):
+    h = HFHandler()
+    local_dir = tmp_path / "org" / "foo" / "cfg"
+    local_dir.mkdir(parents=True)
+    (local_dir / "README.md").write_bytes(b"x")
+    assert not h.is_downloaded("hf:org/foo@abc123#cfg/*", tmp_path, "foo")
+
+
+def test_is_downloaded_glob_star_spans_subdirectories(tmp_path):
+    # `fnmatch`'s `*` crosses `/`, as in `snapshot_download`'s `allow_patterns`.
+    nested = tmp_path / "org" / "foo" / "cfg" / "sub"
+    nested.mkdir(parents=True)
+    (nested / "test.parquet").write_bytes(b"x")
+    assert HFHandler().is_downloaded("hf:org/foo@abc123#cfg/*", tmp_path, "foo")
