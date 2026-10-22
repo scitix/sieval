@@ -1,16 +1,16 @@
 """Whether a source's staged bytes are the ones its dataset pins.
 
-A handler's ``is_downloaded`` answers "is a finished download resident"; it
-cannot tell a pinned snapshot from a directory someone else filled. This module
-adds the pin comparison on top — ``hf:`` against the recorded revision,
-``url:`` against the declared checksum — so ``sieval dataset download``,
-readiness and ``sieval eval`` share one verdict on what "present" means.
+``is_downloaded`` only says a download is resident. This adds the pin check —
+``hf:`` against the recorded revision, ``url:`` against the declared checksum —
+so ``download``, readiness and ``eval`` share one verdict.
+
+A ``url:`` archive is checked, not what a loader extracts from it.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import os
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -35,10 +35,14 @@ def probe_source(meta: DatasetMeta, source: str, dest_root: Path) -> SourceProbe
 
     Raises ``NotImplementedError`` for an unregistered scheme, like ``resolve``.
     """
-    if not resolve(source).is_downloaded(source, dest_root, meta.name):
-        return SourceProbe("absent")
-    reason = _pin_mismatch_reason(meta, source, dest_root)
-    return SourceProbe("stale", reason) if reason else SourceProbe("pinned")
+    if resolve(source).is_downloaded(source, dest_root, meta.name):
+        reason = _pin_mismatch_reason(meta, source, dest_root)
+        return SourceProbe("stale", reason) if reason else SourceProbe("pinned")
+    # `is_downloaded` looks for data suffixes only; a dir holding other files
+    # is still occupied, and a fetch into it would keep them.
+    if source.startswith("hf:") and (reason := pin_mismatch(source, dest_root)):
+        return SourceProbe("stale", reason)
+    return SourceProbe("absent")
 
 
 def _pin_mismatch_reason(meta: DatasetMeta, source: str, dest_root: Path) -> str | None:
@@ -46,14 +50,11 @@ def _pin_mismatch_reason(meta: DatasetMeta, source: str, dest_root: Path) -> str
         return pin_mismatch(source, dest_root)
     if source.startswith("url:"):
         return _checksum_mismatch(meta, source, dest_root)
-    # `local:` corpora are bring-your-own and carry no pin; a custom scheme's
-    # handler owns its own notion of residency.
-    return None
+    return None  # `local:` is bring-your-own and carries no pin
 
 
 def staged_dir(meta: DatasetMeta, source: str, dest_root: Path) -> Path:
-    """Directory *source* stages into: ``<root>/<org>/<repo>`` for ``hf:``,
-    ``<root>/<dataset name>`` for every other scheme."""
+    """``<root>/<org>/<repo>`` for ``hf:``, ``<root>/<dataset name>`` otherwise."""
     if source.startswith("hf:"):
         return dest_root / parse_hf_source(source).repo_id
     return dest_root / meta.name
@@ -63,20 +64,34 @@ def _checksum_mismatch(meta: DatasetMeta, source: str, dest_root: Path) -> str |
     basename = url_path_basename(source[len("url:") :]) or "download"
     expected = dict(meta.checksums).get(basename)
     if expected is None:
-        # `check_datasets` requires a checksum for every registered url:
-        # source; an undeclared one has nothing to compare against.
-        return None
-    path = dest_root / meta.name / basename
-    stat = path.stat()
-    actual = _sha256((path, stat.st_size, stat.st_mtime_ns))
+        return None  # `check_datasets` requires one for every registered source
+    actual = _cached_sha256(dest_root / meta.name / basename)
     if actual != expected:
         return f"{basename} has {actual}, expected {expected}"
     return None
 
 
-@lru_cache(maxsize=256)
-def _sha256(key: tuple[Path, int, int]) -> str:
-    # Keyed on (path, size, mtime) so `task list` — one probe per task,
-    # several tasks per dataset — hashes a large archive once per process,
-    # while a rewrite between probes still rehashes.
-    return compute_sha256(key[0])
+def _cached_sha256(path: Path) -> str:
+    """``compute_sha256``, memoized in a ``.<name>.sha256`` sidecar.
+
+    Keyed on size + mtime, so readiness does not reread a multi-GB archive per
+    CLI call and a rewrite still rehashes. Best effort: a read-only data dir
+    just hashes every time.
+    """
+    stat = path.stat()
+    key = f"{stat.st_size} {stat.st_mtime_ns}"
+    sidecar = path.with_name(f".{path.name}.sha256")
+    try:
+        cached_key, _, digest = sidecar.read_text().rpartition(" ")
+        if cached_key == key and digest:
+            return digest
+    except OSError:
+        pass
+    digest = compute_sha256(path)
+    tmp = sidecar.with_name(f"{sidecar.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(f"{key} {digest}")
+        tmp.replace(sidecar)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+    return digest

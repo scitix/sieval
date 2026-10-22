@@ -256,6 +256,21 @@ def test_pin_mismatch_ignores_files_under_cache(tmp_path):
     assert pin_mismatch(f"hf:org/foo@{_PIN}", tmp_path) is None
 
 
+def test_pin_mismatch_flags_a_downloaded_file_since_deleted(tmp_path):
+    """A record with no file: `load_dataset(dir)` would load fewer rows."""
+    local_dir = tmp_path / "org" / "foo"
+    _stage(local_dir, "data/train-00000.parquet", _PIN)
+    _stage(local_dir, "data/train-00001.parquet", _PIN)
+    (local_dir / "data/train-00001.parquet").unlink()
+    assert pin_mismatch(f"hf:org/foo@{_PIN}", tmp_path) == (
+        "data/train-00001.parquet was downloaded but is missing"
+    )
+
+
+def test_pin_mismatch_none_for_an_absent_repo(tmp_path):
+    assert pin_mismatch(f"hf:org/foo@{_PIN}", tmp_path) is None
+
+
 def h_is_downloaded(dest_root):
     return HFHandler().is_downloaded(f"hf:org/foo@{_PIN}", dest_root, "foo")
 

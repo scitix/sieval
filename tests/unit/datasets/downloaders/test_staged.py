@@ -14,6 +14,7 @@ from sieval.datasets.downloaders.staged import (
     probe_source,
     staged_dir,
 )
+from sieval.datasets.downloaders.verify import compute_sha256
 
 _PIN = "a" * 40
 _URL = "url:https://example.com/f.csv"
@@ -86,7 +87,7 @@ def test_url_without_a_declared_checksum_is_pinned_on_presence(tmp_path):
 
 
 def test_url_rehashes_after_the_file_is_rewritten(tmp_path):
-    """The hash cache is keyed on size+mtime, so a replaced file is re-read."""
+    """The sidecar is keyed on size+mtime, so a replaced file is re-read."""
     path = tmp_path / "ds" / "f.csv"
     path.parent.mkdir()
     path.write_bytes(_GOOD)
@@ -95,15 +96,60 @@ def test_url_rehashes_after_the_file_is_rewritten(tmp_path):
     assert probe_source(_meta(_URL), _URL, tmp_path).status == "stale"
 
 
-def test_url_hashes_once_for_repeated_probes(tmp_path):
+def test_url_hashes_once_across_probes(tmp_path):
+    """The sidecar outlives the process, unlike an in-memory cache."""
     (tmp_path / "ds").mkdir()
-    (tmp_path / "ds" / "f.csv").write_bytes(b"cached-once")
+    (tmp_path / "ds" / "f.csv").write_bytes(_GOOD)
     with patch(
-        "sieval.datasets.downloaders.staged.compute_sha256", return_value="sha256:x"
+        "sieval.datasets.downloaders.staged.compute_sha256", wraps=compute_sha256
     ) as mock_hash:
         for _ in range(3):
-            probe_source(_meta(_URL), _URL, tmp_path)
+            assert probe_source(_meta(_URL), _URL, tmp_path).status == "pinned"
     assert mock_hash.call_count == 1
+    assert (tmp_path / "ds" / ".f.csv.sha256").is_file()
+
+
+def test_url_hashes_every_time_in_a_read_only_dir(tmp_path):
+    (tmp_path / "ds").mkdir()
+    (tmp_path / "ds" / "f.csv").write_bytes(_GOOD)
+    with (
+        patch("pathlib.Path.write_text", side_effect=PermissionError),
+        patch(
+            "sieval.datasets.downloaders.staged.compute_sha256", wraps=compute_sha256
+        ) as mock_hash,
+    ):
+        for _ in range(2):
+            assert probe_source(_meta(_URL), _URL, tmp_path).status == "pinned"
+    assert mock_hash.call_count == 2
+    assert list((tmp_path / "ds").iterdir()) == [tmp_path / "ds" / "f.csv"]
+
+
+def test_url_ignores_a_sidecar_with_a_stale_key(tmp_path):
+    """A sidecar copied alongside other bytes is not trusted."""
+    path = tmp_path / "ds" / "f.csv"
+    path.parent.mkdir()
+    path.write_bytes(b"other")
+    good = "sha256:" + hashlib.sha256(_GOOD).hexdigest()
+    (tmp_path / "ds" / ".f.csv.sha256").write_text(f"12 0 {good}")
+    assert probe_source(_meta(_URL), _URL, tmp_path).status == "stale"
+
+
+def test_hf_stale_when_the_dir_holds_only_non_data_files(tmp_path):
+    """`is_downloaded` misses them, but a fetch into the dir would keep them."""
+    local_dir = tmp_path / "org" / "foo"
+    local_dir.mkdir(parents=True)
+    (local_dir / "old_copy.jsonl.gz").write_bytes(b"x")
+    src = f"hf:org/foo@{_PIN}"
+    probe = probe_source(_meta(src), src, tmp_path)
+    assert probe == SourceProbe(
+        "stale", "old_copy.jsonl.gz has no download record, so its revision is unknown"
+    )
+
+
+def test_hf_absent_for_an_empty_repo_dir(tmp_path):
+    (tmp_path / "org" / "foo").mkdir(parents=True)
+    src = f"hf:org/foo@{_PIN}"
+    assert probe_source(_meta(src), src, tmp_path) == SourceProbe("absent")
 
 
 def test_local_source_is_pinned_on_presence(tmp_path):

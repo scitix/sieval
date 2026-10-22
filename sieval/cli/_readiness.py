@@ -32,9 +32,9 @@ class MissingEntry:
     """One concrete remediation step the user can take.
 
     `kind="data"` populates `sources` (raw `source` strings from DatasetMeta)
-    and `stale`, which maps each source that is staged but is not the pinned
-    bytes to the reason; `kind="dataset-deps"` / `"task-deps"` populate `group`
-    (extras group name) and `unmet` (verbatim output of `extras_unsatisfied`).
+    and `stale` (source → reason, for the subset staged with other bytes);
+    `kind="dataset-deps"` / `"task-deps"` populate `group` (extras group name)
+    and `unmet` (verbatim output of `extras_unsatisfied`).
     """
 
     kind: MissingKind
@@ -63,6 +63,7 @@ class ReadinessReport:
 def missing_entry_to_dict(e: MissingEntry) -> dict:
     """Flatten a MissingEntry to its wire-format shape (kind-specific keys)."""
     if e.kind == "data":
+        # `stale` is always present (possibly empty), like `sources`.
         return {"kind": "data", "sources": list(e.sources), "stale": dict(e.stale)}
     return {"kind": e.kind, "group": e.group, "unmet": list(e.unmet)}
 
@@ -84,8 +85,7 @@ def _probe_dataset(
     entries: list[MissingEntry] = []
     had_unknown = False
 
-    # A source staged with other bytes than its pin counts as missing: running
-    # on it would evaluate data the registry never pinned.
+    # A stale source counts as missing: it is not the data the registry pins.
     data_missing: list[str] = []
     stale: list[tuple[str, str]] = []
     for src in ds_meta.source:

@@ -896,6 +896,24 @@ def test_dataset_download_refuses_a_hand_placed_copy(tmp_path):
     assert (local_dir / "train.jsonl").exists()
 
 
+def test_dataset_download_refuses_a_dir_holding_only_non_data_files(tmp_path):
+    """`snapshot_download` would keep the stray file, so a plain download that
+    proceeded would report success and leave the source stale."""
+    local_dir = tmp_path / "HuggingFaceH4" / "aime_2024"
+    local_dir.mkdir(parents=True)
+    (local_dir / "old_copy.jsonl.gz").write_bytes(b"x")
+    with patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_dl:
+        result = runner.invoke(
+            dataset_app,
+            ["download", "aime_2024", "--data-dir", str(tmp_path), "-o", "json"],
+        )
+    assert result.exit_code == 1
+    assert (
+        "old_copy.jsonl.gz has no download record" in json.loads(result.stdout)["error"]
+    )
+    mock_dl.assert_not_called()
+
+
 def test_dataset_download_skips_the_pinned_snapshot(tmp_path):
     stage_hf_snapshot(tmp_path, AIME_2024_SOURCE, "train.parquet")
     with patch("sieval.datasets.downloaders.hf.HFHandler.download") as mock_dl:

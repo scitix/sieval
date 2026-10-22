@@ -299,8 +299,7 @@ def _download_one(
         h = resolve_handler(src)
         probe = None if force else probe_source(m, src, dest_root)
         if probe is not None and probe.status == "stale":
-            # Refuse rather than clear: in a shared data dir the bytes may be
-            # someone's hand-placed copy, and deleting them is the user's call.
+            # Refuse, not clear: in a shared data dir they may be someone's copy.
             raise RuntimeError(
                 f"{src} is staged at {staged_dir(m, src, dest_root)} but is not "
                 f"the pinned data: {probe.reason}. Re-run "

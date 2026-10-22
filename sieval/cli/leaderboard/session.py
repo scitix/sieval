@@ -1528,13 +1528,11 @@ def _emit_best_effort_deterministic_warning(labels: list[str]) -> None:
     )
 
 
-def _warn_if_unpinned_staging(name: str, ds_class: type, path: str) -> None:
-    """Warn when *path* is a registered source's staging dir holding other bytes.
+def _refuse_unpinned_staging(name: str, ds_class: type, path: str) -> None:
+    """Refuse *path* when it is a registered source's staging dir holding other bytes.
 
-    A warning, not a refusal: a user may point a dataset at their own copy on
-    purpose. It only fires for a path that resolves to where `sieval dataset
-    download` stages one of the class's sources, since only there does the
-    registry's pin say what the bytes should be.
+    Only the staging dir is checked: there the registry's pin says what the
+    bytes must be. A user's own copy elsewhere loads as given.
     """
     try:
         meta = get_dataset_meta(ds_class)
@@ -1550,15 +1548,10 @@ def _warn_if_unpinned_staging(name: str, ds_class: type, path: str) -> None:
         except NotImplementedError:
             continue
         if probe.status == "stale":
-            logger.warning(
-                "Dataset '{}' loads {}, which is not the data {} pins: {}. "
-                "Results will not reflect the registered dataset; run "
-                "`sieval dataset download {} --force` to replace it.",
-                name,
-                target,
-                src,
-                probe.reason,
-                meta.name,
+            raise RuntimeError(
+                f"Dataset '{name}' loads {target}, which is not the data {src} "
+                f"pins: {probe.reason}. Run `sieval dataset download "
+                f"{meta.name} --force` to replace it."
             )
 
 
@@ -4430,7 +4423,7 @@ class EvalSession:
                 path = os.path.expandvars(path)
             init_args = self._normalize_dict(cfg.get("args"), f"Dataset '{name}' args")
             if path is not None:
-                _warn_if_unpinned_staging(name, ds_class, path)
+                _refuse_unpinned_staging(name, ds_class, path)
 
             try:
                 dataset = ds_class(path, **init_args) if path else ds_class(**init_args)
