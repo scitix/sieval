@@ -172,7 +172,7 @@ class ProfileReport(TypedDict, total=False):
     token_usage: dict[str, ProfileStageTokenUsage]
     io: dict[str, ProfileTimingStats]
     stages: dict[str, ProfileTimingStats]
-    #: This run's model requests by phase and model (``TaskRequestLog.summary``).
+    #: ``TaskRequestLog.summary``.
     requests: "RequestProfile"
 
 

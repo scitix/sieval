@@ -1,22 +1,14 @@
 """One record per model request attempt, observed below every retry loop.
 
-Every client sieval builds to reach a model is a :class:`RecordingAsyncClient`.
-It sits *under* whichever loop retries the request -- the OpenAI SDK's, or its
-own copy of that loop for ``async_http_json`` -- so each HTTP attempt is seen
-on its own, SDK retries included, and ``max_retries`` means the same in both.
-The client cannot see which sample or phase sent a request; two context
-variables carry that:
+Every model client is a :class:`RecordingAsyncClient`, sitting under whichever
+loop retries -- the OpenAI SDK's, or its own copy of it for ``async_http_json``
+-- so each HTTP attempt is seen. Two context variables say whose request it is:
 
 * :func:`stage_scope` -- set by the runner around one stage of one sample;
-* :func:`observe_call` -- set by ``Model.arun`` / ``SglangGenModel.arun``
-  around one model call, after the request is built.
+* :func:`observe_call` -- set by ``Model.arun`` around one model call.
 
-With either one unset nothing is recorded, so a call made outside a run (a
-health check, a test) costs one ``ContextVar.get``.
-
-A record carries no credential, header, or body: the request id, a status, an
-exception class, and timings. Nothing here feeds an identity, a digest, or
-``model_calls[]``.
+With either unset nothing is recorded. A record holds no credential, header or
+body, and feeds no identity, digest or ``model_calls[]``.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -56,8 +48,7 @@ def timeout_phase(exc: BaseException) -> str | None:
     """The ``httpx`` phase that timed out behind *exc*, if one did.
 
     Follows ``__cause__`` only: the OpenAI SDK raises ``APITimeoutError``
-    *from* the ``httpx`` error, while an unrelated error raised inside an
-    ``except`` block merely has it as ``__context__``.
+    *from* the ``httpx`` error; an unrelated ``__context__`` is not a cause.
     """
 
     seen: set[int] = set()
@@ -71,26 +62,21 @@ def timeout_phase(exc: BaseException) -> str | None:
     return None
 
 
-#: Connection limits for every model client sieval builds -- the OpenAI SDK's.
-#: httpx's own default of 100 queued an ``async_http_json`` run's requests
-#: past that silently, whatever its ``concurrency_limit``.
+#: The OpenAI SDK's limits, for every model client. httpx's default of 100
+#: silently queued requests past it, whatever ``concurrency_limit`` said.
 DEFAULT_CONNECTION_LIMITS = httpx.Limits(
     max_connections=1000, max_keepalive_connections=100
 )
 
-#: Retry backoff, as the OpenAI SDK has it: 0.5s doubling, capped at 8s.
+#: The OpenAI SDK's backoff: 0.5s doubling, capped at 8s; ``retry-after``
+#: obeyed within (0, 60] seconds.
 INITIAL_RETRY_DELAY = 0.5
 MAX_RETRY_DELAY = 8.0
-#: A server's ``retry-after`` is obeyed only within (0, 60] seconds.
 MAX_RETRY_AFTER = 60.0
 
 
 def should_retry(response: httpx.Response) -> bool:
-    """Whether an error *response* is retried: the OpenAI SDK's rule.
-
-    ``x-should-retry`` decides when the server sends it; otherwise 408, 409,
-    429 and every 5xx are retried.
-    """
+    """The OpenAI SDK's rule: ``x-should-retry`` if sent, else 408/409/429/5xx."""
 
     header = response.headers.get("x-should-retry")
     if header == "true":
@@ -106,11 +92,7 @@ def retry_delay(
     remaining: int,
     headers: httpx.Headers | None,
 ) -> float:
-    """Seconds to wait before the next try: the OpenAI SDK's schedule.
-
-    A ``retry-after-ms`` / ``retry-after`` within (0, 60] seconds is obeyed;
-    otherwise ``0.5 * 2**n`` capped at 8, times a jitter in (0.75, 1].
-    """
+    """Seconds before the next try, on the OpenAI SDK's schedule and jitter."""
 
     retry_after = _retry_after_s(headers) if headers is not None else None
     if retry_after is not None and 0 < retry_after <= MAX_RETRY_AFTER:
@@ -139,29 +121,20 @@ class RequestSink(Protocol):
     """Where a run's attempt records go."""
 
     def role_of(self, model_meta: Mapping[str, object]) -> str:
-        """``subject``, a judge role, or ``unknown`` for the model of *model_meta*."""
+        """``subject``, a judge role, or ``unknown``."""
         ...
 
     def record(self, line: dict[str, JSONValue]) -> None:
-        """Accept one attempt record; must not block or await."""
+        """Accept one attempt record; must not block."""
         ...
 
 
-type LimiterLike = object
+def limiter_snapshot(limiter: anyio.CapacityLimiter) -> dict[str, JSONValue]:
+    """``{"borrowed", "total"}``; an unbounded total is ``None``."""
 
-
-def limiter_snapshot(limiter: LimiterLike | None) -> dict[str, JSONValue] | None:
-    """``{"borrowed", "total"}`` of an ``anyio.CapacityLimiter``, else ``None``.
-
-    An unbounded total is ``None``: JSON has no infinity.
-    """
-
-    borrowed = getattr(limiter, "borrowed_tokens", None)
-    total = getattr(limiter, "total_tokens", None)
-    if not isinstance(borrowed, int) or not isinstance(total, int | float):
-        return None
+    total = limiter.total_tokens
     return {
-        "borrowed": borrowed,
+        "borrowed": limiter.borrowed_tokens,
         "total": None if math.isinf(total) else int(total),
     }
 
@@ -177,9 +150,9 @@ class StageScope:
     sample_id: str | int
     iteration: int
     repeat_index: int | None
-    #: Limiters the stage holds, by name (``global``, ``task``, ``stage`` ...).
-    limiters: Mapping[str, LimiterLike]
-    #: Offset base for ``offset_s``: the run's ``time.monotonic()`` start.
+    #: Limiters the stage holds, by name.
+    limiters: Mapping[str, anyio.CapacityLimiter]
+    #: The run's ``time.monotonic()`` start, the base of ``offset_s``.
     run_start: float
     _calls: int = 0
 
@@ -200,7 +173,7 @@ class _Attempt:
     outcome: str | None = None
     request_id: str | None = None
     retry_after_header_s: float | None = None
-    #: When the request went out on a connection (httpcore's trace).
+    #: When the request headers went out (httpcore's trace).
     sent: float | None = None
     on_end: Callable[[], None] | None = field(default=None, repr=False)
 
@@ -219,7 +192,7 @@ class _Attempt:
 
 @dataclass
 class CallScope:
-    """One model call: every attempt it made, written out when it ends."""
+    """One model call and its attempts, recorded when it ends."""
 
     stage: StageScope
     call: int
@@ -227,7 +200,7 @@ class CallScope:
     phase: str
     model: dict[str, JSONValue]
     n: int
-    limiters: Mapping[str, LimiterLike]
+    limiters: Mapping[str, anyio.CapacityLimiter]
     entered: float
     queue_s: float | None = None
     usage: UsageStats | None = None
@@ -239,11 +212,10 @@ class CallScope:
         self.queue_s = time.monotonic() - self.entered
 
     def begin_attempt(self, connection_in_flight: int) -> _Attempt:
-        in_flight: dict[str, JSONValue] = {}
-        for name, limiter in (*self.stage.limiters.items(), *self.limiters.items()):
-            snapshot = limiter_snapshot(limiter)
-            if snapshot is not None:
-                in_flight[name] = snapshot
+        in_flight: dict[str, JSONValue] = {
+            name: limiter_snapshot(limiter)
+            for name, limiter in (*self.stage.limiters.items(), *self.limiters.items())
+        }
         in_flight["connection"] = {"borrowed": connection_in_flight, "total": None}
         attempt = _Attempt(
             number=len(self.attempts) + 1,
@@ -283,14 +255,13 @@ class CallScope:
                 "ended_at": _iso(attempt.started_at + (ended - attempt.started)),
                 "offset_s": round(attempt.started - stage.run_start, 6),
                 "latency_s": round(ended - attempt.started, 6),
-                # Of `latency_s`, the wait for a pooled connection (and any
-                # connect) before the request went out; `None` if it never did.
+                # Part of `latency_s` before the headers went out; `None` if never.
                 "connect_s": (
                     round(attempt.sent - attempt.started, 6)
                     if attempt.sent is not None
                     else None
                 ),
-                # The limiter wait is the call's, before its first attempt.
+                # The call's limiter wait, on its first attempt only.
                 "queue_s": (
                     round(self.queue_s, 6)
                     if index == 0 and self.queue_s is not None
@@ -336,12 +307,11 @@ def observe_call(
     model_meta: Callable[[], Mapping[str, object]],
     model: Mapping[str, JSONValue],
     n: int,
-    limiters: Mapping[str, LimiterLike],
+    limiters: Mapping[str, anyio.CapacityLimiter],
 ) -> Iterator[CallScope | None]:
-    """Open one call inside the current stage; yield ``None`` outside a run.
+    """Open one call in the current stage; ``None`` outside a run.
 
-    *model_meta* is called only when a stage is open: it resolves the role.
-    On exit the call's attempts go to the stage's sink -- also when it raised.
+    On exit, raised or not, the call's attempts go to the stage's sink.
     """
 
     stage = _STAGE.get()
@@ -365,7 +335,7 @@ def observe_call(
         yield call
     finally:
         _CALL.reset(token)
-        # A streamed body nobody read to the end or closed ends with its call.
+        # A streamed body never closed ends with its call.
         for attempt in call.attempts:
             attempt.end()
         for line in call.lines():
@@ -385,7 +355,7 @@ def request_id_of(response: httpx.Response) -> str | None:
 
 
 def retry_after_header_s(response: httpx.Response) -> float | None:
-    """The delay the server asked for, in seconds, read as the retry loops do."""
+    """The delay the server asked for, in seconds."""
 
     return _retry_after_s(response.headers)
 
@@ -435,7 +405,7 @@ def _finish_response(attempt: _Attempt, response: httpx.Response) -> None:
 
 
 class _AttemptStream(httpx.AsyncByteStream):
-    """A streamed body that ends its attempt when the body is closed."""
+    """A streamed body that ends its attempt when read out or closed."""
 
     def __init__(self, inner: httpx.AsyncByteStream, attempt: _Attempt) -> None:
         self._inner = inner
@@ -448,7 +418,6 @@ class _AttemptStream(httpx.AsyncByteStream):
         except BaseException as exc:
             _finish_error(self._attempt, exc)
             raise
-        # Read to the end: the caller may close it only after the call returns.
         self._attempt.end()
 
     async def aclose(self) -> None:
@@ -461,7 +430,7 @@ class _AttemptStream(httpx.AsyncByteStream):
 def _sent_trace(
     attempt: _Attempt, inner: Callable[..., object] | None
 ) -> Callable[[str, dict], Awaitable[None]]:
-    """An httpcore ``trace`` extension stamping when the headers go out."""
+    """An httpcore ``trace`` stamping when the headers go out, then *inner*."""
 
     async def trace(name: str, info: dict) -> None:
         if attempt.sent is None and name.endswith("send_request_headers.started"):
@@ -475,14 +444,10 @@ def _sent_trace(
 
 
 class RecordingAsyncClient(httpx.AsyncClient):
-    """``httpx.AsyncClient`` that records each ``send`` inside an open call.
+    """``httpx.AsyncClient`` that records each try inside an open call.
 
-    *max_retries* retries a request the way the OpenAI SDK does (see
-    :func:`should_retry` and :func:`retry_delay`), so ``max_retries`` means
-    the same in every connection family. Each try is one recorded attempt.
-    Give the transport no retries of its own.
-
-    ``RecordingOpenAIClient`` passes ``0``: the SDK runs that loop above it.
+    *max_retries* retries as the OpenAI SDK does (:func:`should_retry`,
+    :func:`retry_delay`); the transport must not retry on its own.
     """
 
     def __init__(self, *, max_retries: int = 0, **kwargs: object) -> None:
@@ -534,20 +499,24 @@ class RecordingAsyncClient(httpx.AsyncClient):
         self._in_flight += 1
         attempt = call.begin_attempt(self._in_flight)
         attempt.on_end = self._leave
+        # Restored after the try: a retry of this request must not chain onto
+        # this attempt's trace and stamp it again.
+        extensions = request.extensions
         request.extensions = {
-            **request.extensions,
-            "trace": _sent_trace(attempt, request.extensions.get("trace")),
+            **extensions,
+            "trace": _sent_trace(attempt, extensions.get("trace")),
         }
         try:
             response = await super().send(request, stream=stream, **kwargs)  # ty: ignore[invalid-argument-type]
         except BaseException as exc:
             _finish_error(attempt, exc)
             raise
+        finally:
+            request.extensions = extensions
         _finish_response(attempt, response)
-        # An error status ends the attempt: a retry loop may close its body
-        # only after sleeping, which would bill the wait as latency.
+        # An error status ends here: a retry loop closes its body only after
+        # the backoff, which would bill the wait as latency.
         if stream and attempt.outcome == "2xx":
-            # Ends when the caller closes the body, as every streamed read does.
             response.stream = _AttemptStream(
                 response.stream,  # ty: ignore[invalid-argument-type]
                 attempt,
@@ -561,8 +530,4 @@ class RecordingAsyncClient(httpx.AsyncClient):
 
 
 class RecordingOpenAIClient(RecordingAsyncClient, DefaultAsyncHttpxClient):
-    """The OpenAI SDK's own default client, recorded.
-
-    Passed as ``AsyncOpenAI(http_client=...)``; the SDK's retry loop and
-    backoff are untouched and run above it, so this client retries nothing.
-    """
+    """The OpenAI SDK's default client, recorded; the SDK retries above it."""

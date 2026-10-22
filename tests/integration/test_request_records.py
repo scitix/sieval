@@ -9,6 +9,7 @@ and no identity, carries no credential, and a resume appends.
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import errno
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -17,7 +18,8 @@ import httpx
 import pytest
 
 from sieval.cli.leaderboard.session import arun_session
-from sieval.core.tasks.requests import REQUESTS_FILE
+from sieval.core.tasks import requests as requests_module
+from sieval.core.tasks.requests import REQUESTS_FILE, TaskRequestLog
 from tests.integration.test_api_key_env import (
     CANDIDATE_HOST,
     SAMPLES,
@@ -125,6 +127,34 @@ class TestRequestRecords:
         record = (task_dir / REQUESTS_FILE).read_text()
         assert "SENTINEL" not in record
         assert "authorization" not in record.lower()
+
+    @pytest.mark.anyio
+    async def test_a_write_error_mid_run_does_not_fail_the_task(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        wire: _Wire,  # noqa: F811
+    ) -> None:
+        monkeypatch.setenv("CANDIDATE_KEY", "k1")
+        monkeypatch.setenv("JUDGE_KEY", "k2")
+        # Every stage's flush is due, so the first fails mid-run.
+        monkeypatch.setattr(requests_module, "FLUSH_LINES", 1)
+        writes: list[int] = []
+
+        def disk_full(_self: TaskRequestLog, lines: list[str]) -> None:
+            writes.append(len(lines))
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(TaskRequestLog, "_append", disk_full)
+        report = await arun_session(_write_config(tmp_path))
+        task_dir = tmp_path / "results" / "judged"
+
+        assert writes, "no flush was attempted"
+        assert report["judged"]["accuracy"] == 1.0
+        assert not (task_dir / REQUESTS_FILE).exists()
+        # The summary still counts the lines that could not be written.
+        counts = json.loads((task_dir / "report.json").read_text())["sieval"]
+        assert counts["requests"]["infer"]["org/candidate"]["calls"] == len(SAMPLES)
 
     @pytest.mark.anyio
     async def test_recording_changes_no_score_and_no_identity(

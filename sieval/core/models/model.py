@@ -723,12 +723,12 @@ class Model:
             "deployment": self._deployment.deployment_id,
         }
 
-    def _request_log_limiters(self) -> dict[str, object]:
+    def _request_log_limiters(self) -> dict[str, anyio.CapacityLimiter]:
         """The pool's shared quota, and the model-local cap when it differs."""
 
         shared = self._pool.shared_limiter
-        limiters: dict[str, object] = {}
-        if shared is not None:
+        limiters: dict[str, anyio.CapacityLimiter] = {}
+        if isinstance(shared, anyio.CapacityLimiter):
             limiters["model_shared"] = shared
         if self._limiter is not None and self._limiter is not shared:
             limiters["model_local"] = self._limiter

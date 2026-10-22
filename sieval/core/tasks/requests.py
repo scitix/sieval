@@ -1,14 +1,10 @@
-"""A task's ``requests.jsonl``: every model request attempt, and their summary.
+"""A task's ``requests.jsonl`` and its per-run summary.
 
-The model layer (:mod:`sieval.core.models.request_log`) produces one line per
-HTTP attempt; :class:`TaskRequestLog` is the sink the runner hands it. Lines
-are buffered and appended off the event loop. The file is append-only: a
-resumed run appends, every line names its ``runs[].id``, and nothing reads the
-file back -- not the resume gate, not an identity, not a score. Deleting it
-changes no result.
-
-The summary is folded in as lines arrive, so rotating the file loses nothing
-from it; it covers the requests of *this* run, which it names.
+:class:`TaskRequestLog` is the runner's sink for the lines
+:mod:`sieval.core.models.request_log` produces. Lines are appended off the
+event loop; a resume appends. Nothing reads the file back, so deleting it
+changes no result. The summary is folded in as lines arrive, so rotation loses
+nothing from it.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -135,8 +131,8 @@ class _Totals:
 class TaskRequestLog:
     """The runner's :class:`~sieval.core.models.request_log.RequestSink`.
 
-    *max_bytes* rotates ``requests.jsonl`` to ``requests.<n>.jsonl`` once it
-    reaches that size; *max_files* rotated files are kept, the oldest removed.
+    At *max_bytes* the file rotates to ``requests.<n>.jsonl``; the newest
+    *max_files* rotated files are kept.
     """
 
     def __init__(
@@ -160,8 +156,7 @@ class TaskRequestLog:
         self._lock = anyio.Lock()
         self._totals: dict[tuple[str, str], _Totals] = defaultdict(_Totals)
         self._run: str | None = None
-        # Roles by call key, then by bare model name for a call whose
-        # defaults a task derived (`with_args`) away from the bound model's.
+        # By call key, then by name: `with_args` changes a model's call key.
         self._roles: dict[str, str] = {}
         self._roles_by_name: dict[str, str] = {}
         if subject is not None:
@@ -210,7 +205,10 @@ class TaskRequestLog:
             await self.flush()
 
     async def flush(self) -> None:
-        """Append every buffered line, in a worker thread."""
+        """Append every buffered line in a worker thread.
+
+        On a write error the lines are dropped; the summary still counts them.
+        """
 
         async with self._lock:
             self._last_flush = time.monotonic()
@@ -257,8 +255,7 @@ class TaskRequestLog:
         return RequestProfile(run=self._run, by_phase=by_phase)
 
     def counts(self) -> RunRequests | None:
-        """The counts and limiter peaks of :meth:`summary`, for ``report.json``
-        and this run's ``runs[]`` entry."""
+        """:meth:`summary`'s counts and peaks, for ``report.json`` and ``runs[]``."""
 
         if not self._totals:
             return None

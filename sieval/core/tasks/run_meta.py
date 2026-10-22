@@ -223,11 +223,11 @@ only when it differs from the directory's ``model``, which stays the one whose
 samples are on disk. ``from`` names
 the directory a resume across tasks copied, with that directory's identity when
 it was copied (``None`` stages for a directory that recorded none).
-``requests`` counts the model requests the run made, by phase and model, as
-``report.json``'s ``sieval.requests`` does for the latest run; absent when it
-made none or ``record_requests`` was off. Kept here because ``profile.json``
-and ``report.json`` are rewritten by every run and ``requests.jsonl`` rotates.
-Not part of any identity.
+``requests`` counts the run's model requests by phase and model; absent when
+it made none or ``record_requests`` was off. It is the durable copy:
+``requests.jsonl`` rotates, ``profile.json`` is rewritten by every run, and a
+fast resume keeps ``report.json``'s ``sieval.requests`` from the run that
+wrote it. Not part of any identity.
 """
 
 

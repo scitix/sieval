@@ -283,12 +283,11 @@ def _openai_sdk_connection(request: ConnectionRequest) -> AsyncOpenAI:
 def _async_http_json_connection(
     request: ConnectionRequest,
 ) -> AsyncHTTPJSONConnection:
-    # Retries run in the client, on the OpenAI SDK's rule and schedule, so
-    # `max_retries` means the same in both families and each try is recorded.
+    # The client retries, as the SDK does; the transport must not.
     client = RecordingAsyncClient(
         max_retries=request.max_retries,
         base_url=request.endpoint,
-        # An explicit transport ignores the client's `limits`: give it them.
+        # An explicit transport ignores the client's `limits`.
         transport=httpx.AsyncHTTPTransport(limits=DEFAULT_CONNECTION_LIMITS),
         timeout=request.timeout,
     )
@@ -303,8 +302,7 @@ OPENAI_SDK_FACTORY = ConnectionFactorySpec(
 
 ASYNC_HTTP_JSON_FACTORY = ConnectionFactorySpec(
     connection_family="async_http_json",
-    # Not the transport's connect-only retries any more: a new name, so a
-    # binding plan made under the old meaning is refused rather than reread.
+    # Renamed with the meaning (was connect-only): an old plan is refused.
     retry_policy_prefix="sieval-http:max-retries=",
     builder=_async_http_json_connection,
 )

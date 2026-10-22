@@ -317,8 +317,7 @@ class TaskSaver:
         """Mark the current ``runs[]`` entry ended, with the stages it reran.
 
         *reported* is set by a run that wrote ``report.json``; *rules_hash* by
-        one that wrote ``anomalies.json``; *requests* by one that made model
-        requests and recorded them.
+        one that wrote ``anomalies.json``; *requests* by one that recorded any.
         """
         meta = self._require_meta()
         run = meta["runs"][-1]

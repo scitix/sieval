@@ -45,7 +45,9 @@ class _Sink:
         self.lines.append(line)
 
 
-def _scope(sink: _Sink, stage: str = "infer", **limiters: object) -> StageScope:
+def _scope(
+    sink: _Sink, stage: str = "infer", **limiters: anyio.CapacityLimiter
+) -> StageScope:
     return StageScope(
         sink=sink,
         task="t",
@@ -380,6 +382,50 @@ class TestConnectionWait:
         assert "http11.send_request_headers.started" in names
         assert sink.lines[0]["connect_s"] is not None
 
+    @pytest.mark.anyio
+    async def test_a_retried_connect_failure_is_not_stamped_by_the_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Our own retry resends the same `Request`: its trace must not chain
+        onto the failed attempt, which never sent its headers."""
+
+        refused = [True]
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if refused.pop() if refused else False:
+                raise httpx.ConnectError("refused", request=request)
+            return httpx.Response(200, json={})
+
+        monkeypatch.setattr(rl, "retry_delay", lambda *_: 0.05)
+        sink = _Sink()
+        client = RecordingAsyncClient(max_retries=1, transport=_Refusing(handler))
+        with (
+            stage_scope(_scope(sink)),
+            observe_call(model_meta=lambda: {"model": "m"}, model={}, n=1, limiters={}),
+        ):
+            await client.post("https://gw.example/x")
+        await client.aclose()
+        failed, ok = sink.lines
+        assert failed["outcome"] == "connection_error"
+        assert failed["connect_s"] is None
+        connect, latency = ok["connect_s"], ok["latency_s"]
+        assert isinstance(connect, float) and isinstance(latency, float)
+        assert connect <= latency
+
+
+class _Refusing(httpx.AsyncBaseTransport):
+    """*handler* may raise before the headers go out; otherwise they do."""
+
+    def __init__(self, handler: Callable) -> None:
+        self._handler = handler
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        result = await self._handler(request)
+        trace = request.extensions.get("trace")
+        if trace is not None:
+            await trace("http11.send_request_headers.started", {})
+        return result
+
 
 class _PoolOfOne(httpx.AsyncBaseTransport):
     """One connection at a time, emitting httpcore's request-headers trace."""
@@ -696,7 +742,6 @@ class TestHelpers:
     def test_limiter_snapshot_reads_an_unbounded_total_as_none(self) -> None:
         limiter = anyio.CapacityLimiter(math.inf)
         assert rl.limiter_snapshot(limiter) == {"borrowed": 0, "total": None}
-        assert rl.limiter_snapshot(object()) is None
 
     def test_retry_after_header(self) -> None:
         def response(**headers: str) -> httpx.Response:
