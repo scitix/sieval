@@ -832,8 +832,7 @@ def run_dry_run(
 ) -> DryRunResult:
     """Run config validation and return structured result.
 
-    *cli_model* is added to the config before any check, and the entry it
-    becomes is shown as the ``cli_model`` check.
+    *cli_model* is added to the config first, shown as the ``cli_model`` check.
     """
     checks: list[DryRunCheck] = []
 
@@ -874,11 +873,11 @@ def run_dry_run(
         }
     )
 
-    # 2b. The model --checkpoint/--api-base name, as the config entry it becomes
+    # 2b. The models: entry --checkpoint/--api-base becomes
     if cli_model is not None:
-        if not isinstance(cfg, dict):
-            cfg = {}
         try:
+            if not isinstance(cfg, dict):
+                raise ValueError("evaluation config must be a mapping")
             apply_cli_model(cfg, cli_model, model_override)
         except ValueError as exc:
             checks.append({"name": "cli_model", "ok": False, "detail": str(exc)})

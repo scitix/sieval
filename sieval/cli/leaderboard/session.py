@@ -1727,7 +1727,7 @@ class EvalSession:
                 loaded_config = {}
             if not isinstance(loaded_config, dict):
                 raise ValueError("Top-level YAML config must be a dictionary")
-        # Before every view below, so the entry is persisted like YAML.
+        # Before every view below, so the entry is persisted as config.
         apply_cli_model(cast(dict[str, Any], loaded_config), cli_model, model_override)
 
         # Pristine YAML — source of truth for deterministic / result_dir
@@ -5362,8 +5362,8 @@ async def arun_session(
         realized_deployments: Typed realized deployments keyed by root model
             config name.
         resume_from: Deprecated alias of ``resume=<dir>``; warns.
-        cli_model: The model ``--checkpoint``/``--api-base`` name, added as the
-            only ``models:`` entry of a config that has none.
+        cli_model: ``--checkpoint``/``--api-base``, added as the ``models:``
+            entry of a config that has none.
 
     Returns:
         A dictionary mapping task names to their reports.

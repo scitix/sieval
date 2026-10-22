@@ -361,8 +361,12 @@ def _render_text_task_reports(result: CommandResult) -> None:
 
 def _render_text_dry_run(result: CommandResult) -> None:
     if not result.ok:
-        # Callers always provide data for dry_run, but guard defensively.
-        checks = result.data.get("checks", []) if isinstance(result.data, dict) else []
+        if not isinstance(result.data, dict):
+            # Raised before any check ran (e.g. no GPU to resolve a plan).
+            logger.error("{}", result.error)
+            log_user("\nDry-run failed.")
+            return
+        checks = result.data.get("checks", [])
         for check in checks:
             if check["ok"]:
                 log_user("✓ {}", check["name"])
@@ -370,9 +374,8 @@ def _render_text_dry_run(result: CommandResult) -> None:
                 log_user("✗ {}", check.get("detail", check["name"]))
             for w in check.get("warnings", []):
                 log_user("⚠ {}", w)
-        d = result.data if isinstance(result.data, dict) else {}
-        n_err = d.get("n_errors", 0)
-        n_warn = d.get("n_warnings", 0)
+        n_err = result.data.get("n_errors", 0)
+        n_warn = result.data.get("n_warnings", 0)
         log_user("\nDry-run failed: {} error(s), {} warning(s).", n_err, n_warn)
         return
     if not isinstance(result.data, dict):

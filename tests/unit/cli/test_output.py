@@ -385,6 +385,16 @@ class TestRenderTextDryRun:
         assert "Dry-run failed" in logged
         assert "error(s)" in logged
 
+    def test_dry_run_error_before_any_check_is_shown(self):
+        result = CommandResult(command="run.dry_run", ok=False, error="No GPU")
+        with (
+            patch("sieval.cli.output.logger") as mock,
+            patch("sieval.cli.output.log_user") as log,
+        ):
+            render(result, OutputFormat.TEXT)
+        mock.error.assert_called_once_with("{}", "No GPU")
+        assert "Dry-run failed" in _collect_log_user(log)
+
 
 class TestRenderTextFallback:
     """Test the fallback path when no text renderer is registered."""

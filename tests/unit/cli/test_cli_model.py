@@ -43,6 +43,15 @@ class TestFromOptions:
         )
         assert cli_model == CliModel(checkpoint="/models/sft")
 
+    def test_relative_checkpoint_is_made_absolute(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        cli_model = CliModel.from_options(
+            checkpoint="ckpt/sft", api_base=None, model=None
+        )
+        assert cli_model == CliModel(checkpoint=str(tmp_path / "ckpt" / "sft"))
+
     def test_both_flags_are_refused(self):
         with pytest.raises(ValueError, match="--checkpoint and --api-base"):
             CliModel.from_options(checkpoint="/m", api_base="http://h/v1", model="m")
@@ -91,7 +100,7 @@ class TestApplyCliModel:
         cfg: dict = {"models": {"b": {}, "a": {}}}
         with pytest.raises(ValueError) as exc:
             apply_cli_model(cfg, CliModel(api_base="http://h/v1"), "m")
-        assert "--api-base supplies the model" in str(exc.value)
+        assert "--api-base is for a config with no 'models:'" in str(exc.value)
         assert "defines a, b" in str(exc.value)
         assert cfg == {"models": {"b": {}, "a": {}}}
 
@@ -168,6 +177,19 @@ class TestDryRun:
         assert "this config defines m" in result["checks"][-1]["detail"]
         assert result["n_errors"] == 1
 
+    def test_non_mapping_config_fails_the_check(self, tmp_path: Path):
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text("- a\n", encoding="utf-8")
+        result = run_dry_run(
+            cfg_path, model_override="m", cli_model=CliModel(api_base="http://h/v1")
+        )
+        assert result["checks"][-1] == {
+            "name": "cli_model",
+            "ok": False,
+            "detail": "evaluation config must be a mapping",
+        }
+        assert result["n_errors"] == 1
+
     def test_without_flags_the_config_still_fails(self, tmp_path: Path):
         result = run_dry_run(_task_only(tmp_path))
         assert result["n_errors"] == 1
@@ -237,6 +259,16 @@ class TestRunCommand:
         assert result.exit_code == 1
         assert "--checkpoint and --api-base" in json.loads(result.stdout)["error"]
         run_all.assert_not_awaited()
+
+    def test_dry_run_shows_a_refusal(self, tmp_path: Path):
+        cfg_path = _task_only(tmp_path, "models:\n  m:\n    name: x\n")
+        with patch("sieval.cli.output.log_user") as log:
+            result = runner.invoke(
+                app, ["run", str(cfg_path), "--checkpoint", "/models/x", "--dry-run"]
+            )
+        assert result.exit_code == 1
+        logged = " ".join(str(arg) for call in log.call_args_list for arg in call.args)
+        assert "this config defines m" in logged
 
     def test_checkpoint_reaches_run_all(self, tmp_path: Path):
         with patch(

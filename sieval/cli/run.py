@@ -171,7 +171,10 @@ async def _run_dry_run(
 
     from sieval.cli.validation import run_dry_run
 
-    if not config_path.exists():
+    def checks(
+        infer_plans: dict[str, dict[str, Any]] | None = None,
+        self_managed_endpoints: frozenset[str] = frozenset(),
+    ) -> dict[str, object]:
         return dict(
             cast(
                 Mapping[str, object],
@@ -181,40 +184,32 @@ async def _run_dry_run(
                     resume=resume,
                     result_dir_override=result_dir,
                     deterministic_override=deterministic,
+                    infer_plans=infer_plans,
                     invocation=shlex.join(sys.argv),
+                    self_managed_endpoints=self_managed_endpoints,
                     cli_model=cli_model,
                 ),
             )
         )
 
+    if not config_path.exists():
+        return checks()
+
     with open(config_path) as stream:
         loaded = yaml.safe_load(stream)
     if not isinstance(loaded, dict):
         raise ValueError("evaluation config must be a mapping")
-    apply_cli_model(loaded, cli_model, model)
+    try:
+        apply_cli_model(loaded, cli_model, model)
+    except ValueError:
+        return checks()  # reported as the failed cli_model check
     effective_deterministic = resolve_deterministic(deterministic, loaded)
     plan_dicts, prepared_launches = await _prepare_launch_batch(
         config_path,
         loaded,
         effective_deterministic=effective_deterministic,
     )
-
-    return dict(
-        cast(
-            Mapping[str, object],
-            run_dry_run(
-                config_path,
-                model_override=model,
-                resume=resume,
-                result_dir_override=result_dir,
-                deterministic_override=deterministic,
-                infer_plans=plan_dicts or None,
-                invocation=shlex.join(sys.argv),
-                self_managed_endpoints=frozenset(prepared_launches),
-                cli_model=cli_model,
-            ),
-        )
-    )
+    return checks(plan_dicts or None, frozenset(prepared_launches))
 
 
 async def _run_all(
@@ -234,8 +229,7 @@ async def _run_all(
       1. Explicit ``infer`` section in the model config.
       2. Top-level ``path`` field without ``api_base`` (path-only shortcut).
 
-    *cli_model* is the model ``--checkpoint``/``--api-base`` name, added as
-    the only ``models:`` entry before anything above is decided.
+    *cli_model* is added to the config before either of those is decided.
 
     Handles go under ``run-<pid>/``, removed when the run ends. Engine logs go
     to ``<result_dir>/logs/<model>/<role>.log`` when a result_dir is set,

@@ -63,29 +63,24 @@ tasks:
 
 ## Model on the Command Line
 
-A benchmark config can leave out `models:` and name the model at run time:
+A config without `models:` can name its model at run time:
 
 ```bash
 sieval run benchmark.yaml --checkpoint /models/my-sft          # launch, then evaluate
 sieval eval benchmark.yaml --api-base http://localhost:8000/v1 --model my-sft
 ```
 
-The flag becomes the config's only model entry, written as a hand-written one
-would be: `{path: <checkpoint>}` or `{api_base: <url>}`, plus `name: <--model>`
-when given. Its key is the last path segment of `--model`, else of the
-checkpoint. The entry is recorded in `effective_config.yaml`, so that file
-reruns and resumes with no flags.
+The flag becomes the config's one `models:` entry, `{path: <absolute
+checkpoint>}` or `{api_base: <url>}`, plus `name: <--model>`. It is keyed by
+the last path segment of `--model`, else of the checkpoint, and recorded in
+`effective_config.yaml`, so that file reruns and resumes with no flags.
 
-- `--checkpoint` launches with the default infer plan, like a bare `path:`.
-  Anything beyond that (tensor parallelism, recipe overrides) still goes in a
-  `models:` section. `sieval eval` has no `--checkpoint`; it never launches.
-- `--api-base` needs `--model`, and turns auto-serve off like a top-level
-  `api_base`. The endpoint's key comes from the environment (`OPENAI_API_KEY`).
-- Giving both, or either one on a config that defines `models:`, is refused
-  before anything launches.
-- A task naming another `model:` (a judge, say) still needs it defined in
-  `models:`, so such a config cannot use these flags.
-- `--dry-run` shows the entry as the `cli_model` check.
+- `--checkpoint` launches with the default infer plan; anything more needs
+  `models:`. `sieval eval` has no `--checkpoint`.
+- `--api-base` needs `--model` and turns auto-serve off. Its key comes from
+  `OPENAI_API_KEY`.
+- Both flags, or either on a config that defines `models:`, is refused. A task
+  naming another model (a judge) still needs `models:`.
 
 ## Credentials
 
