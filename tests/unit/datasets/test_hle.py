@@ -43,8 +43,6 @@ def test_source_pins_hf_revision():
 
 
 def test_registered_as_gated():
-    # `cais/hle` is a gated Hub repo; the registry is where downloads and
-    # downstream catalogs learn that, not this module's docstring.
     assert get_dataset_meta(HLEDataset).gated is True
 
 

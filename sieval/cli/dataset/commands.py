@@ -284,7 +284,6 @@ def _summary(dest_root: Path, records: list[dict]) -> dict:
 
 
 def _gated_message(m: DatasetMeta, src: str, reason: str) -> str:
-    """Say what a gated ``hf:`` source needs, instead of the Hub's bare 401."""
     repo_id = parse_hf_source(src).repo_id
     registered = (
         "is a gated Hugging Face dataset"
@@ -296,17 +295,6 @@ def _gated_message(m: DatasetMeta, src: str, reason: str) -> str:
         f"https://huggingface.co/datasets/{repo_id}, then set HF_TOKEN (or run "
         f"`hf auth login`) and re-run `sieval dataset download {m.name}`."
     )
-
-
-def _require_hf_token(m: DatasetMeta, src: str) -> None:
-    """Refuse a gated fetch up front when no Hub token is configured.
-
-    ``get_token`` reads ``HF_TOKEN`` and the token ``hf auth login`` stores, the
-    same lookup ``snapshot_download`` makes, so this refuses exactly the fetch
-    the Hub would answer with a 401.
-    """
-    if get_token() is None:
-        raise RuntimeError(_gated_message(m, src, "no Hugging Face token is set"))
 
 
 def _download_one(
@@ -331,9 +319,10 @@ def _download_one(
             log_user("[{}] already present: {}", m.name, src)
             already_present += 1
             continue
+        # Same token lookup `snapshot_download` makes; refuse before any request.
+        if m.gated and src.startswith("hf:") and get_token() is None:
+            raise RuntimeError(_gated_message(m, src, "no Hugging Face token is set"))
         log_user("[{}] fetching {}", m.name, src)
-        if m.gated and src.startswith("hf:"):
-            _require_hf_token(m, src)
         try:
             h.download(src, dest_root, m.name, force=force)
         except GatedRepoError as e:

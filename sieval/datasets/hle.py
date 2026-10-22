@@ -6,9 +6,8 @@ frontier-difficulty questions (mathematics, sciences, humanities), each with an
 LLM-judge grading. The Hub repo exposes a single ``test`` split; this loader
 mirrors it as-is.
 
-Access: ``cais/hle`` is a gated Hub repo (registered ``gated=True``) —
-downloading requires accepting the gate on the dataset page and an
-authenticated ``HF_TOKEN`` in the environment.
+Access: ``cais/hle`` is a gated Hub repo (``gated=True``) — accept the gate on
+the dataset page and set ``HF_TOKEN``.
 
 Subset selection (``text_only``, default ``True``) is a sieval addition —
 upstream ``hle_eval`` @ 26dca2e always grades the full set. It applies at load

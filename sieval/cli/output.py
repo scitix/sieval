@@ -593,7 +593,6 @@ _DATASET_LIST_PINNED: frozenset[str] = frozenset({"name", "ready"})
 
 
 def _yes_no(flag: bool) -> str:
-    """Text form of a bool wire field, matching READY's ``yes``/``no``."""
     return "yes" if flag else "no"
 
 

@@ -117,8 +117,7 @@ class DatasetMeta:
     load/parse this dataset). Evaluator-side deps (scorers, parsers) live on
     `TaskMeta.deps_group` instead — the two are independent.
 
-    `gated` marks a dataset whose `hf:` source is a gated Hub repo: fetching it
-    needs the gate accepted on the dataset page and an authenticated token.
+    `gated` marks an `hf:` source that is a gated Hub repo (download needs a token).
     """
 
     name: str
@@ -184,8 +183,6 @@ def _validate(
                 f"{_VALID_SCHEMES} (e.g. 'hf:org/name')"
             )
 
-    # Gating is a Hub-side access control; on a url:/local:-only dataset the
-    # flag would describe nothing `sieval dataset download` can act on.
     if gated and not any(src.startswith("hf:") for src in source):
         raise ValueError(
             f"dataset {name!r} sets gated=True but declares no hf: source; "
@@ -389,7 +386,7 @@ def dataset_meta_to_dict(meta: DatasetMeta) -> dict[str, Any]:
     Wire-format contract (v0.1, frozen):
       - `source` is ALWAYS a list (single-source datasets become 1-element).
       - `license` is always present (may be null).
-      - `gated` is always present (bool); a row without it reads as `false`.
+      - `gated` is always present; a row without it reads as `false`.
     """
     return {
         "name": meta.name,
