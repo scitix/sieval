@@ -1265,11 +1265,7 @@ class TestDeploymentPropagation:
 
 
 class TestExplicitEndpointRefusal:
-    """An ``args.api_base`` next to a checkpoint is refused before launch (#189).
-
-    A top-level ``api_base`` turns auto-serve off; ``args.api_base`` would
-    leave a launched engine idle while requests go elsewhere.
-    """
+    """``args.api_base`` next to a checkpoint is refused before launch (#189)."""
 
     @staticmethod
     def _write(tmp_path: Path, model: dict) -> Path:
@@ -1295,7 +1291,13 @@ class TestExplicitEndpointRefusal:
                 "infer",
             ),
             ({"path": "/tmp/ckpt"}, "path", "path"),
+            (
+                {"infer": {"backend": "sglang"}, "path": "/tmp/ckpt"},
+                "path",
+                "path",
+            ),
         ],
+        ids=["checkpoint", "path", "infer_without_checkpoint"],
     )
     @pytest.mark.parametrize("dry_run", [False, True])
     async def test_args_api_base_with_checkpoint_refuses_before_resolution(
@@ -1333,6 +1335,32 @@ class TestExplicitEndpointRefusal:
         resolve_infer.assert_not_awaited()
         resolve_path.assert_not_awaited()
         launch.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_empty_args_api_base_is_not_an_endpoint(self, tmp_path: Path):
+        from sieval.cli.run import _prepare_launch_batch
+
+        config_path = self._write(
+            tmp_path, {"path": "/tmp/ckpt", "args": {"api_base": ""}}
+        )
+        plan = MagicMock(deterministic=False, backend="sglang")
+        result = MagicMock(plan=plan)
+        with (
+            patch(
+                "sieval.cli.run.auto_resolve_plan", new=AsyncMock(return_value=result)
+            ) as resolve,
+            patch("sieval.cli.run.unwrap_proxies", return_value={}),
+            patch("sieval.infer.topology.validator.validate_plan", return_value=[]),
+            patch("sieval.cli.run.get_translator"),
+            patch("sieval.cli.run.inject_user_env"),
+        ):
+            await _prepare_launch_batch(
+                config_path,
+                yaml.safe_load(config_path.read_text()),
+                effective_deterministic=False,
+            )
+
+        resolve.assert_awaited_once()
 
     @pytest.mark.anyio
     async def test_top_level_api_base_still_skips_the_launch(self, tmp_path: Path):

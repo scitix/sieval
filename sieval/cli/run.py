@@ -69,23 +69,22 @@ def _needs_serve(model_config: dict) -> bool:
 
 
 def _refuse_explicit_endpoint(model_name: str, model_config: dict) -> None:
-    """Refuse to launch an engine for a model that names its own endpoint.
+    """Refuse ``args.api_base`` on a model that ``sieval run`` would serve.
 
-    A top-level ``api_base`` already turns auto-serve off (:func:`_needs_serve`).
-    ``args.api_base`` does not, and the client would send every request there,
-    leaving the launched engine idle while it holds its GPUs.
+    Unlike a top-level ``api_base``, it does not turn auto-serve off.
     """
     args = model_config.get("args")
-    if not isinstance(args, dict) or args.get("api_base") is None:
+    if not isinstance(args, dict) or not args.get("api_base"):
         return
-    source = "infer.checkpoint" if model_config.get("infer") is not None else "path"
-    serve_key = "infer" if source == "infer.checkpoint" else "path"
+    infer_dict = model_config.get("infer")
+    if isinstance(infer_dict, dict) and infer_dict.get("checkpoint"):
+        source, serve_key = "infer.checkpoint", "infer"
+    else:
+        source, serve_key = "path", "path"
     raise ValueError(
-        f"Model '{model_name}' sets both 'args.api_base' and '{source}': "
-        "`sieval run` would launch an engine that receives no requests. "
+        f"Model '{model_name}' sets both 'args.api_base' and '{source}'. "
         "Remove 'args.api_base' to evaluate the launched engine, or remove "
-        f"'{serve_key}' to evaluate the endpoint at "
-        f"{args['api_base']!r}."
+        f"'{serve_key}' to evaluate {args['api_base']!r}."
     )
 
 

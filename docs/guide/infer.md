@@ -123,7 +123,7 @@ A change to any of these changes the grader identity.
 
 Models with a `path` field (and no `api_base`) or an `infer` section in the YAML config are automatically launched by `sieval run` and stopped after evaluation completes.
 
-An explicit `api_base` names the endpoint the model is evaluated on. At the top level it turns auto-serve off. Under `args`, next to a `path` or an `infer.checkpoint`, `sieval run` (and `sieval run --dry-run`) refuses the config before starting any engine, because the launched engine would receive no requests: remove `args.api_base` to evaluate the launched engine, or remove `infer` / `path` to evaluate the given endpoint.
+A top-level `api_base` turns auto-serve off. An `args.api_base` next to `path` or `infer.checkpoint` is refused before any engine starts: keep one or the other.
 
 ### Anthropic Messages
 
