@@ -639,15 +639,72 @@ class TestTopKParsing:
         meta = _meta(
             prompt_tokens=2,
             input_token_logprobs=[[None, 1, "Q"], [-0.2, 2, " B"]],
+            input_top_logprobs=[None, [[-0.2, 2, " B"]]],
             output_token_logprobs=[[-0.3, 3, " g"]],
             output_top_logprobs=[None, [[-0.3, 3, " g"]]],
         )
         t, _ = _make_transport({"text": " g", "meta_info": meta})
-        resp = await t.arun(_request("Q B", input_scoring=True, top_logprobs=1))
+        resp = await t.arun(
+            _request("Q B", input_scoring=True, sampled_logprobs=True, top_logprobs=1)
+        )
         assert resp.top_logprobs == (
             (),
             (TopKEntry(token=" g", logprob=-0.3, token_id=3),),
         )
+
+    @pytest.mark.anyio
+    async def test_input_top_logprobs_go_to_input_scoring(self):
+        meta = _meta(
+            prompt_tokens=2,
+            input_token_logprobs=[[None, 1, "Q"], [-0.2, 2, "ĠB"]],
+            input_top_logprobs=[None, [[-0.2, 2, "ĠB"], [-1.5, 3, "ĠC"]]],
+            output_token_logprobs=[[-0.3, 4, " g"]],
+            output_top_logprobs=[[[-0.3, 4, " g"], [-2.0, 5, " h"]]],
+        )
+        t, post = _make_transport({"text": " g", "meta_info": meta})
+        resp = await t.arun(
+            _request("Q B", input_scoring=True, sampled_logprobs=True, top_logprobs=2)
+        )
+
+        body = post.call_args[1]["body"]
+        assert body["logprob_start_len"] == 0
+        assert body["top_logprobs_num"] == 2
+        assert resp.input_scoring is not None
+        assert resp.input_scoring.top_logprobs == (
+            (),
+            (
+                TopKEntry(token=" B", logprob=-0.2, token_id=2),
+                TopKEntry(token=" C", logprob=-1.5, token_id=3),
+            ),
+        )
+
+    @pytest.mark.anyio
+    async def test_input_top_logprobs_absent_unless_requested(self):
+        meta = _meta(
+            prompt_tokens=1,
+            input_token_logprobs=[[None, 1, "Q"]],
+            input_top_logprobs=[None],
+        )
+        t, _ = _make_transport({"text": "", "meta_info": meta})
+        resp = await t.arun(_request("Q", input_scoring=True))
+        assert resp.input_scoring is not None
+        assert resp.input_scoring.top_logprobs is None
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("input_top", [None, [None]])
+    async def test_misaligned_input_top_logprobs_raise(self, input_top):
+        meta = _meta(
+            prompt_tokens=2,
+            input_token_logprobs=[[None, 1, "Q"], [-0.2, 2, " B"]],
+            input_top_logprobs=input_top,
+        )
+        t, _ = _make_transport({"text": "", "meta_info": meta})
+        with pytest.raises(RuntimeError, match="input top-k logprobs"):
+            await t.arun(
+                _request(
+                    "Q B", input_scoring=True, sampled_logprobs=True, top_logprobs=2
+                )
+            )
 
     @pytest.mark.anyio
     async def test_top_logprobs_none_when_absent(self):

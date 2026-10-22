@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Input-side top-k logprobs.** `alogprobs(echo=True, logprobs=N)` returns the top-N alternatives at every echoed input position in `ModelOutput.input_top_logprobs`, filled from SGLang's `input_top_logprobs` on `sglang_legacy` and from the echoed prompt's `top_logprobs` on `openai_completions`; in the IR they are `InputScoringResult.top_logprobs`. `top_logprobs` keeps only the generated tokens', so its first entry is still the next-token distribution. Since #45 the echo path sent `top_logprobs: 0` whatever `logprobs` said, so a held-out PPL task asking for per-position top-k got none. A reply whose input top-k is missing or misaligned is refused. Old records decode with `input_top_logprobs=None`.
+
+### Changed
+
+- `alogprobs(echo=True)` now sends the `logprobs` it is given; unset, it is 0 with `echo` (as sent before) and 5 without. A task that passed `echo=True, logprobs=N > 0` sends a different request, so its inference identity changes and a resume reruns it. In-tree PPL tasks pass `logprobs=0` and are unaffected.
+
 ## [0.10.1] - 2026-10-22
 
 A patch release despite two breaking changes, because neither touches an

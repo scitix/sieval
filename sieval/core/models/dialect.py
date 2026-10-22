@@ -739,6 +739,17 @@ class OutputContract:
                 "carries none"
             )
 
+        if (
+            req.scoring.input_scoring
+            and req.scoring.top_logprobs > 0
+            and response.input_scoring is not None
+            and response.input_scoring.top_logprobs is None
+            and not empty_outcome
+        ):
+            raise OutputContractError(
+                "top_logprobs were requested but input_scoring carries none"
+            )
+
         if len(response.texts) != req.sampling.n:
             raise OutputContractError(
                 f"expected {req.sampling.n} choices, received {len(response.texts)}"
@@ -790,6 +801,13 @@ def validate_choice_logprobs(value: object) -> None:
 def validate_input_scoring(value: object) -> None:
     if not isinstance(value, InputScoringResult):
         raise OutputContractError("input_scoring channel has invalid shape")
+    if value.top_logprobs is None:
+        return
+    validate_top_logprobs(value.top_logprobs)
+    if len(value.top_logprobs) != len(value.token_logprobs):
+        raise OutputContractError(
+            "input_scoring top-k positions do not align with its tokens"
+        )
 
 
 def validate_structured_output(value: object) -> None:

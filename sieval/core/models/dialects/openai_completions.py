@@ -792,7 +792,16 @@ class _Accumulator:
             if self._context.input_scoring:
                 assert usage is not None
                 boundary = usage.input_tokens
-                input_scoring = InputScoringResult(all_tokens[:boundary])
+                input_top = None
+                if self._context.top_logprobs:
+                    if all_top is None:
+                        raise OutputContractError(
+                            "input scoring response omitted echoed top-k logprobs"
+                        )
+                    input_top = all_top[:boundary]
+                input_scoring = InputScoringResult(
+                    all_tokens[:boundary], top_logprobs=input_top
+                )
                 sampled = all_tokens[boundary:]
                 top = all_top[boundary:] if all_top is not None else None
             else:

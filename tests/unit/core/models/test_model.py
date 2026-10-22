@@ -1060,6 +1060,22 @@ class TestConcurrencyPaths:
         assert req.scoring.sampled_logprobs is False
         assert req.scoring.top_logprobs == 0
 
+    @pytest.mark.anyio
+    async def test_alogprobs_echo_keeps_the_requested_breadth(self):
+        from tests.conftest import HandlerTransport, MockGenModel
+
+        model = MockGenModel()
+        await model.alogprobs("A", echo=True, logprobs=4)
+        await model.alogprobs("A", echo=False)
+
+        assert isinstance(model._transport, HandlerTransport)
+        echoed, next_token = model._transport.requests
+        assert echoed.scoring.input_scoring is True
+        assert echoed.scoring.sampled_logprobs is True
+        assert echoed.scoring.top_logprobs == 4
+        # Without echo the default breadth is still 5.
+        assert next_token.scoring.top_logprobs == 5
+
 
 # ===================================================================
 # Request builders (legacy OpenAI-style kwargs -> IR)
@@ -1277,9 +1293,10 @@ class TestBuilderValidation:
         req = model._build_logprobs_request(
             "p", max_tokens=1, logprobs=5, score_input=True, temperature=0.0
         )
-        # explicit alogprobs args override any _kwargs-borne logprobs config
-        assert req.scoring.sampled_logprobs is False
-        assert req.scoring.top_logprobs == 0
+        # explicit alogprobs args override any _kwargs-borne logprobs config,
+        # and the breadth applies to the echoed input too
+        assert req.scoring.sampled_logprobs is True
+        assert req.scoring.top_logprobs == 5
         assert req.scoring.input_scoring is True
         assert req.sampling.max_tokens == 1
 
@@ -1621,6 +1638,51 @@ class TestResponseBridge:
         out = self._bridge(Response(texts=("t",), logprobs=()))
         assert out.logprobs_tokens == []
         assert out.logprobs == []
+
+    def test_input_top_logprobs_stay_apart_from_the_sampled_top_k(self):
+        """The input's top-k gets its own field, so ``top_logprobs[0]`` stays
+        the next-token distribution CLP tasks read."""
+        resp = Response(
+            texts=("t",),
+            input_scoring=InputScoringResult(
+                token_logprobs=(
+                    TokenLogprob(token="Hello", logprob=None),
+                    TokenLogprob(token=" world", logprob=-0.5),
+                ),
+                top_logprobs=(
+                    (),
+                    (
+                        TopKEntry(token=" world", logprob=-0.5, token_id=1),
+                        TopKEntry(token=" world", logprob=-3.0, token_id=2),
+                        TopKEntry(token=" there", logprob=-1.0, token_id=3),
+                    ),
+                ),
+            ),
+            logprobs=(TokenLogprob(token=" !", logprob=-1.5),),
+            top_logprobs=((TopKEntry(token=" !", logprob=-1.5),),),
+        )
+        out = self._bridge(resp)
+        assert out.logprobs_tokens == ["Hello", " world", " !"]
+        assert out.input_top_logprobs == [{}, {" world": -0.5, " there": -1.0}]
+        assert out.top_logprobs == [{" !": -1.5}]
+
+        restored = dict_to_obj(obj_to_dict(out, add_type=True), global_type_registry)
+        assert isinstance(restored, ModelOutput)
+        assert restored.input_top_logprobs == out.input_top_logprobs
+
+    def test_input_top_logprobs_absent_unless_requested(self):
+        resp = Response(
+            texts=("t",),
+            input_scoring=InputScoringResult(
+                token_logprobs=(TokenLogprob(token="a", logprob=None),)
+            ),
+        )
+        out = self._bridge(resp)
+        assert out.input_top_logprobs is None
+        # A record written before the field existed decodes with it unset.
+        data = obj_to_dict(out, add_type=True)
+        assert "input_top_logprobs" not in data
+        assert dict_to_obj(data, global_type_registry).input_top_logprobs is None
 
     def test_top_logprobs_coalesce_duplicates_by_max(self):
         """Distinct token ids can normalize to identical text (sglang Ġ);

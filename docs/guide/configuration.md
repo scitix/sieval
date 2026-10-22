@@ -164,6 +164,14 @@ A refused request fails before any network I/O; a reply missing a rollout's
 logprobs fails that sample. `infer_args` are part of the inference identity,
 so changing them on a resume reruns inference.
 
+A task scoring its own input asks for the input's top-k in code:
+`model.alogprobs(text, echo=True, logprobs=N)` returns the top-N alternatives
+at every input position in `ModelOutput.input_top_logprobs`, aligned with the
+input tokens that lead `logprobs_tokens` (`{}` for the first token). The
+generated tokens' top-k stays in `top_logprobs`. `sglang_legacy` and
+`openai_completions` serve it. Each position costs a full-vocabulary top-k on
+the server, and the reply grows with N times the input length.
+
 ## Task Pipeline
 
 Each task implements a typed 5-stage pipeline:

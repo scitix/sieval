@@ -641,6 +641,55 @@ class TestOutputLifting:
             await dialect.execute(prepared)
 
     @pytest.mark.anyio
+    async def test_echoed_top_logprobs_split_at_the_usage_boundary(self) -> None:
+        dialect, _ = _dialect(
+            _response(
+                _choice(
+                    text=" c",
+                    tokens=["a", "b", " c"],
+                    token_logprobs=[None, -1.0, -0.3],
+                    top_logprobs=[None, {"b": -1.0, "x": -2.0}, {" c": -0.3}],
+                ),
+                usage=_usage(2, 1),
+            )
+        )
+        req = Request(
+            input=CompletionInput("ab"),
+            scoring=ScoringParams(
+                input_scoring=True, sampled_logprobs=True, top_logprobs=2
+            ),
+        )
+        _, prepared = _prepare(dialect, req)
+        assert prepared.thaw_body()["logprobs"] == 2
+        result = await dialect.execute(prepared)
+
+        assert result.input_scoring is not None
+        assert result.input_scoring.top_logprobs is not None
+        assert [
+            [(item.token, item.logprob) for item in position]
+            for position in result.input_scoring.top_logprobs
+        ] == [[], [("b", -1.0), ("x", -2.0)]]
+        OUTPUT_CONTRACT.validate(_Plan(), req, result)
+
+    @pytest.mark.anyio
+    async def test_echoed_top_logprobs_missing_is_a_contract_error(self) -> None:
+        dialect, _ = _dialect(
+            _response(
+                _choice(text="", tokens=["a"], token_logprobs=[None]),
+                usage=_usage(1, 0),
+            )
+        )
+        req = Request(
+            input=CompletionInput("a"),
+            scoring=ScoringParams(
+                input_scoring=True, sampled_logprobs=True, top_logprobs=2
+            ),
+        )
+        _, prepared = _prepare(dialect, req)
+        with pytest.raises(OutputContractError, match="echoed top-k"):
+            await dialect.execute(prepared)
+
+    @pytest.mark.anyio
     async def test_input_scoring_requires_echoed_logprobs(self) -> None:
         dialect, _ = _dialect(_response(_choice(text="ok"), usage=_usage(1, 0)))
         req = Request(

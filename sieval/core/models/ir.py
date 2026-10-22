@@ -273,6 +273,13 @@ class SamplingParams:
 
 @dataclass(frozen=True)
 class ScoringParams:
+    """What a request scores.
+
+    ``top_logprobs`` is one breadth for every scored position: the sampled
+    tokens, and with ``input_scoring`` the echoed input tokens as well. It
+    requires ``sampled_logprobs``.
+    """
+
     input_scoring: bool = False
     sampled_logprobs: bool = False
     top_logprobs: int = 0
@@ -398,9 +405,17 @@ class ChoiceLogprobs:
 @sieval_record
 @dataclass(frozen=True)
 class InputScoringResult:
+    """The echoed input's token logprobs.
+
+    ``top_logprobs`` is ``None`` unless the request asked for top-k, else
+    aligned with ``token_logprobs``; a position the server scored with no
+    alternatives (the first input token) is ``()``.
+    """
+
     token_logprobs: tuple[TokenLogprob, ...]
     byte_count: int | None = None
     char_count: int | None = None
+    top_logprobs: tuple[tuple[TopKEntry, ...], ...] | None = None
 
 
 @sieval_record

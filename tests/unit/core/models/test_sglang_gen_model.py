@@ -514,6 +514,53 @@ class TestLegacyLifecycle:
         assert root.pool.is_closed is True
 
 
+class TestInputTopLogprobs:
+    """``alogprobs(echo=True, logprobs=N)`` keeps the input's top-k."""
+
+    @pytest.mark.anyio
+    async def test_alogprobs_echo_returns_input_top_logprobs(self):
+        payload = {
+            "text": "",
+            "meta_info": {
+                "prompt_tokens": 2,
+                "completion_tokens": 1,
+                "cached_tokens": 0,
+                "finish_reason": {"type": "length"},
+                "input_token_logprobs": [[None, 1, "Hi"], [-0.4, 2, "Ġthere"]],
+                "input_top_logprobs": [
+                    None,
+                    [[-0.4, 2, "Ġthere"], [-1.1, 3, "Ġall"]],
+                ],
+                "output_token_logprobs": [[-0.2, 4, "!"]],
+                "output_top_logprobs": [[[-0.2, 4, "!"], [-2.5, 5, "."]]],
+            },
+        }
+        client = SimpleNamespace(
+            base_url="http://host:8000/v1/",
+            close=AsyncMock(),
+            post=AsyncMock(return_value=payload),
+        )
+        with patch(
+            "sieval.core.models.sglang_gen_model.AsyncOpenAI",
+            return_value=client,
+        ):
+            model = SglangGenModel(
+                model="m", api_base="http://host:8000/v1", api_key="local"
+            )
+
+        output = await model.alogprobs("Hi there", echo=True, logprobs=2)
+
+        body = client.post.await_args.kwargs["body"]
+        assert body["logprob_start_len"] == 0
+        assert body["top_logprobs_num"] == 2
+        # The input segment leads, as before; the generated token follows.
+        assert output.logprobs_tokens == ["Hi", " there", "!"]
+        assert output.input_top_logprobs == [{}, {" there": -0.4, " all": -1.1}]
+        # The generated token's top-k stays in its own field.
+        assert output.top_logprobs == [{"!": -0.2, ".": -2.5}]
+        await model.aclose()
+
+
 class TestPerRolloutLogprobs:
     """``infer_args: {return_logprobs, top_logprobs}`` at ``n > 1`` (issue #171)."""
 

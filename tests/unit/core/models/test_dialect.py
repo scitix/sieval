@@ -803,6 +803,41 @@ class TestOutputContract:
                 Response(("x",)),
             )
 
+    def test_requested_input_top_logprobs_must_be_present(self):
+        rules = _all_rules(Guarantee.BEST_EFFORT)
+        for channel in ("input_scoring", "logprobs", "top_logprobs"):
+            rules[channel] = OutputRule(Guarantee.PRESENT_OR_ERROR)
+        contract = OutputContract(rules)
+        req = Request(
+            input=CompletionInput("x"),
+            scoring=ScoringParams(
+                input_scoring=True, sampled_logprobs=True, top_logprobs=2
+            ),
+        )
+        with pytest.raises(OutputContractError, match="input_scoring carries none"):
+            contract.validate(
+                _Plan(),
+                req,
+                Response(
+                    ("x",),
+                    logprobs=(),
+                    top_logprobs=(),
+                    input_scoring=InputScoringResult((TokenLogprob("x"),)),
+                ),
+            )
+        contract.validate(
+            _Plan(),
+            req,
+            Response(
+                ("x",),
+                logprobs=(),
+                top_logprobs=(),
+                input_scoring=InputScoringResult(
+                    (TokenLogprob("x"),), top_logprobs=((),)
+                ),
+            ),
+        )
+
     def test_refusal_skips_success_channel_and_continuation_requirements(self):
         rules = _all_rules(Guarantee.BEST_EFFORT)
         rules["reasoning"] = OutputRule(Guarantee.PRESENT_OR_ERROR)
@@ -987,6 +1022,18 @@ class TestOutputContract:
                 "do not align",
             ),
             (
+                validate_input_scoring,
+                InputScoringResult((TokenLogprob("a"),), top_logprobs=()),
+                "do not align",
+            ),
+            (
+                validate_input_scoring,
+                InputScoringResult(
+                    (TokenLogprob("a"),), top_logprobs=cast(Any, ((object(),),))
+                ),
+                "top_logprobs",
+            ),
+            (
                 validate_choice_logprobs,
                 (ChoiceLogprobs((TokenLogprob("a"),), cast(Any, ((object(),),))),),
                 "top_logprobs",
@@ -1003,6 +1050,9 @@ class TestOutputContract:
         validate_reasoning((None, ReasoningOutput(text="reason")))
         validate_tool_calls((FunctionToolCall("call", "tool", {}),))
         validate_input_scoring(InputScoringResult(()))
+        validate_input_scoring(
+            InputScoringResult((TokenLogprob("a"),), top_logprobs=((),))
+        )
         validate_structured_output(StructuredOutput({"ok": True}))
         validate_choice_logprobs(
             (

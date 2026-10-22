@@ -443,10 +443,12 @@ class MockGenModel(GenModel):
         score = self._logprob_scores.get(option_label, -10.0)
         max_tokens = req.sampling.max_tokens
 
+        top = ((TopKEntry(token=f" {option_label}", logprob=score),),)
         input_scoring = None
         if req.scoring.input_scoring:
             input_scoring = InputScoringResult(
-                (TokenLogprob(token=f" {option_label}", logprob=score),)
+                (TokenLogprob(token=f" {option_label}", logprob=score),),
+                top_logprobs=top if req.scoring.top_logprobs > 0 else None,
             )
 
         return Response(
@@ -457,11 +459,7 @@ class MockGenModel(GenModel):
                 if req.scoring.sampled_logprobs
                 else None
             ),
-            top_logprobs=(
-                ((TopKEntry(token=f" {option_label}", logprob=score),),)
-                if req.scoring.top_logprobs > 0
-                else None
-            ),
+            top_logprobs=top if req.scoring.top_logprobs > 0 else None,
             input_scoring=input_scoring,
             usage=UsageStats(input_tokens=1, output_tokens=1, total_tokens=2),
             request_params={"max_tokens": max_tokens},
