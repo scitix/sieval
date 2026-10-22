@@ -9,7 +9,7 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,7 @@ from openai import AsyncOpenAI
 
 from sieval.cli.leaderboard.session import arun_session
 from sieval.core.models import Model, connection_factory
+from sieval.core.models.request_log import RecordingOpenAIClient
 from sieval.core.tasks import InputKind, Task, TaskRequirements
 
 SAMPLES = [
@@ -147,8 +148,12 @@ class _Wire:
     def __init__(self) -> None:
         self.candidate_keys: list[str] = []
         self.judge_keys: list[str] = []
+        #: Answers a request before the hosts do, when it returns a response.
+        self.before: Callable[[httpx.Request], httpx.Response | None] | None = None
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if self.before is not None and (early := self.before(request)) is not None:
+            return early
         if request.url.host == CANDIDATE_HOST:
             self.candidate_keys.append(request.headers["authorization"])
             question = json.loads(request.content)["messages"][-1]["content"]
@@ -166,8 +171,11 @@ def wire(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Wire]:
     real_openai = AsyncOpenAI
 
     def openai_client(**kwargs: Any) -> AsyncOpenAI:
-        transport = httpx.MockTransport(handler)
-        return real_openai(**kwargs, http_client=httpx.AsyncClient(transport=transport))
+        # The factory's own recording client, on an in-process transport.
+        kwargs["http_client"] = RecordingOpenAIClient(
+            timeout=kwargs["timeout"], transport=httpx.MockTransport(handler)
+        )
+        return real_openai(**kwargs)
 
     monkeypatch.setattr(connection_factory, "AsyncOpenAI", openai_client)
     monkeypatch.setattr(

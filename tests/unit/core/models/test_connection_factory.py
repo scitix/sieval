@@ -4,10 +4,9 @@ AI-Generated Code - GPT-5.6 (OpenAI)
 """
 
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import httpx
-import openai
 import pytest
 
 from sieval.core.models.connection_factory import (
@@ -20,9 +19,9 @@ from sieval.core.models.connection_factory import (
     ConnectionRequest,
     UnknownConnectionFamily,
     resolve_client_timeout,
-    timeout_phase,
 )
 from sieval.core.models.dialect_registry import DIALECT_SPECS
+from sieval.core.models.request_log import RecordingOpenAIClient
 
 
 class TestConnectionFactoryRegistry:
@@ -221,7 +220,12 @@ class TestBuiltInConnectionFactories:
             api_key="sk-runtime-only",
             max_retries=7,
             timeout=DEFAULT_REQUEST_TIMEOUT,
+            http_client=ANY,
         )
+        # Retries stay the SDK's; the client below it only records attempts.
+        recording = client_type.call_args.kwargs["http_client"]
+        assert isinstance(recording, RecordingOpenAIClient)
+        assert recording.timeout == DEFAULT_REQUEST_TIMEOUT
 
     def test_the_request_timeout_is_declared_here_not_inherited(self) -> None:
         """Asserted literally on purpose.
@@ -335,49 +339,3 @@ class TestClientTimeout:
             resolve_client_timeout(
                 value, default=DEFAULT_REQUEST_TIMEOUT, subject="Model 'candidate'"
             )
-
-
-class TestTimeoutPhase:
-    _REQUEST = httpx.Request("POST", "http://127.0.0.1:30000/v1/chat/completions")
-
-    @pytest.mark.parametrize(
-        ("error_type", "phase"),
-        [
-            (httpx.ConnectTimeout, "connect"),
-            (httpx.ReadTimeout, "read"),
-            (httpx.WriteTimeout, "write"),
-            (httpx.PoolTimeout, "pool"),
-        ],
-    )
-    def test_reads_the_phase_through_the_sdk_wrapper(
-        self, error_type: type[httpx.TimeoutException], phase: str
-    ) -> None:
-        try:
-            try:
-                raise error_type("timed out", request=self._REQUEST)
-            except httpx.TimeoutException as err:
-                raise openai.APITimeoutError(request=self._REQUEST) from err
-        except openai.APITimeoutError as wrapped:
-            assert timeout_phase(wrapped) == phase
-
-    def test_an_error_without_a_timeout_cause_has_no_phase(self) -> None:
-        assert timeout_phase(RuntimeError("boom")) is None
-        assert timeout_phase(openai.APITimeoutError(request=self._REQUEST)) is None
-
-    def test_a_timeout_only_in_the_context_has_no_phase(self) -> None:
-        """An unrelated error raised while handling a timeout is not one."""
-        try:
-            try:
-                raise httpx.ReadTimeout("timed out", request=self._REQUEST)
-            except httpx.TimeoutException:
-                raise ValueError("grader failed")  # noqa: B904
-        except ValueError as unrelated:
-            assert timeout_phase(unrelated) is None
-
-    def test_a_cyclic_cause_chain_terminates(self) -> None:
-        first = RuntimeError("a")
-        second = RuntimeError("b")
-        first.__cause__ = second
-        second.__cause__ = first
-
-        assert timeout_phase(first) is None

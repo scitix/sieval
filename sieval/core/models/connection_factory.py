@@ -14,6 +14,8 @@ from types import MappingProxyType
 import httpx
 from openai import AsyncOpenAI
 
+from .request_log import RecordingAsyncClient, RecordingOpenAIClient
+
 #: The per-request timeout every sieval client that talks to a model declares.
 #:
 #: Declared rather than inherited: the OpenAI SDK defaults ``read`` to 600 and
@@ -46,13 +48,6 @@ DEFAULT_REQUEST_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 MANAGED_ENGINE_REQUEST_TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 
 CLIENT_TIMEOUT_PHASES = ("connect", "read", "write", "pool")
-
-_TIMEOUT_PHASE_BY_TYPE: tuple[tuple[type[httpx.TimeoutException], str], ...] = (
-    (httpx.ConnectTimeout, "connect"),
-    (httpx.ReadTimeout, "read"),
-    (httpx.WriteTimeout, "write"),
-    (httpx.PoolTimeout, "pool"),
-)
 
 
 def resolve_client_timeout(
@@ -96,25 +91,6 @@ def resolve_client_timeout(
             )
         phases[str(phase)] = float(seconds)
     return httpx.Timeout(**phases)
-
-
-def timeout_phase(exc: BaseException) -> str | None:
-    """The ``httpx`` phase that timed out behind *exc*, if one did.
-
-    Follows ``__cause__`` only: the OpenAI SDK raises ``APITimeoutError``
-    *from* the ``httpx`` error, while an unrelated error raised inside an
-    ``except`` block merely has it as ``__context__``.
-    """
-
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        for timeout_type, phase in _TIMEOUT_PHASE_BY_TYPE:
-            if isinstance(current, timeout_type):
-                return phase
-        current = current.__cause__
-    return None
 
 
 class UnknownConnectionFamily(ValueError):
@@ -297,16 +273,19 @@ def _openai_sdk_connection(request: ConnectionRequest) -> AsyncOpenAI:
         api_key=request.credential,
         max_retries=request.max_retries,
         timeout=request.timeout,
+        http_client=RecordingOpenAIClient(timeout=request.timeout),
     )
 
 
 def _async_http_json_connection(
     request: ConnectionRequest,
 ) -> AsyncHTTPJSONConnection:
-    transport = httpx.AsyncHTTPTransport(retries=request.max_retries)
-    client = httpx.AsyncClient(
+    # Connect retries run in the client rather than the transport, where each
+    # try is recorded; the schedule is the transport's.
+    client = RecordingAsyncClient(
+        connect_retries=request.max_retries,
         base_url=request.endpoint,
-        transport=transport,
+        transport=httpx.AsyncHTTPTransport(retries=0),
         timeout=request.timeout,
     )
     return AsyncHTTPJSONConnection(client, request.credential)

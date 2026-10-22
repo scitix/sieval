@@ -71,6 +71,7 @@ from .ir import (
     Response,
 )
 from .reconcile import CheckStage, DeferredCheck, RuntimeBindingPlan
+from .request_log import observe_call
 
 
 class ModelQuotaSnapshot(TypedDict):
@@ -693,8 +694,18 @@ class Model:
         prepared = self._dialect.prepare(projected, audit)
         audit.finish(prepared)
 
-        async with self._pool.acquire(self._limiter):
-            response = await self._dialect.execute(prepared)
+        with observe_call(
+            model_meta=self.meta,
+            model=self._request_log_model(),
+            n=projected.sampling.n,
+            limiters=self._request_log_limiters(),
+        ) as call:
+            async with self._pool.acquire(self._limiter):
+                if call is not None:
+                    call.admitted()
+                response = await self._dialect.execute(prepared)
+            if call is not None:
+                call.usage = response.usage
         self._dialect.output_contract.validate(
             self._runtime_plan,
             projected,
@@ -702,6 +713,26 @@ class Model:
         )
         self._run_request_checks(projected, response, active_capabilities)
         return replace(response, provenance=self._provenance(response))
+
+    def _request_log_model(self) -> dict[str, JSONValue]:
+        """The model as a request record names it; no endpoint or credential."""
+
+        return {
+            "id": self._model,
+            "dialect": self.dialect_id,
+            "deployment": self._deployment.deployment_id,
+        }
+
+    def _request_log_limiters(self) -> dict[str, object]:
+        """The pool's shared quota, and the model-local cap when it differs."""
+
+        shared = self._pool.shared_limiter
+        limiters: dict[str, object] = {}
+        if shared is not None:
+            limiters["model_shared"] = shared
+        if self._limiter is not None and self._limiter is not shared:
+            limiters["model_local"] = self._limiter
+        return limiters
 
     def _run_request_checks(
         self,

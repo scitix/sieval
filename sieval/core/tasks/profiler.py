@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import ClassVar, NotRequired, Self, TypedDict
+from typing import TYPE_CHECKING, ClassVar, NotRequired, Self, TypedDict
 
 import orjson
 from loguru import logger
@@ -15,6 +15,10 @@ from sieval.core.models import ModelUsage
 from sieval.core.utils.atomic import aatomic_write
 
 from .context import TaskContext
+
+if TYPE_CHECKING:
+    # `requests` builds on this module's timing stats.
+    from .requests import RequestProfile
 
 
 class TaskTokenStats:
@@ -168,9 +172,11 @@ class ProfileReport(TypedDict, total=False):
     token_usage: dict[str, ProfileStageTokenUsage]
     io: dict[str, ProfileTimingStats]
     stages: dict[str, ProfileTimingStats]
+    #: This run's model requests by phase and model (``TaskRequestLog.summary``).
+    requests: "RequestProfile"
 
 
-def _compute_timing_stats(durations: list[float]) -> ProfileTimingStats:
+def compute_timing_stats(durations: list[float]) -> ProfileTimingStats:
     """Compute timing statistics using nearest-rank percentiles (no interpolation).
 
     Percentile indices use ``int(p * N)`` clamped to ``N-1``.  This rounds
@@ -220,6 +226,7 @@ class TaskProfiler:
         self._stage_breakdown: dict[str, dict[str, UsageBreakdownStats]] = {}
         self._stage_usage_calls: dict[str, int] = {}
         self._stage_total_mismatches: dict[str, int] = {}
+        self._requests: RequestProfile | None = None
 
     def include_stage_meta(self) -> None:
         """Aggregate stage timings and token usage regardless of the flags.
@@ -488,7 +495,7 @@ class TaskProfiler:
 
         max_name_len = max(len(k) for k in valid_items)
         for op_name, durations in sorted(valid_items.items()):
-            s = _compute_timing_stats(durations)
+            s = compute_timing_stats(durations)
 
             msg = (
                 f"{prefix}   {op_name:<{max_name_len}} | "
@@ -558,7 +565,7 @@ class TaskProfiler:
             io_stats: dict[str, ProfileTimingStats] = {}
             for op_name, durations in sorted(self._io_aggregates.items()):
                 if durations:
-                    io_stats[op_name] = _compute_timing_stats(durations)
+                    io_stats[op_name] = compute_timing_stats(durations)
             if io_stats:
                 report["io"] = io_stats
 
@@ -567,11 +574,19 @@ class TaskProfiler:
             stage_stats: dict[str, ProfileTimingStats] = {}
             for stage_name, durations in sorted(self._stage_aggregates.items()):
                 if durations:
-                    stage_stats[stage_name] = _compute_timing_stats(durations)
+                    stage_stats[stage_name] = compute_timing_stats(durations)
             if stage_stats:
                 report["stages"] = stage_stats
 
+        if self._requests is not None:
+            report["requests"] = self._requests
+
         return report
+
+    def set_requests(self, summary: "RequestProfile | None") -> None:
+        """This run's request summary, written with the rest of the profile."""
+
+        self._requests = summary
 
     async def save(self, root_dir: Path) -> None:
         """Atomically write profile.json to root_dir.
@@ -580,7 +595,7 @@ class TaskProfiler:
         """
         report = self.to_dict()
         # Skip if only meta — no actual data sections
-        if not any(k in report for k in ("token_usage", "io", "stages")):
+        if not any(k in report for k in ("token_usage", "io", "stages", "requests")):
             return
 
         profile_path = root_dir / "profile.json"

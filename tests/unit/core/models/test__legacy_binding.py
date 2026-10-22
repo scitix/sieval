@@ -9,7 +9,7 @@ AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import httpx
 import pytest
@@ -21,6 +21,7 @@ from sieval.core.models._legacy_binding import (
 )
 from sieval.core.models.connection_factory import DEFAULT_REQUEST_TIMEOUT
 from sieval.core.models.reconcile import RuntimeBindingPlan
+from sieval.core.models.request_log import RecordingOpenAIClient
 
 
 def _a_binding(*, api_key: str | None = "sk-runtime-only") -> _LegacyOpenAIBinding:
@@ -112,7 +113,10 @@ class TestLegacyBindingClient:
             api_key="sk-runtime-only",
             max_retries=4,
             timeout=DEFAULT_REQUEST_TIMEOUT,
+            http_client=ANY,
         )
+        recording = client_factory.call_args.kwargs["http_client"]
+        assert isinstance(recording, RecordingOpenAIClient)
 
     @pytest.mark.parametrize(
         ("value", "expected"),

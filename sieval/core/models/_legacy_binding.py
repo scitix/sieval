@@ -36,6 +36,7 @@ from .deployment import (
 )
 from .dialect_registry import capability_decisions_for, get_dialect_spec
 from .reconcile import RuntimeBindingPlan
+from .request_log import RecordingOpenAIClient
 
 type _LegacyCredentialKind = Literal[
     "explicit-credential",
@@ -406,13 +407,15 @@ def build_legacy_openai_binding(
 ) -> _LegacyOpenAIBinding:
     """Create the wrapper-owned client/pool boundary used for one cycle."""
 
+    timeout = resolve_client_timeout(
+        client_timeout, default=DEFAULT_REQUEST_TIMEOUT, subject=f"Model '{model}'"
+    )
     client = AsyncOpenAI(
         base_url=api_base,
         api_key=api_key,
         max_retries=max_retries,
-        timeout=resolve_client_timeout(
-            client_timeout, default=DEFAULT_REQUEST_TIMEOUT, subject=f"Model '{model}'"
-        ),
+        timeout=timeout,
+        http_client=RecordingOpenAIClient(timeout=timeout),
     )
     endpoint = str(client.base_url).rstrip("/")
     local_limiter = (

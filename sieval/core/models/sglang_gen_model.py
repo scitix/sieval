@@ -38,6 +38,7 @@ from .dialect_registry import compatibility_factory_for
 from .ir import CompletionInput, ModelInput, Request, Response
 from .model import Model
 from .reconcile import RuntimeBindingPlan
+from .request_log import RecordingOpenAIClient, observe_call
 from .transports.sglang import (
     SGLANG_LEGACY_DIALECT_OPTION_KEYS,
     SglangTransport,
@@ -151,15 +152,17 @@ class SglangGenModel(Model):
     ) -> None:
         self._model = model
         self._api_base = api_base
+        timeout = resolve_client_timeout(
+            client_timeout,
+            default=DEFAULT_REQUEST_TIMEOUT,
+            subject=f"Model '{model}'",
+        )
         self._client = AsyncOpenAI(
             base_url=api_base,
             api_key=api_key,
             max_retries=max_retries,
-            timeout=resolve_client_timeout(
-                client_timeout,
-                default=DEFAULT_REQUEST_TIMEOUT,
-                subject=f"Model '{model}'",
-            ),
+            timeout=timeout,
+            http_client=RecordingOpenAIClient(timeout=timeout),
         )
         self._kwargs = dict(kwargs)
         self._extra = dict(extra) if extra is not None else None
@@ -233,8 +236,19 @@ class SglangGenModel(Model):
             raise TypeError(f"arun requires Request, got {type(req).__name__}")
         validate_request_invariants(req)
         _validate_legacy_request_leaves(req)
-        async with self._pool.acquire(self._limiter):
-            return await self._legacy_transport.arun(req)
+        with observe_call(
+            model_meta=self.meta,
+            model=self._request_log_model(),
+            n=req.sampling.n,
+            limiters=self._request_log_limiters(),
+        ) as call:
+            async with self._pool.acquire(self._limiter):
+                if call is not None:
+                    call.admitted()
+                response = await self._legacy_transport.arun(req)
+            if call is not None:
+                call.usage = response.usage
+        return response
 
     def with_dialect(self, dialect_id: str, runtime_plan: RuntimeBindingPlan) -> Model:
         del dialect_id, runtime_plan

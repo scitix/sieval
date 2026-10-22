@@ -20,7 +20,7 @@ from loguru import logger
 from sieval import __version__
 from sieval.core.datasets import repeat_index_of
 from sieval.core.models import ModelOutput
-from sieval.core.models.connection_factory import timeout_phase
+from sieval.core.models.request_log import StageScope, stage_scope, timeout_phase
 from sieval.core.tasks.anomaly import TaskAnomalyDetector
 from sieval.core.tasks.concurrency import (
     compute_stream_buffer_capacity,
@@ -46,6 +46,7 @@ from sieval.core.tasks.metrics import interval_declaration_problems
 from sieval.core.tasks.profiler import TaskProfiler
 from sieval.core.tasks.progress import TaskProgress
 from sieval.core.tasks.records import iter_grader_outputs
+from sieval.core.tasks.requests import TaskRequestLog
 from sieval.core.tasks.run_meta import (
     ABSENT,
     DigestedStage,
@@ -248,6 +249,12 @@ class TaskRunnerConfig:
     record_each_stage: bool = True
     record_type_metadata: bool = True
     record_meta: bool = True
+    # One `requests.jsonl` line per model request attempt, and its summary in
+    # `profile.json` / `report.json`. Rotated at `request_log_max_bytes`,
+    # keeping `request_log_max_files` rotated files.
+    record_requests: bool = True
+    request_log_max_bytes: int = 64 * 1024 * 1024
+    request_log_max_files: int = 8
     stage_meta_hook: TaskStageMetaHook | None = None
     # Per-stage hooks take priority over stage_meta_hook for matching stages;
     # stages not in stage_meta_hooks fall back to stage_meta_hook (if set).
@@ -559,6 +566,10 @@ class TaskRunner:
         self._shared_stage_limiters: dict[str, anyio.CapacityLimiter] = {}
         self._progress_position: int = 0
 
+        # Request records; opened once the run is recorded (see `_open_request_log`).
+        self._request_log: TaskRequestLog | None = None
+        self._run_start = time.monotonic()
+
     def set_runtime_context(
         self,
         shared_global_limiter: anyio.CapacityLimiter | None,
@@ -641,6 +652,7 @@ class TaskRunner:
                 self._abandon_copy()
                 raise
             end_copy(self._root_dir)
+            self._open_request_log()
 
             # 1. Load Initial State
             if not resumed:
@@ -799,6 +811,7 @@ class TaskRunner:
                 try:
                     with anyio.CancelScope(shield=True):
                         await self._saver.flush()
+                        await self._flush_request_log()
                         # Anomalies of the samples this run saw finish.
                         rules_hash = await self._write_anomalies(self._anomaly_results)
                         await self._saver.interrupt_run(rules_hash=rules_hash)
@@ -810,6 +823,9 @@ class TaskRunner:
             return None
 
         finally:
+            # Lines of a run that raised; a no-op after `_finalize`.
+            with anyio.CancelScope(shield=True):
+                await self._flush_request_log()
             # X. Lifecycle Shutdown
             await self._task.shutdown()
 
@@ -1093,13 +1109,65 @@ class TaskRunner:
             if self._progress:
                 self._progress.set_status(self._active_counts, len(self._hydrated_ids))
             try:
-                await self._execute_stage_logic(ctx, compute_send, action)
+                with stage_scope(self._stage_scope(ctx, action)):
+                    await self._execute_stage_logic(ctx, compute_send, action)
+                if self._request_log is not None:
+                    await self._request_log.maybe_flush()
             finally:
                 self._active_counts[action.value] -= 1
                 if self._progress:
                     self._progress.set_status(
                         self._active_counts, len(self._hydrated_ids)
                     )
+
+    def _open_request_log(self) -> None:
+        """Start recording model requests, unless ``record_requests`` is off."""
+        if not self._config.record_requests:
+            return
+        try:
+            judges = self._task.judge_models()
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.warning("Judge models unavailable: {}", exc)
+            judges = {}
+        self._request_log = TaskRequestLog(
+            self._root_dir,
+            subject=self._task.model,
+            judges=judges,
+            max_bytes=self._config.request_log_max_bytes,
+            max_files=self._config.request_log_max_files,
+        )
+
+    def _stage_scope(self, ctx: TaskContext, action: TaskAction) -> StageScope | None:
+        """What a model call made inside this stage is recorded against."""
+        if self._request_log is None:
+            return None
+        key = action.value
+        limiters = {
+            "global": self._shared_global_limiter,
+            "global_stage": self._shared_stage_limiters.get(key),
+            "task": self._local_limiter,
+            "task_stage": self._local_stage_limiters.get(key),
+        }
+        return StageScope(
+            sink=self._request_log,
+            task=self._task.name,
+            run=self._saver.run_id,
+            stage=key,
+            sample_id=ctx.sample_id,
+            iteration=ctx.iteration,
+            repeat_index=ctx.repeat_index,
+            limiters={k: v for k, v in limiters.items() if v is not None},
+            run_start=self._run_start,
+        )
+
+    async def _flush_request_log(self) -> None:
+        if self._request_log is None:
+            return
+        try:
+            await self._request_log.flush()
+        except OSError as exc:
+            # Diagnostics only: a full disk here must not fail the run.
+            logger.error("Failed to write {}: {}", "requests.jsonl", exc)
 
     async def _execute_stage_logic(
         self,
@@ -1382,7 +1450,15 @@ class TaskRunner:
         if isinstance(report, dict):
             as_dict = cast(dict[str, JSONValue], report)
             if counts is not None:
-                as_dict[SIEVAL_COUNTS_KEY] = cast(JSONValue, dict(counts))
+                block = cast(dict[str, JSONValue], dict(counts))
+                requests = (
+                    self._request_log.counts()
+                    if self._request_log is not None
+                    else None
+                )
+                if requests is not None:
+                    block["requests"] = cast(JSONValue, requests)
+                as_dict[SIEVAL_COUNTS_KEY] = block
             as_dict["sieval_versions"] = report_versions(
                 (c.stage_meta for c in finals),
                 (c.stage_meta for c in fails),
@@ -1422,6 +1498,9 @@ class TaskRunner:
         finals, fails = self._final_and_failed()
         anomalies = self._anomalies_of(finals)
 
+        await self._flush_request_log()
+        if self._request_log is not None:
+            self._profiler.set_requests(self._request_log.summary())
         await self._profile(finals + fails)
 
         refusal: UnreadableIntervalError | None = None

@@ -15,7 +15,7 @@ import types
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import anyio
 import httpx
@@ -80,6 +80,7 @@ from sieval.core.models.reconcile import (
     DeploymentCapabilityPlan,
     ServingRequirement,
 )
+from sieval.core.models.request_log import RecordingOpenAIClient
 from sieval.core.models.requirements import (
     AggregatedTaskRequirements,
     InlineModelBinding,
@@ -4403,8 +4404,10 @@ tasks:
         real_openai = AsyncOpenAI
 
         def openai_client(**kwargs: Any) -> AsyncOpenAI:
-            client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-            return real_openai(**kwargs, http_client=client)
+            kwargs["http_client"] = RecordingOpenAIClient(
+                timeout=kwargs["timeout"], transport=httpx.MockTransport(handler)
+            )
+            return real_openai(**kwargs)
 
         monkeypatch.setattr(connection_factory, "AsyncOpenAI", openai_client)
         monkeypatch.setattr(
@@ -5284,6 +5287,7 @@ tasks:
             api_key="local",
             max_retries=9,
             timeout=MANAGED_ENGINE_REQUEST_TIMEOUT,
+            http_client=ANY,
         )
         await session._close_owned_model_resources()
         close.assert_awaited_once()

@@ -50,6 +50,7 @@ from sieval.core.tasks.meta import (
     EvalMode,
     sieval_task,
 )
+from sieval.core.tasks.requests import TaskRequestLog
 from sieval.core.tasks.task import Task
 from tests.conftest import (
     MockAlwaysFailModel,
@@ -2932,3 +2933,59 @@ class TestReportTruncation:
 
         assert report["n_truncated"] == 3
         assert report["n_scored_rollouts"] == 3
+
+
+class TestRequestLogWiring:
+    """The runner's side of ``requests.jsonl``; the wire is in integration."""
+
+    @pytest.mark.anyio
+    async def test_a_failed_write_never_fails_the_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task = MockTask(
+            dataset=MockDataset(),
+            model=MockChatModel(answers=DEFAULT_ANSWERS),
+            name="requests_full_disk",
+        )
+        runner = TaskRunner(task, make_config(tmp_path))
+        flush = AsyncMock(side_effect=OSError("No space left on device"))
+        monkeypatch.setattr(TaskRequestLog, "flush", flush)
+
+        report = await runner.arun()
+
+        assert report["accuracy"] == 1.0
+        assert flush.await_count > 0
+
+    @pytest.mark.anyio
+    async def test_judges_that_cannot_be_read_still_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task = MockTask(
+            dataset=MockDataset(),
+            model=MockChatModel(answers=DEFAULT_ANSWERS),
+            name="requests_no_judges",
+        )
+        monkeypatch.setattr(
+            task, "judge_models", MagicMock(side_effect=TypeError("bad judge"))
+        )
+        runner = TaskRunner(task, make_config(tmp_path))
+
+        await runner.arun()
+
+        log = runner._request_log
+        assert isinstance(log, TaskRequestLog)
+        assert log.role_of(task.model.meta()) == "subject"
+
+    @pytest.mark.anyio
+    async def test_record_requests_off_opens_no_log(self, tmp_path: Path) -> None:
+        task = MockTask(
+            dataset=MockDataset(),
+            model=MockChatModel(answers=DEFAULT_ANSWERS),
+            name="requests_off",
+        )
+        runner = TaskRunner(task, make_config(tmp_path, record_requests=False))
+
+        await runner.arun()
+
+        assert runner._request_log is None
+        assert not (runner.root_dir / "requests.jsonl").exists()

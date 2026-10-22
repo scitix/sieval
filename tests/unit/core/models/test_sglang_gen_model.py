@@ -14,7 +14,7 @@ AI-Generated Code - Claude Fable 5 (Anthropic)
 
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import anyio
 import httpx
@@ -42,6 +42,7 @@ from sieval.core.models import (
 from sieval.core.models._legacy_binding import build_legacy_openai_binding
 from sieval.core.models.dialect import RequestAuditError
 from sieval.core.models.reconcile import RuntimeBindingPlan
+from sieval.core.models.request_log import RecordingOpenAIClient
 from sieval.core.models.transports.sglang import SglangTransport
 from sieval.core.utils.serialization import dict_to_obj, obj_to_dict
 
@@ -111,7 +112,11 @@ class TestDefaultTransport:
             api_key="local",
             max_retries=3,
             timeout=DEFAULT_REQUEST_TIMEOUT,
+            http_client=ANY,
         )
+        recording = client_factory.call_args.kwargs["http_client"]
+        assert isinstance(recording, RecordingOpenAIClient)
+        assert recording.timeout == DEFAULT_REQUEST_TIMEOUT
 
     def test_client_resolves_a_client_timeout_mapping(self):
         client = SimpleNamespace(base_url="http://host:8000/v1/", close=AsyncMock())

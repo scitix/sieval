@@ -17,7 +17,7 @@ from sieval.core.tasks.profiler import (
     TaskProfiler,
     TaskProfilerContext,
     TaskTokenStats,
-    _compute_timing_stats,
+    compute_timing_stats,
 )
 
 
@@ -572,10 +572,10 @@ class TestTaskProfilerLogSummary:
 class TestComputeTimingStats:
     def test_empty_raises(self):
         with pytest.raises(ValueError, match="non-empty"):
-            _compute_timing_stats([])
+            compute_timing_stats([])
 
     def test_single_element(self):
-        s = _compute_timing_stats([0.5])
+        s = compute_timing_stats([0.5])
         assert s["count"] == 1
         assert s["total_s"] == pytest.approx(0.5)
         assert s["avg_s"] == pytest.approx(0.5)
@@ -587,7 +587,7 @@ class TestComputeTimingStats:
         assert s["p99_s"] == pytest.approx(0.5)
 
     def test_two_elements(self):
-        s = _compute_timing_stats([0.1, 0.9])
+        s = compute_timing_stats([0.1, 0.9])
         assert s["count"] == 2
         assert s["min_s"] == pytest.approx(0.1)
         assert s["max_s"] == pytest.approx(0.9)
@@ -596,7 +596,7 @@ class TestComputeTimingStats:
 
     def test_hundred_elements(self):
         durs = [float(i) for i in range(100)]
-        s = _compute_timing_stats(durs)
+        s = compute_timing_stats(durs)
         assert s["count"] == 100
         assert s["total_s"] == pytest.approx(sum(durs))
         assert s["avg_s"] == pytest.approx(sum(durs) / 100)
@@ -612,7 +612,7 @@ class TestComputeTimingStats:
         assert s["p99_s"] == pytest.approx(99.0)
 
     def test_unsorted_input(self):
-        s = _compute_timing_stats([3.0, 1.0, 2.0])
+        s = compute_timing_stats([3.0, 1.0, 2.0])
         assert s["min_s"] == pytest.approx(1.0)
         assert s["max_s"] == pytest.approx(3.0)
         # int(0.5 * 3) == 1, so p50 is sorted_durs[1] == 2.0
