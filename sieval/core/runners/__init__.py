@@ -1,5 +1,5 @@
 from sieval.core.runners.multi_runner import MultiTaskRunner
-from sieval.core.runners.resume_gate import ResumeAction, resume_version_verdict
+from sieval.core.runners.resume_gate import ResumeAction, resume_schema_verdict
 from sieval.core.runners.resume_option import (
     ResumeValue,
     as_resume,
@@ -33,7 +33,7 @@ __all__ = [
     "fold_resume_aliases",
     "read_run_version",
     "resume_source",
-    "resume_version_verdict",
+    "resume_schema_verdict",
     "run_started",
     "same_dir",
 ]

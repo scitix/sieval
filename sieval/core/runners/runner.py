@@ -49,6 +49,7 @@ from sieval.core.tasks.records import iter_grader_outputs
 from sieval.core.tasks.requests import REQUESTS_FILE, TaskRequestLog
 from sieval.core.tasks.run_meta import (
     ABSENT,
+    RESULT_SCHEMA_VERSION,
     DigestedStage,
     GraderIdentity,
     InferenceIdentity,
@@ -86,7 +87,7 @@ from .resume_gate import (
     ResumeAction,
     ResumeVersionError,
     format_reject_message,
-    resume_version_verdict,
+    resume_schema_verdict,
 )
 from .resume_option import as_resume, fold_resume_aliases, resume_source
 from .stage_resume import (
@@ -359,13 +360,13 @@ def read_run_version(root_dir: Path) -> str | None:
 
 
 def gate_resume_version(root_dir: Path, current_version: str) -> None:
-    """Refuse to resume across an incompatible sieval version.
+    """Refuse to resume a directory whose result schema version is not this build's.
 
-    Reads the format-stable ``version`` from ``root_dir/meta.json`` via
-    :func:`read_run_version` and applies :func:`resume_version_verdict`.
-    Missing, unreadable, or version-less ``meta.json`` is fail-closed
-    (reject). Raises :class:`ResumeVersionError` on reject; logs a warning on
-    a compatible non-exact resume; silent on an exact match.
+    Reads ``result_schema_version`` and ``version`` from ``root_dir/meta.json``
+    and applies :func:`resume_schema_verdict`. Missing, unreadable, or
+    version-less ``meta.json`` is fail-closed (reject). Raises
+    :class:`ResumeVersionError` on reject; logs a warning on a resume across
+    SiEval versions; silent on an exact match.
     """
     v_run = read_run_version(root_dir)
     if v_run is None:
@@ -377,15 +378,21 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
             "Start fresh in another result_dir, without resuming it."
         )
 
-    verdict = resume_version_verdict(v_run, current_version)
+    meta = _read_run_meta(root_dir) or {}
+    recorded_schema = meta.get("result_schema_version")
+    verdict = resume_schema_verdict(recorded_schema, v_run, current_version)
     if verdict.action is ResumeAction.REJECT:
         raise ResumeVersionError(
-            format_reject_message(v_run, current_version, verdict.reason)
+            format_reject_message(
+                recorded_schema, v_run, current_version, verdict.reason
+            )
         )
     if verdict.action is ResumeAction.COMPATIBLE:
         logger.warning(
-            "Resuming across compatible sieval versions (persisted={}, current={}); "
-            "per-record provenance will record the blend.",
+            "Resuming across sieval versions of result schema version {} "
+            "(persisted={}, current={}); per-record provenance will record the "
+            "blend.",
+            RESULT_SCHEMA_VERSION,
             v_run,
             current_version,
         )

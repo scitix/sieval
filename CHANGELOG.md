@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Resume compatibility is keyed on the result schema version, not the package version.** `meta.json` gains `result_schema_version`, written at run start beside `version`; it versions the on-disk layout of a task's result directory that resume reads (shard records and their `.idx`, `meta.json`, the `report.json` shape the loader reads), not the `identity` block (`IDENTITY_SCHEMA`). It starts at 1 (`RESULT_SCHEMA_VERSION`). A resume refuses a directory of another result schema version, naming both schema versions and both SiEval versions. A directory without the field maps from its `version`: 0.10.0 and later, local builds included, is 1, so 0.10.x result directories resume under 0.11.0; anything older, unparseable or `0.0.0` is refused, as before. Dev and local builds (`0.10.2+gc18745b`) now resume across builds when the schema matches; they used to be refused unless the version string matched exactly. The package version stays in `version` and `runs[].sieval` as provenance, and the stage identities still decide what a resume reuses. `resume_version_verdict` is replaced by `resume_schema_verdict` (#202).
+
 ## [0.10.2] - 2026-10-22
 
 No on-disk format or stage identity changes: `IDENTITY_SCHEMA` stays 1, every

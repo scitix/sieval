@@ -12,6 +12,7 @@ import pytest
 
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.context import TaskContext, TaskRunIdentity
+from sieval.core.tasks.run_meta import RESULT_SCHEMA_VERSION
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.utils import atomic as saver_module
 
@@ -386,6 +387,7 @@ class TestRunMeta:
 
         meta = _read_meta(root)
         assert meta["version"] == __version__
+        assert meta["result_schema_version"] == RESULT_SCHEMA_VERSION
         assert meta["deterministic"] is True
         assert meta["task"] == _IDENTITY
         assert meta["model"] == "candidate"
@@ -468,6 +470,8 @@ class TestRunMeta:
         meta = _read_meta(root)
         assert "task" not in meta
         assert meta["version"] == "0.6.0"
+        # Only a directory the gate admitted is resumed, so it now says so.
+        assert meta["result_schema_version"] == RESULT_SCHEMA_VERSION
         assert meta["identity"]["data"] is None
         assert [r["start"] for r in meta["runs"]] == ["resume"]
 

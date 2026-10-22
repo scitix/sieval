@@ -22,6 +22,7 @@ from .consts import TaskStage
 from .context import TaskContext, TaskRunIdentity, TaskRunMeta
 from .profiler import TaskProfiler, TaskProfilerContext
 from .run_meta import (
+    RESULT_SCHEMA_VERSION,
     DigestedStage,
     GraderIdentity,
     InferenceIdentity,
@@ -211,8 +212,11 @@ class TaskSaver:
     ) -> None:
         """Rewrite ``meta.json`` for a run that is starting, appending its ``runs[]``.
 
-        ``version``, ``deterministic`` and ``task`` describe the run that
-        created the directory: a resume keeps the persisted values and never
+        ``result_schema_version`` is always this build's
+        :data:`~sieval.core.tasks.run_meta.RESULT_SCHEMA_VERSION`: the resume
+        gate refuses any other. ``version``, ``deterministic`` and ``task``
+        describe the run that created the directory: a resume keeps the
+        persisted values and never
         backfills a missing ``deterministic`` or ``task``, since either would
         describe the resuming process rather than the run that produced the
         samples. A
@@ -235,14 +239,26 @@ class TaskSaver:
         existing = await self._read_meta() if resumed and run_from is None else None
         meta: TaskRunMeta
         if existing is not None and isinstance(existing.get("version"), str):
-            meta = cast(TaskRunMeta, {"version": existing["version"]})
+            # The resume gate admitted only this result schema version, so a
+            # directory from before the field records it from now on.
+            meta = cast(
+                TaskRunMeta,
+                {
+                    "version": existing["version"],
+                    "result_schema_version": RESULT_SCHEMA_VERSION,
+                },
+            )
             # Carried only when recorded: a pre-feature run never said.
             if isinstance(existing.get("deterministic"), bool):
                 meta["deterministic"] = existing["deterministic"]
             if isinstance(existing.get("task"), dict):
                 meta["task"] = existing["task"]
         else:
-            meta = {"version": __version__, "deterministic": self._deterministic}
+            meta = {
+                "version": __version__,
+                "result_schema_version": RESULT_SCHEMA_VERSION,
+                "deterministic": self._deterministic,
+            }
             if self._task_identity is not None:
                 meta["task"] = self._task_identity
         recorded_model = (existing or {}).get("model")

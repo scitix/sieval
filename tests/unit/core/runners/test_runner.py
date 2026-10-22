@@ -2510,9 +2510,15 @@ class TestResumeVersionGate:
         task = MockTask(dataset=MockDataset(), model=model, name="gate_block")
         await TaskRunner(task, make_config(tmp_path, result_dir=result_dir)).arun()
 
-        # Tamper meta.json to an incompatible series.
+        # Tamper meta.json to a result schema version this build does not write.
         (Path(result_dir) / "meta.json").write_bytes(
-            orjson.dumps({"version": "999.0.0", "deterministic": False})
+            orjson.dumps(
+                {
+                    "version": "999.0.0",
+                    "result_schema_version": 999,
+                    "deterministic": False,
+                }
+            )
         )
 
         task2 = MockTask(dataset=MockDataset(), model=model, name="gate_block")

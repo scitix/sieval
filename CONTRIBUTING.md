@@ -90,6 +90,14 @@ ty check                                                                      # 
 
 See [tests/README.md](tests/README.md) for mock infrastructure and full command reference.
 
+### Result schema version
+
+A change to how a task's result directory is laid out on disk (`.idx`, shards,
+`meta.json`, the `report.json` shape the loader reads), or to core semantics
+the stage identities cannot see, bumps `RESULT_SCHEMA_VERSION`. Resume refuses a
+directory of another result schema version. See
+[AGENTS.md](AGENTS.md#result-schema-version).
+
 ## Adding a New Benchmark
 
 1. Create dataset in `sieval/datasets/` — keep upstream field names, and cast a column's dtype
