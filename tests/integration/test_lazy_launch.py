@@ -8,6 +8,7 @@ endpoint. GPU detection is faked.
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import importlib
 import json
 import sys
 import textwrap
@@ -564,8 +565,6 @@ def _patch_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.syspath_prepend(str(patches))
     monkeypatch.delitem(sys.modules, "echo_report_patch", raising=False)
-    import importlib
-
     patch_module = importlib.import_module("echo_report_patch")
     monkeypatch.setattr(EchoTask, "report", patch_module.report)
 

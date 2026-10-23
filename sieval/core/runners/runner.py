@@ -2073,22 +2073,20 @@ class TaskRunner:
         }
 
     def _stage_plan(self) -> ResumePlan:
-        """The recorded directory's stages compared with this run's.
+        """:func:`plan_resume` over this runner's identities, with its decisions.
 
-        :func:`plan_resume` over this runner's own identities. ``preprocess``
-        is decided per sample (``restarted``), so it compares as ``unknown``.
-        ``rerun_from`` is what this runner decides, which also trusts a
-        directory that recorded no identity; ``refused`` is ``None``, since a
-        refusal raises before a plan is returned.
+        ``preprocess`` is decided per sample (``restarted``), so it is left
+        out. ``rerun_from`` is the runner's, which trusts a directory with no
+        identities; ``refused`` is ``None``, as a refusal raises before this.
         """
-        current: dict[str, Any] = {
+        current: dict[str, object] = {
             "data": self._dataset_identity(),
             "inference": self._inference_identity(),
             **(self._grading_identities() or {}),
         }
         plan = plan_resume(self._recorded, current, self._legacy_grader_keys())
+        del plan["stages"]["preprocess"]
         plan["rerun_from"] = self._recorded_grading_change()
-        # Planning got this far, so the runner refuses nothing.
         plan["refused"] = None
         return plan
 

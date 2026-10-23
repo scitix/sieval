@@ -1300,6 +1300,7 @@ class TestPlanRunNamesTheStage:
         stages = plan["stages"]
         assert stages is not None
         assert stages["stages"]["data"] == "differs"
+        assert "preprocess" not in stages["stages"]
         assert stages["rerun_from"] is None
         assert (plan["to_infer"], plan["to_grade"]) == (1, 1)
 
@@ -1321,6 +1322,7 @@ class TestPlanRunNamesTheStage:
         assert stages["identity_schema"] is None
         assert stages["stages"]["postprocess"] == "unknown"
         assert stages["rerun_from"] is None
+        assert stages["refused"] is None  # the bare comparison says `inference`
 
     @pytest.mark.anyio
     async def test_a_removed_sample_is_dropped(self, tmp_path, plugin):
