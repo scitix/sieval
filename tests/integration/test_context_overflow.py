@@ -20,7 +20,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from sieval.cli.session import arun_session
+from sieval.cli.session import aplan_session, arun_session
 from sieval.core.runners import TaskRunner
 from sieval.core.tasks import Task
 from sieval.core.tasks.records import (
@@ -497,3 +497,42 @@ class TestResume:
         assert counts["context_overflow"] == 1
         # Q2's first turn was answered, and right: kept, not blanked.
         assert report["t"]["score"] == 1.0
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("max_retries", [0, 3])
+    async def test_the_plan_counts_a_scored_refusal_as_the_run_does(
+        self,
+        tmp_path: Path,
+        asked: _Asked,
+        monkeypatch: pytest.MonkeyPatch,
+        max_retries: int,
+    ) -> None:
+        # A replay spends no retry, so at max_retries 0 the run still scores Q2.
+        # A plan that counted the spent retry would find nothing to infer, and
+        # `sieval run` would refuse the run that launched no engine for it.
+        asked.answer_with(_with_q3(_refuse("Q2")))
+        config = _config(tmp_path, "AnswerTask")
+        config.write_text(
+            config.read_text().replace(
+                "show_progress: false",
+                f"show_progress: false\n      max_retries: {max_retries}",
+            )
+        )
+
+        async def legacy_infer(self, ctx):
+            return await self._task.infer(ctx.preprocess_result, ctx), []
+
+        with monkeypatch.context() as patched:
+            patched.setattr(TaskRunner, "_infer", legacy_infer)
+            await arun_session(config)
+
+        _, plans = await aplan_session(config, resume=True)
+        plan = plans["t"]
+        assert not isinstance(plan, Exception)
+        # Counted as inferred: a task calling the model twice asks again.
+        assert (plan["to_infer"], plan["to_grade"]) == (1, 1)
+
+        report = await arun_session(config, resume=True)
+        assert asked.count("Q2") == 1, "scored from the record"
+        assert report["t"]["sieval"]["context_overflow"] == 1
+        assert report["t"]["sieval"]["failed"] == 0

@@ -40,6 +40,7 @@ from sieval.core.tasks.context import TaskContext
 from sieval.core.tasks.run_meta import (
     GRADING_STAGES,
     STAGES,
+    ResumeOutcomes,
     RunIdentity,
     digest,
     grader_key,
@@ -82,6 +83,28 @@ class LegacyStageMatch(TypedDict, total=False):
 
     data: bool
     inference: bool
+
+
+class RunPlan(TypedDict):
+    """What a run of one task would do, decided before it does anything.
+
+    Unlike :class:`ResumePlan`, which compares identities alone, this is the
+    runner's per-sample plan (:meth:`~sieval.core.runners.runner.TaskRunner.plan_run`).
+    ``start`` is ``fresh`` (nothing recorded), ``resume`` (stage by stage), or
+    ``reuse`` (the recorded ``report.json`` stands, recomputed when only
+    ``report`` changed). ``outcomes`` counts the recorded samples as
+    ``runs[].resume`` will, ``None`` for a fresh run. ``new`` counts samples
+    with no record. ``to_infer`` counts the samples the run sends to the model
+    under test, ``to_grade`` those it runs through a grading stage.
+    """
+
+    start: Literal["fresh", "resume", "reuse"]
+    recorded: str | None
+    samples: int
+    outcomes: ResumeOutcomes | None
+    new: int
+    to_infer: int
+    to_grade: int
 
 
 def recorded_identity(meta: Mapping[str, Any] | None) -> RunIdentity | None:

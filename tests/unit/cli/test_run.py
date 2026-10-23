@@ -93,6 +93,20 @@ def _make_translate_capture() -> tuple[
     return captured, capture
 
 
+@pytest.fixture(autouse=True)
+def _a_gpu_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every launch here is faked, so fake the GPUs it would need too.
+
+    A test that means a node without GPUs patches ``detect_local_gpu`` itself.
+    """
+    from sieval.infer.introspect import GPUInfo
+
+    monkeypatch.setattr(
+        "sieval.infer.introspect.detect_local_gpu",
+        AsyncMock(return_value=GPUInfo(model="NVIDIA H100", count=8, memory_mib=81559)),
+    )
+
+
 class TestRunCommand:
     def test_run_help(self):
         result = runner.invoke(app, ["run", "--help"])
@@ -1657,7 +1671,11 @@ class TestDeclaredTargetGpu:
         self._record(tmp_path, config_path, redact_secrets(recorded))
         monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100)
         resolve = AsyncMock(return_value=ResolveResult(plan=_fake_plan(), steps=()))
-        with patch("sieval.cli.run.auto_resolve_plan", new=resolve):
+        # The config has no task; say one still infers with `m`, so it launches.
+        with (
+            patch("sieval.cli.run.auto_resolve_plan", new=resolve),
+            patch("sieval.cli.run._models_to_infer", new=AsyncMock(return_value={"m"})),
+        ):
             launch, _ = await self._run(
                 config_path, gpu=self._gpu(self.H100), resume=True
             )

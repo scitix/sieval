@@ -7440,6 +7440,7 @@ class TestEvalSessionWrappers:
             resume_from=None,
             cli_model=None,
             infer_gpu=None,
+            unlaunched_deployments=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7474,6 +7475,7 @@ class TestEvalSessionWrappers:
             resume_from=None,
             cli_model=None,
             infer_gpu=None,
+            unlaunched_deployments=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7537,6 +7539,7 @@ class TestEvalSessionWrappers:
             resume_from=None,
             cli_model=None,
             infer_gpu=None,
+            unlaunched_deployments=None,
         )
 
     def test_run_session_forwards_legacy_external_endpoint_adapter_positionally(
@@ -7687,6 +7690,7 @@ class TestInferArgs:
         runner.runner = MultiTaskRunner()
         runner._infer_plans = None
         runner._resume_config_diff = []
+        runner._unlaunched_roots = frozenset()
         runner._task_requirement_contexts = {
             task_name: _task_requirement_context_for_setup_test(
                 task_cfg,
@@ -9060,6 +9064,7 @@ class TestDeterministicMode:
         runner.runner = MultiTaskRunner()
         runner._infer_plans = None
         runner._resume_config_diff = []
+        runner._unlaunched_roots = frozenset()
         runner.deterministic = True
         runner._task_requirement_contexts = {
             "eval_task": RequirementContext(

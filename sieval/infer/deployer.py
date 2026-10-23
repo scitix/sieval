@@ -231,16 +231,10 @@ class LocalDeployer:
                 cwd=cmd.working_dir,
             )
 
-        # Derive endpoint from health_url
-        endpoint = None
-        if cmd.health_url:
-            parsed = urlparse(cmd.health_url)
-            endpoint = urlunparse((parsed.scheme, parsed.netloc, "/v1", "", "", ""))
-
         return InferHandle(
             backend=cmd.backend or cmd.role,  # engine name; fallback to role
             handle_id=str(process.pid),
-            endpoint=endpoint,
+            endpoint=command_endpoint(cmd),
             metadata={
                 "cmd": cmd.cli_args,
                 "log_file": str(log_file),
@@ -565,6 +559,36 @@ class LocalDeployer:
             metrics_url=metrics_url,
             facts=ServingFacts() if facts is None else facts,
         )
+
+
+def unlaunched_deployment(
+    plan: DeploymentPlan, commands: list[BackendCommand]
+) -> Deployment:
+    """The :class:`Deployment` launching *commands* would realize, launching nothing.
+
+    Equal to :meth:`LocalDeployer.build_deployment` of a launch in everything
+    but ``deployment_id``, which names no process. For planning a run before
+    deciding whether to launch: nothing listens at its endpoints.
+    """
+    handles = [
+        InferHandle(
+            backend=cmd.backend or cmd.role,
+            handle_id="unlaunched",
+            endpoint=command_endpoint(cmd),
+            metadata={"role": cmd.role},
+        )
+        for cmd in commands
+    ]
+    return LocalDeployer().build_deployment(plan, handles)
+
+
+def command_endpoint(cmd: BackendCommand) -> str | None:
+    """The OpenAI-compatible endpoint *cmd* serves once launched, from its
+    health URL; ``None`` without one."""
+    if not cmd.health_url:
+        return None
+    parsed = urlparse(cmd.health_url)
+    return urlunparse((parsed.scheme, parsed.netloc, "/v1", "", "", ""))
 
 
 def _local_deployment_id(

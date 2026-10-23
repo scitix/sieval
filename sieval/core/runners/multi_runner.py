@@ -14,7 +14,7 @@ from sieval.core.tasks.task import Task
 from sieval.core.types import JSONValue
 
 from .runner import TaskRunner, TaskRunnerConfig
-from .stage_resume import LegacyStageMatch
+from .stage_resume import LegacyStageMatch, RunPlan
 
 
 class MultiTaskRunner:
@@ -69,11 +69,12 @@ class MultiTaskRunner:
         inference_recipe: dict[str, JSONValue] | None = None,
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
+        unserved_candidate: bool = False,
     ) -> Self:
         """Register a task for parallel execution.
 
-        *inference_recipe*, *resume_config_diff* and *legacy_match* pass
-        through to :class:`TaskRunner`.
+        *inference_recipe*, *resume_config_diff*, *legacy_match* and
+        *unserved_candidate* pass through to :class:`TaskRunner`.
 
         Auto-sets ``result_dir`` to ``<base_result_dir>/<task.name>`` when
         a base was provided and the task's config lacks its own.
@@ -103,6 +104,7 @@ class MultiTaskRunner:
             inference_recipe=inference_recipe,
             resume_config_diff=resume_config_diff,
             legacy_match=legacy_match,
+            unserved_candidate=unserved_candidate,
         )
 
         if runner.root_dir in self._output_dirs:
@@ -115,6 +117,20 @@ class MultiTaskRunner:
         self._task_names.add(task.name)
         self._output_dirs.add(runner.root_dir)
         return self
+
+    async def plan_run(self) -> dict[str, RunPlan | Exception]:
+        """Each task's :meth:`TaskRunner.plan_run`, by task name; read-only.
+
+        A task whose planning raises maps to the exception, which its run
+        would raise before its first sample. Runners that planned are not run.
+        """
+        plans: dict[str, RunPlan | Exception] = {}
+        for runner in self._runners:
+            try:
+                plans[runner._task.name] = await runner.plan_run()
+            except Exception as exc:
+                plans[runner._task.name] = exc
+        return plans
 
     def run(self) -> dict[str, Any]:
         """Synchronous wrapper around :meth:`arun`."""

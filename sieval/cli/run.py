@@ -48,6 +48,7 @@ from sieval.cli.output import (
 from sieval.cli.resolution import resolve_config_model_types
 from sieval.cli.services import SERVICE_LOG_DIR
 from sieval.cli.session import (
+    config_resumes,
     holds_secret,
     read_persisted_config,
     redact_secrets,
@@ -56,11 +57,16 @@ from sieval.cli.session import (
 )
 from sieval.cli.signals import terminate_as_interrupt
 from sieval.core.models import Deployment
+from sieval.core.runners import RunPlan
 from sieval.core.utils.logging import configure_logging, log_user
 from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import BackendCommand, inject_user_env
 from sieval.infer.config import InferHandle
-from sieval.infer.deployer import DEFAULT_READY_TIMEOUT, LocalDeployer
+from sieval.infer.deployer import (
+    DEFAULT_READY_TIMEOUT,
+    LocalDeployer,
+    unlaunched_deployment,
+)
 from sieval.infer.introspect import (
     check_launch_gpu,
     declared_target_gpu,
@@ -289,6 +295,81 @@ async def _prepare_launch_batch(
     return plan_dicts, prepared_launches
 
 
+def _resumes(resume: bool | str | Path | None, config: Mapping[str, Any]) -> bool:
+    """Whether some task may resume: ``--resume``, or a ``runner_config`` key."""
+    return bool(resume) or config_resumes(config)
+
+
+def _unlaunched(
+    prepared_launches: Mapping[str, tuple[DeploymentPlan, list[BackendCommand]]],
+    names: set[str],
+) -> dict[str, Deployment]:
+    return {
+        name: unlaunched_deployment(*prepared_launches[name]) for name in sorted(names)
+    }
+
+
+async def _plan_tasks(
+    config_path: Path,
+    prepared_launches: Mapping[str, tuple[DeploymentPlan, list[BackendCommand]]],
+    plan_dicts: dict[str, dict[str, Any]],
+    *,
+    model: str | None,
+    resume: bool | str | Path | None,
+    result_dir: str | None,
+    deterministic: bool | None,
+    invocation: str,
+    cli_model: CliModel | None,
+) -> tuple[dict[str, str], dict[str, RunPlan | Exception]]:
+    """Each task's served model and resume plan, with no engine launched.
+
+    The one call that turns resume planning into a launch decision.
+    """
+    from sieval.cli.session import aplan_session
+
+    return await aplan_session(
+        config_path,
+        model=model,
+        resume=resume,
+        result_dir=result_dir,
+        deterministic=deterministic,
+        infer_plans=plan_dicts or None,
+        invocation=invocation,
+        self_managed_endpoints=frozenset(prepared_launches),
+        unlaunched_deployments=_unlaunched(prepared_launches, set(prepared_launches)),
+        cli_model=cli_model,
+    )
+
+
+async def _models_to_infer(
+    config_path: Path,
+    config: Mapping[str, Any],
+    prepared_launches: Mapping[str, tuple[DeploymentPlan, list[BackendCommand]]],
+    plan_dicts: dict[str, dict[str, Any]],
+    **session: Any,
+) -> set[str]:
+    """The served models some task still has samples to infer with.
+
+    A run where nothing resumes infers everything, so it is not planned. A
+    task whose plan raises infers nothing: its run raises the same before its
+    first sample.
+    """
+    if not prepared_launches:
+        return set()
+    if not _resumes(session["resume"], config):
+        return set(prepared_launches)
+    task_models, plans = await _plan_tasks(
+        config_path, prepared_launches, plan_dicts, **session
+    )
+    return {
+        task_models[task]
+        for task, plan in plans.items()
+        if not isinstance(plan, Exception)
+        and plan["to_infer"]
+        and task_models.get(task) in prepared_launches
+    }
+
+
 async def _run_dry_run(
     config_path: Path,
     *,
@@ -447,9 +528,27 @@ async def _run_all(
                 f"Model name {SERVICE_LOG_DIR!r} is reserved for "
                 f"<result_dir>/logs/{SERVICE_LOG_DIR}/; rename the model."
             )
-        if prepared_launches:
-            await check_launch_gpu()
+        # Plan the resume first: an engine starts only for a model some task
+        # still has samples to infer with.
+        to_launch = await _models_to_infer(
+            config_path,
+            config,
+            prepared_launches,
+            plan_dicts,
+            model=model,
+            resume=resume,
+            result_dir=result_dir,
+            deterministic=deterministic,
+            invocation=invocation,
+            cli_model=cli_model,
+        )
+        if to_launch:
+            await check_launch_gpu(required=True)
+        for model_name in sorted(set(prepared_launches) - to_launch):
+            log_user("No inference needed for model {}; not starting it", model_name)
         for model_name, (plan, commands) in prepared_launches.items():
+            if model_name not in to_launch:
+                continue
             log_user("Starting inference for model: {}", model_name)
 
             last_status = None
@@ -536,10 +635,14 @@ async def _run_all(
             resume=resume,
             result_dir=result_dir,
             deterministic=deterministic,
-            self_managed_endpoints=frozenset(realized_deployments),
+            self_managed_endpoints=frozenset(prepared_launches),
             infer_plans=plan_dicts or None,
             invocation=invocation,
             realized_deployments=realized_deployments or None,
+            unlaunched_deployments=(
+                _unlaunched(prepared_launches, set(prepared_launches) - to_launch)
+                or None
+            ),
             cli_model=cli_model,
             infer_gpu=await _plan_gpu_text() if plan_dicts else None,
         )

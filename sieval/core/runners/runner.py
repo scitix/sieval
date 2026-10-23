@@ -106,6 +106,7 @@ from .resume_gate import (
 from .resume_option import as_resume, fold_resume_aliases, resume_source
 from .stage_resume import (
     LegacyStageMatch,
+    RunPlan,
     StageResumeError,
     abandon_copy,
     copy_pending,
@@ -490,12 +491,15 @@ class TaskRunner:
         inference_recipe: dict[str, JSONValue] | None = None,
         resume_config_diff: list[str] | None = None,
         legacy_match: LegacyStageMatch | None = None,
+        unserved_candidate: bool = False,
     ):
         """*inference_recipe* is the serving plan of the model under test,
         without its checkpoint, for the inference identity; ``None`` when the
         model is not served by SiEval. *resume_config_diff* is the config
         change a resume made, for ``runs[].config``. *legacy_match* compares a
         recorded run without identities through its persisted config.
+        *unserved_candidate* says no engine serves the model under test, since
+        a plan found nothing to infer: a run that would infer is refused.
         """
         # A malformed judge reference would leave every grader identity
         # unknown; refuse it before any work.
@@ -505,6 +509,7 @@ class TaskRunner:
         self._inference_recipe = inference_recipe
         self._resume_config_diff = list(resume_config_diff or [])
         self._legacy_match = LegacyStageMatch(**(legacy_match or {}))
+        self._unserved_candidate = unserved_candidate
         # Per-stage resume: what was copied in, and what the comparison chose.
         self._run_from: RunFrom | None = None
         self._copied: list[Path] = []
@@ -898,21 +903,8 @@ class TaskRunner:
         keeps_recorded_model = False
         if resumed:
             # Plan before `begin_run`: a refusal leaves meta.json as it was.
-            self._contexts = await self._loader.load_initial_state()
-            if any(_reuses_inference(c) for c in self._contexts.values()):
-                self._check_inference(inference)
-            self._grading_change = self._recorded_grading_change()
-            await self._hydrate_initial(resumed=True)
-            # Decide per sample what a resume keeps before failures roll back,
-            # so a sample that failed in grading regrades rather than reinfers.
-            changed = await self._plan_stage_resume()
-            self._collect_overflow_replays(inference)
-            self._loader.prepare_failed_retries(self._contexts, self._record_each_stage)
-            for sid in self._overflow_replays:
-                # Scored from the record, not retried: no retry is spent.
-                ctx = self._contexts[sid]
-                self._contexts[sid] = replace(ctx, retry_count=ctx.retry_count - 1)
-            keeps_recorded_model = self._model_differs() and self._check_model_switch()
+            changed, keeps_recorded_model = await self._plan_recorded(inference)
+        self._refuse_unserved()
         # A changed grading stage, and every one after it, is unknown until the
         # run ends: samples not reached yet hold the recorded verdicts. One
         # that did not change is written now, upgrading a schema-1 block.
@@ -941,6 +933,33 @@ class TaskRunner:
             },
         )
         return changed
+
+    async def _plan_recorded(
+        self, inference: InferenceIdentity | None
+    ) -> tuple[list[str | int], bool]:
+        """Load the recorded contexts and decide what a resume does with each.
+
+        The one resume plan, shared by :meth:`_begin_run` and :meth:`plan_run`
+        so that a plan made before launch counts the samples the run infers.
+        Writes nothing; raises a refusal before anything is recorded. Returns
+        the samples it rewinds, and whether the recorded model is kept.
+        """
+        self._contexts = await self._loader.load_initial_state()
+        if any(_reuses_inference(c) for c in self._contexts.values()):
+            self._check_inference(inference)
+        self._grading_change = self._recorded_grading_change()
+        await self._hydrate_initial(resumed=True)
+        # Decide per sample what a resume keeps before failures roll back,
+        # so a sample that failed in grading regrades rather than reinfers.
+        changed = await self._plan_stage_resume()
+        self._collect_overflow_replays(inference)
+        self._loader.prepare_failed_retries(self._contexts, self._record_each_stage)
+        for sid in self._overflow_replays:
+            # Scored from the record, not retried: no retry is spent.
+            ctx = self._contexts[sid]
+            self._contexts[sid] = replace(ctx, retry_count=ctx.retry_count - 1)
+        keeps_recorded_model = self._model_differs() and self._check_model_switch()
+        return changed, keeps_recorded_model
 
     def _collect_overflow_replays(self, inference: InferenceIdentity | None) -> None:
         """Samples an earlier run failed with a context overflow at ``infer``.
@@ -997,6 +1016,41 @@ class TaskRunner:
         grader identity reads, so even a fast resume pays for ``setup()``: a
         task that contacts a service there needs it up.
         """
+        reusable = await self._reusable_report()
+        if reusable is None:
+            return None
+        cached_report, rereport = reusable
+        if rereport:
+            return await self._rereport()
+        # Nothing reruns. The identity is kept, but for grading identities a
+        # schema-1 block lacked; the views are rebuilt from the shards like
+        # every other exit.
+        await self._saver.begin_run(
+            resumed=True,
+            model=self._model_name(),
+            config_diff=self._resume_config_diff,
+            config_path=self._config_path(),
+            identity=self._grading_identity_update(),
+        )
+        self._contexts = await self._loader.load_initial_state()
+        await self._loader.hydrate(
+            self._contexts,
+            self._hydrated_ids,
+            include_stages={TaskStage.FINAL, TaskStage.FAILED},
+            prepare_retries=False,
+            record_each_stage=self._record_each_stage,
+        )
+        # The resume gate pins the dataset, and the report says every sample
+        # is final, so the recorded samples are the whole run.
+        self._total_samples = len(self._contexts)
+        self._resume_plan = _no_outcomes()
+        self._resume_plan["kept"] = len(self._contexts)
+        return await self._finalize(cached_report=cached_report)
+
+    async def _reusable_report(self) -> tuple[JSONValue, bool] | None:
+        """The recorded ``report.json`` a resume finishes on, and whether only
+        ``report`` changed so it is recomputed from the records; ``None`` when
+        the run must go on. Read-only."""
         if not self._resumes:
             return None
         cached_report = await self._loader.load_cached_report()
@@ -1038,32 +1092,7 @@ class TaskRunner:
             # Failures to retry, samples left, or a report from before the
             # `sieval` counts: the full path decides.
             return None
-        if rereport:
-            return await self._rereport()
-        # Nothing reruns. The identity is kept, but for grading identities a
-        # schema-1 block lacked; the views are rebuilt from the shards like
-        # every other exit.
-        await self._saver.begin_run(
-            resumed=True,
-            model=self._model_name(),
-            config_diff=self._resume_config_diff,
-            config_path=self._config_path(),
-            identity=self._grading_identity_update(),
-        )
-        self._contexts = await self._loader.load_initial_state()
-        await self._loader.hydrate(
-            self._contexts,
-            self._hydrated_ids,
-            include_stages={TaskStage.FINAL, TaskStage.FAILED},
-            prepare_retries=False,
-            record_each_stage=self._record_each_stage,
-        )
-        # The resume gate pins the dataset, and the report says every sample
-        # is final, so the recorded samples are the whole run.
-        self._total_samples = len(self._contexts)
-        self._resume_plan = _no_outcomes()
-        self._resume_plan["kept"] = len(self._contexts)
-        return await self._finalize(cached_report=cached_report)
+        return cached_report, rereport
 
     async def _rereport(self) -> JSONValue:
         """Recompute ``report.json`` from a finished run's records: re-report.
@@ -1459,6 +1488,7 @@ class TaskRunner:
 
         self._ran_actions.add(action)
         try:
+            self._check_served(action)
             match action:
                 case TaskAction.PREPROCESS:
                     r = await self._task.preprocess(ctx.raw_sample, ctx)
@@ -1969,6 +1999,137 @@ class TaskRunner:
 
     def _recorded_dir(self) -> str:
         return self._run_from["dir"] if self._run_from else str(self._root_dir)
+
+    async def plan_run(self) -> RunPlan:
+        """Decide what :meth:`arun` would do, without doing or writing any of it.
+
+        Runs the resume planning :meth:`arun` runs (:meth:`_plan_recorded`)
+        against the recorded directory, read where it lies: ``resume=<dir>`` is
+        not copied. Raises what :meth:`arun` would raise before its first
+        sample, such as a :class:`StageResumeError`. Calls the task's
+        ``setup()`` and ``shutdown()``, as :meth:`arun` does. A runner that
+        planned is not run.
+        """
+        await self._task.setup()
+        try:
+            return await self._plan_run()
+        finally:
+            await self._task.shutdown()
+
+    async def _plan_run(self) -> RunPlan:
+        test_set = self._task.dataset.test_set
+        size = len(test_set) if test_set else 0
+        if not (self._resumed_from_existing or self._run_from is not None):
+            return {
+                "start": "fresh",
+                "recorded": None,
+                "samples": size,
+                "outcomes": None,
+                "new": size,
+                "to_infer": size,
+                "to_grade": size,
+            }
+        recorded = self._recorded_dir()
+        reusable = (
+            await self._reusable_report() if self._resumed_from_existing else None
+        )
+        if reusable is not None:
+            outcomes = _no_outcomes()
+            outcomes["kept"] = size
+            if reusable[1]:
+                outcomes["rereported"] = size
+            return {
+                "start": "reuse",
+                "recorded": recorded,
+                "samples": size,
+                "outcomes": outcomes,
+                "new": 0,
+                "to_infer": 0,
+                "to_grade": 0,
+            }
+        if self._run_from is not None:
+            # `arun` copies the directory first; the plan reads it in place.
+            self._loader = TaskLoader(
+                task=self._task,
+                root_dir=Path(self._run_from["dir"]),
+                shard_read_concurrency=self._config.shard_read_concurrency,
+                profiler=self._profiler,
+            )
+        await self._plan_recorded(self._inference_identity())
+        to_infer, to_grade = self._pending_work()
+        return {
+            "start": "resume",
+            "recorded": recorded,
+            "samples": size,
+            "outcomes": self._resume_plan,
+            "new": sum(1 for sid in range(size) if sid not in self._contexts),
+            "to_infer": to_infer,
+            "to_grade": to_grade,
+        }
+
+    def _pending_work(self) -> tuple[int, int]:
+        """``(to_infer, to_grade)``: the samples a run starting now would send
+        to the model under test, and those it would grade.
+
+        Read after :meth:`_plan_recorded`. Counts samples with no record, and
+        recorded ones that are not terminal and stay within ``max_retries``. A
+        recorded context overflow the run scores from its record still counts
+        as inferred, since a task that calls the model more than once infers
+        it again. A sample ``feedback`` sends to another iteration after a
+        regrade is not counted: the plan cannot know it (see
+        :meth:`_check_served`).
+        """
+        test_set = self._task.dataset.test_set
+        size = len(test_set) if test_set else 0
+        to_infer = to_grade = 0
+        for sid in range(size):
+            ctx = self._contexts.get(sid)
+            if ctx is not None and (
+                ctx.is_terminal()
+                or (
+                    self._resumes
+                    and self._max_retries is not None
+                    and ctx.retry_count > self._max_retries
+                )
+            ):
+                continue
+            to_grade += 1
+            if ctx is None or ctx.stage in (TaskStage.INITIAL, TaskStage.PREPROCESSED):
+                to_infer += 1
+        return to_infer, to_grade
+
+    def _refuse_unserved(self) -> None:
+        """Refuse, before recording anything, a run that would infer with no
+        engine serving the model under test.
+
+        :meth:`plan_run` counted the same samples through the same
+        :meth:`_plan_recorded`, so this only fires when the directory changed
+        between the plan and the run.
+        """
+        if not self._unserved_candidate:
+            return
+        to_infer, _ = self._pending_work()
+        if not to_infer:
+            return
+        raise RuntimeError(
+            f"Task '{self._task.name}' now has {to_infer} sample(s) to infer, but "
+            "no engine was launched for its model: the plan made before launch "
+            f"found none. Did {self._recorded_dir()} change since? Run again."
+        )
+
+    def _check_served(self, action: TaskAction) -> None:
+        """Fail a sample about to infer with no engine serving the model.
+
+        Reached when a rerun ``feedback`` sends a sample to another iteration,
+        which no plan can foresee. The sample fails before any request, and a
+        resume that launches the engine retries it.
+        """
+        if action is TaskAction.INFER and self._unserved_candidate:
+            raise RuntimeError(
+                "infer needs an engine for the model under test, and none was "
+                "launched: the plan made before launch found nothing to infer. "
+                "Resume to retry this sample."
+            )
 
     def _abandon_copy(self) -> None:
         """Undo a ``resume=<dir>`` copy no run began on."""

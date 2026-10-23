@@ -18,11 +18,13 @@ Planned as 0.12.0.
 
 - **A resume reruns from the earliest stage that changed** (#210). An extraction change reruns from `postprocess`, a scoring change (judge, prompt, sampling, service, `feedback` code) from `feedback`, and a `report`-only change recomputes `report.json` from the records with no engine or judge call. Before, each of these regraded every sample. Code is attributed to stages by a static walk; a run-time lookup (`getattr(self, <expr>)`, `eval`, `importlib`) falls back to all grading code. No built-in task falls back.
 - `runs[].resume` counts what a resume did with each recorded sample.
+- **`sieval run` starts an engine only for a model with samples to infer** (closes #213). A run that may resume (`--resume`, or `resume` in a `runner_config`) first plans each task's resume, read-only, through the runner's own resume planning (`TaskRunner.plan_run`), and launches only the engines whose models some task still has samples to infer with. A resume that reruns only grading stages, or re-reports, starts no engine and runs on a node without GPUs; when some sample needs inference and `nvidia-smi` finds no GPU, the run is refused before anything starts. The plans, `infer_plans.yaml`, the inference identity and its request digest are what an eager launch records. A fresh run is not planned and launches as before. A sample that `feedback` sends to another iteration after a rerun from `feedback` fails at `infer` when its engine was not started, and a resume that starts it retries it.
 
 ### Added
 
 - **`SIEVAL_TARGET_GPU` declares the GPUs a serving plan is resolved for**, as `<name>:<count>:<memory MiB>` with the name and memory `nvidia-smi` reports, e.g. `NVIDIA H100 80GB HBM3:8:81559`. Recipe resolution reads it instead of `nvidia-smi`, on any node, so a CPU node resolves the plan, and the inference identity, a node with those GPUs would. Unset, nothing changes. Declared, an engine launches only on a node with exactly those GPUs. `infer_plans.yaml` gains `gpu`, the GPUs its plans were resolved for, outside every identity; a `sieval run --resume` declaring the same GPUs reuses the recorded plan of each served model whose `path`, `infer`, capability layer and `deterministic` are unchanged, unless the plan held an engine secret, which `infer_plans.yaml` records redacted (#215, closes #212).
 - `sieval.core.runners.task_resume_plan` / `plan_resume`: the per-stage resume plan, without running anything.
+- `TaskRunner.plan_run` / `MultiTaskRunner.plan_run` (`RunPlan`): the runner's per-sample plan of a run, `to_infer` included, read-only; the one `sieval run` launches by.
 
 ## [0.11.0] - 2026-10-23
 

@@ -521,19 +521,27 @@ def declared_target_gpu(environ: Mapping[str, str] | None = None) -> GPUInfo | N
     return parse_target_gpu(raw) if raw.strip() else None
 
 
-async def check_launch_gpu() -> None:
+async def check_launch_gpu(*, required: bool = False) -> None:
     """Refuse to launch an engine on GPUs other than the declared ones.
 
     A plan resolved for :data:`TARGET_GPU_ENV` is only that node's plan on the
     declared hardware, so every field must match, memory included: two nodes
     of one SKU can report different ``memory.total`` (ECC, PCIe vs SXM), and
     the memory decides tensor parallelism. Without a declaration nothing is
-    checked.
+    checked, unless *required* (some engine will launch): then a node where
+    ``nvidia-smi`` finds no GPU is refused before anything starts.
     """
     declared = declared_target_gpu()
-    if declared is None:
+    if declared is None and not required:
         return
     detected = await detect_local_gpu()
+    if declared is None:
+        if detected is None:
+            raise RuntimeError(
+                "This run needs an inference engine, and nvidia-smi finds no "
+                "GPU on this node. Run it on a GPU node."
+            )
+        return
     if detected == declared:
         return
     if detected is None:

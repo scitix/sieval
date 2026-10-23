@@ -155,6 +155,23 @@ Models with a `path` field (and no `api_base`) or an `infer` section in the YAML
 
 A top-level `api_base` turns auto-serve off. An `args.api_base` next to `path` or `infer.checkpoint` is refused before any engine starts: keep one or the other.
 
+A run that may resume (`--resume`, or `resume` in a `runner_config`) plans each
+task's resume before it starts any engine, with the same per-sample planning
+the run uses, and launches one only for a model some task still has samples to
+infer with. A resume that keeps every sample, or reruns only from
+`postprocess`, `feedback` or `report`, starts none, so it runs on a node
+without GPUs; its `infer_plans.yaml`, the inference identity and `realized_deployments`
+are what a launch would record, and no engine log is written. When some sample
+needs inference and `nvidia-smi` finds no GPU, the run is refused before
+anything starts. A judge or other external model is called only when a sample
+is graded. A recorded context overflow the resume scores from its record still
+starts the engine: a task that calls the model more than once asks again.
+
+A sample that a rerun `feedback` sends to another iteration needs the model
+again, which planning cannot foresee. With no engine started it fails at
+`infer`, before any request, and a later `--resume` that starts the engine
+retries it.
+
 ### Anthropic Messages
 
 To call the native Anthropic Messages API, select the dialect explicitly and

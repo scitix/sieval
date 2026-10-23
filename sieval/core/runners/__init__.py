@@ -19,6 +19,7 @@ from sieval.core.runners.runner import (
 from sieval.core.runners.stage_resume import (
     LegacyStageMatch,
     ResumePlan,
+    RunPlan,
     StageResumeError,
     plan_resume,
     task_resume_plan,
@@ -31,6 +32,7 @@ __all__ = [
     "ResumeAction",
     "ResumePlan",
     "ResumeValue",
+    "RunPlan",
     "StageResumeError",
     "TaskRunner",
     "TaskRunnerConfig",

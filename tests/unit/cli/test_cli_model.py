@@ -300,6 +300,7 @@ class TestRunCommand:
                 "sieval.cli.run.launch_model", new=AsyncMock(return_value=([], None))
             ),
             patch("sieval.cli.run.cleanup_model", new=AsyncMock()),
+            patch("sieval.cli.run.check_launch_gpu", new=AsyncMock()),
             patch(
                 "sieval.cli.session.arun_session",
                 new=AsyncMock(return_value={}),

@@ -125,6 +125,7 @@ from sieval.core.runners import (
     LegacyStageMatch,
     MultiTaskRunner,
     ResumeValue,
+    RunPlan,
     TaskRunnerConfig,
     as_resume,
     fold_resume_aliases,
@@ -1273,6 +1274,15 @@ def _runner_config_blocks(cfg: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     return {k: v for k, v in blocks.items() if isinstance(v, dict)}
 
 
+def config_resumes(cfg: Mapping[str, Any]) -> bool:
+    """Whether some ``runner_config`` of *cfg* sets ``resume`` or an alias of it."""
+    return any(
+        block.get(key)
+        for block in _runner_config_blocks(cfg).values()
+        for key in _RESUME_KEYS
+    )
+
+
 def _drop_resume_keys(cfg: dict[str, Any]) -> None:
     """Remove every resume key in place, and a ``runner_config`` left empty."""
     for block in _runner_config_blocks(cfg).values():
@@ -1671,6 +1681,7 @@ class EvalSession:
         resume_from: str | Path | None = None,
         cli_model: CliModel | None = None,
         infer_gpu: str | None = None,
+        unlaunched_deployments: Mapping[str, Deployment] | None = None,
     ):
         self.config_path = Path(config_path)
         self.model_override = model_override
@@ -1695,7 +1706,17 @@ class EvalSession:
         self._legacy_endpoint_map: Mapping[str, str] = legacy_endpoint_map
         self._infer_plans: Mapping[str, dict[str, Any]] | None = infer_plans
         self._infer_gpu = infer_gpu
-        self._realized_deployments = realized_deployment_map
+        unlaunched = dict(unlaunched_deployments or {})
+        if set(unlaunched) & set(realized_deployment_map):
+            raise ValueError(
+                "a root model cannot have both a realized and an unlaunched "
+                "deployment: "
+                + ", ".join(sorted(set(unlaunched) & set(realized_deployment_map)))
+            )
+        # Roots served by no engine: bound like launched ones, so every
+        # identity is the launched one, but a task never infers through them.
+        self._unlaunched_roots = frozenset(unlaunched)
+        self._realized_deployments = {**realized_deployment_map, **unlaunched}
         for root_name, deployment in self._realized_deployments.items():
             if not isinstance(root_name, str) or not root_name:
                 raise TypeError("realized deployment keys must be non-empty strings")
@@ -4870,6 +4891,9 @@ class EvalSession:
                 inference_recipe=self._inference_recipe_for(candidate.config_name),
                 resume_config_diff=list(self._resume_config_diff),
                 legacy_match=self._legacy_match_for(task_name, runner_config),
+                unserved_candidate=(
+                    self._root_model(candidate.config_name) in self._unlaunched_roots
+                ),
             )
             logger.info("Added task '{}' with class '{}'", task_name, task_spec)
 
@@ -4934,6 +4958,25 @@ class EvalSession:
             == _stage_config(persisted, recorded_name, "inference"),
         }
 
+    def _root_model(self, model_name: str) -> str:
+        """The root of *model_name*'s ``base`` chain: the model that is served."""
+        models_cfg = self._get_named_config_map("models")
+        if model_name not in models_cfg:
+            return model_name
+        return self._model_config_chain(model_name, models_cfg)[0][0]
+
+    def task_models(self) -> dict[str, str]:
+        """Each task's model under test, as the root model config that serves it.
+
+        Read after :meth:`prepare_prelaunch`.
+        """
+        out: dict[str, str] = {}
+        for task_name, context in self._task_requirement_contexts.items():
+            candidate = context.model_bindings.get("candidate")
+            if isinstance(candidate, NamedModelBinding):
+                out[task_name] = self._root_model(candidate.config_name)
+        return out
+
     def _inference_recipe_for(self, model_name: str) -> dict[str, JSONValue] | None:
         """The serving plan of *model_name*'s root, for the inference identity.
 
@@ -4947,13 +4990,7 @@ class EvalSession:
         infer_plans = self._infer_plans
         if not infer_plans:
             return None
-        models_cfg = self._get_named_config_map("models")
-        root = (
-            self._model_config_chain(model_name, models_cfg)[0][0]
-            if model_name in models_cfg
-            else model_name
-        )
-        plan = infer_plans.get(root)
+        plan = infer_plans.get(self._root_model(model_name))
         if plan is None:
             return None
         recipe = cast(dict[str, Any], copy.deepcopy(unwrap_proxies(plan)))
@@ -5283,6 +5320,34 @@ class EvalSession:
         finally:
             await self._close_owned_model_resources()
 
+    async def aplan(self) -> dict[str, RunPlan | Exception]:
+        """What :meth:`arun` would do with each task, by task name; writes nothing.
+
+        Prepares the session as :meth:`arun` does, vendored services included,
+        and asks each task's runner for its :meth:`TaskRunner.plan_run`. A
+        task whose planning raises maps to the exception its run would raise.
+        Raises what :meth:`arun` would raise before any task starts. Service
+        logs go to ``~/.sieval/logs``, never into a result directory.
+        """
+        try:
+            await run_sync(self.prepare_prelaunch)
+            self._stamp_deterministic_seed_contract()
+            result_dir = self._resolve_result_dir()
+            if self.resume_override is True and result_dir:
+                # What `_persist_effective_config` reads before it rewrites.
+                self._recorded_config = await run_sync(
+                    read_persisted_config, Path(result_dir) / "effective_config.yaml"
+                )
+            async with vendored_services_for(
+                self._required_services, result_dir=lambda: None
+            ):
+                await self._prepare_execution()
+                if self.runner is None:
+                    raise RuntimeError("Runner not initialized")
+                return await self.runner.plan_run()
+        finally:
+            await self._close_owned_model_resources()
+
     async def _close_owned_model_resources(self) -> None:
         """Drain and close every session-owned root once; never close externals."""
 
@@ -5331,6 +5396,7 @@ async def arun_session(
     resume_from: str | Path | None = None,
     cli_model: CliModel | None = None,
     infer_gpu: str | None = None,
+    unlaunched_deployments: Mapping[str, Deployment] | None = None,
 ) -> dict[str, Any]:
     """Run tasks defined in a YAML configuration file asynchronously.
 
@@ -5363,6 +5429,10 @@ async def arun_session(
         infer_gpu: The GPUs *infer_plans* were resolved for, as
             ``SIEVAL_TARGET_GPU`` spells them; recorded in ``infer_plans.yaml``
             as ``gpu``, so a resume can tell whether it may reuse the plans.
+        unlaunched_deployments: For a root model ``sieval run`` serves but did
+            not launch, since no task had anything for it to infer: the
+            deployment launching it would realize, nothing listening. Its
+            tasks bind and resume as if it were launched, and refuse to infer.
 
     Returns:
         A dictionary mapping task names to their reports.
@@ -5381,9 +5451,45 @@ async def arun_session(
         resume_from=resume_from,
         cli_model=cli_model,
         infer_gpu=infer_gpu,
+        unlaunched_deployments=unlaunched_deployments,
     )
 
     return await runner.arun()
+
+
+async def aplan_session(
+    config: str | Path,
+    *,
+    model: str | None = None,
+    resume: bool | str | Path | None = None,
+    result_dir: str | None = None,
+    deterministic: bool | None = None,
+    infer_plans: Mapping[str, dict[str, Any]] | None = None,
+    invocation: str | None = None,
+    self_managed_endpoints: frozenset[str] | set[str] = frozenset(),
+    unlaunched_deployments: Mapping[str, Deployment] | None = None,
+    cli_model: CliModel | None = None,
+) -> tuple[dict[str, str], dict[str, RunPlan | Exception]]:
+    """Plan the run :func:`arun_session` would make with the same arguments.
+
+    Returns each task's model under test (its root model config) and its
+    :meth:`EvalSession.aplan` entry. Every served model passes as one of
+    *unlaunched_deployments*. Reads ``--resume`` directories, writes nothing.
+    """
+    session = EvalSession(
+        config_path=config,
+        model_override=model,
+        resume=resume,
+        result_dir_override=result_dir,
+        deterministic_override=deterministic,
+        infer_plans=infer_plans,
+        invocation=invocation,
+        self_managed_endpoints=self_managed_endpoints,
+        unlaunched_deployments=unlaunched_deployments,
+        cli_model=cli_model,
+    )
+    plans = await session.aplan()
+    return session.task_models(), plans
 
 
 def run_session(
