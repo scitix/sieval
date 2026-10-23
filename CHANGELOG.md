@@ -5,19 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.0] - 2026-10-23
 
-Planned as 0.12.0.
+A minor bump: `meta.json` `identity` moves to schema 3, with one identity per
+stage, and the 0.10/0.11 deprecations are removed. `RESULT_SCHEMA_VERSION`
+stays 1, so 0.10.x and 0.11.0 result directories resume, and an unchanged task
+upgrades in place to schema 3 without regrading. `sieval run` now starts an
+engine only for samples left to infer, and `sieval run --dry-run` reports what
+the run would do, per model and per task.
 
 ### Migrating from 0.11.x
 
-- **`meta.json` `identity` is schema 3** (#211, #218): `data`, `preprocess` (was `prompt`), `inference`, `postprocess`, `feedback`, `report`. The combined `grader` is gone; judges and services move to `feedback`. `preprocess` is `{digest, modules, args, splits?, fallback?}`, the code and arguments that render a prompt, instead of a digest of the rendered prompts. Each `preprocess` record is stamped `{data, preprocess}` instead of `{data, prompt}`. Readers must accept schema 1 too (and schema 2, written only by unreleased `main` builds). `RESULT_SCHEMA_VERSION` stays 1, so 0.10.x and 0.11.0 directories resume: an unchanged task's directory upgrades in place without regrading, after one local `preprocess` call per recorded sample.
+- **`meta.json` `identity` is schema 3** (#211, #218): one identity per stage, `data`, `preprocess` (was `prompt`), `inference`, `postprocess`, `feedback`, `report`. The combined `grader` is gone; judges and services move to `feedback`. `preprocess` is `{digest, modules, args, splits?, fallback?}`, the code and arguments that render a prompt, instead of a digest of the rendered prompts. Each `preprocess` record is stamped `{data, preprocess}` instead of `{data, prompt}`. **A reader of `meta.json` must accept schemas 1 to 3**: 1 from 0.10.x and 0.11.0, 2 from unreleased `main` builds only, 3 from now on. `RESULT_SCHEMA_VERSION` stays 1, so 0.10.x and 0.11.0 directories resume: an unchanged task's directory upgrades in place without regrading, after one local `preprocess` call per recorded sample. A `preprocess` change now restarts every sample of the task.
 - `TaskSaver.begin_run(identity={...})` and `set_identity(**stages)` replace the per-stage keyword arguments.
+- **Removed (#222):**
+    - `sieval.cli.leaderboard.session`, deprecated in 0.11.0. Import from `sieval.cli.session`, and resolvers from `sieval.cli.resolution`.
+    - `--resume-from DIR` is an unknown option. Use `--resume DIR`.
+    - **`runner_config.auto_resume` and `runner_config.resume_from`**, top-level or per task, are refused before anything runs, naming the `resume` form to use. In 0.11.0 they warned and still worked. Write `resume: true` or `resume: <dir>`.
+    - The Transport aliases (`sieval.core.models.Transport`, `OpenAIChatTransport`, `OpenAICompletionsTransport`); use the Dialect names. `SglangTransport` stays. `sieval.infer.InferConfig` is gone.
+- **`SIEVAL_TARGET_GPU`** (`<name>:<count>:<memory MiB>`, as `nvidia-smi` reports, e.g. `NVIDIA H100 80GB HBM3:8:81559`) declares the GPUs a serving plan is resolved for, so a CPU node resolves the plan, and the inference identity, a GPU node would. Unset, nothing changes. Set, an engine launches only on a node with exactly those GPUs (#215).
+- **`sieval run` launches engines lazily on a resume** (#216): a run that may resume plans each task first and starts only the engines some task still has samples to infer with. A resume that reruns only grading stages starts no engine and runs without GPUs. A fresh run launches as before.
+- **`sieval run --dry-run` now loads every dataset** and starts each vendored service a task declares, as the run does, in order to plan each task (#217). **A dry-run on a node without the data fails the `resume_plan` check**, where 0.11.0's passed; stage the data, or mount it, before the dry-run. It still launches no engine and writes no result directory.
+- **`Model.extra` carries capabilities a task may ask for**, starting with `sequence_wrappers` (#218, #221). A malformed `sequence_wrappers` template is refused when the model is built and by `--dry-run`.
+- **A plugin task declares its report metric names** with `report_metrics = report_metrics(...)` (`sieval.core.tasks.report_metrics`) on its class (#225). Undeclared, `tasks.<task>.metrics` in the dry-run is `null`; a malformed declaration fails the `report_metrics` check.
 
 ### Changed
 
 - **`preprocess` is identified by code, not by the prompts it renders** (#218): the static walk the grading stages use, the `grader_args()` it reads, and for few-shot a digest of the split it draws from. A model's `extra` reaches the request, which `inference` digests, so a wrapping and a plain model share `preprocess` and differ in `inference`. A run-time name or a file opened at run time falls back to the task's whole code and the data files beside the reader. **A preprocess change now restarts every sample of the task**, where before only the samples whose prompt changed restarted.
-
 - **A resume reruns from the earliest stage that changed** (#210). An extraction change reruns from `postprocess`, a scoring change (judge, prompt, sampling, service, `feedback` code) from `feedback`, and a `report`-only change recomputes `report.json` from the records with no engine or judge call. Before, each of these regraded every sample. Code is attributed to stages by a static walk; a run-time lookup (`getattr(self, <expr>)`, `eval`, `importlib`) falls back to all grading code. No built-in task falls back.
 - `runs[].resume` counts what a resume did with each recorded sample.
 - **`sieval run` starts an engine only for a model with samples to infer** (closes #213). A run that may resume (`--resume`, or `resume` in a `runner_config`) first plans each task's resume, read-only, through the runner's own resume planning (`TaskRunner.plan_run`), and launches only the engines whose models some task still has samples to infer with. A resume that reruns only grading stages, or re-reports, starts no engine and runs on a node without GPUs; when some sample needs inference and `nvidia-smi` finds no GPU, the run is refused before anything starts. The plans, `infer_plans.yaml`, the inference identity and its request digest are what an eager launch records. A fresh run is not planned and launches as before. A sample that `feedback` sends to another iteration after a rerun from `feedback` fails at `infer` when its engine was not started, and a resume that starts it retries it.
@@ -38,6 +52,10 @@ Planned as 0.12.0.
 - **The resume aliases deprecated in 0.10.0.** `--resume-from DIR` is now an unknown option (use `--resume DIR`). A config setting `runner_config.auto_resume` or `runner_config.resume_from`, top-level or per task, is refused before anything runs, naming the `resume` form to use, rather than ignored, so a resume never silently becomes a fresh run. `TaskRunnerConfig(auto_resume=, resume_from=)`, `EvalSession(resume_from=)`, `arun_session(resume_from=)` / `run_session(resume_from=)` and `sieval.core.runners.fold_resume_aliases` are gone; pass `resume=True` or `resume=<dir>`.
 - The transport import aliases: `sieval.core.models.Transport` (use `sieval.core.models.dialect.Dialect`), and `OpenAIChatTransport` / `OpenAICompletionsTransport` from `sieval.core.models.transports` (use `OpenAIChatDialect` / `OpenAICompletionsDialect` from `sieval.core.models.dialects`). `SglangTransport` stays.
 - `sieval.infer.InferConfig`, unused since `DeploymentPlan` replaced it.
+
+### Fixed
+
+- **A concurrency limit admits no extra task.** `anyio` before 4.15 let a task scheduled ahead of a woken waiter take the slot too, so `concurrency_limit`, `concurrency_limits` and a model's `concurrency_limit` could run one request over their bound. SiEval now requires `anyio>=4.15` (#224).
 
 ## [0.11.0] - 2026-10-23
 
@@ -472,6 +490,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.12.0]: https://github.com/scitix/sieval/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/scitix/sieval/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/scitix/sieval/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/scitix/sieval/compare/v0.10.0...v0.10.1
