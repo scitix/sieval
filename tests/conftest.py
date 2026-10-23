@@ -15,8 +15,16 @@ class-path references).
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
-import gc
-import random
+import os
+
+# `datasets` imports torch whenever it is installed, for a formatter nothing
+# here uses: about a second per interpreter, and the suite starts many (xdist
+# workers, the offload pool's spawned workers, every subprocess test). Set
+# before the first `datasets` import, so those children inherit it too.
+os.environ.setdefault("USE_TORCH", "0")
+
+import gc  # noqa: E402
+import random  # noqa: E402
 import sys
 import threading
 import time

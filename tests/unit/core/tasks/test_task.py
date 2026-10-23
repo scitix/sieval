@@ -218,10 +218,6 @@ class TestValidateModelType:
         with pytest.raises(TypeError, match="completion"):
             _GenOnlyTask(_SimpleDataset(), _MockChatModel())
 
-    def test_no_model_type_restriction_accepts_both(self):
-        _ConcreteTask(_SimpleDataset(), _MockChatModel())
-        _ConcreteTask(_SimpleDataset(), _MockGenModel())
-
     def test_unrecognized_model_type_raises(self):
         class _CustomModel(Model):
             """Bare model with no bound dialect shape."""

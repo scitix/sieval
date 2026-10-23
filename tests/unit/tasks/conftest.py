@@ -1,4 +1,5 @@
-"""Task-test collection tweaks: NLTK staging under xdist, and mutation testing.
+"""Task-test collection tweaks (NLTK staging under xdist, mutation testing),
+and one shared fixture.
 
 **NLTK staging.** ``sieval/community/ifbench/instructions_util.py`` calls
 ``download_nltk_resources()`` at module scope, so the corpora arrive with whoever
@@ -33,16 +34,23 @@ mutmut for every pytest run it drives and is absent otherwise.
 
 Skipping happens before fixture setup, so the probe interpreter never starts.
 
+**BigQuery credentials.** ``no_bigquery_credentials`` is shared by the backend
+and the task tests. Deleting the variable alone is not enough: google-auth then
+probes the GCE metadata server, which on a host off GCP costs ~12s of timeouts.
+
 AI-Generated Code - Claude Fable 5 (Anthropic)
 """
 
 import contextlib
+import importlib
 import os
 import tempfile
 from pathlib import Path
 
 import pytest
 from filelock import FileLock
+
+from sieval.tasks._spider2_backends import BIGQUERY_CREDENTIAL_ENV
 
 
 def _warm_stem() -> Path | None:
@@ -96,3 +104,30 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if item.name.startswith("test_import_does_not_pull_"):
             item.add_marker(skip)
+
+
+@pytest.fixture
+def no_bigquery_credentials(monkeypatch):
+    """No environment key *and* no application default credentials.
+
+    Both halves are needed since `missing_credentials` learned to accept ADC:
+    deleting the variable alone leaves the answer dependent on whether the host
+    running the suite happens to have `gcloud auth application-default login`
+    in its state — green in CI, red on a developer box that uses GCP.
+    """
+    monkeypatch.delenv(BIGQUERY_CREDENTIAL_ENV, raising=False)
+    try:
+        # `import_module`, not a plain `import`: CI installs eight dependency
+        # groups and `spider2` is not one of them, so a static import here is an
+        # `unresolved-import` in the typecheck job — which the scoped override
+        # for `_spider2_backends.py` does not cover, because this is a test.
+        google_auth = importlib.import_module("google.auth")
+    except ImportError:
+        # The `spider2` group is absent, so the probe's own ImportError branch
+        # already reports "unreachable" — nothing to patch.
+        return
+
+    def _nothing_configured(*_args, **_kwargs):
+        raise RuntimeError("no application default credentials")
+
+    monkeypatch.setattr(google_auth, "default", _nothing_configured)

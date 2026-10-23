@@ -23,6 +23,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import openai._base_client
 import orjson
 import pytest
 import yaml
@@ -273,14 +274,11 @@ class TestResumeAcrossReleases:
         upgrade restarts every sample instead of keeping its inference."""
         evaluator(_recorded_service(release))
         root = _copy(release, tmp_path)
-        original = HumanEvalZeroShotGenTask.preprocess
-
-        async def preprocess(self, raw, ctx):
-            record = await original(self, raw, ctx)
-            record["prompt"][0]["content"] += "\n"
-            return record
-
-        monkeypatch.setattr(HumanEvalZeroShotGenTask, "preprocess", preprocess)
+        _patch_preprocess(tmp_path, monkeypatch)
+        # The refused connections retry; skip the SDK's backoff, not the retries.
+        monkeypatch.setattr(
+            openai._base_client.BaseClient, "_calculate_retry_timeout", lambda *_: 0
+        )
         result = CliRunner().invoke(
             app,
             [
@@ -363,28 +361,50 @@ class TestResumeAcrossReleases:
 
 
 def _patch_report(tmp_path: Path, monkeypatch) -> None:
-    """Replace `report` from a package on disk, as a plugin patch does."""
+    _patch(
+        tmp_path,
+        monkeypatch,
+        "report",
+        """
+        async def report(self, finals, fails):
+            return {**(await _original(self, finals, fails)), "patched": True}
+        """,
+    )
+
+
+def _patch_preprocess(tmp_path: Path, monkeypatch) -> None:
+    _patch(
+        tmp_path,
+        monkeypatch,
+        "preprocess",
+        """
+        async def preprocess(self, raw, ctx):
+            record = await _original(self, raw, ctx)
+            record["prompt"][0]["content"] += "\\n"
+            return record
+        """,
+    )
+
+
+def _patch(tmp_path: Path, monkeypatch, stage: str, body: str) -> None:
+    """Replace *stage* from a package on disk, as a plugin patch does.
+
+    A function defined in this test module would make the stage's identity
+    walk this module and everything it imports, the CLI included.
+    """
+    package = f"{stage}_patch"
     root = tmp_path / "patches"
-    (root / "report_patch").mkdir(parents=True)
-    (root / "report_patch" / "__init__.py").write_text(
-        textwrap.dedent(
-            """
-            from sieval.tasks import HumanEvalZeroShotGenTask
-
-            _original = HumanEvalZeroShotGenTask.report
-
-
-            async def report(self, finals, fails):
-                return {**(await _original(self, finals, fails)), "patched": True}
-            """
-        )
+    (root / package).mkdir(parents=True)
+    (root / package / "__init__.py").write_text(
+        "from sieval.tasks import HumanEvalZeroShotGenTask\n\n"
+        f"_original = HumanEvalZeroShotGenTask.{stage}\n\n" + textwrap.dedent(body)
     )
     monkeypatch.syspath_prepend(str(root))
-    monkeypatch.delitem(sys.modules, "report_patch", raising=False)
+    monkeypatch.delitem(sys.modules, package, raising=False)
     import importlib
 
-    patch = importlib.import_module("report_patch")
-    monkeypatch.setattr(HumanEvalZeroShotGenTask, "report", patch.report)
+    patch = importlib.import_module(package)
+    monkeypatch.setattr(HumanEvalZeroShotGenTask, stage, getattr(patch, stage))
 
 
 def _dataset():
