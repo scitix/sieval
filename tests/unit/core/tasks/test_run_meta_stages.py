@@ -525,3 +525,60 @@ class TestWalkConstructs:
         for stage in GRADING_STAGES:
             assert code[stage]["modules"] == whole
             assert "source" in code[stage]["fallback"]
+
+    def test_an_absolute_import_of_the_own_package_is_walked(self, plugin):
+        """The own package's name is left out of the digest, not out of the
+        parse: ``from <package>.x`` is not Python."""
+        pkg, load = plugin
+        _edit(
+            pkg,
+            "task.py",
+            "from .extract import extract\n",
+            f"from {PACKAGE}.extract import extract\n",
+        )
+        _edit(pkg, "task.py", "from . import metrics\n", f"import {PACKAGE}.metrics\n")
+        _edit(pkg, "task.py", "metrics.mean(finals)", f"{PACKAGE}.metrics.mean(finals)")
+        before = stage_code(load())
+        assert not any("fallback" in before[s] for s in GRADING_STAGES)
+        _edit(pkg, "extract.py", "text.strip()", "text.strip().lower()")
+        assert _changed(before, stage_code(load())) == ["postprocess"]
+
+    def test_a_re_exported_function_counts_where_it_is_called(self, plugin):
+        """A module holding a class of the MRO is read a function at a time;
+        a name it only imports is followed to where it is defined."""
+        pkg, load = plugin
+        (pkg / "base.py").write_text(
+            "from .extract import extract  # noqa: F401\n\n\nclass Mixin:\n    pass\n"
+        )
+        _edit(
+            pkg,
+            "task.py",
+            "from .extract import extract\n",
+            "from .base import Mixin, extract\n",
+        )
+        _edit(pkg, "task.py", "class StageTask(Base):", "class StageTask(Base, Mixin):")
+        before = stage_code(load())
+        _edit(pkg, "extract.py", "text.strip()", "text.strip().lower()")
+        assert _changed(before, stage_code(load())) == ["postprocess"]
+
+    def test_a_name_imported_in_two_methods_resolves_per_method(self, plugin):
+        pkg, load = plugin
+        _edit(pkg, "task.py", "from .extract import extract\n", "")
+        _edit(pkg, "task.py", "from . import metrics\n", "")
+        _edit(
+            pkg,
+            "task.py",
+            "        return extract(normalize(inf))\n",
+            "        from .extract import extract as run\n"
+            "        return run(normalize(inf))\n",
+        )
+        _edit(
+            pkg,
+            "task.py",
+            '        return {"score": metrics.mean(finals)}\n',
+            "        from .metrics import mean as run\n"
+            '        return {"score": run(finals)}\n',
+        )
+        before = stage_code(load())
+        _edit(pkg, "metrics.py", "len(finals)", "len(finals) * 2")
+        assert _changed(before, stage_code(load())) == ["report"]

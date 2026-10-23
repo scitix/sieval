@@ -59,6 +59,7 @@ from sieval.core.tasks.requests import REQUESTS_FILE, TaskRequestLog
 from sieval.core.tasks.run_meta import (
     ABSENT,
     GRADING_STAGES,
+    IDENTITY_ERRORS,
     RESULT_SCHEMA_VERSION,
     DigestedStage,
     GradingIdentity,
@@ -1918,7 +1919,7 @@ class TaskRunner:
                 service_identities(task_cls.services),
                 self._task.grader_args(),
             )
-        except (TypeError, ValueError, AttributeError) as exc:
+        except IDENTITY_ERRORS as exc:
             logger.warning("Legacy grader identity unavailable: {}", exc)
             return set()
 
@@ -2359,7 +2360,7 @@ class TaskRunner:
                 self._task.grader_args(),
                 grader_task(task_cls),
             )
-        except (TypeError, ValueError, AttributeError, SyntaxError, OSError) as exc:
+        except IDENTITY_ERRORS as exc:
             logger.warning("Grading identities unavailable: {}", exc)
             self._stage_stamps = dict.fromkeys(GRADING_STAGES)
             return None

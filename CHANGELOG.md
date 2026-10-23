@@ -11,20 +11,17 @@ Planned as 0.12.0.
 
 ### Migrating from 0.11.x
 
-- **`meta.json` `identity` is schema 2, one identity per pipeline stage**: `data`, `preprocess` (was `prompt`), `inference`, `postprocess`, `feedback` and `report`. The combined `grader` is gone; judges and services move to `feedback`. A reader of `identity.grader` or `identity.prompt` must read the new names, and accept schema 1 from directories written by 0.10.0 to 0.11.x. `runs[].reran` lists the new names, `report` included whenever the run wrote `report.json`.
-- **Every built-in task's grading identities are new**, since they did not exist before; a schema-1 directory whose task is unchanged upgrades in place without regrading (below). `RESULT_SCHEMA_VERSION` stays 1, so 0.10.x and 0.11.0 directories resume as they are.
-- `TaskSaver.begin_run` takes the identity as one `identity={stage: value}` mapping, and `set_identity` takes stages by name.
+- **`meta.json` `identity` is schema 2**: `data`, `preprocess` (was `prompt`), `inference`, `postprocess`, `feedback`, `report`. The combined `grader` is gone; judges and services move to `feedback`. Readers must accept schema 1 too. `RESULT_SCHEMA_VERSION` stays 1, so 0.10.x and 0.11.0 directories resume, and an unchanged task's schema-1 directory upgrades in place without regrading.
+- `TaskSaver.begin_run(identity={...})` and `set_identity(**stages)` replace the per-stage keyword arguments.
 
 ### Changed
 
-- **A resume reruns from the earliest stage that changed.** The grader identity is split along the pipeline: a change to answer extraction reruns `postprocess`, `feedback` and `report` on the recorded inference; a change to scoring (a judge's model, prompt or sampling, a service, the `feedback` code) reruns `feedback` and `report` on the recorded `postprocess`; a change to `report` alone recomputes `report.json` from the recorded samples, with no engine started and no judge called. Before, any of these regraded every sample, judge calls included.
-- **Code is attributed to stages by a static walk from each stage method** (`postprocess`, `feedback`, `report` and `problem_groups`, plus `__init__`, `setup` and the other methods every stage shares): methods by name across the MRO, so overrides and patched-in methods count; module functions and helper classes by name; imports by what they bind. Code several stages reach counts in each. A stage reaching code by a name only known at run time (`getattr(self, <expr>)`, `eval`, `importlib`) counts all grading code, as do the stages after it. None of the built-in tasks needs that fallback.
-- **A schema-1 directory keeps its verdicts when its task is unchanged.** The old combined grader digest is still computed with the walk that wrote it (0.10.0's import-name keys, 0.10.1 to 0.11.x's file-path keys); when it matches, nothing in grading changed, so every verdict is kept and the identity is rewritten as schema 2 in place. When it differs, `postprocess` counts as changed and every sample regrades, as before.
-- `runs[]` records `resume`: how many recorded samples a resume `kept`, `rereported`, `regraded` (feedback reran), `repostprocessed`, `restarted` or `dropped`.
+- **A resume reruns from the earliest stage that changed** (#210). An extraction change reruns from `postprocess`, a scoring change (judge, prompt, sampling, service, `feedback` code) from `feedback`, and a `report`-only change recomputes `report.json` from the records with no engine or judge call. Before, each of these regraded every sample. Code is attributed to stages by a static walk; a run-time lookup (`getattr(self, <expr>)`, `eval`, `importlib`) falls back to all grading code. No built-in task falls back.
+- `runs[].resume` counts what a resume did with each recorded sample.
 
 ### Added
 
-- `sieval.core.runners.task_resume_plan(task, recorded_meta, runner_keys=...)` and `plan_resume`: what a resume of a task directory would do, stage by stage, without running anything, for a dry run to report. `run_meta.stage_code` names the code each grading stage reaches, and why a stage fell back to all of it.
+- `sieval.core.runners.task_resume_plan` / `plan_resume`: the per-stage resume plan, without running anything.
 
 ## [0.11.0] - 2026-10-23
 

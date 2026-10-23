@@ -276,38 +276,22 @@ class and `grader_args()`; `feedback` also holds every judge and service.
 those in `GRADER_ARGS_EXCLUDED`; a task extends it with arguments that cannot
 change a verdict: `Task.GRADER_ARGS_EXCLUDED | {"grade_timeout"}`.
 
-Code is attributed by a static walk from each stage's method (`postprocess`,
-`feedback`, `report` and `problem_groups`) plus what every stage shares
-(`__init__`, `setup`, `make_context`, `grader_args`, `judge_models`,
-`judge_prompts`): a method by its name on any class of the task's MRO,
-overrides and patched-in methods included; a module function or helper class
-by its name; an import to what it binds. Code two stages reach counts in both.
-A module's import-time statements (constants, decorators, signatures) count in
-every stage that reaches it; a helper module neither defines a task class nor
-holds a method is digested whole. A stage whose code reaches other code by a
-name only known at run time (`getattr(self, name)`, `eval`,
-`importlib.import_module`, `vars()`) counts all of the task's grading code
-instead, and so does every stage after it; `stage_code()` names the construct.
+Code is attributed to stages by a static walk from each stage method; code two
+stages reach counts in both. A stage that reaches code by a name only known at
+run time (`getattr(self, name)`, `eval`, `importlib`) counts all grading code,
+and so does every stage after it; `stage_code()` names the construct.
 
-`meta.json` from 0.10.0 to 0.11.x holds identity schema 1, with `prompt` for
-`preprocess` and one `grader` for the three grading stages. A resume reads it:
-when the old `grader` still matches the task's code (computed by the walk that
-wrote it), every verdict is kept and the block is rewritten as schema 2 in
-place; when it does not, `postprocess` counts as changed and every sample
-regrades.
+A schema-1 `meta.json` (0.10.0 to 0.11.x) folds the grading stages into one
+`grader`. If it still matches the task's code, every verdict is kept and the
+block is upgraded in place; otherwise every sample regrades.
 
 A same-directory resume reruns a sample with no recorded identity, such as one
 interrupted before `preprocess`. Under `record_meta: false` no sample has one,
 so every recorded sample reruns, with a warning.
 
-`runs[].reran` lists the stages a run executed, `report` included when it wrote
-`report.json`; `runs[].resume` counts what a resume did with each recorded
-sample: `kept`, `rereported`, `regraded` (feedback reran), `repostprocessed`,
-`restarted` and `dropped`.
-
-A dry run reports the same plan per task through
-`sieval.core.runners.task_resume_plan(task, recorded_meta, runner_keys=...)`,
-which starts nothing.
+`runs[].resume` counts what a resume did with each recorded sample.
+`sieval.core.runners.task_resume_plan()` returns the same plan without running
+anything.
 
 A resume with another model regrades and reports on the recorded inference:
 `model` stays the recorded one, the invoking model goes in `runs[].model`, and

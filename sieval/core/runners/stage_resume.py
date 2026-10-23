@@ -17,10 +17,8 @@ Report differs                  ``report.json`` is recomputed from the
 A sample past iteration 0 restarts instead of rolling back to a grading stage:
 its later inference saw the old grader's feedback.
 
-A schema-1 directory (0.10.0 to 0.11.x) recorded the three grading stages as
-one ``grader``. When :func:`~sieval.core.tasks.run_meta.legacy_grader_keys`
-holds its key, none of them changed; otherwise ``postprocess`` counts as
-changed, as a changed ``grader`` regraded before.
+A schema-1 ``grader`` (0.10.0 to 0.11.x) matches all grading stages or none
+(:func:`~sieval.core.tasks.run_meta.legacy_grader_keys`).
 
 A sample's data and prompt digests come from its ``preprocess`` record. For a
 directory recorded before them, the prompt is digested from the ``preprocess``
@@ -132,15 +130,11 @@ type StageComparison = Literal["same", "differs", "unknown"]
 class ResumePlan(TypedDict):
     """What a resume of one task directory would do, from identities alone.
 
-    ``stages`` compares each of :data:`~sieval.core.tasks.run_meta.STAGES`.
     ``rerun_from`` is the earliest grading stage a finished sample reruns
-    from (``report`` recomputes ``report.json`` only), ``None`` when no
-    grading stage changed. Data and preprocess are decided per sample, by its
-    ``preprocess`` record, so they are only compared here. ``refused`` is
-    ``inference`` when a resume reusing recorded inference would be refused.
-    ``legacy_grader`` is set for a schema-1 directory: ``kept`` when its
-    combined ``grader`` still matches, so every verdict is kept and the block
-    is upgraded in place, ``regrade`` when it does not.
+    from, ``None`` if none changed; data and preprocess are decided per
+    sample, so only compared here. ``refused`` is ``inference`` when reusing
+    the recorded inference would be refused. ``legacy_grader`` is set for a
+    schema-1 directory: ``kept`` (upgraded in place) or ``regrade``.
     """
 
     identity_schema: int | None
@@ -237,14 +231,16 @@ def task_resume_plan(
 
 
 def _compare(stage: str, recorded: object, current: object) -> StageComparison:
-    mine = cast(Mapping[str, Any], recorded) if isinstance(recorded, Mapping) else None
-    theirs = cast(Mapping[str, Any], current) if isinstance(current, Mapping) else None
+    theirs = (
+        cast(Mapping[str, Any], recorded) if isinstance(recorded, Mapping) else None
+    )
+    mine = cast(Mapping[str, Any], current) if isinstance(current, Mapping) else None
     if stage in GRADING_STAGES:
-        a, b = stage_key(mine), stage_key(theirs)
+        a, b = stage_key(theirs), stage_key(mine)
     else:
         # Inference compares as a resume refuses it: by its configuration.
-        a = mine.get("digest") if mine is not None else None
-        b = theirs.get("digest") if theirs is not None else None
+        a = theirs.get("digest") if theirs is not None else None
+        b = mine.get("digest") if mine is not None else None
     if not isinstance(a, str) or not isinstance(b, str):
         return "unknown"
     return "same" if a == b else "differs"

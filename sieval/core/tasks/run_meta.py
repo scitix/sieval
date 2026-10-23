@@ -21,28 +21,17 @@ produced the current ``report.json``:
                  its body and whether it streamed, never the method, path,
                  query or model name. The model under test, the engine build
                  and the SiEval version are left out.
-``postprocess``  The code :meth:`~sieval.core.tasks.task.Task.postprocess`
-                 reaches (:func:`stage_code`), the task class and its
-                 :meth:`~sieval.core.tasks.task.Task.grader_args`.
-``feedback``     The same for :meth:`~sieval.core.tasks.task.Task.feedback`,
-                 plus each judge's model, version, sampling arguments and
-                 prompt, and each service the task declares, vendored or
-                 external.
-``report``       The same for :meth:`~sieval.core.tasks.task.Task.report`
-                 and :meth:`~sieval.core.tasks.task.Task.problem_groups`.
+``postprocess``  The code ``postprocess`` reaches (:func:`stage_code`), the
+                 task class and its ``grader_args()``.
+``feedback``     The same for ``feedback``, plus every judge and service.
+``report``       The same for ``report`` and ``problem_groups``.
 ===============  ============================================================
 
-A grading stage also holds a judge or service its code reads, besides
-``feedback``.
-
-A change to one stage reruns it and every stage after it; a ``report``-only
-change recomputes ``report.json`` from the recorded samples.
+A change to one stage reruns it and every stage after it.
 
 Identity schema 1 (0.10.0 to 0.11.x) named ``preprocess`` ``prompt`` and
-folded the last three into one ``grader`` identity (:func:`grader_identity`),
-which cannot be split. :func:`read_identity` reads such a block with the
-grading stages unknown, and :func:`legacy_grader_keys` recomputes the old
-``grader`` with the walk that wrote it: equal means no grading stage changed.
+folded the grading stages into one ``grader``. :func:`legacy_grader_keys`
+recomputes it with the walk that wrote it: equal means nothing changed.
 
 Every digest is ``sha256:`` over canonical JSON (sorted keys, no whitespace).
 A stage whose input could not be read is ``None``: unknown, never a guess. A
@@ -119,6 +108,16 @@ GRADER_PACKAGES: tuple[str, ...] = (
     "sieval.community",
     "sieval_plugins",
     "sieval_shared",
+)
+
+#: What computing a grading identity may raise: a walk reads files and parses
+#: them, and a task hook may reject an argument. The identity is then unknown.
+IDENTITY_ERRORS: tuple[type[Exception], ...] = (
+    TypeError,
+    ValueError,
+    AttributeError,
+    SyntaxError,
+    OSError,
 )
 
 #: Environment variable naming the served judge, set by the orchestrator that
@@ -252,13 +251,11 @@ class RunFrom(TypedDict):
 class ResumeOutcomes(TypedDict):
     """What a resume did with each recorded sample, as ``runs[].resume``.
 
-    By the earliest stage that changed for it: ``kept`` as recorded (only
-    ``report`` changed, or nothing), ``regraded`` reran ``feedback`` on its
-    recorded ``postprocess``, ``repostprocessed`` reran ``postprocess`` and
-    ``feedback`` on its recorded inference, ``restarted`` reran from
-    ``preprocess``, ``dropped`` is outside the dataset now. ``rereported`` is
-    how many kept samples a changed ``report`` recomputed ``report.json`` from:
-    every one when ``report`` changed, else ``0``.
+    Keyed by the earliest stage that changed for it: ``kept`` (nothing, or
+    only ``report``), ``regraded`` (``feedback``), ``repostprocessed``
+    (``postprocess``), ``restarted`` (from ``preprocess``), ``dropped`` (no
+    longer in the dataset). ``rereported`` is how many kept samples a changed
+    ``report`` read.
     """
 
     kept: int
@@ -297,9 +294,7 @@ While the run is in flight the entry has neither ``ended`` nor ``reran``.
 A run that saves its ``report.json`` writes both: ``ended`` (ISO 8601 UTC, like
 ``at``) and ``reran``, the stages it executed, ``[]`` for a fast resume.
 ``reported: true`` says the run wrote ``report.json``, which a fast resume does
-not; a run that called ``report()`` lists ``report`` in ``reran``. ``resume``
-counts what a per-stage resume did with each recorded sample
-(:class:`ResumeOutcomes`). A run
+not. ``resume`` is :class:`ResumeOutcomes`. A run
 stopped by an interrupt writes ``ended`` and ``interrupted: true``, and no
 ``reran``. An entry with no ``ended`` is a run that is still going, or was
 killed or failed before it could say so. ``config`` is the config diff a resume
@@ -792,13 +787,16 @@ def _self_import_text(node: ast.Import | ast.ImportFrom, own: str) -> str | None
     return ast.unparse(ast.Import(names=names))
 
 
-def _without_own_name(source: bytes, own: str) -> bytes:
-    """*source* with each absolute import of *own* as :func:`_self_import_text`.
+def _own_name_lines(source: bytes, own: str) -> list[bytes]:
+    """*source*'s lines with each absolute import of *own* as
+    :func:`_self_import_text`, line for line: a rewritten span's later lines
+    are empty, so the AST of *source* still indexes them.
 
     Nothing outside those spans changes; comments inside one drop out, as in
-    the variant rewrite. A file that is not UTF-8 or does not parse is returned
-    unchanged.
+    the variant rewrite. A file that is not UTF-8 or does not parse is
+    returned unchanged.
     """
+    lines = source.splitlines(keepends=True)
     bom = codecs.BOM_UTF8 if source.startswith(codecs.BOM_UTF8) else b""
     body = source[len(bom) :]
     try:
@@ -807,7 +805,7 @@ def _without_own_name(source: bytes, own: str) -> bytes:
             warnings.simplefilter("ignore", SyntaxWarning)
             tree = ast.parse(body.decode("utf-8"))
     except (SyntaxError, UnicodeDecodeError, ValueError):
-        return source
+        return lines
     edits = [
         (node.lineno, node.col_offset, node.end_lineno, node.end_col_offset, text)
         for node in ast.walk(tree)
@@ -815,15 +813,20 @@ def _without_own_name(source: bytes, own: str) -> bytes:
         and (text := _self_import_text(node, own)) is not None
     ]
     if not edits:
-        return source
-    starts = [0]
-    for line in body.splitlines(keepends=True):
-        starts.append(starts[-1] + len(line))
+        return lines
+    out = body.splitlines(keepends=True)
     for row, col, end_row, end_col, text in sorted(edits, reverse=True):
-        start = starts[row - 1] + col
-        end = starts[cast(int, end_row) - 1] + cast(int, end_col)
-        body = body[:start] + text.encode("utf-8") + body[end:]
-    return bom + body
+        tail = out[cast(int, end_row) - 1][cast(int, end_col) :]
+        out[row - 1] = out[row - 1][:col] + text.encode("utf-8") + tail
+        for i in range(row, cast(int, end_row)):
+            out[i] = b""
+    out[0] = bom + out[0]
+    return out
+
+
+def _without_own_name(source: bytes, own: str) -> bytes:
+    """*source* as :func:`grader_modules` digests a file of the plugin *own*."""
+    return b"".join(_own_name_lines(source, own))
 
 
 def _own_package(task_cls: type) -> str | None:
@@ -1041,6 +1044,47 @@ def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
     return out
 
 
+type _Bindings = dict[str, list[tuple[str, str | None]]]
+
+
+def _bindings(
+    roots: Iterable[ast.AST], name: str, is_package: bool, *, nested: bool = True
+) -> _Bindings:
+    """``{bound name: [(module, attribute or None)]}`` for the imports in *roots*.
+
+    A name may bind several targets (``try``/``except ImportError``, or two
+    ``import a.x``/``import a.y`` binding ``a``). A star import binds
+    ``*<module>``. *nested* ``False`` leaves out imports inside a ``def``,
+    which bind only there.
+    """
+    out: _Bindings = {}
+
+    def bind(key: str, target: tuple[str, str | None]) -> None:
+        if target not in (targets := out.setdefault(key, [])):
+            targets.append(target)
+
+    stack = list(roots)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bind(alias.asname or alias.name.partition(".")[0], (alias.name, None))
+        elif isinstance(node, ast.ImportFrom):
+            module = (
+                _resolve_relative(name, is_package, node.level, node.module or "")
+                if node.level
+                else node.module or ""
+            )
+            for alias in node.names:
+                if alias.name == "*":
+                    bind(f"*{module}", (module, None))
+                else:
+                    bind(alias.asname or alias.name, (module, alias.name))
+        if nested or not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            stack.extend(ast.iter_child_nodes(node))
+    return out
+
+
 class _Module:
     """A module the stage walk reads one function at a time.
 
@@ -1050,7 +1094,9 @@ class _Module:
     runs at import, which counts in every stage reaching the module.
     """
 
-    def __init__(self, name: str, path: str, source: bytes, is_package: bool):
+    def __init__(
+        self, name: str, path: str, source: bytes, is_package: bool, own: bool
+    ):
         self.name = name
         self.path = path
         self.is_package = is_package
@@ -1080,7 +1126,11 @@ class _Module:
                 for target in _assigned_names(node):
                     self.top.setdefault(target, node)
         self.shell_nodes = shell_nodes
-        lines = source.splitlines(keepends=True)
+        # Parsed as written; digested as grader_modules digests the file.
+        top = name.partition(".")[0]
+        lines = (
+            _own_name_lines(source, top) if own else source.splitlines(keepends=True)
+        )
         self._lines = lines
         stripped: set[int] = set()
         for unit in self.units.values():
@@ -1089,7 +1139,11 @@ class _Module:
         self.shell = b"".join(
             line for i, line in enumerate(lines, start=1) if i not in stripped
         )
-        self.bindings = _bindings(self.tree, name, is_package)
+        #: Module-scope imports; a unit's own are :meth:`unit_bindings`.
+        self.bindings = _bindings(self.tree.body, name, is_package, nested=False)
+
+    def unit_bindings(self, qualname: str) -> _Bindings:
+        return _bindings([self.units[qualname]], self.name, self.is_package)
 
     def unit_source(self, qualname: str) -> bytes:
         unit = self.units[qualname]
@@ -1110,36 +1164,6 @@ def _assigned_names(node: ast.AST) -> list[str]:
     for target in targets:
         names.extend(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
     return names
-
-
-def _bindings(
-    tree: ast.Module, name: str, is_package: bool
-) -> dict[str, tuple[str, str | None]]:
-    """``{bound name: (module, attribute or None)}`` for every import in *tree*.
-
-    A star import binds ``*<module>``.
-    """
-    out: dict[str, tuple[str, str | None]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    out[alias.asname] = (alias.name, None)
-                else:
-                    top = alias.name.partition(".")[0]
-                    out.setdefault(top, (alias.name, None))
-        elif isinstance(node, ast.ImportFrom):
-            module = (
-                _resolve_relative(name, is_package, node.level, node.module or "")
-                if node.level
-                else node.module or ""
-            )
-            for alias in node.names:
-                if alias.name == "*":
-                    out[f"*{module}"] = (module, None)
-                else:
-                    out[alias.asname or alias.name] = (module, alias.name)
-    return out
 
 
 class _Refs:
@@ -1243,11 +1267,9 @@ def _methods_of(value: object) -> list[object]:
 class _StageWalker:
     """Attribute a task class's code to the stages that reach it.
 
-    A module holding a class of the task's MRO, or a function patched onto
-    one, is read a function at a time (:class:`_Module`); a stage reaches a
-    method by its attribute name, a function or helper class by its bare name.
-    Any other module is digested whole, with what it imports, as
-    :func:`grader_modules` does.
+    A module holding a class of the MRO, or a method patched onto one, is
+    read a function at a time (:class:`_Module`); any other is digested whole,
+    as :func:`grader_modules` does.
     """
 
     def __init__(self, task_cls: type):
@@ -1297,12 +1319,10 @@ class _StageWalker:
         self.methods.setdefault(attr, []).append((module, unit))
 
     def unreached(self) -> dict[str, dict[str, str]]:
-        """Files of each package outside ``sieval`` that no stage reaches, by package.
+        """Files of each package outside ``sieval`` that no stage reaches.
 
-        Such a package counts whole, as :func:`grader_modules` digests it, in
-        every stage that reaches any of it: a stage may still run one of its
-        files (a module its ``__init__`` imports, one read by path) and
-        nothing tells which. A file some stage does reach counts only there.
+        They count in every stage that reaches any of the package: a stage
+        may still run one (read by path, say) and nothing tells which.
         """
         reached: set[str] = set()
         tops: set[str] = set()
@@ -1336,11 +1356,8 @@ class _StageWalker:
         return out
 
     def _index_source(self, klass: type) -> None:
-        """Index the methods *klass*'s source defines, patched over or not.
-
-        A patch may wrap the method it replaces (``original = Task.report``),
-        so the definition still counts wherever its name is reached.
-        """
+        """Index the methods *klass*'s source defines, patched over or not:
+        a patch may wrap the one it replaces."""
         module = klass.__module__
         if not _followed(module, self.roots):
             return
@@ -1362,8 +1379,9 @@ class _StageWalker:
             if path is None:
                 self._modules[name] = None
             else:
+                own = name.partition(".")[0] == self.own_package
                 self._modules[name] = _Module(
-                    name, path, self._hashed(name, _read_source(path)), is_package
+                    name, path, _read_source(path), is_package, own
                 )
         return self._modules[name]
 
@@ -1416,6 +1434,7 @@ class _StageWalk:
         self._pending: list[tuple[str, str]] = []
         self._pending_shells: list[str] = []
         self._pending_whole: list[str] = []
+        self._bound: set[tuple[str, str | None]] = set()
 
     def reach_attr(self, attr: str) -> None:
         if attr not in self.attrs:
@@ -1428,9 +1447,14 @@ class _StageWalk:
             self._pending_shells.append(module)
 
     def reach_module(self, module: str, attr: str | None) -> None:
-        """Reach what an import binds: a split module's unit, or a whole module."""
-        if not _followed(module, self.w.roots):
+        """Reach what an import binds: a split module's unit, or a whole module.
+
+        A name a split module imports rather than defines (a re-export) is
+        followed to where it is defined.
+        """
+        if not _followed(module, self.w.roots) or (module, attr) in self._bound:
             return
+        self._bound.add((module, attr))
         if attr is not None and _locate(f"{module}.{attr}") is not None:
             module, attr = f"{module}.{attr}", None
         if module not in self.w.split:
@@ -1446,8 +1470,16 @@ class _StageWalk:
             # The module object itself: any of its names may be read off it.
             for name in parsed.top:
                 self.reach_name(parsed, name)
+            self.reach_bound(parsed.bindings, parsed.bindings)
         elif attr in parsed.top:
             self.reach_name(parsed, attr)
+        else:
+            self.reach_bound(parsed.bindings, [attr])
+
+    def reach_bound(self, bindings: _Bindings, names: Iterable[str]) -> None:
+        for name in names:
+            for module, attr in bindings.get(name, ()):
+                self.reach_module(module, attr)
 
     def reach_name(self, parsed: _Module, name: str) -> None:
         """Reach a top-level name of *parsed*: a function, or a helper class."""
@@ -1462,12 +1494,18 @@ class _StageWalk:
                 (parsed.name, q) for q in parsed.units if q.startswith(prefix)
             )
 
-    def read(self, parsed: _Module, refs: _Refs, where: str) -> None:
+    def read(self, parsed: _Module, refs: _Refs, where: str, local: _Bindings) -> None:
+        """Follow what *refs* read in *parsed*. *local* holds the reading
+        unit's own imports: they run whenever it does, so all are reached, and
+        a name they bind resolves to them as well as to the module's."""
         dynamic = list(refs.dynamic)
         for target in refs.computed:
-            bound = parsed.bindings.get(target) if target is not None else None
+            bound = [
+                *(local.get(target, ()) if target is not None else ()),
+                *(parsed.bindings.get(target, ()) if target is not None else ()),
+            ]
             # Only a module outside the walk is safe to look a name up on.
-            if bound is None or _followed(bound[0], self.w.roots):
+            if not bound or any(_followed(m, self.w.roots) for m, _ in bound):
                 dynamic.append(f"getattr({target or 'self'}, <expr>)")
         if dynamic:
             raise _Unattributable(
@@ -1479,12 +1517,11 @@ class _StageWalk:
         self.loaded |= refs.loaded
         self.stores.extend(refs.stores)
         self.strings |= refs.strings
+        self.reach_bound(local, local)
         for name in refs.names:
             if name in parsed.top:
                 self.reach_name(parsed, name)
-            elif name in parsed.bindings:
-                module, attr = parsed.bindings[name]
-                self.reach_module(module, attr)
+            self.reach_bound(parsed.bindings, [name])
 
     def run(self) -> None:
         while self._pending or self._pending_shells or self._pending_whole:
@@ -1493,13 +1530,14 @@ class _StageWalk:
                 parsed = self.w.module(module)
                 if parsed is None:
                     continue
-                self.read(parsed, _Refs(parsed.shell_nodes), f"{module} at import")
+                self.read(parsed, _Refs(parsed.shell_nodes), f"{module} at import", {})
                 # A star import, or one whose names the module never reads,
                 # runs for its side effects: it counts wherever the module does.
                 read = _Refs([parsed.tree]).names
-                for bound, (target, attr) in parsed.bindings.items():
-                    if bound.startswith("*") or bound not in read:
-                        self.reach_module(target, attr)
+                self.reach_bound(
+                    parsed.bindings,
+                    [b for b in parsed.bindings if b.startswith("*") or b not in read],
+                )
             elif self._pending:
                 module, qualname = self._pending.pop()
                 if (module, qualname) in self.units:
@@ -1508,8 +1546,12 @@ class _StageWalk:
                 self.reach_shell(module)
                 parsed = self.w.module(module)
                 if parsed is not None:
-                    unit = parsed.units[qualname]
-                    self.read(parsed, _Refs([unit]), f"{module}.{qualname}")
+                    self.read(
+                        parsed,
+                        _Refs([parsed.units[qualname]]),
+                        f"{module}.{qualname}",
+                        parsed.unit_bindings(qualname),
+                    )
             else:
                 self._whole_step(self._pending_whole.pop())
 
@@ -1534,11 +1576,11 @@ class _StageWalk:
                 parsed = self.w.module(module)
                 if parsed is None:
                     continue
-                bound = _bindings(tree, name, is_package)
-                attrs = [a for m, a in bound.values() if m == module and a]
-                if not attrs or len(attrs) != sum(
-                    1 for m, _ in bound.values() if m == module
-                ):
+                bound = [
+                    t for ts in _bindings([tree], name, is_package).values() for t in ts
+                ]
+                attrs = [a for m, a in bound if m == module and a]
+                if not attrs or len(attrs) != sum(1 for m, _ in bound if m == module):
                     self.reach_module(module, None)
                 for attr in attrs:
                     self.reach_module(module, attr)
@@ -1606,31 +1648,23 @@ def stage_code(
     judge_roles: Iterable[str] = (),
     services: Iterable[str] = (),
 ) -> dict[str, StageCode]:
-    """The code each stage of *task_cls* that runs task code reaches, by stage.
+    """The code each stage of *task_cls* reaches, by stage.
 
-    Each of ``preprocess``, ``postprocess``, ``feedback`` and ``report`` starts
-    from its :data:`STAGE_ENTRY_METHODS` and the :data:`SHARED_ENTRY_METHODS`,
-    and follows names statically: a method by its attribute name on any class
-    of the MRO (an override, a patched-in method and the definition it
-    replaced all count, as does every method of that name), a module function
-    or helper class by its bare name, an import to what it binds. Code two
-    stages reach counts in both.
+    Each stage starts from its :data:`STAGE_ENTRY_METHODS` and the
+    :data:`SHARED_ENTRY_METHODS` and follows names statically: a method by
+    attribute name across the MRO, a module function or helper class by bare
+    name, an import to what it binds (through re-exports; a method's own
+    imports resolve within it). Code two stages reach counts in both.
 
-    A stage reads a judge of *judge_roles* when its code reads ``self._<role>``
-    or ``self.<role>``, or an attribute stored from one; a task overriding
-    ``judge_models`` reads every judge in every stage. It reads a service of
-    *services* when its code reads the service's endpoint variable name, or an
-    attribute stored from it. ``feedback`` holds every judge and service
-    whatever its code reads (:func:`grading_identities`), so one reached in a
-    way the walk cannot see still counts there.
+    A stage reads a judge when its code reads ``self._<role>``/``self.<role>``
+    or an attribute stored from one (every judge, if the task overrides
+    ``judge_models``), and a service when it reads its endpoint variable name.
 
     A construct the walk cannot follow (``getattr`` on the task with a
     computed name, ``eval``, ``importlib``, ``vars()``, a method with no
-    source) makes that grading stage, and every grading stage after it, count
-    all of :func:`grader_modules`, every judge and every service instead:
-    over-invalidated, never under. ``fallback`` names the construct.
-    ``preprocess`` falls back on its own, since the prompts it renders are
-    digested per sample anyway.
+    source) makes that grading stage and every later one count all of
+    :func:`grader_modules`, every judge and service; ``fallback`` names it.
+    ``preprocess`` falls back on its own: its prompts are digested per sample.
     """
     roles = sorted(set(judge_roles))
     markers = {SERVICE_ENDPOINT_ENV[s] for s in services if s in SERVICE_ENDPOINT_ENV}
@@ -1943,7 +1977,7 @@ def legacy_grader_keys(
             identity = grader_identity(
                 walk(task_cls), judges, services, args=args, task=task(task_cls)
             )
-        except (TypeError, ValueError, AttributeError, SyntaxError, OSError):
+        except IDENTITY_ERRORS:
             continue
         key = grader_key(identity)
         if key is not None:
