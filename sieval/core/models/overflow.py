@@ -23,6 +23,7 @@ closes.
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
@@ -109,15 +110,40 @@ def is_context_overflow_text(text: str) -> bool:
     return any(marker in lowered for marker in _OVERFLOW_MARKERS)
 
 
+#: The status a status error writes into its message, which is all a FAILED
+#: record keeps of it: openai's ``Error code: 400 - {...}`` and httpx's
+#: ``Client error '400 Bad Request' for url ...`` (``Server error``, ...).
+_RECORDED_STATUS = re.compile(
+    r"Error code: (\d{3})\b|"
+    r"(?:Informational response|Success|Redirect response|Client error|Server error)"
+    r" '(\d{3}) "
+)
+
+
+def recorded_status(message: str) -> int | None:
+    """The HTTP status a recorded failure message names first, if any."""
+    match = _RECORDED_STATUS.search(message)
+    if match is None:
+        return None
+    return int(match.group(1) or match.group(2))
+
+
 def is_recorded_context_overflow(reason: str | None, message: str | None) -> bool:
     """Whether a recorded ``exception::<name>`` failure was a context overflow.
 
     Read off a FAILED record of an earlier run, which kept the exception's name
-    and message but not its status, so a transport failure is ruled out by name.
+    and message but not the status as a field. The rule is
+    :func:`context_overflow_message`'s: the status the message names must be
+    400 or 413, and a message naming none (a stream error) must not come from a
+    transport failure, ruled out by name. A 429 or a 5xx quoting the words is
+    never an overflow, and stays retriable.
     """
     if not reason or not message or not reason.startswith("exception::"):
         return False
     if reason.removeprefix("exception::") in _TRANSPORT_FAILURES:
+        return False
+    status = recorded_status(message)
+    if status is not None and status not in _OVERFLOW_STATUSES:
         return False
     return is_context_overflow_text(message)
 
@@ -196,40 +222,52 @@ class OverflowScope:
     saying which call it answered. The first call to the model under test takes
     it; a second raises :class:`ReplayAmbiguous` and marks the scope
     *ambiguous*, and the runner runs ``infer`` again live.
+
+    A call takes its position, and the replay, when it *asks* (:meth:`ask`),
+    not when it is answered: two calls an ``infer`` makes concurrently each
+    hold their own position in *calls*, in the order they were made, and the
+    second of them meets the replay as ambiguous rather than both taking it.
+    A position whose result is ``None`` was asked but never answered (a call
+    cancelled when a sibling's refusal escaped), and is sent again.
     """
 
     model: object
     convert: bool = False
-    known: list[tuple[object, Request, CallResult]] = field(default_factory=list)
+    known: list[tuple[object, Request, CallResult | None]] = field(default_factory=list)
     replay: str | None = None
-    calls: list[tuple[object, Request, CallResult]] = field(default_factory=list)
+    calls: list[tuple[object, Request, CallResult | None]] = field(default_factory=list)
     escaped: list[tuple[BaseException, str]] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)
     ambiguous: bool = False
-    _subject_calls: int = 0
+    _subject_asked: int = 0
     _replaying: bool = True
 
-    def recorded(self, model: object, req: Request) -> CallResult | None:
-        """The result this call already has, or ``None`` to send it."""
+    def ask(self, model: object, req: Request) -> tuple[int, CallResult | None]:
+        """Take this call's position; with the result it already has, if any.
+
+        Every call to a model inside the scope asks first, once, and passes the
+        position to :meth:`answered`. A ``None`` result means send it.
+        """
+        slot = len(self.calls)
+        self.calls.append((model, req, None))
         if self.replay is not None and model is self.model:
-            if self._subject_calls == 0:
-                return self.replay
+            self._subject_asked += 1
+            if self._subject_asked == 1:
+                return slot, self.replay
             self.ambiguous = True
             raise ReplayAmbiguous(
                 "a recorded context overflow met a second call to the model under test"
             )
-        index = len(self.calls)
-        if self._replaying and index < len(self.known):
-            known_model, known_req, result = self.known[index]
-            if known_model is model and known_req == req:
-                return result
+        if self._replaying and slot < len(self.known):
+            known_model, known_req, result = self.known[slot]
+            if known_model is model and known_req == req and result is not None:
+                return slot, result
         self._replaying = False
-        return None
+        return slot, None
 
-    def answered(self, model: object, req: Request, result: CallResult) -> None:
-        self.calls.append((model, req, result))
-        if model is self.model:
-            self._subject_calls += 1
+    def answered(self, slot: int, result: CallResult) -> None:
+        model, req, _ = self.calls[slot]
+        self.calls[slot] = (model, req, result)
 
     def escaping(self, exc: BaseException) -> str | None:
         """The refusal's message when *exc* is, or wraps, an overflow seen here."""

@@ -816,9 +816,9 @@ class Model:
         scope = current_overflow_scope()
         if scope is None:
             return response_to_model_output(self.meta(), await self.arun(req))
-        recorded = scope.recorded(self, req)
+        slot, recorded = scope.ask(self, req)
         if recorded is not None:
-            return self._answer(scope, req, recorded)
+            return self._answer(scope, slot, req, recorded)
         try:
             output = response_to_model_output(self.meta(), await self.arun(req))
         except Exception as exc:
@@ -827,10 +827,10 @@ class Model:
                 raise
             if not scope.convert:
                 scope.escaped.append((exc, message))
-                scope.answered(self, req, message)
+                scope.answered(slot, message)
                 raise
-            return self._answer(scope, req, message)
-        scope.answered(self, req, output)
+            return self._answer(scope, slot, req, message)
+        scope.answered(slot, output)
         return output
 
     def context_overflow_output(
@@ -847,13 +847,16 @@ class Model:
         scope = current_overflow_scope()
         if scope is None or scope.model is not self:
             raise ContextOverflowError(message)
-        return self._answer(scope, req, message)
+        # A call like any other: it takes its position, and any recorded
+        # refusal, though its own message is what it answers with.
+        slot, _ = scope.ask(self, req)
+        return self._answer(scope, slot, req, message)
 
     def _answer(
-        self, scope: OverflowScope, req: Request, result: CallResult
+        self, scope: OverflowScope, slot: int, req: Request, result: CallResult
     ) -> ModelOutput:
         """A call's known result: an output, or a refusal under *scope*'s rule."""
-        scope.answered(self, req, result)
+        scope.answered(slot, result)
         if isinstance(result, ModelOutput):
             return result
         if not scope.convert:

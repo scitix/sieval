@@ -67,6 +67,17 @@ as Multi-IF's walk ending at the turn that no longer fits, keeps doing so. A
 task that measures its own prompt calls `model.context_overflow_output(...)`
 to record the overflow without sending it.
 
+When a refusal escapes a task's `infer`, the runner calls `infer` again for
+that sample with refusals converted. The model calls the first pass made are
+answered from it, not sent again, but anything else `infer` does runs twice,
+so an `infer` should have no side effects beyond its model calls. A resume of
+a sample an earlier run failed with the refusal at `infer` scores it from the
+recorded message, without a request, when the inference identity and the
+model under test are unchanged; the recorded status must be 400 or 413 (or
+absent), as live. If that `infer` calls the model under test more than once,
+in turn or concurrently, the record cannot say which call was refused, and
+the sample is inferred again.
+
 `denominator_policy` is `requested` (`finals + fails`, so a pipeline failure
 counts as **wrong**) or `judged` (`finals` only, failures excluded). The split is
 upstream-convention-driven, and unifying it would change `score` for eight tasks

@@ -420,6 +420,48 @@ class TestResume:
         assert asked.count("Q2") == 1
 
     @pytest.mark.anyio
+    async def test_a_refusal_under_another_inference_identity_is_asked_again(
+        self,
+        tmp_path: Path,
+        asked: _Asked,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Every sample refused, so none keeps an inference and the resume's
+        # inference gate lets a changed identity through: only the replay's own
+        # identity check stands between it and a refusal it did not record.
+        def refuse_all(request: httpx.Request) -> httpx.Response | None:
+            if request.url.host != CANDIDATE_HOST:
+                return None
+            return httpx.Response(400, json={"error": {"message": REFUSAL}})
+
+        asked.answer_with(refuse_all)
+        config = _config(tmp_path, "AnswerTask")
+        task_dir = tmp_path / "results" / "t"
+
+        async def legacy_infer(self, ctx):
+            return await self._task.infer(ctx.preprocess_result, ctx), []
+
+        with monkeypatch.context() as patched:
+            patched.setattr(TaskRunner, "_infer", legacy_infer)
+            await arun_session(config)
+        assert _read(task_dir, "report.json")["sieval"]["failed"] == 3
+        first_digest = _read(task_dir, "meta.json")["identity"]["inference"]["digest"]
+
+        config.write_text(
+            config.read_text().replace(
+                "max_retries: 2", "max_retries: 2\n      temperature: 0.5"
+            )
+        )
+        await arun_session(config, resume=True)
+        meta = _read(task_dir, "meta.json")
+        assert meta["identity"]["inference"]["digest"] != first_digest
+        # Asked again under the new sampling, not scored from the old record.
+        assert asked.count("Q2") == 2
+        counts = _read(task_dir, "report.json")["sieval"]
+        assert counts["failed"] == 0
+        assert counts["context_overflow"] == 3
+
+    @pytest.mark.anyio
     async def test_a_refusal_that_cannot_name_its_call_is_inferred_again(
         self,
         tmp_path: Path,

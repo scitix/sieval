@@ -160,7 +160,11 @@ class Task[
             answer it is and flagged by the ``context_overflow`` anomaly rule.
             ``"fail"``: the sample fails as ``context_overflow``, which no
             resume retries. In the task's source, so the grader identity
-            covers it.
+            covers it. Under ``"score"``, a refusal that escapes ``infer``
+            makes the runner call ``infer`` a second time for that sample,
+            with the model calls the first run made answered from it rather
+            than sent again; anything else ``infer`` does (a service call, a
+            file it writes) runs twice, so keep it free of such side effects.
     """
 
     model_type: ClassVar[Literal["chat", "gen"] | None] = None

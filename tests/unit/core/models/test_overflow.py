@@ -7,6 +7,7 @@ what gets classified.
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import asyncio
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -15,7 +16,7 @@ import httpx
 import openai
 import pytest
 
-from sieval.core.models import ChatModel, GenModel, SglangGenModel
+from sieval.core.models import ChatModel, GenModel, ModelOutput, SglangGenModel
 from sieval.core.models.overflow import (
     CONTEXT_OVERFLOW,
     ContextOverflowError,
@@ -24,6 +25,7 @@ from sieval.core.models.overflow import (
     context_overflow_message,
     is_recorded_context_overflow,
     overflow_scope,
+    recorded_status,
 )
 from sieval.core.models.request_log import RecordingOpenAIClient
 from sieval.core.types import JSONValue
@@ -167,6 +169,48 @@ class TestRecognition:
         message = f"Error code: 400 - {{'error': {{'message': {SGLANG_TOTAL!r}}}}}"
         assert is_recorded_context_overflow(reason, message) is expected
 
+    @pytest.mark.parametrize(
+        ("reason", "message", "expected"),
+        [
+            # The status the message names gates it, as `_status_of` does live.
+            ("exception::RateLimitError", f"Error code: 429 - {VLLM}", False),
+            ("exception::UnprocessableEntityError", f"Error code: 422 - {VLLM}", False),
+            ("exception::APIStatusError", f"Error code: 502 - {VLLM}", False),
+            (
+                "exception::HTTPStatusError",
+                f"Server error '503 Service Unavailable' for url 'http://e'\ne: {VLLM}",
+                False,
+            ),
+            ("exception::APIStatusError", f"Error code: 413 - {VLLM}", True),
+            (
+                "exception::HTTPStatusError",
+                f"Client error '400 Bad Request' for url 'http://e'\nsglang: {VLLM}",
+                True,
+            ),
+            # No status in it at all: a stream error, read on its text.
+            ("exception::APIError", VLLM, True),
+        ],
+    )
+    def test_a_recorded_failure_is_gated_on_the_status_it_names(
+        self, reason, message, expected
+    ):
+        assert is_recorded_context_overflow(reason, message) is expected
+
+    @pytest.mark.parametrize("status", [400, 413, 422, 429, 500, 503])
+    def test_the_recorded_status_is_what_each_client_writes(self, status):
+        response = httpx.Response(
+            status,
+            request=httpx.Request("POST", "http://e/v1"),
+            json={"error": {"message": VLLM}},
+        )
+        client = openai.OpenAI(api_key="k", base_url="http://e/v1")
+        sdk_error = client._make_status_error_from_response(response)
+        with pytest.raises(httpx.HTTPStatusError) as raised:
+            response.raise_for_status()
+        assert recorded_status(str(sdk_error)) == status
+        assert recorded_status(str(raised.value)) == status
+        assert recorded_status(VLLM) is None
+
 
 class TestOutsideAScope:
     @pytest.mark.anyio
@@ -267,6 +311,12 @@ class TestOtherErrorsStillRaise:
         assert isinstance(caught.value.__cause__, openai.BadRequestError)
 
 
+async def _chat_answer(wire: _Wire, model: ChatModel, text: str) -> ModelOutput:
+    """A real output for *text*, made outside any scope."""
+    wire.responses = [_chat_ok(text)]
+    return await model.agenerate(text)
+
+
 class TestReplay:
     @pytest.mark.anyio
     async def test_known_calls_are_answered_without_a_request(self, wire):
@@ -319,6 +369,53 @@ class TestReplay:
                 await model.agenerate("again")
         assert scope.ambiguous
         assert wire.requests == []
+
+    @pytest.mark.anyio
+    async def test_concurrent_calls_after_a_recorded_refusal_are_ambiguous(self, wire):
+        # Both ask before either is answered: only one may take the replay.
+        model = _chat()
+        scope = OverflowScope(model, convert=True, replay=VLLM)
+        with overflow_scope(scope), pytest.raises(ReplayAmbiguous):
+            await asyncio.gather(model.agenerate("a"), model.agenerate("b"))
+        assert scope.ambiguous
+        assert wire.requests == []
+
+    @pytest.mark.anyio
+    async def test_calls_answered_out_of_order_replay_at_the_position_asked(self, wire):
+        # Two concurrent calls: "a" asks first, but "b" is answered first.
+        model = _chat()
+        req_a = model._build_generate_request("a")
+        req_b = model._build_generate_request("b")
+        observed = OverflowScope(model)
+        slot_a, _ = observed.ask(model, req_a)
+        slot_b, _ = observed.ask(model, req_b)
+        observed.answered(slot_b, VLLM)
+        answer_a = await _chat_answer(wire, model, "a")
+        observed.answered(slot_a, answer_a)
+        assert [req for _, req, _ in observed.calls] == [req_a, req_b]
+
+        # The converting rerun makes them in the same order: neither is sent.
+        sent = len(wire.requests)
+        scope = OverflowScope(model, convert=True, known=observed.calls)
+        with overflow_scope(scope):
+            first, second = await asyncio.gather(
+                model.agenerate("a"), model.agenerate("b")
+            )
+        assert len(wire.requests) == sent
+        assert first.texts == ["a"]
+        assert second.finish_reasons == [CONTEXT_OVERFLOW]
+
+    @pytest.mark.anyio
+    async def test_a_call_asked_but_never_answered_is_sent_again(self, wire):
+        model = _chat()
+        observed = OverflowScope(model)
+        observed.ask(model, model._build_generate_request("a"))  # cancelled
+        wire.responses = [_chat_ok("a")]
+        scope = OverflowScope(model, convert=True, known=observed.calls)
+        with overflow_scope(scope):
+            output = await model.agenerate("a")
+        assert output.texts == ["a"]
+        assert len(wire.requests) == 1
 
     @pytest.mark.anyio
     async def test_a_task_measured_overflow_is_recorded_without_a_request(self, wire):

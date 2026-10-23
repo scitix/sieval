@@ -1428,8 +1428,9 @@ class TaskRunner:
         keeps doing so. When one escapes, the run that used to fail the sample,
         ``infer`` runs again with refusals returned as empty outputs (see
         :mod:`sieval.core.models.overflow`); the calls already answered are
-        replayed, not sent again. A task declaring ``context_overflow = "fail"``
-        fails the sample instead, as non-retriable.
+        replayed, not sent again, but the rest of ``infer`` runs twice. A task
+        declaring ``context_overflow = "fail"`` fails the sample instead, as
+        non-retriable.
         """
         model = self._task.model
         pre = ctx.preprocess_result
