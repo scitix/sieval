@@ -9,6 +9,8 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import json
+import sys
+import textwrap
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -419,10 +421,19 @@ class TestDryRunReportsWhatARunWouldDo:
             "recorded": str(tmp_path / "results" / "echo"),
             "samples": 3,
             "resume_plan": _resume_plan(kept=2),
+            "stages": data["tasks"]["echo"]["stages"],
             "new": 1,
             "to_infer": 1,
             "to_grade": 1,
+            "needs_inference": True,
         }
+        stages = data["tasks"]["echo"]["stages"]
+        assert stages["identity_schema"] == 2
+        assert stages["rerun_from"] is None
+        # A third sample changes the set's data identity; each recorded sample
+        # still matches its own digest, so both are kept.
+        assert stages["stages"]["data"] == "differs"
+        assert stages["stages"]["inference"] == "same"
         assert engine.launches == []
         assert _tree(tmp_path / "results") == recorded
 
@@ -450,6 +461,8 @@ class TestDryRunReportsWhatARunWouldDo:
         assert data["models"]["subject"]["needs_inference"] is False
         echo = data["tasks"]["echo"]
         assert echo["resume_plan"] == _resume_plan(repostprocessed=2)
+        assert echo["stages"]["rerun_from"] == "postprocess"
+        assert echo["needs_inference"] is False
         assert (echo["to_infer"], echo["to_grade"]) == (0, 2)
 
     def test_resume_from_another_dir_copies_nothing(
@@ -510,9 +523,11 @@ class TestDryRunReportsWhatARunWouldDo:
             "recorded": None,
             "samples": 3,
             "resume_plan": None,
+            "stages": None,
             "new": 3,
             "to_infer": 3,
             "to_grade": 3,
+            "needs_inference": True,
         }
         assert not (tmp_path / "results").exists()
 
@@ -531,3 +546,114 @@ class TestDryRunReportsWhatARunWouldDo:
         assert echo["start"] == "reuse"
         assert echo["resume_plan"] == _resume_plan(kept=3)
         assert out["data"]["needs_inference"] is False
+
+
+def _patch_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace ``EchoTask.report`` from a package on disk, as a plugin patch does."""
+    patches = tmp_path / "patches"
+    (patches / "echo_report_patch").mkdir(parents=True, exist_ok=True)
+    (patches / "echo_report_patch" / "__init__.py").write_text(
+        textwrap.dedent(
+            """
+            async def report(self, finals, fails):
+                correct = sum(1 for f in finals if f.feedback_result["correct"])
+                return {"correct": correct, "total": len(finals) + len(fails),
+                        "patched": True}
+            """
+        )
+    )
+    monkeypatch.syspath_prepend(str(patches))
+    monkeypatch.delitem(sys.modules, "echo_report_patch", raising=False)
+    import importlib
+
+    patch_module = importlib.import_module("echo_report_patch")
+    monkeypatch.setattr(EchoTask, "report", patch_module.report)
+
+
+class TestDryRunStagePlan:
+    """The dry-run's per-task stage plan, and whether the run then infers."""
+
+    H100_TEXT = TestDryRunReportsWhatARunWouldDo.H100_TEXT
+
+    def test_a_report_only_change_rereports_and_infers_nothing(
+        self, tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with _gpu(H100):
+            _sync_run(_write(tmp_path, QUESTIONS[:2]))
+        engine.launches.clear()
+        engine.requests.clear()
+        _patch_report(tmp_path, monkeypatch)
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100_TEXT)
+        config = _write(tmp_path, QUESTIONS[:2])
+
+        with _gpu(None):
+            code, out = _dry_run(config, "--resume")
+
+        assert code == 0, out
+        data = out["data"]
+        echo = data["tasks"]["echo"]
+        assert echo["start"] == "reuse"
+        assert echo["resume_plan"] == _resume_plan(kept=2, rereported=2)
+        assert (echo["to_infer"], echo["needs_inference"]) == (0, False)
+        assert echo["stages"]["rerun_from"] == "report"
+        assert echo["stages"]["stages"]["report"] == "differs"
+        assert echo["stages"]["stages"]["feedback"] == "same"
+        assert data["needs_inference"] is False
+
+        # The run re-reports on a node with no GPU: no engine, no request.
+        with _gpu(None):
+            report = _sync_run(config, resume=True)
+        assert engine.launches == [] and engine.requests == []
+        assert report["echo"]["patched"] is True
+        assert _meta(tmp_path)["runs"][-1]["resume"] == _resume_plan(
+            kept=2, rereported=2
+        )
+
+    @pytest.mark.parametrize(
+        ("change", "rerun_from", "outcomes"),
+        [
+            ("none", None, {"kept": 2}),
+            ("report", "report", {"kept": 2, "rereported": 2}),
+            ("grader", "postprocess", {"repostprocessed": 2}),
+            ("new_sample", None, {"kept": 2}),
+            ("fewer_samples", None, {"kept": 1, "dropped": 1}),
+        ],
+    )
+    def test_needs_inference_agrees_with_what_the_run_launches(
+        self,
+        tmp_path: Path,
+        engine: Engine,
+        monkeypatch: pytest.MonkeyPatch,
+        change: str,
+        rerun_from: str | None,
+        outcomes: dict[str, int],
+    ) -> None:
+        with _gpu(H100):
+            _sync_run(_write(tmp_path, QUESTIONS[:2]))
+        engine.launches.clear()
+        engine.requests.clear()
+        questions = {"new_sample": QUESTIONS, "fewer_samples": QUESTIONS[:1]}.get(
+            change, QUESTIONS[:2]
+        )
+        if change == "report":
+            _patch_report(tmp_path, monkeypatch)
+        config = _write(tmp_path, questions, strict=change == "grader")
+
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100_TEXT)
+        with _gpu(None):
+            code, out = _dry_run(config, "--resume")
+        monkeypatch.delenv("SIEVAL_TARGET_GPU")
+        assert code == 0, out
+        data = out["data"]
+        echo = data["tasks"]["echo"]
+        assert echo["resume_plan"] == _resume_plan(**outcomes)
+        assert echo["stages"]["rerun_from"] == rerun_from
+
+        with _gpu(H100):
+            _sync_run(config, resume=True)
+
+        assert data["needs_inference"] is (engine.launches == ["subject"])
+        assert data["needs_inference"] is bool(engine.launches)
+        assert echo["needs_inference"] is bool(engine.requests)
+        assert len(engine.requests) == echo["to_infer"]
+        assert _meta(tmp_path)["runs"][-1]["resume"] == echo["resume_plan"]

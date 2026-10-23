@@ -93,15 +93,18 @@ class RunPlan(TypedDict):
     ``start`` is ``fresh`` (nothing recorded), ``resume`` (stage by stage), or
     ``reuse`` (the recorded ``report.json`` stands, recomputed when only
     ``report`` changed). ``outcomes`` counts the recorded samples as
-    ``runs[].resume`` will, ``None`` for a fresh run. ``new`` counts samples
-    with no record. ``to_infer`` counts the samples the run sends to the model
-    under test, ``to_grade`` those it runs through a grading stage.
+    ``runs[].resume`` will, ``None`` for a fresh run. ``stages`` is the
+    recorded directory's :class:`ResumePlan` against this run, ``None`` for a
+    fresh run; its ``rerun_from`` is the runner's own decision. ``new`` counts
+    samples with no record. ``to_infer`` counts the samples the run sends to
+    the model under test, ``to_grade`` those it runs through a grading stage.
     """
 
     start: Literal["fresh", "resume", "reuse"]
     recorded: str | None
     samples: int
     outcomes: ResumeOutcomes | None
+    stages: "ResumePlan | None"
     new: int
     to_infer: int
     to_grade: int

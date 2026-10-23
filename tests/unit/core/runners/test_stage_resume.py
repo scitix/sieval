@@ -1212,6 +1212,125 @@ class TestPerStageRollback:
         assert "judges" not in identity["postprocess"]
 
 
+def _outcomes(**counts: int) -> dict[str, int]:
+    keys = ("kept", "rereported", "regraded", "repostprocessed", "restarted")
+    return {**dict.fromkeys((*keys, "dropped"), 0), **counts}
+
+
+async def _plugin_plan(tmp_path, cls, samples=SAMPLES):
+    """``plan_run`` of a resume of the plugin run, and the calls it made."""
+    model = MockCountingChatModel(answers=ANSWERS)
+    judge = _CountingJudge()
+    task = cls(dataset=MockDataset(samples), model=model, name="qa", judge=judge)
+    root = tmp_path / "plugin"
+    before = {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+    runner = TaskRunner(task, make_config(tmp_path, result_dir=str(root), resume=True))
+    plan = await runner.plan_run()
+    after = {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+    assert after == before  # planning writes nothing
+    assert task.calls == {"postprocess": 0, "feedback": 0, "report": 0}
+    assert (model.call_count, judge.call_count) == (0, 0)
+    return plan
+
+
+class TestPlanRunNamesTheStage:
+    """``plan_run``, which ``sieval run --dry-run`` reports: each outcome, the
+    stage it reruns from, and whether it infers."""
+
+    @pytest.mark.anyio
+    async def test_nothing_changed_keeps_every_sample(self, tmp_path, plugin):
+        _, load = plugin
+        await _plugin_run(tmp_path, load())
+        plan = await _plugin_plan(tmp_path, load())
+        assert (plan["start"], plan["outcomes"]) == ("reuse", _outcomes(kept=3))
+        stages = plan["stages"]
+        assert stages is not None
+        assert stages["rerun_from"] is None
+        assert all(stages["stages"][s] == "same" for s in GRADING_STAGES)
+        assert (plan["to_infer"], plan["to_grade"]) == (0, 0)
+
+    @pytest.mark.anyio
+    async def test_a_report_change_rereports(self, tmp_path, plugin):
+        pkg, load = plugin
+        await _plugin_run(tmp_path, load())
+        _edit(pkg, "metrics.py", "'total'", "'count'")
+        plan = await _plugin_plan(tmp_path, load())
+        assert plan["start"] == "reuse"
+        assert plan["outcomes"] == _outcomes(kept=3, rereported=3)
+        stages = plan["stages"]
+        assert stages is not None
+        assert stages["rerun_from"] == "report"
+        assert stages["stages"]["report"] == "differs"
+        assert stages["stages"]["feedback"] == "same"
+        assert (plan["to_infer"], plan["to_grade"]) == (0, 0)
+
+    @pytest.mark.anyio
+    async def test_a_feedback_change_regrades(self, tmp_path, plugin):
+        pkg, load = plugin
+        await _plugin_run(tmp_path, load())
+        _edit(pkg, "grade.py", "prediction == gold", "str(prediction) == str(gold)")
+        plan = await _plugin_plan(tmp_path, load())
+        assert plan["start"] == "resume"
+        assert plan["outcomes"] == _outcomes(regraded=3)
+        stages = plan["stages"]
+        assert stages is not None
+        assert stages["rerun_from"] == "feedback"
+        assert stages["stages"]["postprocess"] == "same"
+        assert (plan["to_infer"], plan["to_grade"]) == (0, 3)
+
+    @pytest.mark.anyio
+    async def test_a_postprocess_change_repostprocesses(self, tmp_path, plugin):
+        pkg, load = plugin
+        await _plugin_run(tmp_path, load())
+        _edit(pkg, "task.py", "t.strip() for t", "t.strip().lower() for t")
+        plan = await _plugin_plan(tmp_path, load())
+        assert plan["outcomes"] == _outcomes(repostprocessed=3)
+        stages = plan["stages"]
+        assert stages is not None
+        assert stages["rerun_from"] == "postprocess"
+        assert (plan["to_infer"], plan["to_grade"]) == (0, 3)
+
+    @pytest.mark.anyio
+    async def test_a_data_change_restarts_and_infers(self, tmp_path, plugin):
+        _, load = plugin
+        await _plugin_run(tmp_path, load())
+        samples = [*SAMPLES[:2], {"question": "What is 9-7?", "answer": "2"}]
+        plan = await _plugin_plan(tmp_path, load(), samples)
+        assert plan["outcomes"] == _outcomes(kept=2, restarted=1)
+        stages = plan["stages"]
+        assert stages is not None
+        assert stages["stages"]["data"] == "differs"
+        assert stages["rerun_from"] is None
+        assert (plan["to_infer"], plan["to_grade"]) == (1, 1)
+
+    @pytest.mark.anyio
+    async def test_a_directory_without_identities_reruns_nothing(
+        self, tmp_path, plugin
+    ):
+        """The runner trusts it, so ``rerun_from`` is its decision, not the
+        bare comparison's, which finds every stage unknown."""
+        _, load = plugin
+        root, *_ = await _plugin_run(tmp_path, load())
+        meta = _meta(root)
+        del meta["identity"]
+        (root / "meta.json").write_bytes(orjson.dumps(meta))
+        plan = await _plugin_plan(tmp_path, load())
+        assert (plan["start"], plan["outcomes"]) == ("reuse", _outcomes(kept=3))
+        stages = plan["stages"]
+        assert stages is not None
+        assert stages["identity_schema"] is None
+        assert stages["stages"]["postprocess"] == "unknown"
+        assert stages["rerun_from"] is None
+
+    @pytest.mark.anyio
+    async def test_a_removed_sample_is_dropped(self, tmp_path, plugin):
+        _, load = plugin
+        await _plugin_run(tmp_path, load())
+        plan = await _plugin_plan(tmp_path, load(), SAMPLES[:2])
+        assert plan["outcomes"] == _outcomes(kept=2, dropped=1)
+        assert (plan["to_infer"], plan["to_grade"]) == (0, 0)
+
+
 class TestSchema1Directory:
     """The fixtures under ``tests/integration/resume`` resume real schema-1
     directories; this covers the plan a dry run reports for one."""

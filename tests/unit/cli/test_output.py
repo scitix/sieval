@@ -431,6 +431,7 @@ class TestRenderTextDryRunPlan:
                 "echo": {
                     "start": "resume",
                     "resume_plan": _outcomes(kept=2, regraded=1),
+                    "stages": {"rerun_from": "feedback"},
                     "to_infer": 1,
                     "to_grade": 2,
                 },
@@ -445,7 +446,10 @@ class TestRenderTextDryRunPlan:
         )
         assert "model subject: engine starts" in lines
         assert "model judge: engine not started" in lines
-        assert "task echo: resume (2 kept, 1 regraded), 1 to infer, 2 to grade" in lines
+        assert (
+            "task echo: resume (2 kept, 1 regraded), from feedback, 1 to infer, "
+            "2 to grade"
+        ) in lines
         assert "task fresh: fresh, 3 to infer, 3 to grade" in lines
         assert "needs inference: yes" in lines
 

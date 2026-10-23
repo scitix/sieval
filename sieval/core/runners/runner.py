@@ -106,6 +106,7 @@ from .resume_gate import (
 from .resume_option import as_resume, fold_resume_aliases, resume_source
 from .stage_resume import (
     LegacyStageMatch,
+    ResumePlan,
     RunPlan,
     StageResumeError,
     abandon_copy,
@@ -115,6 +116,7 @@ from .stage_resume import (
     end_copy,
     has_graded,
     iteration_dirs,
+    plan_resume,
     recorded_grader,
     recorded_identity,
     recorded_sample_digests,
@@ -2025,6 +2027,7 @@ class TaskRunner:
                 "recorded": None,
                 "samples": size,
                 "outcomes": None,
+                "stages": None,
                 "new": size,
                 "to_infer": size,
                 "to_grade": size,
@@ -2043,6 +2046,7 @@ class TaskRunner:
                 "recorded": recorded,
                 "samples": size,
                 "outcomes": outcomes,
+                "stages": self._stage_plan(),
                 "new": 0,
                 "to_infer": 0,
                 "to_grade": 0,
@@ -2062,10 +2066,31 @@ class TaskRunner:
             "recorded": recorded,
             "samples": size,
             "outcomes": self._resume_plan,
+            "stages": self._stage_plan(),
             "new": sum(1 for sid in range(size) if sid not in self._contexts),
             "to_infer": to_infer,
             "to_grade": to_grade,
         }
+
+    def _stage_plan(self) -> ResumePlan:
+        """The recorded directory's stages compared with this run's.
+
+        :func:`plan_resume` over this runner's own identities. ``preprocess``
+        is decided per sample (``restarted``), so it compares as ``unknown``.
+        ``rerun_from`` is what this runner decides, which also trusts a
+        directory that recorded no identity; ``refused`` is ``None``, since a
+        refusal raises before a plan is returned.
+        """
+        current: dict[str, Any] = {
+            "data": self._dataset_identity(),
+            "inference": self._inference_identity(),
+            **(self._grading_identities() or {}),
+        }
+        plan = plan_resume(self._recorded, current, self._legacy_grader_keys())
+        plan["rerun_from"] = self._recorded_grading_change()
+        # Planning got this far, so the runner refuses nothing.
+        plan["refused"] = None
+        return plan
 
     def _pending_work(self) -> tuple[int, int]:
         """``(to_infer, to_grade)``: the samples a run starting now would send

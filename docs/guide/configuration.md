@@ -348,9 +348,17 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
       "recorded": "outputs/run/echo",
       "samples": 3,
       "resume_plan": {"kept": 2, "rereported": 0, "regraded": 0, "repostprocessed": 0, "restarted": 0, "dropped": 0},
+      "stages": {
+        "identity_schema": 2,
+        "stages": {"data": "differs", "preprocess": "unknown", "inference": "same", "postprocess": "same", "feedback": "same", "report": "same"},
+        "rerun_from": null,
+        "refused": null,
+        "legacy_grader": null
+      },
       "new": 1,
       "to_infer": 1,
-      "to_grade": 1
+      "to_grade": 1,
+      "needs_inference": true
     }
   },
   "needs_inference": true
@@ -368,7 +376,16 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
   `resume_plan` counts the recorded samples as `runs[].resume` will, and is
   `null` for a fresh start; `new` counts samples with no record. `to_infer`
   counts the samples sent to the model under test, `to_grade` those run through
-  a grading stage.
+  a grading stage, and the task's `needs_inference` is whether `to_infer` is
+  above zero.
+- `tasks.<task>.stages` compares the recorded identities with this run's,
+  stage by stage: `same`, `differs` or `unknown`. `rerun_from` is the earliest
+  grading stage the resume reruns from, `report` for a re-report, `null` when
+  none does. Data and preprocess are decided per sample, so the counts in
+  `resume_plan` say what a difference there does (`restarted`). `legacy_grader`
+  is `kept` or `regrade` for a schema-1 directory. `null` for a fresh start.
+  A report-only change shows `start: reuse`, `rereported` equal to `kept`,
+  `rerun_from: report`, `to_infer: 0` and `needs_inference: false`.
 - `needs_inference` is whether the run starts any engine. A task that infers
   through an `api_base` model counts in its `to_infer` but starts none.
 

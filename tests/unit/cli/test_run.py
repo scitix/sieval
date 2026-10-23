@@ -356,6 +356,7 @@ class TestPrelaunchSequencing:
             "recorded": "r/t",
             "samples": 2,
             "outcomes": {"kept": 2 - to_infer},
+            "stages": {"rerun_from": None},
             "new": to_infer,
             "to_infer": to_infer,
             "to_grade": to_infer,
@@ -378,6 +379,10 @@ class TestPrelaunchSequencing:
         assert result["needs_inference"] is False
         tasks = cast(dict, result["tasks"])
         assert tasks["t_api"]["to_infer"] == 2
+        # A task infers through `api` without starting an engine.
+        assert tasks["t_api"]["needs_inference"] is True
+        assert tasks["t_a"]["needs_inference"] is False
+        assert tasks["t_a"]["stages"] == {"rerun_from": None}
 
     @pytest.mark.anyio
     async def test_a_fresh_run_starts_every_served_engine(self, tmp_path: Path) -> None:

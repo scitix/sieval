@@ -364,11 +364,13 @@ def _render_dry_run_plan(data: dict) -> None:
         outcomes = ", ".join(
             f"{n} {outcome}" for outcome, n in (entry["resume_plan"] or {}).items() if n
         )
+        rerun_from = (entry.get("stages") or {}).get("rerun_from")
         log_user(
-            "task {}: {}{}, {} to infer, {} to grade",
+            "task {}: {}{}{}, {} to infer, {} to grade",
             name,
             entry["start"],
             f" ({outcomes})" if outcomes else "",
+            f", from {rerun_from}" if rerun_from else "",
             entry["to_infer"],
             entry["to_grade"],
         )

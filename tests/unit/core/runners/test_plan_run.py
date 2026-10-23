@@ -79,6 +79,7 @@ class TestPlanResume:
             "recorded": None,
             "samples": 3,
             "outcomes": None,
+            "stages": None,
             "new": 3,
             "to_infer": 3,
             "to_grade": 3,

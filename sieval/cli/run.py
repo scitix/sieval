@@ -354,10 +354,13 @@ def _models_to_launch(
     return {
         task_models[task]
         for task, plan in plans.items()
-        if not isinstance(plan, Exception)
-        and plan["to_infer"]
-        and task_models.get(task) in served
+        if _infers(plan) and task_models.get(task) in served
     }
+
+
+def _infers(plan: RunPlan | Exception) -> bool:
+    """Whether a task's run sends any sample to its model under test."""
+    return not isinstance(plan, Exception) and plan["to_infer"] > 0
 
 
 async def _models_to_infer(
@@ -401,7 +404,9 @@ def _task_json(model: str | None, plan: RunPlan | Exception) -> dict[str, object
     """A task's entry in the dry-run report.
 
     ``resume_plan`` is the plan's ``outcomes``, the counts ``runs[].resume``
-    records; ``None`` for a fresh start, which has no recorded samples.
+    records, and ``stages`` its stage comparison; both ``None`` for a fresh
+    start, which has no recorded samples. ``needs_inference`` is
+    :func:`_infers`, the test :func:`_models_to_launch` launches by.
     """
     if isinstance(plan, Exception):
         return {"model": model, "error": cli_error_message(plan)}
@@ -411,9 +416,11 @@ def _task_json(model: str | None, plan: RunPlan | Exception) -> dict[str, object
         "recorded": plan["recorded"],
         "samples": plan["samples"],
         "resume_plan": plan["outcomes"],
+        "stages": plan["stages"],
         "new": plan["new"],
         "to_infer": plan["to_infer"],
         "to_grade": plan["to_grade"],
+        "needs_inference": _infers(plan),
     }
 
 
