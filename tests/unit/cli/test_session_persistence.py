@@ -1051,8 +1051,7 @@ class TestResumeFromSurface:
         assert rc.resume is True
 
     def test_a_cli_resume_wins_over_yaml_false(self, tmp_path: Path):
-        """`resume: false` in YAML is the default; `--resume` turns it on, as
-        `--resume` did over `auto_resume: false`."""
+        """`resume: false` in YAML is the default; `--resume` turns it on."""
         session = self._session(tmp_path, resume=True)
         rc = session._build_runner_config({}, {"resume": False}, "qa")
         assert rc.resume is True
@@ -1154,8 +1153,8 @@ class TestResumeFromSurface:
         assert session._legacy_match_for("qa", rc) is None
 
 
-class TestDeprecatedResumeKeys:
-    """`runner_config.auto_resume` and `.resume_from` fold into `.resume`."""
+class TestRemovedResumeKeys:
+    """`runner_config.auto_resume` and `.resume_from` are refused, naming `resume`."""
 
     BASE = TestResumeFromSurface.CONFIG
 
@@ -1172,82 +1171,18 @@ class TestDeprecatedResumeKeys:
             config_path=str(cfg), result_dir_override=str(tmp_path / "out"), **kw
         )
 
-    def test_auto_resume_becomes_resume(self, tmp_path: Path, warnings):
-        session = self._session(tmp_path, top="  auto_resume: true\n")
-        assert session._reified_config["runner_config"] == {"resume": True}
-        rc = session._build_runner_config({}, session.config["runner_config"], "qa")
-        assert rc.resume is True
-        assert warnings == [
-            "runner_config.auto_resume is deprecated; use runner_config.resume: true"
-        ]
-
-    def test_resume_from_becomes_resume(self, tmp_path: Path, warnings):
-        session = self._session(tmp_path, task="      resume_from: /mnt/old/qa\n")
-        task_rc = session._reified_config["tasks"]["qa"]["runner_config"]
-        assert task_rc == {"resume": "/mnt/old/qa"}
-        rc = session._build_runner_config(session.config["tasks"]["qa"], {}, "qa")
-        assert rc.resume == Path("/mnt/old/qa")
-        assert warnings == [
-            "tasks.qa.runner_config.resume_from is deprecated; "
-            "use tasks.qa.runner_config.resume <dir>"
-        ]
-
-    @pytest.mark.anyio
-    async def test_effective_config_records_only_resume(self, tmp_path: Path):
-        session = self._session(
-            tmp_path,
-            top="  auto_resume: false\n",
-            task="      resume_from: /mnt/old/qa\n",
-        )
-        await session._persist_effective_config()
-        persisted = yaml.safe_load(
-            (tmp_path / "out" / "effective_config.yaml").read_text()
-        )
-        assert persisted["runner_config"] == {"resume": False}
-        assert persisted["tasks"]["qa"]["runner_config"] == {"resume": "/mnt/old/qa"}
-
-    def test_an_alias_beside_a_different_resume_is_refused(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="disagree; set only"):
-            self._session(
-                tmp_path,
-                task="      resume: /mnt/a/qa\n      resume_from: /mnt/b/qa\n",
-            )
-
-    def test_auto_resume_false_beside_resume_true_is_refused(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="runner_config.auto_resume"):
-            self._session(tmp_path, top="  resume: true\n  auto_resume: false\n")
-
-    def test_a_per_task_alias_beats_the_cli(self, tmp_path: Path, warnings):
-        session = self._session(
-            tmp_path, task="      resume_from: /mnt/old/qa\n", resume=True
-        )
-        rc = session._build_runner_config(session.config["tasks"]["qa"], {}, "qa")
-        assert rc.resume == Path("/mnt/old/qa")
-
-    def test_the_session_alias_maps_to_resume(self, tmp_path: Path, warnings):
-        (tmp_path / "old" / "qa").mkdir(parents=True)
-        session = self._session(tmp_path, resume_from=tmp_path / "old")
-        assert session.resume_override == tmp_path / "old"
-        rc = session._build_runner_config({}, {}, "qa")
-        assert rc.resume == tmp_path / "old" / "qa"
-        assert warnings == ["resume_from is deprecated; use resume <dir>"]
-
-    def test_run_session_takes_the_alias_alone(self, tmp_path: Path, warnings):
-        """``resume`` left at its default must not read as ``false``, which
-        disagrees with any ``resume_from``."""
-        from sieval.cli import session as session_mod
-
-        built: list[EvalSession] = []
-
-        def build(*args, **kwargs):
-            built.append(EvalSession(*args, **kwargs))
-            raise KeyboardInterrupt  # stop before anything runs
-
-        cfg = _write_yaml(tmp_path, "cfg.yaml", self.BASE)
-        with (
-            patch.object(session_mod, "EvalSession", build),
-            pytest.raises(KeyboardInterrupt),
+    def test_auto_resume_is_refused(self, tmp_path: Path):
+        with pytest.raises(
+            ValueError,
+            match=r"runner_config\.auto_resume was removed in 0\.12; "
+            r"use runner_config\.resume: true",
         ):
-            session_mod.run_session(cfg, resume_from=tmp_path / "old")
-        assert built[0].resume_override == tmp_path / "old"
-        assert warnings == ["resume_from is deprecated; use resume <dir>"]
+            self._session(tmp_path, top="  auto_resume: true\n")
+
+    def test_resume_from_is_refused(self, tmp_path: Path):
+        with pytest.raises(
+            ValueError,
+            match=r"tasks\.qa\.runner_config\.resume_from was removed in 0\.12; "
+            r"use tasks\.qa\.runner_config\.resume: <dir>",
+        ):
+            self._session(tmp_path, task="      resume_from: /mnt/old/qa\n")

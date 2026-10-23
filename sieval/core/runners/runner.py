@@ -106,7 +106,7 @@ from .resume_gate import (
     format_reject_message,
     resume_schema_verdict,
 )
-from .resume_option import as_resume, fold_resume_aliases, resume_source
+from .resume_option import as_resume, resume_source
 from .stage_resume import (
     LegacyStageMatch,
     ResumePlan,
@@ -265,16 +265,12 @@ class TaskRunnerConfig:
             ``result_dir`` and resumed; ``result_dir`` itself resumes in
             place. Once ``result_dir`` holds a run the copy is skipped, so the
             same config resumes an interrupted copy.
-        auto_resume: Deprecated; folded into ``resume`` and cleared.
-        resume_from: Deprecated; folded into ``resume`` and cleared.
         effective_config: The session's ``effective_config.yaml``, recorded in
             ``meta.json`` as ``config``. Not part of any identity.
     """
 
     result_dir: str | None = None
     resume: bool | Path | None = None
-    auto_resume: bool | None = None
-    resume_from: str | None = None
     effective_config: str | None = None
 
     profile_io: bool = False  # timings
@@ -325,16 +321,7 @@ class TaskRunnerConfig:
     deterministic: bool = False
 
     def __post_init__(self) -> None:
-        self.resume = fold_resume_aliases(
-            as_resume(self.resume),
-            auto_resume=self.auto_resume,
-            resume_from=self.resume_from,
-            new="resume",
-            auto="auto_resume",
-            source="resume_from",
-        )
-        self.auto_resume = None
-        self.resume_from = None
+        self.resume = as_resume(self.resume)
 
 
 def _read_run_meta(root_dir: Path) -> dict | None:

@@ -14,7 +14,6 @@ from sieval.core.models import (
 from sieval.infer.config import (
     InferCommand,
     InferCondition,
-    InferConfig,
     InferConfigDict,
     InferEnv,
     InferHandle,
@@ -50,7 +49,6 @@ from sieval.infer.topology.resolver import (
 __all__ = [
     # Config types (kept for compatibility)
     "InferCommand",
-    "InferConfig",
     "InferConfigDict",
     "InferEnv",
     "InferHandle",

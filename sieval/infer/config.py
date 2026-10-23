@@ -10,7 +10,7 @@ from typing import TypedDict
 
 # Infer param values are YAML scalars
 ParamValue = str | int | float | bool
-# Metadata values used across InferHandle and InferConfig
+# Metadata values used across InferHandle
 MetadataValue = str | int | list[str]
 
 
@@ -106,18 +106,3 @@ class InferEnv:
     gpu_topo: str = ""
     python_version: str = ""
     extra: dict[str, str] = field(default_factory=dict)
-
-
-# Legacy: InferConfig kept for backward compatibility during migration.
-# New code should use DeploymentPlan instead.
-@dataclass
-class InferConfig:
-    """Resolved infer configuration ready to pass to a backend.
-
-    Deprecated: use DeploymentPlan from sieval.infer.topology instead.
-    """
-
-    backend: str
-    checkpoint: str
-    params: dict[str, ParamValue] = field(default_factory=dict)
-    metadata: dict[str, MetadataValue] = field(default_factory=dict)

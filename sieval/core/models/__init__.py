@@ -110,7 +110,6 @@ from .reconcile import (
     reconcile,
 )
 from .sglang_gen_model import SglangGenModel
-from .transport import Transport
 
 __all__ = [
     "BINDING_RESOURCE_KEYS",
@@ -199,7 +198,6 @@ __all__ = [
     "ToolParams",
     "ToolResultPart",
     "TopKEntry",
-    "Transport",
     "UsageStats",
     "check_extra",
     "sequence_wrapper",

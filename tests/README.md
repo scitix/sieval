@@ -31,7 +31,6 @@ tests/
 ├── unit/                        # Unit tests — mirrors sieval/ structure
 │   ├── conftest.py
 │   ├── cli/                     # sieval/cli/
-│   │   ├── leaderboard/          # sieval/cli/leaderboard/ (deprecated alias, removed after 0.11)
 │   │   │   └── test_session.py   # The alias re-exports the engine and warns
 │   │   ├── infer/                # sieval/cli/infer/
 │   │   │   ├── test_display.py   # Infer display formatting
@@ -79,7 +78,7 @@ tests/
 │   │   │   └── test_texts.py
 │   │   └── test_datasets.py
 │   ├── infer/                   # sieval/infer/
-│   │   ├── test_config.py       # InferConfig, InferHandle, InferStatus
+│   │   ├── test_config.py       # InferHandle, InferPhase, config dicts
 │   │   ├── test_deployer.py     # LocalDeployer launch orchestration
 │   │   ├── test_introspect.py   # Checkpoint introspection and GPU detection
 │   │   ├── test_recipes.py      # Recipe loading and merging

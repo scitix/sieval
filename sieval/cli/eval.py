@@ -14,7 +14,6 @@ import typer
 
 from sieval.cli._cli_model import ApiBaseOption, CliModel
 from sieval.cli._resume_option import (
-    ResumeFromOption,
     ResumeOption,
     cli_resume,
 )
@@ -38,7 +37,6 @@ def eval_cmd(
         str | None,
         typer.Option("--result-dir", help="Override result directory"),
     ] = None,
-    resume_from: ResumeFromOption = None,
     deterministic: Annotated[
         bool | None,
         typer.Option(
@@ -66,7 +64,7 @@ def eval_cmd(
     from sieval.core.utils.logging import configure_logging
 
     configure_logging(verbose)
-    resumed = cli_resume(resume, resume_from)
+    resumed = cli_resume(resume)
     # No --checkpoint: this command never launches an engine.
     cli_model = CliModel.from_options(checkpoint=None, api_base=api_base, model=model)
 

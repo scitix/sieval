@@ -1047,42 +1047,19 @@ class TestCheckSubpackageImports:
         assert any("must not import sieval.cli.session" in e for e in errors)
 
     def test_forbidden_subpackages_for_matches_subtree_not_prefix(self):
-        shim = "sieval.cli.leaderboard"
-        assert _forbidden_subpackages_for("sieval.cli.infer") == {
-            "sieval.cli.session",
-            shim,
-        }
+        assert _forbidden_subpackages_for("sieval.cli.infer") == {"sieval.cli.session"}
         assert _forbidden_subpackages_for("sieval.cli.infer.sub") == {
-            "sieval.cli.session",
-            shim,
+            "sieval.cli.session"
         }
         # A sibling whose name merely starts with the root string must not match.
-        assert _forbidden_subpackages_for("sieval.cli.inference") == {shim}
-        assert _forbidden_subpackages_for("sieval.cli") == {shim}
+        assert _forbidden_subpackages_for("sieval.cli.inference") == set()
+        assert _forbidden_subpackages_for("sieval.cli") == set()
 
     def test_rule_table_entries_are_dotted_sieval_packages(self):
         """A non-dotted entry can never match, so the rule would pass vacuously."""
         for root, targets in FORBIDDEN_SUBPACKAGE.items():
             assert root == "sieval" or root.startswith("sieval.")
             assert all(t.startswith("sieval.") for t in targets)
-
-    @pytest.mark.parametrize(
-        ("rel", "body"),
-        [
-            ("sieval/cli/run.py", "from sieval.cli.leaderboard.session import x\n"),
-            ("sieval/cli/run.py", "from sieval.cli import leaderboard\n"),
-            ("sieval/core/foo.py", "import sieval.cli.leaderboard.session\n"),
-        ],
-    )
-    def test_nothing_under_sieval_imports_the_deprecated_shim(
-        self, tmp_path: Path, rel: str, body: str
-    ):
-        """The shim is deleted in the release after 0.11; no internal caller
-        may come to depend on it first (#194)."""
-        f = self._write(tmp_path, rel, body)
-        errors = _check_subpackage_imports(f, ast.parse(body))
-        assert len(errors) == 1
-        assert "must not import sieval.cli.leaderboard" in errors[0]
 
     @pytest.mark.parametrize(
         "body",

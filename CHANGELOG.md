@@ -31,6 +31,13 @@ Planned as 0.12.0.
 - **`sieval run --dry-run` reports what the run would do** (closes #214). `-o json` adds `gpu`, `models` (each served model's plan as `infer_plans.yaml` would record it, each process its launch starts, and `needs_inference`, whether this run starts it), `tasks` (each task's `start`, `resume_plan` with the counts `runs[].resume` will record, `null` for a fresh start, `new`, `to_infer` and `to_grade`) and `needs_inference`, whether any engine starts. The plans come from the call `sieval run` launches by. A resume that would be refused, or planning that raises, fails the new `resume_plan` check; when the dry-run stops before planning, `tasks` and `needs_inference` are `null`. It launches no engine, writes no result directory, reads `--resume` directories in place, and runs on a node without GPUs given `SIEVAL_TARGET_GPU`. Planning loads the datasets and starts each vendored service a task declares, as the run does, so a dry-run that passes its checks costs a session setup. The existing checks are unchanged.
 - `sieval run --dry-run` reports each task's `stages` (per-stage `same`/`differs`/`unknown`, and `rerun_from`, the stage a resume reruns from) and its own `needs_inference`; `RunPlan` gains `stages` (closes #219).
 
+### Removed
+
+- **`sieval.cli.leaderboard.session`**, deprecated in 0.11.0. Import from `sieval.cli.session` (resolvers from `sieval.cli.resolution`).
+- **The resume aliases deprecated in 0.10.0.** `--resume-from DIR` is now an unknown option (use `--resume DIR`). A config setting `runner_config.auto_resume` or `runner_config.resume_from`, top-level or per task, is refused before anything runs, naming the `resume` form to use, rather than ignored, so a resume never silently becomes a fresh run. `TaskRunnerConfig(auto_resume=, resume_from=)`, `EvalSession(resume_from=)`, `arun_session(resume_from=)` / `run_session(resume_from=)` and `sieval.core.runners.fold_resume_aliases` are gone; pass `resume=True` or `resume=<dir>`.
+- The transport import aliases: `sieval.core.models.Transport` (use `sieval.core.models.dialect.Dialect`), and `OpenAIChatTransport` / `OpenAICompletionsTransport` from `sieval.core.models.transports` (use `OpenAIChatDialect` / `OpenAICompletionsDialect` from `sieval.core.models.dialects`). `SglangTransport` stays.
+- `sieval.infer.InferConfig`, unused since `DeploymentPlan` replaced it.
+
 ## [0.11.0] - 2026-10-23
 
 A minor bump: `sieval leaderboard` is removed and SiEval is scoped to an

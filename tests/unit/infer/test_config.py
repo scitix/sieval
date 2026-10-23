@@ -7,7 +7,6 @@ from typing import Any
 
 from sieval.infer.config import (
     InferCondition,
-    InferConfig,
     InferConfigDict,
     InferHandle,
     InferMetaDict,
@@ -86,44 +85,6 @@ class TestInferHandle:
             metadata=meta,
         )
         assert handle.metadata == meta
-
-
-class TestInferConfig:
-    """Tests for InferConfig dataclass."""
-
-    def test_required_fields(self) -> None:
-        cfg = InferConfig(backend="vllm", checkpoint="/models/qwen3-8b")
-        assert cfg.backend == "vllm"
-        assert cfg.checkpoint == "/models/qwen3-8b"
-
-    def test_params_default_factory(self) -> None:
-        cfg = InferConfig(backend="vllm", checkpoint="/models/qwen3-8b")
-        assert cfg.params == {}
-        assert isinstance(cfg.params, dict)
-
-    def test_metadata_default_factory(self) -> None:
-        cfg = InferConfig(backend="vllm", checkpoint="/models/qwen3-8b")
-        assert cfg.metadata == {}
-        assert isinstance(cfg.metadata, dict)
-
-    def test_defaults_not_shared(self) -> None:
-        """Each instance should get its own default dicts."""
-        c1 = InferConfig(backend="vllm", checkpoint="/a")
-        c2 = InferConfig(backend="vllm", checkpoint="/b")
-        c1.params["key"] = "value"
-        c1.metadata["key"] = "value"
-        assert "key" not in c2.params
-        assert "key" not in c2.metadata
-
-    def test_custom_params_and_metadata(self) -> None:
-        cfg = InferConfig(
-            backend="sglang",
-            checkpoint="/models/qwen2.5-72b",
-            params={"dtype": "bfloat16", "tp": 2},
-            metadata={"framework": "sglang==0.3.0"},
-        )
-        assert cfg.params["dtype"] == "bfloat16"
-        assert cfg.metadata["framework"] == "sglang==0.3.0"
 
 
 class TestInferConfigDict:
