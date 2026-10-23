@@ -5,6 +5,8 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 
 import json
 import math
+import time
+import types
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
@@ -329,13 +331,19 @@ class TestStreamedAttempts:
 
 class TestConnectionWait:
     @pytest.mark.anyio
-    async def test_a_full_pool_is_billed_as_connect_not_hidden(self) -> None:
+    async def test_a_full_pool_is_billed_as_connect_not_hidden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """One pooled connection, two concurrent calls: the second waits for it.
 
         The wait is inside `latency_s` -- the request was not out -- and
         `connect_s` says how much of it.
         """
-
+        # A fake clock for the log only: a wall-clock sleep under-runs on CI.
+        now = [100.0]
+        monkeypatch.setattr(
+            rl, "time", types.SimpleNamespace(monotonic=lambda: now[0], time=time.time)
+        )
         release = anyio.Event()
 
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -349,12 +357,11 @@ class TestConnectionWait:
             async with anyio.create_task_group() as tg:
                 for _ in range(2):
                     tg.start_soon(self._one, client)
-                await anyio.sleep(0.05)
+                await anyio.wait_all_tasks_blocked()
+                now[0] += 0.5
                 release.set()
         await client.aclose()
-        connects = sorted(line["connect_s"] for line in sink.lines)
-        assert connects[0] < 0.01
-        assert connects[1] >= 0.05
+        assert sorted(line["connect_s"] for line in sink.lines) == [0.0, 0.5]
 
     @staticmethod
     async def _one(client: RecordingAsyncClient) -> None:
