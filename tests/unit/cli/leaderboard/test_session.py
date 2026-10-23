@@ -73,8 +73,7 @@ def test_package_no_longer_exports_aggregation_api():
 
 
 def test_a_global_the_old_module_held_is_forwarded():
-    """External patches read ``DETERMINISTIC_DEFAULT_SEED`` off the old path with
-    a ``None`` default; a ``None`` there silently drops the deterministic seed."""
+    """A ``None`` here silently drops the deterministic seed (#204)."""
     with pytest.warns(DeprecationWarning):
         shim = _import_shim()
     with pytest.warns(DeprecationWarning, match=r"sieval\.cli\.session"):
@@ -106,4 +105,12 @@ def test_an_unknown_name_still_raises_attribute_error():
     assert getattr(shim, "no_such_name", None) is None
     with pytest.raises(AttributeError, match="no_such_name"):
         shim.no_such_name  # noqa: B018
-    assert not hasattr(shim, "__path__")
+
+
+def test_a_dunder_the_engine_holds_is_not_forwarded(monkeypatch):
+    """``inspect.unwrap`` and the import system probe dunders; they must not
+    see the engine's."""
+    monkeypatch.setattr(session, "__wrapped__", object(), raising=False)
+    with pytest.warns(DeprecationWarning):
+        shim = _import_shim()
+    assert not hasattr(shim, "__wrapped__")

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- The deprecated `sieval.cli.leaderboard.session` alias forwards every name `sieval.cli.session` (or `sieval.cli.resolution`) holds, with the same `DeprecationWarning`, not only the ten in its `__all__`. `getattr(alias, "DETERMINISTIC_DEFAULT_SEED", None)` returned `None`, so code patching session construction for custom `class:` models dropped `seed` in deterministic runs. Assigning to the alias still does not reach the engine; patch `sieval.cli.session`. `AlignmentCard`, `AlignmentBlockDict` and `load_card` stay removed (#204).
+- The deprecated `sieval.cli.leaderboard.session` alias forwards every global of `sieval.cli.session` and `sieval.cli.resolution`, not only its ten `__all__` names; `getattr(alias, "DETERMINISTIC_DEFAULT_SEED", None)` returned `None` and silently dropped `seed` in deterministic runs (#204).
 
 ## [0.10.2] - 2026-10-22
 

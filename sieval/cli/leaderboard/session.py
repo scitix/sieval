@@ -2,16 +2,13 @@
 Deprecated alias of :mod:`sieval.cli.session` (and the class resolvers of
 :mod:`sieval.cli.resolution`), re-exporting the same objects. Delete after 0.11.
 
-``__all__`` lists the documented names. Any other attribute the engine module
-holds, such as ``DETERMINISTIC_DEFAULT_SEED``, is forwarded on access, so code
-that read a global of the 0.10 module keeps getting it. Assigning to this module
-does not reach the engine: patch :mod:`sieval.cli.session` instead.
+Other engine globals (e.g. ``DETERMINISTIC_DEFAULT_SEED``) are forwarded on
+access. Assigning here does not reach the engine; patch :mod:`sieval.cli.session`.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
 import warnings
-from typing import Any
 
 import sieval.cli.resolution as _resolution
 import sieval.cli.session as _session
@@ -39,10 +36,8 @@ _DEPRECATION = (
 warnings.warn(_DEPRECATION, DeprecationWarning, stacklevel=2)
 
 
-def __getattr__(name: str) -> Any:
-    """Forward a name this alias does not hold to the engine module."""
-    if name.startswith("__"):
-        # Module protocol probes (`__path__`, `__wrapped__`) stay this module's.
+def __getattr__(name: str):
+    if name.startswith("__"):  # keep protocol probes (`__path__`, `__wrapped__`) local
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     for home in (_session, _resolution):
         try:
