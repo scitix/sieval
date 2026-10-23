@@ -58,6 +58,13 @@ from sieval.core.types import JSONValue
 
 from .services import ServiceIdentity
 
+#: Version of the task result directory a resume reads (shard records and their
+#: ``.idx``, ``meta.json``, the ``report.json`` shape), written as ``meta.json``
+#: ``result_schema_version``; a resume refuses any other. Bump it for a layout
+#: change older directories cannot be read under, or for a core change that
+#: alters results: the grader walk skips ``sieval.core``, so nothing else sees it.
+RESULT_SCHEMA_VERSION = 1
+
 #: Version of the ``identity`` block's layout. A digest computed differently is
 #: not a layout change: it reruns one stage, a new schema would discard them all.
 IDENTITY_SCHEMA = 1
@@ -72,7 +79,8 @@ STAGES: tuple[str, ...] = ("data", "prompt", "inference", "grader")
 
 #: Package roots the grader walk follows. ``sieval.core`` and
 #: ``sieval.datasets`` are left out on purpose: data has its own identity, and a
-#: core change is told by the SiEval version and the replay a release runs.
+#: core change that alters results bumps :data:`RESULT_SCHEMA_VERSION`, checked
+#: by the replay a release runs.
 #: ``sieval_shared`` is the package sieval-plugins variants share.
 GRADER_PACKAGES: tuple[str, ...] = (
     "sieval.tasks",

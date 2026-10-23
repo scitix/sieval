@@ -51,6 +51,7 @@ from sieval.core.tasks.meta import (
     sieval_task,
 )
 from sieval.core.tasks.requests import TaskRequestLog
+from sieval.core.tasks.run_meta import RESULT_SCHEMA_VERSION
 from sieval.core.tasks.task import Task
 from tests.conftest import (
     MockAlwaysFailModel,
@@ -359,7 +360,11 @@ def _write_meta(root: Path, task_block: object) -> Path:
     """Persist a `meta.json` whose `task` block is *whatever was passed* —
     malformed shapes included, since the gate has to survive them."""
     root.mkdir(parents=True, exist_ok=True)
-    meta: dict[str, object] = {"version": __version__, "deterministic": False}
+    meta: dict[str, object] = {
+        "version": __version__,
+        "result_schema_version": RESULT_SCHEMA_VERSION,
+        "deterministic": False,
+    }
     if task_block is not None:
         meta["task"] = task_block
     (root / "meta.json").write_bytes(orjson.dumps(meta))
@@ -805,7 +810,13 @@ class TestE2ERunnerGuardRails:
         result_dir = tmp_path / "existing_run"
         result_dir.mkdir()
         (result_dir / "meta.json").write_bytes(
-            orjson.dumps({"version": __version__, "runs": [{"start": "fresh"}]})
+            orjson.dumps(
+                {
+                    "version": __version__,
+                    "result_schema_version": RESULT_SCHEMA_VERSION,
+                    "runs": [{"start": "fresh"}],
+                }
+            )
         )
         task_existing = MockTask(dataset=dataset, model=model, name="e2e_existing")
         existing_cfg = make_config(tmp_path, result_dir=str(result_dir), resume=False)
@@ -1017,7 +1028,13 @@ class TestResolveResultDir:
         # an EXACT match and this test stays focused on dir-selection logic.
         for d in (older, latest):
             (d / "meta.json").write_bytes(
-                orjson.dumps({"version": __version__, "deterministic": False})
+                orjson.dumps(
+                    {
+                        "version": __version__,
+                        "result_schema_version": RESULT_SCHEMA_VERSION,
+                        "deterministic": False,
+                    }
+                )
             )
 
         dataset = MockDataset()
@@ -2511,9 +2528,15 @@ class TestResumeVersionGate:
         task = MockTask(dataset=MockDataset(), model=model, name="gate_block")
         await TaskRunner(task, make_config(tmp_path, result_dir=result_dir)).arun()
 
-        # Tamper meta.json to an incompatible series.
+        # Tamper meta.json to a result schema version this build does not write.
         (Path(result_dir) / "meta.json").write_bytes(
-            orjson.dumps({"version": "999.0.0", "deterministic": False})
+            orjson.dumps(
+                {
+                    "version": "999.0.0",
+                    "result_schema_version": 999,
+                    "deterministic": False,
+                }
+            )
         )
 
         task2 = MockTask(dataset=MockDataset(), model=model, name="gate_block")

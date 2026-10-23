@@ -29,7 +29,7 @@ from sieval.core.tasks import (
 )
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.loader import TaskLoader
-from sieval.core.tasks.run_meta import aggregate_digest, digest
+from sieval.core.tasks.run_meta import RESULT_SCHEMA_VERSION, aggregate_digest, digest
 from sieval.core.tasks.saver import TaskSaver
 from sieval.core.tasks.task import Task
 from sieval.core.utils import atomic as saver_module
@@ -728,11 +728,23 @@ class TestRunStartedHere:
         root.mkdir()
         assert not run_started(root)
         (root / "meta.json").write_bytes(
-            orjson.dumps({"version": __version__, "deterministic": False})
+            orjson.dumps(
+                {
+                    "version": __version__,
+                    "result_schema_version": RESULT_SCHEMA_VERSION,
+                    "deterministic": False,
+                }
+            )
         )
         assert run_started(root)
         (root / "meta.json").write_bytes(
-            orjson.dumps({"version": __version__, "runs": []})
+            orjson.dumps(
+                {
+                    "version": __version__,
+                    "result_schema_version": RESULT_SCHEMA_VERSION,
+                    "runs": [],
+                }
+            )
         )
         assert not run_started(root)
 
@@ -759,7 +771,13 @@ class TestShardsMeanStarted:
             (root / "meta.json").unlink()
         else:
             (root / "meta.json").write_bytes(
-                orjson.dumps({"version": __version__, "deterministic": False})
+                orjson.dumps(
+                    {
+                        "version": __version__,
+                        "result_schema_version": RESULT_SCHEMA_VERSION,
+                        "deterministic": False,
+                    }
+                )
             )
         assert list(root.rglob("*.idx"))
         return root, recorded
@@ -864,7 +882,13 @@ class TestBackwardCompatibleRead:
         await first.arun()
         root = first.root_dir
         (root / "meta.json").write_bytes(
-            orjson.dumps({"version": __version__, "deterministic": False})
+            orjson.dumps(
+                {
+                    "version": __version__,
+                    "result_schema_version": RESULT_SCHEMA_VERSION,
+                    "deterministic": False,
+                }
+            )
         )
         (root / "report.json").unlink()
 

@@ -90,6 +90,12 @@ ty check                                                                      # 
 
 See [tests/README.md](tests/README.md) for mock infrastructure and full command reference.
 
+### Result schema version
+
+An incompatible change to a task result directory's layout, or a core change
+that alters results, bumps `RESULT_SCHEMA_VERSION`; resume refuses a directory
+of another version. See [AGENTS.md](AGENTS.md#result-schema-version).
+
 ## Adding a New Benchmark
 
 1. Create dataset in `sieval/datasets/` — keep upstream field names, and cast a column's dtype

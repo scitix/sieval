@@ -58,6 +58,7 @@ from sieval.core.tasks.records import iter_grader_outputs
 from sieval.core.tasks.requests import REQUESTS_FILE, TaskRequestLog
 from sieval.core.tasks.run_meta import (
     ABSENT,
+    RESULT_SCHEMA_VERSION,
     DigestedStage,
     GraderIdentity,
     InferenceIdentity,
@@ -95,7 +96,7 @@ from .resume_gate import (
     ResumeAction,
     ResumeVersionError,
     format_reject_message,
-    resume_version_verdict,
+    resume_schema_verdict,
 )
 from .resume_option import as_resume, fold_resume_aliases, resume_source
 from .stage_resume import (
@@ -366,30 +367,30 @@ def read_run_version(root_dir: Path) -> str | None:
     """Return the sieval version in ``root_dir/meta.json``, or ``None``.
 
     Public for the CLI, which explains a cross-version resume in an abort it
-    raises before any runner exists. One reader, so its message cannot come to
-    describe a different file than :func:`gate_resume_version` read.
+    raises before any runner exists.
 
     ``None`` covers every unusable case: no file, unreadable, not a mapping, no
     ``version``, or a non-string one.
     """
-    meta = _read_run_meta(root_dir)
-    if meta is None:
-        return None
-    version = meta.get("version")
+    return _recorded_version(_read_run_meta(root_dir))
+
+
+def _recorded_version(meta: dict | None) -> str | None:
+    version = (meta or {}).get("version")
     return version if isinstance(version, str) else None
 
 
 def gate_resume_version(root_dir: Path, current_version: str) -> None:
-    """Refuse to resume across an incompatible sieval version.
+    """Refuse to resume a directory whose result schema version is not this build's.
 
-    Reads the format-stable ``version`` from ``root_dir/meta.json`` via
-    :func:`read_run_version` and applies :func:`resume_version_verdict`.
-    Missing, unreadable, or version-less ``meta.json`` is fail-closed
-    (reject). Raises :class:`ResumeVersionError` on reject; logs a warning on
-    a compatible non-exact resume; silent on an exact match.
+    Applies :func:`resume_schema_verdict` to ``root_dir/meta.json``, read once.
+    Missing, unreadable, or version-less ``meta.json`` is fail-closed (reject).
+    Raises :class:`ResumeVersionError` on reject; logs a warning on a resume
+    across SiEval versions; silent on an exact match.
     """
-    v_run = read_run_version(root_dir)
-    if v_run is None:
+    meta = _read_run_meta(root_dir)
+    v_run = _recorded_version(meta)
+    if meta is None or v_run is None:
         # *root_dir* may be a `resume` source, so never advise removing it.
         raise ResumeVersionError(
             f"Resume aborted: {root_dir} holds a run, but its meta.json is "
@@ -398,17 +399,21 @@ def gate_resume_version(root_dir: Path, current_version: str) -> None:
             "Start fresh in another result_dir, without resuming it."
         )
 
-    verdict = resume_version_verdict(v_run, current_version)
+    recorded_schema = meta.get("result_schema_version")
+    verdict = resume_schema_verdict(recorded_schema, v_run, current_version)
     if verdict.action is ResumeAction.REJECT:
         raise ResumeVersionError(
-            format_reject_message(v_run, current_version, verdict.reason)
+            format_reject_message(
+                recorded_schema, v_run, current_version, verdict.reason
+            )
         )
     if verdict.action is ResumeAction.COMPATIBLE:
         logger.warning(
-            "Resuming across compatible sieval versions (persisted={}, current={}); "
-            "per-record provenance will record the blend.",
+            "Resuming across sieval versions (persisted={}, current={}, result "
+            "schema version {}); per-record provenance will record the blend.",
             v_run,
             current_version,
+            RESULT_SCHEMA_VERSION,
         )
 
 

@@ -22,6 +22,7 @@ from .consts import TaskStage
 from .context import TaskContext, TaskRunIdentity, TaskRunMeta
 from .profiler import TaskProfiler, TaskProfilerContext
 from .run_meta import (
+    RESULT_SCHEMA_VERSION,
     DigestedStage,
     GraderIdentity,
     InferenceIdentity,
@@ -211,14 +212,15 @@ class TaskSaver:
     ) -> None:
         """Rewrite ``meta.json`` for a run that is starting, appending its ``runs[]``.
 
-        ``version``, ``deterministic`` and ``task`` describe the run that
-        created the directory: a resume keeps the persisted values and never
-        backfills a missing ``deterministic`` or ``task``, since either would
-        describe the resuming process rather than the run that produced the
-        samples. A
-        fresh run writes its own. A stage identity given here replaces the
-        carried one (``None`` sets it unknown); a stage not given is carried
-        from a resumed ``meta.json`` of the same identity schema.
+        ``result_schema_version`` is always this build's: the resume gate
+        admits no other. ``version``, ``deterministic`` and ``task`` describe
+        the run that created the directory: a resume keeps the persisted values
+        and never backfills a missing ``deterministic`` or ``task``, since
+        either would describe the resuming process rather than the run that
+        produced the samples. A fresh run writes its own. A stage identity
+        given here replaces the carried one (``None`` sets it unknown); a stage
+        not given is carried from a resumed ``meta.json`` of the same identity
+        schema.
 
         *run_from* starts a resume across tasks: the directory's history begins
         with this run (``start: "from"``) and its origin fields are this run's,
@@ -235,14 +237,25 @@ class TaskSaver:
         existing = await self._read_meta() if resumed and run_from is None else None
         meta: TaskRunMeta
         if existing is not None and isinstance(existing.get("version"), str):
-            meta = cast(TaskRunMeta, {"version": existing["version"]})
+            # The gate admitted only this schema; a pre-field directory records it now.
+            meta = cast(
+                TaskRunMeta,
+                {
+                    "version": existing["version"],
+                    "result_schema_version": RESULT_SCHEMA_VERSION,
+                },
+            )
             # Carried only when recorded: a pre-feature run never said.
             if isinstance(existing.get("deterministic"), bool):
                 meta["deterministic"] = existing["deterministic"]
             if isinstance(existing.get("task"), dict):
                 meta["task"] = existing["task"]
         else:
-            meta = {"version": __version__, "deterministic": self._deterministic}
+            meta = {
+                "version": __version__,
+                "result_schema_version": RESULT_SCHEMA_VERSION,
+                "deterministic": self._deterministic,
+            }
             if self._task_identity is not None:
                 meta["task"] = self._task_identity
         recorded_model = (existing or {}).get("model")

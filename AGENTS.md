@@ -15,8 +15,15 @@ SiEval is a **model delivery quality verification system**: eval-side knowledge 
 Precise reproducibility is a product contract, not a nicety.
 
 - Safety guards (e.g. the resume stage comparison) ship strict-only. No `--force-*` flags, no bypass env vars, no "(future)" escape-hatch hints in errors.
-- A resume (`--resume`, `--resume DIR`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): changed data or prompt → those samples rerun; changed grader → regrade on the recorded inference; changed inference, or an unknown stage it would reuse → refused. The version-series gate stays. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
+- A resume (`--resume`, `--resume DIR`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): changed data or prompt → those samples rerun; changed grader → regrade on the recorded inference; changed inference, or an unknown stage it would reuse → refused. Before that, `meta.json` `result_schema_version` must equal `RESULT_SCHEMA_VERSION` (absent: mapped from `version`, 0.10.0+ is 1); the package version is provenance only. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
 - Recovery: "start fresh" or "match the stage the refusal names". Escape-hatch proposals must re-justify the contract, not just add a flag.
+
+## Result Schema Version
+
+Bump `RESULT_SCHEMA_VERSION` (`sieval/core/tasks/run_meta.py`) in the PR that makes either change below, and say so in the CHANGELOG:
+
+- a change to a task result directory's layout (shards, `.idx`, `meta.json`, the `report.json` shape) that older directories cannot be read under;
+- a core change that alters results. The grader identity does not walk `sieval.core` or `sieval.datasets`, so nothing else catches it.
 
 ## Project Structure & Module Organization
 
