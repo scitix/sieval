@@ -5,9 +5,12 @@ resume from a directory recorded before stage identities.
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
 
+import importlib
 import os
 import shutil
 import stat
+import sys
+import textwrap
 from pathlib import Path
 
 import anyio
@@ -23,6 +26,8 @@ from sieval.core.runners.stage_resume import (
     COPY_MARKER,
     StageResumeError,
     copy_recorded_dir,
+    plan_resume,
+    recorded_grader,
     recorded_identity,
 )
 from sieval.core.tasks import (
@@ -31,6 +36,7 @@ from sieval.core.tasks import (
     build_prompt_record,
     build_rollout_judgement,
 )
+from sieval.core.tasks.run_meta import GRADING_STAGES, grader_key
 from sieval.core.tasks.task import Task
 from tests.conftest import MockCountingChatModel, MockDataset, make_config
 
@@ -189,8 +195,10 @@ class TestSameDirectory:
         assert task.calls["feedback"] == 3
         assert report["threshold"] == 0.9
         meta = _meta(root)
-        assert meta["runs"][-1]["reran"] == ["grader"]
-        assert meta["identity"]["grader"]["args"]["threshold"] == 0.9
+        assert meta["runs"][-1]["reran"] == ["postprocess", "feedback", "report"]
+        assert meta["runs"][-1]["resume"]["repostprocessed"] == 3
+        for stage in ("postprocess", "feedback", "report"):
+            assert meta["identity"][stage]["args"]["threshold"] == 0.9
 
         # The regrade is now the record: a third run fast-resumes.
         again, model = _task(threshold=0.9)
@@ -221,7 +229,11 @@ class TestSameDirectory:
         assert model.call_count == 0
         assert resumed.calls["postprocess"] == 0
         assert resumed.calls["feedback"] == 2
-        assert _meta(root)["runs"][-1]["reran"] == ["grader"]
+        run = _meta(root)["runs"][-1]
+        assert run["reran"] == ["feedback", "report"]
+        # Graded by this grader already: kept, and the two failures retried.
+        assert run["resume"]["kept"] == 3
+        assert run["resume"]["regraded"] == 0
 
     @pytest.mark.anyio
     async def test_an_inference_difference_is_refused_naming_the_stage(self, tmp_path):
@@ -245,9 +257,11 @@ class TestSameDirectory:
         assert model.call_count == 3
         assert _meta(root)["runs"][-1]["reran"] == [
             "data",
-            "prompt",
+            "preprocess",
             "inference",
-            "grader",
+            "postprocess",
+            "feedback",
+            "report",
         ]
 
     @pytest.mark.anyio
@@ -301,15 +315,16 @@ class TestResumeFrom:
         meta = _meta(runner.root_dir)
         [run] = meta["runs"]
         assert run["start"] == "from"
-        assert run["reran"] == ["grader"]
+        # Another task class: every grading stage reruns.
+        assert run["reran"] == ["postprocess", "feedback", "report"]
         assert run["from"] == {"dir": str(src), "identity": source_meta["identity"]}
         assert (
             meta["identity"]["inference"]["digest"]
             == (source_meta["identity"]["inference"]["digest"])
         )
         assert (
-            meta["identity"]["grader"]["digest"]
-            != (source_meta["identity"]["grader"]["digest"])
+            meta["identity"]["report"]["digest"]
+            != (source_meta["identity"]["report"]["digest"])
         )
         # profile.json aggregates every sample's recorded stage meta, reused
         # ones included, so what reran is told by `reran` and the calls above.
@@ -595,7 +610,7 @@ class TestPreIdentityDirectory:
         meta = _meta(runner.root_dir)
         [run] = meta["runs"]
         assert run["start"] == "from"
-        assert run["reran"] == ["grader"]
+        assert run["reran"] == ["postprocess", "feedback", "report"]
         # The source recorded no identity: `from.identity` says so.
         assert run["from"]["identity"]["inference"] is None
         assert meta["identity"]["data"]["digest"] is not None
@@ -740,13 +755,25 @@ class TestInterruptedBeforeEveryPreprocess:
         assert (root / "meta.json").read_bytes() == before
 
 
-def test_recorded_identity_reads_only_this_schema():
+def test_recorded_identity_reads_schema_1_and_2():
     assert recorded_identity(None) is None
     assert recorded_identity({"identity": {"schema": 99}}) is None
-    identity = recorded_identity({"identity": {"schema": 1, "data": {"digest": "x"}}})
+    identity = recorded_identity({"identity": {"schema": 2, "data": {"digest": "x"}}})
     assert identity is not None
     assert identity["data"] == {"digest": "x"}
-    assert identity["grader"] is None
+    assert identity["report"] is None
+    old = {
+        "schema": 1,
+        "prompt": {"digest": "p"},
+        "grader": {"digest": "g", "modules": {}, "judges": []},
+    }
+    identity = recorded_identity({"identity": old})
+    assert identity is not None
+    assert identity["schema"] == 2
+    assert identity["preprocess"] == {"digest": "p"}
+    assert identity["postprocess"] is None
+    assert recorded_grader({"identity": old}) == old["grader"]
+    assert recorded_grader({"identity": {"schema": 2}}) is None
 
 
 # ===================================================================
@@ -805,7 +832,7 @@ class TestInterruptedCopy:
 
         meta = await self._rerun(tmp_path, src)
         assert [r["start"] for r in meta["runs"]] == ["from"]
-        assert meta["runs"][0]["reran"] == ["grader"]
+        assert meta["runs"][0]["reran"] == ["postprocess", "feedback", "report"]
 
     @staticmethod
     async def _kill_before_any_index(tmp_path, monkeypatch):
@@ -971,3 +998,265 @@ class TestInterruptedCopy:
         monkeypatch.setattr(stage_resume, "remove_copied", lambda created: None)
         stage_resume.abandon_copy(dst, [dst / "0"])
         assert (dst / COPY_MARKER).exists()
+
+
+# ===================================================================
+# Per-stage rollback: the earliest grading stage that changed
+# ===================================================================
+_PLUGIN = "sieval_rollback_plugin"
+
+_PLUGIN_TASK = """
+from sieval.core.tasks import (
+    build_judgement_record,
+    build_prediction_record,
+    build_prompt_record,
+    build_rollout_judgement,
+)
+from sieval.core.tasks.task import Task
+
+from .grade import correct
+from .metrics import summarize
+
+
+class PluginQA(Task):
+    model_type = "chat"
+
+    def __init__(self, dataset, model, name=None, judge=None):
+        super().__init__(dataset=dataset, model=model, name=name)
+        self._judge = judge
+        self.calls = {"postprocess": 0, "feedback": 0, "report": 0}
+
+    async def preprocess(self, raw, ctx):
+        return build_prompt_record(
+            [{"role": "user", "content": raw["question"]}], reference=raw["answer"]
+        )
+
+    async def infer(self, pre, ctx):
+        return await self.model.agenerate(pre["prompt"][0]["content"])
+
+    async def postprocess(self, inf, ctx):
+        self.calls["postprocess"] += 1
+        return build_prediction_record([t.strip() for t in inf.texts])
+
+    async def feedback(self, post, ctx):
+        self.calls["feedback"] += 1
+        if self._judge is not None:
+            await self._judge.agenerate("Is it right?")
+        gold = ctx.raw_sample["answer"]
+        rollouts = [
+            build_rollout_judgement(r["index"], correct(r.get("prediction"), gold))
+            for r in post["rollouts"]
+        ]
+        return True, build_judgement_record(gold, rollouts)
+
+    async def report(self, finals, fails):
+        self.calls["report"] += 1
+        return summarize(finals, fails)
+"""
+
+_PLUGIN_FILES = {
+    "__init__.py": "",
+    "task.py": _PLUGIN_TASK,
+    "grade.py": "def correct(prediction, gold):\n    return prediction == gold\n",
+    "metrics.py": (
+        "def summarize(finals, fails):\n"
+        "    return {'total': len(finals) + len(fails)}\n"
+    ),
+}
+
+
+class _CountingJudge(MockCountingChatModel):
+    """A judge that counts its calls."""
+
+    def __init__(self):
+        super().__init__(answers={})
+        self._model = "count-judge"
+
+
+@pytest.fixture
+def plugin(tmp_path, monkeypatch):
+    """A plugin task on disk; ``load()`` re-imports it after an edit."""
+    # An edit can keep a file's size within the second, which a cached
+    # bytecode file would not notice.
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    pkg = tmp_path / "plugins" / _PLUGIN
+    pkg.mkdir(parents=True)
+    for name, text in _PLUGIN_FILES.items():
+        (pkg / name).write_text(textwrap.dedent(text))
+    monkeypatch.syspath_prepend(str(pkg.parent))
+
+    def drop():
+        for name in list(sys.modules):
+            if name == _PLUGIN or name.startswith(_PLUGIN + "."):
+                sys.modules.pop(name, None)
+
+    def load():
+        drop()
+        return importlib.import_module(f"{_PLUGIN}.task").PluginQA
+
+    yield pkg, load
+    drop()
+
+
+def _edit(pkg, name, old, new):
+    path = pkg / name
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new))
+
+
+async def _plugin_run(tmp_path, cls, **cfg):
+    model = MockCountingChatModel(answers=ANSWERS)
+    judge = _CountingJudge()
+    task = cls(dataset=MockDataset(SAMPLES), model=model, name="qa", judge=judge)
+    runner = TaskRunner(
+        task, make_config(tmp_path, result_dir=str(tmp_path / "plugin"), **cfg)
+    )
+    report = await runner.arun()
+    return runner.root_dir, task, model, judge, report
+
+
+class TestPerStageRollback:
+    @pytest.mark.anyio
+    async def test_a_report_change_rereports_without_a_model_or_judge(
+        self, tmp_path, plugin
+    ):
+        pkg, load = plugin
+        root, *_ = await _plugin_run(tmp_path, load())
+        before = _meta(root)["identity"]
+        _edit(pkg, "metrics.py", "'total'", "'count'")
+
+        _, task, model, judge, report = await _plugin_run(tmp_path, load(), resume=True)
+        assert report["count"] == 3 and "total" not in report
+        assert model.call_count == 0
+        assert judge.call_count == 0
+        assert task.calls == {"postprocess": 0, "feedback": 0, "report": 1}
+        meta = _meta(root)
+        run = meta["runs"][-1]
+        assert run["reran"] == ["report"]
+        assert run["resume"] == {
+            "kept": 3,
+            "rereported": 3,
+            "regraded": 0,
+            "repostprocessed": 0,
+            "restarted": 0,
+            "dropped": 0,
+        }
+        assert meta["identity"]["postprocess"] == before["postprocess"]
+        assert meta["identity"]["feedback"]["digest"] == before["feedback"]["digest"]
+        assert meta["identity"]["report"] != before["report"]
+
+        # Re-reported is now the record: the next resume reuses report.json.
+        _, again, model, judge, _ = await _plugin_run(tmp_path, load(), resume=True)
+        assert again.calls["report"] == 0
+        assert _meta(root)["runs"][-1]["reran"] == []
+
+    @pytest.mark.anyio
+    async def test_an_unfinished_run_with_a_report_change_keeps_its_verdicts(
+        self, tmp_path, plugin
+    ):
+        """The fast path needs a finished report; without one, the per-sample
+        plan keeps every graded sample and only report() runs."""
+        pkg, load = plugin
+        root, *_ = await _plugin_run(tmp_path, load())
+        (root / "report.json").unlink()
+        _edit(pkg, "metrics.py", "'total'", "'count'")
+        _, task, model, judge, report = await _plugin_run(tmp_path, load(), resume=True)
+        assert report["count"] == 3 and "total" not in report
+        assert (model.call_count, judge.call_count) == (0, 0)
+        assert task.calls == {"postprocess": 0, "feedback": 0, "report": 1}
+        assert _meta(root)["runs"][-1]["resume"]["rereported"] == 3
+
+    @pytest.mark.anyio
+    async def test_a_feedback_change_refeeds_on_the_recorded_postprocess(
+        self, tmp_path, plugin
+    ):
+        pkg, load = plugin
+        root, *_ = await _plugin_run(tmp_path, load())
+        _edit(pkg, "grade.py", "prediction == gold", "str(prediction) == str(gold)")
+
+        _, task, model, judge, _ = await _plugin_run(tmp_path, load(), resume=True)
+        assert model.call_count == 0
+        assert judge.call_count == 3
+        assert task.calls == {"postprocess": 0, "feedback": 3, "report": 1}
+        run = _meta(root)["runs"][-1]
+        assert run["reran"] == ["feedback", "report"]
+        assert run["resume"]["regraded"] == 3
+
+    @pytest.mark.anyio
+    async def test_a_postprocess_change_reruns_postprocess_onward(
+        self, tmp_path, plugin
+    ):
+        pkg, load = plugin
+        root, *_ = await _plugin_run(tmp_path, load())
+        _edit(pkg, "task.py", "t.strip() for t", "t.strip().lower() for t")
+
+        _, task, model, judge, _ = await _plugin_run(tmp_path, load(), resume=True)
+        assert model.call_count == 0
+        assert judge.call_count == 3
+        assert task.calls == {"postprocess": 3, "feedback": 3, "report": 1}
+        run = _meta(root)["runs"][-1]
+        assert run["reran"] == ["postprocess", "feedback", "report"]
+        assert run["resume"]["repostprocessed"] == 3
+
+    @pytest.mark.anyio
+    async def test_a_report_change_reaches_no_judge_model_even_unfinished(
+        self, tmp_path, plugin
+    ):
+        """A judge whose model changed counts in feedback; report alone stays."""
+        _, load = plugin
+        root, *_ = await _plugin_run(tmp_path, load())
+        identity = _meta(root)["identity"]
+        assert [j["role"] for j in identity["feedback"]["judges"]] == ["judge"]
+        assert "judges" not in identity["report"]
+        assert "judges" not in identity["postprocess"]
+
+
+class TestSchema1Directory:
+    """The fixtures under ``tests/integration/resume`` resume real schema-1
+    directories; this covers the plan a dry run reports for one."""
+
+    def test_plan_resume_reads_a_schema_1_block(self):
+        meta = {
+            "identity": {
+                "schema": 1,
+                "inference": {"digest": "sha256:i"},
+                "grader": {"digest": "g", "modules": {}, "judges": []},
+            }
+        }
+        key = grader_key(meta["identity"]["grader"])
+        assert key is not None
+        current = {"inference": {"digest": "sha256:i"}}
+        kept = plan_resume(meta, current, {key})
+        assert kept["legacy_grader"] == "kept"
+        assert kept["rerun_from"] is None
+        assert kept["refused"] is None
+        assert all(kept["stages"][s] == "same" for s in GRADING_STAGES)
+        regrade = plan_resume(meta, current, set())
+        assert regrade["legacy_grader"] == "regrade"
+        assert regrade["rerun_from"] == "postprocess"
+        assert regrade["stages"]["postprocess"] == "differs"
+
+
+def test_plan_resume_rolls_back_to_the_earliest_changed_stage():
+    stage = {"digest": "x", "task": "t", "modules": {"m": "1"}, "args": {}}
+    changed = {**stage, "modules": {"m": "2"}}
+    recorded = {
+        "identity": {
+            "schema": 2,
+            "inference": {"digest": "sha256:i"},
+            "postprocess": stage,
+            "feedback": stage,
+            "report": stage,
+        }
+    }
+    same = {"inference": {"digest": "sha256:i"}, **dict.fromkeys(GRADING_STAGES, stage)}
+    assert plan_resume(recorded, same)["rerun_from"] is None
+    assert plan_resume(recorded, {**same, "report": changed})["rerun_from"] == "report"
+    plan = plan_resume(recorded, {**same, "feedback": changed, "report": changed})
+    assert plan["rerun_from"] == "feedback"
+    assert plan["stages"]["postprocess"] == "same"
+    assert plan["stages"]["data"] == "unknown"
+    other = plan_resume(recorded, {**same, "inference": {"digest": "sha256:j"}})
+    assert other["refused"] == "inference"
+    assert plan_resume(None, same)["identity_schema"] is None

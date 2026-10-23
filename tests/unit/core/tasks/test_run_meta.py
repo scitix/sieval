@@ -22,7 +22,9 @@ from sieval.core.models.capabilities import RequestDefaults
 from sieval.core.tasks.run_meta import (
     ABSENT,
     GRADER_PACKAGES,
+    GRADING_STAGES,
     JUDGE_MODEL_REF_ENV,
+    STAGES,
     JudgeIdentity,
     _file_key,
     _without_own_name,
@@ -44,6 +46,7 @@ from sieval.core.tasks.run_meta import (
     new_run_record,
     ordered_stages,
     prompt_of,
+    read_identity,
     request_definition,
     request_digest,
     validate_judge_model_ref,
@@ -1130,9 +1133,36 @@ class TestDocument:
 
     def test_carried_identity_keeps_known_stages(self):
         data = {"digest": "sha256:d", "samples": 1}
-        carried = carried_identity({"identity": {"schema": 1, "data": data}})
+        carried = carried_identity({"identity": {"schema": 2, "data": data}})
         assert carried["data"] == data
-        assert carried["grader"] is None
+        assert carried["report"] is None
+
+    def test_a_schema_1_block_reads_as_schema_2(self):
+        data = {"digest": "sha256:d", "samples": 1}
+        prompt = {"digest": "sha256:p", "samples": 1}
+        grader = {"digest": "sha256:g", "modules": {}, "judges": []}
+        block = {
+            "schema": 1,
+            "data": data,
+            "prompt": prompt,
+            "inference": {"digest": "sha256:i"},
+            "grader": grader,
+        }
+        read = read_identity(block)
+        assert read is not None
+        identity, legacy = read
+        assert identity["schema"] == 2
+        assert identity["data"] == data
+        assert identity["preprocess"] == prompt
+        assert identity["inference"] == {"digest": "sha256:i"}
+        assert all(identity.get(s) is None for s in GRADING_STAGES)
+        assert legacy == grader
+        assert carried_identity({"identity": block}) == identity
+
+    def test_another_schema_is_not_read(self):
+        assert read_identity({"schema": 3, "data": {"digest": "x"}}) is None
+        assert read_identity("nope") is None
+        assert carried_identity({"identity": {"schema": 3}}) == empty_identity()
 
     def test_carried_runs_tolerates_old_and_malformed(self):
         assert carried_runs(None) == []
@@ -1155,7 +1185,19 @@ class TestDocument:
         ]
 
     def test_ordered_stages(self):
-        assert ordered_stages({"grader", "data", "bogus"}) == ["data", "grader"]
+        assert ordered_stages({"report", "data", "feedback", "grader"}) == [
+            "data",
+            "feedback",
+            "report",
+        ]
+        assert STAGES == (
+            "data",
+            "preprocess",
+            "inference",
+            "postprocess",
+            "feedback",
+            "report",
+        )
 
 
 class TestGraderKey:

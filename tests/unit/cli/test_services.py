@@ -422,8 +422,9 @@ def _write_config(tmp_path: Path, tasks: dict[str, str]) -> tuple[Path, Path]:
 
 
 def _grader(result_dir: Path, task: str) -> dict:
+    """The ``feedback`` identity, which records the services a task calls."""
     meta = orjson.loads((result_dir / task / "meta.json").read_bytes())
-    return meta["identity"]["grader"]
+    return meta["identity"]["feedback"]
 
 
 class TestSession:

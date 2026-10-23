@@ -16,13 +16,20 @@ from sieval.core.runners.runner import (
     read_run_version,
     run_started,
 )
-from sieval.core.runners.stage_resume import LegacyStageMatch, StageResumeError
+from sieval.core.runners.stage_resume import (
+    LegacyStageMatch,
+    ResumePlan,
+    StageResumeError,
+    plan_resume,
+    task_resume_plan,
+)
 
 __all__ = [
     "LegacyStageMatch",
     "MultiTaskRunner",
     "ResultDirExistsError",
     "ResumeAction",
+    "ResumePlan",
     "ResumeValue",
     "StageResumeError",
     "TaskRunner",
@@ -31,9 +38,11 @@ __all__ = [
     "UnreadableIntervalError",
     "as_resume",
     "fold_resume_aliases",
+    "plan_resume",
     "read_run_version",
     "resume_source",
     "resume_schema_verdict",
     "run_started",
     "same_dir",
+    "task_resume_plan",
 ]

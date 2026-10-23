@@ -15,7 +15,7 @@ SiEval is a **model delivery quality verification system**: eval-side knowledge 
 Precise reproducibility is a product contract, not a nicety.
 
 - Safety guards (e.g. the resume stage comparison) ship strict-only. No `--force-*` flags, no bypass env vars, no "(future)" escape-hatch hints in errors.
-- A resume (`--resume`, `--resume DIR`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`): changed data or prompt → those samples rerun; changed grader → regrade on the recorded inference; changed inference, or an unknown stage it would reuse → refused. Before that, `meta.json` `result_schema_version` must equal `RESULT_SCHEMA_VERSION` (absent: mapped from `version`, 0.10.0+ is 1); the package version is provenance only. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
+- A resume (`--resume`, `--resume DIR`) compares stage identities, not config text (`sieval/core/runners/stage_resume.py`), and reruns from the earliest changed stage: changed data or preprocess → those samples rerun; changed postprocess, feedback or report → rerun from that stage on the recorded inference (report only: recomputed from the records, no engine or judge); changed inference, or an unknown stage it would reuse → refused. Before that, `meta.json` `result_schema_version` must equal `RESULT_SCHEMA_VERSION` (absent: mapped from `version`, 0.10.0+ is 1); the package version is provenance only. `effective_config.yaml` and `infer_plans.yaml` are audit records; config changes go to `meta.json` `runs[].config`.
 - Recovery: "start fresh" or "match the stage the refusal names". Escape-hatch proposals must re-justify the contract, not just add a flag.
 
 ## Result Schema Version
@@ -23,7 +23,9 @@ Precise reproducibility is a product contract, not a nicety.
 Bump `RESULT_SCHEMA_VERSION` (`sieval/core/tasks/run_meta.py`) in the PR that makes either change below, and say so in the CHANGELOG:
 
 - a change to a task result directory's layout (shards, `.idx`, `meta.json`, the `report.json` shape) that older directories cannot be read under;
-- a core change that alters results. The grader identity does not walk `sieval.core` or `sieval.datasets`, so nothing else catches it.
+- a core change that alters results. The grading identities do not walk `sieval.core` or `sieval.datasets`, so nothing else catches it.
+
+`IDENTITY_SCHEMA` versions only the `identity` block. Bumping it does not refuse a resume, so a new schema must read the old one: schema 2 reads schema 1's `grader` through `legacy_grader_keys`, which keeps the old walks unchanged.
 
 ## Project Structure & Module Organization
 

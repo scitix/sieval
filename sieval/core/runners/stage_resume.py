@@ -1,11 +1,26 @@
 """Per-stage resume: a recorded task directory compared with a new run.
 
-==========================  ====================================================
-Data or prompt differ       That sample reruns from the start.
-Inference differs           Refused: :class:`StageResumeError` names the stage.
-Grader differs              ``postprocess``, ``feedback`` and ``report`` rerun
-                            on the recorded inference.
-==========================  ====================================================
+A resume rolls each recorded sample back to the earliest stage whose identity
+changed, and reruns from there:
+
+==============================  ==============================================
+Data or preprocess differ       That sample reruns from the start.
+Inference differs               Refused: :class:`StageResumeError` names it.
+Postprocess differs             ``postprocess`` onward reruns on the recorded
+                                inference.
+Feedback differs                ``feedback`` onward reruns on the recorded
+                                ``postprocess``.
+Report differs                  ``report.json`` is recomputed from the
+                                recorded samples: no engine, no judge call.
+==============================  ==============================================
+
+A sample past iteration 0 restarts instead of rolling back to a grading stage:
+its later inference saw the old grader's feedback.
+
+A schema-1 directory (0.10.0 to 0.11.x) recorded the three grading stages as
+one ``grader``. When :func:`~sieval.core.tasks.run_meta.legacy_grader_keys`
+holds its key, none of them changed; otherwise ``postprocess`` counts as
+changed, as a changed ``grader`` regraded before.
 
 A sample's data and prompt digests come from its ``preprocess`` record. For a
 directory recorded before them, the prompt is digested from the ``preprocess``
@@ -18,27 +33,40 @@ AI-Generated Code - Claude Opus 5.5 (Anthropic)
 
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 from sieval.core.tasks.consts import TaskStage
 from sieval.core.tasks.context import TaskContext
 from sieval.core.tasks.run_meta import (
-    IDENTITY_SCHEMA,
+    GRADING_STAGES,
     STAGES,
     RunIdentity,
     digest,
-    empty_identity,
+    grader_key,
+    grader_task,
+    grading_identities,
+    inference_identity,
+    judge_identities,
+    legacy_grader_keys,
     prompt_of,
+    read_identity,
+    stage_code,
+    stage_key,
 )
+from sieval.core.tasks.services import service_identities
+from sieval.core.types import JSONValue
 from sieval.core.utils.atomic import atomic_write
+
+if TYPE_CHECKING:
+    from sieval.core.tasks.task import Task
 
 
 class StageResumeError(RuntimeError):
     """A resume refused because a stage it would reuse differs or is unknown.
 
-    ``stage`` is one of ``data``, ``prompt``, ``inference``.
+    ``stage`` is ``data`` or ``inference``.
     """
 
     def __init__(self, stage: str, message: str) -> None:
@@ -59,16 +87,167 @@ class LegacyStageMatch(TypedDict, total=False):
 
 
 def recorded_identity(meta: Mapping[str, Any] | None) -> RunIdentity | None:
-    """The ``identity`` block of a recorded ``meta.json``, when it has this schema."""
-    identity = (meta or {}).get("identity")
-    if not isinstance(identity, dict) or identity.get("schema") != IDENTITY_SCHEMA:
-        return None
-    out = empty_identity()
-    for stage in STAGES:
-        value = identity.get(stage)
-        if isinstance(value, dict):
-            out[stage] = value  # type: ignore[literal-required]
-    return out
+    """A recorded ``meta.json``'s ``identity`` block as schema 2.
+
+    A schema-1 block's grading stages are ``None`` (see :func:`recorded_grader`).
+    ``None`` when there is no block of a schema this build reads.
+    """
+    read = read_identity((meta or {}).get("identity"))
+    return read[0] if read is not None else None
+
+
+def recorded_grader(meta: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    """A schema-1 block's combined ``grader`` identity; ``None`` for schema 2."""
+    read = read_identity((meta or {}).get("identity"))
+    return read[1] if read is not None else None
+
+
+def earliest_grading_change(
+    recorded: Mapping[str, Any] | None,
+    current: Mapping[str, Any],
+    legacy_match: bool | None = None,
+) -> str | None:
+    """The first grading stage whose identity differs, else ``None``.
+
+    *recorded* is the recorded block as schema 2 and *current* this run's. A
+    stage unknown on either side differs. For a schema-1 block pass
+    *legacy_match*, whether its combined ``grader`` key is among
+    :func:`~sieval.core.tasks.run_meta.legacy_grader_keys`: ``True`` means no
+    grading stage changed, ``False`` that ``postprocess`` did.
+    """
+    if legacy_match is not None:
+        return None if legacy_match else GRADING_STAGES[0]
+    for stage in GRADING_STAGES:
+        mine = stage_key(current.get(stage))
+        theirs = stage_key((recorded or {}).get(stage))
+        if mine is None or theirs is None or mine != theirs:
+            return stage
+    return None
+
+
+#: A stage compared between a recorded run and this one.
+type StageComparison = Literal["same", "differs", "unknown"]
+
+
+class ResumePlan(TypedDict):
+    """What a resume of one task directory would do, from identities alone.
+
+    ``stages`` compares each of :data:`~sieval.core.tasks.run_meta.STAGES`.
+    ``rerun_from`` is the earliest grading stage a finished sample reruns
+    from (``report`` recomputes ``report.json`` only), ``None`` when no
+    grading stage changed. Data and preprocess are decided per sample, by its
+    ``preprocess`` record, so they are only compared here. ``refused`` is
+    ``inference`` when a resume reusing recorded inference would be refused.
+    ``legacy_grader`` is set for a schema-1 directory: ``kept`` when its
+    combined ``grader`` still matches, so every verdict is kept and the block
+    is upgraded in place, ``regrade`` when it does not.
+    """
+
+    identity_schema: int | None
+    stages: dict[str, StageComparison]
+    rerun_from: str | None
+    refused: str | None
+    legacy_grader: Literal["kept", "regrade"] | None
+
+
+def plan_resume(
+    recorded_meta: Mapping[str, Any] | None,
+    current: Mapping[str, Any],
+    legacy_grader_keys: Iterable[str] = (),
+) -> ResumePlan:
+    """Compare a recorded ``meta.json`` with this run's identities, running nothing.
+
+    A pure entry point for a dry run. *current* is this run's identity as
+    schema 2; ``data`` and ``preprocess`` may be ``None`` before anything is
+    preprocessed and then compare as ``unknown``. *legacy_grader_keys* is
+    :func:`~sieval.core.tasks.run_meta.legacy_grader_keys` for this task,
+    read only for a schema-1 directory. The runner plans per sample and is
+    authoritative; this says what a resume of a finished directory does.
+    """
+    block = (recorded_meta or {}).get("identity")
+    schema = block.get("schema") if isinstance(block, Mapping) else None
+    read = read_identity(block)
+    recorded: Mapping[str, Any] = read[0] if read is not None else {}
+    grader = read[1] if read is not None else None
+    stages: dict[str, StageComparison] = {
+        stage: _compare(stage, recorded.get(stage), current.get(stage))
+        for stage in STAGES
+    }
+    legacy: Literal["kept", "regrade"] | None = None
+    legacy_match: bool | None = None
+    if grader is not None:
+        key = grader_key(grader)
+        legacy_match = key is not None and key in set(legacy_grader_keys)
+        legacy = "kept" if legacy_match else "regrade"
+        # Unsplittable: all the same, or postprocess changed and the rest unknown.
+        for stage in GRADING_STAGES:
+            stages[stage] = "same" if legacy_match else "unknown"
+        if not legacy_match:
+            stages[GRADING_STAGES[0]] = "differs"
+    return {
+        "identity_schema": schema if isinstance(schema, int) else None,
+        "stages": stages,
+        "rerun_from": earliest_grading_change(recorded, current, legacy_match),
+        "refused": "inference" if stages["inference"] != "same" else None,
+        "legacy_grader": legacy,
+    }
+
+
+def task_resume_plan(
+    task: "Task",
+    recorded_meta: Mapping[str, Any] | None,
+    *,
+    runner_keys: Mapping[str, JSONValue],
+    recipe: Mapping[str, JSONValue] | None = None,
+) -> ResumePlan:
+    """:func:`plan_resume` for *task* against a recorded ``meta.json``.
+
+    Computes this run's inference and grading identities as
+    :class:`~sieval.core.runners.runner.TaskRunner` does, so call it after
+    ``task.setup()``, which may resolve an argument the grading identities
+    read. *runner_keys* holds :data:`~sieval.core.tasks.run_meta.INFERENCE_RUNNER_KEYS`
+    and *recipe* the serving recipe, as the runner is given them. Reads files,
+    starts nothing and calls no model.
+    """
+    task_cls = type(task)
+    judges = judge_identities(task.judge_models(), task.judge_prompts())
+    services = service_identities(task_cls.services)
+    args = task.grader_args()
+    grading = grading_identities(
+        stage_code(task_cls, [j["role"] for j in judges], task_cls.services),
+        judges,
+        services,
+        args,
+        grader_task(task_cls),
+    )
+    current: dict[str, Any] = {
+        "inference": inference_identity(
+            model=task.model,
+            task_args=task.inference_args(),
+            runner_keys=runner_keys,
+            recipe=recipe,
+        ),
+        **grading,
+    }
+    return plan_resume(
+        recorded_meta,
+        current,
+        legacy_grader_keys(task_cls, judges, services, args),
+    )
+
+
+def _compare(stage: str, recorded: object, current: object) -> StageComparison:
+    mine = cast(Mapping[str, Any], recorded) if isinstance(recorded, Mapping) else None
+    theirs = cast(Mapping[str, Any], current) if isinstance(current, Mapping) else None
+    if stage in GRADING_STAGES:
+        a, b = stage_key(mine), stage_key(theirs)
+    else:
+        # Inference compares as a resume refuses it: by its configuration.
+        a = mine.get("digest") if mine is not None else None
+        b = theirs.get("digest") if theirs is not None else None
+    if not isinstance(a, str) or not isinstance(b, str):
+        return "unknown"
+    return "same" if a == b else "differs"
 
 
 def recorded_sample_digests(

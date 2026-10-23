@@ -113,11 +113,12 @@ The service's handle is `run-<pid>/service-<name>.json` and its log
 a served model may not be named `services`. Only one run per process may start
 a given service. SIGTERM stops a run as Ctrl+C does, and it exits 143.
 
-Each task's `meta.json` records what graded it under `identity.grader.services`:
+Each task's `meta.json` records what graded it under `identity.feedback.services`:
 `"source": "vendored"` with the `VENDORED.md` commit, a digest of the
 evaluator's Python sources and its `runtime` (Python version, platform, versions
 of the packages graded programs import); or `"source": "external"`, with no URL.
-A change to any of these changes the grader identity.
+A change to any of these changes the `feedback` identity, so a resume reruns
+`feedback` and `report`.
 
 ## YAML Infer Configuration
 

@@ -179,17 +179,25 @@ class TestFreshRun:
         assert meta["deterministic"] is False
         assert meta["model"] == "mock-chat"
         identity = meta["identity"]
-        assert identity["schema"] == 1
+        assert identity["schema"] == 2
         assert identity["data"]["samples"] == 3
-        assert identity["prompt"]["samples"] == 3
+        assert identity["preprocess"]["samples"] == 3
         assert identity["inference"]["digest"].startswith("sha256:")
         # A test task lives outside the followed packages: no modules, no judges.
-        assert identity["grader"]["modules"] == {}
-        assert identity["grader"]["judges"] == []
+        for stage in ("postprocess", "feedback", "report"):
+            assert identity[stage]["modules"] == {}
+        assert identity["feedback"]["judges"] == []
         [run] = meta["runs"]
         assert run["sieval"] == __version__
         assert run["start"] == "fresh"
-        assert run["reran"] == ["data", "prompt", "inference", "grader"]
+        assert run["reran"] == [
+            "data",
+            "preprocess",
+            "inference",
+            "postprocess",
+            "feedback",
+            "report",
+        ]
         assert run["ended"] >= run["at"]
         assert "interrupted" not in run
         assert "config" not in run
@@ -209,7 +217,7 @@ class TestFreshRun:
             for i, s in enumerate(SAMPLES)
         )
         assert identity["data"] == expected_data
-        assert identity["prompt"] == expected_prompt
+        assert identity["preprocess"] == expected_prompt
 
     @pytest.mark.anyio
     async def test_per_sample_digests_land_in_the_preprocess_record(self, tmp_path):
@@ -252,11 +260,11 @@ class TestFreshRun:
         )
         await runner.arun()
         assert all(m["identity"]["inference"] is not None for m in seen)
-        assert all(m["identity"]["grader"] is not None for m in seen)
+        assert all(m["identity"]["feedback"] is not None for m in seen)
         assert all("reran" not in m["runs"][-1] for m in seen)
         assert all("ended" not in m["runs"][-1] for m in seen)
         assert seen[-1]["identity"]["data"] is not None
-        assert seen[-1]["identity"]["prompt"] is not None
+        assert seen[-1]["identity"]["preprocess"] is not None
 
     @pytest.mark.anyio
     async def test_failed_preprocess_still_counts_in_data(self, tmp_path):
@@ -271,7 +279,7 @@ class TestFreshRun:
         await runner.arun()
         identity = _meta(runner.root_dir)["identity"]
         assert identity["data"]["samples"] == 3
-        assert identity["prompt"]["samples"] == 3
+        assert identity["preprocess"]["samples"] == 3
 
 
 class TestInferenceIdentityFromRunner:
@@ -364,7 +372,7 @@ class TestInferenceIdentityFromRunner:
         await runner.arun()
         identity = _meta(runner.root_dir)["identity"]
         assert identity["inference"]["requests"]["digest"] is not None
-        assert identity["prompt"]["digest"] is not None
+        assert identity["preprocess"]["digest"] is not None
 
 
 class TestJudgeIdentity:
@@ -382,7 +390,7 @@ class TestJudgeIdentity:
         runner = _runner(tmp_path, task=task)
         await runner.arun()
 
-        [judge] = _meta(runner.root_dir)["identity"]["grader"]["judges"]
+        [judge] = _meta(runner.root_dir)["identity"]["feedback"]["judges"]
         assert judge == {
             "role": "grader",
             "model": "mock-judge",
@@ -409,7 +417,7 @@ class TestJudgeIdentity:
         )
         runner = _runner(tmp_path, task=task)
         await runner.arun()
-        [judge] = _meta(runner.root_dir)["identity"]["grader"]["judges"]
+        [judge] = _meta(runner.root_dir)["identity"]["feedback"]["judges"]
         assert judge["version"] is None
         assert "ref" not in judge
 
@@ -437,7 +445,7 @@ class TestJudgeIdentity:
         )
         runner = _runner(tmp_path, task=task)
         await runner.arun()
-        [judge] = _meta(runner.root_dir)["identity"]["grader"]["judges"]
+        [judge] = _meta(runner.root_dir)["identity"]["feedback"]["judges"]
         assert judge["model"] == "mock-chat"
         assert judge["version"] == "judge-v1"
 
@@ -460,7 +468,7 @@ class TestJudgeIdentity:
         )
         runner = _runner(tmp_path, task=task)
         await runner.arun()
-        [judge] = _meta(runner.root_dir)["identity"]["grader"]["judges"]
+        [judge] = _meta(runner.root_dir)["identity"]["feedback"]["judges"]
         assert judge["version"] is None
 
     @pytest.mark.anyio
@@ -482,7 +490,7 @@ class TestJudgeIdentity:
             tmp_path, task=judged(MockJudgeModel(temperature=1.0)), resume=True
         )
         await second.arun()
-        [judge] = _meta(second.root_dir)["identity"]["grader"]["judges"]
+        [judge] = _meta(second.root_dir)["identity"]["feedback"]["judges"]
         assert judge["sampling"] == {"temperature": 1.0}
         assert judge["version"] is None
 
@@ -511,7 +519,7 @@ class TestIdentityUnavailable:
         runner = _runner(tmp_path, task=task, record_meta=False)
         await runner.arun()
         identity = _meta(runner.root_dir)["identity"]
-        assert identity["prompt"] == aggregate_digest([(0, None, None)])
+        assert identity["preprocess"] == aggregate_digest([(0, None, None)])
 
     @pytest.mark.anyio
     async def test_a_broken_judge_lookup_leaves_the_grader_unknown(self, tmp_path):
@@ -526,7 +534,7 @@ class TestIdentityUnavailable:
         runner = _runner(tmp_path, task=task)
         await runner.arun()
         identity = _meta(runner.root_dir)["identity"]
-        assert identity["grader"] is None
+        assert all(identity[s] is None for s in ("postprocess", "feedback", "report"))
         assert identity["inference"] is None
         assert identity["data"]["samples"] == 3
         # Identity is bookkeeping: no sample fails over it.
@@ -627,9 +635,16 @@ class TestResume:
         meta = _meta(root)
         assert model.call_count == 1
         assert meta["runs"][-1]["start"] == "resume"
-        assert meta["runs"][-1]["reran"] == ["data", "prompt", "inference", "grader"]
+        assert meta["runs"][-1]["reran"] == [
+            "data",
+            "preprocess",
+            "inference",
+            "postprocess",
+            "feedback",
+            "report",
+        ]
         assert meta["identity"]["data"] == full["data"]
-        assert meta["identity"]["prompt"] == full["prompt"]
+        assert meta["identity"]["preprocess"] == full["preprocess"]
 
     @pytest.mark.anyio
     async def test_judge_version_survives_a_resume_that_grades_nothing(self, tmp_path):
@@ -648,10 +663,10 @@ class TestResume:
         second = _runner(tmp_path, task=judged(), resume=True)
         await second.arun()
         meta = _meta(second.root_dir)
-        # Only `report()` ran, which has no identity.
-        assert meta["runs"][-1]["reran"] == []
+        # Only `report()` ran.
+        assert meta["runs"][-1]["reran"] == ["report"]
         assert meta["runs"][-1]["reported"] is True
-        [judge] = meta["identity"]["grader"]["judges"]
+        [judge] = meta["identity"]["feedback"]["judges"]
         assert judge["version"] == "mock-judge-2026-10-01"
 
     @pytest.mark.anyio
@@ -719,7 +734,14 @@ class TestRunStartedHere:
         # The killed run never said it ended.
         assert "reran" not in meta["runs"][0]
         assert "ended" not in meta["runs"][0]
-        assert meta["runs"][1]["reran"] == ["data", "prompt", "inference", "grader"]
+        assert meta["runs"][1]["reran"] == [
+            "data",
+            "preprocess",
+            "inference",
+            "postprocess",
+            "feedback",
+            "report",
+        ]
 
     def test_a_pre_runs_directory_is_started_by_its_meta(self, tmp_path):
         """Before `runs[]`, `meta.json` was written once, when a run started:
@@ -808,7 +830,7 @@ class TestShardsMeanStarted:
         assert model.call_count == 0
         meta = _meta(root)
         assert [r["start"] for r in meta["runs"]] == ["resume"]
-        assert meta["runs"][0]["reran"] == []
+        assert meta["runs"][0]["reran"] == ["report"]
         assert meta["identity"]["inference"] == recorded["identity"]["inference"]
 
     @pytest.mark.anyio
@@ -860,7 +882,14 @@ class TestShardsMeanStarted:
         await runner.arun()
         meta = _meta(root)
         assert [r["start"] for r in meta["runs"]] == ["fresh"]
-        assert meta["runs"][0]["reran"] == ["data", "prompt", "inference", "grader"]
+        assert meta["runs"][0]["reran"] == [
+            "data",
+            "preprocess",
+            "inference",
+            "postprocess",
+            "feedback",
+            "report",
+        ]
         assert (root / "0" / "backup" / "x.idx").read_text() == "not\tan\tindex\n"
 
     @pytest.mark.anyio
@@ -899,10 +928,10 @@ class TestBackwardCompatibleRead:
         assert [r["start"] for r in meta["runs"]] == ["resume"]
         # Every sample was already final: only `report()` ran, and data and
         # prompt are digested from what the shards hold.
-        assert meta["runs"][0]["reran"] == []
+        assert meta["runs"][0]["reran"] == ["report"]
         assert meta["runs"][0]["reported"] is True
         assert meta["identity"]["data"]["samples"] == 3
-        assert meta["identity"]["prompt"]["samples"] == 3
+        assert meta["identity"]["preprocess"]["samples"] == 3
 
 
 # ===================================================================
@@ -1063,7 +1092,7 @@ class TestEndRunFailure:
         assert model.call_count == 0  # nothing was inferred again
         last = meta["runs"][-1]
         assert last["start"] == "resume"
-        assert last["reran"] == []
+        assert last["reran"] == ["report"]
         assert last["reported"] is True
         assert meta["identity"]["inference"]["requests"]["samples"] == 3
 

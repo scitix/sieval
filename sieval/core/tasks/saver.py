@@ -4,7 +4,7 @@ A shard's ``.idx`` lines are written after the records they point at.
 """
 
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,9 +23,9 @@ from .context import TaskContext, TaskRunIdentity, TaskRunMeta
 from .profiler import TaskProfiler, TaskProfilerContext
 from .run_meta import (
     RESULT_SCHEMA_VERSION,
-    DigestedStage,
-    GraderIdentity,
+    STAGES,
     InferenceIdentity,
+    ResumeOutcomes,
     RunFrom,
     RunRequests,
     carried_identity,
@@ -34,13 +34,6 @@ from .run_meta import (
     ordered_stages,
     utc_now,
 )
-
-
-class _Unset:
-    """A ``set_identity`` stage not given, apart from ``None`` (unknown)."""
-
-
-_UNSET = _Unset()
 
 
 class TaskSaver:
@@ -205,10 +198,7 @@ class TaskSaver:
         keep_recorded_model: bool = False,
         config_diff: Sequence[str] = (),
         config_path: str | None = None,
-        data: DigestedStage | None | _Unset = _UNSET,
-        prompt: DigestedStage | None | _Unset = _UNSET,
-        inference: InferenceIdentity | None | _Unset = _UNSET,
-        grader: GraderIdentity | None | _Unset = _UNSET,
+        identity: Mapping[str, object] | None = None,
     ) -> None:
         """Rewrite ``meta.json`` for a run that is starting, appending its ``runs[]``.
 
@@ -217,10 +207,10 @@ class TaskSaver:
         the run that created the directory: a resume keeps the persisted values
         and never backfills a missing ``deterministic`` or ``task``, since
         either would describe the resuming process rather than the run that
-        produced the samples. A fresh run writes its own. A stage identity
-        given here replaces the carried one (``None`` sets it unknown); a stage
-        not given is carried from a resumed ``meta.json`` of the same identity
-        schema.
+        produced the samples. A fresh run writes its own. A stage in
+        *identity* replaces the carried one (``None`` sets it unknown); a stage
+        not given is carried from a resumed ``meta.json``, a schema-1 block
+        read as schema 2 (:func:`carried_identity`).
 
         *run_from* starts a resume across tasks: the directory's history begins
         with this run (``start: "from"``) and its origin fields are this run's,
@@ -278,41 +268,24 @@ class TaskSaver:
         meta["runs"] = [*carried_runs(existing), run]
         self._run_index = len(meta["runs"])
         self._meta = meta
-        self._apply_identity(data, prompt, inference, grader)
+        self._apply_identity(identity or {})
         await self._write_meta()
 
-    async def set_identity(
-        self,
-        *,
-        data: DigestedStage | None | _Unset = _UNSET,
-        prompt: DigestedStage | None | _Unset = _UNSET,
-        inference: InferenceIdentity | None | _Unset = _UNSET,
-        grader: GraderIdentity | None | _Unset = _UNSET,
-    ) -> None:
-        """Replace the given stage identities and rewrite ``meta.json``.
+    async def set_identity(self, **stages: object) -> None:
+        """Replace the given stage identities, by stage name, and rewrite ``meta.json``.
 
         A stage left out keeps its value; ``None`` sets it unknown.
         """
         self._require_meta()
-        self._apply_identity(data, prompt, inference, grader)
+        self._apply_identity(stages)
         await self._write_meta()
 
-    def _apply_identity(
-        self,
-        data: DigestedStage | None | _Unset,
-        prompt: DigestedStage | None | _Unset,
-        inference: InferenceIdentity | None | _Unset,
-        grader: GraderIdentity | None | _Unset,
-    ) -> None:
-        identity = self._require_meta()["identity"]
-        if not isinstance(data, _Unset):
-            identity["data"] = data
-        if not isinstance(prompt, _Unset):
-            identity["prompt"] = prompt
-        if not isinstance(inference, _Unset):
-            identity["inference"] = inference
-        if not isinstance(grader, _Unset):
-            identity["grader"] = grader
+    def _apply_identity(self, stages: Mapping[str, object]) -> None:
+        unknown = set(stages) - set(STAGES)
+        if unknown:
+            raise ValueError(f"unknown identity stage(s): {sorted(unknown)}")
+        identity = cast(dict[str, object], self._require_meta()["identity"])
+        identity.update(stages)
 
     @property
     def inference_identity(self) -> InferenceIdentity | None:
@@ -326,16 +299,20 @@ class TaskSaver:
         reported: bool = False,
         rules_hash: str | None = None,
         requests: RunRequests | None = None,
+        resume: ResumeOutcomes | None = None,
     ) -> None:
         """Mark the current ``runs[]`` entry ended, with the stages it reran.
 
         *reported* is set by a run that wrote ``report.json``; *rules_hash* by
-        one that wrote ``anomalies.json``; *requests* by one that recorded any.
+        one that wrote ``anomalies.json``; *requests* by one that recorded any;
+        *resume* by a resume that planned per sample.
         """
         meta = self._require_meta()
         run = meta["runs"][-1]
         run["ended"] = utc_now()
         run["reran"] = ordered_stages(reran)
+        if resume is not None:
+            run["resume"] = resume
         if reported:
             run["reported"] = True
         if rules_hash is not None:

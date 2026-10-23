@@ -413,9 +413,9 @@ class TestReadRunVersion:
 
 class TestFinishedDirOfAnotherTask:
     """A result dir is matched by path alone. Per-stage resume replaces the
-    old name gate: another task's finished directory differs in its grader
-    identity (the task class is part of it), so it is regraded, never handed
-    back as this task's report."""
+    old name gate: another task's finished directory differs in its grading
+    identities (the task class is part of each), so it is regraded, never
+    handed back as this task's report."""
 
     @pytest.mark.anyio
     async def test_finished_dir_is_not_handed_to_another_task(
@@ -444,7 +444,7 @@ class TestFinishedDirOfAnotherTask:
         report = await other.arun()
         assert report["other"] == 3
         meta = orjson.loads((runner.root_dir / "meta.json").read_bytes())
-        assert meta["runs"][-1]["reran"] == ["grader"]
+        assert meta["runs"][-1]["reran"] == ["postprocess", "feedback", "report"]
 
 
 class TestE2EFailureRecovery:

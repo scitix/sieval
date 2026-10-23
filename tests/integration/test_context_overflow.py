@@ -404,14 +404,20 @@ class TestResume:
         assert report["t"]["score"] == pytest.approx(2 / 3)
 
         meta = _read(task_dir, "meta.json")
-        # Neither the inference nor the grader identity moved; only what was
+        # Neither the inference nor a grading identity moved; only what was
         # sent for the formerly failed sample is now on record.
         assert (
             meta["identity"]["inference"]["digest"]
             == (first_identity["inference"]["digest"])
         )
-        assert meta["identity"]["grader"] == first_identity["grader"]
-        assert meta["runs"][-1]["reran"] == ["inference", "grader"]
+        for stage in ("postprocess", "feedback", "report"):
+            assert meta["identity"][stage] == first_identity[stage]
+        assert meta["runs"][-1]["reran"] == [
+            "inference",
+            "postprocess",
+            "feedback",
+            "report",
+        ]
         # No request went out, so the resume's request counts have no infer.
         assert "infer" not in (meta["runs"][-1].get("requests") or {})
 

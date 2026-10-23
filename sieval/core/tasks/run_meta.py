@@ -4,31 +4,45 @@
 rewrites it atomically, so this module only builds the document; the saver
 writes it.
 
-The four stage identities describe the run that produced the current
-``report.json``:
+The six stage identities, one per pipeline stage, describe the run that
+produced the current ``report.json``:
 
-=============  ==============================================================
-``data``       Every selected sample, keyed by ``(sample_id, repeat_index)``
-               and digested over its whole raw content.
-``prompt``     Every sample's ``PromptRecord.prompt``, before the model's chat
-               template.
-``inference``  The candidate's resolved request arguments, dialect and engine,
-               the task's own inference arguments (``n``), the result-changing
-               runner keys and the serving recipe, plus ``requests``: every
-               sample's request parameters as the dialect sent them, so a
-               ``stop`` or ``max_tokens`` a task passes at call time counts.
-               Only what defines a request counts there: its body and whether
-               it streamed, never the method, path, query or model name.
-               The model under test, the engine build and the SiEval version
-               are left out.
-``grader``     The source of every module the task class reaches by a static
-               import walk under :data:`GRADER_PACKAGES` and the ``sieval_*``
-               plugin package of each class in its MRO, keyed by file path;
-               the task class, its
-               :meth:`~sieval.core.tasks.task.Task.grader_args`, each judge's
-               model, version, sampling arguments and prompt, and each service
-               the task declares, vendored or external.
-=============  ==============================================================
+===============  ============================================================
+``data``         Every selected sample, keyed by ``(sample_id, repeat_index)``
+                 and digested over its whole raw content.
+``preprocess``   Every sample's ``PromptRecord.prompt``, before the model's
+                 chat template.
+``inference``    The candidate's resolved request arguments, dialect and
+                 engine, the task's own inference arguments (``n``), the
+                 result-changing runner keys and the serving recipe, plus
+                 ``requests``: every sample's request parameters as the dialect
+                 sent them, so a ``stop`` or ``max_tokens`` a task passes at
+                 call time counts. Only what defines a request counts there:
+                 its body and whether it streamed, never the method, path,
+                 query or model name. The model under test, the engine build
+                 and the SiEval version are left out.
+``postprocess``  The code :meth:`~sieval.core.tasks.task.Task.postprocess`
+                 reaches (:func:`stage_code`), the task class and its
+                 :meth:`~sieval.core.tasks.task.Task.grader_args`.
+``feedback``     The same for :meth:`~sieval.core.tasks.task.Task.feedback`,
+                 plus each judge's model, version, sampling arguments and
+                 prompt, and each service the task declares, vendored or
+                 external.
+``report``       The same for :meth:`~sieval.core.tasks.task.Task.report`
+                 and :meth:`~sieval.core.tasks.task.Task.problem_groups`.
+===============  ============================================================
+
+A grading stage also holds a judge or service its code reads, besides
+``feedback``.
+
+A change to one stage reruns it and every stage after it; a ``report``-only
+change recomputes ``report.json`` from the recorded samples.
+
+Identity schema 1 (0.10.0 to 0.11.x) named ``preprocess`` ``prompt`` and
+folded the last three into one ``grader`` identity (:func:`grader_identity`),
+which cannot be split. :func:`read_identity` reads such a block with the
+grading stages unknown, and :func:`legacy_grader_keys` recomputes the old
+``grader`` with the walk that wrote it: equal means no grading stage changed.
 
 Every digest is ``sha256:`` over canonical JSON (sorted keys, no whitespace).
 A stage whose input could not be read is ``None``: unknown, never a guess. A
@@ -49,6 +63,7 @@ import sys
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from loguru import logger
@@ -56,7 +71,7 @@ from loguru import logger
 from sieval.core.models import REQUEST_ENVELOPE_HTTP, REQUEST_ENVELOPE_KEY, Model
 from sieval.core.types import JSONValue
 
-from .services import ServiceIdentity
+from .services import SERVICE_ENDPOINT_ENV, ServiceIdentity
 
 #: Version of the task result directory a resume reads (shard records and their
 #: ``.idx``, ``meta.json``, the ``report.json`` shape), written as ``meta.json``
@@ -67,7 +82,8 @@ RESULT_SCHEMA_VERSION = 1
 
 #: Version of the ``identity`` block's layout. A digest computed differently is
 #: not a layout change: it reruns one stage, a new schema would discard them all.
-IDENTITY_SCHEMA = 1
+#: Schema 1 is still read (:func:`read_identity`).
+IDENTITY_SCHEMA = 2
 
 #: A per-sample digest of a value that was legitimately absent: the prompt of a
 #: sample whose ``preprocess`` failed, the requests of one never inferred. Kept
@@ -75,7 +91,23 @@ IDENTITY_SCHEMA = 1
 ABSENT = "absent"
 
 #: Stage names in pipeline order; ``runs[].reran`` lists them in this order.
-STAGES: tuple[str, ...] = ("data", "prompt", "inference", "grader")
+STAGES: tuple[str, ...] = (
+    "data",
+    "preprocess",
+    "inference",
+    "postprocess",
+    "feedback",
+    "report",
+)
+
+#: The stages that grade, each named by the Task method that runs it.
+GRADING_STAGES: tuple[str, ...] = ("postprocess", "feedback", "report")
+
+#: Schema-1 stage names that carry over to schema 2, and their new names. The
+#: schema-1 ``grader`` covered all of :data:`GRADING_STAGES` and has none.
+SCHEMA_1_STAGES: Mapping[str, str] = MappingProxyType(
+    {"data": "data", "prompt": "preprocess", "inference": "inference"}
+)
 
 #: Package roots the grader walk follows. ``sieval.core`` and
 #: ``sieval.datasets`` are left out on purpose: data has its own identity, and a
@@ -141,7 +173,9 @@ class JudgeIdentity(TypedDict):
 
 
 class GraderIdentity(TypedDict):
-    """``task`` is :func:`grader_task` and ``args`` the task's
+    """The identity-schema-1 ``grader`` block, which covered every grading stage.
+
+    ``task`` is :func:`grader_task` and ``args`` the task's
     :meth:`~sieval.core.tasks.task.Task.grader_args`, both absent in a block
     written before they counted; ``services`` is present only for a task that
     declares one."""
@@ -151,6 +185,22 @@ class GraderIdentity(TypedDict):
     modules: dict[str, str]
     args: NotRequired[dict[str, JSONValue]]
     judges: list[JudgeIdentity]
+    services: NotRequired[list[ServiceIdentity]]
+
+
+class GradingIdentity(TypedDict):
+    """One grading stage: ``postprocess``, ``feedback`` or ``report``.
+
+    ``modules`` is that stage's code (:func:`stage_code`). ``feedback`` holds
+    every judge and service; another stage holds the ones its code reads.
+    ``services`` is present only for a task that declares one.
+    """
+
+    digest: str
+    task: str
+    modules: dict[str, str]
+    args: dict[str, JSONValue]
+    judges: NotRequired[list[JudgeIdentity]]
     services: NotRequired[list[ServiceIdentity]]
 
 
@@ -164,9 +214,11 @@ class RunIdentity(TypedDict):
 
     schema: int
     data: DigestedStage | None
-    prompt: DigestedStage | None
+    preprocess: DigestedStage | None
     inference: InferenceIdentity | None
-    grader: GraderIdentity | None
+    postprocess: GradingIdentity | None
+    feedback: GradingIdentity | None
+    report: GradingIdentity | None
 
 
 class LimiterPeak(TypedDict):
@@ -190,8 +242,31 @@ type RunRequests = dict[str, dict[str, RequestCounts]]
 
 
 class RunFrom(TypedDict):
+    """``identity`` is the copied directory's block as it recorded it, of
+    either schema, or an empty one when it recorded none."""
+
     dir: str
-    identity: RunIdentity
+    identity: RunIdentity | dict[str, Any]
+
+
+class ResumeOutcomes(TypedDict):
+    """What a resume did with each recorded sample, as ``runs[].resume``.
+
+    By the earliest stage that changed for it: ``kept`` as recorded (only
+    ``report`` changed, or nothing), ``regraded`` reran ``feedback`` on its
+    recorded ``postprocess``, ``repostprocessed`` reran ``postprocess`` and
+    ``feedback`` on its recorded inference, ``restarted`` reran from
+    ``preprocess``, ``dropped`` is outside the dataset now. ``rereported`` is
+    how many kept samples a changed ``report`` recomputed ``report.json`` from:
+    every one when ``report`` changed, else ``0``.
+    """
+
+    kept: int
+    rereported: int
+    regraded: int
+    repostprocessed: int
+    restarted: int
+    dropped: int
 
 
 # Functional form: ``from`` is a keyword.
@@ -211,6 +286,7 @@ RunRecord = TypedDict(
         "model": NotRequired[str],
         "from": NotRequired[RunFrom],
         "requests": NotRequired[RunRequests],
+        "resume": NotRequired[ResumeOutcomes],
     },
 )
 """One ``runs[]`` entry, appended when a run starts.
@@ -221,8 +297,9 @@ While the run is in flight the entry has neither ``ended`` nor ``reran``.
 A run that saves its ``report.json`` writes both: ``ended`` (ISO 8601 UTC, like
 ``at``) and ``reran``, the stages it executed, ``[]`` for a fast resume.
 ``reported: true`` says the run wrote ``report.json``, which a fast resume does
-not. ``report()`` has no identity, so a run that only re-aggregated finished
-samples is ``reran: []`` with ``reported: true``. A run
+not; a run that called ``report()`` lists ``report`` in ``reran``. ``resume``
+counts what a per-stage resume did with each recorded sample
+(:class:`ResumeOutcomes`). A run
 stopped by an interrupt writes ``ended`` and ``interrupted: true``, and no
 ``reran``. An entry with no ``ended`` is a run that is still going, or was
 killed or failed before it could say so. ``config`` is the config diff a resume
@@ -534,6 +611,12 @@ def _locate(name: str) -> tuple[str | None, bool] | None:
     return None
 
 
+def _read_source(path: str) -> bytes:
+    """A module's source bytes, as every walk here digests them."""
+    with open(path, "rb") as f:
+        return f.read()
+
+
 def _resolve_relative(current: str, is_package: bool, level: int, target: str) -> str:
     base = current if is_package else current.rpartition(".")[0]
     for _ in range(level - 1):
@@ -803,8 +886,7 @@ def grader_modules(task_cls: type) -> dict[str, str]:
         path, is_package = located
         if path is None:
             continue
-        with open(path, "rb") as f:
-            source = f.read()
+        source = _read_source(path)
         key = _file_key(name, path, own_package)
         hashed = _without_own_name(source, top) if top == own_package else source
         modules[key] = "sha256:" + hashlib.sha256(hashed).hexdigest()
@@ -812,6 +894,787 @@ def grader_modules(task_cls: type) -> dict[str, str]:
     if own_package is not None:
         modules = _absent_inits(own_package) | modules
     return dict(sorted(modules.items()))
+
+
+def grader_modules_v0_10_0(task_cls: type) -> dict[str, str]:
+    """:func:`grader_modules` as SiEval 0.10.0 computed it, keyed by import name.
+
+    Kept unchanged so a 0.10.0 directory's ``grader`` identity can still be
+    compared (:func:`legacy_grader_keys`). 0.10.1 keyed files by path instead.
+    """
+    starts = {klass.__module__ for klass in task_cls.__mro__}
+    own = {root for module in starts if (root := _own_root_v0_10_0(module)) is not None}
+    patched = {
+        root
+        for module in _function_modules(task_cls) - starts
+        if (root := _patch_root(module)) is not None
+    }
+    extra = sorted((own | patched) - set(GRADER_PACKAGES))
+    roots = (*GRADER_PACKAGES, *extra)
+    pending = [m for m in starts | _function_modules(task_cls) if _followed(m, roots)]
+    pending.extend(extra)
+    seen: set[str] = set()
+    modules: dict[str, str] = {}
+    while pending:
+        name = pending.pop()
+        if name in seen or not _followed(name, roots):
+            continue
+        seen.add(name)
+        located = _locate(name)
+        if located is None:
+            continue
+        path, is_package = located
+        if path is None:
+            continue
+        source = _read_source(path)
+        modules[name] = "sha256:" + hashlib.sha256(source).hexdigest()
+        pending.extend(_imports_of(name, source, is_package, roots))
+        if is_package and name not in GRADER_PACKAGES:
+            pending.extend(_package_files_v0_10_0(name, path))
+    return dict(sorted(modules.items()))
+
+
+def _own_root_v0_10_0(module: str) -> str | None:
+    """:func:`_own_root` as 0.10.0 had it: a package with an ``__init__.py``."""
+    top = module.partition(".")[0]
+    if not top.startswith("sieval_"):
+        return None
+    located = _locate(top)
+    if located is None or located[0] is None:
+        return None
+    return top
+
+
+def _package_files_v0_10_0(name: str, init: str) -> list[str]:
+    """:func:`_package_files` as 0.10.0 had it: one location, from its ``__init__``."""
+    root = os.path.dirname(init)
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d for d in dirnames if not d.startswith((".", "__pycache__"))
+        )
+        rel = os.path.relpath(dirpath, root)
+        prefix = name if rel == "." else f"{name}.{rel.replace(os.sep, '.')}"
+        for filename in sorted(filenames):
+            if not filename.endswith(".py"):
+                continue
+            stem = filename[:-3]
+            found.append(prefix if stem == "__init__" else f"{prefix}.{stem}")
+    return found
+
+
+def grader_task_v0_10_0(task_cls: type) -> str:
+    """:func:`grader_task` as 0.10.0 had it: the class's import path."""
+    return f"{task_cls.__module__}.{task_cls.__qualname__}"
+
+
+# ---------------------------------------------------------------------------
+# Stage code: which code each stage reaches
+# ---------------------------------------------------------------------------
+
+#: The Task methods each code-identified stage starts from.
+STAGE_ENTRY_METHODS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "preprocess": ("preprocess",),
+        "postprocess": ("postprocess",),
+        "feedback": ("feedback",),
+        "report": ("report", "problem_groups"),
+    }
+)
+
+#: Methods every code-identified stage starts from as well: they build the
+#: state a stage reads (``self._*``) and the sample (``ctx.raw_sample``).
+SHARED_ENTRY_METHODS: tuple[str, ...] = (
+    "__init__",
+    "__post_init__",
+    "setup",
+    "make_context",
+    "grader_args",
+    "judge_models",
+    "judge_prompts",
+)
+
+#: Builtins that run, or look up, code no name in the source shows.
+_DYNAMIC_NAMES = frozenset({"eval", "exec", "globals", "locals", "vars", "__import__"})
+
+#: Attributes that load or look up code no name in the source shows.
+_DYNAMIC_ATTRS = frozenset(
+    {
+        "import_module",
+        "spec_from_file_location",
+        "exec_module",
+        "run_path",
+        "run_module",
+        "__dict__",
+        "__getattribute__",
+    }
+)
+
+#: The dynamic names that may load a module by name. A module digested whole
+#: holds no task method a lookup could reach, so only these matter there.
+_LOADERS = frozenset(
+    {"__import__", "import_module", "spec_from_file_location", "exec_module"}
+    | {"run_path", "run_module", "exec", "eval"}
+)
+
+#: Attribute lookups that name the attribute in an argument.
+_ATTR_CALLS = frozenset({"getattr", "setattr", "delattr", "hasattr"})
+
+
+class _Unattributable(Exception):
+    """A construct the static per-method walk cannot attribute to a stage."""
+
+
+def _body_span(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[int, int]:
+    """A function body's lines; ``(0, -1)`` when it shares the ``def`` line."""
+    start = node.body[0].lineno
+    if start <= node.lineno:
+        return (0, -1)
+    return (start, cast(int, node.end_lineno))
+
+
+def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+    """What runs when the ``def`` itself runs: decorators, defaults, annotations."""
+    out: list[ast.AST] = [*node.decorator_list, node.args]
+    if node.returns is not None:
+        out.append(node.returns)
+    return out
+
+
+class _Module:
+    """A module the stage walk reads one function at a time.
+
+    ``units`` holds each top-level function and each method of a top-level
+    class, by qualname. ``shell`` is the source without their bodies: imports,
+    decorators, signatures, class attributes and every other statement that
+    runs at import, which counts in every stage reaching the module.
+    """
+
+    def __init__(self, name: str, path: str, source: bytes, is_package: bool):
+        self.name = name
+        self.path = path
+        self.is_package = is_package
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            self.tree = ast.parse(source)
+        self.units: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+        self.top: dict[str, ast.AST] = {}
+        shell_nodes: list[ast.AST] = []
+        for node in self.tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.top[node.name] = node
+                self.units[node.name] = node
+                shell_nodes.extend(_signature(node))
+            elif isinstance(node, ast.ClassDef):
+                self.top[node.name] = node
+                shell_nodes.extend([*node.decorator_list, *node.bases, *node.keywords])
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        self.units[f"{node.name}.{item.name}"] = item
+                        shell_nodes.extend(_signature(item))
+                    else:
+                        shell_nodes.append(item)
+            elif not isinstance(node, (ast.Import, ast.ImportFrom)):
+                # A top-level import binds; what reads the name reaches it.
+                shell_nodes.append(node)
+                for target in _assigned_names(node):
+                    self.top.setdefault(target, node)
+        self.shell_nodes = shell_nodes
+        lines = source.splitlines(keepends=True)
+        self._lines = lines
+        stripped: set[int] = set()
+        for unit in self.units.values():
+            start, end = _body_span(unit)
+            stripped.update(range(start, end + 1))
+        self.shell = b"".join(
+            line for i, line in enumerate(lines, start=1) if i not in stripped
+        )
+        self.bindings = _bindings(self.tree, name, is_package)
+
+    def unit_source(self, qualname: str) -> bytes:
+        unit = self.units[qualname]
+        start, end = _body_span(unit)
+        return b"".join(self._lines[start - 1 : end]) if start else b""
+
+
+def _assigned_names(node: ast.AST) -> list[str]:
+    """Module-level names *node* binds outside a ``def`` or ``class``."""
+    names: list[str] = []
+    targets: list[ast.AST] = []
+    if isinstance(node, ast.Assign):
+        targets = list(node.targets)
+    elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        targets = [node.target]
+    elif isinstance(node, ast.TypeAlias):
+        targets = [node.name]
+    for target in targets:
+        names.extend(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
+    return names
+
+
+def _bindings(
+    tree: ast.Module, name: str, is_package: bool
+) -> dict[str, tuple[str, str | None]]:
+    """``{bound name: (module, attribute or None)}`` for every import in *tree*.
+
+    A star import binds ``*<module>``.
+    """
+    out: dict[str, tuple[str, str | None]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    out[alias.asname] = (alias.name, None)
+                else:
+                    top = alias.name.partition(".")[0]
+                    out.setdefault(top, (alias.name, None))
+        elif isinstance(node, ast.ImportFrom):
+            module = (
+                _resolve_relative(name, is_package, node.level, node.module or "")
+                if node.level
+                else node.module or ""
+            )
+            for alias in node.names:
+                if alias.name == "*":
+                    out[f"*{module}"] = (module, None)
+                else:
+                    out[alias.asname or alias.name] = (module, alias.name)
+    return out
+
+
+class _Refs:
+    """The bare names and attribute names some code reads."""
+
+    def __init__(self, nodes: Iterable[ast.AST]):
+        self.names: set[str] = set()
+        self.attrs: set[str] = set()
+        #: Attributes read rather than assigned.
+        self.loaded: set[str] = set()
+        self.dynamic: list[str] = []
+        #: Objects of a ``getattr`` with a computed name: a bare name, or
+        #: ``None`` for any other expression.
+        self.computed: list[str | None] = []
+        #: ``(attribute, attributes read, strings)`` for each ``<x>.<attr> =
+        #: <value>``: what the stored value was built from.
+        self.stores: list[tuple[str, frozenset[str], frozenset[str]]] = []
+        #: String constants outside such a stored value: an endpoint variable
+        #: read where it is used.
+        self.strings: set[str] = set()
+        stored: set[int] = set()
+        for root in nodes:
+            for node in ast.walk(root):
+                if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value:
+                    targets = (
+                        node.targets if isinstance(node, ast.Assign) else [node.target]
+                    )
+                    value = list(ast.walk(node.value))
+                    reads = frozenset(
+                        n.attr for n in value if isinstance(n, ast.Attribute)
+                    )
+                    texts = frozenset(
+                        n.value
+                        for n in value
+                        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    )
+                    for target in targets:
+                        if isinstance(target, ast.Attribute):
+                            self.stores.append((target.attr, reads, texts))
+                            stored.update(id(n) for n in value)
+        for root in nodes:
+            for node in ast.walk(root):
+                if (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and id(node) not in stored
+                ):
+                    self.strings.add(node.value)
+                if isinstance(node, ast.Name):
+                    self.names.add(node.id)
+                    if node.id in _DYNAMIC_NAMES:
+                        self.dynamic.append(node.id)
+                elif isinstance(node, ast.Attribute):
+                    self.attrs.add(node.attr)
+                    if isinstance(node.ctx, ast.Load):
+                        self.loaded.add(node.attr)
+                    if node.attr in _DYNAMIC_ATTRS:
+                        self.dynamic.append(node.attr)
+                elif isinstance(node, ast.Call):
+                    self._attr_call(node)
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for alias in node.names:
+                        self.names.add(alias.asname or alias.name.partition(".")[0])
+
+    def _attr_call(self, node: ast.Call) -> None:
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else None
+        if name not in _ATTR_CALLS or len(node.args) < 2:
+            return
+        attr = node.args[1]
+        if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+            self.attrs.add(attr.value)
+            if name != "setattr":
+                self.loaded.add(attr.value)
+            return
+        target = node.args[0]
+        if isinstance(target, ast.Attribute) and target.attr != "__class__":
+            # State the task holds (``self._dataset``), never the task itself.
+            return
+        if isinstance(target, ast.Name) and target.id not in ("self", "cls"):
+            # A module bound by an import is checked by the caller; any other
+            # name may hold the task or one of its classes.
+            self.computed.append(target.id)
+            return
+        self.computed.append(None)
+
+
+def _methods_of(value: object) -> list[object]:
+    """The functions behind a class attribute: a method, a property's accessors."""
+    if isinstance(value, property):
+        return [f for f in (value.fget, value.fset, value.fdel) if f is not None]
+    inner = getattr(value, "__func__", None)
+    if callable(inner):
+        return [inner]
+    wrapped = getattr(value, "func", None)  # functools.partial / partialmethod
+    if callable(wrapped) and not isinstance(value, type):
+        return [wrapped]
+    return [value]
+
+
+class _StageWalker:
+    """Attribute a task class's code to the stages that reach it.
+
+    A module holding a class of the task's MRO, or a function patched onto
+    one, is read a function at a time (:class:`_Module`); a stage reaches a
+    method by its attribute name, a function or helper class by its bare name.
+    Any other module is digested whole, with what it imports, as
+    :func:`grader_modules` does.
+    """
+
+    def __init__(self, task_cls: type):
+        self.task_cls = task_cls
+        starts = {klass.__module__ for klass in task_cls.__mro__}
+        own = {root for module in starts if (root := _own_root(module)) is not None}
+        patched = {
+            root
+            for module in _function_modules(task_cls) - starts
+            if (root := _patch_root(module)) is not None
+        }
+        extra = sorted((own | patched) - set(GRADER_PACKAGES))
+        self.roots: tuple[str, ...] = (*GRADER_PACKAGES, *extra)
+        self.own_package = _own_package(task_cls)
+        self.mro_classes = {
+            (klass.__module__, klass.__qualname__) for klass in task_cls.__mro__
+        }
+        self._modules: dict[str, _Module | None] = {}
+        #: ``{attribute: [(module, unit)]}`` over every class of the MRO.
+        self.methods: dict[str, list[tuple[str, str]]] = {}
+        for klass in task_cls.__mro__:
+            for attr, value in vars(klass).items():
+                for func in _methods_of(value):
+                    self._index(klass, attr, func)
+            self._index_source(klass)
+        #: Modules holding a class of the MRO: their shells hold class
+        #: attributes any stage may read, so every stage reaches them.
+        self.class_modules = {m for m in starts if _followed(m, self.roots)}
+        #: Modules read a function at a time.
+        self.split = self.class_modules | {
+            m for units in self.methods.values() for m, _ in units
+        }
+
+    def _index(self, klass: type, attr: str, func: object) -> None:
+        if isinstance(func, type) or not callable(func):
+            return
+        module = getattr(func, "__module__", None)
+        if not isinstance(module, str) or not _followed(module, self.roots):
+            return
+        qualname = getattr(func, "__qualname__", None)
+        unit = qualname.partition(".<locals>")[0] if isinstance(qualname, str) else ""
+        parsed = self.module(module)
+        if parsed is None or unit not in parsed.units:
+            raise _Unattributable(
+                f"{klass.__qualname__}.{attr} is not a function in {module}'s source"
+            )
+        self.methods.setdefault(attr, []).append((module, unit))
+
+    def unreached(self) -> dict[str, dict[str, str]]:
+        """Files of each package outside ``sieval`` that no stage reaches, by package.
+
+        Such a package counts whole, as :func:`grader_modules` digests it, in
+        every stage that reaches any of it: a stage may still run one of its
+        files (a module its ``__init__`` imports, one read by path) and
+        nothing tells which. A file some stage does reach counts only there.
+        """
+        reached: set[str] = set()
+        tops: set[str] = set()
+        for entries in STAGE_ENTRY_METHODS.values():
+            try:
+                walk = self._walk(entries)
+            except _Unattributable:
+                # That stage counts everything (its fallback): it reaches no
+                # file in particular, so leaves none out of the others.
+                continue
+            for module in (*walk.shells, *walk.whole):
+                reached.add(module)
+                tops.add(module.partition(".")[0])
+        tops.discard("sieval")
+        out: dict[str, dict[str, str]] = {}
+        for top in sorted(tops):
+            files: dict[str, str] = {}
+            for module in (top, *_package_files(top)):
+                if module in reached or module in self.split:
+                    continue
+                located = _locate(module)
+                if located is None or located[0] is None:
+                    continue
+                source = self._hashed(module, _read_source(located[0]))
+                files[self._key(module, located[0])] = (
+                    "sha256:" + hashlib.sha256(source).hexdigest()
+                )
+            if top == self.own_package:
+                files = _absent_inits(top) | files
+            out[top] = files
+        return out
+
+    def _index_source(self, klass: type) -> None:
+        """Index the methods *klass*'s source defines, patched over or not.
+
+        A patch may wrap the method it replaces (``original = Task.report``),
+        so the definition still counts wherever its name is reached.
+        """
+        module = klass.__module__
+        if not _followed(module, self.roots):
+            return
+        parsed = self.module(module)
+        if parsed is None:
+            return
+        prefix = klass.__qualname__ + "."
+        for qualname in parsed.units:
+            if qualname.startswith(prefix):
+                attr = qualname[len(prefix) :]
+                units = self.methods.setdefault(attr, [])
+                if (module, qualname) not in units:
+                    units.append((module, qualname))
+
+    def module(self, name: str) -> _Module | None:
+        if name not in self._modules:
+            located = _locate(name)
+            path, is_package = located if located is not None else (None, False)
+            if path is None:
+                self._modules[name] = None
+            else:
+                self._modules[name] = _Module(
+                    name, path, self._hashed(name, _read_source(path)), is_package
+                )
+        return self._modules[name]
+
+    def _hashed(self, name: str, source: bytes) -> bytes:
+        top = name.partition(".")[0]
+        return _without_own_name(source, top) if top == self.own_package else source
+
+    def _key(self, name: str, path: str) -> str:
+        return _file_key(name, path, self.own_package)
+
+    def stage(
+        self, entries: Iterable[str]
+    ) -> tuple[dict[str, str], "_StageWalk", set[str]]:
+        """What *entries* reach: ``({key: digest}, the walk, top-level
+        packages outside sieval reached)``.
+
+        A function's key is ``<file key>:<qualname>``; a module shell's or a
+        whole module's is its file key. Raises :class:`_Unattributable` for
+        code that reaches other code by a name only known at run time.
+        """
+        walk = self._walk(entries)
+        tops = {m.partition(".")[0] for m in (*walk.shells, *walk.whole)}
+        tops.discard("sieval")
+        return walk.digests(), walk, tops
+
+    def _walk(self, entries: Iterable[str]) -> "_StageWalk":
+        walk = _StageWalk(self)
+        # Dunder methods are reached by protocol, not by name.
+        dunders = [a for a in self.methods if a.startswith("__") and a.endswith("__")]
+        for entry in (*entries, *SHARED_ENTRY_METHODS, *dunders):
+            walk.reach_attr(entry)
+        for module in sorted(self.class_modules):
+            walk.reach_shell(module)
+        walk.run()
+        return walk
+
+
+class _StageWalk:
+    """One stage's walk over a :class:`_StageWalker`'s modules."""
+
+    def __init__(self, walker: _StageWalker):
+        self.w = walker
+        self.units: set[tuple[str, str]] = set()
+        self.shells: set[str] = set()
+        self.whole: set[str] = set()
+        self.attrs: set[str] = set()
+        self.loaded: set[str] = set()
+        self.stores: list[tuple[str, frozenset[str], frozenset[str]]] = []
+        self.strings: set[str] = set()
+        self._pending: list[tuple[str, str]] = []
+        self._pending_shells: list[str] = []
+        self._pending_whole: list[str] = []
+
+    def reach_attr(self, attr: str) -> None:
+        if attr not in self.attrs:
+            self.attrs.add(attr)
+            self._pending.extend(self.w.methods.get(attr, ()))
+
+    def reach_shell(self, module: str) -> None:
+        if module not in self.shells:
+            self.shells.add(module)
+            self._pending_shells.append(module)
+
+    def reach_module(self, module: str, attr: str | None) -> None:
+        """Reach what an import binds: a split module's unit, or a whole module."""
+        if not _followed(module, self.w.roots):
+            return
+        if attr is not None and _locate(f"{module}.{attr}") is not None:
+            module, attr = f"{module}.{attr}", None
+        if module not in self.w.split:
+            if module not in self.whole:
+                self.whole.add(module)
+                self._pending_whole.append(module)
+            return
+        self.reach_shell(module)
+        parsed = self.w.module(module)
+        if parsed is None:
+            return
+        if attr is None:
+            # The module object itself: any of its names may be read off it.
+            for name in parsed.top:
+                self.reach_name(parsed, name)
+        elif attr in parsed.top:
+            self.reach_name(parsed, attr)
+
+    def reach_name(self, parsed: _Module, name: str) -> None:
+        """Reach a top-level name of *parsed*: a function, or a helper class."""
+        node = parsed.top.get(name)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            self._pending.append((parsed.name, name))
+        elif isinstance(node, ast.ClassDef):
+            if (parsed.name, name) in self.w.mro_classes:
+                return  # the task's own class: its methods are reached by name
+            prefix = name + "."
+            self._pending.extend(
+                (parsed.name, q) for q in parsed.units if q.startswith(prefix)
+            )
+
+    def read(self, parsed: _Module, refs: _Refs, where: str) -> None:
+        dynamic = list(refs.dynamic)
+        for target in refs.computed:
+            bound = parsed.bindings.get(target) if target is not None else None
+            # Only a module outside the walk is safe to look a name up on.
+            if bound is None or _followed(bound[0], self.w.roots):
+                dynamic.append(f"getattr({target or 'self'}, <expr>)")
+        if dynamic:
+            raise _Unattributable(
+                f"{where} reaches code by a name only known at run time "
+                f"({', '.join(sorted(set(dynamic)))})"
+            )
+        for attr in refs.attrs:
+            self.reach_attr(attr)
+        self.loaded |= refs.loaded
+        self.stores.extend(refs.stores)
+        self.strings |= refs.strings
+        for name in refs.names:
+            if name in parsed.top:
+                self.reach_name(parsed, name)
+            elif name in parsed.bindings:
+                module, attr = parsed.bindings[name]
+                self.reach_module(module, attr)
+
+    def run(self) -> None:
+        while self._pending or self._pending_shells or self._pending_whole:
+            if self._pending_shells:
+                module = self._pending_shells.pop()
+                parsed = self.w.module(module)
+                if parsed is None:
+                    continue
+                self.read(parsed, _Refs(parsed.shell_nodes), f"{module} at import")
+                # A star import, or one whose names the module never reads,
+                # runs for its side effects: it counts wherever the module does.
+                read = _Refs([parsed.tree]).names
+                for bound, (target, attr) in parsed.bindings.items():
+                    if bound.startswith("*") or bound not in read:
+                        self.reach_module(target, attr)
+            elif self._pending:
+                module, qualname = self._pending.pop()
+                if (module, qualname) in self.units:
+                    continue
+                self.units.add((module, qualname))
+                self.reach_shell(module)
+                parsed = self.w.module(module)
+                if parsed is not None:
+                    unit = parsed.units[qualname]
+                    self.read(parsed, _Refs([unit]), f"{module}.{qualname}")
+            else:
+                self._whole_step(self._pending_whole.pop())
+
+    def _whole_step(self, name: str) -> None:
+        """Follow a whole module's imports; a split module it imports is reached
+        by the names imported from it."""
+        path, is_package = _locate(name) or (None, False)
+        if path is None:
+            return
+        tree_source = _read_source(path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(tree_source)
+        loads = sorted({d for d in _Refs([tree]).dynamic if d in _LOADERS})
+        if loads and name.partition(".")[0] != "sieval":
+            # It may load any file of its package, which no import shows and
+            # another stage may reach. Under `sieval` the walk follows imports
+            # only, as `grader_modules` does.
+            raise _Unattributable(f"{name} loads modules by name ({', '.join(loads)})")
+        for module in _imports_of(name, tree_source, is_package, self.w.roots):
+            if module in self.w.split:
+                parsed = self.w.module(module)
+                if parsed is None:
+                    continue
+                bound = _bindings(tree, name, is_package)
+                attrs = [a for m, a in bound.values() if m == module and a]
+                if not attrs or len(attrs) != sum(
+                    1 for m, _ in bound.values() if m == module
+                ):
+                    self.reach_module(module, None)
+                for attr in attrs:
+                    self.reach_module(module, attr)
+            else:
+                self.reach_module(module, None)
+
+    def reads(self, attrs: Iterable[str], strings: Iterable[str] = ()) -> bool:
+        """Whether this stage's code reads one of *attrs*, a string of
+        *strings*, or an attribute it stored from either (``self._client =
+        self._grader.client``), followed to a fixpoint."""
+        derived = set(attrs)
+        texts = set(strings)
+        grew = True
+        while grew:
+            grew = False
+            for target, reads, consts in self.stores:
+                if target not in derived and (reads & derived or consts & texts):
+                    derived.add(target)
+                    grew = True
+        return bool(self.loaded & derived) or bool(self.strings & texts)
+
+    def digests(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for module in self.shells:
+            parsed = self.w.module(module)
+            if parsed is not None:
+                key = self.w._key(module, parsed.path)
+                out[key] = "sha256:" + hashlib.sha256(parsed.shell).hexdigest()
+        for module, qualname in self.units:
+            parsed = self.w.module(module)
+            if parsed is not None:
+                key = f"{self.w._key(module, parsed.path)}:{qualname}"
+                source = parsed.unit_source(qualname)
+                out[key] = "sha256:" + hashlib.sha256(source).hexdigest()
+        for module in self.whole:
+            located = _locate(module)
+            if located is None or located[0] is None:
+                continue
+            source = self.w._hashed(module, _read_source(located[0]))
+            out[self.w._key(module, located[0])] = (
+                "sha256:" + hashlib.sha256(source).hexdigest()
+            )
+        return dict(sorted(out.items()))
+
+
+class StageCode(TypedDict):
+    """The code one stage reaches (:func:`stage_code`).
+
+    ``modules`` is ``{key: digest}``: a function or method as
+    ``<file key>:<qualname>``, a module's shell or a whole module as its file
+    key. ``judges`` are the judge roles the stage's code reads; ``services``
+    whether it reads a declared service's endpoint. ``fallback`` says why the
+    stage counts all of the task's grading code, every judge and service
+    instead.
+    """
+
+    modules: dict[str, str]
+    judges: list[str]
+    services: bool
+    fallback: NotRequired[str]
+
+
+def stage_code(
+    task_cls: type,
+    judge_roles: Iterable[str] = (),
+    services: Iterable[str] = (),
+) -> dict[str, StageCode]:
+    """The code each stage of *task_cls* that runs task code reaches, by stage.
+
+    Each of ``preprocess``, ``postprocess``, ``feedback`` and ``report`` starts
+    from its :data:`STAGE_ENTRY_METHODS` and the :data:`SHARED_ENTRY_METHODS`,
+    and follows names statically: a method by its attribute name on any class
+    of the MRO (an override, a patched-in method and the definition it
+    replaced all count, as does every method of that name), a module function
+    or helper class by its bare name, an import to what it binds. Code two
+    stages reach counts in both.
+
+    A stage reads a judge of *judge_roles* when its code reads ``self._<role>``
+    or ``self.<role>``, or an attribute stored from one; a task overriding
+    ``judge_models`` reads every judge in every stage. It reads a service of
+    *services* when its code reads the service's endpoint variable name, or an
+    attribute stored from it. ``feedback`` holds every judge and service
+    whatever its code reads (:func:`grading_identities`), so one reached in a
+    way the walk cannot see still counts there.
+
+    A construct the walk cannot follow (``getattr`` on the task with a
+    computed name, ``eval``, ``importlib``, ``vars()``, a method with no
+    source) makes that grading stage, and every grading stage after it, count
+    all of :func:`grader_modules`, every judge and every service instead:
+    over-invalidated, never under. ``fallback`` names the construct.
+    ``preprocess`` falls back on its own, since the prompts it renders are
+    digested per sample anyway.
+    """
+    roles = sorted(set(judge_roles))
+    markers = {SERVICE_ENDPOINT_ENV[s] for s in services if s in SERVICE_ENDPOINT_ENV}
+    unknown_services = any(s not in SERVICE_ENDPOINT_ENV for s in services)
+    has_services = bool(markers) or unknown_services
+    out: dict[str, StageCode] = {}
+    try:
+        walker: _StageWalker | None = _StageWalker(task_cls)
+        reason: str | None = None
+    except _Unattributable as exc:
+        walker, reason = None, str(exc)
+    own_judges = walker is not None and "judge_models" in walker.methods
+    unreached = walker.unreached() if walker is not None else {}
+    whole: dict[str, str] | None = None
+    grading_reason = reason
+    for stage in ("preprocess", *GRADING_STAGES):
+        why = reason if stage == "preprocess" else grading_reason
+        if walker is not None and why is None:
+            try:
+                modules, walk, tops = walker.stage(STAGE_ENTRY_METHODS[stage])
+            except _Unattributable as exc:
+                why = str(exc)
+            else:
+                for top in sorted(tops):
+                    modules = unreached.get(top, {}) | modules
+                judges = [r for r in roles if own_judges or walk.reads((r, f"_{r}"))]
+                out[stage] = {
+                    "modules": dict(sorted(modules.items())),
+                    "judges": judges,
+                    "services": has_services
+                    and (unknown_services or walk.reads((), markers)),
+                }
+                continue
+        if stage != "preprocess":
+            grading_reason = why
+        if whole is None:
+            whole = grader_modules(task_cls)
+        out[stage] = {
+            "modules": dict(whole),
+            "judges": roles,
+            "services": has_services,
+            "fallback": cast(str, why),
+        }
+    return out
 
 
 def _parse_judge_model_ref(raw: str) -> str | dict[str, str] | None:
@@ -995,6 +1858,99 @@ def grader_key(grader: Mapping[str, Any] | None) -> str | None:
         return None
 
 
+def grading_identities(
+    code: Mapping[str, StageCode],
+    judges: Sequence[JudgeIdentity],
+    services: Sequence[ServiceIdentity],
+    args: Mapping[str, JSONValue],
+    task: str,
+) -> dict[str, GradingIdentity]:
+    """Build the ``postprocess``, ``feedback`` and ``report`` identities.
+
+    Each holds its stage's code (*code*, from :func:`stage_code`), the task
+    class and :meth:`~sieval.core.tasks.task.Task.grader_args`. ``feedback``
+    holds every judge and service; another stage holds those its code reads
+    (agieval's extractor, were it called in ``postprocess``).
+    """
+    out: dict[str, GradingIdentity] = {}
+    for stage in GRADING_STAGES:
+        stage_code_ = code[stage]
+        identity: GradingIdentity = {
+            "digest": "",
+            "task": task,
+            "modules": dict(stage_code_["modules"]),
+            "args": dict(args),
+        }
+        feedback = stage == "feedback"
+        read = set(stage_code_["judges"])
+        mine = [j for j in judges if feedback or j["role"] in read]
+        if mine or feedback:
+            identity["judges"] = mine
+        if services and (feedback or stage_code_["services"]):
+            identity["services"] = list(services)
+        identity["digest"] = digest(
+            {k: v for k, v in identity.items() if k != "digest"}
+        )
+        out[stage] = identity
+    return out
+
+
+def stage_key(stage: Mapping[str, Any] | None) -> str | None:
+    """What a resume compares of a grading identity: all but what a judge reported.
+
+    Every field except ``digest`` counts, so a field added later counts
+    without a change here. A judge's ``version`` is what its API answered once
+    called, so a run that has not called it yet cannot know it, and ``ref``
+    names where the judge was served; both are recorded, neither decides a
+    regrade. ``None`` when *stage* is unknown or malformed.
+    """
+    if not isinstance(stage, Mapping) or not isinstance(stage.get("modules"), Mapping):
+        return None
+    payload = {k: v for k, v in stage.items() if k != "digest"}
+    if "judges" in stage:
+        if not isinstance(stage["judges"], list):
+            return None
+        payload["judges"] = [
+            {k: v for k, v in j.items() if k not in ("version", "ref")}
+            for j in stage["judges"]
+            if isinstance(j, Mapping)
+        ]
+    try:
+        return digest(payload)
+    except (TypeError, ValueError):
+        return None
+
+
+def legacy_grader_keys(
+    task_cls: type,
+    judges: Sequence[JudgeIdentity],
+    services: Sequence[ServiceIdentity],
+    args: Mapping[str, JSONValue],
+) -> set[str]:
+    """:func:`grader_key` of the schema-1 ``grader`` each release would write.
+
+    0.10.0 keyed modules and the task by import name; 0.10.1 to 0.11.x by file
+    path (:func:`grader_modules`). A recorded ``grader`` whose key is one of
+    these was written for this task's grading code as it is now. A walk that
+    fails is left out, so it matches nothing.
+    """
+    keys: set[str] = set()
+    for walk, task in (
+        (grader_modules, grader_task),
+        (grader_modules_v0_10_0, grader_task_v0_10_0),
+    ):
+        try:
+            identity = grader_identity(
+                walk(task_cls), judges, services, args=args, task=task(task_cls)
+            )
+        except (TypeError, ValueError, AttributeError, SyntaxError, OSError):
+            continue
+        key = grader_key(identity)
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
 # ---------------------------------------------------------------------------
 # Document
 # ---------------------------------------------------------------------------
@@ -1004,21 +1960,51 @@ def empty_identity() -> RunIdentity:
     return {
         "schema": IDENTITY_SCHEMA,
         "data": None,
-        "prompt": None,
+        "preprocess": None,
         "inference": None,
-        "grader": None,
+        "postprocess": None,
+        "feedback": None,
+        "report": None,
     }
 
 
-def carried_identity(existing: Mapping[str, Any] | None) -> RunIdentity:
-    """The previous run's identity when it has this schema, else an empty one."""
-    identity = empty_identity()
-    previous = (existing or {}).get("identity")
-    if isinstance(previous, dict) and previous.get("schema") == IDENTITY_SCHEMA:
+def read_identity(
+    block: object,
+) -> tuple[RunIdentity, Mapping[str, Any] | None] | None:
+    """A recorded ``identity`` block as schema 2, with a schema-1 ``grader``.
+
+    Schema 2 is read as written. Schema 1 maps ``data`` and ``inference``
+    across and ``prompt`` to ``preprocess`` (:data:`SCHEMA_1_STAGES`); its
+    ``grader`` cannot be split, so the grading stages read as unknown and the
+    ``grader`` is returned beside them, for the caller to compare whole
+    (:func:`legacy_grader_keys`). ``None`` for any other schema.
+    """
+    if not isinstance(block, Mapping):
+        return None
+    block = cast(Mapping[str, Any], block)
+    out = empty_identity()
+    schema = block.get("schema")
+    if schema == IDENTITY_SCHEMA:
         for stage in STAGES:
-            if isinstance(previous.get(stage), dict):
-                identity[stage] = previous[stage]  # type: ignore[literal-required]
-    return identity
+            if isinstance(block.get(stage), dict):
+                out[stage] = block[stage]  # type: ignore[literal-required]
+        return out, None
+    if schema == 1:
+        for old, new in SCHEMA_1_STAGES.items():
+            if isinstance(block.get(old), dict):
+                out[new] = block[old]  # type: ignore[literal-required]
+        grader = block.get("grader")
+        return out, grader if isinstance(grader, Mapping) else None
+    return None
+
+
+def carried_identity(existing: Mapping[str, Any] | None) -> RunIdentity:
+    """The previous run's identity as schema 2 (:func:`read_identity`), else empty.
+
+    A schema-1 block's grading stages are unknown until the run writes them.
+    """
+    read = read_identity((existing or {}).get("identity"))
+    return read[0] if read is not None else empty_identity()
 
 
 def carried_runs(existing: Mapping[str, Any] | None) -> list[dict[str, Any]]:

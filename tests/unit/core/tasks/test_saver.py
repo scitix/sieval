@@ -392,11 +392,13 @@ class TestRunMeta:
         assert meta["task"] == _IDENTITY
         assert meta["model"] == "candidate"
         assert meta["identity"] == {
-            "schema": 1,
+            "schema": 2,
             "data": None,
-            "prompt": None,
+            "preprocess": None,
             "inference": None,
-            "grader": None,
+            "postprocess": None,
+            "feedback": None,
+            "report": None,
         }
         [run] = meta["runs"]
         assert run["sieval"] == __version__
@@ -424,7 +426,7 @@ class TestRunMeta:
         first = TaskSaver(root_dir=root, deterministic=False, task_identity=_IDENTITY)
         await first.begin_run(resumed=False, model="m")
         await first.set_identity(data={"digest": "sha256:d", "samples": 3})
-        await first.end_run(["grader", "data", "prompt", "inference"])
+        await first.end_run(["report", "data", "preprocess", "inference"])
         # The directory was created by an older version of the same series.
         meta = _read_meta(root)
         meta["version"] = "0.9.0"
@@ -435,7 +437,7 @@ class TestRunMeta:
             resumed=True,
             model="m",
             config_diff=["concurrency_limit: 8 → 2"],
-            inference={"digest": "sha256:i"},
+            identity={"inference": {"digest": "sha256:i"}},
         )
 
         meta = _read_meta(root)
@@ -446,7 +448,7 @@ class TestRunMeta:
         assert meta["identity"]["data"] == {"digest": "sha256:d", "samples": 3}
         assert meta["identity"]["inference"] == {"digest": "sha256:i"}
         first_run, second_run = meta["runs"]
-        assert first_run["reran"] == ["data", "prompt", "inference", "grader"]
+        assert first_run["reran"] == ["data", "preprocess", "inference", "report"]
         assert second_run["start"] == "resume"
         assert second_run["config"] == ["concurrency_limit: 8 → 2"]
         assert "reran" not in second_run
@@ -563,7 +565,7 @@ class TestRunMeta:
         )
         await TaskSaver(root_dir=root).begin_run(resumed=True)
         meta = _read_meta(root)
-        assert meta["identity"]["schema"] == 1
+        assert meta["identity"]["schema"] == 2
         assert meta["identity"]["data"] is None
         # Malformed entries are dropped, well-formed ones kept.
         assert [r["start"] for r in meta["runs"]] == ["fresh", "resume"]
@@ -573,17 +575,75 @@ class TestRunMeta:
         """Leaving a stage out keeps it; `None` is a value, and sets it unknown."""
         await saver.begin_run(
             resumed=False,
-            inference={"digest": "sha256:i"},
-            grader={"digest": "sha256:g", "modules": {}, "judges": []},
+            identity={
+                "inference": {"digest": "sha256:i"},
+                "report": {"digest": "sha256:r", "modules": {}},
+            },
         )
         await saver.set_identity(data={"digest": "sha256:d", "samples": 1})
-        await saver.set_identity(grader=None)
+        await saver.set_identity(report=None)
         identity = _read_meta(tmp_root)["identity"]
         assert identity["data"] == {"digest": "sha256:d", "samples": 1}
         assert identity["inference"] == {"digest": "sha256:i"}
-        assert identity["prompt"] is None
-        assert identity["grader"] is None
+        assert identity["preprocess"] is None
+        assert identity["report"] is None
         assert saver.inference_identity == {"digest": "sha256:i"}
+
+    @pytest.mark.anyio
+    async def test_an_unknown_stage_is_refused(self, saver):
+        await saver.begin_run(resumed=False)
+        with pytest.raises(ValueError, match="grader"):
+            await saver.set_identity(grader=None)
+
+    @pytest.mark.anyio
+    async def test_a_schema_1_identity_is_carried_as_schema_2(self, tmp_path):
+        """`prompt` becomes `preprocess`; the unsplittable `grader` is dropped,
+        leaving the grading stages unknown until the run writes them."""
+        root = tmp_path / "old"
+        root.mkdir()
+        (root / "meta.json").write_bytes(
+            orjson.dumps(
+                {
+                    "version": "0.11.0",
+                    "identity": {
+                        "schema": 1,
+                        "data": {"digest": "sha256:d", "samples": 1},
+                        "prompt": {"digest": "sha256:p", "samples": 1},
+                        "inference": {"digest": "sha256:i"},
+                        "grader": {"digest": "sha256:g", "modules": {}, "judges": []},
+                    },
+                    "runs": [],
+                }
+            )
+        )
+        await TaskSaver(root_dir=root).begin_run(resumed=True)
+        assert _read_meta(root)["identity"] == {
+            "schema": 2,
+            "data": {"digest": "sha256:d", "samples": 1},
+            "preprocess": {"digest": "sha256:p", "samples": 1},
+            "inference": {"digest": "sha256:i"},
+            "postprocess": None,
+            "feedback": None,
+            "report": None,
+        }
+
+    @pytest.mark.anyio
+    async def test_resume_outcomes_land_in_runs(self, saver, tmp_root):
+        outcomes = {
+            "kept": 2,
+            "rereported": 2,
+            "regraded": 1,
+            "repostprocessed": 0,
+            "restarted": 0,
+            "dropped": 0,
+        }
+        await saver.begin_run(resumed=False)
+        await saver.end_run(["feedback", "report"], resume=outcomes)
+        await saver.begin_run(resumed=True)
+        await saver.end_run([])
+        runs = _read_meta(tmp_root)["runs"]
+        assert runs[0]["resume"] == outcomes
+        assert "resume" not in runs[1]
 
     @pytest.mark.anyio
     async def test_reported_marks_a_run_that_wrote_its_report(self, saver, tmp_root):
@@ -647,8 +707,12 @@ class TestRunMeta:
     @pytest.mark.anyio
     async def test_end_run_orders_stages(self, saver, tmp_root):
         await saver.begin_run(resumed=False)
-        await saver.end_run(["grader", "prompt"])
-        assert _read_meta(tmp_root)["runs"][-1]["reran"] == ["prompt", "grader"]
+        await saver.end_run(["report", "feedback", "preprocess", "grader"])
+        assert _read_meta(tmp_root)["runs"][-1]["reran"] == [
+            "preprocess",
+            "feedback",
+            "report",
+        ]
         assert saver.run_meta is not None
 
     @pytest.mark.anyio

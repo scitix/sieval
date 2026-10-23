@@ -58,25 +58,29 @@ from sieval.core.tasks.records import iter_grader_outputs
 from sieval.core.tasks.requests import REQUESTS_FILE, TaskRequestLog
 from sieval.core.tasks.run_meta import (
     ABSENT,
+    GRADING_STAGES,
     RESULT_SCHEMA_VERSION,
     DigestedStage,
-    GraderIdentity,
+    GradingIdentity,
     InferenceIdentity,
     JudgeIdentity,
+    ResumeOutcomes,
     RunFrom,
     RunRequests,
     aggregate_digest,
     call_key,
     digest,
     empty_identity,
-    grader_identity,
     grader_key,
-    grader_modules,
     grader_task,
+    grading_identities,
     inference_identity,
     judge_identities,
+    legacy_grader_keys,
     prompt_of,
     request_digest,
+    stage_code,
+    stage_key,
     validate_judge_model_ref,
 )
 from sieval.core.tasks.saver import TaskSaver
@@ -105,9 +109,11 @@ from .stage_resume import (
     abandon_copy,
     copy_pending,
     copy_recorded_dir,
+    earliest_grading_change,
     end_copy,
     has_graded,
     iteration_dirs,
+    recorded_grader,
     recorded_identity,
     recorded_sample_digests,
 )
@@ -158,6 +164,17 @@ def _counts(
             1 for sid, its in anomalies.items() if sid in final_ids and its
         ),
         "context_overflow": sum(1 for c in (*finals, *fails) if _overflowed(c)),
+    }
+
+
+def _no_outcomes() -> ResumeOutcomes:
+    return {
+        "kept": 0,
+        "rereported": 0,
+        "regraded": 0,
+        "repostprocessed": 0,
+        "restarted": 0,
+        "dropped": 0,
     }
 
 
@@ -491,13 +508,18 @@ class TaskRunner:
         self._run_from: RunFrom | None = None
         self._copied: list[Path] = []
         self._recorded: dict | None = None
-        self._regrade = False
-        self._grader_stamp: str | None = None
+        # The earliest grading stage whose recorded identity differs from this
+        # run's, and this run's grading identities and their keys.
+        self._grading_change: str | None = None
+        self._grading: dict[str, GradingIdentity] | None = None
+        self._stage_code: dict | None = None
+        self._legacy_keys: set[str] | None = None
+        self._stage_stamps: dict[str, str | None] = dict.fromkeys(GRADING_STAGES)
         # Context overflows an earlier run recorded as failed inference, by
         # sample: a resume scores them from the recorded refusal (`_infer`).
         self._overflow_replays: dict[str | int, str] = {}
         self._data_match: bool | None = None
-        self._resume_plan: dict[str, int] = {}
+        self._resume_plan: ResumeOutcomes | None = None
         self._unverified_inference = 0
         # Run history: actions executed this run, each sample's data and prompt
         # digests as of its first preprocess, and judge versions the API
@@ -660,13 +682,14 @@ class TaskRunner:
             # 0. Lifecycle Setup
             await self._task.setup()
 
+            # Before any identity is written, fast resume's included.
+            if self._recorded is not None:
+                self._seed_judge_versions(self._recorded)
+
             # 0.5. Fast Resume: a finished run's report.json is reused.
             cached = await self._fast_resume()
             if cached is not None:
                 return cached
-
-            if self._recorded is not None:
-                self._seed_judge_versions(self._recorded)
             # Copied here, not in `__init__`, so a runner never run copies
             # nothing. The copy stays marked unfinished until `_begin_run`
             # records the run (see `_holds_run`).
@@ -869,8 +892,7 @@ class TaskRunner:
         preprocess. Returns the samples a resume rewinds.
         """
         inference = self._inference_identity()
-        grader = self._grader_identity()
-        self._grader_stamp = grader_key(grader)
+        grading = self._grading_identities()
         changed: list[str | int] = []
         keeps_recorded_model = False
         if resumed:
@@ -878,7 +900,7 @@ class TaskRunner:
             self._contexts = await self._loader.load_initial_state()
             if any(_reuses_inference(c) for c in self._contexts.values()):
                 self._check_inference(inference)
-            self._regrade = self._recorded_grader_stamp() != self._grader_stamp
+            self._grading_change = self._recorded_grading_change()
             await self._hydrate_initial(resumed=True)
             # Decide per sample what a resume keeps before failures roll back,
             # so a sample that failed in grading regrades rather than reinfers.
@@ -890,8 +912,14 @@ class TaskRunner:
                 ctx = self._contexts[sid]
                 self._contexts[sid] = replace(ctx, retry_count=ctx.retry_count - 1)
             keeps_recorded_model = self._model_differs() and self._check_model_switch()
-        # A regrade leaves the grader unknown until the run ends: samples it
-        # has not reached yet were graded by the recorded grader.
+        # A changed grading stage, and every one after it, is unknown until the
+        # run ends: samples not reached yet hold the recorded verdicts. One
+        # that did not change is written now, upgrading a schema-1 block.
+        unknown_from = (
+            GRADING_STAGES.index(self._grading_change)
+            if resumed and self._grading_change is not None
+            else len(GRADING_STAGES)
+        )
         await self._saver.begin_run(
             resumed=resumed,
             run_from=self._run_from,
@@ -899,10 +927,17 @@ class TaskRunner:
             keep_recorded_model=keeps_recorded_model,
             config_diff=self._resume_config_diff if resumed else (),
             config_path=self._config_path(),
-            data=None,
-            prompt=None,
-            inference=inference,
-            grader=None if self._regrade else grader,
+            identity={
+                "data": None,
+                "preprocess": None,
+                "inference": inference,
+                **{
+                    stage: None
+                    if i >= unknown_from or grading is None
+                    else grading[stage]
+                    for i, stage in enumerate(GRADING_STAGES)
+                },
+            },
         )
         return changed
 
@@ -985,25 +1020,34 @@ class TaskRunner:
                 self._recorded_model(),
             )
             cached_report = None
-        if cached_report is not None and not self._recorded_stages_match():
-            logger.info(
-                "report.json found, but its run's stage identities differ "
-                "from this run's; resuming stage by stage"
-            )
-            cached_report = None
+        rereport = False
+        if cached_report is not None:
+            match = self._recorded_stages_match()
+            if match is None:
+                logger.info(
+                    "report.json found, but its run's stage identities differ "
+                    "from this run's; resuming stage by stage"
+                )
+                cached_report = None
+            elif match == "report":
+                rereport = True
         if cached_report is None:
             return None
         if not _reported_complete(cached_report):
             # Failures to retry, samples left, or a report from before the
             # `sieval` counts: the full path decides.
             return None
-        # Nothing reruns, so the identity is kept; the views are rebuilt from
-        # the shards like every other exit.
+        if rereport:
+            return await self._rereport()
+        # Nothing reruns. The identity is kept, but for grading identities a
+        # schema-1 block lacked; the views are rebuilt from the shards like
+        # every other exit.
         await self._saver.begin_run(
             resumed=True,
             model=self._model_name(),
             config_diff=self._resume_config_diff,
             config_path=self._config_path(),
+            identity=self._grading_identity_update(),
         )
         self._contexts = await self._loader.load_initial_state()
         await self._loader.hydrate(
@@ -1016,7 +1060,42 @@ class TaskRunner:
         # The resume gate pins the dataset, and the report says every sample
         # is final, so the recorded samples are the whole run.
         self._total_samples = len(self._contexts)
+        self._resume_plan = _no_outcomes()
+        self._resume_plan["kept"] = len(self._contexts)
         return await self._finalize(cached_report=cached_report)
+
+    async def _rereport(self) -> JSONValue:
+        """Recompute ``report.json`` from a finished run's records: re-report.
+
+        Only ``report`` changed, so every sample is kept as recorded and
+        nothing reaches ``preprocess``, ``infer`` or a judge; ``report()`` runs
+        on the final and failed records, and the views are rebuilt.
+        """
+        await self._saver.begin_run(
+            resumed=True,
+            model=self._model_name(),
+            config_diff=self._resume_config_diff,
+            config_path=self._config_path(),
+            identity=self._grading_identity_update(report_unknown=True),
+        )
+        self._contexts = await self._loader.load_initial_state()
+        await self._loader.hydrate(
+            self._contexts,
+            self._hydrated_ids,
+            include_stages={TaskStage.FINAL, TaskStage.FAILED},
+            prepare_retries=False,
+            record_each_stage=self._record_each_stage,
+        )
+        self._total_samples = len(self._contexts)
+        self._resume_plan = _no_outcomes()
+        self._resume_plan["kept"] = len(self._contexts)
+        self._resume_plan["rereported"] = len(self._contexts)
+        logger.info(
+            "{}: only report changed; re-reporting {} recorded sample(s)",
+            self._task.name,
+            len(self._contexts),
+        )
+        return await self._finalize()
 
     async def _run_streams(
         self,
@@ -1331,8 +1410,8 @@ class TaskRunner:
                     "prompt": self._safe_digest(prompt_of(inner)),
                 }
             elif stage in (TaskStage.POSTPROCESSED, TaskStage.FEEDBACK):
-                # Per sample, so a resume can tell which grader graded it.
-                meta["identity"] = {"grader": self._grader_stamp}
+                # Per sample, so a resume can tell which code graded it.
+                meta["identity"] = self._grading_stamps(stage)
 
             # 3. Merge user-provided meta then hook
             if out_meta:
@@ -1650,7 +1729,9 @@ class TaskRunner:
                 await self._refresh_anomaly_count(report, finals, fails, anomalies)
         if refusal is None:
             if reused:
-                await self._saver.end_run((), rules_hash=rules_hash)
+                await self._saver.end_run(
+                    (), rules_hash=rules_hash, resume=self._resume_plan
+                )
             else:
                 await self._end_run(reported=reported, rules_hash=rules_hash)
         await self._finish_progress(finals, fails, anomalies)
@@ -1774,11 +1855,12 @@ class TaskRunner:
             raise FileNotFoundError(f"resume directory not found: {src}")
         gate_resume_version(src, __version__)
         recorded = _read_run_meta(src)
-        identity = recorded_identity(recorded)
+        block = (recorded or {}).get("identity")
         self._recorded = recorded
+        # As that directory recorded it, a schema-1 block included.
         self._run_from = {
             "dir": str(src),
-            "identity": identity if identity is not None else empty_identity(),
+            "identity": block if isinstance(block, dict) else empty_identity(),
         }
         logger.info("Resuming {} from {}", self._task.name, src)
 
@@ -1801,11 +1883,59 @@ class TaskRunner:
         """
         return self._run_from is None and recorded_identity(self._recorded) is not None
 
-    def _recorded_grader_stamp(self) -> str | None:
+    def _recorded_grading_change(self) -> str | None:
+        """The earliest grading stage the recorded run graded differently.
+
+        A run without identities is trusted only as :meth:`_trusts_unrecorded`
+        says. A schema-1 ``grader`` matches when its key is one an earlier
+        release would compute for this task now (:func:`legacy_grader_keys`).
+        """
         identity = recorded_identity(self._recorded)
         if identity is None:
-            return self._grader_stamp if self._trusts_unrecorded() else None
-        return grader_key(identity["grader"])
+            return None if self._trusts_unrecorded() else GRADING_STAGES[0]
+        current = self._grading_identities() or {}
+        grader = recorded_grader(self._recorded)
+        legacy = None
+        if grader is not None:
+            legacy = grader_key(grader) in self._legacy_grader_keys()
+        return earliest_grading_change(identity, current, legacy)
+
+    def _legacy_grader_keys(self) -> set[str]:
+        """:func:`legacy_grader_keys` for this task, walked once per runner."""
+        if self._legacy_keys is None:
+            self._legacy_keys = self._compute_legacy_grader_keys()
+        return self._legacy_keys
+
+    def _compute_legacy_grader_keys(self) -> set[str]:
+        try:
+            judges = judge_identities(
+                self._task.judge_models(), self._task.judge_prompts()
+            )
+            task_cls = type(self._task)
+            return legacy_grader_keys(
+                task_cls,
+                judges,
+                service_identities(task_cls.services),
+                self._task.grader_args(),
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.warning("Legacy grader identity unavailable: {}", exc)
+            return set()
+
+    def _grading_identity_update(self, *, report_unknown: bool = False) -> dict:
+        """Grading identities a run that grades nothing writes at its start.
+
+        Each stage identity this run computes, so a schema-1 block becomes
+        schema 2 in place; ``report`` stays unknown until a re-report writes
+        it. Empty when they cannot be computed: the carried ones stay.
+        """
+        grading = self._grading_identities()
+        if grading is None:
+            return {}
+        update: dict = dict(grading)
+        if report_unknown:
+            update["report"] = None
+        return update
 
     def _check_inference(self, current: InferenceIdentity | None) -> None:
         """Refuse a resume whose inference differs from the recorded run's."""
@@ -1848,16 +1978,21 @@ class TaskRunner:
         abandon_copy(self._root_dir, self._copied)
         self._copied = []
 
-    def _recorded_stages_match(self) -> bool:
-        """Whether a finished run may be fast-resumed: same data, inference and
-        grader. The prompt is covered by the grader: its template is in the
-        task module and arguments the grader digests."""
+    def _recorded_stages_match(self) -> Literal["all", "report"] | None:
+        """Whether a finished run may be reused: ``all`` its stages match,
+        ``report`` all but the report, ``None`` otherwise.
+
+        Same data, inference, postprocess and feedback reuse every sample.
+        Preprocess is covered by the code the stages digest: a prompt
+        template lives in the task module or the arguments it digests.
+        """
         identity = recorded_identity(self._recorded)
         if identity is None:
-            return (
+            trusted = (
                 self._legacy_match.get("data") is not False
                 and self._legacy_match.get("inference") is not False
             )
+            return "all" if trusted else None
         inference = self._inference_identity()
         recorded_inference = identity["inference"]
         if (
@@ -1865,15 +2000,18 @@ class TaskRunner:
             or recorded_inference is None
             or recorded_inference.get("digest") != inference["digest"]
         ):
-            return False
-        if grader_key(identity["grader"]) != grader_key(self._grader_identity()):
-            return False
+            return None
         recorded_data = identity["data"]
-        return (
-            recorded_data is not None
-            and recorded_data.get("digest") is not None
-            and recorded_data == self._dataset_identity()
-        )
+        if (
+            recorded_data is None
+            or recorded_data.get("digest") is None
+            or recorded_data != self._dataset_identity()
+        ):
+            return None
+        change = self._recorded_grading_change()
+        if change is None:
+            return "all"
+        return "report" if change == "report" else None
 
     def _dataset_identity(self) -> DigestedStage:
         test_set = self._task.dataset.test_set
@@ -1899,14 +2037,51 @@ class TaskRunner:
         return self._data_match
 
     @staticmethod
-    def _sample_grader_stamp(ctx: TaskContext) -> str | None:
+    def _sample_stamps(ctx: TaskContext) -> dict[str, str] | None:
+        """The grading stage keys *ctx*'s grading records carry, or ``None``.
+
+        ``{"grader": key}`` for a record a schema-1 run stamped, else
+        ``{stage: key}`` per grading stage. ``None`` when no record says.
+        """
         for stage in (TaskStage.FEEDBACK, TaskStage.POSTPROCESSED):
             for entry in reversed(ctx.stage_meta.get(stage.value, ())):
-                if isinstance(entry, dict) and isinstance(entry.get("identity"), dict):
-                    stamp = entry["identity"].get("grader")
-                    if isinstance(stamp, str):
-                        return stamp
+                if not isinstance(entry, dict):
+                    continue
+                identity = entry.get("identity")
+                if not isinstance(identity, dict):
+                    continue
+                stamps = {k: v for k, v in identity.items() if isinstance(v, str)}
+                if stamps:
+                    return stamps
         return None
+
+    def _sample_grading_change(self, ctx: TaskContext) -> str | None:
+        """The earliest grading stage that graded *ctx* differently.
+
+        Read from its own stamps when it has them: a sample an interrupted
+        regrade already redid is current while the directory's grading
+        identity is still unknown. Otherwise the directory's comparison
+        decides.
+        """
+        stamps = self._sample_stamps(ctx)
+        if stamps is None:
+            return self._grading_change
+        if "grader" in stamps:
+            if recorded_grader(self._recorded) is None:
+                # Upgraded to schema 2 since: that run found the stamp current,
+                # so the directory's identity describes this sample.
+                return self._grading_change
+            return (
+                None
+                if stamps["grader"] in self._legacy_grader_keys()
+                else GRADING_STAGES[0]
+            )
+        for stage in ("postprocess", "feedback"):
+            # A stage the sample has not reached carries no stamp.
+            if stage in stamps and stamps[stage] != self._stage_stamps[stage]:
+                return stage
+        # `report` runs over every sample at once: the directory says.
+        return "report" if self._grading_change == "report" else None
 
     async def _current_prompt_digest(self, ctx: TaskContext) -> str | None:
         """What this run's ``preprocess`` makes of *ctx*'s sample, digested."""
@@ -1922,15 +2097,18 @@ class TaskRunner:
     async def _plan_stage_resume(self) -> list[str | int]:
         """Decide, per recorded sample, what this resume keeps.
 
-        Changed data or prompt restarts a sample. A changed grader rolls it back
-        to its recorded inference, or restarts it if it is past iteration 0,
-        since that inference saw the old grader's feedback. Samples outside the
-        dataset are dropped. Returns the samples to rewrite as this run's.
+        Each sample rolls back to the earliest stage that changed for it:
+        changed data or preprocess restarts it; a changed postprocess rolls it
+        back to its recorded inference, a changed feedback to its recorded
+        postprocess; a sample past iteration 0 restarts instead, since its
+        later inference saw the old feedback. A changed report keeps every
+        sample and recomputes ``report.json``. Samples outside the dataset are
+        dropped. Returns the samples to rewrite as this run's.
         """
         test_set = self._task.dataset.test_set
         size = len(test_set) if test_set else 0
         changed: list[str | int] = []
-        counts = dict.fromkeys(("kept", "restarted", "regraded", "dropped"), 0)
+        counts = _no_outcomes()
 
         for sid, ctx in list(self._contexts.items()):
             if not isinstance(sid, int) or not 0 <= sid < size:
@@ -1943,6 +2121,8 @@ class TaskRunner:
                 self._contexts[sid] = new_ctx
                 changed.append(sid)
 
+        if self._grading_change == "report":
+            counts["rereported"] = counts["kept"]
         self._resume_plan = counts
         if self._unverified_inference:
             logger.warning(
@@ -1953,16 +2133,23 @@ class TaskRunner:
                 self._unverified_inference,
             )
         logger.info(
-            "Per-stage resume of {}: {} kept, {} regraded, {} restarted, {} dropped",
+            "Per-stage resume of {}: {} kept ({} re-reported), {} regraded, "
+            "{} re-postprocessed, {} restarted, {} dropped",
             self._task.name,
             counts["kept"],
+            counts["rereported"],
             counts["regraded"],
+            counts["repostprocessed"],
             counts["restarted"],
             counts["dropped"],
         )
         return changed
 
-    async def _plan_sample(self, ctx: TaskContext) -> tuple[str, TaskContext]:
+    async def _plan_sample(
+        self, ctx: TaskContext
+    ) -> tuple[
+        Literal["kept", "regraded", "repostprocessed", "restarted"], TaskContext
+    ]:
         """One sample's resume: ``(outcome, context to continue from)``."""
         if self._trusts_unrecorded() or ctx.stage is TaskStage.INITIAL:
             return "kept", ctx
@@ -2000,14 +2187,14 @@ class TaskRunner:
                 ctx = self._stamp_input(ctx, current_data, current_prompt)
         if not has_graded(ctx):
             return "kept", ctx
-        graded_by = self._sample_grader_stamp(ctx) or self._recorded_grader_stamp()
-        if graded_by == self._grader_stamp:
-            if self._sample_grader_stamp(ctx) is None:
-                ctx = self._stamp_grader(ctx, graded_by)
+        change = self._sample_grading_change(ctx)
+        if change in (None, "report"):
             return "kept", ctx
         if ctx.iteration > 0:
             return "restarted", restart
-        return "regraded", self._to_regrade(ctx)
+        if change == "feedback" and ctx.postprocess_result is not None:
+            return "regraded", self._to_refeed(ctx)
+        return "repostprocessed", self._to_regrade(ctx)
 
     @staticmethod
     def _stamp_input(ctx: TaskContext, data: str | None, prompt: str | None):
@@ -2019,19 +2206,35 @@ class TaskRunner:
         history[-1] = cast(TaskStageMeta, last)
         return replace(ctx, stage_meta={**ctx.stage_meta, key: history})
 
+    def _grading_stamps(self, upto: TaskStage) -> dict[str, str | None]:
+        """The grading stage keys a record of stage *upto* is stamped with.
+
+        A ``postprocess`` record carries the ``postprocess`` key, a
+        ``feedback`` record ``postprocess`` and ``feedback``: what produced it.
+        """
+        stages = ["postprocess"]
+        if upto is TaskStage.FEEDBACK:
+            stages.append("feedback")
+        return {stage: self._stage_stamps[stage] for stage in stages}
+
     @staticmethod
-    def _stamp_grader(ctx: TaskContext, stamp: str | None) -> TaskContext:
-        """Stamp the grader that graded *ctx* on its grading meta, so a later
-        resume can tell it apart once ``meta.json`` names another grader."""
-        meta = dict(ctx.stage_meta)
-        for stage in (TaskStage.POSTPROCESSED, TaskStage.FEEDBACK):
-            history = list(meta.get(stage.value) or ())
-            if history:
-                last = dict(history[-1])
-                last["identity"] = {"grader": stamp}
-                history[-1] = cast(TaskStageMeta, last)
-                meta[stage.value] = history
-        return replace(ctx, stage_meta=meta)
+    def _to_refeed(ctx: TaskContext) -> TaskContext:
+        """Roll *ctx* back to its recorded ``postprocess``, to judge it again."""
+        keep = {
+            TaskStage.PREPROCESSED.value,
+            TaskStage.INFERRED.value,
+            TaskStage.POSTPROCESSED.value,
+        }
+        return replace(
+            ctx,
+            stage=TaskStage.POSTPROCESSED,
+            feedback_result=None,
+            error_action=None,
+            error_reason=None,
+            error_msg=None,
+            retry_count=0,
+            stage_meta={k: v for k, v in ctx.stage_meta.items() if k in keep},
+        )
 
     @staticmethod
     def _to_regrade(ctx: TaskContext) -> TaskContext:
@@ -2123,7 +2326,13 @@ class TaskRunner:
             logger.warning("Inference identity unavailable: {}", exc)
             return None
 
-    def _grader_identity(self) -> GraderIdentity | None:
+    def _grading_identities(self) -> dict[str, GradingIdentity] | None:
+        """This run's ``postprocess``, ``feedback`` and ``report`` identities.
+
+        The stage code is walked once per runner; judge versions are read
+        each time, as the API reports them. Sets the keys each grading record
+        is stamped with.
+        """
         try:
             judges = judge_identities(
                 self._task.judge_models(),
@@ -2131,16 +2340,32 @@ class TaskRunner:
                 versions=self._judge_versions,
             )
             task_cls = type(self._task)
-            return grader_identity(
-                grader_modules(task_cls),
+            if self._stage_code is None:
+                self._stage_code = stage_code(
+                    task_cls, [j["role"] for j in judges], task_cls.services
+                )
+                for stage, code in self._stage_code.items():
+                    if "fallback" in code:
+                        logger.info(
+                            "{}: {} counts all grading code ({})",
+                            self._task.name,
+                            stage,
+                            code["fallback"],
+                        )
+            grading = grading_identities(
+                self._stage_code,
                 judges,
                 service_identities(task_cls.services),
-                args=self._task.grader_args(),
-                task=grader_task(task_cls),
+                self._task.grader_args(),
+                grader_task(task_cls),
             )
         except (TypeError, ValueError, AttributeError, SyntaxError, OSError) as exc:
-            logger.warning("Grader identity unavailable: {}", exc)
+            logger.warning("Grading identities unavailable: {}", exc)
+            self._stage_stamps = dict.fromkeys(GRADING_STAGES)
             return None
+        self._stage_stamps = {s: stage_key(grading[s]) for s in GRADING_STAGES}
+        self._grading = grading
+        return grading
 
     def _seed_judge_versions(self, meta: dict | None) -> None:
         """Carry judge versions a resumed run's ``meta.json`` recorded.
@@ -2149,7 +2374,9 @@ class TaskRunner:
         the version it reported earlier still describes the verdicts on disk.
         Carried only into a role still held by the same model and sampling.
         """
-        grader = ((meta or {}).get("identity") or {}).get("grader") or {}
+        identity = (meta or {}).get("identity") or {}
+        # The schema-1 `grader`, else schema 2's `feedback`, which holds every judge.
+        grader = identity.get("grader") or identity.get("feedback") or {}
         current = {j["role"]: j for j in self._current_judges()}
         for judge in grader.get("judges") or ():
             if not isinstance(judge, dict):
@@ -2255,7 +2482,7 @@ class TaskRunner:
         entries = self._sample_digests.items()
         await self._saver.set_identity(
             data=aggregate_digest((sid, rep, d) for sid, (rep, d, _) in entries),
-            prompt=aggregate_digest((sid, rep, p) for sid, (rep, _, p) in entries),
+            preprocess=aggregate_digest((sid, rep, p) for sid, (rep, _, p) in entries),
         )
 
     def _requests_identity(self) -> DigestedStage:
@@ -2295,9 +2522,10 @@ class TaskRunner:
         *reported* says ``report.json`` was written; ``report()`` returning
         ``None`` writes none.
 
-        Writes the data and prompt identities if a sample never reached
+        Writes the data and preprocess identities if a sample never reached
         preprocess, folds what the candidate was sent into the inference
-        identity, and rewrites the grader's with the judge versions reported.
+        identity, and rewrites the grading ones with the judge versions
+        reported.
         """
         await self._maybe_write_input_identity(force=True)
         inference = self._saver.inference_identity
@@ -2308,22 +2536,29 @@ class TaskRunner:
                     "requests": self._requests_identity(),
                 }
             )
-        # Always: a regrade left it unknown until now.
-        await self._saver.set_identity(grader=self._grader_identity())
+        # Always: a regrade left them unknown until now.
+        grading = self._grading_identities()
+        await self._saver.set_identity(
+            **{s: (grading or {}).get(s) for s in GRADING_STAGES}
+        )
         ran = self._ran_actions
         reran = set()
         if TaskAction.PREPROCESS in ran:
-            reran |= {"data", "prompt"}
+            reran |= {"data", "preprocess"}
         if TaskAction.INFER in ran:
             reran.add("inference")
-        # `report()` has no identity: only the stages that grade count.
-        if ran & {TaskAction.POSTPROCESS, TaskAction.FEEDBACK}:
-            reran.add("grader")
+        if TaskAction.POSTPROCESS in ran:
+            reran.add("postprocess")
+        if TaskAction.FEEDBACK in ran:
+            reran.add("feedback")
+        if reported:
+            reran.add("report")
         await self._saver.end_run(
             reran,
             reported=reported,
             rules_hash=rules_hash,
             requests=self._request_counts(),
+            resume=self._resume_plan,
         )
 
     def _resolve_result_dir(
