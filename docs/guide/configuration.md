@@ -321,6 +321,67 @@ A directory recorded before stage identities is compared through the session's
 `effective_config.yaml`. Without one, `--resume DIR` is refused and an in-place
 `--resume` trusts it.
 
+### What a run would do
+
+`sieval run --dry-run [--resume [DIR]] -o json` reports what the run would do,
+without launching an engine or writing a result directory. It reads the
+`--resume` directories in place. On a node without GPUs, declare the target ones
+in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-declared-gpus)).
+
+```json
+{
+  "checks": [{"name": "resume_plan", "ok": true, "detail": "1 task(s): 1 sample(s) to infer, 1 to grade"}],
+  "n_errors": 0,
+  "n_warnings": 0,
+  "gpu": "NVIDIA H100 80GB HBM3:8:81559",
+  "models": {
+    "subject": {
+      "plan": {"checkpoint": "/models/Qwen3-4B", "backend": "sglang", "assignments": []},
+      "launch": [{"role": "full", "argv": ["sglang", "serve", "--model-path", "/models/Qwen3-4B"]}],
+      "needs_inference": true
+    }
+  },
+  "tasks": {
+    "echo": {
+      "model": "subject",
+      "start": "resume",
+      "recorded": "outputs/run/echo",
+      "samples": 3,
+      "resume_plan": {"kept": 2, "rereported": 0, "regraded": 0, "repostprocessed": 0, "restarted": 0, "dropped": 0},
+      "new": 1,
+      "to_infer": 1,
+      "to_grade": 1
+    }
+  },
+  "needs_inference": true
+}
+```
+
+- `checks` are the config checks, then `resume_plan`, which fails when a task's
+  resume would be refused; that task's entry then holds `error` instead.
+- `models` has one entry per model `sieval run` serves: the plan as
+  `infer_plans.yaml` would record it, each process the launch starts (`argv`,
+  and `env` and `cwd` when set), and `needs_inference`, whether this run starts
+  its engine. `gpu` is what the plans were resolved for.
+- `tasks.<task>.start` is `fresh`, `resume` (stage by stage) or `reuse` (the
+  recorded `report.json` stands, recomputed when only `report` changed).
+  `resume_plan` counts the recorded samples as `runs[].resume` will, and is
+  `null` for a fresh start; `new` counts samples with no record. `to_infer`
+  counts the samples sent to the model under test, `to_grade` those run through
+  a grading stage.
+- `needs_inference` is whether the run starts any engine. A task that infers
+  through an `api_base` model counts in its `to_infer` but starts none.
+
+`gpu`, `models`, `tasks` and `needs_inference` are always present. When the
+config checks fail, or planning raises (the `resume_plan` check then names
+why), `tasks` and every `needs_inference` are `null`: unknown, not false.
+
+Planning sets the session up as the run does. It loads every dataset,
+downloading one not yet cached, and starts each vendored service a task
+declares; neither writes under the result directory. A sample that `feedback`
+sends to another iteration after a rerun from `feedback` is not counted, since
+the plan cannot know it.
+
 Deprecated, removed next release: `--resume-from DIR`, `runner_config.auto_resume`
 and `runner_config.resume_from` (and the same-named Python fields and
 arguments) map to `resume` and warn once; one that disagrees with `resume` is

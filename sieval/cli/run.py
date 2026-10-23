@@ -8,7 +8,7 @@ import dataclasses
 import shlex
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -341,6 +341,25 @@ async def _plan_tasks(
     )
 
 
+def _models_to_launch(
+    served: Iterable[str],
+    task_models: Mapping[str, str],
+    plans: Mapping[str, RunPlan | Exception],
+) -> set[str]:
+    """The *served* models some task still has samples to infer with.
+
+    A task whose plan raises infers nothing: its run raises the same before
+    its first sample.
+    """
+    return {
+        task_models[task]
+        for task, plan in plans.items()
+        if not isinstance(plan, Exception)
+        and plan["to_infer"]
+        and task_models.get(task) in served
+    }
+
+
 async def _models_to_infer(
     config_path: Path,
     config: Mapping[str, Any],
@@ -348,12 +367,8 @@ async def _models_to_infer(
     plan_dicts: dict[str, dict[str, Any]],
     **session: Any,
 ) -> set[str]:
-    """The served models some task still has samples to infer with.
-
-    A run where nothing resumes infers everything, so it is not planned. A
-    task whose plan raises infers nothing: its run raises the same before its
-    first sample.
-    """
+    """The served models to launch: all of them for a run where nothing
+    resumes, which is not planned; else :func:`_models_to_launch`."""
     if not prepared_launches:
         return set()
     if not _resumes(session["resume"], config):
@@ -361,12 +376,44 @@ async def _models_to_infer(
     task_models, plans = await _plan_tasks(
         config_path, prepared_launches, plan_dicts, **session
     )
+    return _models_to_launch(prepared_launches, task_models, plans)
+
+
+def _launch_json(command: BackendCommand) -> dict[str, object]:
+    """One process a launch starts: its role, argv and the env it adds."""
+    out: dict[str, object] = {"role": command.role, "argv": list(command.cli_args)}
+    if command.env:
+        out["env"] = dict(command.env)
+    if command.working_dir:
+        out["cwd"] = command.working_dir
+    return out
+
+
+def _plan_summary(plans: Mapping[str, RunPlan | Exception]) -> str:
+    """One line for the ``resume_plan`` check: what the tasks would do."""
+    ok = [p for p in plans.values() if not isinstance(p, Exception)]
+    to_infer = sum(p["to_infer"] for p in ok)
+    to_grade = sum(p["to_grade"] for p in ok)
+    return f"{len(ok)} task(s): {to_infer} sample(s) to infer, {to_grade} to grade"
+
+
+def _task_json(model: str | None, plan: RunPlan | Exception) -> dict[str, object]:
+    """A task's entry in the dry-run report.
+
+    ``resume_plan`` is the plan's ``outcomes``, the counts ``runs[].resume``
+    records; ``None`` for a fresh start, which has no recorded samples.
+    """
+    if isinstance(plan, Exception):
+        return {"model": model, "error": cli_error_message(plan)}
     return {
-        task_models[task]
-        for task, plan in plans.items()
-        if not isinstance(plan, Exception)
-        and plan["to_infer"]
-        and task_models.get(task) in prepared_launches
+        "model": model,
+        "start": plan["start"],
+        "recorded": plan["recorded"],
+        "samples": plan["samples"],
+        "resume_plan": plan["outcomes"],
+        "new": plan["new"],
+        "to_infer": plan["to_infer"],
+        "to_grade": plan["to_grade"],
     }
 
 
@@ -379,7 +426,13 @@ async def _run_dry_run(
     deterministic: bool | None = None,
     cli_model: CliModel | None = None,
 ) -> dict[str, object]:
-    """Resolve the same managed batch and return the pure prelaunch plan."""
+    """Report what the run would do, launching no engine.
+
+    The checks, then each served model's plan and launch argv, and each task's
+    plan; see ``docs/guide/configuration.md``. Reads ``--resume`` directories in
+    place and writes no result directory. Planning loads the datasets and
+    starts each vendored service a task declares, as the run does.
+    """
 
     from sieval.cli.validation import run_dry_run
 
@@ -404,8 +457,14 @@ async def _run_dry_run(
             )
         )
 
+    def unplanned(result: dict[str, object]) -> dict[str, object]:
+        # Every report key is present; ``None`` where the dry-run stopped first.
+        for key in ("gpu", "models", "tasks", "needs_inference"):
+            result.setdefault(key, None)
+        return result
+
     if not config_path.exists():
-        return checks()
+        return unplanned(checks())
 
     with open(config_path) as stream:
         loaded = yaml.safe_load(stream)
@@ -414,7 +473,7 @@ async def _run_dry_run(
     try:
         apply_cli_model(loaded, cli_model, model)
     except ValueError:
-        return checks()  # reported as the failed cli_model check
+        return unplanned(checks())  # reported as the failed cli_model check
     effective_deterministic = resolve_deterministic(deterministic, loaded)
     plan_dicts, prepared_launches = await _prepare_launch_batch(
         config_path,
@@ -422,7 +481,76 @@ async def _run_dry_run(
         effective_deterministic=effective_deterministic,
         recorded=_recorded_plans(resume, result_dir or loaded.get("result_dir")),
     )
-    return checks(plan_dicts or None, frozenset(prepared_launches))
+    result = checks(plan_dicts or None, frozenset(prepared_launches))
+    # ``needs_inference`` stays ``None`` until the tasks are planned.
+    models: dict[str, dict[str, object]] = {
+        name: {
+            "plan": plan_dicts[name],
+            "launch": [_launch_json(command) for command in commands],
+            "needs_inference": None,
+        }
+        for name, (_, commands) in prepared_launches.items()
+    }
+    result["gpu"] = await _plan_gpu_text() if prepared_launches else None
+    result["models"] = models
+    if result["n_errors"]:
+        return unplanned(result)
+
+    # What the run would do: each task's plan, from the call the run makes.
+    # Planning sets the session up as the run does: it loads every dataset
+    # (downloading one not yet cached) and starts each vendored service a task
+    # declares, writing nothing under the result directory.
+    checks_list = cast(list[dict[str, object]], result["checks"])
+    try:
+        task_models, plans = await _plan_tasks(
+            config_path,
+            prepared_launches,
+            plan_dicts,
+            model=model,
+            resume=resume,
+            result_dir=result_dir,
+            deterministic=deterministic,
+            invocation=shlex.join(sys.argv),
+            cli_model=cli_model,
+        )
+    except Exception as exc:
+        # Raised before any task would start: the run fails the same way.
+        detail = cli_error_message(exc)
+        checks_list.append({"name": "resume_plan", "ok": False, "detail": detail})
+        result["n_errors"] = cast(int, result["n_errors"]) + 1
+        return unplanned(result)
+    refused = {t: p for t, p in plans.items() if isinstance(p, Exception)}
+    result["tasks"] = {
+        task: _task_json(task_models.get(task), plan) for task, plan in plans.items()
+    }
+    if refused:
+        checks_list.append(
+            {
+                "name": "resume_plan",
+                "ok": False,
+                "detail": "; ".join(
+                    f"{task}: {cli_error_message(exc)}"
+                    for task, exc in sorted(refused.items())
+                ),
+            }
+        )
+        result["n_errors"] = cast(int, result["n_errors"]) + 1
+    else:
+        checks_list.append(
+            {"name": "resume_plan", "ok": True, "detail": _plan_summary(plans)}
+        )
+    # The launch decision `_models_to_infer` makes for the run.
+    launches = (
+        _models_to_launch(prepared_launches, task_models, plans)
+        if _resumes(resume, loaded)
+        else set(prepared_launches)
+    )
+    for name, entry in models.items():
+        entry["needs_inference"] = name in launches
+    # Whether an engine starts. A task inferring through an `api_base` model
+    # needs no engine, so it does not count.
+    result["needs_inference"] = bool(launches)
+    return result
 
 
 async def _run_all(
@@ -730,7 +858,14 @@ def register_run_command(app: typer.Typer) -> None:
         ] = False,
         dry_run: Annotated[
             bool,
-            typer.Option("--dry-run", help="Validate config without running"),
+            typer.Option(
+                "--dry-run",
+                help=(
+                    "Validate the config, then report each model's plan and each "
+                    "task's resume plan, launching no engine. Loads the datasets "
+                    "and starts any vendored service, as the run does."
+                ),
+            ),
         ] = False,
         output: Annotated[
             OutputFormat,

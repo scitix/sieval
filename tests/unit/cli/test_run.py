@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -279,6 +280,11 @@ class TestPrelaunchSequencing:
                 "sieval.cli.validation.run_dry_run",
                 return_value=dry_result,
             ) as validate,
+            # The tasks' resume plans, which the CLI tests cover.
+            patch(
+                "sieval.cli.run._plan_tasks",
+                new=AsyncMock(return_value=({}, {})),
+            ),
         ):
             result = await _run_dry_run(
                 config_path,
@@ -288,7 +294,16 @@ class TestPrelaunchSequencing:
                 deterministic=True,
             )
 
-        assert result == dry_result
+        assert result["checks"] == [{"name": "resume_plan", "ok": True, "detail": ANY}]
+        assert result["n_errors"] == 0
+        assert result["models"] == {
+            "model_a": {
+                "plan": plan_dicts["model_a"],
+                "launch": [],
+                "needs_inference": False,
+            }
+        }
+        assert (result["tasks"], result["needs_inference"]) == ({}, False)
         prepare.assert_awaited_once()
         assert prepare.call_args.kwargs["effective_deterministic"] is True
         assert validate.call_args.kwargs["infer_plans"] == plan_dicts
@@ -297,6 +312,108 @@ class TestPrelaunchSequencing:
         assert validate.call_args.kwargs["result_dir_override"] == "result-override"
         assert validate.call_args.kwargs["deterministic_override"] is True
         assert validate.call_args.kwargs["self_managed_endpoints"] == {"model_a"}
+
+    @staticmethod
+    async def _dry_run(
+        tmp_path: Path,
+        *,
+        n_errors: int = 0,
+        resume: bool = True,
+        plan_tasks: AsyncMock | None = None,
+    ) -> dict[str, object]:
+        """``_run_dry_run`` with ``model_a`` served and ``api`` not."""
+        from sieval.cli.run import _run_dry_run
+
+        config_path = tmp_path / "cfg.yaml"
+        config_path.write_text(yaml.safe_dump({"models": {}, "tasks": {}}))
+        plan_dicts = {"model_a": {"backend": "vllm", "assignments": []}}
+        checks = [{"name": "schema", "ok": not n_errors}]
+        with (
+            patch.dict(os.environ, {"SIEVAL_TARGET_GPU": "NVIDIA H100:8:81559"}),
+            patch(
+                "sieval.cli.run._prepare_launch_batch",
+                new=AsyncMock(
+                    return_value=(plan_dicts, {"model_a": (_fake_plan(), [])})
+                ),
+            ),
+            patch(
+                "sieval.cli.validation.run_dry_run",
+                return_value={"checks": checks, "n_errors": n_errors, "n_warnings": 0},
+            ),
+            patch(
+                "sieval.cli.run._plan_tasks",
+                new=plan_tasks or AsyncMock(return_value=({}, {})),
+            ) as planned,
+        ):
+            result = await _run_dry_run(config_path, resume=resume)
+        result["_planned"] = planned.await_count
+        return result
+
+    @staticmethod
+    def _plan(to_infer: int) -> dict[str, object]:
+        return {
+            "start": "resume",
+            "recorded": "r/t",
+            "samples": 2,
+            "outcomes": {"kept": 2 - to_infer},
+            "new": to_infer,
+            "to_infer": to_infer,
+            "to_grade": to_infer,
+        }
+
+    @pytest.mark.anyio
+    async def test_needs_inference_is_whether_an_engine_starts(
+        self, tmp_path: Path
+    ) -> None:
+        # `api` infers through an api_base model: no engine starts for it.
+        plans = AsyncMock(
+            return_value=(
+                {"t_api": "api", "t_a": "model_a"},
+                {"t_api": self._plan(2), "t_a": self._plan(0)},
+            )
+        )
+        result = await self._dry_run(tmp_path, plan_tasks=plans)
+        models = cast(dict, result["models"])
+        assert models["model_a"]["needs_inference"] is False
+        assert result["needs_inference"] is False
+        tasks = cast(dict, result["tasks"])
+        assert tasks["t_api"]["to_infer"] == 2
+
+    @pytest.mark.anyio
+    async def test_a_fresh_run_starts_every_served_engine(self, tmp_path: Path) -> None:
+        # `_models_to_infer` does not plan a run where nothing resumes.
+        result = await self._dry_run(tmp_path, resume=False)
+        assert cast(dict, result["models"])["model_a"]["needs_inference"] is True
+        assert result["needs_inference"] is True
+
+    @pytest.mark.anyio
+    async def test_failed_checks_leave_the_plan_unknown(self, tmp_path: Path) -> None:
+        result = await self._dry_run(tmp_path, n_errors=1)
+        assert result["_planned"] == 0
+        assert (result["tasks"], result["needs_inference"]) == (None, None)
+        assert cast(dict, result["models"])["model_a"]["needs_inference"] is None
+        assert result["gpu"] == "NVIDIA H100:8:81559"
+
+    @pytest.mark.anyio
+    async def test_a_planning_error_fails_resume_plan(self, tmp_path: Path) -> None:
+        boom = AsyncMock(side_effect=ValueError("result_dir is not a directory"))
+        result = await self._dry_run(tmp_path, plan_tasks=boom)
+        assert result["n_errors"] == 1
+        assert cast(list, result["checks"])[-1] == {
+            "name": "resume_plan",
+            "ok": False,
+            "detail": "result_dir is not a directory",
+        }
+        assert (result["tasks"], result["needs_inference"]) == (None, None)
+
+    @pytest.mark.anyio
+    async def test_a_missing_config_still_has_every_key(self, tmp_path: Path) -> None:
+        from sieval.cli.run import _run_dry_run
+
+        result = await _run_dry_run(tmp_path / "absent.yaml")
+        assert result["n_errors"] == 1
+        for key in ("gpu", "models", "tasks", "needs_inference"):
+            assert result[key] is None
 
     @pytest.mark.anyio
     async def test_binding_error_prevents_every_managed_launch(self, tmp_path: Path):

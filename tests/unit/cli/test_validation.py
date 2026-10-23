@@ -1485,6 +1485,11 @@ class TestRunDryRunCli:
                 "sieval.cli.validation._capability_reconcile_check",
                 return_value={"name": "capability_reconcile", "ok": True},
             ),
+            # Planning builds the run, which these fake classes cannot.
+            patch(
+                "sieval.cli.run._plan_tasks",
+                new=AsyncMock(return_value=({}, {})),
+            ),
         ):
             result = cli_runner.invoke(app, ["run", "--dry-run", str(config)])
         assert result.exit_code == 0

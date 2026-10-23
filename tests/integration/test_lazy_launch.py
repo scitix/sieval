@@ -334,3 +334,200 @@ class TestLazyLaunch:
         assert engine.requests == ["Q3"]
         assert reports["echo"]["total"] == 2
         assert reports["echo_other"]["total"] == 3
+
+
+def _sync_run(config: Path, **kwargs: Any) -> dict:
+    """``_run`` from a test that is not async, as the CLI is not."""
+    import anyio
+
+    return anyio.run(lambda: _run(config, **kwargs))
+
+
+def _dry_run(config: Path, *args: str) -> tuple[int, dict]:
+    from typer.testing import CliRunner
+
+    from sieval.cli.main import app
+
+    result = CliRunner().invoke(
+        app, ["run", str(config), "--dry-run", *args, "-o", "json"]
+    )
+    return result.exit_code, json.loads(result.stdout)
+
+
+def _resume_plan(**counts: int) -> dict[str, int]:
+    """A task's ``resume_plan``: every outcome, zero unless given."""
+    keys = ("kept", "rereported", "regraded", "repostprocessed", "restarted")
+    return {**dict.fromkeys((*keys, "dropped"), 0), **counts}
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
+class TestDryRunReportsWhatARunWouldDo:
+    """``sieval run --dry-run -o json`` on a CPU node, with declared GPUs."""
+
+    H100_TEXT = "NVIDIA H100 80GB HBM3:8:81559"
+
+    def test_a_resume_reports_its_plan_and_reads_dirs_read_only(
+        self, tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with _gpu(H100):
+            _sync_run(_write(tmp_path, QUESTIONS[:2]))
+        recorded = _tree(tmp_path / "results")
+        engine.launches.clear()
+        config = _write(tmp_path, QUESTIONS)
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100_TEXT)
+        cpu = AsyncMock(return_value=None)
+
+        with (
+            _gpu(None),
+            patch("sieval.infer.topology.resolver.detect_local_gpu", new=cpu),
+        ):
+            code, out = _dry_run(config, "--resume")
+
+        cpu.assert_not_awaited()  # nvidia-smi is never asked
+        assert code == 0, out
+        data = out["data"]
+        assert {c["name"] for c in data["checks"]} >= {"schema", "capability_reconcile"}
+        assert data["needs_inference"] is True
+        assert data["gpu"] == self.H100_TEXT
+        model = data["models"]["subject"]
+        assert model["needs_inference"] is True
+        assert model["plan"]["backend"] == "sglang"
+        checkpoint = str(tmp_path / "Qwen3-4B")
+        assert model["launch"] == [
+            {
+                "role": "full",
+                "argv": [
+                    "sglang",
+                    "serve",
+                    "--model-path",
+                    checkpoint,
+                    *model["launch"][0]["argv"][4:],
+                ],
+            }
+        ]
+        assert "--port" in model["launch"][0]["argv"]
+        assert data["tasks"]["echo"] == {
+            "model": "subject",
+            "start": "resume",
+            "recorded": str(tmp_path / "results" / "echo"),
+            "samples": 3,
+            "resume_plan": _resume_plan(kept=2),
+            "new": 1,
+            "to_infer": 1,
+            "to_grade": 1,
+        }
+        assert engine.launches == []
+        assert _tree(tmp_path / "results") == recorded
+
+        # The plan the dry-run reports is the one the run then records.
+        with _gpu(H100):
+            _sync_run(config, resume=True)
+        plans = yaml.safe_load((tmp_path / "results" / "infer_plans.yaml").read_text())
+        assert plans["models"]["subject"] == model["plan"]
+
+    def test_nothing_to_infer(
+        self, tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with _gpu(H100):
+            _sync_run(_write(tmp_path, QUESTIONS[:2]))
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100_TEXT)
+        # A task argument: both samples rerun from postprocess.
+        config = _write(tmp_path, QUESTIONS[:2], strict=True)
+
+        with _gpu(None):
+            code, out = _dry_run(config, "--resume")
+
+        assert code == 0, out
+        data = out["data"]
+        assert data["needs_inference"] is False
+        assert data["models"]["subject"]["needs_inference"] is False
+        echo = data["tasks"]["echo"]
+        assert echo["resume_plan"] == _resume_plan(repostprocessed=2)
+        assert (echo["to_infer"], echo["to_grade"]) == (0, 2)
+
+    def test_resume_from_another_dir_copies_nothing(
+        self, tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with _gpu(H100):
+            _sync_run(_write(tmp_path, QUESTIONS))
+        recorded = tmp_path / "results"
+        before = _tree(recorded)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        config = _write(elsewhere, QUESTIONS)
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100_TEXT)
+
+        with _gpu(None):
+            code, out = _dry_run(config, "--resume", str(recorded))
+
+        assert code == 0, out
+        echo = out["data"]["tasks"]["echo"]
+        assert (echo["start"], echo["recorded"]) == ("resume", str(recorded / "echo"))
+        assert out["data"]["needs_inference"] is False
+        assert _tree(recorded) == before
+        assert not (elsewhere / "results").exists()
+
+    def test_a_refused_resume_fails_the_dry_run(
+        self, tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with _gpu(H100):
+            _sync_run(_write(tmp_path, QUESTIONS[:2]))
+        cfg = yaml.safe_load(_write(tmp_path, QUESTIONS[:2]).read_text())
+        cfg["tasks"]["echo"]["infer_args"] = {"temperature": 0.9}  # another inference
+        config = tmp_path / "eval.yaml"
+        config.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100_TEXT)
+
+        with _gpu(None):
+            code, out = _dry_run(config, "--resume")
+
+        assert code == 1
+        data = out["data"]
+        assert "inference" in data["tasks"]["echo"]["error"]
+        assert [c["name"] for c in data["checks"] if not c["ok"]] == ["resume_plan"]
+
+    def test_a_fresh_run_infers_everything(
+        self, tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100_TEXT)
+        with _gpu(None):
+            code, out = _dry_run(_write(tmp_path, QUESTIONS))
+        assert code == 0, out
+        data = out["data"]
+        assert data["needs_inference"] is True
+        assert data["models"]["subject"]["needs_inference"] is True
+        # No recorded samples, so no resume plan.
+        assert data["tasks"]["echo"] == {
+            "model": "subject",
+            "start": "fresh",
+            "recorded": None,
+            "samples": 3,
+            "resume_plan": None,
+            "new": 3,
+            "to_infer": 3,
+            "to_grade": 3,
+        }
+        assert not (tmp_path / "results").exists()
+
+    def test_a_finished_run_is_reused(
+        self, tmp_path: Path, engine: Engine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with _gpu(H100):
+            _sync_run(_write(tmp_path, QUESTIONS))
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100_TEXT)
+
+        with _gpu(None):
+            code, out = _dry_run(_write(tmp_path, QUESTIONS), "--resume")
+
+        assert code == 0, out
+        echo = out["data"]["tasks"]["echo"]
+        assert echo["start"] == "reuse"
+        assert echo["resume_plan"] == _resume_plan(kept=3)
+        assert out["data"]["needs_inference"] is False

@@ -348,6 +348,33 @@ def _render_text_task_reports(result: CommandResult) -> None:
         log_user("{}", task_data.get("report", ""))
 
 
+def _render_dry_run_plan(data: dict) -> None:
+    """What ``sieval run --dry-run`` found the run would do, when it got that far."""
+    tasks = data.get("tasks")
+    if not isinstance(tasks, dict) or not tasks:
+        return
+    log_user("")
+    for name, entry in (data.get("models") or {}).items():
+        starts = "starts" if entry.get("needs_inference") else "not started"
+        log_user("model {}: engine {}", name, starts)
+    for name, entry in tasks.items():
+        if "error" in entry:
+            log_user("task {}: refused", name)
+            continue
+        outcomes = ", ".join(
+            f"{n} {outcome}" for outcome, n in (entry["resume_plan"] or {}).items() if n
+        )
+        log_user(
+            "task {}: {}{}, {} to infer, {} to grade",
+            name,
+            entry["start"],
+            f" ({outcomes})" if outcomes else "",
+            entry["to_infer"],
+            entry["to_grade"],
+        )
+    log_user("needs inference: {}", "yes" if data.get("needs_inference") else "no")
+
+
 def _render_text_dry_run(result: CommandResult) -> None:
     if not result.ok:
         if not isinstance(result.data, dict):
@@ -363,6 +390,7 @@ def _render_text_dry_run(result: CommandResult) -> None:
                 log_user("✗ {}", check.get("detail", check["name"]))
             for w in check.get("warnings", []):
                 log_user("⚠ {}", w)
+        _render_dry_run_plan(result.data)
         n_err = result.data.get("n_errors", 0)
         n_warn = result.data.get("n_warnings", 0)
         log_user("\nDry-run failed: {} error(s), {} warning(s).", n_err, n_warn)
@@ -382,6 +410,7 @@ def _render_text_dry_run(result: CommandResult) -> None:
             log_user("✗ {}", check.get("detail", check["name"]))
         for w in check.get("warnings", []):
             log_user("⚠ {}", w)
+    _render_dry_run_plan(result.data)
     n_warn = result.data.get("n_warnings", 0)
     if n_warn:
         log_user("\nDry-run passed with {} warning(s).", n_warn)

@@ -396,6 +396,84 @@ class TestRenderTextDryRun:
         assert "Dry-run failed" in _collect_log_user(log)
 
 
+def _rendered_lines(mock_log_user) -> list[str]:
+    """Each ``log_user`` call as the line it prints."""
+    return [c.args[0].format(*c.args[1:]) for c in mock_log_user.call_args_list]
+
+
+def _outcomes(**counts: int) -> dict[str, int]:
+    keys = ("kept", "rereported", "regraded", "repostprocessed", "restarted")
+    return {**dict.fromkeys((*keys, "dropped"), 0), **counts}
+
+
+class TestRenderTextDryRunPlan:
+    """The summary ``sieval run --dry-run`` adds once the tasks are planned."""
+
+    def _render(self, ok: bool, **data: object) -> list[str]:
+        result = CommandResult(
+            command="run.dry_run",
+            ok=ok,
+            data={"checks": [], "n_errors": 0 if ok else 1, "n_warnings": 0, **data},
+            error=None if ok else "Dry-run failed",
+        )
+        with patch("sieval.cli.output.log_user") as mock:
+            render(result, OutputFormat.TEXT)
+        return _rendered_lines(mock)
+
+    def test_each_model_and_task_gets_a_line(self) -> None:
+        lines = self._render(
+            True,
+            models={
+                "subject": {"needs_inference": True},
+                "judge": {"needs_inference": False},
+            },
+            tasks={
+                "echo": {
+                    "start": "resume",
+                    "resume_plan": _outcomes(kept=2, regraded=1),
+                    "to_infer": 1,
+                    "to_grade": 2,
+                },
+                "fresh": {
+                    "start": "fresh",
+                    "resume_plan": None,
+                    "to_infer": 3,
+                    "to_grade": 3,
+                },
+            },
+            needs_inference=True,
+        )
+        assert "model subject: engine starts" in lines
+        assert "model judge: engine not started" in lines
+        assert "task echo: resume (2 kept, 1 regraded), 1 to infer, 2 to grade" in lines
+        assert "task fresh: fresh, 3 to infer, 3 to grade" in lines
+        assert "needs inference: yes" in lines
+
+    def test_a_refused_task_is_named_on_a_failed_dry_run(self) -> None:
+        lines = self._render(
+            False,
+            models={"subject": {"needs_inference": False}},
+            tasks={
+                "echo": {"error": "inference changed"},
+                "other": {
+                    "start": "reuse",
+                    "resume_plan": _outcomes(kept=3),
+                    "to_infer": 0,
+                    "to_grade": 0,
+                },
+            },
+            needs_inference=False,
+        )
+        assert "task echo: refused" in lines
+        assert "task other: reuse (3 kept), 0 to infer, 0 to grade" in lines
+        assert "needs inference: no" in lines
+        assert lines[-1].startswith("\nDry-run failed")
+
+    def test_nothing_is_added_before_the_tasks_are_planned(self) -> None:
+        lines = self._render(False, tasks=None, needs_inference=None)
+        assert not any(line.startswith(("task ", "needs inference")) for line in lines)
+
+
 class TestRenderTextFallback:
     """Test the fallback path when no text renderer is registered."""
 
