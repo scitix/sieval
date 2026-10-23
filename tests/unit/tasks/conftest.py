@@ -38,12 +38,8 @@ Skipping happens before fixture setup, so the probe interpreter never starts.
 and the task tests. Deleting the variable alone is not enough: google-auth then
 probes the GCE metadata server, which on a host off GCP costs ~12s of timeouts.
 
-**Report metric names.** Every ``report()`` a test here runs is checked against
-the metrics the task declares (``sieval/meta/report_metrics.py``): each numeric
-key it writes must be declared or matched by a pattern. These fixtures are
-small, so this catches a key added to a report without its declaration, not a
-declared name that no fixture reaches; ``tests/unit/meta/test_report_metrics.py``
-holds the rest.
+**Report metric names.** Every ``report()`` a test here runs must write only
+numeric keys its declaration (``sieval/meta/report_metrics.py``) names or matches.
 
 AI-Generated Code - Claude Fable 5 (Anthropic)
 """
@@ -142,7 +138,8 @@ def no_bigquery_credentials(monkeypatch):
     monkeypatch.setattr(google_auth, "default", _nothing_configured)
 
 
-def _owners() -> list[type]:
+@functools.cache
+def _owners() -> tuple[type, ...]:
     """Each built-in class that defines ``report``, from every task module."""
     import sieval.tasks
     from sieval.core.tasks.task import Task
@@ -157,7 +154,7 @@ def _owners() -> list[type]:
         pending += cls.__subclasses__()
         if "report" in vars(cls) and cls.__module__.startswith("sieval.tasks."):
             seen.append(cls)
-    return seen
+    return tuple(seen)
 
 
 def _numeric(value: object) -> bool:

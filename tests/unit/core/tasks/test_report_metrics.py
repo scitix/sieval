@@ -60,6 +60,11 @@ class TestReportMetrics:
         )
         assert (a | {"n"}).names == {"score", "n"}
 
+    def test_union_with_a_str_is_refused(self) -> None:
+        # Iterating a str would add one name per character.
+        with pytest.raises(TypeError, match="wrap the name"):
+            report_metrics("fails") | "score"
+
     def test_json_sorts_names_and_keeps_pattern_order(self) -> None:
         declared = report_metrics("score", "fails", patterns=("b_{x}", "a_{x}"))
         assert declared.to_json() == {
@@ -149,3 +154,15 @@ class TestDeclaredReportMetrics:
 
         with pytest.raises(TypeError, match="ReportMetrics or None"):
             declared_report_metrics(Wrong)
+
+    def test_a_malformed_declaration_is_refused_below_a_nearer_report(self) -> None:
+        # The report shadows it, but the author still wrote a broken declaration.
+        class Wrong(_Base):
+            report_metrics = frozenset({"score"})
+
+        class Below(Wrong):
+            async def report(self, finals, fails):
+                return {}
+
+        with pytest.raises(TypeError, match="ReportMetrics or None"):
+            declared_report_metrics(Below)

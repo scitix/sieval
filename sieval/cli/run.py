@@ -411,7 +411,7 @@ def _task_json(
     start, which has no recorded samples. ``needs_inference`` is
     :func:`_infers`, the test :func:`_models_to_launch` launches by.
     ``metrics`` is :func:`~sieval.cli.validation.task_report_metrics_json`,
-    beside a refusal too.
+    kept beside a refusal.
     """
     if isinstance(plan, Exception):
         return {"model": model, "error": cli_error_message(plan), "metrics": metrics}
@@ -533,12 +533,26 @@ async def _run_dry_run(
         result["n_errors"] = cast(int, result["n_errors"]) + 1
         return unplanned(result)
     refused = {t: p for t, p in plans.items() if isinstance(p, Exception)}
+    metrics: dict[str, dict[str, list[str]] | None] = {}
+    malformed: dict[str, TypeError] = {}
+    for task in plans:
+        try:
+            metrics[task] = task_report_metrics_json(loaded, task)
+        except TypeError as exc:
+            metrics[task], malformed[task] = None, exc
     result["tasks"] = {
-        task: _task_json(
-            task_models.get(task), plan, task_report_metrics_json(loaded, task)
-        )
+        task: _task_json(task_models.get(task), plan, metrics[task])
         for task, plan in plans.items()
     }
+    if malformed:
+        checks_list.append(
+            {
+                "name": "report_metrics",
+                "ok": False,
+                "detail": "; ".join(f"{t}: {e}" for t, e in sorted(malformed.items())),
+            }
+        )
+        result["n_errors"] = cast(int, result["n_errors"]) + 1
     if refused:
         checks_list.append(
             {

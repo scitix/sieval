@@ -709,10 +709,11 @@ def task_report_metrics_json(
 ) -> dict[str, list[str]] | None:
     """*task*'s report metric names and patterns, ``None`` where unknown.
 
-    From the class the config names, resolved as the imports check resolves
-    it; see :mod:`sieval.core.tasks.report_metrics`. Unknown for a class that
-    declares none, whose report outgrew the declaration it inherits, or that
-    does not resolve. Advisory: it never fails a dry-run.
+    See :mod:`sieval.core.tasks.report_metrics`. A class that does not resolve
+    is unknown; the imports check reports it.
+
+    Raises:
+        TypeError: if the class's ``report_metrics`` is malformed.
     """
     from sieval.meta.report_metrics import task_report_metrics
 
@@ -722,9 +723,10 @@ def task_report_metrics_json(
     if not isinstance(spec, str):
         return None
     try:
-        declared = task_report_metrics(resolve_task_class(spec))
+        task_cls = resolve_task_class(spec)
     except Exception:
         return None
+    declared = task_report_metrics(task_cls)
     return declared.to_json() if declared is not None else None
 
 

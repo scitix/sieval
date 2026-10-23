@@ -1,19 +1,10 @@
-"""The report metrics of each built-in task, by the class that owns its ``report``.
+"""The report metrics of each built-in task, by the class that defines ``report``.
 
-A table here rather than a ``report_metrics`` attribute on each task class,
-because a task module's source is in its stage identities
-(:func:`~sieval.core.tasks.run_meta.stage_code`): an attribute added there
-would change every stage of every built-in task and rerun a resumed directory
-from ``postprocess``. ``sieval.meta`` is outside the grader walk, so this file
-moves no identity. A plugin task declares on its class instead.
-
-The ``report`` of a class listed here is checked against its entry on fixtures
-in ``tests/unit/meta/test_report_metrics.py``: every numeric key
-written is declared or matched by a pattern.
-
-A ``{placeholder}`` stands for a group read from the data: a category, subset,
-language, turn or seed split. A group the data has none of is not written, so a
-name matching a pattern can still be absent from a run.
+A table rather than an attribute on each class: a task module's source is in its
+stage identities, so an attribute there would rerun every resumed directory from
+``postprocess``. ``sieval.meta`` is outside the grader walk. Plugin tasks
+declare on the class. Each entry is checked against the reports that
+``tests/unit/tasks`` runs (``tests/unit/tasks/conftest.py``).
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """

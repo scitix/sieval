@@ -449,15 +449,10 @@ in `SIEVAL_TARGET_GPU` ([Resolving for declared GPUs](infer.md#resolving-for-dec
   `legacy_grader` is `kept` or `regrade` for a schema-1 directory;
   `legacy_preprocess` is `true` for a schema-1 or schema-2 directory, compared
   by rendering its recorded samples once. `stages` is `null` for a fresh start.
-- `tasks.<task>.metrics` names the numeric keys the task's `report.json` may
-  write, for a check such as a pass criterion on `score` to refuse a name the
-  task never reports before the run, not after. `names` are written as is;
-  `patterns` stand for keys built from the data, `{placeholder}` for the
-  varying part, so `score_{category}` matches `score_stem`. A name matching
-  only a pattern may still be absent from a run whose data lacks the group.
-  `null` when unknown: the task declares none, or its `report` is defined
-  below the class that declares, or patched in. See
-  [Report metric names](metrics.md#report-metric-names).
+- `tasks.<task>.metrics` is the numeric keys the task's `report.json` may
+  write: `names` as spelled, `patterns` such as `score_{category}` for keys
+  built from the data. `null` when unknown. A malformed declaration fails the
+  `report_metrics` check. See [Report metric names](metrics.md#report-metric-names).
 - `needs_inference` is whether the run starts any engine. A task that infers
   through an `api_base` model counts in its `to_infer` but starts none.
 

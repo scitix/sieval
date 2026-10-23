@@ -116,6 +116,12 @@ class _UndeclaredTask(MATH500ZeroShotGenTask):
         return {"mine": 1.0}
 
 
+class _MalformedTask(MATH500ZeroShotGenTask):
+    """A plugin task whose declaration is not a ``ReportMetrics``."""
+
+    report_metrics = frozenset({"score"})
+
+
 class TestRunCommand:
     def test_run_help(self):
         result = runner.invoke(app, ["run", "--help"])
@@ -417,6 +423,29 @@ class TestPrelaunchSequencing:
         assert found["mine"] is None
         assert (found["gone"], found["bare"]) == (None, None)
         assert result["n_errors"] == 0
+        assert "report_metrics" not in {c["name"] for c in cast(list, result["checks"])}
+
+    @pytest.mark.anyio
+    async def test_a_malformed_declaration_fails_the_dry_run(
+        self, tmp_path: Path
+    ) -> None:
+        # Reading it as unknown would let a check pass that the author broke.
+        tasks = {
+            "bad": {"class": "tests.unit.cli.test_run._MalformedTask"},
+            "math": {"class": "MATH500ZeroShotGenTask"},
+        }
+        plans = AsyncMock(return_value=({}, {name: self._plan(0) for name in tasks}))
+        result = await self._dry_run(tmp_path, plan_tasks=plans, tasks=tasks)
+        entries = cast(dict, result["tasks"])
+        assert entries["bad"]["metrics"] is None
+        assert entries["math"]["metrics"] is not None
+        (check,) = [
+            c for c in cast(list, result["checks"]) if c["name"] == "report_metrics"
+        ]
+        assert check["ok"] is False
+        assert check["detail"].startswith("bad: ")
+        assert "ReportMetrics or None" in check["detail"]
+        assert result["n_errors"] == 1
 
     @pytest.mark.anyio
     async def test_a_fresh_run_starts_every_served_engine(self, tmp_path: Path) -> None:
