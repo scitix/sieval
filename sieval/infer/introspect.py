@@ -13,8 +13,10 @@ Two strategies for identifying model size:
 AI-Generated Code - Claude Opus 4.6 (Anthropic)
 """
 
+import os
 import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -477,3 +479,63 @@ async def detect_local_gpu() -> GPUInfo | None:
         info.memory_mib,
     )
     return info
+
+
+#: The GPUs a serving plan is resolved for, read instead of ``nvidia-smi``.
+TARGET_GPU_ENV = "SIEVAL_TARGET_GPU"
+
+_TARGET_GPU_FORM = (
+    "'<name>:<count>:<memory MiB>', with <name> and <memory MiB> as "
+    "`nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits` "
+    "prints them on that node, e.g. 'NVIDIA H100 80GB HBM3:8:81559'"
+)
+
+
+def parse_target_gpu(text: str) -> GPUInfo:
+    """Parse a GPU declaration, ``<name>:<count>:<memory MiB>``.
+
+    The fields are the ones :func:`detect_local_gpu` reads, verbatim: the name
+    selects the recipe's hardware profile and is recorded in a path-only plan,
+    and the memory decides tensor parallelism. A shorthand such as
+    ``H100-80G`` would resolve another plan than the node does.
+    """
+    parts = text.rsplit(":", 2)
+    name = parts[0].strip() if len(parts) == 3 else ""
+    try:
+        count, memory_mib = int(parts[1]), int(parts[2])
+    except (IndexError, ValueError):
+        count = memory_mib = 0
+    if not name or count < 1 or memory_mib < 1:
+        raise ValueError(f"{TARGET_GPU_ENV}={text!r} is not {_TARGET_GPU_FORM}")
+    return GPUInfo(model=name, count=count, memory_mib=memory_mib)
+
+
+def format_target_gpu(gpu: GPUInfo) -> str:
+    """The declaration :func:`parse_target_gpu` reads back as *gpu*."""
+    return f"{gpu.model}:{gpu.count}:{gpu.memory_mib}"
+
+
+def declared_target_gpu(environ: Mapping[str, str] | None = None) -> GPUInfo | None:
+    """The GPUs :data:`TARGET_GPU_ENV` declares; ``None`` when it is unset."""
+    raw = (os.environ if environ is None else environ).get(TARGET_GPU_ENV, "")
+    return parse_target_gpu(raw) if raw.strip() else None
+
+
+async def check_launch_gpu() -> None:
+    """Refuse to launch an engine on GPUs other than the declared ones.
+
+    A plan resolved for :data:`TARGET_GPU_ENV` is only that node's plan on the
+    declared hardware. Without a declaration nothing is checked.
+    """
+    declared = declared_target_gpu()
+    if declared is None:
+        return
+    detected = await detect_local_gpu()
+    if detected != declared:
+        here = format_target_gpu(detected) if detected else "no GPU"
+        raise RuntimeError(
+            f"The serving plan was resolved for {TARGET_GPU_ENV}="
+            f"{format_target_gpu(declared)!r}, but this node has {here}. "
+            "Declare the GPUs this node has, or run on a node that has the "
+            "declared ones."
+        )

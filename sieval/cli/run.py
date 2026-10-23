@@ -47,7 +47,12 @@ from sieval.cli.output import (
 )
 from sieval.cli.resolution import resolve_config_model_types
 from sieval.cli.services import SERVICE_LOG_DIR
-from sieval.cli.session import resolve_deterministic, unwrap_proxies
+from sieval.cli.session import (
+    read_persisted_config,
+    redact_secrets,
+    resolve_deterministic,
+    unwrap_proxies,
+)
 from sieval.cli.signals import terminate_as_interrupt
 from sieval.core.models import Deployment
 from sieval.core.utils.logging import configure_logging, log_user
@@ -55,8 +60,14 @@ from sieval.infer.backends import get_translator
 from sieval.infer.backends.translator import BackendCommand, inject_user_env
 from sieval.infer.config import InferHandle
 from sieval.infer.deployer import DEFAULT_READY_TIMEOUT, LocalDeployer
+from sieval.infer.introspect import (
+    check_launch_gpu,
+    declared_target_gpu,
+    detect_local_gpu,
+    format_target_gpu,
+)
 from sieval.infer.recipes import capability_model_type
-from sieval.infer.topology import DeploymentPlan
+from sieval.infer.topology import DeploymentPlan, plan_from_mapping
 from sieval.infer.topology.resolver import auto_resolve_plan
 
 
@@ -94,16 +105,111 @@ def _refuse_explicit_endpoint(model_name: str, model_config: dict) -> None:
     )
 
 
+def _recorded_session_dir(
+    resume: bool | str | Path | None, result_dir: str | None
+) -> Path | None:
+    """The session ``result_dir`` a resume continues, whose plans it may reuse.
+
+    ``--resume DIR`` names it, or names a task directory inside it.
+    """
+    if resume is True:
+        return Path(result_dir) if result_dir else None
+    if isinstance(resume, (str, Path)):
+        recorded = Path(resume)
+        return recorded.parent if (recorded / "meta.json").is_file() else recorded
+    return None
+
+
+class _RecordedPlans:
+    """What a resumed session recorded about its served models, read-only.
+
+    Its plans are reused only when ``SIEVAL_TARGET_GPU`` declares the GPUs they
+    were resolved for, and only for a model whose serving config is unchanged:
+    a recipe the installed SiEval resolves differently would otherwise change
+    the inference identity and refuse the resume.
+    """
+
+    def __init__(self, session_dir: Path | None, gpu: str | None) -> None:
+        self._plans: dict[str, Any] = {}
+        self._config: dict[str, Any] = {}
+        if session_dir is None or gpu is None:
+            return
+        recorded = read_persisted_config(session_dir / "infer_plans.yaml")
+        if recorded is None or recorded.get("gpu") != gpu:
+            return
+        plans = recorded.get("models")
+        config = read_persisted_config(session_dir / "effective_config.yaml")
+        if isinstance(plans, dict) and config is not None:
+            self._plans, self._config = plans, config
+
+    def plan_for(
+        self,
+        model_name: str,
+        model_config: dict[str, Any],
+        capability: str,
+        deterministic: bool,
+    ) -> DeploymentPlan | None:
+        """The recorded plan of *model_name*, when this run would serve it alike."""
+        raw = self._plans.get(model_name)
+        recorded_models = self._config.get("models")
+        if not isinstance(raw, dict) or not isinstance(recorded_models, dict):
+            return None
+        recorded_model = recorded_models.get(model_name)
+        if not isinstance(recorded_model, dict):
+            return None
+        current = redact_secrets(model_config)
+        if any(recorded_model.get(k) != current.get(k) for k in ("path", "infer")):
+            return None
+        try:
+            types = resolve_config_model_types(self._config).model_types_by_config
+            plan = plan_from_mapping(raw)
+        except (TypeError, ValueError):
+            return None
+        if model_name not in types or capability_model_type(types[model_name]) != (
+            capability
+        ):
+            return None
+        if plan.deterministic != deterministic:
+            return None
+        return plan
+
+
+def _declared_gpu_text() -> str | None:
+    """``SIEVAL_TARGET_GPU``, normalized; ``None`` when nothing is declared."""
+    declared = declared_target_gpu()
+    return format_target_gpu(declared) if declared is not None else None
+
+
+async def _plan_gpu_text() -> str | None:
+    """The GPUs this run's plans were resolved for, as ``SIEVAL_TARGET_GPU``
+    spells them: the declared ones, else this node's."""
+    gpu = declared_target_gpu() or await detect_local_gpu()
+    return format_target_gpu(gpu) if gpu is not None else None
+
+
+def _recorded_plans(
+    resume: bool | str | Path | None, result_dir: str | None
+) -> _RecordedPlans:
+    return _RecordedPlans(
+        _recorded_session_dir(resume, result_dir), _declared_gpu_text()
+    )
+
+
 async def _prepare_launch_batch(
     config_path: Path,
     config: dict[str, Any],
     *,
     effective_deterministic: bool,
+    recorded: _RecordedPlans | None = None,
 ) -> tuple[
     dict[str, dict[str, Any]],
     dict[str, tuple[DeploymentPlan, list[BackendCommand]]],
 ]:
-    """Resolve and translate every managed deployment without launching it."""
+    """Resolve and translate every managed deployment without launching it.
+
+    A plan *recorded* by the session a resume continues is reused when it
+    applies (:class:`_RecordedPlans`).
+    """
 
     models = config.get("models", {})
     if not isinstance(models, dict):
@@ -120,7 +226,23 @@ async def _prepare_launch_batch(
         _refuse_explicit_endpoint(model_name, model_config)
 
         infer_dict = model_config.get("infer")
-        if infer_dict is not None:
+        capability = capability_model_type(
+            model_type_resolution.model_types_by_config[model_name]
+        )
+        reused = (
+            recorded.plan_for(
+                model_name, model_config, capability, effective_deterministic
+            )
+            if recorded is not None
+            else None
+        )
+        if reused is not None:
+            logger.info("Reusing the recorded serving plan of {}", model_name)
+            plan = reused
+            user_env = {
+                str(k): str(v) for k, v in ((infer_dict or {}).get("env") or {}).items()
+            }
+        elif infer_dict is not None:
             _, plan, user_env = await resolve_infer_config(
                 config_path,
                 model_name,
@@ -129,10 +251,7 @@ async def _prepare_launch_batch(
         else:
             checkpoint = model_config["path"]
             result = await auto_resolve_plan(
-                checkpoint=checkpoint,
-                capability=capability_model_type(
-                    model_type_resolution.model_types_by_config[model_name]
-                ),
+                checkpoint=checkpoint, capability=capability
             )
             plan = result.plan
             user_env = {}
@@ -208,6 +327,7 @@ async def _run_dry_run(
         config_path,
         loaded,
         effective_deterministic=effective_deterministic,
+        recorded=_recorded_plans(resume, result_dir or loaded.get("result_dir")),
     )
     return checks(plan_dicts or None, frozenset(prepared_launches))
 
@@ -272,6 +392,7 @@ async def _run_all(
             config_path,
             config,
             effective_deterministic=effective_deterministic,
+            recorded=_recorded_plans(resume, effective_result_dir),
         )
 
         # Task requirements, model declarations, and every managed desired
@@ -314,6 +435,8 @@ async def _run_all(
                 f"Model name {SERVICE_LOG_DIR!r} is reserved for "
                 f"<result_dir>/logs/{SERVICE_LOG_DIR}/; rename the model."
             )
+        if prepared_launches:
+            await check_launch_gpu()
         for model_name, (plan, commands) in prepared_launches.items():
             log_user("Starting inference for model: {}", model_name)
 
@@ -406,6 +529,7 @@ async def _run_all(
             invocation=invocation,
             realized_deployments=realized_deployments or None,
             cli_model=cli_model,
+            infer_gpu=await _plan_gpu_text() if plan_dicts else None,
         )
         return reports
 

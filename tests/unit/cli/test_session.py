@@ -7439,6 +7439,7 @@ class TestEvalSessionWrappers:
             realized_deployments=None,
             resume_from=None,
             cli_model=None,
+            infer_gpu=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7472,6 +7473,7 @@ class TestEvalSessionWrappers:
             realized_deployments=None,
             resume_from=None,
             cli_model=None,
+            infer_gpu=None,
         )
         assert result == {"task_a": {"ok": True}}
 
@@ -7534,6 +7536,7 @@ class TestEvalSessionWrappers:
             realized_deployments=None,
             resume_from=None,
             cli_model=None,
+            infer_gpu=None,
         )
 
     def test_run_session_forwards_legacy_external_endpoint_adapter_positionally(

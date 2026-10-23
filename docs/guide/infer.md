@@ -53,6 +53,29 @@ The instruct flags are inert on a base checkpoint — the engine accepts and
 ignores them — so this affects what `infer_plans.yaml` records as the params
 used, not whether the service starts.
 
+## Resolving for declared GPUs
+
+A recipe's hardware layer and its tensor and data parallelism come from the
+GPUs `nvidia-smi` reports. To resolve a plan on another node, a CPU node
+included, declare those GPUs instead:
+
+```bash
+export SIEVAL_TARGET_GPU='NVIDIA H100 80GB HBM3:8:81559'   # <name>:<count>:<memory MiB>
+```
+
+`<name>` and `<memory MiB>` are what
+`nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits` prints
+on a node with those GPUs, and `<count>` is how many it lists. The plan is then
+the one that node resolves, so the inference identity matches too. A shorthand
+like `H100-80G:8` is refused: the name is recorded in a path-only plan and the
+memory decides tensor parallelism, so only the reported values reproduce it.
+
+Declared, `sieval infer start` and `sieval run` launch an engine only on a node
+with exactly those GPUs. `infer_plans.yaml` records as `gpu` the GPUs its plans
+were resolved for, declared or detected. A `sieval run --resume` declaring the
+same GPUs reuses a recorded plan, rather than resolving it again, for each
+served model whose `path` and `infer` are unchanged.
+
 ## Handles and engine logs
 
 Each launched service has a handle file under `~/.sieval/handles`:

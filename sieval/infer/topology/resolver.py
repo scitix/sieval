@@ -13,8 +13,10 @@ from loguru import logger
 
 from sieval.infer.config import ParamValue
 from sieval.infer.introspect import (
+    TARGET_GPU_ENV,
     ModelIdentity,
     bytes_per_param,
+    declared_target_gpu,
     detect_local_gpu,
     extract_moe_info,
     introspect_checkpoint_with_config,
@@ -410,10 +412,13 @@ async def auto_resolve_plan(
         family=identity.family,
     )
 
-    # 2. Detect GPU
-    gpu = await detect_local_gpu()
+    # 2. The declared GPUs, else this node's
+    gpu = declared_target_gpu() or await detect_local_gpu()
     if gpu is None:
-        raise RuntimeError("No GPU detected — cannot auto-resolve deployment plan.")
+        raise RuntimeError(
+            "No GPU detected — cannot auto-resolve deployment plan. On a node "
+            f"without the GPUs, declare them in {TARGET_GPU_ENV}."
+        )
 
     hw = HardwareEnv(
         gpu_count=gpu.count,

@@ -271,6 +271,19 @@ def _neutralize_openai_client_finalizer():
 
 
 # ===================================================================
+# No declared GPUs leak in from the shell (autouse)
+# ===================================================================
+@pytest.fixture(autouse=True)
+def _no_declared_target_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset ``SIEVAL_TARGET_GPU``, which replaces GPU detection.
+
+    A test that fakes ``detect_local_gpu`` would otherwise resolve for whatever
+    the developer's shell declares.
+    """
+    monkeypatch.delenv("SIEVAL_TARGET_GPU", raising=False)
+
+
+# ===================================================================
 # Mock Dataset
 # ===================================================================
 class MockDataset(Dataset):

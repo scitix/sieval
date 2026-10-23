@@ -36,6 +36,7 @@ from sieval.infer.deployer import (
     DeployError,
     DeployTimeoutError,
 )
+from sieval.infer.introspect import check_launch_gpu
 from sieval.infer.params import merge_params
 from sieval.infer.recipes import capability_model_type
 from sieval.infer.topology.models import (
@@ -376,6 +377,8 @@ def infer_start(
         render(dr_result, output)
         return
 
+    # A plan resolved for declared GPUs launches only on those GPUs.
+    anyio.run(check_launch_gpu)
     keep = resolve_keep_logs(keep_logs)
 
     # Claim the handle under the handle lock: a live holder refuses, and a

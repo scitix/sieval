@@ -24,6 +24,7 @@ from sieval.infer.introspect import (
     GPUInfo,
     ModelIdentity,
     bytes_per_param,
+    declared_target_gpu,
     detect_local_gpu,
     introspect_checkpoint_sync,
 )
@@ -274,7 +275,9 @@ async def _resolve_recipe_params(
     # final merge operate on a single canonical key form.
     overrides = merge_params(overrides or {})
 
-    gpu = await detect_local_gpu()
+    # The declared GPUs stand in for this node's, so any node resolves the plan
+    # a node with that hardware would.
+    gpu = declared_target_gpu() or await detect_local_gpu()
 
     params: dict[str, ParamValue] = {}
     if gpu:

@@ -1089,7 +1089,7 @@ _SECRET_CONFIG_KEYS = frozenset({"api_key", "authorization"})
 _REDACTED = "<redacted>"
 
 
-def _redact_secrets(value: Any) -> Any:
+def redact_secrets(value: Any) -> Any:
     """A copy of *value* with every secret config value, at any depth, redacted.
 
     Matched by key name anywhere, so a task arg named ``api_key`` is redacted
@@ -1099,11 +1099,11 @@ def _redact_secrets(value: Any) -> Any:
         return {
             k: _REDACTED
             if k in _SECRET_CONFIG_KEYS and v is not None
-            else _redact_secrets(v)
+            else redact_secrets(v)
             for k, v in value.items()
         }
     if isinstance(value, list):
-        return [_redact_secrets(item) for item in value]
+        return [redact_secrets(item) for item in value]
     return value
 
 
@@ -1286,7 +1286,7 @@ def _fold_runner_resume_aliases(cfg: dict[str, Any]) -> None:
             block["resume"] = str(resume) if isinstance(resume, Path) else resume
 
 
-def _read_persisted_config(path: Path) -> dict[str, Any] | None:
+def read_persisted_config(path: Path) -> dict[str, Any] | None:
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
@@ -1654,6 +1654,7 @@ class EvalSession:
         serving_reconciler: ServingReconciler | None = None,
         resume_from: str | Path | None = None,
         cli_model: CliModel | None = None,
+        infer_gpu: str | None = None,
     ):
         self.config_path = Path(config_path)
         self.model_override = model_override
@@ -1677,6 +1678,7 @@ class EvalSession:
             )
         self._legacy_endpoint_map: Mapping[str, str] = legacy_endpoint_map
         self._infer_plans: Mapping[str, dict[str, Any]] | None = infer_plans
+        self._infer_gpu = infer_gpu
         self._realized_deployments = realized_deployment_map
         for root_name, deployment in self._realized_deployments.items():
             if not isinstance(root_name, str) or not root_name:
@@ -4893,7 +4895,7 @@ class EvalSession:
         ``None`` when there is none: both stages stay unknown.
         """
         if isinstance(runner_config.resume, Path):
-            persisted = _read_persisted_config(
+            persisted = read_persisted_config(
                 runner_config.resume.parent / "effective_config.yaml"
             )
         elif runner_config.resume:
@@ -5161,7 +5163,7 @@ class EvalSession:
         ``path`` / ``infer`` fields.
         """
         body = yaml.safe_dump(
-            _redact_secrets(self._reified_config),
+            redact_secrets(self._reified_config),
             default_flow_style=False,
             allow_unicode=True,
             sort_keys=False,
@@ -5169,7 +5171,7 @@ class EvalSession:
         result_dir = self._resolve_result_dir()
         if self.resume_override is True and result_dir:
             self._recorded_config = await run_sync(
-                _read_persisted_config, Path(result_dir) / "effective_config.yaml"
+                read_persisted_config, Path(result_dir) / "effective_config.yaml"
             )
         extra_lines = [
             "Reproduce:",
@@ -5203,16 +5205,21 @@ class EvalSession:
         """Write infer_plans.yaml to result_dir when the caller supplied plans.
 
         Rerun re-resolves plans from the ``infer:`` section of
-        effective_config.yaml plus the installed sieval version, so this file
-        is audit-only. It never blocks a resume: the serving recipe is part of
-        each task's inference identity, which a resume compares instead.
+        effective_config.yaml plus the installed sieval version. A resume
+        under ``SIEVAL_TARGET_GPU`` equal to the recorded ``gpu`` reuses a plan
+        whose model config is unchanged (``sieval run``). It never blocks a
+        resume: the serving recipe is part of each task's inference identity,
+        which a resume compares instead.
         """
         if not self._infer_plans:
             return
 
-        payload = {"models": dict(self._infer_plans)}
+        payload: dict[str, Any] = {"models": dict(self._infer_plans)}
+        if self._infer_gpu is not None:
+            # Outside `models`, so it stays out of every inference identity.
+            payload = {"gpu": self._infer_gpu, **payload}
         body = yaml.safe_dump(
-            _redact_secrets(payload),
+            redact_secrets(payload),
             default_flow_style=False,
             allow_unicode=True,
             sort_keys=False,
@@ -5224,7 +5231,9 @@ class EvalSession:
             extra_lines=[
                 "Reference only: audit log of the DeploymentPlan used",
                 "  for each served model. Re-resolved at runtime from",
-                "  effective_config.yaml + installed sieval version.",
+                "  effective_config.yaml + installed sieval version, except",
+                "  that a resume reuses a model's plan when SIEVAL_TARGET_GPU",
+                "  equals `gpu` and the model's config is unchanged.",
             ],
         )
         await self._persist_audit_yaml(
@@ -5304,6 +5313,7 @@ async def arun_session(
     realized_deployments: Mapping[str, Deployment] | None = None,
     resume_from: str | Path | None = None,
     cli_model: CliModel | None = None,
+    infer_gpu: str | None = None,
 ) -> dict[str, Any]:
     """Run tasks defined in a YAML configuration file asynchronously.
 
@@ -5333,6 +5343,9 @@ async def arun_session(
         resume_from: Deprecated alias of ``resume=<dir>``; warns.
         cli_model: ``--checkpoint``/``--api-base``, added as the ``models:``
             entry of a config that has none.
+        infer_gpu: The GPUs *infer_plans* were resolved for, as
+            ``SIEVAL_TARGET_GPU`` spells them; recorded in ``infer_plans.yaml``
+            as ``gpu``, so a resume can tell whether it may reuse the plans.
 
     Returns:
         A dictionary mapping task names to their reports.
@@ -5350,6 +5363,7 @@ async def arun_session(
         realized_deployments=realized_deployments,
         resume_from=resume_from,
         cli_model=cli_model,
+        infer_gpu=infer_gpu,
     )
 
     return await runner.arun()

@@ -1516,3 +1516,157 @@ class TestEffectiveConfigRerunSafety:
         loaded = yaml.safe_load(infer_plans.read_text())
         assert "model_a" in loaded["models"]
         assert loaded["models"]["model_a"]["backend"] == "vllm"
+
+
+class TestDeclaredTargetGpu:
+    """``SIEVAL_TARGET_GPU`` resolves on any node the plan a node with those
+    GPUs resolves, and a resume reuses the plan it recorded for them."""
+
+    H100 = "NVIDIA H100 80GB HBM3:8:81559"
+
+    def _config(self, tmp_path: Path) -> Path:
+        checkpoint = tmp_path / "Qwen3-32B"
+        checkpoint.mkdir()
+        (checkpoint / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["Qwen3ForCausalLM"],
+                    "model_type": "qwen3",
+                    "vocab_size": 151936,
+                    "hidden_size": 5120,
+                    "num_hidden_layers": 64,
+                    "num_attention_heads": 64,
+                    "num_key_value_heads": 8,
+                    "intermediate_size": 25600,
+                    "torch_dtype": "bfloat16",
+                }
+            )
+        )
+        config_path = tmp_path / "cfg.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "models": {"m": {"path": str(checkpoint), "type": "chat"}},
+                    "result_dir": str(tmp_path / "out"),
+                    "tasks": {},
+                }
+            )
+        )
+        return config_path
+
+    async def _run(
+        self, config_path: Path, *, gpu: object, resume: bool = False
+    ) -> tuple[AsyncMock, AsyncMock]:
+        """Run with this node's GPUs faked as *gpu*; return the launch and
+        session mocks."""
+        from sieval.cli.run import _run_all
+
+        launch = AsyncMock(return_value=([_fake_handle()], None))
+        session = AsyncMock(return_value={})
+        nvidia_smi = AsyncMock(return_value=gpu)
+        with (
+            patch("sieval.infer.topology.resolver.detect_local_gpu", new=nvidia_smi),
+            patch("sieval.infer.introspect.detect_local_gpu", new=nvidia_smi),
+            patch("sieval.cli.run.detect_local_gpu", new=nvidia_smi),
+            patch("sieval.cli.run.launch_model", new=launch),
+            patch("sieval.cli.run.cleanup_model", new=AsyncMock()),
+            patch("sieval.cli.session.arun_session", new=session),
+        ):
+            await _run_all(config_path, resume=resume)
+        return launch, session
+
+    @staticmethod
+    def _gpu(text: str) -> object:
+        from sieval.infer.introspect import parse_target_gpu
+
+        return parse_target_gpu(text)
+
+    @pytest.mark.anyio
+    async def test_a_declared_plan_is_the_detected_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        config_path = self._config(tmp_path)
+        _, detected = await self._run(config_path, gpu=self._gpu(self.H100))
+
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100)
+        _, declared = await self._run(config_path, gpu=self._gpu(self.H100))
+
+        assert declared.await_args is not None and detected.await_args is not None
+        plans = declared.await_args.kwargs["infer_plans"]
+        assert plans == detected.await_args.kwargs["infer_plans"]
+        # Both name the GPUs the plans are for, as the variable spells them.
+        assert declared.await_args.kwargs["infer_gpu"] == self.H100
+        assert detected.await_args.kwargs["infer_gpu"] == self.H100
+
+    @pytest.mark.anyio
+    async def test_declared_gpus_other_than_this_nodes_refuse_the_launch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100)
+        with pytest.raises(RuntimeError, match="no GPU"):
+            await self._run(self._config(tmp_path), gpu=None)
+
+    def _record(self, tmp_path: Path, config_path: Path, plan: dict) -> None:
+        """What a session that served ``m`` with *plan* on the H100s left."""
+        out = tmp_path / "out"
+        out.mkdir(exist_ok=True)
+        (out / "effective_config.yaml").write_text(config_path.read_text())
+        (out / "infer_plans.yaml").write_text(
+            yaml.safe_dump({"gpu": self.H100, "models": {"m": plan}}, sort_keys=False)
+        )
+
+    @pytest.mark.anyio
+    async def test_a_resume_reuses_the_plan_recorded_for_the_declared_gpus(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from sieval.cli.session import unwrap_proxies
+
+        config_path = self._config(tmp_path)
+        # Not what this SiEval resolves, so only a reuse produces it.
+        recorded = unwrap_proxies(_fake_plan())
+        recorded["checkpoint"] = yaml.safe_load(config_path.read_text())["models"]["m"][
+            "path"
+        ]
+        self._record(tmp_path, config_path, recorded)
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100)
+        resolve = AsyncMock()
+        with patch("sieval.cli.run.auto_resolve_plan", new=resolve):
+            _, session = await self._run(
+                config_path, gpu=self._gpu(self.H100), resume=True
+            )
+
+        resolve.assert_not_awaited()
+        assert session.await_args is not None
+        assert session.await_args.kwargs["infer_plans"] == {"m": recorded}
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("change", ["other_gpus", "fresh_run", "changed_model"])
+    async def test_otherwise_the_plan_is_resolved_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+    ):
+        from sieval.cli.session import unwrap_proxies
+
+        config_path = self._config(tmp_path)
+        self._record(tmp_path, config_path, unwrap_proxies(_fake_plan()))
+        declared = self.H100
+        if change == "other_gpus":
+            declared = "NVIDIA A100-SXM4-80GB:8:81920"
+        if change == "changed_model":
+            cfg = yaml.safe_load(config_path.read_text())
+            cfg["models"]["m"]["infer"] = {"backend": "vllm"}
+            cfg["models"]["m"]["infer"]["overrides"] = {"tp": 8}
+            config_path.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", declared)
+        resolve = AsyncMock(return_value=ResolveResult(plan=_fake_plan(), steps=()))
+        resolve_yaml = AsyncMock(return_value=("m", _fake_plan(), {}))
+        with (
+            patch("sieval.cli.run.auto_resolve_plan", new=resolve),
+            patch("sieval.cli.run.resolve_infer_config", new=resolve_yaml),
+        ):
+            await self._run(
+                config_path,
+                gpu=self._gpu(declared),
+                resume=change != "fresh_run",
+            )
+
+        assert resolve.await_count + resolve_yaml.await_count == 1

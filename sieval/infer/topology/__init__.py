@@ -26,6 +26,7 @@ from sieval.infer.topology.models import (
     WellKnownRole,
     deployment_plan_fingerprint,
     deployment_plan_projection,
+    plan_from_mapping,
 )
 from sieval.infer.topology.resolver import precision_key
 from sieval.infer.topology.validator import validate_plan
@@ -52,6 +53,7 @@ __all__ = [
     "WellKnownRole",
     "deployment_plan_fingerprint",
     "deployment_plan_projection",
+    "plan_from_mapping",
     "precision_key",
     "validate_plan",
 ]

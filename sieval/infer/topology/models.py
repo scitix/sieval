@@ -265,6 +265,44 @@ def deployment_plan_projection(
     )
 
 
+def plan_from_mapping(raw: Mapping[str, Any]) -> DeploymentPlan:
+    """Rebuild a :class:`DeploymentPlan` from its plain form, as
+    ``infer_plans.yaml`` records it.
+
+    Raises ``ValueError`` for a mapping that is not such a plan.
+    """
+    try:
+        assignments = tuple(
+            RoleAssignment(
+                role=a["role"],
+                devices=DeviceGroup(**a["devices"]),
+                topology=ParallelTopology(**a["topology"]),
+                replicas=a.get("replicas", 1),
+                engine_params=dict(a.get("engine_params") or {}),
+                scaling=(
+                    ScalingPolicy(**a["scaling"])
+                    if a.get("scaling") is not None
+                    else None
+                ),
+            )
+            for a in raw["assignments"]
+        )
+        attachments = tuple(ServiceBinding(**b) for b in raw.get("attachments") or ())
+        plan = DeploymentPlan(
+            checkpoint=raw["checkpoint"],
+            backend=raw["backend"],
+            assignments=assignments,
+            attachments=attachments,
+            deterministic=raw.get("deterministic", False),
+            seed=raw.get("seed", DETERMINISTIC_DEFAULT_SEED),
+        )
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"not a recorded deployment plan: {exc}") from exc
+    if _plain_plan_value(plan) != _plain_plan_value(raw):
+        raise ValueError("recorded deployment plan has fields this version lacks")
+    return plan
+
+
 def _plain_plan_value(value: Any) -> Any:
     """Recursively normalize plan dataclasses and frozen mappings for JSON."""
 
