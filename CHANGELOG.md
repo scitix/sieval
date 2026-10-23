@@ -5,19 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.11.0] - 2026-10-23
+
+A minor bump: `sieval leaderboard` is removed and SiEval is scoped to an
+evaluation engine, and a resume is now admitted by the result schema version
+instead of the package version. No stage identity changes: `IDENTITY_SCHEMA`
+and `RESULT_SCHEMA_VERSION` are both 1, every built-in task's grader digest is
+the one 0.10.2 computes, and 0.10.0, 0.10.1 and 0.10.2 result directories,
+local builds included, resume. `anomalies.json`'s `rules_hash` changes, since
+the rule set gained `context_overflow`.
+
+### Migrating from 0.10.x
+
+- **`sieval leaderboard run` is now `sieval eval`**, with the same options. `sieval leaderboard report` / `list`, alignment cards and the shipped leaderboard specs are gone; compare runs from their result files and `meta.json`. A config's `alignment:` block loads with a warning and is ignored.
+- **Import the engine from `sieval.cli.session`.** `sieval.cli.leaderboard.session` still works for this release, with a `DeprecationWarning`, and forwards every name.
+- **Each task directory gains `requests.jsonl`**, one line per model request attempt. Set `runner_config.record_requests: false` to turn it off.
+- **A prompt longer than the context window scores as wrong** and is flagged by the `context_overflow` anomaly, instead of failing the sample; it counts under `report.json` `sieval.context_overflow` and `anomalies`, not `failed`. A task declares `context_overflow = "fail"` to keep the failure.
+- **The resume gate reads `meta.json` `result_schema_version`.** A directory without it maps from its `version` (0.10.0 or later is schema 1), so 0.10.x directories resume as they are. Replace `resume_version_verdict` with `resume_schema_verdict`.
+
+### Added
+
+- **`requests.jsonl`: every model request attempt is recorded.** One line per attempt beside a task's shards: phase, role, model, sample, attempt number, timings (`connect_s` is the wait for a pooled connection), HTTP status or exception class, provider request id, retry wait, usage, and the occupancy of every limiter it ran under. Judges and extractors are covered without task code. `profile.json` gains a per-phase, per-model `requests` summary, `report.json`'s `sieval` block its counts and limiter peaks, and each `meta.json` `runs[]` entry the run's own counts. The file is append-only, rotated (`request_log_max_bytes`, `request_log_max_files`), and read by nothing: no identity, digest or score depends on it. `record_requests: false` turns it off (#197, #201).
+- **`sieval run --checkpoint <path>` and `sieval run|eval --api-base <url> --model <name>`** add the one `models:` entry a config with only `datasets:` and `tasks:` lacks, and `effective_config.yaml` records it, so a rerun or resume needs no flags. Both flags together, `--api-base` without `--model`, or either on a config that defines models is refused before anything launches; `--dry-run` reports it as the `cli_model` check (#195, #198).
+- **`result_schema_version` in `meta.json`** (`RESULT_SCHEMA_VERSION`, starting at 1) versions the result directory a resume reads, separately from `identity.schema`. The package version stays in `version` and `runs[].sieval` as provenance (#202, #203).
+- **`context_overflow` anomaly rule** (gen tasks), and `Model.context_overflow_output` for a task that measures its own prompt and records the overflow without sending it (#206, #207).
 
 ### Changed
 
-- **Resume compatibility is keyed on the result schema version, not the package version.** `meta.json` gains `result_schema_version` (`RESULT_SCHEMA_VERSION`, starting at 1), versioning the result directory a resume reads; a resume refuses another one, naming both schema versions and both SiEval versions. A directory without the field maps from its `version`: 0.10.0 and later, local builds included, is 1, so 0.10.x directories resume under this release, and older, unparseable or `0.0.0` ones are refused as before. Dev and local builds (`0.10.2+gc18745b`) now resume across builds when the schema matches. This release keeps schema 1. The package version stays in `version` and `runs[].sieval` as provenance. `resume_version_verdict` is replaced by `resume_schema_verdict` (#202).
-- **A prompt longer than the model's context window is scored as wrong, not failed.** When the server refuses the model under test's prompt as too long (SGLang's "is longer than the model's context length" or "Requested token count exceeds the model's maximum context length", vLLM's and OpenAI's "maximum context length", a 400 or 413), the call inside `infer` returns one empty text per rollout with finish reason `context_overflow`. The task grades it like any blank answer, the new `context_overflow` anomaly rule flags it, and `report.json`'s `sieval` block counts it under `anomalies` and the new `context_overflow` key, not under `failed`. It used to fail the sample on every resume, so a run with one never completed. A task declares `context_overflow = "fail"` to keep the failure, now recorded with reason `context_overflow` and never retried. Timeouts, connection errors, 5xx and a judge's own overflow still fail; a logprob call fails as `context_overflow`. A task that catches the refusal itself (Multi-IF's and SysBench's walks) is unchanged, and one that measures its prompt can record the overflow without sending it with `Model.context_overflow_output`. In `requests.jsonl` and the request summaries the refused attempt keeps its status and is counted under outcome `context_overflow` instead of `4xx`.
-- **A resume scores a recorded overflow without asking again.** A directory whose samples failed with a context-overflow refusal at `infer` (as 0.10.x recorded them) resumes them from the recorded refusal when the inference identity matches: no request is sent, no retry is spent, and the sample is graded and counted as above. The recorded message must name a 400 or 413 (or no status, as a stream error does), as live: a 429 or 5xx quoting the words stays a retriable failure. A task whose `infer` calls the model under test more than once, in turn or concurrently, is inferred again instead, since the record cannot say which call was refused. Because a refusal that escapes `infer` makes the runner call `infer` once more with refusals converted, an `infer` should have no side effects beyond its model calls.
+- **BREAKING — SiEval is an evaluation engine.** The `leaderboard` command group is removed with `run`, `report` and `list`; `sieval eval` (`cli/eval.py`) replaces `sieval leaderboard run` and always reports `command="eval"` / `eval.dry_run`. The engine moves to `sieval.cli.session`. `card.py`, `catalog.py`, `scanner.py`, `annotation.py`, the leaderboard renderers and `leaderboards/` are deleted; `examples/leaderboard-math-sft.yaml` is now `examples/math-suite.yaml` (#194, #199).
+- **BREAKING — resume compatibility is keyed on the result schema version, not the package version.** A resume refuses another schema version, naming both schema versions and both SiEval versions. A directory without the field maps from its `version`: 0.10.0 and later, local builds included, is 1; older, unparseable or `0.0.0` ones are refused as before. Dev and local builds (`0.10.2+gc18745b`) now resume across builds when the schema matches. `resume_version_verdict` is replaced by `resume_schema_verdict` (#202, #203).
+- **A prompt longer than the model's context window is scored as wrong, not failed.** When the server refuses the model under test's prompt as too long (SGLang's "is longer than the model's context length" or "Requested token count exceeds the model's maximum context length", vLLM's and OpenAI's "maximum context length", a 400 or 413), the call inside `infer` returns one empty text per rollout with finish reason `context_overflow`. The task grades it like any blank answer, the `context_overflow` rule flags it, and `report.json`'s `sieval` block counts it under `anomalies` and the new `context_overflow` key, not under `failed`. It used to fail the sample on every resume, so a run with one never completed. A task declares `context_overflow = "fail"` to keep the failure, now recorded with reason `context_overflow` and never retried. Timeouts, connection errors, 5xx and a judge's own overflow still fail; a logprob call fails as `context_overflow`. A task that catches the refusal itself (Multi-IF's and SysBench's walks) is unchanged. `extraction_failure` and `empty_postprocess` leave such rollouts to the new rule. In `requests.jsonl` and the request summaries the refused attempt keeps its status and is counted under outcome `context_overflow` instead of `4xx` (#206, #207).
+- **A resume scores a recorded overflow without asking again.** A directory whose samples failed with a context-overflow refusal at `infer` (as 0.10.x recorded them) resumes them from the recorded refusal when the inference identity matches: no request is sent, no retry is spent, and the sample is graded and counted as above. The recorded message must name a 400 or 413 (or no status, as a stream error does), as live: a 429 or 5xx quoting the words stays a retriable failure. A task whose `infer` calls the model under test more than once, in turn or concurrently, is inferred again instead, since the record cannot say which call was refused. Because a refusal that escapes `infer` makes the runner call `infer` once more with refusals converted, an `infer` should have no side effects beyond its model calls (#206, #207).
+- **`max_retries` means the same on every connection family.** The Anthropic and Google clients used to retry only connect failures, so a 429 or 503 from such a judge failed its sample at once. They now retry as the OpenAI SDK does: 408/409/429/5xx and transport errors, `x-should-retry`, `retry-after(-ms)` within 60 s, 0.5 s doubling to 8 s with the SDK's jitter. Both families get the SDK's connection limits (1000/100; httpx's default of 100 queued requests past a higher concurrency limit) and follow redirects, and Anthropic's HTTP errors name the provider's reason, as Google's do. The retry policy is renamed `sieval-http:max-retries=`, so a binding plan made under the old meaning is refused rather than reread (#201).
+- `progress.json` is written off the event loop, as `report.json` and `meta.json` are; on a network filesystem its fsync used to stall every task in a session (#196, #200).
 
 ### Fixed
 
-- The deprecated `sieval.cli.leaderboard.session` alias forwards every global of `sieval.cli.session` and `sieval.cli.resolution`, not only its ten `__all__` names; `getattr(alias, "DETERMINISTIC_DEFAULT_SEED", None)` returned `None` and silently dropped `seed` in deterministic runs (#204).
+- The deprecated `sieval.cli.leaderboard.session` alias forwards every global of `sieval.cli.session` and `sieval.cli.resolution`, not only its ten `__all__` names; `getattr(alias, "DETERMINISTIC_DEFAULT_SEED", None)` returned `None` and silently dropped `seed` in deterministic runs (#204, #205).
 
-No stage identity changes: the inference and grader digests of every built-in task are the ones 0.10.2 computes, so a 0.10.2 directory resumes. `RESULT_SCHEMA_VERSION` stays 1 although scoring an overflow is a core change that alters results: 0.10.x never finalized an overflowed sample, so a resume reuses no result the change would have made differently, and it builds that sample as a fresh run would. A reused 0.10.x `report.json` gains `context_overflow` in its `sieval` block. `anomalies.json`'s `rules_hash` changes, since the rule set gained `context_overflow`.
+### Deprecated
+
+- `sieval.cli.leaderboard.session`, kept for one release (#199). The resume aliases deprecated in 0.10.0 (`--resume-from`, `auto_resume`, `resume_from`) are still accepted and still warn.
+
+### Identity
+
+`RESULT_SCHEMA_VERSION` stays 1 although scoring an overflow is a core change that alters results: 0.10.x never finalized an overflowed sample, so a resume reuses no result the change would have made differently, and it builds that sample as a fresh run would. A reused 0.10.x `report.json` gains `context_overflow` in its `sieval` block. Every built-in task's grader digest is 0.10.2's, and inference digests are unchanged.
 
 ## [0.10.2] - 2026-10-22
 
@@ -406,6 +438,7 @@ Mainstream benchmarks registered in `sieval/meta/index.json`:
 - Project-wide preflight (`scripts/check_preflight.py`): links, deps, tasks, datasets, imports, examples, meta-index sync, version.
 - Tooling: `ruff`, `ty`, `mypy strict`, `pytest`.
 
+[0.11.0]: https://github.com/scitix/sieval/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/scitix/sieval/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/scitix/sieval/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/scitix/sieval/compare/v0.9.0...v0.10.0
