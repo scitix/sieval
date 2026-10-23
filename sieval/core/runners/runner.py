@@ -20,8 +20,16 @@ from loguru import logger
 from sieval import __version__
 from sieval.core.datasets import repeat_index_of
 from sieval.core.models import ModelOutput
+from sieval.core.models.overflow import (
+    CONTEXT_OVERFLOW,
+    ContextOverflowError,
+    OverflowScope,
+    ReplayAmbiguous,
+    is_recorded_context_overflow,
+    overflow_scope,
+)
 from sieval.core.models.request_log import StageScope, stage_scope, timeout_phase
-from sieval.core.tasks.anomaly import TaskAnomalyDetector
+from sieval.core.tasks.anomaly import TaskAnomalyDetector, detect_context_overflow
 from sieval.core.tasks.concurrency import (
     compute_stream_buffer_capacity,
     get_limiter_for,
@@ -29,6 +37,7 @@ from sieval.core.tasks.concurrency import (
     prepare_limiters,
 )
 from sieval.core.tasks.consts import (
+    CONTEXT_OVERFLOW_REASON,
     NON_RETRIABLE_REASON,
     STAGE_DIRS,
     NonRetriableSampleError,
@@ -113,14 +122,25 @@ _NOT_REPORTED: Any = object()
 class SievalCounts(TypedDict):
     """The ``sieval`` block of ``report.json``.
 
-    ``anomalies`` counts final samples any rule flagged. A fast resume needs
-    ``total == final`` and ``failed == 0``.
+    ``anomalies`` counts final samples any rule flagged. ``context_overflow``
+    counts samples whose prompt the model under test refused as longer than its
+    context window: final ones, scored as an empty answer and also counted in
+    ``anomalies``, and failed ones of a task that declares ``context_overflow =
+    "fail"``. A fast resume needs ``total == final`` and ``failed == 0``.
     """
 
     total: int
     final: int
     failed: int
     anomalies: int
+    context_overflow: int
+
+
+def _overflowed(ctx: TaskContext) -> bool:
+    """Whether *ctx*'s prompt did not fit the model under test's window."""
+    if ctx.stage is TaskStage.FAILED:
+        return ctx.error_reason == CONTEXT_OVERFLOW_REASON
+    return bool(detect_context_overflow(ctx))
 
 
 def _counts(
@@ -137,6 +157,7 @@ def _counts(
         "anomalies": sum(
             1 for sid, its in anomalies.items() if sid in final_ids and its
         ),
+        "context_overflow": sum(1 for c in (*finals, *fails) if _overflowed(c)),
     }
 
 
@@ -472,6 +493,9 @@ class TaskRunner:
         self._recorded: dict | None = None
         self._regrade = False
         self._grader_stamp: str | None = None
+        # Context overflows an earlier run recorded as failed inference, by
+        # sample: a resume scores them from the recorded refusal (`_infer`).
+        self._overflow_replays: dict[str | int, str] = {}
         self._data_match: bool | None = None
         self._resume_plan: dict[str, int] = {}
         self._unverified_inference = 0
@@ -859,7 +883,12 @@ class TaskRunner:
             # Decide per sample what a resume keeps before failures roll back,
             # so a sample that failed in grading regrades rather than reinfers.
             changed = await self._plan_stage_resume()
+            self._collect_overflow_replays(inference)
             self._loader.prepare_failed_retries(self._contexts, self._record_each_stage)
+            for sid in self._overflow_replays:
+                # Scored from the record, not retried: no retry is spent.
+                ctx = self._contexts[sid]
+                self._contexts[sid] = replace(ctx, retry_count=ctx.retry_count - 1)
             keeps_recorded_model = self._model_differs() and self._check_model_switch()
         # A regrade leaves the grader unknown until the run ends: samples it
         # has not reached yet were graded by the recorded grader.
@@ -876,6 +905,35 @@ class TaskRunner:
             grader=None if self._regrade else grader,
         )
         return changed
+
+    def _collect_overflow_replays(self, inference: InferenceIdentity | None) -> None:
+        """Samples an earlier run failed with a context overflow at ``infer``.
+
+        Such a failure is fixed by the model, its serving and the prompt, so a
+        resume that keeps all three scores it from the recorded refusal instead
+        of asking again: kept when the task scores overflows and the recorded
+        inference identity equals this run's for the same model. A sample whose
+        data or prompt changed was restarted by the plan already.
+        """
+        if self._task.context_overflow != "score":
+            return
+        identity = recorded_identity(self._recorded)
+        recorded = identity["inference"] if identity is not None else None
+        if (
+            inference is None
+            or recorded is None
+            or recorded.get("digest") != inference["digest"]
+            or self._model_differs()
+        ):
+            return
+        for sid, ctx in self._contexts.items():
+            if (
+                ctx.stage is TaskStage.FAILED
+                and ctx.error_action is TaskAction.INFER
+                and ctx.error_msg is not None
+                and is_recorded_context_overflow(ctx.error_reason, ctx.error_msg)
+            ):
+                self._overflow_replays[sid] = ctx.error_msg
 
     async def _hydrate_initial(self, *, resumed: bool) -> None:
         """Hydrate the recorded contexts a run continues from."""
@@ -1256,6 +1314,7 @@ class TaskRunner:
             stage: TaskStage,
             raw_result: Any,
             finalize: bool | None = None,
+            overflows: list[str] | None = None,
         ) -> TaskContext:
             # 1. Resolve value and optional user meta (box preserved)
             val, out_meta = _resolve(raw_result)
@@ -1264,6 +1323,8 @@ class TaskRunner:
 
             # 2. Auto meta always recorded; user meta merges on top
             meta = _build_auto_meta(timing_s, inner)
+            if overflows:
+                meta[CONTEXT_OVERFLOW] = list(overflows)
             if stage == TaskStage.PREPROCESSED:
                 meta["identity"] = {
                     "data": self._safe_digest(ctx.raw_sample),
@@ -1324,8 +1385,8 @@ class TaskRunner:
                     new_ctx = _run_stage(TaskStage.PREPROCESSED, r)
 
                 case TaskAction.INFER:
-                    r = await self._task.infer(ctx.preprocess_result, ctx)
-                    new_ctx = _run_stage(TaskStage.INFERRED, r)
+                    r, overflows = await self._infer(ctx)
+                    new_ctx = _run_stage(TaskStage.INFERRED, r, overflows=overflows)
 
                 case TaskAction.POSTPROCESS:
                     r = await self._task.postprocess(ctx.infer_result, ctx)
@@ -1344,11 +1405,12 @@ class TaskRunner:
             # A task raising `NonRetriableSampleError` has declared the outcome
             # deterministic in this sample's own input, so it earns the one reason
             # the loader will not roll back.
-            reason = (
-                NON_RETRIABLE_REASON
-                if isinstance(e, NonRetriableSampleError)
-                else f"exception::{e.__class__.__name__}"
-            )
+            if isinstance(e, ContextOverflowError):
+                reason = CONTEXT_OVERFLOW_REASON
+            elif isinstance(e, NonRetriableSampleError):
+                reason = NON_RETRIABLE_REASON
+            else:
+                reason = f"exception::{e.__class__.__name__}"
             new_ctx = ctx.to_failed(action, reason, _failure_message(e))
 
         # Outside the handler above: a failed `meta.json` write fails the task,
@@ -1363,6 +1425,54 @@ class TaskRunner:
             if new_ctx.is_terminal():
                 self._contexts[new_ctx.sample_id] = new_ctx
             raise
+
+    async def _infer(self, ctx: TaskContext) -> tuple[Any, list[str]]:
+        """Run the task's ``infer``; ``(result, context overflows scored)``.
+
+        Run as it always was first, so a task that handles an overflow itself
+        keeps doing so. When one escapes, the run that used to fail the sample,
+        ``infer`` runs again with refusals returned as empty outputs (see
+        :mod:`sieval.core.models.overflow`); the calls already answered are
+        replayed, not sent again, but the rest of ``infer`` runs twice. A task
+        declaring ``context_overflow = "fail"`` fails the sample instead, as
+        non-retriable.
+        """
+        model = self._task.model
+        pre = ctx.preprocess_result
+        replay = self._overflow_replays.pop(ctx.sample_id, None)
+        if replay is not None:
+            scope = OverflowScope(model, convert=True, replay=replay)
+            try:
+                with overflow_scope(scope):
+                    result = await self._task.infer(pre, ctx)
+            except ReplayAmbiguous:
+                pass
+            except Exception:
+                if not scope.ambiguous:
+                    raise
+            else:
+                if not scope.ambiguous:
+                    return result, scope.messages
+            logger.info(
+                "{}: the recorded context overflow of sample {} cannot say which "
+                "call it answered; inferring it again",
+                self._task.name,
+                ctx.sample_id,
+            )
+        observed = OverflowScope(model)
+        try:
+            with overflow_scope(observed):
+                return await self._task.infer(pre, ctx), []
+        except Exception as exc:
+            message = observed.escaping(exc)
+            if message is None:
+                raise
+            if self._task.context_overflow == "fail":
+                raise ContextOverflowError(message) from exc
+        scope = OverflowScope(model, convert=True, known=observed.calls)
+        with overflow_scope(scope):
+            result = await self._task.infer(pre, ctx)
+        return result, scope.messages
 
     def _unstored_terminal(
         self, compute_leftover: MemoryObjectReceiveStream[TaskContext]
@@ -1555,11 +1665,16 @@ class TaskRunner:
         fails: list[TaskContext],
         anomalies: dict[str | int, dict[int, dict[str, list[int]]]],
     ) -> None:
-        """Match a reused report's ``sieval.anomalies`` to the re-detection."""
+        """Match a reused report's ``sieval`` anomaly counts to the re-detection."""
         counts = report[SIEVAL_COUNTS_KEY]
-        count = _counts(self._total_samples, finals, fails, anomalies)["anomalies"]
-        if counts.get("anomalies") != count:
-            counts["anomalies"] = count
+        current = _counts(self._total_samples, finals, fails, anomalies)
+        stale = {
+            key: current[key]
+            for key in ("anomalies", "context_overflow")
+            if counts.get(key) != current[key]
+        }
+        if stale:
+            counts.update(stale)
             await self._saver.save_report(report)
 
     def _anomalies_of(

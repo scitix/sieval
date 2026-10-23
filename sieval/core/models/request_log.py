@@ -32,6 +32,7 @@ from openai import DefaultAsyncHttpxClient
 from sieval.core.types import JSONValue
 
 from .ir import UsageStats
+from .overflow import CONTEXT_OVERFLOW, context_overflow_message
 
 #: Headers a provider may name its request id under, in lookup order.
 REQUEST_ID_HEADERS = ("x-request-id", "request-id", "x-amzn-requestid")
@@ -206,6 +207,21 @@ class CallScope:
     usage: UsageStats | None = None
     attempts: list[_Attempt] = field(default_factory=list)
 
+    def mark_context_overflow(self, exc: BaseException) -> None:
+        """Label the last attempt when *exc* refused the prompt as too long.
+
+        Its own outcome, so ``outcomes`` still partitions attempts: the refusal
+        counts once, under ``context_overflow`` rather than ``4xx``. The status
+        stays the one the server sent.
+        """
+
+        if not self.attempts or context_overflow_message(exc) is None:
+            return
+        attempt = self.attempts[-1]
+        attempt.outcome = CONTEXT_OVERFLOW
+        if attempt.error is None:
+            attempt.error = f"exception::{type(exc).__name__}"
+
     def admitted(self) -> None:
         """Mark the call through every limiter; the wait is ``queue_s``."""
 
@@ -333,6 +349,9 @@ def observe_call(
     token = _CALL.set(call)
     try:
         yield call
+    except BaseException as exc:
+        call.mark_context_overflow(exc)
+        raise
     finally:
         _CALL.reset(token)
         # A streamed body never closed ends with its call.
@@ -361,6 +380,10 @@ def retry_after_header_s(response: httpx.Response) -> float | None:
 
 
 def status_outcome(status: int) -> str:
+    """The outcome of a status. A refused over-long prompt is relabelled
+    ``context_overflow`` when its call ends (``CallScope.mark_context_overflow``).
+    """
+
     if 200 <= status < 300:
         return "2xx"
     if status == 429:

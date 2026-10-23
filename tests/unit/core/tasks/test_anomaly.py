@@ -17,6 +17,7 @@ from sieval.core.tasks.anomaly import (
     _model_outputs,
     _rule_applies,
     _unwrap_result,
+    detect_context_overflow,
     detect_empty_infer_gen,
     detect_empty_infer_ppl,
     detect_empty_postprocess,
@@ -657,12 +658,12 @@ class TestRulesHashStability:
         fails you changed the rule set: update the value here in the same
         commit, so the rotation is in the diff.
         """
-        assert get_rules_hash() == "2c440347324b1edb"
+        assert get_rules_hash() == "9212a6abb14db24e"
 
     def test_the_rule_set_is_the_expected_size(self):
         # Guards the other direction: a rule silently dropped from the registry
         # stops being detected, and nothing else would notice.
-        assert len(get_applied_rules()) == 5
+        assert len(get_applied_rules()) == 6
 
     def test_the_hash_is_short_and_hex(self):
         # Persisted into every report and compared as a string; a change in
@@ -802,3 +803,58 @@ class TestDetectWithTaskTags:
         ctx = _make_final_ctx(infer_result=output, postprocess_result="ok")
         assert detector.has_anomalies(ctx, task_tags={"gen"}) is True
         assert detector.has_anomalies(ctx, task_tags={"ppl"}) is False
+
+
+class TestContextOverflow:
+    """A prompt the window could not hold: its own rule, not an extraction miss."""
+
+    @staticmethod
+    def _overflowed(n: int = 1) -> ModelOutput:
+        return ModelOutput(
+            model={"model": "m", "api_base": None, "default_params": {}},
+            texts=[""] * n,
+            finish_reasons=["context_overflow"] * n,
+        )
+
+    def test_flags_every_rollout_of_an_overflowed_call(self):
+        ctx = _make_final_ctx(infer_result=self._overflowed(3))
+        assert detect_context_overflow(ctx) == {0, 1, 2}
+
+    def test_a_later_turn_flags_the_rollout_once(self):
+        answered = ModelOutput(
+            model={"model": "m", "api_base": None, "default_params": {}},
+            texts=["fine"],
+            finish_reasons=["stop"],
+        )
+        ctx = _make_final_ctx(infer_result=[answered, self._overflowed()])
+        assert detect_context_overflow(ctx) == {0}
+
+    def test_is_not_also_an_extraction_failure_or_a_truncation(self):
+        ctx = _make_final_ctx(
+            infer_result=self._overflowed(),
+            postprocess_result=build_prediction_record([None]),
+        )
+        assert detect_extraction_failure(ctx) == set()
+        assert detect_truncated_output(ctx) == set()
+        assert (
+            detect_empty_postprocess(
+                _make_final_ctx(infer_result=self._overflowed(), postprocess_result="")
+            )
+            == set()
+        )
+
+    def test_an_unrelated_empty_answer_is_still_an_extraction_failure(self):
+        ctx = _make_final_ctx(
+            infer_result=ModelOutput(
+                model={"model": "m", "api_base": None, "default_params": {}},
+                texts=[""],
+                finish_reasons=["stop"],
+            ),
+            postprocess_result=build_prediction_record([None]),
+        )
+        assert detect_context_overflow(ctx) == set()
+        assert detect_extraction_failure(ctx) == {0}
+
+    def test_is_gen_scoped(self):
+        rule = _DETECTION_RULES["context_overflow"]["definition"]
+        assert rule["applies_to"] == ["gen"]

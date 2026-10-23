@@ -70,6 +70,14 @@ from .ir import (
     Request,
     Response,
 )
+from .overflow import (
+    CallResult,
+    ContextOverflowError,
+    OverflowScope,
+    context_overflow_message,
+    current_overflow_scope,
+    overflow_output,
+)
 from .reconcile import CheckStage, DeferredCheck, RuntimeBindingPlan
 from .request_log import observe_call
 
@@ -796,8 +804,66 @@ class Model:
         )
 
     async def agenerate(self, prompt: object, **kwargs: object) -> ModelOutput:
+        """Generate one output.
+
+        Inside the runner's ``infer``, where this is the model under test, a
+        refusal of the prompt as longer than the context window may come back
+        as an empty output finishing with ``context_overflow`` instead of
+        raising; see :mod:`sieval.core.models.overflow`. Every other error, and
+        every call outside ``infer``, raises as before.
+        """
         req = self._build_generate_request(prompt, **kwargs)
-        return response_to_model_output(self.meta(), await self.arun(req))
+        scope = current_overflow_scope()
+        if scope is None:
+            return response_to_model_output(self.meta(), await self.arun(req))
+        slot, recorded = scope.ask(self, req)
+        if recorded is not None:
+            return self._answer(scope, slot, req, recorded)
+        try:
+            output = response_to_model_output(self.meta(), await self.arun(req))
+        except Exception as exc:
+            message = context_overflow_message(exc) if scope.model is self else None
+            if message is None:
+                raise
+            if not scope.convert:
+                scope.escaped.append((exc, message))
+                scope.answered(slot, message)
+                raise
+            return self._answer(scope, slot, req, message)
+        scope.answered(slot, output)
+        return output
+
+    def context_overflow_output(
+        self, prompt: object, message: str, **kwargs: object
+    ) -> ModelOutput:
+        """What :meth:`agenerate` returns for a prompt the window cannot hold.
+
+        For a task that measures its own prompt and knows the request would be
+        refused: the overflow is recorded without sending it. Raises
+        :class:`~sieval.core.models.overflow.ContextOverflowError` wherever
+        :meth:`agenerate` would have raised the refusal.
+        """
+        req = self._build_generate_request(prompt, **kwargs)
+        scope = current_overflow_scope()
+        if scope is None or scope.model is not self:
+            raise ContextOverflowError(message)
+        # A call like any other: it takes its position, and any recorded
+        # refusal, though its own message is what it answers with.
+        slot, _ = scope.ask(self, req)
+        return self._answer(scope, slot, req, message)
+
+    def _answer(
+        self, scope: OverflowScope, slot: int, req: Request, result: CallResult
+    ) -> ModelOutput:
+        """A call's known result: an output, or a refusal under *scope*'s rule."""
+        scope.answered(slot, result)
+        if isinstance(result, ModelOutput):
+            return result
+        if not scope.convert:
+            error = ContextOverflowError(result)
+            scope.escaped.append((error, result))
+            raise error
+        return overflow_output(self.meta(), req, result, scope)
 
     async def alogprobs(
         self,
@@ -822,7 +888,15 @@ class Model:
             temperature=temperature,
             **kwargs,
         )
-        response = await self.arun(req)
+        try:
+            response = await self.arun(req)
+        except Exception as exc:
+            # Logprob tasks need the logprobs an overflow cannot give, so it
+            # fails the sample, but as the deterministic outcome it is.
+            message = context_overflow_message(exc)
+            if message is None:
+                raise
+            raise ContextOverflowError(message) from exc
         if (
             response.logprobs is None
             and response.input_scoring is None

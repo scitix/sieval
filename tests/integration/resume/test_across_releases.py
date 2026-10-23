@@ -127,3 +127,5 @@ def test_eval_resumes_a_released_directory_under_the_next_release(
     report = orjson.loads((root / TASK / "report.json").read_bytes())
     assert report["score"] == 20.0
     assert report["sieval"]["final"] == 5
+    # The reused report gains the count a 0.10.x report never wrote.
+    assert report["sieval"]["context_overflow"] == 0

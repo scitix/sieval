@@ -83,6 +83,9 @@ class TaskStageMeta(TypedDict, total=False):
     # Set on the `preprocessed` entry: the sample's own data and prompt
     # digests (`run_meta.digest`), which a resume compares per sample.
     identity: dict[str, str | None]
+    # Set on the `inferred` entry when the model under test refused a prompt as
+    # longer than its context window: each refusal's message, in call order.
+    context_overflow: list[str]
 
 
 @sieval_record

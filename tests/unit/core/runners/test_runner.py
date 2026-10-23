@@ -2317,6 +2317,7 @@ class TestRunnerAnomalyReporting:
             "final": 3,
             "failed": 0,
             "anomalies": 0,
+            "context_overflow": 0,
         }
 
 

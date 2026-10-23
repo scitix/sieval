@@ -12,6 +12,7 @@ import xxhash
 from loguru import logger
 
 from sieval.core.models import ModelOutput
+from sieval.core.models.overflow import CONTEXT_OVERFLOW
 from sieval.core.tasks.context import TaskContext, TaskStage, TaskStageOutput
 from sieval.core.tasks.records import is_prediction_record
 from sieval.core.utils.atomic import aatomic_write
@@ -358,6 +359,39 @@ def detect_truncated_output(ctx: TaskContext) -> set[int]:
     return truncated
 
 
+def _overflowed_rollouts(ctx: TaskContext) -> set[int]:
+    """Rollouts whose prompt did not fit the model's context window.
+
+    Unioned across calls like :func:`detect_truncated_output`: a multi-turn
+    rollout whose later turn no longer fit is flagged once.
+    """
+    if ctx.infer_result is None:
+        return set()
+    return {
+        index
+        for output in _model_outputs(_unwrap_result(ctx.infer_result))
+        for index, reason in enumerate(output.finish_reasons or ())
+        if reason == CONTEXT_OVERFLOW
+    }
+
+
+@sieval_detection_rule(
+    description="The prompt did not fit the model's context window",
+    category="correctness",
+    rationale=(
+        "The server refused the prompt as longer than the model's context "
+        "window, so the rollout was scored as an empty answer rather than "
+        "failed: the refusal is deterministic for this model and prompt, and no "
+        "retry can change it. A different serving context length, or a shorter "
+        "prompt, is what would."
+    ),
+    applies_to=["gen"],
+    tags=["context_length", "input_length", "context_overflow"],
+)
+def detect_context_overflow(ctx: TaskContext) -> set[int]:
+    return _overflowed_rollouts(ctx)
+
+
 @sieval_detection_rule(
     description="Postprocess result is empty or None",
     category="correctness",
@@ -381,7 +415,8 @@ def detect_empty_postprocess(ctx: TaskContext) -> set[int]:
     )
     is_empty_string = isinstance(post_result, str) and not post_result.strip()
     if post_result is None or is_empty_collection or is_empty_string:
-        return {0}
+        # An empty answer to a prompt that never ran: `context_overflow` names it.
+        return set() if _overflowed_rollouts(ctx) else {0}
     return set()
 
 
@@ -411,8 +446,11 @@ def detect_extraction_failure(ctx: TaskContext) -> set[int]:
         # A prediction record covering no rollouts is itself the anomaly; index 0
         # is a sentinel here, since there is no rollout to point at.
         return {0}
+    # A rollout whose prompt never ran is `context_overflow`'s, not a miss.
+    overflowed = _overflowed_rollouts(ctx)
     return {
-        rollout.get("index", position)
+        index
         for position, rollout in enumerate(rollouts)
         if not rollout.get("extracted")
+        and (index := rollout.get("index", position)) not in overflowed
     }

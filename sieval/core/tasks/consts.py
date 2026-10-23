@@ -80,10 +80,21 @@ ERROR_ACTION_CLEAR_FIELDS = {
 #: exception's own message, which ``error_msg`` keeps.
 NON_RETRIABLE_REASON = "non_retriable"
 
+#: Reason recorded when the model under test refused a prompt as longer than its
+#: context window and the task runs with ``context_overflow: fail``. Under the
+#: default ``score`` the sample is graded instead and never fails for it.
+CONTEXT_OVERFLOW_REASON = "context_overflow"
+
 #: Reasons the loader refuses to roll back for another attempt. The two limit
-#: reasons are terminal by exhaustion; ``NON_RETRIABLE_REASON`` is terminal by
-#: declaration -- the task said the outcome is deterministic in its input.
-ERROR_REASONS_NON_RETRIABLE = {"iteration_limit", "retry_limit", NON_RETRIABLE_REASON}
+#: reasons are terminal by exhaustion; ``NON_RETRIABLE_REASON`` and
+#: ``CONTEXT_OVERFLOW_REASON`` are terminal by declaration -- the outcome is
+#: deterministic in the sample's own input.
+ERROR_REASONS_NON_RETRIABLE = {
+    "iteration_limit",
+    "retry_limit",
+    NON_RETRIABLE_REASON,
+    CONTEXT_OVERFLOW_REASON,
+}
 
 
 class NonRetriableSampleError(Exception):

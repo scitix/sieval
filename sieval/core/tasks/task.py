@@ -153,12 +153,25 @@ class Task[
         services: Processes the task calls besides models, by name from
             :data:`~sieval.core.tasks.services.SERVICE_ENDPOINT_ENV`, such as
             ``{"code-eval"}``. The CLI starts each one whose endpoint is unset.
+        context_overflow: What a prompt the model under test refuses as longer
+            than its context window is. ``"score"`` (the default, and most
+            benchmarks' convention): the call returns one empty text per
+            rollout finishing with ``context_overflow``, graded as the blank
+            answer it is and flagged by the ``context_overflow`` anomaly rule.
+            ``"fail"``: the sample fails as ``context_overflow``, which no
+            resume retries. In the task's source, so the grader identity
+            covers it. Under ``"score"``, a refusal that escapes ``infer``
+            makes the runner call ``infer`` a second time for that sample,
+            with the model calls the first run made answered from it rather
+            than sent again; anything else ``infer`` does (a service call, a
+            file it writes) runs twice, so keep it free of such side effects.
     """
 
     model_type: ClassVar[Literal["chat", "gen"] | None] = None
     tags: ClassVar[AbstractSet[str]] = frozenset()  # override in subclasses
     requires: ClassVar[TaskRequirements] = TaskRequirements()
     services: ClassVar[AbstractSet[str]] = frozenset()
+    context_overflow: ClassVar[Literal["score", "fail"]] = "score"
 
     def __init__(
         self, dataset: Dataset[TRawSample], model: Model, name: str | None = None

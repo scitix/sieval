@@ -41,9 +41,42 @@ other value is a scalar or a flat list — a number, a string, an interval as
 a value in band (`hle_0shot_gen`'s `calibration_error`). Consumers that read
 `score` and pass the rest through are unaffected.
 
-`sieval` holds the runner's counts: `total`, `final`, `failed`, and
-`anomalies` (final samples an anomaly rule flagged, matching `anomalies.json`).
-A resume reuses `report.json` only when `final == total` and `failed == 0`.
+`sieval` holds the runner's counts: `total`, `final`, `failed`,
+`anomalies` (final samples an anomaly rule flagged, matching `anomalies.json`)
+and `context_overflow` (samples whose prompt the model under test refused as
+longer than its context window, below). A resume reuses `report.json` only
+when `final == total` and `failed == 0`.
+
+**Context overflow.** A prompt longer than the subject model's context window
+is refused by the server, deterministically for that model: no retry or resume
+can change it. SiEval scores it as wrong rather than failing the sample. The
+call returns one empty text per rollout with finish reason `context_overflow`,
+the task grades that blank answer as it grades any, and the
+`context_overflow` anomaly rule flags it (not `extraction_failure`, and not
+`n_truncated`: nothing was generated). Such a sample counts in `final`,
+`anomalies` and `context_overflow`, never in `failed`. A task that wants the
+old behaviour declares `context_overflow = "fail"` on its class: the sample
+then fails with reason `context_overflow`, which no resume retries, and still
+counts in `context_overflow`. Only the model under test inside `infer` is
+covered; a judge whose own prompt overflows still fails the sample, and a
+logprob task (`alogprobs`) fails it as `context_overflow`, since it needs
+logprobs a refusal cannot give. A refusal is a 400 or 413 (or a status-less
+stream error) whose message says the input does not fit; timeouts, connection
+errors and 5xx still fail. A task that already catches a refusal itself, such
+as Multi-IF's walk ending at the turn that no longer fits, keeps doing so. A
+task that measures its own prompt calls `model.context_overflow_output(...)`
+to record the overflow without sending it.
+
+When a refusal escapes a task's `infer`, the runner calls `infer` again for
+that sample with refusals converted. The model calls the first pass made are
+answered from it, not sent again, but anything else `infer` does runs twice,
+so an `infer` should have no side effects beyond its model calls. A resume of
+a sample an earlier run failed with the refusal at `infer` scores it from the
+recorded message, without a request, when the inference identity and the
+model under test are unchanged; the recorded status must be 400 or 413 (or
+absent), as live. If that `infer` calls the model under test more than once,
+in turn or concurrently, the record cannot say which call was refused, and
+the sample is inferred again.
 
 `denominator_policy` is `requested` (`finals + fails`, so a pipeline failure
 counts as **wrong**) or `judged` (`finals` only, failures excluded). The split is
