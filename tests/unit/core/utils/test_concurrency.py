@@ -90,3 +90,36 @@ class TestCompositeLimiter:
         result = await composite.__aenter__()
         assert result is composite
         await composite.__aexit__(None, None, None)
+
+
+class TestCapacityLimiterHandoff:
+    """The stage and model limits rest on ``anyio.CapacityLimiter`` holding its
+    bound, which anyio before 4.15 did not: a release woke the next waiter
+    without handing it the token, so a task scheduled before that waiter ran
+    found the queue empty, took the token, and the limit held one more task
+    than it allowed. That is how ``concurrency_limits={"infer": 4}`` was seen
+    to run 5 inferences at once."""
+
+    @pytest.mark.anyio
+    async def test_a_release_hands_the_token_to_the_waiter(self):
+        limiter = anyio.CapacityLimiter(1)
+        holding = peak = 0
+
+        async def hold():
+            nonlocal holding, peak
+            async with limiter:
+                holding += 1
+                peak = max(peak, holding)
+                await anyio.sleep(0.01)
+                holding -= 1
+
+        async with anyio.create_task_group() as tg:
+            await limiter.acquire()
+            tg.start_soon(hold)
+            await anyio.sleep(0.01)  # the first task now waits in the queue
+            # One step, no checkpoint between: a newcomer is scheduled ahead of
+            # the waiter's wake-up, then the token is released.
+            tg.start_soon(hold)
+            limiter.release()
+
+        assert peak == 1

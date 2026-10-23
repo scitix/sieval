@@ -4,7 +4,13 @@ description = "SiEval - Model Delivery Quality Verification System"
 authors = [{ name = "ScitiX" }]
 dynamic = ["version"]
 dependencies = [
-  "anyio>=4.11.0",
+  # 4.15 hands a released CapacityLimiter token to the waiter it wakes; before,
+  # a task scheduled ahead of that waiter took the token too, so every stage
+  # and model concurrency limit could run one task over.
+  "anyio>=4.15.0",
+  # Not imported here: anyio 4.15's own floor, declared so the lock bump it
+  # forces is reviewable (`check_deps` does not credit a moved package).
+  "typing-extensions>=4.16.0",
   # Direct, not just via typer: sieval/cli/output.py imports click for the
   # exception hierarchy typer does not re-export (ClickException, UsageError,
   # get_current_context). Floor matches typer 0.24's own requirement.
