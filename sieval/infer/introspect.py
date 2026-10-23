@@ -525,17 +525,33 @@ async def check_launch_gpu() -> None:
     """Refuse to launch an engine on GPUs other than the declared ones.
 
     A plan resolved for :data:`TARGET_GPU_ENV` is only that node's plan on the
-    declared hardware. Without a declaration nothing is checked.
+    declared hardware, so every field must match, memory included: two nodes
+    of one SKU can report different ``memory.total`` (ECC, PCIe vs SXM), and
+    the memory decides tensor parallelism. Without a declaration nothing is
+    checked.
     """
     declared = declared_target_gpu()
     if declared is None:
         return
     detected = await detect_local_gpu()
-    if detected != declared:
-        here = format_target_gpu(detected) if detected else "no GPU"
-        raise RuntimeError(
-            f"The serving plan was resolved for {TARGET_GPU_ENV}="
-            f"{format_target_gpu(declared)!r}, but this node has {here}. "
-            "Declare the GPUs this node has, or run on a node that has the "
-            "declared ones."
-        )
+    if detected == declared:
+        return
+    if detected is None:
+        here = "no GPU"
+    else:
+        differing = [
+            f"{field} {theirs!r} (declared {ours!r})"
+            for field, ours, theirs in (
+                ("name", declared.model, detected.model),
+                ("count", declared.count, detected.count),
+                ("memory MiB", declared.memory_mib, detected.memory_mib),
+            )
+            if ours != theirs
+        ]
+        here = f"{format_target_gpu(detected)!r}: {', '.join(differing)}"
+    raise RuntimeError(
+        f"The serving plan was resolved for {TARGET_GPU_ENV}="
+        f"{format_target_gpu(declared)!r}, but this node has {here}. "
+        "Declare the GPUs this node has, or run on a node that has the "
+        "declared ones."
+    )

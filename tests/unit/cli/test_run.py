@@ -15,6 +15,7 @@ import yaml
 from typer.testing import CliRunner
 
 from sieval.cli import app
+from sieval.cli.run import _RecordedPlans
 from sieval.core.models import (
     Deployment,
     DeploymentTopology,
@@ -1638,6 +1639,109 @@ class TestDeclaredTargetGpu:
         resolve.assert_not_awaited()
         assert session.await_args is not None
         assert session.await_args.kwargs["infer_plans"] == {"m": recorded}
+
+    @pytest.mark.anyio
+    async def test_a_plan_recorded_with_a_secret_is_resolved_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``infer_plans.yaml`` is written redacted, so reusing a plan with an
+        engine ``api_key`` would launch the engine with the marker as its key."""
+        from sieval.cli.session import redact_secrets, unwrap_proxies
+
+        config_path = self._config(tmp_path)
+        recorded = unwrap_proxies(_fake_plan())
+        recorded["checkpoint"] = yaml.safe_load(config_path.read_text())["models"]["m"][
+            "path"
+        ]
+        recorded["assignments"][0]["engine_params"]["api_key"] = "sk-engine"
+        self._record(tmp_path, config_path, redact_secrets(recorded))
+        monkeypatch.setenv("SIEVAL_TARGET_GPU", self.H100)
+        resolve = AsyncMock(return_value=ResolveResult(plan=_fake_plan(), steps=()))
+        with patch("sieval.cli.run.auto_resolve_plan", new=resolve):
+            launch, _ = await self._run(
+                config_path, gpu=self._gpu(self.H100), resume=True
+            )
+
+        resolve.assert_awaited_once()
+        assert launch.await_count == 1
+        assert "<redacted>" not in str(launch.await_args_list)
+
+    def _recorded_plans(
+        self, tmp_path: Path, plan: dict | None = None
+    ) -> _RecordedPlans:
+        from sieval.cli.session import unwrap_proxies
+
+        config_path = self._config(tmp_path)
+        raw = plan if plan is not None else unwrap_proxies(_fake_plan())
+        self._record(tmp_path, config_path, raw)
+        return _RecordedPlans(tmp_path / "out", self.H100)
+
+    def _model_config(self, tmp_path: Path) -> dict:
+        return yaml.safe_load((tmp_path / "cfg.yaml").read_text())["models"]["m"]
+
+    def test_a_recorded_plan_applies_only_to_the_same_serving(self, tmp_path: Path):
+        recorded = self._recorded_plans(tmp_path)
+        model = self._model_config(tmp_path)
+        plan_for = recorded.plan_for
+
+        assert plan_for("m", model, "instruct", False) == _fake_plan()
+        assert plan_for("other", model, "instruct", False) is None
+        assert plan_for("m", {**model, "path": "/elsewhere"}, "instruct", False) is None
+        assert plan_for("m", model, "base", False) is None
+        assert plan_for("m", model, "instruct", True) is None
+
+    def test_a_record_this_version_cannot_read_is_not_reused(self, tmp_path: Path):
+        from sieval.cli.session import unwrap_proxies
+
+        raw = unwrap_proxies(_fake_plan())
+        raw["added_later"] = 1
+        recorded = self._recorded_plans(tmp_path, raw)
+        model = self._model_config(tmp_path)
+        assert recorded.plan_for("m", model, "instruct", False) is None
+
+    @pytest.mark.parametrize(
+        "damage", ["no_plans_file", "no_models", "no_config", "bad_config"]
+    )
+    def test_an_incomplete_record_reuses_nothing(self, tmp_path: Path, damage: str):
+        self._recorded_plans(tmp_path)
+        out = tmp_path / "out"
+        if damage == "no_plans_file":
+            (out / "infer_plans.yaml").unlink()
+        if damage == "no_models":
+            (out / "infer_plans.yaml").write_text(yaml.safe_dump({"gpu": self.H100}))
+        if damage == "no_config":
+            (out / "effective_config.yaml").unlink()
+        if damage == "bad_config":
+            # A model the session's type resolution refuses.
+            (out / "effective_config.yaml").write_text(
+                yaml.safe_dump({"models": {"m": "not a mapping"}, "tasks": {}})
+            )
+        recorded = _RecordedPlans(out, self.H100)
+        model = self._model_config(tmp_path)
+        assert recorded.plan_for("m", model, "instruct", False) is None
+
+    @pytest.mark.parametrize(
+        ("resume", "expected"),
+        [
+            (True, "out"),
+            (False, None),
+            (None, None),
+            ("session", "session"),
+            ("session/task", "session"),
+        ],
+    )
+    def test_the_recorded_session_dir(
+        self, tmp_path: Path, resume: bool | str | None, expected: str | None
+    ):
+        from sieval.cli.run import _recorded_session_dir
+
+        (tmp_path / "session" / "task").mkdir(parents=True)
+        (tmp_path / "session" / "task" / "meta.json").write_text("{}")
+        target = tmp_path / resume if isinstance(resume, str) else resume
+        found = _recorded_session_dir(target, str(tmp_path / "out"))
+        assert found == (tmp_path / expected if expected else None)
+        # A plain resume without a result_dir has nothing to read.
+        assert _recorded_session_dir(True, None) is None
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("change", ["other_gpus", "fresh_run", "changed_model"])

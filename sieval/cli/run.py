@@ -48,6 +48,7 @@ from sieval.cli.output import (
 from sieval.cli.resolution import resolve_config_model_types
 from sieval.cli.services import SERVICE_LOG_DIR
 from sieval.cli.session import (
+    holds_secret,
     read_persisted_config,
     redact_secrets,
     resolve_deterministic,
@@ -131,7 +132,8 @@ class _RecordedPlans:
 
     def __init__(self, session_dir: Path | None, gpu: str | None) -> None:
         self._plans: dict[str, Any] = {}
-        self._config: dict[str, Any] = {}
+        self._models: dict[str, Any] = {}
+        self._capabilities: dict[str, str] = {}
         if session_dir is None or gpu is None:
             return
         recorded = read_persisted_config(session_dir / "infer_plans.yaml")
@@ -139,8 +141,18 @@ class _RecordedPlans:
             return
         plans = recorded.get("models")
         config = read_persisted_config(session_dir / "effective_config.yaml")
-        if isinstance(plans, dict) and config is not None:
-            self._plans, self._config = plans, config
+        if not isinstance(plans, dict) or config is None:
+            return
+        models = config.get("models")
+        try:
+            types = resolve_config_model_types(config).model_types_by_config
+        except ValueError:
+            return
+        if isinstance(models, dict):
+            self._plans, self._models = plans, models
+            self._capabilities = {
+                name: capability_model_type(kind) for name, kind in types.items()
+            }
 
     def plan_for(
         self,
@@ -151,23 +163,23 @@ class _RecordedPlans:
     ) -> DeploymentPlan | None:
         """The recorded plan of *model_name*, when this run would serve it alike."""
         raw = self._plans.get(model_name)
-        recorded_models = self._config.get("models")
-        if not isinstance(raw, dict) or not isinstance(recorded_models, dict):
+        recorded_model = self._models.get(model_name)
+        if not isinstance(raw, dict) or not isinstance(recorded_model, dict):
             return None
-        recorded_model = recorded_models.get(model_name)
-        if not isinstance(recorded_model, dict):
+        # `infer_plans.yaml` is written redacted: a plan that held a secret
+        # (an engine `api_key`) reads back holding the marker, and would
+        # launch the engine with it.
+        if holds_secret(raw):
             return None
+        # Compared redacted, as `effective_config.yaml` records them.
         current = redact_secrets(model_config)
         if any(recorded_model.get(k) != current.get(k) for k in ("path", "infer")):
             return None
-        try:
-            types = resolve_config_model_types(self._config).model_types_by_config
-            plan = plan_from_mapping(raw)
-        except (TypeError, ValueError):
+        if self._capabilities.get(model_name) != capability:
             return None
-        if model_name not in types or capability_model_type(types[model_name]) != (
-            capability
-        ):
+        try:
+            plan = plan_from_mapping(raw)
+        except ValueError:
             return None
         if plan.deterministic != deterministic:
             return None

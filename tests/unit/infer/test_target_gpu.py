@@ -191,6 +191,22 @@ class TestCheckLaunchGpu:
         ):
             await check_launch_gpu()
 
+    @pytest.mark.anyio
+    async def test_the_refusal_names_the_field_that_differs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # One SKU, another reported memory.total (e.g. ECC on).
+        here = GPUInfo(model=H100.model, count=H100.count, memory_mib=80000)
+        monkeypatch.setenv(TARGET_GPU_ENV, format_target_gpu(H100))
+        with (
+            patch(_LAUNCH_GPU, new=AsyncMock(return_value=here)),
+            pytest.raises(RuntimeError) as refused,
+        ):
+            await check_launch_gpu()
+        message = str(refused.value)
+        assert f"memory MiB 80000 (declared {H100.memory_mib})" in message
+        assert "name " not in message and "count " not in message
+
 
 class TestPlanFromMapping:
     @pytest.mark.anyio

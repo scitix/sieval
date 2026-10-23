@@ -1107,6 +1107,22 @@ def redact_secrets(value: Any) -> Any:
     return value
 
 
+def holds_secret(value: Any) -> bool:
+    """Whether :func:`redact_secrets` redacts anything in *value*.
+
+    A record written through :func:`redact_secrets` holds the marker in its
+    place, so such a record cannot stand in for the value it was written from.
+    """
+    if isinstance(value, Mapping):
+        return any(
+            (k in _SECRET_CONFIG_KEYS and v is not None) or holds_secret(v)
+            for k, v in value.items()
+        )
+    if isinstance(value, list):
+        return any(holds_secret(item) for item in value)
+    return False
+
+
 def _diff_lines(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     """Return ``- <path>: <old> → <new>`` lines for every differing leaf.
 
@@ -5207,9 +5223,9 @@ class EvalSession:
         Rerun re-resolves plans from the ``infer:`` section of
         effective_config.yaml plus the installed sieval version. A resume
         under ``SIEVAL_TARGET_GPU`` equal to the recorded ``gpu`` reuses a plan
-        whose model config is unchanged (``sieval run``). It never blocks a
-        resume: the serving recipe is part of each task's inference identity,
-        which a resume compares instead.
+        whose model config is unchanged and that holds no redacted secret
+        (``sieval run``). It never blocks a resume: the serving recipe is part
+        of each task's inference identity, which a resume compares instead.
         """
         if not self._infer_plans:
             return
@@ -5233,7 +5249,8 @@ class EvalSession:
                 "  for each served model. Re-resolved at runtime from",
                 "  effective_config.yaml + installed sieval version, except",
                 "  that a resume reuses a model's plan when SIEVAL_TARGET_GPU",
-                "  equals `gpu` and the model's config is unchanged.",
+                "  equals `gpu`, the model's config is unchanged and its",
+                "  plan holds no <redacted> value.",
             ],
         )
         await self._persist_audit_yaml(

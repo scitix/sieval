@@ -21,7 +21,7 @@ Planned as 0.12.0.
 
 ### Added
 
-- **`SIEVAL_TARGET_GPU` declares the GPUs a serving plan is resolved for**, as `<name>:<count>:<memory MiB>` with the name and memory `nvidia-smi` reports, e.g. `NVIDIA H100 80GB HBM3:8:81559`. Recipe resolution reads it instead of `nvidia-smi`, on any node, so a CPU node resolves the plan, and the inference identity, a node with those GPUs would. Unset, nothing changes. Declared, an engine launches only on a node with exactly those GPUs. `infer_plans.yaml` gains `gpu`, the GPUs its plans were resolved for, outside every identity; a `sieval run --resume` declaring the same GPUs reuses the recorded plan of each served model whose `path` and `infer` are unchanged.
+- **`SIEVAL_TARGET_GPU` declares the GPUs a serving plan is resolved for**, as `<name>:<count>:<memory MiB>` with the name and memory `nvidia-smi` reports, e.g. `NVIDIA H100 80GB HBM3:8:81559`. Recipe resolution reads it instead of `nvidia-smi`, on any node, so a CPU node resolves the plan, and the inference identity, a node with those GPUs would. Unset, nothing changes. Declared, an engine launches only on a node with exactly those GPUs. `infer_plans.yaml` gains `gpu`, the GPUs its plans were resolved for, outside every identity; a `sieval run --resume` declaring the same GPUs reuses the recorded plan of each served model whose `path`, `infer`, capability layer and `deterministic` are unchanged, unless the plan held an engine secret, which `infer_plans.yaml` records redacted (#215, closes #212).
 - `sieval.core.runners.task_resume_plan` / `plan_resume`: the per-stage resume plan, without running anything.
 
 ## [0.11.0] - 2026-10-23

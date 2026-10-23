@@ -71,10 +71,16 @@ like `H100-80G:8` is refused: the name is recorded in a path-only plan and the
 memory decides tensor parallelism, so only the reported values reproduce it.
 
 Declared, `sieval infer start` and `sieval run` launch an engine only on a node
-with exactly those GPUs. `infer_plans.yaml` records as `gpu` the GPUs its plans
-were resolved for, declared or detected. A `sieval run --resume` declaring the
-same GPUs reuses a recorded plan, rather than resolving it again, for each
-served model whose `path` and `infer` are unchanged.
+with exactly those GPUs, memory included: two nodes of one model can report
+different `memory.total` (ECC on or off, PCIe or SXM), and the refusal names
+each field that differs. `--dry-run` checks nothing, so it runs on any node.
+
+`infer_plans.yaml` records as `gpu` the GPUs its plans were resolved for,
+declared or detected. A `sieval run --resume` declaring the same GPUs reuses a
+recorded plan, rather than resolving it again, for each served model whose
+`path`, `infer`, capability layer and `deterministic` are unchanged. A plan
+holding an engine `api_key` or `authorization` is resolved again instead:
+`infer_plans.yaml` writes those values as `<redacted>`.
 
 ## Handles and engine logs
 
