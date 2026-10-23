@@ -13,7 +13,6 @@ caller's budget must outlive the bound the engine enforces.
 AI-Generated Code - Claude Opus 5 (1M context) (Anthropic)
 """
 
-import importlib
 import sqlite3
 
 import pandas as pd
@@ -118,33 +117,6 @@ def test_unknown_backend_is_rejected():
 
 
 # --- remote engines: credentials --------------------------------------------
-
-
-@pytest.fixture
-def no_bigquery_credentials(monkeypatch):
-    """No environment key *and* no application default credentials.
-
-    Both halves are needed since `missing_credentials` learned to accept ADC:
-    deleting the variable alone leaves the answer dependent on whether the host
-    running the suite happens to have `gcloud auth application-default login`
-    in its state — green in CI, red on a developer box that uses GCP.
-    """
-    monkeypatch.delenv(BIGQUERY_CREDENTIAL_ENV, raising=False)
-    try:
-        # `import_module`, not a plain `import`: CI installs eight dependency
-        # groups and `spider2` is not one of them, so a static import here is an
-        # `unresolved-import` in the typecheck job — which the scoped override
-        # for `_spider2_backends.py` does not cover, because this is a test.
-        google_auth = importlib.import_module("google.auth")
-    except ImportError:
-        # The `spider2` group is absent, so the probe's own ImportError branch
-        # already reports "unreachable" — nothing to patch.
-        return
-
-    def _nothing_configured(*_args, **_kwargs):
-        raise RuntimeError("no application default credentials")
-
-    monkeypatch.setattr(google_auth, "default", _nothing_configured)
 
 
 @pytest.mark.usefixtures("no_bigquery_credentials")

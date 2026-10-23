@@ -7437,7 +7437,6 @@ class TestEvalSessionWrappers:
             invocation=None,
             self_managed_endpoints=frozenset(),
             realized_deployments=None,
-            resume_from=None,
             cli_model=None,
             infer_gpu=None,
             unlaunched_deployments=None,
@@ -7472,7 +7471,6 @@ class TestEvalSessionWrappers:
             invocation=None,
             self_managed_endpoints=frozenset(),
             realized_deployments=None,
-            resume_from=None,
             cli_model=None,
             infer_gpu=None,
             unlaunched_deployments=None,
@@ -7503,7 +7501,6 @@ class TestEvalSessionWrappers:
             None,
             None,
             frozenset(),
-            None,
             None,
         )
         assert result == {"task_b": {"ok": True}}
@@ -7536,7 +7533,6 @@ class TestEvalSessionWrappers:
             invocation=None,
             self_managed_endpoints=frozenset(),
             realized_deployments=None,
-            resume_from=None,
             cli_model=None,
             infer_gpu=None,
             unlaunched_deployments=None,
@@ -7566,7 +7562,6 @@ class TestEvalSessionWrappers:
             plans,
             None,
             frozenset(),
-            None,
             None,
         )
 

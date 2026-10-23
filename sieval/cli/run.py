@@ -25,7 +25,6 @@ from sieval.cli._cli_model import (
 )
 from sieval.cli._resume_option import (
     ResumeCommand,
-    ResumeFromOption,
     ResumeOption,
     cli_resume,
 )
@@ -823,7 +822,6 @@ def register_run_command(app: typer.Typer) -> None:
                 help="Override result directory",
             ),
         ] = None,
-        resume_from: ResumeFromOption = None,
         deterministic: Annotated[
             bool | None,
             typer.Option(
@@ -881,7 +879,7 @@ def register_run_command(app: typer.Typer) -> None:
     ) -> None:
         """All-in-one: launch inference services, run evaluation, and cleanup."""
         configure_logging(verbose)
-        resumed = cli_resume(resume, resume_from)
+        resumed = cli_resume(resume)
         cli_model = CliModel.from_options(
             checkpoint=checkpoint, api_base=api_base, model=model
         )

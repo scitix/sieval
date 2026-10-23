@@ -381,8 +381,8 @@ async def auto_resolve_plan(
 ) -> ResolveResult:
     """Auto-resolve a DeploymentPlan from a checkpoint path.
 
-    Replaces resolve.auto_resolve(). Same 5-step flow but returns
-    ResolveResult instead of InferConfig.
+    Same 5-step flow as the old resolve.auto_resolve(), returning a
+    ResolveResult.
 
     Args:
         capability: Recipe capability key (``"instruct"`` / ``"base"``). Base

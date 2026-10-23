@@ -443,22 +443,6 @@ class TestResumeFrom:
             r["start"] for r in _meta(tmp_path / "b")["runs"]
         ]
 
-    @pytest.mark.anyio
-    async def test_the_deprecated_resume_from_still_copies(self, tmp_path):
-        src = await _first(tmp_path)
-        task, model = _task(cls=StrictQATask)
-        runner, _ = await _run(tmp_path, "second", task, resume_from=str(src))
-        assert model.call_count == 0
-        assert _meta(runner.root_dir)["runs"][0]["start"] == "from"
-
-    @pytest.mark.anyio
-    async def test_the_deprecated_auto_resume_still_resumes(self, tmp_path):
-        src = await _first(tmp_path)
-        task, model = _task()
-        runner, _ = await _run(tmp_path, "first", task, auto_resume=True)
-        assert model.call_count == 0
-        assert runner.root_dir == src
-
     def test_the_copy_holds_only_shards(self, tmp_path):
         src = tmp_path / "src"
         (src / "0" / "final").mkdir(parents=True)

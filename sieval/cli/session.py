@@ -128,7 +128,6 @@ from sieval.core.runners import (
     RunPlan,
     TaskRunnerConfig,
     as_resume,
-    fold_resume_aliases,
     resume_source,
     same_dir,
 )
@@ -1259,8 +1258,9 @@ def _configured_client_timeout(
     )
 
 
-#: ``resume`` and its deprecated aliases.
-_RESUME_KEYS = ("resume", "auto_resume", "resume_from")
+#: Resume keys removed in 0.12, refused rather than dropped: a dropped
+#: ``resume_from`` would turn a resume into a fresh run without a word.
+_REMOVED_RESUME_KEYS = {"auto_resume": "resume: true", "resume_from": "resume: <dir>"}
 
 
 def _runner_config_blocks(cfg: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1275,19 +1275,14 @@ def _runner_config_blocks(cfg: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def config_resumes(cfg: Mapping[str, Any]) -> bool:
-    """Whether some ``runner_config`` of *cfg* sets ``resume`` or an alias of it."""
-    return any(
-        block.get(key)
-        for block in _runner_config_blocks(cfg).values()
-        for key in _RESUME_KEYS
-    )
+    """Whether some ``runner_config`` of *cfg* sets ``resume``."""
+    return any(block.get("resume") for block in _runner_config_blocks(cfg).values())
 
 
 def _drop_resume_keys(cfg: dict[str, Any]) -> None:
-    """Remove every resume key in place, and a ``runner_config`` left empty."""
+    """Remove ``resume`` in place, and a ``runner_config`` left empty."""
     for block in _runner_config_blocks(cfg).values():
-        for key in _RESUME_KEYS:
-            block.pop(key, None)
+        block.pop("resume", None)
     if cfg.get("runner_config") == {}:
         del cfg["runner_config"]
     for task in (cfg.get("tasks") or {}).values():
@@ -1295,21 +1290,14 @@ def _drop_resume_keys(cfg: dict[str, Any]) -> None:
             del task["runner_config"]
 
 
-def _fold_runner_resume_aliases(cfg: dict[str, Any]) -> None:
-    """Rewrite ``auto_resume`` / ``resume_from`` as ``resume``, in place."""
+def _refuse_removed_resume_keys(cfg: Mapping[str, Any]) -> None:
+    """Raise on ``auto_resume`` / ``resume_from``, naming the ``resume`` form."""
     for where, block in _runner_config_blocks(cfg).items():
-        if not {"auto_resume", "resume_from"} & block.keys():
-            continue
-        resume = fold_resume_aliases(
-            as_resume(block.get("resume"), f"{where}.resume"),
-            auto_resume=block.pop("auto_resume", None),
-            resume_from=block.pop("resume_from", None),
-            new=f"{where}.resume",
-            auto=f"{where}.auto_resume",
-            source=f"{where}.resume_from",
-        )
-        if resume is not None:
-            block["resume"] = str(resume) if isinstance(resume, Path) else resume
+        for key, use in _REMOVED_RESUME_KEYS.items():
+            if key in block:
+                raise ValueError(
+                    f"{where}.{key} was removed in 0.12; use {where}.{use}"
+                )
 
 
 def read_persisted_config(path: Path) -> dict[str, Any] | None:
@@ -1678,7 +1666,6 @@ class EvalSession:
         realized_deployments: Mapping[str, Deployment] | None = None,
         model_capability_profiles: Mapping[str, ModelCapabilityProfile] | None = None,
         serving_reconciler: ServingReconciler | None = None,
-        resume_from: str | Path | None = None,
         cli_model: CliModel | None = None,
         infer_gpu: str | None = None,
         unlaunched_deployments: Mapping[str, Deployment] | None = None,
@@ -1687,13 +1674,7 @@ class EvalSession:
         self.model_override = model_override
         # `True`, or a recorded session dir each task starts from; see
         # `_cli_resume_for`.
-        self.resume_override: ResumeValue = fold_resume_aliases(
-            as_resume(resume),
-            resume_from=resume_from,
-            new="resume",
-            auto="resume",
-            source="resume_from",
-        )
+        self.resume_override: ResumeValue = as_resume(resume)
         self.result_dir_override = result_dir_override
         self.deterministic_override = deterministic_override
         legacy_endpoint_map = dict(endpoint_map or {})
@@ -1794,8 +1775,7 @@ class EvalSession:
             model=model_override,
             result_dir=result_dir_override,
         )
-        # Before persisting, so effective_config.yaml records only `resume`.
-        _fold_runner_resume_aliases(reified)
+        _refuse_removed_resume_keys(reified)
         # Before the copy, so the digests reach both the persisted view (and
         # therefore --resume) and the runtime view below. Not where the
         # operation runs: `arun` persists before `_prepare_execution`, so by
@@ -5393,7 +5373,6 @@ async def arun_session(
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] | set[str] = frozenset(),
     realized_deployments: Mapping[str, Deployment] | None = None,
-    resume_from: str | Path | None = None,
     cli_model: CliModel | None = None,
     infer_gpu: str | None = None,
     unlaunched_deployments: Mapping[str, Deployment] | None = None,
@@ -5423,7 +5402,6 @@ async def arun_session(
             warning to genuinely external endpoints.
         realized_deployments: Typed realized deployments keyed by root model
             config name.
-        resume_from: Deprecated alias of ``resume=<dir>``; warns.
         cli_model: ``--checkpoint``/``--api-base``, added as the ``models:``
             entry of a config that has none.
         infer_gpu: The GPUs *infer_plans* were resolved for, as
@@ -5448,7 +5426,6 @@ async def arun_session(
         invocation=invocation,
         self_managed_endpoints=self_managed_endpoints,
         realized_deployments=realized_deployments,
-        resume_from=resume_from,
         cli_model=cli_model,
         infer_gpu=infer_gpu,
         unlaunched_deployments=unlaunched_deployments,
@@ -5503,7 +5480,6 @@ def run_session(
     invocation: str | None = None,
     self_managed_endpoints: frozenset[str] | set[str] = frozenset(),
     realized_deployments: Mapping[str, Deployment] | None = None,
-    resume_from: str | Path | None = None,
 ) -> dict[str, Any]:
     return anyio.run(
         arun_session,
@@ -5517,5 +5493,4 @@ def run_session(
         invocation,
         self_managed_endpoints,
         realized_deployments,
-        resume_from,
     )

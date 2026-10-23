@@ -63,12 +63,10 @@ FORBIDDEN: dict[str, set[str]] = {
 }
 
 # dotted package -> modules it must NOT import: edges *inside* a layer, which
-# FORBIDDEN (keyed on one segment) cannot express. The `sieval` root keeps every
-# module off the deprecated `sieval.cli.leaderboard` alias so it can be deleted.
+# FORBIDDEN (keyed on one segment) cannot express.
 FORBIDDEN_SUBPACKAGE: dict[str, set[str]] = {
     "sieval.cli.infer": {"sieval.cli.session"},
     "sieval.core.models.dialects": {"sieval.core.models.reconcile"},
-    "sieval": {"sieval.cli.leaderboard"},
 }
 
 # Guard: an entry outside the package never matches, so its rule would be dead

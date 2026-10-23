@@ -95,7 +95,7 @@ Bump `RESULT_SCHEMA_VERSION` (`sieval/core/tasks/run_meta.py`) in the PR that ma
     - Tasks: use package-level imports from `sieval.tasks` for official built-in tasks.
     - Custom/community tasks should prefer full module paths (for example `sieval.tasks.<module>.MyTask`) to avoid naming conflicts.
     - `runners`: canonical path is `sieval.core.runners` (`TaskRunner`, `MultiTaskRunner`).
-    - `session`: canonical path is `sieval.cli.session` (`EvalSession`, `arun_session`). `sieval.cli.leaderboard.session` is a deprecated alias, removed after 0.11.
+    - `session`: canonical path is `sieval.cli.session` (`EvalSession`, `arun_session`).
     - `validation`: canonical path is `sieval.cli.validation` (`validate_eval_config`, `run_dry_run`).
     - `resolution`: canonical path is `sieval.cli.resolution` (`resolve_task_class`, `resolve_dataset_class`, `derive_model_type`). `cli/infer/` must not import `cli/session.py`.
     - Within the same package/subpackage: use relative imports (`from .foo import Bar`).

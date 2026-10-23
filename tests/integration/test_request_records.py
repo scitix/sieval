@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from sieval.cli.leaderboard.session import arun_session
+from sieval.cli.session import arun_session
 from sieval.core.tasks import requests as requests_module
 from sieval.core.tasks.requests import REQUESTS_FILE, TaskRequestLog
 from tests.integration.test_api_key_env import (

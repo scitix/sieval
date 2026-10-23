@@ -1,6 +1,5 @@
 """
-``--resume [DIR]`` on ``sieval run`` and ``sieval eval``: every parse form, and
-``--resume-from`` as its alias.
+``--resume [DIR]`` on ``sieval run`` and ``sieval eval``: every parse form.
 
 AI-Generated Code - Claude Opus 5.5 (Anthropic)
 """
@@ -162,31 +161,8 @@ class TestParse:
 
 
 @pytest.mark.parametrize("command", COMMANDS, ids=" ".join)
-class TestResumeFromAlias:
-    def test_maps_to_resume_dir_and_warns(self, command, config, warnings):
-        code, kw, _ = _invoke(command, [config, "--resume-from", "/runs/old"])
-        assert code == 0
-        assert kw["resume"] == Path("/runs/old")
-        assert "resume_from" not in kw
-        assert warnings == ["--resume-from is deprecated; use --resume <dir>"]
-
-    def test_beside_the_same_resume_dir(self, command, config, warnings):
-        code, kw, _ = _invoke(
-            command, [config, "--resume", "/runs/old", "--resume-from", "/runs/old"]
-        )
-        assert code == 0
-        assert kw["resume"] == Path("/runs/old")
-
-    def test_beside_resume_alone_keeps_the_directory(self, command, config, warnings):
-        """``--resume --resume-from DIR`` meant ``DIR`` before."""
-        code, kw, _ = _invoke(command, [config, "--resume", "--resume-from", "/d"])
-        assert code == 0
-        assert kw["resume"] == Path("/d")
-
-    def test_beside_another_resume_dir_is_refused(self, command, config, warnings):
-        code, kw, output = _invoke(
-            command, [config, "--resume", "/a", "--resume-from", "/b"]
-        )
-        assert code == 1
-        assert kw == {}
-        assert "disagree; set only --resume" in output
+def test_resume_from_was_removed(command, config):
+    code, kw, output = _invoke(command, [config, "--resume-from", "/runs/old"])
+    assert code == 2
+    assert kw == {}
+    assert "--resume-from" in output

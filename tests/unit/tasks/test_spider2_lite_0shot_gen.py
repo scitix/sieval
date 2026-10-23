@@ -281,10 +281,8 @@ async def test_unrunnable_sql_is_recorded_as_an_error(staged):
 
 
 @pytest.mark.anyio
-async def test_missing_cloud_credentials_are_flagged_not_silently_wrong(
-    staged, monkeypatch
-):
-    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+@pytest.mark.usefixtures("no_bigquery_credentials")
+async def test_missing_cloud_credentials_are_flagged_not_silently_wrong(staged):
     row = dict(_ROW, instance_id="bq001", db="warehouse")
     task = _task(staged, rows=[row])
     _, judgement = await _judge(task, row)

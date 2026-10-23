@@ -3,7 +3,6 @@ from sieval.core.runners.resume_gate import ResumeAction, resume_schema_verdict
 from sieval.core.runners.resume_option import (
     ResumeValue,
     as_resume,
-    fold_resume_aliases,
     resume_source,
     same_dir,
 )
@@ -39,7 +38,6 @@ __all__ = [
     "UnfinishedCopyError",
     "UnreadableIntervalError",
     "as_resume",
-    "fold_resume_aliases",
     "plan_resume",
     "read_run_version",
     "resume_source",

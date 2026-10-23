@@ -15,7 +15,7 @@ import click
 import typer
 from typer.core import TyperCommand
 
-from sieval.core.runners import ResumeValue, fold_resume_aliases
+from sieval.core.runners import ResumeValue
 
 #: Click's value for a bare ``--resume``: not empty (Typer makes that ``None``)
 #: and never a path (no path holds NUL).
@@ -38,32 +38,10 @@ ResumeOption = Annotated[
     ),
 ]
 
-ResumeFromOption = Annotated[
-    Path | None,
-    typer.Option(
-        "--resume-from",
-        metavar="DIR",
-        help="Deprecated: use --resume DIR",
-        hidden=True,
-    ),
-]
 
-
-def cli_resume(resume: str | None, resume_from: Path | None) -> ResumeValue:
-    """``True`` for a bare ``--resume``, a path for ``DIR``, else ``None``.
-
-    Folds in the deprecated ``--resume-from``.
-    """
-    value: ResumeValue = (
-        None if resume is None else True if resume == _IN_PLACE else Path(resume)
-    )
-    return fold_resume_aliases(
-        value,
-        resume_from=resume_from,
-        new="--resume",
-        auto="--resume",
-        source="--resume-from",
-    )
+def cli_resume(resume: str | None) -> ResumeValue:
+    """``True`` for a bare ``--resume``, a path for ``DIR``, else ``None``."""
+    return None if resume is None else True if resume == _IN_PLACE else Path(resume)
 
 
 class ResumeCommand(TyperCommand):

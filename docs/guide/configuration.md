@@ -461,7 +461,7 @@ declares; neither writes under the result directory. A sample that `feedback`
 sends to another iteration after a rerun from `feedback` is not counted, since
 the plan cannot know it.
 
-Deprecated, removed next release: `--resume-from DIR`, `runner_config.auto_resume`
-and `runner_config.resume_from` (and the same-named Python fields and
-arguments) map to `resume` and warn once; one that disagrees with `resume` is
-refused.
+Removed in 0.12: `--resume-from DIR` (use `--resume DIR`), and
+`runner_config.auto_resume` / `runner_config.resume_from` (use
+`runner_config.resume: true` / `resume: <dir>`). A config that still sets
+either key is refused, naming the `resume` form to use.
