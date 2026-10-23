@@ -35,6 +35,7 @@ from sieval.infer.topology.models import (
     WellKnownRole,
     deployment_plan_projection,
 )
+from sieval.tasks import MATH500ZeroShotGenTask
 
 runner = CliRunner()
 
@@ -106,6 +107,13 @@ def _a_gpu_node(monkeypatch: pytest.MonkeyPatch) -> None:
         "sieval.infer.introspect.detect_local_gpu",
         AsyncMock(return_value=GPUInfo(model="NVIDIA H100", count=8, memory_mib=81559)),
     )
+
+
+class _UndeclaredTask(MATH500ZeroShotGenTask):
+    """A plugin task whose own report declares no metrics."""
+
+    async def report(self, finals, fails):
+        return {"mine": 1.0}
 
 
 class TestRunCommand:
@@ -320,12 +328,13 @@ class TestPrelaunchSequencing:
         n_errors: int = 0,
         resume: bool = True,
         plan_tasks: AsyncMock | None = None,
+        tasks: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """``_run_dry_run`` with ``model_a`` served and ``api`` not."""
         from sieval.cli.run import _run_dry_run
 
         config_path = tmp_path / "cfg.yaml"
-        config_path.write_text(yaml.safe_dump({"models": {}, "tasks": {}}))
+        config_path.write_text(yaml.safe_dump({"models": {}, "tasks": tasks or {}}))
         plan_dicts = {"model_a": {"backend": "vllm", "assignments": []}}
         checks = [{"name": "schema", "ok": not n_errors}]
         with (
@@ -383,6 +392,31 @@ class TestPrelaunchSequencing:
         assert tasks["t_api"]["needs_inference"] is True
         assert tasks["t_a"]["needs_inference"] is False
         assert tasks["t_a"]["stages"] == {"rerun_from": None}
+
+    @pytest.mark.anyio
+    async def test_each_task_reports_its_metric_names(self, tmp_path: Path) -> None:
+        tasks = {
+            "math": {"class": "MATH500ZeroShotGenTask"},
+            "mmlu": {"class": "sieval.tasks.mmlu_kshot_clp.MMLUFewShotCLPTask"},
+            "mine": {"class": "tests.unit.cli.test_run._UndeclaredTask"},
+            # Advisory: a class this cannot resolve, or none, is unknown.
+            "gone": {"class": "no_such_plugin.Task"},
+            "bare": {"dataset": "d"},
+        }
+        plans = AsyncMock(return_value=({}, {name: self._plan(0) for name in tasks}))
+        result = await self._dry_run(tmp_path, plan_tasks=plans, tasks=tasks)
+        found = {
+            name: entry["metrics"]
+            for name, entry in cast(dict, result["tasks"]).items()
+        }
+        assert {"score", "pass@1", "n_truncated"} <= set(found["math"]["names"])
+        assert found["math"]["patterns"] == []
+        # A clp task has no rollouts for the runner to count.
+        assert "n_truncated" not in found["mmlu"]["names"]
+        assert found["mmlu"]["patterns"] == ["score_{category}"]
+        assert found["mine"] is None
+        assert (found["gone"], found["bare"]) == (None, None)
+        assert result["n_errors"] == 0
 
     @pytest.mark.anyio
     async def test_a_fresh_run_starts_every_served_engine(self, tmp_path: Path) -> None:

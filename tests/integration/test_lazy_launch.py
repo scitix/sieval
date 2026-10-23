@@ -27,6 +27,7 @@ from sieval.cli.run import _run_all
 from sieval.core.models import connection_factory
 from sieval.core.models.request_log import RecordingOpenAIClient
 from sieval.core.tasks import Task
+from sieval.core.tasks.report_metrics import report_metrics
 from sieval.infer.backends.translator import BackendCommand
 from sieval.infer.config import InferHandle
 from sieval.infer.deployer import command_endpoint
@@ -40,6 +41,8 @@ class EchoTask(Task):
     """Asks each question once; right when the reply names the question."""
 
     model_type = "chat"
+    # Declared as a plugin task declares it; the dry-run reports it.
+    report_metrics = report_metrics("correct", "total")
 
     def __init__(self, dataset, model, name=None, strict=False):
         super().__init__(dataset=dataset, model=model, name=name)
@@ -427,6 +430,7 @@ class TestDryRunReportsWhatARunWouldDo:
             "to_infer": 1,
             "to_grade": 1,
             "needs_inference": True,
+            "metrics": {"names": ["correct", "total"], "patterns": []},
         }
         stages = data["tasks"]["echo"]["stages"]
         assert stages["identity_schema"] == 3
@@ -508,6 +512,8 @@ class TestDryRunReportsWhatARunWouldDo:
         assert code == 1
         data = out["data"]
         assert "inference" in data["tasks"]["echo"]["error"]
+        # What a check needs is known before planning, so a refusal keeps it.
+        assert data["tasks"]["echo"]["metrics"]["names"] == ["correct", "total"]
         assert [c["name"] for c in data["checks"] if not c["ok"]] == ["resume_plan"]
 
     def test_a_fresh_run_infers_everything(
@@ -532,6 +538,7 @@ class TestDryRunReportsWhatARunWouldDo:
             "to_infer": 3,
             "to_grade": 3,
             "needs_inference": True,
+            "metrics": {"names": ["correct", "total"], "patterns": []},
         }
         assert not (tmp_path / "results").exists()
 
@@ -600,6 +607,8 @@ class TestDryRunStagePlan:
         assert echo["stages"]["rerun_from"] == "report"
         assert echo["stages"]["stages"]["report"] == "differs"
         assert echo["stages"]["stages"]["feedback"] == "same"
+        # The patched report writes `patched`, which the class never declared.
+        assert echo["metrics"] is None
         assert data["needs_inference"] is False
 
         # The run re-reports on a node with no GPU: no engine, no request.

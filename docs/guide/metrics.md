@@ -663,6 +663,51 @@ unit), `timeouts` (the code family), `exact_match` / `flexible_exact_match`
 `score_<category>` (MMLU, MMLU-Pro), and UGMathBench's `eacc` / `aacc` / `cacc` /
 `delta`. `score_key` always names which of them the headline came from.
 
+## Report metric names
+
+Which keys a task's report may write is known before it runs, so a platform can
+refuse a criterion naming a metric the task never reports (`scroe: {min: 0}`)
+at submission rather than find the key missing from a finished run.
+`sieval run --dry-run -o json` reports it per task as `tasks.<task>.metrics`
+([What a run would do](configuration.md#what-a-run-would-do)).
+
+```json
+{"names": ["fails", "n_problems", "score"], "patterns": ["score_{category}"]}
+```
+
+- `names` are keys the report may write as spelled.
+- `patterns` are keys built from the data: `{placeholder}` stands for one or
+  more characters, so `score_{category}` matches `score_stem`. Which groups a
+  run writes depends on its data, so a name a pattern matches can be absent
+  from a run whose data has none of that group, as a declared name can be
+  absent when it cannot be computed (the rule above).
+- A name neither declared nor matched is one the task never writes.
+- Only numeric keys are named: `score_key`, `denominator_policy`, `ci95_units`
+  and the `*_ci95` intervals are not metrics. For a generative task the
+  runner's `n_truncated` and `n_scored_rollouts` are included.
+
+Each built-in task is declared in `sieval/meta/report_metrics.py`, by the class
+that defines its `report`. Not on the class itself, because a task module's
+source is part of its stage identities: an attribute there would rerun every
+resumed result from `postprocess`. Every task test checks the keys its report
+writes against the declaration.
+
+A plugin task declares on its class:
+
+```python
+from sieval.core.tasks.report_metrics import report_metrics
+
+
+class MyTask(Task[...]):
+    report_metrics = report_metrics("score", "accuracy", patterns=("score_{subset}",))
+```
+
+A subclass inherits its parent's declaration together with its `report`. A
+subclass that defines its own `report`, or a `report` patched in from another
+module, writes keys no inherited declaration saw, so its metrics are `null`,
+unknown, until it declares its own. `report_metrics = None` declares unknown.
+A check reading `null` cannot tell, and should not refuse.
+
 ## Reading a report across versions
 
 Adding a key is non-destructive: downstream consumers read `score` and

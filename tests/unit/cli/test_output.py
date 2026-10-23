@@ -434,6 +434,7 @@ class TestRenderTextDryRunPlan:
                     "stages": {"rerun_from": "feedback"},
                     "to_infer": 1,
                     "to_grade": 2,
+                    "metrics": {"names": ["score"], "patterns": []},
                 },
                 "fresh": {
                     "start": "fresh",
@@ -450,7 +451,10 @@ class TestRenderTextDryRunPlan:
             "task echo: resume (2 kept, 1 regraded), from feedback, 1 to infer, "
             "2 to grade"
         ) in lines
-        assert "task fresh: fresh, 3 to infer, 3 to grade" in lines
+        # No declared report metrics: a check on them cannot run.
+        assert (
+            "task fresh: fresh, 3 to infer, 3 to grade, report metrics unknown"
+        ) in lines
         assert "needs inference: yes" in lines
 
     def test_a_refused_task_is_named_on_a_failed_dry_run(self) -> None:
@@ -464,6 +468,7 @@ class TestRenderTextDryRunPlan:
                     "resume_plan": _outcomes(kept=3),
                     "to_infer": 0,
                     "to_grade": 0,
+                    "metrics": {"names": ["score"], "patterns": []},
                 },
             },
             needs_inference=False,

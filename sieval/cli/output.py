@@ -366,13 +366,14 @@ def _render_dry_run_plan(data: dict) -> None:
         )
         rerun_from = (entry.get("stages") or {}).get("rerun_from")
         log_user(
-            "task {}: {}{}{}, {} to infer, {} to grade",
+            "task {}: {}{}{}, {} to infer, {} to grade{}",
             name,
             entry["start"],
             f" ({outcomes})" if outcomes else "",
             f", from {rerun_from}" if rerun_from else "",
             entry["to_infer"],
             entry["to_grade"],
+            "" if entry.get("metrics") else ", report metrics unknown",
         )
     log_user("needs inference: {}", "yes" if data.get("needs_inference") else "no")
 
